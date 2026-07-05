@@ -311,8 +311,16 @@ const shellScreen = createPrompt((config, done) => {
       done({ key: 'select', value: choices[cursor]?.value });
       return;
     }
-    if (key.name === 'up') setCursor((c) => (c - 1 + choices.length) % choices.length);
-    else if (key.name === 'down') setCursor((c) => (c + 1) % choices.length);
+    // ⚠ @inquirer/core's useState setter does NOT take a React-style functional
+    // updater — setState(fn) stores the FUNCTION as the value (only the INITIAL
+    // value may be a factory). Passing `(c) => …` here froze the menu: cursor
+    // became a function, no row ever matched `i === cursor`, and ⏎ selected
+    // undefined (owner repro 2026-07-05: "can't go up and down"). Compute from
+    // the closure's `cursor` instead — the render re-runs per keypress, so it
+    // is always current.
+    if (choices.length === 0) return;
+    if (key.name === 'up') setCursor((cursor - 1 + choices.length) % choices.length);
+    else if (key.name === 'down') setCursor((cursor + 1) % choices.length);
   });
   const menu = choices
     .map((c, i) => `${i === cursor ? accent('❯ ') : '  '}${c.name}`)

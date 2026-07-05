@@ -1888,6 +1888,39 @@ export function claimHoldExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The OBSERVATION-LANE self-select EXCLUSION floor for issue-family claims. A
+ * `payload.lane:'observation'` row is a turn-end-reflection / rubric scorecard filed via
+ * `improvements:capture { lane:'observation' }` (D-005): by DESIGN it "never enters the work
+ * queue/triage/auto-implement — only Scout's corpus-digest + the Observations pane read it".
+ * But these rows land in `harness_shared.work_items` as issue-family `change`-kind rows, so
+ * WITHOUT this floor the oldest-first self-select serves them like real work — a single-box
+ * drain member claims a scorecard, finds there is nothing to DO (its payload IS the whole
+ * deliverable), and releases it: pure recycle churn. This was the dominant pool pollutant
+ * (922 open observation rows vs 854 real issue/feature items, 2026-07-05) and the root of the
+ * recurring "claim_next keeps surfacing lane:observation scorecards" friction
+ * (EI-7503/EI-7587/EI-7741). This floor makes the claim path HONOR the D-005 "never enters the
+ * work queue" contract the capture tool already advertises.
+ *
+ * UNCONDITIONAL (unlike the rig floor's caller bypass): no self-select caller legitimately
+ * wants an observation record — the Observations pane / Scout digest read them directly, never
+ * by claiming. Still directly claimable BY ID (the same named-claim bypass every issue floor
+ * allows), so an operator can still inspect/edit one.
+ *
+ * Mirrors {@link claimHoldExclusionSql}'s shape (same COALESCE-for-NULL-safety pattern) and is
+ * likewise ONE source of truth shared by {@link claimNextIssueWorkItem} (the claim) and
+ * {@link diagnoseClaimNextMiss} (both the POOL and READY counts) so the miss diagnosis can
+ * never disagree with what the claim actually serves. Applied to the POOL count too (not just
+ * READY, as the rig/claimHold floors are) because an observation row is not work-queue
+ * material AT ALL (D-005) — a queue of only scorecards must read `drained:true` so a drainer
+ * idles, rather than the "pending-but-gated, don't idle" verdict a held-but-real item gets.
+ */
+export function observationLaneExclusionSql(sql: OrgSql) {
+  // COALESCE so a NULL-payload row reads NULL ->> 'lane' = NULL, and
+  // `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ the row is INCLUDED (never excluded).
+  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'`;
+}
+
+/**
  * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
  * excluded from `claim_next`/`scheduler:get_next` self-selection (see
  * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
@@ -2130,7 +2163,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR wi.taken_by = '')
-         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])`;
+         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
+         -- D-005: observation-lane rows never enter the work queue, so they are NOT part of the
+         -- "work here a bee shouldn't idle on" POOL — excluding them here (not just from READY,
+         -- as the rig/claimHold floors are) lets a scorecard-only backlog read drained:true.
+         AND ${observationLaneExclusionSql(sql)}`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
 
     // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
@@ -2175,6 +2212,8 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
          -- WI-2797: a claim-held item is likewise pending-but-gated — same floor the claim applies.
          AND ${claimHoldExclusionSql(sql)}
+         -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
+         AND ${observationLaneExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
          AND ${issueCooldown > 0
@@ -2283,6 +2322,9 @@ export async function claimNextIssueWorkItem(
           -- WI-2797: never self-select an item a peer has explicitly claim-held (do-not-
           -- opportunistically-claim) — still directly claimable by id.
           AND ${claimHoldExclusionSql(sql)}
+          -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
+          -- "never enters the work queue" (only the Observations pane + Scout digest read it).
+          AND ${observationLaneExclusionSql(sql)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"

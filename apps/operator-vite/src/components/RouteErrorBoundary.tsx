@@ -1,6 +1,8 @@
 import { Component, useEffect, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
 import { useLocation } from '@tanstack/react-router';
 import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
+import { CHUNK_LOAD_ERROR_RE } from '@papercusp/operator-core/lib/lazy-with-retry';
+import { inDevBuildWatcherShell } from '../lib/dev-build-shell';
 
 /**
  * Error boundary around the route content (`<Outlet/>`).
@@ -28,12 +30,34 @@ interface State {
   expanded: boolean;
 }
 
-/** Chunk-load failures = the page predates the current build (a lazy tab's
- *  hashed chunk 404s after `vite build --watch` rewrote dist/). Exported for
- *  tests. Webkit says "Importing a module script failed"; Chromium/Firefox
- *  have their own phrasings. */
-export const CHUNK_LOAD_ERROR_RE =
-  /Importing a module script failed|Failed to fetch dynamically imported module|error loading dynamically imported module/i;
+/** The canonical chunk-load-error matcher (every engine's phrasing — WebKit
+ *  "Importing a module script failed", Chromium/Firefox/webpack variants) lives
+ *  in lazy-with-retry so the RETRY site and THIS boundary can never disagree
+ *  about what counts as a (retryable / auto-reloadable) chunk failure. The old
+ *  divergence — the retry helper's regex missed WebKit's phrasing while this one
+ *  matched it — is exactly why transients escalated to this fatal card on the
+ *  packaged desktop (WI-2902). Re-exported for this module's existing tests. */
+export { CHUNK_LOAD_ERROR_RE };
+
+/** The error-card explanatory copy, honest for the current shell: blame the
+ *  build watcher only in a dev shell; in the packaged app describe it as the
+ *  transient load hiccup it actually is (WI-2902). */
+function ErrorCardBody(): ReactNode {
+  return inDevBuildWatcherShell() ? (
+    <p style={BODY}>
+      Often this just means the app was rebuilt underneath the page — the dev
+      build watcher rewrote the bundle, so an already-open view can no longer
+      load part of itself. Reloading picks up the latest build. If it persists
+      after a reload, it&rsquo;s a real bug; the details are below.
+    </p>
+  ) : (
+    <p style={BODY}>
+      This part of the app failed to load. It&rsquo;s usually a temporary hiccup
+      while Papercusp is still starting up — reloading almost always fixes it. If
+      it persists after a reload, it&rsquo;s a real bug; the details are below.
+    </p>
+  );
+}
 /** SessionStorage key holding the last chunk-auto-reload timestamp. SHARED by
  *  RouteErrorBoundary (Outlet) + DefaultRouterErrorComponent (root) so the two
  *  boundaries share ONE 60s debounce and can't double-reload. Exported for tests. */
@@ -95,13 +119,7 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
       <div role="alert" style={WRAP}>
         <div style={CARD}>
           <h2 style={TITLE}>This view hit an error</h2>
-          <p style={BODY}>
-            Often this just means the app was rebuilt underneath the page — the
-            dev build watcher rewrote the bundle, so an already-open view can no
-            longer load part of itself. Reloading picks up the latest build. If
-            it persists after a reload, it&rsquo;s a real bug; the details are
-            below.
-          </p>
+          <ErrorCardBody />
           <div style={ROW}>
             <button type="button" style={PRIMARY} onClick={() => hardReload()}>
               Reload
@@ -185,12 +203,7 @@ export function DefaultRouterErrorComponent({
     <div role="alert" style={WRAP}>
       <div style={CARD}>
         <h2 style={TITLE}>This view hit an error</h2>
-        <p style={BODY}>
-          Often this just means the app was rebuilt underneath the page — the
-          dev build watcher rewrote the bundle, so an already-open view can no
-          longer load part of itself. Reloading picks up the latest build. If it
-          persists after a reload, it&rsquo;s a real bug; the details are below.
-        </p>
+        <ErrorCardBody />
         <div style={ROW}>
           <button type="button" style={PRIMARY} onClick={() => hardReload()}>
             Reload

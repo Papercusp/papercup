@@ -1,5 +1,10 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
-import { lazy, Suspense, useEffect, type ReactNode } from 'react';
+import { Suspense, useEffect, type ReactNode } from 'react';
+// Boot-critical shell chunks (LeftSidebar, the dev rail) load via lazyWithRetry,
+// not bare React.lazy: on the packaged WebKitGTK desktop a first-boot dynamic
+// import can transiently fail while the self-hosting operator is busy, and bare
+// lazy escalates that straight to the fatal route error boundary (WI-2902).
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { Toaster } from 'sonner';
 // Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed

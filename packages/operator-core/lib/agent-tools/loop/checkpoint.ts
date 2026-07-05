@@ -114,8 +114,11 @@ export default defineTool({
     // armed yet (e.g. a checkpoint written before the first loop:arm — an edge case, since
     // loop:checkpoint's whole purpose assumes an armed loop already exists).
     const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
-    const harness =
-      armedRoutine?.harnessSlug ?? args.harness ?? ctx.harnessSlug ?? resolveHiveHomeSlug(undefined, undefined);
+    // EI-7734: the pre-armed-routine fallback is routed through resolveHiveHomeSlug
+    // (not a raw `??` chain) so its '*'-skip logic runs — every superuser/operator
+    // session sets ctx.harnessSlug='*' (the wildcard sentinel), which would otherwise
+    // win this chain outright and scope the carry-note under the literal '*' namespace.
+    const harness = armedRoutine?.harnessSlug ?? resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [

@@ -22,7 +22,18 @@ vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller', workspaceId: 'ws-1' })),
 }));
-vi.mock('../../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'home-hive') }));
+// EI-7734 fallout: checkpoint.ts now routes EVERY no-armed-routine fallback through this
+// mock (previously a raw ctx.harnessSlug check short-circuited before ever calling it), so
+// a static `() => 'home-hive'` that ignores its args broke every test asserting an explicit
+// harness/ctx value wins — it silently returned 'home-hive' regardless of what was passed.
+// Mirror the real resolveHiveHomeSlug's precedence (explicit arg > ctx slug > 'home-hive'
+// env-fallback stand-in) so the mock actually honors the inputs it's given.
+vi.mock('../../hive/wake', () => ({
+  resolveHiveHomeSlug: vi.fn((explicit?: string | null, ctxSlug?: string | null) => {
+    const concrete = (s?: string | null) => (s && s !== '*' ? s : undefined);
+    return concrete(explicit) ?? concrete(ctxSlug) ?? 'home-hive';
+  }),
+}));
 // WI-2148: the fix under test — loop:checkpoint resolves harness from the ARMED routine
 // (getLoopStatus) FIRST, so it matches whatever the cold-wake reader resolves. Default
 // (most tests): no armed routine found (null) ⇒ falls through to the old arg/ctx/home-hive

@@ -4,4 +4,9 @@
 // and the operator, so they share ONE implementation here rather than two
 // copies that drift. (They drifted once: the sync copy lacked the guard and
 // auto-reloaded the desktop on every `vite build --watch` rebuild.)
-export { lazyWithRetry, shouldAutoReloadChunkFailure } from '@papercusp/sync';
+export {
+  lazyWithRetry,
+  shouldAutoReloadChunkFailure,
+  isChunkLoadError,
+  CHUNK_LOAD_ERROR_RE,
+} from '@papercusp/sync';

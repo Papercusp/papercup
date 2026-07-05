@@ -18,7 +18,10 @@
  *
  * Unlike DevAdminRail this is NOT dev-gated — it's a first-class app surface.
  */
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+// Retry-wrapped lazy: a transient first-boot chunk fetch failure on the packaged
+// WebKitGTK desktop must retry, not escalate to the fatal boundary (WI-2902).
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';

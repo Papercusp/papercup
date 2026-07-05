@@ -1,5 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
+// Retry-wrapped lazy (WI-2902): transient first-boot chunk fetch failures on the
+// packaged WebKitGTK desktop must retry, not escalate to the fatal boundary.
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 
 /**
  * /pi — PiTerminalsDock view. Translated from `apps/operator/app/pi/page.tsx`

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
 import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
+import { inDevBuildWatcherShell } from '../lib/dev-build-shell';
 
 /**
  * Surfaces a user-controlled reload when a code-split chunk fails to load.
@@ -27,11 +28,18 @@ export default function ChunkReloadPrompt() {
     const onPreloadError = () => {
       if (shown) return;
       shown = true;
-      toast('A newer build is available', {
+      // Honest copy per shell (WI-2902): only a dev build shell actually has a
+      // "newer build" (the watcher rewrote dist). In the packaged app the
+      // dynamic import just transiently failed to load — say that instead.
+      const devShell = inDevBuildWatcherShell();
+      const title = devShell ? 'A newer build is available' : 'A component failed to load';
+      const description = devShell
+        ? 'Some content failed to load because the app was updated underneath it. Reload to get the latest.'
+        : 'Some content failed to load — this can happen while the app is still starting up. Reload to retry.';
+      toast(title, {
         // Stable id → sonner dedupes, so repeated chunk failures never stack.
         id: 'chunk-reload-prompt',
-        description:
-          'Some content failed to load because the app was updated underneath it. Reload to get the latest.',
+        description,
         duration: Infinity,
         // `window.location.reload()` is a no-op on the desktop host (it
         // overrides reload to keep `vite build --watch` from yanking the

@@ -204,6 +204,29 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
   });
+
+  // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'
+  // (the wildcard sentinel, _harness-scope.ts). A raw `args.harness ?? ctx.harnessSlug ?? …`
+  // chain would let that truthy '*' win outright — bypassing resolveHiveHomeSlug's own
+  // '*'-skip logic entirely — and the wildcard would then get interpolated verbatim into
+  // the wake prompt's self-task example (`work_items:create { harness:'*', … }`), which
+  // work_items:create's harness resolution rejects (harnessScope throws on the wildcard).
+  // The fix routes BOTH args.harness and ctx.harnessSlug THROUGH resolveHiveHomeSlug
+  // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
+  it('EI-7734: routes ctx.harnessSlug through resolveHiveHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
+    const { resolveHiveHomeSlug } = await import('../../hive/wake');
+    vi.mocked(resolveHiveHomeSlug).mockReturnValueOnce('papercusp' as never);
+    const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never) as Out;
+    const b = body(out);
+    // resolveHiveHomeSlug must be CALLED with the raw '*' so its own skip logic runs —
+    // a pre-fix raw `??` chain would never call it at all (ctx.harnessSlug='*' wins first).
+    expect(vi.mocked(resolveHiveHomeSlug)).toHaveBeenCalledWith(undefined, '*');
+    // The resolved (non-wildcard) harness is what actually arms + what the wake prompt sees —
+    // never the raw '*'.
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(b.loop.harness).not.toBe('*');
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+  });
 });
 
 describe('loop:arm — EI-6878: firstFireAt must not leak the raw parked-loop sentinel', () => {

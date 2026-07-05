@@ -23,7 +23,10 @@
  * accordion is unmounted while collapsed, so an inactive panel's SSE/queries never
  * run.
  */
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+// Retry-wrapped lazy (WI-2902): a transient chunk fetch failure retries instead
+// of escalating to the fatal route error boundary.
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
