@@ -40,6 +40,10 @@ import {
   isFleetLaunchCall,
   resetFleetLaunchBudget,
   fleetLaunchBudgetReason,
+  isLocalModel,
+  getOwnLaunchedModel,
+  fleetLaunchMemberModel,
+  fleetLaunchModelReason,
   isAgentSession,
   isEvalCall,
   evalBlockReason,
@@ -1523,6 +1527,145 @@ describe('onToolCall fleet-launch budget (agent sessions only, session-cumulativ
     delete process.env.PAPERCUSP_AGENT_SESSION;
     for (let n = 1; n <= FLEET_LAUNCH_CALLS_PER_SESSION + 3; n++) {
       expect((await launchCall(n)).block).toBeUndefined();
+    }
+  });
+});
+
+describe('isLocalModel / getOwnLaunchedModel / fleetLaunchMemberModel (fleet-launch model guard #8)', () => {
+  it('isLocalModel recognizes local/gateway specs, not cloud', () => {
+    expect(isLocalModel('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe(true);
+    expect(isLocalModel('ollama/llama3')).toBe(true);
+    expect(isLocalModel('some-ORNITH-build')).toBe(true); // case-insensitive
+    expect(isLocalModel('maxwell1500')).toBe(true);
+    expect(isLocalModel('claude')).toBe(false);
+    expect(isLocalModel('opus:high')).toBe(false);
+    expect(isLocalModel('sonnet')).toBe(false);
+    expect(isLocalModel(undefined)).toBe(false);
+    expect(isLocalModel('')).toBe(false);
+  });
+  it('getOwnLaunchedModel reads --model / --model= from argv (fail-open when absent)', () => {
+    const orig = process.argv;
+    try {
+      process.argv = ['bun', 'omp', '--model', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M'];
+      expect(getOwnLaunchedModel()).toBe('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
+      process.argv = ['bun', 'omp', '--model=opus:high'];
+      expect(getOwnLaunchedModel()).toBe('opus:high');
+      process.argv = ['bun', 'omp', '--no-lsp'];
+      expect(getOwnLaunchedModel()).toBeUndefined();
+    } finally {
+      process.argv = orig;
+    }
+  });
+  it('fleetLaunchMemberModel extracts from direct + tools:invoke-wrapped args', () => {
+    expect(fleetLaunchMemberModel({ model: 'x' })).toBe('x');
+    expect(fleetLaunchMemberModel({ name: 'fleet:launch-on-plan', args: { model: 'y' } })).toBe('y');
+    expect(fleetLaunchMemberModel({ name: 'fleet:launch-on-plan', args: { count: 2 } })).toBeUndefined();
+    expect(fleetLaunchMemberModel(undefined)).toBeUndefined();
+  });
+  it('fleetLaunchModelReason names the own model + the required arg', () => {
+    const r = fleetLaunchModelReason('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
+    expect(r).toContain('fleet-launch model guard');
+    expect(r).toContain('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
+    expect(r).toContain('model:');
+  });
+});
+
+describe('onToolCall fleet-launch member-model guard (ornith mode #8 / WI-2382)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  const prevArgv = process.argv;
+  const ORNITH = 'ollama-cc/maxwell1500/ornith-35b:IQ3_M';
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetFleetLaunchBudget();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.argv = prevArgv;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetFleetLaunchBudget();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const withOwnModel = (m: string) => {
+    process.argv = ['bun', '/home/x/.bun/bin/omp', '--no-lsp', '--model', m];
+  };
+  const launch = (args: Record<string, unknown>) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_tools_invoke',
+      toolCallId: 'fl',
+      input: { name: 'fleet:launch-on-plan', args },
+    });
+
+  it('blocks a local-model agent that launches WITHOUT a local member model (the iter22 bug)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    const r = await launch({ name: 'f', plan: 'p', count: 2, agent: 'omp' }); // no model
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('fleet-launch model guard');
+    expect(r.reason).toContain(ORNITH);
+  });
+
+  it('also blocks when the launch pins a CLOUD member model', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    expect((await launch({ name: 'f', plan: 'p', model: 'claude' })).block).toBe(true);
+  });
+
+  it('ALLOWS the launch when a local member model is pinned', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    expect((await launch({ name: 'f', plan: 'p', agent: 'omp', model: ORNITH })).block).toBeUndefined();
+  });
+
+  it('does NOT fire for a CLOUD-model omp session (own model not local)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel('opus:high');
+    expect((await launch({ name: 'f', plan: 'p' })).block).toBeUndefined();
+  });
+
+  it('does NOT fire when the own model is undetectable — fail-open (no --model in argv)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    process.argv = ['bun', 'omp', '--no-lsp'];
+    expect((await launch({ name: 'f', plan: 'p' })).block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    withOwnModel(ORNITH);
+    expect((await launch({ name: 'f', plan: 'p' })).block).toBeUndefined();
+  });
+
+  it('does NOT consume the fleet-launch budget on a wrong-model block (a corrected retry stays possible)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    // 3 wrong-model attempts — all model-blocked, none reach the budget counter…
+    for (let i = 0; i < 3; i++) expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+    // …so a correct launch is still allowed (budget of 2 not yet spent).
+    expect((await launch({ name: 'f', plan: 'p', model: ORNITH })).block).toBeUndefined();
+    expect((await launch({ name: 'f', plan: 'p', model: ORNITH })).block).toBeUndefined();
+  });
+
+  it('feeds the SHARED reflexive backstop — a persistent wrong-model loop HALTS (naming fleet-model)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('fleet-model');
+    } finally {
+      setHaltForTest(prevHalt);
     }
   });
 });

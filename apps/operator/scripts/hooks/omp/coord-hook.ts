@@ -1628,6 +1628,65 @@ export function fleetLaunchBudgetReason(count: number): string {
   );
 }
 
+/** True for a LOCAL / gateway model spec — the models only the omp backend runs: an `ollama-cc/…`,
+ *  an `ollama/…`, or any spec naming ornith / maxwell (the local ornith build). Used to tell an
+ *  ornith agent session apart from a cloud (claude/codex) one, and to check that a fleet-launch pins
+ *  a local MEMBER model. Pure. */
+export function isLocalModel(model: string | undefined): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  return (
+    m.startsWith('ollama-cc/') || m.startsWith('ollama/') || m.includes('ornith') || m.includes('maxwell')
+  );
+}
+
+/** The model THIS omp session was launched with, read from its own process argv (`--model <spec>` or
+ *  `--model=<spec>`). The `-e` coord hook loads INSIDE the omp process, so process.argv IS omp's argv.
+ *  Returns undefined if no --model flag is present, so callers FAIL OPEN (no false block). Pure-ish
+ *  (reads process.argv only). */
+export function getOwnLaunchedModel(): string | undefined {
+  const argv = process.argv || [];
+  const i = argv.indexOf('--model');
+  if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
+  const eq = argv.find((a) => a.startsWith('--model='));
+  return eq ? eq.slice('--model='.length) : undefined;
+}
+
+/** Extract the member `model` arg from a fleet:launch-on-plan call in either surface spelling — the
+ *  direct MCP call (input.model) or the tools:invoke wrapper (input.args.model). Pure. */
+export function fleetLaunchMemberModel(
+  input: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!input) return undefined;
+  if (typeof input.model === 'string') return input.model;
+  const args = input.args;
+  if (args && typeof args === 'object') {
+    const inner = (args as Record<string, unknown>).model;
+    if (typeof inner === 'string') return inner;
+  }
+  return undefined;
+}
+
+/** The redirect returned when a LOCAL-model (ornith) agent session launches a fleet WITHOUT pinning a
+ *  local member `model` (ornith iter22, 2026-07-04 / WI-2382 — failure mode #8). fleet:launch-on-plan
+ *  DEFAULTS members to cloud `claude` unless a local model is given, so an ornith leader that omits it
+ *  (or whose weak model dropped the arg) silently spawns CLAUDE members — the wrong backend,
+ *  invisibly (iter22: 2 claude members launched + died, the ornith-member test invalidated). Names the
+ *  session's OWN model so the fix is copy-pasteable. Pure. */
+export function fleetLaunchModelReason(ownModel: string): string {
+  return (
+    'fleet-launch model guard: you are running the local model `' +
+    ownModel +
+    '`, but this fleet:launch-on-plan call does NOT pin a local member `model` — so it would ' +
+    'silently launch your members as CLOUD `claude` agents (fleet:launch-on-plan defaults ' +
+    'agent=claude unless a local model is given), NOT your own model. Re-call it WITH the member ' +
+    'model pinned: `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
+    'plan:"<plan-slug>", count:<n>, agent:"omp", model:"' +
+    ownModel +
+    '"}}`. The `model` arg is REQUIRED — do not omit it.'
+  );
+}
+
 /** True when the current process is a Papercusp AGENT session, so the coord-hook
  *  guards below (doom-loop breaker, per-turn shell + session fleet-launch budgets,
  *  eval + native-tool-search redirects, native-scheduler lockout, destructive-git
@@ -2386,6 +2445,22 @@ export async function onToolCall(
     // specific bash guards (git/scheduler) so those still win at call #1.
     if (isShellTool(event.toolName) && noteShellCall() > SHELL_CALLS_PER_TURN_LIMIT) {
       return { block: true, reason: shellBudgetReason(_shellCallsThisTurn) };
+    }
+    // Fleet-launch member-model guard (ornith iter22, 2026-07-04 / WI-2382 — failure mode #8): a
+    // LOCAL-model (ornith) agent that launches a fleet WITHOUT pinning a local member model silently
+    // spawns CLOUD `claude` members (fleet:launch-on-plan's default), NOT its own model — iter22's
+    // leader dropped agent:"omp" and launched 2 claude members invisibly, invalidating the ornith-
+    // member test. Enforce it structurally: if THIS session runs a local model but the launch omits a
+    // local member model, BLOCK with a re-call-with-model redirect naming the session's own model.
+    // Runs BEFORE the budget check so a corrected retry does NOT burn the launch budget; feeds the
+    // shared reflexive backstop so a leader that keeps launching wrong-model self-halts. Only fires
+    // for a local-model session (a cloud omp session is untouched) and only in agent sessions (D-003).
+    if (isFleetLaunchCall(event.toolName, event.input)) {
+      const own = getOwnLaunchedModel();
+      if (own && isLocalModel(own) && !isLocalModel(fleetLaunchMemberModel(event.input))) {
+        noteReflexiveBlock('fleet-model');
+        return { block: true, reason: fleetLaunchModelReason(own) };
+      }
     }
     // Session-cumulative fleet-launch budget (ornith run-10): the launch verb is
     // one-shot; a weak leader re-calling it between checkpoints dodges the

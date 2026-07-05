@@ -124,10 +124,13 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
   tell an agent to fix it"; the dev/staging/prod/local/release buttons +
   shortcuts; feature flags) · ㉔ defineTool · ㉕ the declarative event system
   · ㉖ comb · ㉗ the inference gateway (account pinning / default system
-  account / auto routing).
+  account / auto routing) · ㉘ templates (composable app-building: whole apps
+  assembled from official templates — components + a GUIDE + checks — from
+  the Cupboard's Templates section; the one-click "New app from template"
+  entry point is still under construction, label it so).
 - **Ch 6 — Under construction (aspiration p2p)**: say EXPLICITLY these are
-  still being built: ㉘ overview · ㉙ gpu allocation · ㉚ account allocation ·
-  ㉛ agent delegation + cross-machine communication · ㉜ p2p git.
+  still being built: ㉙ overview · ㉚ gpu allocation · ㉛ account allocation ·
+  ㉜ agent delegation + cross-machine communication · ㉝ p2p git.
 - **Finale — the GUI walkthrough**: open with (verbatim): *"Now the last
   piece is the GUI, while you are expected to navigate the app in the TUI,
   the GUI is useful for adjusting settings and for browsing the state and
