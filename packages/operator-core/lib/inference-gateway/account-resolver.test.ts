@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('../deployment/account-pool-store', () => ({ loadAccountPool: vi.fn() }));
 vi.mock('../deployment/account-pool', () => ({ accountByCredentialRef: vi.fn() }));
 
-import { resolveBoundAccount, resolveAccountPool, poolAccountIdForRef } from './account-resolver';
+import { resolveBoundAccount, resolveAccountPool, poolAccountIdForRef, localLoginCredentialRef } from './account-resolver';
 import { loadAccountPool } from '../deployment/account-pool-store';
 import { accountByCredentialRef } from '../deployment/account-pool';
 
@@ -248,5 +248,23 @@ describe('poolAccountIdForRef', () => {
   it('returns undefined for an unknown credential ref', () => {
     mockedByRef.mockReturnValue(undefined as never);
     expect(poolAccountIdForRef({ accounts: [] }, 'ref:nope')).toBeUndefined();
+  });
+});
+
+describe('localLoginCredentialRef (P-006 darwin Keychain fallback)', () => {
+  it('darwin without a file bundle → the Keychain ref', () => {
+    expect(localLoginCredentialRef({ platform: 'darwin', exists: () => false, home: '/Users/u' })).toBe(
+      'keychain:Claude Code-credentials',
+    );
+  });
+  it('darwin WITH a file bundle keeps the (refresh-capable) file ref', () => {
+    expect(localLoginCredentialRef({ platform: 'darwin', exists: () => true, home: '/Users/u' })).toBe(
+      'file:/Users/u/.claude/.credentials.json',
+    );
+  });
+  it('linux always uses the file ref (even when absent — the resolve-time error is the right surface there)', () => {
+    expect(localLoginCredentialRef({ platform: 'linux', exists: () => false, home: '/home/u' })).toBe(
+      'file:/home/u/.claude/.credentials.json',
+    );
   });
 });

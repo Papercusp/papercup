@@ -269,6 +269,12 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // checkPeerLogConsistency guards: mig 490 + mapper + projection landed without
   // this classification (5 reds at HEAD) — flagged to WI-1935 owner su-35c3b.]
   'p2p_work_offers',
+  // P-302 LIVE-2 seam 1 (WI-2001): the fleet-leader lease row — keyed
+  // (workspace_id, harness_slug = the hive HOME, owner_github_user_id,
+  // fleet_slug) → workspace-owned + peer-log. It is a liveness/anti-flap hint
+  // (not authorization); producer = CDC capture (mig 518), projection
+  // 'p2p-fleet-leader-leases'.
+  'p2p_fleet_leader_leases',
   // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts federate
   // as hive state (mig 461 capture triggers, shareable=true rows only — D-006 privacy;
   // apply side partitions by receiver-stamped source_hive, H6). Keyed (workspace_id,

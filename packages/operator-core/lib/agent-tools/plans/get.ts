@@ -175,13 +175,13 @@ function findSection(
 export default defineTool({
   name: "plans:get",
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. ALWAYS pass `harness` on an operator/superuser-scoped call (a concrete slug, or 'all' for cross-harness/Papercusp's-own-plans) — omitting it throws harness_required (a harness-scoped session supplies it automatically, so this only applies when you're calling from operator scope).",
   guidance: {
-    when: "You have a slug from plans:list and need the plan contents.",
+    when: "You have a slug from plans:list and need the plan contents. Pass `harness` on THIS call (a concrete slug for that plan's project, or 'all' for operator/cross-harness scope) unless your session is already scoped to a harness — an operator/superuser session is NOT auto-scoped and omitting it fails with harness_required.",
     notWhen:
       "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
-      "plans:list → plans:get { slug } → optionally plans:items for cross-plan picks.",
+      "plans:list → plans:get { slug, harness } → optionally plans:items for cross-plan picks.",
   },
   capability: "plans:read",
   requirePrincipal: false,

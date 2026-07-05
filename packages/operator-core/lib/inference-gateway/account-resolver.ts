@@ -13,6 +13,8 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { CLAUDE_KEYCHAIN_SERVICES } from '../agent-auth-detect';
 import { loadAccountPool } from '../deployment/account-pool-store';
 import {
   accountByCredentialRef,
@@ -75,6 +77,27 @@ function accountsFor(pool: AccountPool, provider: AccountProvider) {
   return pool.accounts.filter((a) => (a.provider === 'codex' ? 'codex' : 'claude') === provider);
 }
 
+/**
+ * The credentialRef for the box's own Claude login (the `local` fallback account) — pure +
+ * injectable for tests. Linux/WSL: the `~/.claude/.credentials.json` bundle. macOS: Claude Code
+ * keeps that bundle in the login KEYCHAIN, not on disk (P-006, cross-platform-hardening) — so
+ * when the file is absent on darwin, fall back to the Keychain item (credential-store.ts's
+ * read-only `keychain:` channel). A darwin box that DOES have the file (hand-provisioned) keeps
+ * using it, which also preserves refresh-capable behavior there.
+ */
+export function localLoginCredentialRef(opts?: {
+  platform?: NodeJS.Platform;
+  exists?: (p: string) => boolean;
+  home?: string;
+}): string {
+  const platform = opts?.platform ?? process.platform;
+  const exists = opts?.exists ?? existsSync;
+  const home = opts?.home ?? homedir();
+  const bundle = join(home, '.claude', '.credentials.json');
+  if (platform === 'darwin' && !exists(bundle)) return `keychain:${CLAUDE_KEYCHAIN_SERVICES[0]}`;
+  return `file:${bundle}`;
+}
+
 export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount> {
   const pool = await loadPoolOrThrow(ws);
   const accounts = accountsFor(pool, 'claude');
@@ -90,8 +113,7 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
   }
   // No env pin and 0 or >1 pool accounts → the box's own login. (>1 with no pin is ambiguous;
   // the local login is the safe, explicit default rather than guessing which pool account.)
-  const localBundle = join(homedir(), '.claude', '.credentials.json');
-  return { accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' };
+  return { accountId: 'local', credentialRef: localLoginCredentialRef(), source: 'local-fallback' };
 }
 
 /**
@@ -113,8 +135,7 @@ export async function resolveAccountPool(ws?: string, provider: AccountProvider 
     source: 'pool' as const,
   }));
   if (all.length === 0 && provider === 'claude') {
-    const localBundle = join(homedir(), '.claude', '.credentials.json');
-    return [{ accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' }];
+    return [{ accountId: 'local', credentialRef: localLoginCredentialRef(), source: 'local-fallback' }];
   }
   if (all.length === 0) {
     return [];

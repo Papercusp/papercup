@@ -5,12 +5,28 @@
  * projects the directory's verified list, gates non-loopback callers with 403,
  * and never leaks a private hive.
  */
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import hivesRoute from './hives';
 import { configureHiveDirectoryForTest, __resetHiveDirectorySingleton } from '../../../hive-directory-deps';
 import type { HiveDirectoryDeps } from '../../../hive-directory';
 import { buildHiveAnnounce, type HiveAnnounceBody, type SignedHiveAnnounce } from '../../../sync/hyperbee/hive-announce';
+
+// EI-7726: the handler fires a real, un-awaited `ensureHiveDirectoryWired(...)` on every
+// GET (fire-and-forget lazy-wire — see hives.ts). Unmocked, that promise runs the REAL
+// boot path (resolveLocalAnnounceIdentity, getSharedSwarm, wireHiveDirectoryAtBoot) against
+// this box's actual workspace/keychain, which is never wired in a test process — it
+// eventually rejects and hive-directory-boot.ts logs a `console.warn` for the real
+// "papercusp" workspace. Because the promise is never awaited by the handler, that warn
+// lands at an unpredictable later tick — sometimes mid-way through a LATER `it()` in this
+// file — and vitest-fail-on-console then fails whichever test happened to be running at
+// that moment (the reported "403s a non-loopback caller" failure was never actually about
+// that test; it was collateral from this dangling promise). Sibling discovery-route tests
+// (federation-status.test.ts, join-invite.test.ts, discover-join-flow.test.ts) already
+// mock this same seam for the same reason — this file was the one gap. Stubbing it makes
+// the fire-and-forget call an instant no-op, so no real boot code (and no console.warn)
+// ever runs during this suite.
+vi.mock('../../../hive-directory-boot', () => ({ ensureHiveDirectoryWired: vi.fn(async () => null) }));
 
 const NOW = 1_700_000_000_000;
 

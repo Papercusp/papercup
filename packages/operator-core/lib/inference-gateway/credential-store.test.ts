@@ -13,6 +13,7 @@ import {
   credentialRefSupportsOpenAiBearer,
   normalizeBearerToken,
   scrubSecrets,
+  _setKeychainReaderForTests,
   type ClaudeCredentialBundle,
 } from './credential-store';
 import {
@@ -351,4 +352,78 @@ test('scrubSecrets — redacts sk-ant tokens and generic Bearer values, keeps an
   assert.equal(scrubSecrets('Bearer abcdefghijklmnopqrstuvwx failed'), 'Bearer [redacted] failed');
   // Non-secret text passes through untouched.
   assert.equal(scrubSecrets('plain error, no secrets'), 'plain error, no secrets');
+});
+
+// ── keychain: channel (P-006, cross-platform-hardening-and-agent-ergonomics-2026-07-05) ──
+
+test('parseCredentialRef — keychain: names the macOS Keychain service', () => {
+  assert.deepEqual(parseCredentialRef('keychain:Claude Code-credentials'), {
+    kind: 'keychain',
+    path: 'Claude Code-credentials',
+  });
+});
+
+test('keychain resolver — reads the bundle, caches until near expiry, invalidate() re-reads', async () => {
+  let reads = 0;
+  _setKeychainReaderForTests((service) => {
+    assert.equal(service, 'Claude Code-credentials');
+    reads++;
+    return JSON.stringify({ claudeAiOauth: { accessToken: 'kc-token-1', expiresAt: Date.now() + 60 * 60 * 1000 } });
+  });
+  try {
+    const r = makeCredentialResolver('keychain:Claude Code-credentials');
+    assert.equal(r.kind, 'keychain');
+    assert.equal(await r.current(), 'kc-token-1');
+    assert.equal(await r.current(), 'kc-token-1');
+    assert.equal(reads, 1, 'far-from-expiry token is served from cache');
+    r.invalidate();
+    assert.equal(await r.current(), 'kc-token-1');
+    assert.equal(reads, 2, 'invalidate() forces a Keychain re-read');
+  } finally {
+    _setKeychainReaderForTests(null);
+  }
+});
+
+test('keychain resolver — near-expiry re-reads every call; hard-expired throws actionable guidance', async () => {
+  let reads = 0;
+  let expiresAt = Date.now() + 60_000; // inside the 5-min refresh skew, not yet expired
+  _setKeychainReaderForTests(() => {
+    reads++;
+    return JSON.stringify({ claudeAiOauth: { accessToken: 'kc-near', expiresAt } });
+  });
+  try {
+    const r = makeCredentialResolver('keychain:Claude Code');
+    assert.equal(await r.current(), 'kc-near');
+    assert.equal(await r.current(), 'kc-near');
+    assert.equal(reads, 2, 'near-expiry keeps re-reading (Claude Code may refresh the item any moment)');
+    expiresAt = Date.now() - 1_000; // the bundle went stale-dead (Claude Code not running)
+    await assert.rejects(r.current(), /expired at .* run Claude Code on this Mac/s);
+  } finally {
+    _setKeychainReaderForTests(null);
+  }
+});
+
+test('keychain resolver — missing item / non-JSON payload throw descriptive errors', async () => {
+  _setKeychainReaderForTests(() => null);
+  try {
+    await assert.rejects(
+      makeCredentialResolver('keychain:Claude Code-credentials').current(),
+      /no readable Keychain item/,
+    );
+  } finally {
+    _setKeychainReaderForTests(null);
+  }
+  _setKeychainReaderForTests(() => 'not-json');
+  try {
+    await assert.rejects(
+      makeCredentialResolver('keychain:Claude Code-credentials').current(),
+      /not a credentials-bundle JSON/,
+    );
+  } finally {
+    _setKeychainReaderForTests(null);
+  }
+});
+
+test('makeBearerCredentialResolver — rejects keychain: (Claude-subscription-only channel)', () => {
+  assert.throws(() => makeBearerCredentialResolver('keychain:Claude Code'), /keychain: is Claude-subscription-only/);
 });

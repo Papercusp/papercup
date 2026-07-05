@@ -1068,10 +1068,22 @@ describe('psu-launcher arg parsing', () => {
     expect(resumeAccountPlan({ account: null, picker: false })).toEqual({ source: 'none', account: null, prompt: false });
   });
 
-  it('buildResumeEnv: account env LAYERS onto the resume identity/scope; absent → byte-identical', () => {
+  it('buildResumeEnv: resumed psu sessions always carry the agent-session marker', () => {
     const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
-    // No account → exactly resumeEnvFor (the re-pin is opt-in; the default resume is unchanged).
-    expect(buildResumeEnv(session)).toEqual(resumeEnvFor(session));
+    expect(buildResumeEnv(session)).toEqual({
+      ...resumeEnvFor(session),
+      PAPERCUSP_AGENT_SESSION: '1',
+    });
+  });
+
+  it('buildResumeEnv: account env LAYERS onto the resume identity/scope and marker', () => {
+    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+    // No account → identity/scope exactly match resumeEnvFor; psu still adds
+    // the marker that arms hook-level guards for Claude too (WI-3071).
+    expect(buildResumeEnv(session)).toEqual({
+      ...resumeEnvFor(session),
+      PAPERCUSP_AGENT_SESSION: '1',
+    });
     // A resolved account env folds on top (the gateway pin the resume would otherwise lose).
     expect(
       buildResumeEnv(session, {
@@ -1082,13 +1094,14 @@ describe('psu-launcher arg parsing', () => {
       PAPERCUSP_SID: 'su-abc',
       PAPERCUSP_WORKSPACE: 'ws1',
       PAPERCUSP_ADV_SESSION_ID: '7',
+      PAPERCUSP_AGENT_SESSION: '1',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
       ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6',
       PAPERCUSP_ACCOUNT_ID: 'aviynw6',
     });
   });
 
-  it('buildResumeEnv: the brain agent-session marker still rides alongside the account env', () => {
+  it('buildResumeEnv: the brain path still carries the agent-session marker alongside the account env', () => {
     const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
     const env = buildResumeEnv(session, { brain: true, accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: 'avi' }, notice: null } });
     expect(env.PAPERCUSP_AGENT_SESSION).toBe('1');

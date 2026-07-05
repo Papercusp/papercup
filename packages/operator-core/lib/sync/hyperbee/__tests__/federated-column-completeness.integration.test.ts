@@ -236,6 +236,9 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     assignee_rank: 'per-bee work-list ordering, local work state (mapper doc)',
     rank_writer: 'per-bee work-list ordering, local work state (mapper doc)',
     rank_updated_at: 'per-bee work-list ordering, local work state (mapper doc)',
+    last_progress_at: 'machine-local item-scoped progress heartbeat; claims/progress are re-established per receiver',
+    base_harness_slug: 'engineer_issues view trigger identity helper (mig 510); not peer content',
+    base_origin: 'engineer_issues view trigger origin-preservation helper (mig 514); op provenance supplies federation origin',
     updated_at: 'machine-local row timestamp (federated time is created_at via the mapper)',
     signal_origin: 'frontier signal provenance (organic/drill/replay/shadow) — local learning-lane tag',
   },
@@ -259,6 +262,13 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
       "HOST-LOCAL refusal (revocation-reaper P-106 deferred #2) — deliberately never federates: a host cannot re-sign the publisher's record, it only stops serving it HERE (mig 490 masks it from the stamp trigger; the projection upsert never touches it)",
     created_at: 'machine-local row timestamp; the federated content is record_json + signature',
     updated_at: 'machine-local row timestamp; the federated content is record_json + signature',
+  },
+  p2p_fleet_leader_leases: {
+    // P-302 LIVE-2 seam 1: the federated subset is the incumbent identity +
+    // roster epoch (toFleetLeaderLeaseValue). Row timestamps are local; the
+    // ordering cursor is fed_ts/fed_hlc from the op envelope.
+    created_at: 'machine-local row timestamp',
+    updated_at: 'machine-local row timestamp',
   },
   agent_facts: {
     // F1-4/P-012 (mig 461/462): the federated subset is scope/scope_ref/key/body/
@@ -356,12 +366,12 @@ describe('federated CDC tables — every column federates or is documented-local
   it('sanity: the CDC-captured set is the 25 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    // 25 = 17 prior + 8 added since (p2p_fleet_directory/p2p_work_offers already
+    // 26 = 17 prior + 9 added since (p2p_fleet_directory/p2p_work_offers already
     // carried their own NOT_FEDERATED coverage when added; agent_facts,
     // gym_qd_archive, bee_claim_specs, gate_verdicts, p2p_peer_grants, p2p_receipts
     // did not — restored here, WI-2233). This count is a TRIPWIRE, not a target:
     // bump it AND add the new table's NOT_FEDERATED/mapper coverage together.
-    expect(CDC_CAPTURED_TABLES.length).toBe(25);
+    expect(CDC_CAPTURED_TABLES.length).toBe(26);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

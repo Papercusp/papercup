@@ -19,6 +19,7 @@
  * hot proxy path off disk between refreshes.
  */
 import { promises as fs } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { getOAuthToken, type TokenStorage } from '../oauth/token';
 import { getProvider, registerProvider, makeClaudeProvider } from '../oauth/providers';
 
@@ -53,16 +54,19 @@ function expandHome(p: string): string {
 }
 
 /** Parse a credentialRef into its channel + path (mirrors `resolveCredential`). Every account is a
- *  consumer Claude Max OAuth subscription — `token:` (a `claude setup-token`) or `file:` (a
- *  refreshable `.credentials.json` bundle). There is NO static-API-key channel: this deployment has
- *  no `ANTHROPIC_API_KEY`, and a raw billed key would 400 against the subscription-only
- *  `oauth-2025-04-20` beta the gateway sends. */
-export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'env'; path: string } {
+ *  consumer Claude Max OAuth subscription — `token:` (a `claude setup-token`), `file:` (a
+ *  refreshable `.credentials.json` bundle), or `keychain:` (the macOS login-Keychain item Claude
+ *  Code stores the SAME bundle JSON in — darwin has no `.credentials.json` on disk; P-006,
+ *  cross-platform-hardening-and-agent-ergonomics-2026-07-05). There is NO static-API-key channel:
+ *  this deployment has no `ANTHROPIC_API_KEY`, and a raw billed key would 400 against the
+ *  subscription-only `oauth-2025-04-20` beta the gateway sends. */
+export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'env' | 'keychain'; path: string } {
   if (ref.startsWith('token:')) return { kind: 'token', path: expandHome(ref.slice(6)) };
   if (ref.startsWith('file:')) return { kind: 'file', path: expandHome(ref.slice(5)) };
   if (ref.startsWith('env:')) return { kind: 'env', path: ref.slice(4).trim() };
+  if (ref.startsWith('keychain:')) return { kind: 'keychain', path: ref.slice(9).trim() };
   if (ref.startsWith('/') || ref.startsWith('~')) return { kind: 'file', path: expandHome(ref) };
-  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/path — Claude Max OAuth only)`);
+  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/keychain:/path — Claude Max OAuth only)`);
 }
 
 /**
@@ -104,9 +108,59 @@ export interface CredentialResolver {
   current(): Promise<string>;
   /** Force the next `current()` to re-read/refresh (call after an upstream 401). */
   invalidate(): void;
-  /** The credential channel: `token` (a setup-token, never refreshes) or `file` (a bundle the
-   *  gateway refreshes near expiry). Both are subscription OAuth → Bearer + the oauth beta. */
-  readonly kind: 'token' | 'file';
+  /** The credential channel: `token` (a setup-token, never refreshes), `file` (a bundle the
+   *  gateway refreshes near expiry), or `keychain` (the macOS login-Keychain bundle — READ-ONLY:
+   *  Claude Code owns the item + its refresh; the gateway re-READS near expiry instead of
+   *  refreshing). All are subscription OAuth → Bearer + the oauth beta. */
+  readonly kind: 'token' | 'file' | 'keychain';
+}
+
+// ── macOS Keychain channel (P-006, cross-platform-hardening) ───────────────────
+// Claude Code on macOS stores the SAME `.credentials.json` bundle JSON as a login-Keychain
+// generic-password (service label: agent-auth-detect's CLAUDE_KEYCHAIN_SERVICES). Reading the
+// SECRET (`-w`) is deliberate here — unlike the metadata-only sign-in probe — because the gateway
+// needs the token itself. ⚠ Keychain ACL: the item was created by Claude Code, so the FIRST
+// `security` read on a Mac may raise an "allow access" GUI prompt (click "Always Allow" once).
+// READ-ONLY by design: writing the item back (refresh) from a non-creating binary risks both a
+// second ACL wall and corrupting Claude Code's own entry — Claude Code refreshes it as it runs, so
+// the resolver re-reads near expiry and fails with actionable guidance if the bundle went stale.
+
+/** Read the Keychain item's secret payload, or null when absent/unreadable. Injectable for tests
+ *  (there is no `security` off macOS). */
+export type KeychainSecretReader = (service: string) => string | null;
+
+const defaultKeychainReader: KeychainSecretReader = (service) => {
+  try {
+    const r = spawnSync('security', ['find-generic-password', '-s', service, '-w'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim()) return r.stdout;
+  } catch {
+    /* security absent / errored → treated as not-found below */
+  }
+  return null;
+};
+let keychainReader: KeychainSecretReader = defaultKeychainReader;
+export function _setKeychainReaderForTests(fn: KeychainSecretReader | null): void {
+  keychainReader = fn ?? defaultKeychainReader;
+}
+
+/** Read + parse Claude Code's Keychain bundle. Throws with actionable guidance on any miss. */
+export function readClaudeKeychainBundle(service: string): ClaudeCredentialBundle {
+  const raw = keychainReader(service);
+  if (!raw) {
+    throw new Error(
+      `inference-gateway: no readable Keychain item for service '${service}' — is Claude Code ` +
+        'signed in on this Mac? (security find-generic-password -s returned nothing; a Keychain ' +
+        'ACL prompt may need a one-time "Always Allow")',
+    );
+  }
+  try {
+    return JSON.parse(raw.trim()) as ClaudeCredentialBundle;
+  } catch {
+    throw new Error(`inference-gateway: Keychain item '${service}' is not a credentials-bundle JSON`);
+  }
 }
 
 /**
@@ -183,8 +237,9 @@ export async function credentialRefSupportsOpenAiBearer(credentialRef: string): 
  * Build a resolver for one account's credentialRef. `token:` returns the staged setup-token
  * verbatim (cached; no expiry). `file:` returns the bundle's access token, refreshing via the
  * claude provider when within REFRESH_SKEW_MS of expiry; an in-memory {token, expiresAt} cache
- * keeps the per-request path off disk between refreshes. `harnessKey` scopes the
- * concurrent-refresh dedup so distinct accounts never share a refresh.
+ * keeps the per-request path off disk between refreshes. `keychain:` returns the macOS Keychain
+ * bundle's access token, RE-READING (not refreshing — Claude Code owns the item) near expiry.
+ * `harnessKey` scopes the concurrent-refresh dedup so distinct accounts never share a refresh.
  */
 export function makeCredentialResolver(credentialRef: string, harnessKey?: string): CredentialResolver {
   ensureClaudeProvider();
@@ -209,6 +264,29 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
         cachedToken = normalizeBearerToken(await fs.readFile(path, 'utf8'));
         if (!cachedToken) throw new Error(`inference-gateway: empty setup-token at ${path}`);
         return cachedToken;
+      }
+      if (kind === 'keychain') {
+        // Serve the cache until near expiry, then RE-READ the Keychain (Claude Code refreshes the
+        // item as it runs). Within the skew window but not yet expired → serve the just-read token
+        // and keep re-reading each call until a fresher one appears; hard-expired → fail with the
+        // action that fixes it (never inject a known-dead bearer upstream).
+        const now = Date.now();
+        if (cachedToken && (cachedExpiresAt === 0 || cachedExpiresAt - now > REFRESH_SKEW_MS)) {
+          return cachedToken;
+        }
+        const o = readClaudeKeychainBundle(path).claudeAiOauth;
+        const token = normalizeBearerToken(o?.accessToken ?? '');
+        if (!token) throw new Error(`inference-gateway: Keychain bundle '${path}' has no accessToken`);
+        const expiresAt = o?.expiresAt ?? 0;
+        if (expiresAt && expiresAt <= now) {
+          throw new Error(
+            `inference-gateway: Keychain credential '${path}' expired at ${new Date(expiresAt).toISOString()} ` +
+              '— run Claude Code on this Mac so it refreshes its own Keychain entry, or register a pool account',
+          );
+        }
+        cachedToken = token;
+        cachedExpiresAt = expiresAt;
+        return token;
       }
       // file: bundle — serve the cache until near expiry, else refresh-on-read via getOAuthToken.
       const now = Date.now();
@@ -241,6 +319,11 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
 
 export function makeBearerCredentialResolver(credentialRef: string): CredentialResolver {
   const { kind, path } = parseCredentialRef(credentialRef);
+  if (kind === 'keychain') {
+    throw new Error(
+      `inference-gateway: unsupported bearer credentialRef '${credentialRef}' (keychain: is Claude-subscription-only; use token:/file:/env: for bearer accounts)`,
+    );
+  }
   let cachedToken: string | undefined;
   return {
     kind: kind === 'env' ? 'token' : kind,

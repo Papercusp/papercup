@@ -50,6 +50,7 @@ import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
 import type { P2pReceiptWireRow } from './projections/p2p-receipts';
 import type { FleetDirectoryRow } from './projections/fleet-directory';
 import type { WorkOfferWireRow } from './projections/work-offers';
+import type { FleetLeaderLeaseWireRow } from './projections/fleet-leader-leases';
 import type { AgentFactWireRow } from './projections/agent-facts';
 import type { GymQdEliteWireRow } from './projections/gym-qd-elites';
 
@@ -165,6 +166,11 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // (projections/work-offers.ts); key == '<publisher_ghid>/<offer_id>' (the generated
   // offer_fed_key column, mig 490). local_disposition is host-local and never federates.
   p2p_work_offers: 'p2p-work-offers',
+  // P-302 LIVE-2 seam 1 (WI-2001): the fleet-leader lease row. Hive-home-scoped
+  // liveness hint (not authorization), projection 'p2p-fleet-leader-leases';
+  // key == '<owner_ghid>/<fleet_slug>' (the generated leader_lease_fed_key column,
+  // mig 518).
+  p2p_fleet_leader_leases: 'p2p-fleet-leader-leases',
 };
 
 /**
@@ -614,6 +620,18 @@ function toWorkOfferValue(row: Record<string, unknown>): WorkOfferWireRow {
   };
 }
 
+function toFleetLeaderLeaseValue(row: Record<string, unknown>): FleetLeaderLeaseWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    owner_github_user_id: numOrZero(row.owner_github_user_id),
+    fleet_slug: String(row.fleet_slug ?? ''),
+    device_pubkey: String(row.device_pubkey ?? ''),
+    leader_github_user_id: numOrZero(row.leader_github_user_id),
+    since_ms: numOrZero(row.since_ms),
+    roster_epoch: numOrZero(row.roster_epoch),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `ReportWireRow` the hive-reports projection INSERT
  *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.hive_reports —
  *  harness_slug = the Hive home (demux), report_id = the peer-log key, the reporter
@@ -920,6 +938,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | P2pReceiptWireRow
     | FleetDirectoryRow
     | WorkOfferWireRow
+    | FleetLeaderLeaseWireRow
     | AgentFactWireRow
     | GymQdEliteWireRow;
   switch (outboxRow.table_name) {
@@ -988,6 +1007,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'p2p_work_offers':
       value = toWorkOfferValue(row);
+      break;
+    case 'p2p_fleet_leader_leases':
+      value = toFleetLeaderLeaseValue(row);
       break;
     case 'agent_facts':
       value = toAgentFactValue(row);

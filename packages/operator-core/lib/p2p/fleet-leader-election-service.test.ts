@@ -16,6 +16,7 @@ import {
 import type { FleetMemberDevice } from './fleet-leader-election';
 import type { ScopeId } from '../sync/hive-git/scope-repo';
 import type { LeadershipAnnouncement } from './fleet-leader-election';
+import { PgFleetLeaderLeaseStore } from './fleet-leader-lease-store';
 
 const NOW = 1_800_000_000_000;
 const OWNER = 42;
@@ -144,6 +145,52 @@ describe('createInMemoryLeaderLeaseStore', () => {
     expect(await store.read(other)).toBeNull(); // scoped independently
     await store.write(SCOPE, null);
     expect(await store.read(SCOPE)).toBeNull();
+  });
+});
+
+function fakeTemplateSql(results: unknown[][] = []) {
+  const calls: { text: string; vals: unknown[] }[] = [];
+  const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+    calls.push({ text: strings.join('?'), vals });
+    return Promise.resolve(results.shift() ?? []);
+  }) as never;
+  return { sql, calls };
+}
+
+describe('PgFleetLeaderLeaseStore', () => {
+  it('reads and maps the persisted lease row for a fleet scope', async () => {
+    const { sql, calls } = fakeTemplateSql([
+      [{ device_pubkey: 'leader-pub', leader_github_user_id: String(OWNER), since_ms: String(NOW), roster_epoch: '7' }],
+    ]);
+    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: 'hive-home', sqlOverride: sql });
+    await expect(store.read(SCOPE)).resolves.toEqual({
+      devicePubkey: 'leader-pub',
+      githubUserId: OWNER,
+      sinceMs: NOW,
+      rosterEpoch: 7,
+    });
+    expect(calls[0]!.text).toMatch(/SELECT device_pubkey, leader_github_user_id, since_ms, roster_epoch/);
+    expect(calls[0]!.vals).toEqual(expect.arrayContaining(['ws-test', 'hive-home', OWNER, 'alpha']));
+  });
+
+  it('upserts and clears a lease row', async () => {
+    const { sql, calls } = fakeTemplateSql();
+    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: 'hive-home', sqlOverride: sql });
+    await store.write(SCOPE, { devicePubkey: 'leader-pub', githubUserId: OWNER, sinceMs: NOW, rosterEpoch: 2 });
+    await store.write(SCOPE, null);
+
+    expect(calls[0]!.text).toMatch(/INSERT INTO harness_shared\.p2p_fleet_leader_leases/);
+    expect(calls[0]!.text).toMatch(/ON CONFLICT/);
+    expect(calls[0]!.vals).toEqual(expect.arrayContaining(['ws-test', 'hive-home', OWNER, 'alpha', 'leader-pub', 2]));
+    expect(calls[1]!.text).toMatch(/DELETE FROM harness_shared\.p2p_fleet_leader_leases/);
+    expect(calls[1]!.vals).toEqual(expect.arrayContaining(['ws-test', 'hive-home', OWNER, 'alpha']));
+  });
+
+  it('fails visibly when workspace or hive scope is missing', async () => {
+    const { sql, calls } = fakeTemplateSql();
+    await expect(new PgFleetLeaderLeaseStore({ workspaceId: null, hiveSlug: 'hive-home', sqlOverride: sql }).read(SCOPE)).rejects.toThrow(/workspaceId required/);
+    await expect(new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: '', sqlOverride: sql }).write(SCOPE, null)).rejects.toThrow(/hiveSlug required/);
+    expect(calls.length).toBe(0);
   });
 });
 

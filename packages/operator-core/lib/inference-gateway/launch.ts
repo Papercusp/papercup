@@ -567,7 +567,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   if (refreshMs > 0) {
     timer = setInterval(() => {
       for (const { resolver } of resolvers) {
-        if (resolver.kind !== 'file') continue;
+        // `token` setup-tokens never expire — skip; `file` refreshes via OAuth; `keychain`
+        // (macOS local fallback, P-006) re-reads the Claude-Code-owned Keychain item.
+        if (resolver.kind === 'token') continue;
         resolver.invalidate();
         void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
       }

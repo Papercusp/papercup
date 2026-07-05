@@ -52,6 +52,7 @@ import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildFleetDirectoryProjection } from './fleet-directory';
 import { buildWorkOffersProjection } from './work-offers';
+import { buildFleetLeaderLeaseProjection } from './fleet-leader-leases';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildP2pPeerGrantsProjection } from './p2p-peer-grants';
@@ -226,6 +227,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // resolve to the record's publisher). Inert until offers are authored (the D-005
   // seat-offer publish on resource:delegate is the first production author).
   'p2p-work-offers',
+  // P-302 LIVE-2 seam 1: fleet leader lease hints are hive-home-grained and
+  // peer-log-backed so every machine reads the same incumbent before recompute.
+  'p2p-fleet-leader-leases',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -337,6 +341,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // (the fleet owner's machines must receive them; verify resolves attestations
     // on the Hive home) — scope to hiveScoped.
     buildWorkOffersProjection(hiveScoped),
+    // P-302 LIVE-2 seam 1: leader leases are hive-home-grained liveness hints
+    // (not auth records) and share the same home-scope as the fleet directory.
+    buildFleetLeaderLeaseProjection(hiveScoped),
   ] as TableProjection<unknown>[];
 }
 

@@ -100,6 +100,9 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // p2p_work_offers; mig 490). [Added by su-16e4c with the table-registry entry to
   // green the drift guards; flagged to the WI-1935 owner su-35c3b.]
   'p2p-work-offers': 'p2p_work_offers',
+  // P-302 LIVE-2 seam 1 (WI-2001): fleet leader lease hints federate over the
+  // peer-log (projections/fleet-leader-leases.ts → p2p_fleet_leader_leases; mig 518).
+  'p2p-fleet-leader-leases': 'p2p_fleet_leader_leases',
   // federated-scout-gym-learning-2026-07-02 F1-1: shareable standing facts federate
   // over the peer-log (projections/agent-facts.ts → agent_facts; mig 461/462).
   // [Added by Lane A su-71623 with the table-registry entry to green the drift

@@ -31,7 +31,9 @@ function anyExists(paths: readonly string[]): boolean {
  * ⚠ Mac-VM verify: the `-s` service labels below are Claude Code's current ones; if a
  * future Claude Code release renames the item, add the new label here.
  */
-const CLAUDE_KEYCHAIN_SERVICES = ['Claude Code-credentials', 'Claude Code'] as const;
+/** Exported as the ONE source of the service labels — the inference-gateway's `keychain:`
+ *  credential resolver (credential-store.ts) reads the same item for its secret payload. */
+export const CLAUDE_KEYCHAIN_SERVICES = ['Claude Code-credentials', 'Claude Code'] as const;
 
 export function claudeKeychainSignedIn(platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'darwin') return false;

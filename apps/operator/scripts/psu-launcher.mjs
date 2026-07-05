@@ -1398,17 +1398,17 @@ export function resumeAccountPlan(args) {
 
 /**
  * The full env for a resume launch — identity + workspace scope (resumeEnvFor),
- * the brain agent-session marker, and the re-pinned account env. Pure — exported
- * for tests. With no `accountEnv` it is byte-identical to the pre-account resume
- * (resumeEnvFor [+ brain marker]); `accountEnv.env` layers the gateway pin on top.
+ * the psu agent-session marker, and the re-pinned account env. Pure — exported
+ * for tests. With no `accountEnv`, the account routing stays byte-identical to
+ * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  */
 export function buildResumeEnv(session, { fork = false, brain = false, accountEnv = null } = {}) {
   return {
     ...resumeEnvFor(session, { fork }),
-    // omp is always an agent session (a local model drives it), so a resumed omp
-    // session needs the coord-hook guards armed too — parity with launchFreshSu
-    // (WI-2350). Owner sessions never run omp; D-003 preserved for claude/codex.
-    ...(brain || session.agent === 'omp' ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+    // Anything launched/resumed through psu is an agent session for hook
+    // purposes. Direct non-psu Claude terminals remain unmarked and keep the
+    // owner-session exemption in pretooluse-bash-resource-gate.sh.
+    PAPERCUSP_AGENT_SESSION: '1',
     ...(accountEnv?.env ?? {}),
   };
 }
@@ -3756,15 +3756,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     wrapperBin: bin,
     args: launchArgs,
     cwd: res.cwd,
-    // The brain (Queen) is an agent: arm the hook-level scheduler guard. A
-    // plain human su launch never sets the marker (native-scheduler-lockout
-    // D-003). omp is ALSO always an agent session — a local model drives it, so
-    // a `--plan`/`--fleet` omp launch (brain=false) still needs the coord-hook
-    // guards armed (WI-2350: without this the ENTIRE guard suite sat inert and
-    // ornith leaders doom-looped uncaught). Owner sessions never run omp.
+    // Anything launched through psu is an agent session for hook purposes:
+    // native-scheduler lockout, OMP coord-hook guards, and the destructive
+    // shared-tree git guard must all be armed. Direct non-psu Claude terminals
+    // stay unmarked, preserving the owner-session exemption.
     envelopeEnv: {
       ...res.envelopeEnv,
-      ...(brain || res.agent === 'omp' ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+      PAPERCUSP_AGENT_SESSION: '1',
       // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
       // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
       // live model object like Claude's statusline stdin). Omitted when no --model (default).
