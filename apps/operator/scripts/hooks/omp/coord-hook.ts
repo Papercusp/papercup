@@ -1507,21 +1507,41 @@ interface RepeatRun {
 }
 let _repeatRun: RepeatRun | undefined;
 
-/** Stable, bounded key for loop detection: lowercased toolName + sorted-key JSON
- *  of the input, capped so a huge arg blob cannot blow memory. Never throws (an
- *  unserializable input degrades to a constant marker, which still detects a
- *  repeat of that same input). Pure. */
+/** Deterministically re-key every plain-object level of `value` in sorted-key order, leaving
+ *  arrays/primitives untouched. A `JSON.stringify(value, Object.keys(value).sort())` replacer
+ *  ARRAY (the previous implementation here) is NOT scoped to one level: JSON.stringify applies
+ *  that same top-level key allowlist RECURSIVELY at every nesting depth, so a wrapped call whose
+ *  distinguishing fields live inside a nested object (a `tools:invoke` call shaped
+ *  `{name, args:{name, plan, model, ...}}`) silently drops every nested key not named `name`/
+ *  `args` — collapsing genuinely-different calls (different `plan`/`model`/`count`) into the
+ *  SAME loop-detection key. Caught by the WI-2382 fleet-launch model-guard tests: a corrected
+ *  retry (different `model`) was misclassified as a 4th identical repeat and blocked. Pure. */
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+      out[k] = sortKeysDeep((value as Record<string, unknown>)[k]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Stable, bounded key for loop detection: lowercased toolName + deep sorted-key JSON of the
+ *  input, capped so a huge arg blob cannot blow memory. Never throws (an unserializable input
+ *  degrades to a constant marker, which still detects a repeat of that same input). Pure. */
 export function toolCallLoopKey(
   toolName: string,
   input: Record<string, unknown> | undefined,
 ): string {
   let argsPart: string;
   try {
-    argsPart = JSON.stringify(input ?? {}, Object.keys(input ?? {}).sort()).slice(0, 2000);
+    argsPart = JSON.stringify(sortKeysDeep(input ?? {})).slice(0, 2000);
   } catch {
     argsPart = '<unserializable>';
   }
-  return `${toolName.toLowerCase()} ${argsPart}`;
+  return `${toolName.toLowerCase()} ${argsPart}`;
 }
 
 /** Record a tool call under `key` and return the new CONSECUTIVE run length (1 =
