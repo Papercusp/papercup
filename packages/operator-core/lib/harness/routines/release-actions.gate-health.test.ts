@@ -24,8 +24,17 @@ const fakeSql = {
     if (/SELECT\s+metadata->'gate_health'/i.test(query)) {
       return Promise.resolve([{ gh: seededGh }]);
     }
-    // escalation clear (green path) reads `.count`; the routines gate_health write
-    // and any escalation upsert are not read for their result.
+    // Escalation clear (green path) reads `.count`. A real DB would only have a
+    // row to clear when the seeded gate_health actually believed an escalation
+    // was open (`stallAlerted: true`) — mirror that here so the happy-path
+    // recovery test (seed stallAlerted:true, expect a clean clear) doesn't spuriously
+    // hit trackGateStall's "MATCHED 0 ROWS despite stallAlerted" warn path (that
+    // warn is for a genuinely-diverged DB, which no test here is simulating).
+    if (/UPDATE\s+harness_shared\.harness_escalations/i.test(query)) {
+      return Promise.resolve({ count: seededGh?.stallAlerted ? 1 : 0 });
+    }
+    // the routines gate_health write and any escalation upsert are not read for
+    // their result.
     return Promise.resolve({ count: 0 });
   },
 };
