@@ -1353,6 +1353,15 @@ export const FLAGS = {
   // the machinery lands, so a default-ON flag can never over-share; the effective tier
   // clamps to 1 today. OFF ⇒ nothing federates (tier 0) — the instant off-switch.
   FEDERATED_SCOUT_LEARNING: "papercusp-federated-scout-learning",
+  // DEFAULT ON (alpha flags-default-on; NOT in DARK_FLAGS). Gates the docs
+  // "Ask a question" retrieval-augmented Q&A over the REAL /internal/docs —
+  // POST /api/desktop/docs-qa, backing BOTH the terminal onboarding tutorial's
+  // "Ask a question" and the Ctrl+/ search palette's ask mode. Replaces the old
+  // shell-out-to-a-user-CLI Q&A (which died in a clean build and had no docs
+  // tools). Runs server-side on the operator's configured backend + in-process
+  // doc retrieval. OFF ⇒ the ask mode is hidden and the endpoint 404s (keyword
+  // search still works); a clean instant kill-switch. (WI-2844.)
+  DOCS_QA: "papercusp-docs-qa",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

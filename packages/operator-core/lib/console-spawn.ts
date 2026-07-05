@@ -234,6 +234,23 @@ export interface DesktopEnvResolution {
   /** False ⇒ no display could be resolved — spawning would ghost. */
   resolved: boolean;
   error: string | null;
+  /**
+   * WI-2840: non-fatal healing notes — set when an already-present DISPLAY /
+   * XAUTHORITY value was found to be STALE (its socket/file no longer exists)
+   * and was overridden by a freshly re-resolved one instead of being trusted
+   * blindly. Empty when nothing needed healing. Callers should log these
+   * loudly: a long-lived process silently carrying a poisoned value is
+   * exactly what wedged desktop-terminal spawns until an operator restart
+   * (the staging-operator incident this ticket was filed from).
+   */
+  warnings: string[];
+}
+
+/** Extract the `/tmp/.X11-unix/X<N>` socket path a DISPLAY value points at.
+ *  Handles `:N`, `:N.M`, and `host:N.M` forms; null when unparseable. */
+function socketPathForDisplay(display: string): string | null {
+  const m = /:(\d+)(?:\.\d+)?$/.exec(display);
+  return m ? `/tmp/.X11-unix/X${m[1]}` : null;
 }
 
 /** Injectable fs probes so the resolver is unit-testable without a desktop. */
@@ -260,9 +277,28 @@ export function resolveLinuxDesktopEnv(
   probes: DesktopEnvProbes = realProbes(),
 ): DesktopEnvResolution {
   const env: Record<string, string> = {};
+  const warnings: string[] = [];
 
-  // DISPLAY: trust the operator's own when set; else probe the X sockets.
-  if (!baseEnv.DISPLAY) {
+  // DISPLAY: trust the operator's own value — but ONLY after checking its X
+  // socket still exists (WI-2840). A long-lived process (e.g. a systemd-
+  // managed staging operator up for days) can carry a DISPLAY set at process
+  // start whose X session has since ended (server restart, logout, socket
+  // renumbered) — the value being SET is not evidence it is still LIVE.
+  // Trusting it blindly is exactly what silently poisoned spawns until the
+  // operator was restarted. If the socket is gone, treat it as unset and
+  // re-resolve via the same socket scan the no-DISPLAY branch already uses.
+  let haveDisplay = Boolean(baseEnv.DISPLAY);
+  if (haveDisplay) {
+    const socketPath = socketPathForDisplay(baseEnv.DISPLAY!);
+    if (socketPath && !probes.existsSync(socketPath)) {
+      warnings.push(
+        `stale DISPLAY=${baseEnv.DISPLAY} — no X socket at ${socketPath}; ` +
+          're-resolving instead of trusting the inherited value (WI-2840)',
+      );
+      haveDisplay = false;
+    }
+  }
+  if (!haveDisplay) {
     let sockets: string[] = [];
     try {
       sockets = probes
@@ -277,9 +313,11 @@ export function resolveLinuxDesktopEnv(
         env: {},
         resolved: false,
         error:
+          (warnings.length ? `${warnings.join('; ')}; and ` : '') +
           'no X display: the operator has no DISPLAY and no X socket exists under /tmp/.X11-unix — ' +
           'a desktop terminal cannot open on this host (headless?). Launch from a desktop session, ' +
           'or run the command yourself in a terminal on the machine with the display. (WI-1886)',
+        warnings,
       };
     }
     env.DISPLAY = `:${sockets[0]!.slice(1)}`;
@@ -292,12 +330,23 @@ export function resolveLinuxDesktopEnv(
   if (!baseEnv.XDG_RUNTIME_DIR && probes.existsSync(runtimeDir)) {
     env.XDG_RUNTIME_DIR = runtimeDir;
   }
-  if (!baseEnv.XAUTHORITY) {
+
+  // XAUTHORITY: same validate-before-trust — a set-but-vanished cookie file
+  // (WI-2840) is treated as unset and re-resolved from the usual candidates.
+  let haveXauth = Boolean(baseEnv.XAUTHORITY);
+  if (haveXauth && !probes.existsSync(baseEnv.XAUTHORITY!)) {
+    warnings.push(
+      `stale XAUTHORITY=${baseEnv.XAUTHORITY} — file no longer exists; ` +
+        're-resolving instead of trusting the inherited value (WI-2840)',
+    );
+    haveXauth = false;
+  }
+  if (!haveXauth) {
     const candidates = [`${runtimeDir}/gdm/Xauthority`, `${probes.home}/.Xauthority`];
     const found = candidates.find((p) => probes.existsSync(p));
     if (found) env.XAUTHORITY = found;
   }
-  return { env, resolved: true, error: null };
+  return { env, resolved: true, error: null, warnings };
 }
 
 /**
@@ -452,6 +501,13 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   const desktop = resolveLinuxDesktopEnv();
   if (!desktop.resolved) {
     return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
+  }
+  if (desktop.warnings.length > 0) {
+    // WI-2840: healed a stale inherited DISPLAY/XAUTHORITY — this is exactly
+    // the "long-lived process env poisoned" symptom the ticket was filed
+    // from. Log loudly (visible in the systemd journal for a service-managed
+    // operator) so a recurrence has a named cause instead of a silent wedge.
+    console.warn(`[console-spawn] ${desktop.warnings.join('; ')}`);
   }
 
   // 7. Spawn a new window running the one-liner; detach so closing the

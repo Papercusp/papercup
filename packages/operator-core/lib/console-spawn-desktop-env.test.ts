@@ -32,10 +32,14 @@ function probes(overrides: Partial<DesktopEnvProbes> = {}): DesktopEnvProbes {
 }
 
 describe('resolveLinuxDesktopEnv (WI-1886a)', () => {
-  it('operator already has DISPLAY ⇒ resolved, nothing injected for it', () => {
-    const r = resolveLinuxDesktopEnv({ DISPLAY: ':0' }, probes());
+  it('operator already has a LIVE DISPLAY (socket exists) ⇒ resolved, nothing injected for it', () => {
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':0' },
+      probes({ existsSync: (p) => p === '/tmp/.X11-unix/X0' }),
+    );
     expect(r.resolved).toBe(true);
     expect(r.env.DISPLAY).toBeUndefined();
+    expect(r.warnings).toEqual([]);
   });
 
   it('no DISPLAY + an X socket ⇒ injects DISPLAY from the lowest socket', () => {
@@ -90,9 +94,44 @@ describe('resolveLinuxDesktopEnv (WI-1886a)', () => {
   it('falls back to ~/.Xauthority when the gdm one is absent', () => {
     const r = resolveLinuxDesktopEnv(
       { DISPLAY: ':0', DBUS_SESSION_BUS_ADDRESS: 'set', XDG_RUNTIME_DIR: '/run/user/1000' },
-      probes({ existsSync: (p) => p === '/home/user/.Xauthority' }),
+      probes({
+        existsSync: (p) => p === '/home/user/.Xauthority' || p === '/tmp/.X11-unix/X0',
+      }),
     );
     expect(r.env.XAUTHORITY).toBe('/home/user/.Xauthority');
+  });
+
+  it('WI-2840: a set-but-STALE DISPLAY (socket gone) is healed by re-resolving, with a named warning', () => {
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':0' },
+      probes({ readdirSync: () => ['X1'], existsSync: () => false }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBe(':1');
+    expect(r.warnings).toEqual([
+      expect.stringMatching(/stale DISPLAY=:0.*no X socket.*WI-2840/),
+    ]);
+  });
+
+  it('WI-2840: a stale DISPLAY with no live socket anywhere ⇒ UNRESOLVED, error names both the stale value and no-display', () => {
+    const r = resolveLinuxDesktopEnv({ DISPLAY: ':0' }, probes());
+    expect(r.resolved).toBe(false);
+    expect(r.error).toMatch(/stale DISPLAY=:0/);
+    expect(r.error).toMatch(/no X display/i);
+    expect(r.warnings.length).toBe(1);
+  });
+
+  it('WI-2840: a set-but-STALE XAUTHORITY (file gone) is healed by re-resolving, with a named warning', () => {
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':0', XAUTHORITY: '/stale/xauth' },
+      probes({
+        existsSync: (p) => p === '/tmp/.X11-unix/X0' || p === '/home/user/.Xauthority',
+      }),
+    );
+    expect(r.env.XAUTHORITY).toBe('/home/user/.Xauthority');
+    expect(r.warnings).toEqual([
+      expect.stringMatching(/stale XAUTHORITY=\/stale\/xauth.*WI-2840/),
+    ]);
   });
 
   it('never overrides env the operator already carries', () => {
