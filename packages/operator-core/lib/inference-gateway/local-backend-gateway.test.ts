@@ -231,15 +231,35 @@ test('POST /admin/reload folds onAdminReloadLocalBackends into the response when
 });
 
 test('/v1/messages (Anthropic path) is unaffected by an unmatched local-backend pool — falls through untouched', async () => {
-  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['some-local-model'], maxConcurrent: 4, enabled: true }]);
-  // No accountId/token/pool wired, so the Anthropic path errors internally rather than local-backend-routing —
-  // proving `/v1/messages` never gets intercepted by the local-backend branch (distinct route namespace).
+  // Stand up a FAKE Anthropic upstream so this test is HERMETIC — it must not depend on live
+  // api.anthropic.com. EI-7524: the original assertion was just `assert.notEqual(res.status, 502)`
+  // with NO `upstreamBase` wired, so `/v1/messages` reached the REAL Anthropic API and its status was
+  // network-dependent — 401 when the connection succeeded, but a 502 "inference-gateway upstream error"
+  // when the connection failed (CI / firewall / a transient DNS-or-connect hiccup during a long
+  // full-suite run). That upstream-error 502 collides with proxyLocal's OWN "no reachable local
+  // backend" 502, so a bare status check could not tell "wrongly routed to local-backend" from
+  // "correctly routed to Anthropic, Anthropic just unreachable" → intermittent false failures.
+  const anthropic = await startFakeBackend('anthropic-upstream', okJsonReply({ id: 'msg-from-anthropic', type: 'message' }));
+  backends = [anthropic];
+  await boot(
+    [{ id: 'b1', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['some-local-model'], maxConcurrent: 4, enabled: true }],
+    { upstreamBase: anthropic.baseUrl },
+  );
+  // `some-local-model` matches the registered local-backend pool, yet a `/v1/messages` request must NOT
+  // be intercepted by the local-backend branch (that branch only handles `/v1/chat/completions` +
+  // `/v1/completions` — a DISTINCT route namespace). Proof: the request lands on the Anthropic upstream,
+  // not on proxyLocal (which would 502 "no reachable local backend").
   const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'some-local-model', messages: [] }),
   });
-  assert.notEqual(res.status, 502); // NOT routed through proxyLocal's "no reachable backend" path
+  assert.equal(res.status, 200);
+  const json = (await res.json()) as { id: string };
+  assert.equal(json.id, 'msg-from-anthropic'); // reached the Anthropic upstream, NOT proxyLocal
+  assert.equal(anthropic.requests.length, 1); // the Anthropic proxy forwarded it upstream…
+  assert.equal(anthropic.requests[0].url, '/v1/messages'); // …at the same route namespace, untouched
+  assert.notEqual(res.status, 502); // and never through proxyLocal's "no reachable backend" path
 });
 
 // ---------------------------------------------------------------------------------------------

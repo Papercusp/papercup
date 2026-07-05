@@ -270,6 +270,28 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'memory:remember',
   'memory:update',
   'memory:forget',
+  // search:* prose recall (session-search-scope-2026-07-05 live-smoke finding) —
+  // read-only; crossWorkspace ONLY so an unscoped psu gets the admin handle for
+  // the non-workspace-scoped operator_turns table (P-062 Phase 4). From a SCOPED
+  // session the engine confines every source by the ctx workspaceId it is handed
+  // (runFullTextSearch/runHybridSearch `workspaceId:` — each SearchSource's SQL
+  // filters on it); operator_turns is host-global operator history, not another
+  // workspace's tenant data. Denying these made prose recall (and the EI-6984
+  // work_item dedup check) deterministically unusable for every workspace-scoped
+  // psu session — the same failure shape as autonomy:decide (EI-1810).
+  'search:fulltext',
+  'search:semantic',
+  // sessions:* (session-search-scope-2026-07-05 P-005/P-006) — read-only session
+  // recall. session_turns confines to (workspace_id = $ws OR 'default') — the
+  // 'default' rows are THIS HOST's local transcript files (claude/omp/codex
+  // JSONL), which carry no workspace identity and are not tenant data (same
+  // class as memory:*, partitioned by owner not workspace). The flagship flow —
+  // `sessions:search { session:'self' }` compaction recovery — runs from
+  // workspace-scoped psu sessions, exactly the caller the clamp would deny.
+  'sessions:search',
+  'sessions:read',
+  'sessions:list',
+  'sessions:timeline',
 ]);
 
 /** Whether a crossWorkspace tool is safe to call from a SCOPED superuser session —

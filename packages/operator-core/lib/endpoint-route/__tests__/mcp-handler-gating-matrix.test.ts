@@ -440,6 +440,22 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
   });
 
+  it('flag ON: a scoped superuser MAY call search:fulltext + sessions:search — scoped-safe read-only recall (session-search-scope-2026-07-05)', async () => {
+    // The prose-search family is crossWorkspace only so an unscoped psu gets the
+    // admin handle for the host-global operator_turns table (P-062 Phase 4); from a
+    // scoped session the engine confines every source by the handed ctx workspaceId,
+    // and session_turns' 'default' rows are host-local transcripts, not tenant data.
+    // The clamp denying these made prose recall AND the flagship compaction-recovery
+    // flow (sessions:search { session:'self' }) unusable for every workspace-scoped
+    // psu session — the EI-1810 failure shape. The allowlist exempts them (reaching
+    // the handler is the assertion; a handler error on stubbed PG is irrelevant).
+    h.scopedClampFlag.value = true;
+    for (const name of ['search:fulltext', 'search:semantic', 'sessions:search', 'sessions:read', 'sessions:list', 'sessions:timeline']) {
+      const res = await callTool(name, { query: 'pricing' }, scoped('ws-test'));
+      expect(textOf(res), name).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+    }
+  });
+
   it('flag ON: a scoped superuser MAY call flags:set — a GLOBAL-config meta-control exempt from the clamp (no tenant data; fixes the circular lockout)', async () => {
     // flags:set is crossWorkspace:true (it writes the global flag store + audit log), but it
     // touches NO per-workspace tenant data — and denying it would lock the operator out of the
@@ -1121,8 +1137,16 @@ describe('cross-workspace-denial invariant (isolation-plan #4)', () => {
 
   const FOREIGN_READ_SURFACES = [
     'papercusp:list_workspaces',
-    'search:fulltext',
-    'search:semantic',
+    // search:fulltext / search:semantic — MOVED to SCOPED_SAFE_CROSSWORKSPACE after
+    // the explicit allowlist review this comment block calls for (session-search-
+    // scope-2026-07-05): every SearchSource SQL confines by the workspaceId the
+    // ENGINE is handed, and the handlers hand it ctx.workspaceId (the session's own
+    // scoped workspace — never a caller-controlled arg), so a ws-b session can only
+    // ever read ws-b rows (+ the session/coord sources' workspace_id='default' rows,
+    // which are THIS HOST's local transcript files, not another workspace's tenant
+    // data). crossWorkspace:true exists only so the UNSCOPED path gets the admin
+    // handle for the non-RLS operator_turns table (P-062 Phase 4). The MAY-call
+    // side is asserted in the scoped-safe allowlist tests above.
   ] as const;
 
   for (const tool of FOREIGN_READ_SURFACES) {
