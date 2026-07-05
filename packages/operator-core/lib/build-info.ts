@@ -12,6 +12,15 @@
  * one-time `git rev-parse --short HEAD` of the running checkout. Best-effort —
  * any failure yields `sha: null`, so the zero-dependency /api/health contract
  * (must answer even half-init, never throw) holds.
+ *
+ * WI-2644: the packaged desktop sidecar runs a bundled `serve.mjs` with no
+ * `npm_package_version` in its env (that's only set when npm itself invokes a
+ * script) — so `version` silently fell back to '0.0.0' on every real desktop
+ * build, even though the shipped app has a real version (tauri.conf.json).
+ * Mirrors the working PAPERCUSP_BUILD_SHA pattern: prefer an explicit
+ * `PAPERCUSP_BUILD_VERSION` (set at build time from tauri.conf.json's version,
+ * see papercusp-desktop/bin/release-local.sh), else fall back to
+ * npm_package_version, else '0.0.0'.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +38,8 @@ export function resolveBuildInfo(opts: {
   gitSha?: () => string | null;
 } = {}): BuildInfo {
   const env = opts.env ?? process.env;
-  const version = env.npm_package_version ?? '0.0.0';
+  const envVersion = env.PAPERCUSP_BUILD_VERSION?.trim();
+  const version = envVersion || env.npm_package_version || '0.0.0';
   const envSha = env.PAPERCUSP_BUILD_SHA?.trim();
   if (envSha) return { sha: envSha, version };
   const gitSha = opts.gitSha ?? defaultGitSha;

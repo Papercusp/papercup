@@ -32,6 +32,7 @@ import {
   claudeProjectMemoryDir,
   HybridBackend,
   Mem0Backend,
+  invalidateMemoryClient,
   type EmbedFn,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
@@ -102,9 +103,20 @@ const OPENAI_EMBED_COOLDOWN_MS = Number(process.env.PAPERCUSP_EMBED_FALLBACK_COO
 let openAiEmbedCooldownUntilMs = 0;
 
 /** Record an OpenAI embed failure severe enough to prefer local for a while (a hard quota/billing
- *  stop, or the retry budget exhausting entirely). Exported as a seam for tests (GAP 4). */
+ *  stop, or the retry budget exhausting entirely). Exported as a seam for tests (GAP 4).
+ *
+ *  EI-7279: the cascade decision (resolveEmbedderWith, above) is only EVALUATED when the mem0
+ *  client is (re)built — and mem0-client.ts caches that client for a 1-HOUR TTL. Setting the
+ *  cooldown flag alone left it inert for the rest of that hour: the already-built client kept
+ *  routing every embed through the SAME dead OpenAI key (each call's own HTTP request still
+ *  fails, but the 'auto' cascade that would have picked local never re-runs), so `auto` mode
+ *  hard-failed identically to `openai` mode for up to an hour after the fallback should have
+ *  engaged — reproduced live 2026-07-04 (two back-to-back memory:remember probes, both
+ *  embed_quota_exhausted, well inside one client lifetime). Force a rebuild on the VERY NEXT
+ *  call so the cooldown just recorded is actually consulted immediately, not up to an hour late. */
 export function markOpenAiEmbedFailure(now: number = Date.now()): void {
   openAiEmbedCooldownUntilMs = now + OPENAI_EMBED_COOLDOWN_MS;
+  invalidateMemoryClient();
 }
 
 /** Is OpenAI embedding in its post-failure cooldown (the 'auto' cascade should prefer local)?

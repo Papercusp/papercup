@@ -68,7 +68,7 @@ const G = globalThis as unknown as { __papercuspDbosStarted?: boolean };
  * connections get more slack. A DBOS transaction genuinely wedged for minutes is
  * still clearly anomalous and still gets killed, just later.
  */
-function withDbosIdleTxGrace(url: string): string {
+export function withDbosIdleTxGrace(url: string): string {
   const graceSec = Math.max(60, Number(process.env.PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC) || 300);
   const opt = encodeURIComponent(`-c idle_in_transaction_session_timeout=${graceSec * 1000}`);
   return url + (url.includes('?') ? '&' : '?') + `options=${opt}`;
@@ -110,7 +110,7 @@ export async function startDbos(): Promise<void> {
   const { DBOS } = await import('@dbos-inc/dbos-sdk');
   DBOS.setConfig({
     name: 'papercusp-operator',
-    systemDatabaseUrl: url,
+    systemDatabaseUrl: withDbosIdleTxGrace(url),
     systemDatabaseSchemaName: 'dbos',
     applicationVersion: PINNED_APP_VERSION,
     // The operator shares a box with Restart (shop-api binds :3001); DBOS's

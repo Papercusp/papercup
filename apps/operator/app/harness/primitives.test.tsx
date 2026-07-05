@@ -28,6 +28,15 @@ import {
 } from './primitives';
 import { getRoleStyle, SEVERITY, ISSUE_STATUS, STATUS, WORK_ITEM_KIND, AGENT_KIND } from './theme';
 
+// AgentKindPill pack-routes its label through useLexicon (restore-pot-lexicon
+// D-006). Bind the real CLASSIC/Pot resolver here so the pill renders the public
+// cast (Mug / Papercup / Kettle) — and so the test skips the flag-store SSE
+// bootstrap the live hook would kick off in jsdom.
+vi.mock('../../lib/useLexicon', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/lexicon')>('@papercusp/lexicon');
+  return { useLexicon: () => actual.lexiconFor('classic') };
+});
+
 afterEach(() => cleanup());
 
 describe('SEVERITY_ICON / ISSUE_STATUS_ICON maps', () => {
@@ -192,10 +201,11 @@ describe('KindPill', () => {
 });
 
 describe('AgentKindPill', () => {
-  it('renders glyph + canonical label for a known agent kind', () => {
+  it('renders the cup glyph + pack-routed label for a known agent kind', () => {
     render(<AgentKindPill kind="queen" />);
-    expect(screen.getByText(AGENT_KIND.queen.label)).toBeTruthy();
-    expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy();
+    // classic/Pot pack: queen → brain → "Mug" (NOT the theme fallback "Queen")
+    expect(screen.getByText('Mug')).toBeTruthy();
+    expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy(); // 🍵
   });
 
   it('covers every glyph kind in the AGENT_KIND table (and vice versa)', () => {

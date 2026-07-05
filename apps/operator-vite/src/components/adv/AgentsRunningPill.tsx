@@ -226,12 +226,14 @@ interface RosterResponse {
   active: RosterAgent[];
 }
 
-/** The colony glyph vocabulary (matches the zellij roster + AdvAgentsPanel). */
+/** The cup-cast glyph vocabulary (restore-pot-lexicon D-006) — matches the
+ *  zellij roster (apps/tui agent_pane_kind.rs) + AdvAgentsPanel AGENT_KIND_GLYPH.
+ *  queen=Mug 🍵 · overwatch=Kettle 🫖 · sentinel=Papercup 🥤 · bee(worker)=☕. */
 const KIND_GLYPH: Record<string, string> = {
-  queen: '♛',
-  overwatch: '👁',
+  queen: '🍵',
+  overwatch: '🫖',
   bee: '☕',
-  sentinel: '🛡',
+  sentinel: '🥤',
   planner: '📋',
   su: '🛠',
 };

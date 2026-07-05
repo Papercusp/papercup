@@ -20,8 +20,9 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import net from 'node:net';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
@@ -156,6 +157,7 @@ export function findLiveHost(
   dir: string = PSU_PTY_DIR,
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): PsuPtyHost | null {
+  startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHost;
   const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
   if (!existsSync(metaPath)) return null;
@@ -188,6 +190,7 @@ export function listLiveHosts(
   dir: string = PSU_PTY_DIR,
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): PsuPtyHost[] {
+  startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHost;
   let files: string[];
   try {

@@ -27,6 +27,8 @@ import {
   type AgentKindKey, type IssueSeverityKey, type IssueStatusKey, type StatusMeta, type WorkItemKindKey,
 } from './theme';
 import { Tooltip } from './Tooltip';
+import { useLexicon } from '../../lib/useLexicon';
+import type { TermKey } from '@papercusp/lexicon';
 
 /**
  * Shared chip-pill geometry — the SeverityPill recipe (tinted rounded-full
@@ -227,18 +229,35 @@ export function KindPill({
 // Agent pane kind → glyph — the colony tab's vocabulary (apps/tui
 // agent_pane_kind.rs), shared so the desktop and zellij read the same at a
 // glance.
+// Cup-cast glyphs (restore-pot-lexicon D-006) — must match apps/tui
+// agent_pane_kind.rs, which uses fixed cup glyphs regardless of pack so the
+// desktop and zellij read identically. queen=Mug 🍵 · overwatch=Kettle 🫖 ·
+// sentinel=Papercup 🥤 · bee(worker)=☕.
 export const AGENT_KIND_GLYPH: Record<string, string> = {
-  queen: '♛',
-  overwatch: '👁', // overwatch-role-2026-06-15 B-01 — must match apps/tui agent_pane_kind.rs
+  queen: '🍵',
+  overwatch: '🫖',
   bee: '☕',
-  sentinel: '🛡',
+  sentinel: '🥤',
   planner: '📋',
   su: '🛠',
 };
 
-/** Agent kind badge — colony glyph + label chip, colored from the canonical
- * AGENT_KIND table (same recipe as KindPill). An unknown kind keeps its raw
- * name on the neutral grey fallback chip. */
+// Cast members whose LABEL routes through the active brand pack. classic/Pot →
+// Mug / Papercup / Kettle / Contributor; the-hive (internal) → Queen / Sentinel
+// / Overwatch / Bee. planner/su have no cast term key → keep their static
+// theme label. (Colors stay from the AGENT_KIND theme table; only the word
+// flips with the pack.)
+const AGENT_KIND_TERM: Partial<Record<string, TermKey>> = {
+  queen: 'brain',
+  sentinel: 'operator',
+  overwatch: 'overwatch',
+  bee: 'contributor',
+};
+
+/** Agent kind badge — cup-cast glyph + label chip, colored from the canonical
+ * AGENT_KIND table (same recipe as KindPill). The label pack-routes via the
+ * active lexicon for cast roles; an unknown kind keeps its raw name on the
+ * neutral grey fallback chip. */
 export function AgentKindPill({
   kind,
   size = 'sm',
@@ -248,8 +267,14 @@ export function AgentKindPill({
   size?: 'xs' | 'sm';
   showLabel?: boolean;
 }) {
+  const t = useLexicon();
   const s = AGENT_KIND[kind as AgentKindKey];
-  const labelOverride = kind in AGENT_KIND ? undefined : kind;
+  const termKey = AGENT_KIND_TERM[kind];
+  const labelOverride = termKey
+    ? t(termKey)
+    : kind in AGENT_KIND
+      ? undefined
+      : kind;
   return (
     <ChipPill
       meta={s}
