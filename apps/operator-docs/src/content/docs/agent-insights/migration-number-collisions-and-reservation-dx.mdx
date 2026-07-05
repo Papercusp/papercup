@@ -1,6 +1,6 @@
 ---
-title: "Migration-number collisions: the reservation tool and lint:migrations aren't gated"
-description: "Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs — and the violation counts have grown since discovery, not shrunk. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror."
+title: "Migration-number collisions: use the reservation tool; the lint's FS checks are now gated"
+description: "Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations catches dups + raw BEGIN/COMMIT + unreserved numbers; since 2026-07-04 (EI-6843) its two PG-free checks are gated — lint-migrations.test.ts runs them against the real sql/ dir on every test:affected / green-checkpoint run, after re-baselining ENFORCED_FROM 215→494 to grandfather already-applied ledgered history. Only the PG-backed reservation check still needs a manual run. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror."
 discovered: 2026-06-20
 tags: [migrations, db, reservations, lint, ci, collision, dx, agent-coordination, footgun, toctou]
 status: active
@@ -8,6 +8,7 @@ documents:
   - packages/operator-core/lib/agent-tools/db/next_migration.ts
   - scripts/next-migration.mjs
   - scripts/lint-migrations.mjs
+  - packages/operator-core/lib/lint-migrations.test.ts
   - libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js
   - packages/operator-core/lib/migration-drift.ts
 ---
@@ -35,8 +36,11 @@ runner — don't propagate it as a current fact.
 
 The **real**, verifiable damage from a dup number today:
 
-- **`lint:migrations` goes red** (its `duplicateNumberGroups` check), and since
-  that lint isn't gated (below), nobody is told.
+- **`lint:migrations` goes red** (its `duplicateNumberGroups` check). Since
+  `2026-07-04` that check IS gated for enforced-era numbers (see gap #3's
+  resolution below): a new dup ≥494 fails `test:affected` / the green gate
+  immediately; pre-494 historical dups are grandfathered (the runner keys by
+  full filename, so they never collided at runtime).
 - **Coordination confusion** — two unrelated features both claim "319"; tooling
   and humans that key on the number get the wrong file.
 - **Possible loss at git-merge time** — when the two authors' divergent branches
@@ -92,13 +96,14 @@ boot-apply semantics.
    MCP client drop is a session-specific transient; the systematic fix is the CLI +
    the per-role access expansion (see gap #1 update above).
 
-3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already
-   detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would
-   end the runner's per-file wrapper txn early), and (c) numbers ≥215 absent from
-   the reservation ledger. But `lint:migrations` is **only an npm script** — it is
-   referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks`. So the
-   guard never runs automatically; the dup-number check (which is PG-free and
-   would run fine in CI) never fires on a PR.
+3. **`lint:migrations` was not gated** (RESOLVED for the PG-free checks,
+   `2026-07-04` — see below). `scripts/lint-migrations.mjs` already detects
+   (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would
+   end the runner's per-file wrapper txn early), and (c) numbers ≥`ENFORCED_FROM`
+   absent from the reservation ledger. But it was **only an npm script** —
+   referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks` — so the
+   guard never ran automatically; the dup-number check (which is PG-free and
+   runs fine in CI) never fired on a PR.
 
 As of `2026-06-20`, `node scripts/lint-migrations.mjs` exited **1**: 7 files
 carried raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and ~10 numbers
@@ -113,6 +118,21 @@ raw top-level `BEGIN;`/`COMMIT;`, and **64 numbers ≥215** on disk with no
 reservation-ledger row. The tree has been shipping with the linter red for
 weeks with nothing catching it at PR time — direct evidence that gap #3
 (below) remains unaddressed.
+
+**Resolved for the PG-free checks (`2026-07-04`, EI-6843):** the duplicate-`NNN`
+and raw-tx-control scans now run against the REAL `libs/papercusp/libs/db/sql/`
+directory inside `packages/operator-core/lib/lint-migrations.test.ts` (the
+"real … sql/ directory (gate wiring)" describe block), which `npm run
+test:affected` — and therefore the green-checkpoint gate — runs on every
+candidate. Because the tree was red (worse than at discovery), enforcement was
+re-baselined FIRST: `ENFORCED_FROM` moved 215→494, grandfathering the
+already-applied, ledgered history (editing/renaming an applied file would break
+its recorded checksum), and `duplicateNumberGroups` now takes an `enforcedFrom`
+boundary so historical same-number pairs don't red the gate. A FUTURE violation
+(≥494) fails the suite immediately. The PG-backed reservation check (c) remains
+CLI-only — as of `2026-07-05` `node scripts/lint-migrations.mjs` still exits 1
+with one live violation (migration `510` on disk with no reservation row), so
+"clean first, gate second" still applies to that check.
 
 ## The two-dirs footgun (bonus)
 
@@ -159,17 +179,19 @@ Small, mostly additive; each item is independent:
    item 4 below (still open). **Also DONE (`2026-07-03`, EI-6852):** both
    allocators now read the on-disk max **inside** the advisory-lock transaction
    instead of before it, closing the TOCTOU window described above.
-2. **Gate `lint:migrations`** (the real detection layer — it already has a
-   `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Still
-   **not done** as of `2026-07-03` — see the re-verified counts above (3
-   duplicate-number groups, 34 raw-`BEGIN/COMMIT` files, 64 unreserved numbers
-   ≥215). Wire it into CI (and ideally pre-push). NOTE: the tree is red today
-   (worse than at discovery — see above), so this must be sequenced AFTER
-   cleaning the raw `BEGIN/COMMIT` files, resolving the duplicate-number groups,
-   and backfilling the unreserved reservation rows — otherwise the new gate
-   immediately fails. Don't add the gate first. (Do NOT instead change the boot
-   runner to abort on dup numbers: it currently applies both colliding files by
-   filename, and altering boot-apply semantics — especially the
+2. ~~**Gate `lint:migrations`**~~ **DONE for the PG-free checks (`2026-07-04`,
+   EI-6843)** — not via `.github/`/`.husky` but via the vitest suite:
+   `packages/operator-core/lib/lint-migrations.test.ts` scans the real sql/ dir
+   for duplicate numbers + raw tx-control on every `test:affected` /
+   green-checkpoint run. The required "clean first" sequencing was honored by
+   RE-BASELINING instead of editing history: `ENFORCED_FROM` 215→494
+   grandfathers the applied, ledgered legacy (immutable — recorded checksums),
+   so the gate starts green and only a genuinely NEW violation reds it. Still
+   open: the PG-backed unreserved-number check is not in the gate (needs a live
+   PG; exercised only by the CLI) — backfill the missing reservation rows
+   (e.g. `510` as of `2026-07-05`) before gating it. (Do NOT instead change the
+   boot runner to abort on dup numbers: it currently applies both colliding
+   files by filename, and altering boot-apply semantics — especially the
    `continueOnError` fleet path — is far riskier than catching the dup at PR
    time.)
 3. **Mark the sidecar mirror.** Since the mirror dir is itself gitignored, a
@@ -185,4 +207,6 @@ Small, mostly additive; each item is independent:
    of the same contract — live evidence for why this item matters, not just a
    hypothetical.
 
-Sequencing matters for #3: clean first, gate second.
+Sequencing mattered for the gating item (#2) and was honored via the
+`2026-07-04` re-baseline; the same rule — clean first, gate second — applies to
+any future gating of the reservation check.
