@@ -20,6 +20,7 @@
  * armed together — the verb picks exactly one.
  */
 
+import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -28,6 +29,7 @@ import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { buildKey } from '../../events/await/catalog';
 import { clampText, LIMITS } from '../limits';
+import { devDeployState } from '../../dev-deploy-state';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -83,6 +85,20 @@ function reply(body: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
 }
 
+export function checkpointPipelineName(integrationRoot: string): string {
+  const base = path.basename(path.resolve(integrationRoot));
+  return (base.replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+}
+
+async function defaultCheckpointPipeline(): Promise<string | undefined> {
+  try {
+    const state = await devDeployState();
+    return checkpointPipelineName(state.integrationRoot);
+  } catch {
+    return undefined;
+  }
+}
+
 // ── deploy:await — "wake when my sha is live on :3070" ───────────────────────
 defineTool({
   name: 'deploy:await',
@@ -113,12 +129,12 @@ defineTool({
 defineTool({
   name: 'checkpoint:await',
   description:
-    'Sleep until the green-checkpoint resolves — arms awaits on BOTH release:green (passed → advanced to main) and green-checkpoint:red (held → not green) so you wake either way, instead of polling for the gate verdict. The gate keys are global (one per checkpoint run), so check payload.sha on wake. Then END YOUR TURN.',
+    'Sleep until the current pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed → advanced to main) and green-checkpoint:red:<pipeline> (held → not green) so you wake either way, instead of polling for the gate verdict. Pass pipeline to override; pass global:true only when you intentionally want every co-hosted pipeline verdict and will lineage-check payload.pipeline/payload.sha yourself. Then END YOUR TURN.',
   capability: 'coord:write',
   guidance: {
     when: 'You need to know whether the gate went green (your change cleared into main) or is held (a test is red) before proceeding — instead of re-polling dev:pipeline_position / dev:build_status.',
     notWhen: 'Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config.',
-    chaining: 'checkpoint:await → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail); resume or go fix the red.',
+    chaining: 'checkpoint:await → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline; resume or go fix the red.',
     seeAlso: ['events:catalog', 'deploy:await (the next stage — live on :3070)', 'events:await'],
   },
   requirePrincipal: false,
@@ -131,20 +147,25 @@ defineTool({
       .optional()
       .describe(
         "Scope to ONE pipeline's gate — the repo basename of its integration root (e.g. 'papercusp'). " +
-          "Omit for the global keys, which wake on EVERY co-hosted pipeline's verdict (EI-7646: you then " +
-          'must lineage-check payload.sha/payload.pipeline yourself on each wake).',
+          "Omit to default to the current dev pipeline. Use global:true for the global keys, which wake " +
+          "on EVERY co-hosted pipeline's verdict (EI-7646: you then must lineage-check payload.sha/payload.pipeline yourself).",
       ),
+    global: z
+      .boolean()
+      .optional()
+      .describe("Use the global release:green / green-checkpoint:red keys instead of the current pipeline's keys. Only for cross-pipeline monitors."),
     note: z.string().max(LIMITS.ANNOTATION).optional().describe('Why you are waiting — echoed into the wake turn.'),
     timeout_sec: timeoutArg,
   }),
   async handler(args, ctx) {
+    const pipeline = args.global ? undefined : args.pipeline ?? (await defaultCheckpointPipeline());
     const keys = [
-      buildKey('checkpoint', { pipeline: args.pipeline }),
-      buildKey('checkpoint-red', { pipeline: args.pipeline }),
+      buildKey('checkpoint', { pipeline }),
+      buildKey('checkpoint-red', { pipeline }),
     ];
     const note =
       args.note ??
-      `checkpoint:await${args.pipeline ? ` [${args.pipeline}]` : ''} — blocked until the green gate resolves`;
+      `checkpoint:await${pipeline ? ` [${pipeline}]` : ' [global]'} — blocked until the green gate resolves`;
     return reply(await armAwaits(ctx, keys, note, args.timeout_sec));
   },
 });

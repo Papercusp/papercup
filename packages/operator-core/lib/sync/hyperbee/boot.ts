@@ -2758,17 +2758,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // is never used again once dropped from `admitted` — without an explicit
       // close it leaks (each `store.get({key})` call is a distinct session, not
       // shared/refcounted by key). Best-effort + optional (a hand-rolled
-      // RemoteLog test fixture may not implement `close`); a close failure must
-      // never abort revoke() — the peer is refused regardless.
+      // RemoteLog test fixture may not implement `close`). Fire-and-forget
+      // (NOT awaited): closing a session that still has a live replicator
+      // attached can take multiple seconds to tear down cleanly, and revoke()
+      // is on the hot path (owner-driven, potentially inside a request) — the
+      // peer is already fully refused (revoked/admitted/pubkeyToLogKey all
+      // updated above) before the session finishes closing, so nothing
+      // correctness-relevant waits on it. A close failure never surfaces to
+      // the caller either way.
       if (revokedLog && typeof revokedLog.close === 'function') {
-        try {
-          await revokedLog.close();
-        } catch (e) {
+        void revokedLog.close().catch((e: unknown) => {
           console.error(
             `[boot] revoke: closing session for ${peerLabel(logKey)} failed (non-fatal):`,
             e,
           );
-        }
+        });
       }
       recordBootEvent(
         opts.workspaceId,

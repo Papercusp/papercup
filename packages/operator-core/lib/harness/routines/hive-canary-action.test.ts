@@ -119,6 +119,25 @@ describe('planCanaryTick', () => {
     expect(plan.queueId).toBe('F-CANARY-20260612');
   });
 
+  it('EI-7420: suppresses overdue reports (never overdue) when isPaused — the Hive is owner-paused, not broken', () => {
+    const rows: CanaryFeatureRow[] = [
+      {
+        feature_id: 'F-CANARY-20260611',
+        status: 'todo',
+        created_ts: now - 25 * 3600 * 1000, // 25 hours ago (overdue by 19h)
+        payload: { canary: true },
+      },
+    ];
+    const paused = planCanaryTick(rows, { deadlineHours: 6, nowMs: now, isPaused: true });
+    expect(paused.overdue).toEqual([]);
+    expect(paused.suppressed).toEqual(['F-CANARY-20260611']);
+
+    // Same rows, unpaused, still reports as genuinely overdue.
+    const unpaused = planCanaryTick(rows, { deadlineHours: 6, nowMs: now, isPaused: false });
+    expect(unpaused.overdue).toEqual(['F-CANARY-20260611']);
+    expect(unpaused.suppressed).toEqual([]);
+  });
+
   it('caps overdue list at input array size', () => {
     const rows: CanaryFeatureRow[] = Array.from({ length: 10 }, (_, i) => ({
       feature_id: `F-CANARY-${String(20260601 + i).padStart(8, '0')}`,

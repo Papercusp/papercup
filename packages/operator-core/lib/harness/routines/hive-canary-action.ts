@@ -48,6 +48,14 @@ export interface CanaryPlan {
   overdue: string[];
   /** Today's canary feature id (`F-CANARY-<YYYYMMDD>`). */
   queueId: string;
+  /**
+   * Canary ids that WOULD be overdue but are suppressed because the harness's
+   * Hive currently has `pauseNewWork` set (owner-steering-pause-aware-canary
+   * follow-on to EI-7420) — an intentional pause is not an autonomous-loop
+   * failure. NOT marked canary_reported, so a still-non-terminal canary is
+   * re-evaluated (and genuinely reported if still overdue) once un-paused.
+   */
+  suppressed: string[];
 }
 
 /** Today's canary id from a clock (UTC date-keyed — one per day, replay-stable). */
@@ -66,19 +74,27 @@ export function canaryIdFor(nowMs: number): string {
  */
 export function planCanaryTick(
   rows: CanaryFeatureRow[],
-  opts: { deadlineHours?: number; nowMs?: number } = {},
+  opts: { deadlineHours?: number; nowMs?: number; isPaused?: boolean } = {},
 ): CanaryPlan {
   const deadlineHours = opts.deadlineHours ?? 6;
   const nowMs = opts.nowMs ?? Date.now();
   const cutoff = nowMs - deadlineHours * 3_600_000;
-  const overdue = rows
+  const candidates = rows
     .filter((r) => r.payload !== null && r.payload !== undefined)
     .filter((r) => r.payload.canary === true)
     .filter((r) => r.payload.canary_reported !== true)
     .filter((r) => !CANARY_TERMINAL.has(r.status))
     .filter((r) => Number(r.created_ts) < cutoff)
     .map((r) => r.feature_id);
-  return { overdue, queueId: canaryIdFor(nowMs) };
+  // Pause-aware (EI-7420): an owner-initiated pauseNewWork means the Queen is
+  // intentionally starting no new work — a stuck canary under that condition is
+  // an expected consequence of the pause, not a broken autonomous loop. Suppress
+  // the report entirely (never mark canary_reported) so the SAME canary is
+  // re-evaluated — and genuinely reported if still overdue — once un-paused.
+  if (opts.isPaused) {
+    return { overdue: [], queueId: canaryIdFor(nowMs), suppressed: candidates };
+  }
+  return { overdue: candidates, queueId: canaryIdFor(nowMs), suppressed: [] };
 }
 
 /** Forensics for one missed canary: DBOS pipeline rows + nursery rows + fire-state. */
@@ -159,7 +175,24 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
        AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
      ORDER BY created_ts DESC LIMIT 30`;
-  const plan = planCanaryTick(rows, { deadlineHours });
+
+  // Pause-aware (EI-7420): resolve the Hive this harness belongs to (a MEMBER
+  // harness carries `hive_slug`; a hive-home harness IS its own hive) and check
+  // whether the owner currently has pauseNewWork set — an intentional pause, not
+  // an autonomous-loop failure, so a stuck canary under it shouldn't file a bug.
+  let isPaused = false;
+  try {
+    const reg = await loadHarnessRegistry(workspaceId);
+    const hiveHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
+    const steering = await getOwnerSteering(workspaceId, hiveHomeSlug, sql);
+    isPaused = isPausedNow(steering, Date.now());
+  } catch (e) {
+    console.warn(`[hive-canary] pause-check failed for ${installSlug} — treating as unpaused: ${e instanceof Error ? e.message : e}`);
+  }
+  const plan = planCanaryTick(rows, { deadlineHours, isPaused });
+  if (plan.suppressed.length > 0) {
+    console.log(`[hive-canary] ${installSlug}: suppressed ${plan.suppressed.length} overdue report(s) — Hive is owner-paused (pauseNewWork): ${plan.suppressed.join(', ')}`);
+  }
 
   // Phase 1 — CHECK: report each overdue canary with forensics (cap 3/tick).
   for (const fid of plan.overdue.slice(0, 3)) {

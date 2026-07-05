@@ -364,7 +364,12 @@ impl OperatorClient {
             .await
     }
     pub async fn plans_list(&self) -> Result<serde_json::Value> {
-        self.get_json("/api/admin/plans/list").await
+        // EI-7430: `standard` tier is ~6x smaller than the default `full` tier for
+        // the same list (521KB -> 87KB live-measured) — the TUI only ever renders
+        // the summary fields anyway. `/api/admin/plans/:verb` forwards unknown
+        // query params straight through (bodyFromSearchParams), so this needs no
+        // server-side change.
+        self.get_json("/api/admin/plans/list?payloadTier=standard").await
     }
 
     /// Bring an agent's external terminal window to the foreground via the
@@ -460,9 +465,15 @@ impl OperatorClient {
 
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
         let v = self.plans_list().await?;
-        Ok(serde_json::from_value::<PlansResponse>(v)
+        let mut plans = serde_json::from_value::<PlansResponse>(v)
             .context("decode plans")?
-            .plans)
+            .plans;
+        // EI-7430: the `standard` payloadTier appends a synthetic notice row
+        // (slug == "(truncated)") when the 150-row recency cap trims the list
+        // (list-shape.ts) — the TUI has no use for it (150 rows is already more
+        // than any pane renders), so drop it rather than showing a fake plan.
+        plans.retain(|p| p.slug != "(truncated)");
+        Ok(plans)
     }
 
     /// Deployed cloud frames (`/api/deploy/frames`) — the per-frame-tab roster

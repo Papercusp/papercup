@@ -91,6 +91,41 @@ export function selectNudgeTargets(
   });
 }
 
+/**
+ * EI-7402: drop targets whose declared plan is NOT backed by any harness_plans
+ * row (a file-only plan the store never ingested) — the plans:set-status remedy
+ * this watch teaches can never succeed against one, so nudging it every wake is
+ * pure, undischargeable noise. Pure over a precomputed existence map so the
+ * decision is unit-testable without a PG round-trip; `existsByKey` keys on
+ * `${workspaceId}::${planSlug}` (matching `storeExistsKey`). A slug missing
+ * from the map (a lookup that failed) fails OPEN — kept, not silently dropped.
+ */
+export function storeExistsKey(workspaceId: string, planSlug: string): string {
+  return `${workspaceId}::${planSlug}`;
+}
+
+export function filterStoreBackedTargets<T extends { agentId: string; declaredPlanSlug: string | null }>(
+  targets: readonly T[],
+  workspaceByAgent: ReadonlyMap<string, string>,
+  existsByKey: ReadonlyMap<string, boolean>,
+): { keep: T[]; skippedStoreAbsent: number } {
+  const keep: T[] = [];
+  let skippedStoreAbsent = 0;
+  for (const t of targets) {
+    const plan = t.declaredPlanSlug;
+    if (plan) {
+      const workspaceId = workspaceByAgent.get(t.agentId) ?? 'default';
+      const exists = existsByKey.get(storeExistsKey(workspaceId, plan));
+      if (exists === false) {
+        skippedStoreAbsent += 1;
+        continue;
+      }
+    }
+    keep.push(t);
+  }
+  return { keep, skippedStoreAbsent };
+}
+
 /** The stable summary prefix — also the outbox-throttle marker. */
 export const NUDGE_PREFIX = 'claim-discipline:';
 
@@ -152,34 +187,37 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
       .flatMap((e) => e.to),
   );
 
+  const preTargets = selectNudgeTargets(declaredAgents, claimedPlansByAgent, recentlyNudged);
+
   // EI-7402: a declared plan slug that the plans:* store never ingested (authored
   // only as repo markdown, no harness_plans row in ANY harness) makes the
   // plans:set-status remedy below undischargeable — the agent would be nudged
-  // every wake for a fix that can never succeed. Filter those out before sending;
-  // an agent already working such a plan via work_items claims has nothing to fix
-  // here. Cache per (workspaceId, plan) since many agents can share a declared plan.
+  // every wake for a fix that can never succeed. Resolve existence per distinct
+  // (workspace, plan) pair once, then let the pure filter decide who's kept.
   const workspaceByAgent = new Map(presenceRows.map((p) => [p.ownerId, p.workspaceId]));
-  const existsCache = new Map<string, boolean>();
-  const storeExists = async (workspaceId: string, plan: string): Promise<boolean> => {
-    const key = `${workspaceId}::${plan}`;
-    const cached = existsCache.get(key);
-    if (cached !== undefined) return cached;
-    const exists = await planSlugExistsInWorkspace(workspaceId, plan).catch(() => true); // fail-open: don't suppress a real nudge on a transient PG hiccup
-    existsCache.set(key, exists);
-    return exists;
-  };
+  const existsByKey = new Map<string, boolean>();
+  const distinctKeys = new Set(
+    preTargets
+      .filter((t): t is typeof t & { declaredPlanSlug: string } => !!t.declaredPlanSlug)
+      .map((t) => storeExistsKey(workspaceByAgent.get(t.agentId) ?? 'default', t.declaredPlanSlug)),
+  );
+  await Promise.all(
+    Array.from(distinctKeys).map(async (key) => {
+      const [workspaceId, plan] = key.split('::');
+      // Fail-open on a lookup error — never suppress a possibly-real nudge on a
+      // transient PG hiccup; only an AFFIRMED absence skips the nudge.
+      const exists = await planSlugExistsInWorkspace(workspaceId, plan).catch(() => true);
+      existsByKey.set(key, exists);
+    }),
+  );
 
-  const targets = selectNudgeTargets(declaredAgents, claimedPlansByAgent, recentlyNudged);
-  let skippedStoreAbsent = 0;
-  let nudged = 0;
+  const { keep: targets, skippedStoreAbsent } = filterStoreBackedTargets(
+    preTargets,
+    workspaceByAgent,
+    existsByKey,
+  );
   for (const t of targets) {
     const plan = t.declaredPlanSlug!;
-    const workspaceId = workspaceByAgent.get(t.agentId) ?? 'default';
-    if (!(await storeExists(workspaceId, plan))) {
-      skippedStoreAbsent += 1;
-      continue;
-    }
-    nudged += 1;
     await sendMessage(WATCH_IDENTITY, {
       to: [t.agentId],
       summary: nudgeSummary(plan),
@@ -190,7 +228,7 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     );
   }
   console.log(
-    `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${nudged} nudged` +
+    `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
       (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
       (recentlyNudged.size ? `, ${recentlyNudged.size} in throttle window` : ''),
   );

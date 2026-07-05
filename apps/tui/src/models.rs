@@ -28,7 +28,11 @@ pub struct PlanSummary {
     pub harness: Option<String>,
     #[serde(default)]
     pub archived: bool,
-    #[serde(default)]
+    // EI-7430: the `standard` payloadTier (list-shape.ts) renames this field to
+    // `next` (and clips it) to keep the list compact — alias it so the same
+    // struct decodes either the full tier's `nextAction` or the standard tier's
+    // `next`.
+    #[serde(default, alias = "next")]
     pub next_action: Option<String>,
     /// Item counts by effectiveStatus (`itemCounts`) — the fleet view aggregates
     /// these into plan progress (done/total). The wire sends `object | null`
@@ -37,6 +41,13 @@ pub struct PlanSummary {
     /// and a null would otherwise hard-fail the whole plans decode).
     #[serde(default, deserialize_with = "null_as_default")]
     pub item_counts: ItemCounts,
+    /// EI-7430: the `standard` tier flattens `itemCounts` into these two scalar
+    /// fields instead of the full object (list-shape.ts openDoneCounts) — absent
+    /// on the `full` tier, in which case `item_counts` above carries the detail.
+    #[serde(default)]
+    pub open: Option<u32>,
+    #[serde(default)]
+    pub done: Option<u32>,
     /// Plan priority (higher first); the fleet view orders active plans by it.
     #[serde(default)]
     pub priority: Option<i64>,
@@ -2319,6 +2330,32 @@ mod tests {
         assert_eq!(p.harness.as_deref(), Some("papercup"));
         assert_eq!(p.next_action.as_deref(), Some("review state"));
         assert!(!p.archived);
+    }
+
+    #[test]
+    fn parses_plans_list_standard_tier_shape() {
+        // EI-7430: the `standard` payloadTier (list-shape.ts) flattens itemCounts
+        // into scalar open/done and renames nextAction -> next — the TUI struct
+        // must decode this shape too, plus tolerate the synthetic truncation row.
+        let j = r#"{"plans":[
+            {"slug":"a-2026-05-14","title":"Plan A","status":"shipped","updated":"2026-05-30",
+             "harness":"papercup","next":"review state","open":3,"done":5,
+             "owner":"x@y.z","initiative":null,"template":null,"startStatus":null,
+             "priority":null,"scheduled":null},
+            {"slug":"(truncated)","title":"showing 150 of 400 — narrow with status/updatedSince/limit/order, plans:get {slug} for detail, or payloadTier:\"full\"",
+             "status":null,"harness":null,"updated":null,"next":null,"open":0}
+        ]}"#;
+        let r: PlansResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.plans.len(), 2);
+        let p = &r.plans[0];
+        assert_eq!(p.slug, "a-2026-05-14");
+        assert_eq!(p.next_action.as_deref(), Some("review state"));
+        assert_eq!(p.open, Some(3));
+        assert_eq!(p.done, Some(5));
+        // The second row is the synthetic notice — decodes fine (uniform shape),
+        // filtering it out is client.rs's plans_typed() responsibility, tested
+        // where that helper lives.
+        assert_eq!(r.plans[1].slug, "(truncated)");
     }
 
     #[test]

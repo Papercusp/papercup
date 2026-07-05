@@ -27,6 +27,19 @@
  * hive_watchdog_fires row (source `scorecard-pulse`) — the countable "the data
  * layer is running on the floor pulse" signal. Fail-soft by contract: never
  * throws into the periodic scheduler.
+ *
+ * ## Coalescing (WI-2977)
+ * Each pulse pass is its own `improvements:capture` in the `observation` lane,
+ * which by design (D-005) skips search-first dedup — recurrence is meant to be
+ * the clustering signal for a genuine friction observation. But a pulse floor
+ * isn't a friction finding; it's the SAME "the window was empty" fact re-filed
+ * every tick a stopped supervisor stays stopped, so a multi-day outage piled up
+ * one new open EI per hour (9 re-accumulated 07-04..07-05 after a sweep closed
+ * the previous batch). Before filing, this now looks up the standing pulse-floor
+ * item for this hive by a stable `watchdogKey` (`pulseWatchdogKey`, reuses the
+ * indexed `findIssuesByWatchdogKeys` lookup the improvement watchdog already
+ * uses) — an OPEN match bumps its `payload.pulseRepeat` counter instead of
+ * filing a new issue; only the FIRST pulse for a given outage creates one.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { overwatchEnabled } from './overwatch/watchdog';
@@ -34,6 +47,7 @@ import { getOverwatchControlState } from './overwatch/snapshot';
 import { checkScorecardFreshness } from './scorecard-freshness';
 import { computeSystemHealth } from './system-health/compute';
 import { captureImprovement } from './harness/improvements/capture-core';
+import { findIssuesByWatchdogKeys, mergeIssuePayload } from './issues-engineer';
 import {
   COORDINATION_RUBRIC_REF,
   synthesizeCoordinationScorecard,
@@ -41,6 +55,29 @@ import {
   type ScorecardRating,
 } from './overwatch/scorecard-backstop';
 import type { SystemHealth } from './system-health/types';
+
+/** Stable cross-tick dedup key for this hive's pulse floor (WI-2977). Same shape
+ *  convention as `watchdogKeyOf` elsewhere: `<source>:<key>`. */
+export function pulseWatchdogKey(sourceHive: string): string {
+  return `scorecard-pulse:${sourceHive}`;
+}
+
+/** The `payload.pulseRepeat` stamp coalesced pulses bump instead of re-filing. */
+export interface PulseRepeatStamp {
+  /** Total pulse fires coalesced onto this item, INCLUDING the one that created it. */
+  count: number;
+  firstFiredAt: string;
+  lastFiredAt: string;
+}
+
+/** Pure: defensively parse `payload.pulseRepeat` (absent/malformed → never fired before). */
+export function readPulseRepeatCount(payload: unknown): number {
+  if (payload == null || typeof payload !== 'object') return 0;
+  const raw = (payload as Record<string, unknown>).pulseRepeat;
+  if (raw == null || typeof raw !== 'object') return 0;
+  const n = (raw as Record<string, unknown>).count;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
 
 /** The window in which SOME scorecard (agent or floor) must exist, else the pulse files one.
  *  1h — generous vs the overwatch cadence (10min) so a live loop always wins, tight enough
