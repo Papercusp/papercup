@@ -1,6 +1,7 @@
 /**
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
+import { EventEmitter } from 'node:events';
 import { describe, it, expect } from 'vitest';
 import {
   diffHealth,
@@ -110,20 +111,87 @@ describe('HEALTH_ENDPOINTS', () => {
 describe('probeEndpoint — per-spec timeout override (EI-6902)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("honors a spec's own timeoutMs over the 3000ms default", async () => {
-    // A fetch that never settles — probeEndpoint must wait for the SPEC's timeout
-    // (not the 3000ms default) before aborting.
-    const fetchSpy = vi.fn(
-      (_url: string, opts: { signal: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
-        }),
-    );
-    vi.stubGlobal('fetch', fetchSpy);
+  it("honors a spec's own timeoutMs over the 3000ms default (once past the TCP preflight)", async () => {
+    // A real listener so the TCP preflight succeeds fast — the thing under test
+    // here is the HTTP response budget, not connect reachability.
+    const server = net.createServer((socket) => socket.on('data', () => {}));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      // A fetch that never settles — probeEndpoint must wait for the SPEC's timeout
+      // (not the 3000ms default) before aborting.
+      const fetchSpy = vi.fn(
+        (_url: string, opts: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      vi.stubGlobal('fetch', fetchSpy);
+      const start = Date.now();
+      const result = await probeEndpoint({ name: 'vite', url: `http://127.0.0.1:${port}/`, timeoutMs: 20 });
+      expect(Date.now() - start).toBeGreaterThanOrEqual(15); // aborted at ~20ms, not ~3000ms
+      expect(result).toEqual(expect.objectContaining({ name: 'vite', up: false, status: null }));
+    } finally {
+      server.close();
+    }
+  });
+
+  it('tolerates a slow-but-alive endpoint: connects instantly, HTTP response arrives within the response budget', async () => {
+    const server = net.createServer((socket) => socket.on('data', () => {}));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const fetchSpy = vi.fn(
+        () => new Promise((resolve) => setTimeout(() => resolve(new Response(null, { status: 200 })), 30)),
+      );
+      vi.stubGlobal('fetch', fetchSpy);
+      const result = await probeEndpoint({ name: 'vite', url: `http://127.0.0.1:${port}/`, timeoutMs: 200 });
+      expect(result.up).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe('tcpPreflight — fast connect budget, separate from the HTTP response budget (EI-7462)', () => {
+  it('a refused connection (nothing listening) reports unreachable well under the response timeout', async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
     const start = Date.now();
-    const result = await probeEndpoint({ name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 20 });
-    expect(Date.now() - start).toBeGreaterThanOrEqual(15); // aborted at ~20ms, not ~3000ms
-    expect(result).toEqual(expect.objectContaining({ name: 'vite', up: false, status: null }));
+    const ok = await tcpPreflight(`http://127.0.0.1:${port}/`, 5000);
+    const elapsed = Date.now() - start;
+    expect(ok).toBe(false);
+    expect(elapsed).toBeLessThan(1000); // fast ECONNREFUSED, not the 5000ms budget passed in
+  });
+
+  it('a connect that never settles (wedged accept queue) is marked unreachable at the preflight deadline, not left hanging', async () => {
+    // A fake "socket" that never emits connect or error — models a listener whose
+    // backlog is stuck (SYN never completes) rather than a clean refuse.
+    const neverSettles = () => {
+      const fake = new EventEmitter() as unknown as ReturnType<typeof net.connect>;
+      return fake;
+    };
+    const start = Date.now();
+    const ok = await tcpPreflight('http://127.0.0.1:1/', 50, neverSettles);
+    const elapsed = Date.now() - start;
+    expect(ok).toBe(false);
+    expect(elapsed).toBeGreaterThanOrEqual(45);
+    expect(elapsed).toBeLessThan(1000); // bounded by the preflight deadline, not any HTTP timeout
+  });
+
+  it('a connect that succeeds resolves reachable quickly', async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const ok = await tcpPreflight(`http://127.0.0.1:${port}/`, CONNECT_PREFLIGHT_MS);
+      expect(ok).toBe(true);
+    } finally {
+      server.close();
+    }
   });
 });
 

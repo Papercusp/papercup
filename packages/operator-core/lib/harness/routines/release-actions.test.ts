@@ -46,12 +46,14 @@ import {
   decideReleaseFixerDispatch,
   classifyGateStallStatus,
   shouldWarnOnStallClearMiss,
+  annotateFailingTestsWithFlakeStats,
   RELEASE_FIXER_DEDUP_MS,
   type AutoServePlan,
   type DeployEventRow,
   type ReleaseFixerRecord,
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
+import type { FlakeSuspect } from '../../dev-data';
 
 describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
@@ -373,6 +375,47 @@ describe('shouldBackOff — P-013 deploy-failure back-off', () => {
   });
   it('tolerates a double-encoded JSON detail string', () => {
     expect(shouldBackOff(evt('failed', stored, 5 * 60_000, true), full, now)).toBe(true);
+  });
+});
+
+describe('annotateFailingTestsWithFlakeStats (EI-7443)', () => {
+  function suspect(over: Partial<FlakeSuspect> & { file_path: string }): FlakeSuspect {
+    return {
+      file_path: over.file_path,
+      fails: over.fails ?? 10,
+      passes: over.passes ?? 50,
+      both_status_shas: over.both_status_shas ?? 3,
+      flake_rate: over.flake_rate ?? 0.167,
+      last_fail: over.last_fail ?? null,
+      last_pass: over.last_pass ?? null,
+      reason: over.reason ?? 'flake-shaped',
+    };
+  }
+
+  it('returns undefined when there are no failing tests', () => {
+    expect(annotateFailingTestsWithFlakeStats(undefined, [suspect({ file_path: 'a.test.ts' })])).toBeUndefined();
+    expect(annotateFailingTestsWithFlakeStats([], [suspect({ file_path: 'a.test.ts' })])).toBeUndefined();
+  });
+
+  it('returns undefined when there are no flagged suspects at all', () => {
+    expect(annotateFailingTestsWithFlakeStats(['a.test.ts'], [])).toBeUndefined();
+  });
+
+  it('returns undefined when the failing files do not overlap any flagged suspect (a real regression)', () => {
+    expect(
+      annotateFailingTestsWithFlakeStats(['regression.test.ts'], [suspect({ file_path: 'unrelated.test.ts' })]),
+    ).toBeUndefined();
+  });
+
+  it('annotates ONLY the failing files that match a flagged suspect, ignoring the rest', () => {
+    const out = annotateFailingTestsWithFlakeStats(
+      ['flaky.test.ts', 'regression.test.ts'],
+      [suspect({ file_path: 'flaky.test.ts', fails: 12, passes: 53, both_status_shas: 4, flake_rate: 0.185 })],
+    );
+    expect(out).toContain('EI-7443');
+    expect(out).toContain('flaky.test.ts: 12F/53P over 7d, 4 commit(s)');
+    expect(out).toContain('flake_rate=0.185');
+    expect(out).not.toContain('regression.test.ts');
   });
 });
 

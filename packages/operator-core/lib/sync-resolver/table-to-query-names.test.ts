@@ -149,10 +149,17 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
     expect(noArgs).toEqual(withId);
   });
 
-  it('the live map currently contains ONLY bare-string (full-bust) targets', () => {
+  it('the live map is bare-string (full-bust) EXCEPT the EI-7433 scoped entries', () => {
+    // plans.get was flipped to { name, scope } (harness_plans natural-key
+    // scoping, mig 507) — the first live per-row-scoped entry. Every other
+    // mapped query name today is still a bare string (full-bust); name each
+    // scoped exception explicitly so a future accidental object-ification
+    // elsewhere in the map still fails loud here.
+    const KNOWN_SCOPED = new Set(['plans.get']);
     for (const [table, targets] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       for (const t of targets) {
-        expect(typeof t, `target for ${table}`).toBe('string');
+        if (typeof t === 'string') continue;
+        expect(KNOWN_SCOPED.has(t.name), `unexpected scoped target ${t.name} for ${table}`).toBe(true);
       }
     }
   });
@@ -216,13 +223,16 @@ describe('TABLE_TO_QUERY_NAMES shape', () => {
     }
   });
 
-  it('all values are non-empty string arrays', () => {
+  it('all values are non-empty arrays of well-formed query-name entries (bare string OR { name, scope })', () => {
     for (const [k, vs] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       expect(Array.isArray(vs), `value for ${k}`).toBe(true);
       expect(vs.length, `value for ${k}`).toBeGreaterThan(0);
       for (const v of vs) {
-        expect(typeof v, `entry in ${k}`).toBe('string');
-        expect(v, `entry in ${k}`).toMatch(/^\w+\.\w+$/);
+        const name = typeof v === 'string' ? v : v.name;
+        expect(name, `entry in ${k}`).toMatch(/^\w+\.\w+$/);
+        if (typeof v !== 'string') {
+          expect(typeof v.scope, `scope fn for ${name} in ${k}`).toBe('function');
+        }
       }
     }
   });

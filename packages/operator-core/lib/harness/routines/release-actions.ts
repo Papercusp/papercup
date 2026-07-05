@@ -28,6 +28,7 @@ import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { STALE_MS } from '../../liveness';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
+import type { FlakeSuspect } from '../../dev-data';
 
 // Re-exported for backward compatibility — release-actions.test.ts imports
 // buildIsolatedScopeArgv from THIS module. The pure builder itself now lives in
