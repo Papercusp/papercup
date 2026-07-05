@@ -1,27 +1,33 @@
 #!/usr/bin/env bash
-# PostToolUse hook — set the TERMINAL TITLE to this session's FULL fleet identity
-# (session-objective-display-2026-06-22 P-003/P-004; extended to full title parity
-# 2026-07-03, WI-1963 #3). Codex and OMP have no bottom status pane (that's a
-# Claude-Code-only TUI feature), but they DO own a tty — so we emit an OSC-0 title
-# escape (ESC ] 0 ; <title> BEL) carrying the SAME `term_title` the Claude statusline
-# writes: fleets (👑/👤 + colour squares) · loop chip · model·effort · id · objective,
-# all from `coord:glance` (+ the launch model spec in PAPERCUSP_MODEL, since these CLIs
-# have no live model object like Claude's statusline stdin). So a human reading the tab /
-# window title sees the full fleet/model/loop/objective state — parity with Claude's
-# title — with no LLM file-writing. The render (term_title) is kept byte-identical to
-# statusline-fleet.sh; objective-title-parity.test.ts guards the two against drift.
+# PostToolUse hook — the Codex STATUS-DISPLAY pipe: terminal TITLE + 💡 tip notice
+# (session-objective-display-2026-06-22 P-003/P-004; WI-1963 full title parity;
+# SINGLE-SOURCE rework tui-status-parity-single-source-2026-07-05). Codex has no
+# bottom status pane (that's a Claude-Code-only TUI feature), but it DOES own a
+# tty and consumes PostToolUse `additionalContext` — so this hook surfaces the
+# fleet status through BOTH:
 #
-# SHARED by Codex AND OMP (the same `cc/` shell contract the lock/activity hooks
-# use): both fire PostToolUse with a minimal env and own a controlling tty. We
-# write the escape to the TTY directly (/dev/tty), NOT stdout — hook stdout goes
-# to the harness, never the screen, so a title written there would be invisible
-# (and could corrupt the tool result). The CLIENT owns the tty; this hook only
-# nudges its title.
+#   1. TITLE — an OSC-0 escape (ESC ] 0 ; <title> BEL) carrying the glance's
+#      server-rendered `display.title` VERBATIM (status-display.ts — the ONE
+#      render every TUI shows: fleets 👑/👤 + colour squares · ⟳loop · ▶/⏸✉staged ·
+#      ☕bees · ⏳governor · peers · id · 🔭objective). New chips belong in
+#      status-display.ts, NOT here; the embedded `term_title` assembly below is
+#      only the fallback for a pre-display operator.
+#   2. 💡 NOTICE — the glance's `display.notice` (the top contextual tip, e.g.
+#      "Wake mode is manual — 4 staged wakes waiting"), injected as PostToolUse
+#      additionalContext when it CHANGES (a per-session cursor file dedups), so a
+#      codex session gets the same tips the Claude statusline shows. Disable with
+#      PAPERCUSP_TIP_NOTICE=0.
 #
-# FIRE-AND-FORGET + FAIL-OPEN: one short coord:glance read; on any trouble
-# (operator down/slow, no objective, no tty) it emits nothing and exits 0. NEVER
-# blocks the tool stream, NEVER writes to stdout. Set PAPERCUSP_OBJECTIVE_SYNC=1
-# to run synchronously (tests).
+# The title escape goes to the TTY directly (/dev/tty), NOT stdout — hook stdout
+# is reserved for the additionalContext JSON (the harness consumes it; a title
+# written there would corrupt the tool result).
+#
+# SYNC + FAIL-OPEN: one short coord:glance read per tool call (the notice must
+# reach stdout before the hook exits — same latency contract as
+# posttooluse-coord-inbox.sh, ~10-30ms localhost, 1.5s worst-case timeout); on
+# any trouble (operator down/slow, no tty) it emits nothing and exits 0.
+# PAPERCUSP_OBJECTIVE_SYNC is kept as an accepted env for back-compat (the hook
+# is now always synchronous).
 #
 # Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
 # exactly like the coord-inbox / activity hooks; a plain codex/omp elsewhere has
@@ -59,7 +65,7 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
   python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" <<'PYEOF'
-import json, sys, urllib.request, urllib.parse
+import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
@@ -226,6 +232,53 @@ def term_title(g, model_tag=''):
     return ' · '.join(bits)
 
 
+def emit_notice(disp):
+    """💡 tip-notice injection (tui-status-parity-single-source-2026-07-05 P-003, codex leg):
+    when the glance's server-rendered display.notice CHANGES (id+text vs a per-session
+    cursor file), print the PostToolUse additionalContext JSON so the harness injects it —
+    the codex equivalent of the Claude statusline's 💡 line. First run SHOWS a standing
+    notice once (a manual wake gate is worth one surfacing at session start), then the
+    cursor dedups. Fail-open: any trouble ⇒ no output. PAPERCUSP_TIP_NOTICE=0 disables."""
+    if os.environ.get('PAPERCUSP_TIP_NOTICE', '1') == '0':
+        return
+    notice = disp.get('notice') if isinstance(disp, dict) else None
+    if not isinstance(notice, dict):
+        return
+    text = str(notice.get('text') or '').strip()
+    if not text:
+        return
+    key = f'{notice.get("id") or "tip"}|{text}'
+    cache_dir = os.environ.get('PAPERCUSP_LOCKS_CACHE_DIR') or os.path.join(
+        os.path.expanduser('~'), '.papercusp', 'locks-cache')
+    safe_owner = re.sub(r'[^A-Za-z0-9._-]', '_', me)[:80]
+    cursor_path = os.path.join(cache_dir, f'tip-notice-{safe_owner}.json')
+    try:
+        with open(cursor_path) as f:
+            if (json.load(f) or {}).get('key') == key:
+                return  # unchanged — already surfaced
+    except Exception:
+        pass  # no cursor yet — first surfacing
+    try:
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+        tmp = f'{cursor_path}.{os.getpid()}.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'key': key}, f)
+        os.replace(tmp, cursor_path)
+    except Exception:
+        pass  # cursor write failed — worst case the notice repeats; still emit
+    print(json.dumps({
+        'hookSpecificOutput': {
+            'hookEventName': 'PostToolUse',
+            'additionalContext': (
+                '<system-reminder type="papercusp-status-tip">'
+                + text
+                + ' (fleet status tip — act on it or surface it to the user; coord:glance for detail)'
+                + '</system-reminder>'
+            ),
+        },
+    }))
+
+
 try:
     glance = None
     try:
@@ -237,32 +290,40 @@ try:
     except Exception:
         glance = None
 
-    # Full title = the SAME assembly the Claude statusline writes (fleets 👑/👤 + colour squares,
-    # loop chip, id, objective) — WI-1963 title parity. Model display REMOVED 2026-07-03 (owner
-    # directive, WI-2124): better none than a possibly-stale model. model_tag_from_spec + the
-    # PAPERCUSP_MODEL plumbing stay defined for a trivial re-enable if a reliable source lands.
-    title = term_title(glance)
+    # SINGLE-SOURCE title (tui-status-parity-single-source-2026-07-05): pipe the
+    # server-rendered display.title VERBATIM when the operator ships it — the ONE
+    # render every TUI shows. The embedded term_title assembly survives ONLY as
+    # the fallback for a pre-display operator (WI-1963 parity era); new chips go
+    # in status-display.ts, not here. Model display REMOVED 2026-07-03 (owner
+    # directive, WI-2124): better none than a possibly-stale model.
+    disp = glance.get('display') if isinstance(glance, dict) else None
+    dtitle = disp.get('title') if isinstance(disp, dict) else None
+    if isinstance(dtitle, str) and dtitle.strip():
+        title = dtitle.strip()
+    else:
+        title = term_title(glance)
     # Strip control chars that could break out of the OSC string (defensive).
     title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
-    if not title:
-        sys.exit(0)
-    # OSC 0 sets BOTH the icon name and the window title: ESC ] 0 ; <text> BEL.
-    osc = '\033]0;' + title + '\007'
-    # Write straight to the tty (the client owns it). A piped/headless session has
-    # no controlling tty → the open fails and we fail open (no title set).
-    try:
-        with open(title_tty, 'w') as tty:
-            tty.write(osc)
-    except Exception:
-        sys.exit(0)
+    if title:
+        # OSC 0 sets BOTH the icon name and the window title: ESC ] 0 ; <text> BEL.
+        osc = '\033]0;' + title + '\007'
+        # Write straight to the tty (the client owns it). A piped/headless session
+        # has no controlling tty → the open fails and we fail open (no title set).
+        try:
+            with open(title_tty, 'w') as tty:
+                tty.write(osc)
+        except Exception:
+            pass
+    # 💡 tip notice — stdout is reserved for this additionalContext JSON.
+    emit_notice(disp)
 except Exception:
     sys.exit(0)
 PYEOF
 }
 
-if [ -n "${PAPERCUSP_OBJECTIVE_SYNC:-}" ]; then
-  set_title >/dev/null 2>&1 || true
-else
-  ( set_title >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
-fi
+# ALWAYS synchronous with stdout passed through: stdout carries the tip-notice
+# additionalContext JSON the harness consumes (a detached/redirected run would
+# silently drop it — the pre-2026-07-05 behavior). stderr stays silenced; any
+# failure exits 0 (fail-open, never blocks the tool stream).
+set_title 2>/dev/null || true
 exit 0

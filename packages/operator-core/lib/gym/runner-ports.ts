@@ -18,6 +18,7 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { rm as rmCb } from 'node:fs';
+import { basename } from 'node:path';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { buildSubstrateCloneCommands } from './clone';
@@ -61,22 +62,29 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         body: JSON.stringify({ slug, path: clonePath }),
       });
       if (res.status === 409) {
-        // WI-2604: gym slugs are DETERMINISTIC (run-identity.ts's gymRunIdentity — same
-        // (task×variant×cycle×repeat) always resolves to the same slug, on purpose, for
-        // idempotent DBOS replay). Nothing tears the throwaway harness project entry down
-        // after a run completes (only a setup failure does), so a later run/replay of the
-        // SAME key hits a live "slug already exists" 409 and the whole cycle fails. Since
-        // the identity is deterministic BY DESIGN, re-registering the same slug at the
-        // same clone path is an idempotent no-op, not a real collision — verify the
-        // existing project really is this same throwaway (path match) before swallowing
-        // the 409, so an unrelated real slug collision still surfaces loudly.
+        // WI-2604 / EI-7196: gym slugs are DETERMINISTIC (run-identity.ts's gymRunIdentity
+        // — same (task×variant×cycle×repeat) always resolves to the same slug, on purpose,
+        // for idempotent DBOS replay). Nothing tears the throwaway harness project entry
+        // down after a run COMPLETES (only a setup failure does), so a later run/replay of
+        // the SAME key hits a live "slug already exists" 409 and the whole cycle fails.
+        //
+        // EI-7196 — the clone lives under a FRESH `mkdtemp` scratch root per fire
+        // (autoloop-cycle.ts), so the absolute clonePath legitimately CHANGES every run
+        // even though the slug is stable. WI-2604's original strict `existing.path ===
+        // clonePath` guard therefore NEVER matched a real replay (prior run's random
+        // `/tmp/gym-loop-AAA/<slug>` ≠ this run's `/tmp/gym-loop-BBB/<slug>`) and threw on
+        // every subsequent fire — the CHRONIC autoloop red. Compare the path BASENAME
+        // instead: the clone dir is always named after the slug (cloneDirName ===
+        // harnessSlug), so a genuine same-throwaway replay matches under any scratch root,
+        // while an unrelated real slug collision (a non-throwaway harness whose dir isn't
+        // named after the slug) still surfaces loudly.
         const existing = await doFetch(`${cfg.operatorBaseUrl}/api/harness/projects`);
         if (existing.ok) {
           const body = (await existing.json().catch(() => ({}))) as { projects?: Array<{ slug: string; path: string }> };
           const match = body.projects?.find((p) => p.slug === slug);
-          if (match && match.path === clonePath) return; // idempotent re-registration — same throwaway, same path
+          if (match && basename(match.path) === basename(clonePath)) return; // idempotent re-registration — same throwaway (clone dir named after the slug), scratch root varies per run
         }
-        throw new Error(`registerThrowawayHarness ${slug} → 409: slug already exists at a DIFFERENT path than ${clonePath} (real collision, not idempotent replay)`);
+        throw new Error(`registerThrowawayHarness ${slug} → 409: slug already exists at a path whose basename differs from ${clonePath} (real collision, not idempotent replay)`);
       }
       if (!res.ok) throw new Error(`registerThrowawayHarness ${slug} → ${res.status}: ${await res.text()}`);
       // The route returns HTTP 200 even when scaffoldHarnessSchema() throws — it

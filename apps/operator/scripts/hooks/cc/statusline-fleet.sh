@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Claude Code statusline — render a compact CROSS-CLI FLEET glance from
 # `coord:glance` (papercusp-worker-integration-2026-06-04 D-005 + the
-# coord-glance combined read, 2026-06-12). Two lines:
+# coord-glance combined read, 2026-06-12).
+#
+# SINGLE-SOURCE (tui-status-parity-single-source-2026-07-05): when the operator
+# ships a server-rendered `display` block on the glance (status-display.ts),
+# this hook prints display.statusline / display.title VERBATIM (width-fitting
+# only). New chips belong in status-display.ts — NOT here; the local assembly
+# below is only the fallback for a pre-display operator. Two lines:
 #
 #   🔭 wire objective display · ◇ su-9859e · ⏸ manual ✉2 · ☕1 · 5 peers · ◆ su-074be ✎ catalog.ts
 #   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
@@ -533,6 +539,31 @@ except Exception:
 # no-op naturally: mchip falsy ⇒ never appended; mtitle '' ⇒ term_title's `if model_tag` skips it.
 mchip = None
 mtitle = ''
+
+# ── SINGLE-SOURCE display render (tui-status-parity-single-source-2026-07-05) ──
+# When the operator ships a server-rendered `display` block on the glance
+# (status-display.ts — ONE render feeding every TUI), this hook is a DUMB PIPE:
+# print display.statusline verbatim (width-fitting only — emit() clips chip rows
+# to COLUMNS; 💡 tip rows WRAP so a tip is never lost) and mirror display.title
+# into the OS title. The per-client assembly below survives ONLY as the fallback
+# for a pre-display operator; do NOT add chips there — add them server-side.
+disp = glance.get('display') if isinstance(glance, dict) else None
+if isinstance(disp, dict) and isinstance(disp.get('statusline'), list) and disp.get('statusline'):
+    out = []
+    for raw in disp['statusline']:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        if raw.startswith('💡'):
+            out.extend(textwrap.wrap(raw, width=cols, subsequent_indent='  ')[:4])
+        else:
+            out.append(raw)
+    dtitle = disp.get('title')
+    if isinstance(dtitle, str) and dtitle.strip():
+        set_title(dtitle.strip())
+    else:
+        set_title(term_title(glance, mtitle))
+    emit(out, cols)
+    sys.exit(0)
 
 if not isinstance(glance, dict) or 'wake' not in glance:
     # No parseable glance. Fixture mode: an activity-shaped payload (no 'wake'

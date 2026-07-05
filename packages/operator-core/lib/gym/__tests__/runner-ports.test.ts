@@ -137,6 +137,34 @@ describe('createGymRunnerPorts', () => {
     ).rejects.toThrow(/409|collision/);
   });
 
+  it('registerThrowawayHarness (EI-7196): a 409 for the SAME slug under a DIFFERENT scratch root but SAME clone-dir basename is idempotent (no throw)', async () => {
+    // The autoloop clones under a FRESH `mkdtemp` scratch root every fire, so the absolute
+    // clonePath legitimately changes run-to-run (/tmp/gym-loop-AAA/<slug> → …-BBB/<slug>)
+    // even though the deterministic slug is stable and the registry still holds the PRIOR
+    // run's path. WI-2604's strict full-path equality never matched this real replay and
+    // threw on every subsequent fire — the CHRONIC red. The clone dir is always named after
+    // the slug, so a basename match recognizes the same throwaway under any scratch root.
+    const { config, reqs } = cfg({
+      fetchFn: (async (url: string, init?: RequestInit) => {
+        reqs.push({ url, init: init ?? {} });
+        if (init?.method === 'POST') {
+          return { ok: false, status: 409, text: async () => '{"error":"slug already exists"}' } as unknown as Response;
+        }
+        // The registry still holds the PRIOR fire's path — a DIFFERENT scratch root, same basename.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ projects: [{ slug: 'gymx', path: '/tmp/gym-loop-AAA/gymx' }] }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch,
+    });
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.registerThrowawayHarness({ slug: 'gymx', clonePath: '/tmp/gym-loop-BBB/gymx', workspaceId: 'gym-ws' }),
+    ).resolves.toBeUndefined();
+    expect(reqs.some((r) => r.init.method === undefined && r.url.endsWith('/api/harness/projects'))).toBe(true);
+  });
+
   it('startPipeline hits the admin route with the superuser bearer + returns the workflow id', async () => {
     const { config, reqs } = cfg();
     const p = createGymRunnerPorts(config);
