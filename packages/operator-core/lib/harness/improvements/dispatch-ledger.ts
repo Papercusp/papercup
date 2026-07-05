@@ -101,7 +101,7 @@ export async function recordDispatchFired(input: RecordDispatchInput): Promise<s
     const { sql } = getOrgPg();
     const rows = await sql<{ id: string }[]>`
       INSERT INTO harness_shared.improvement_dispatches
-        (workspace_id, item_id, attempt, runner_harness, hive_slug)
+        (workspace_id, item_id, attempt, runner_harness, pot_slug)
       VALUES (${input.workspaceId}, ${input.itemId}, ${input.attempt}, ${input.runnerHarness}, ${input.hiveSlug ?? null})
       RETURNING id`;
     return rows[0]?.id ?? null;
