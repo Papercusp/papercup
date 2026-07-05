@@ -14,7 +14,19 @@ what you write goes stale the moment it is written.
 ## Open with the re-orient banner
 Begin the summary with a one-line instruction to the successor, stated
 explicitly: **"This is a stale snapshot of a live system. Before acting on any
-fleet / claim / liveness statement below, re-run `coord:orient` and reconcile."**
+fleet / claim / liveness statement below, re-run `coord:orient
+{ afterCompaction: true }` and reconcile — the recovery block re-delivers your
+held work-items' checkpoints, armed-loop status, and the self-recall pointer."**
+
+## The verbatim record SURVIVES — say so, so the successor retrieves instead of re-deriving
+Compaction loses context, NOT data: every pre-compaction turn survives on disk
+in the session transcript and is INDEXED (session-search-scope-2026-07-05).
+Include this line verbatim in the summary: **"Anything this summary dropped is
+recoverable: `sessions:search { session:'self', mode:'verbatim', query:'<what
+you remember>' }` finds the exact pre-compaction quote with its surrounding
+turns; `sessions:read { session:'self' }` reads the tail."** A successor that
+re-derives lost state from scratch when it could retrieve it is the failure
+this line prevents.
 
 ## Preserve with highest priority
 - **Identity block** — as structured fields, not prose: the session `su-id`, the

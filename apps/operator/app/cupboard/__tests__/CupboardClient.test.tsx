@@ -337,7 +337,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
     });
   }
 
-  it('resolves the announce by hive_pubkey: title, visibility, Join CTA → join-hive', async () => {
+  it('resolves the announce by hive_pubkey: title, visibility, Join CTA → join-pot', async () => {
     directoryResponds([
       {
         hiveId: 'demo', title: 'Demo Hive', description: '', owner: 'alice',
@@ -353,7 +353,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
     await waitFor(() =>
       expect(screen.getByTestId('cupboard-hive-join-msg').textContent).toContain("Joined pot 'demo-hive' — 2/2"),
     );
-    const joinCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('join-hive'))!;
+    const joinCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('join-pot'))!;
     expect(JSON.parse(String((joinCall[1] as RequestInit).body))).toMatchObject({ hiveId: 'demo' });
   });
 

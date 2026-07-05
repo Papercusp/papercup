@@ -10,7 +10,7 @@ vi.mock('execa', () => ({ default: execaMock.fn }));
 
 import { desktopGithubUser } from './github-user';
 
-const handler = (desktopGithubUser as { handler: (ctx: unknown) => Promise<Response> }).handler;
+const handler = (desktopGithubUser as unknown as { handler: (ctx: unknown) => Promise<Response> }).handler;
 
 describe('GET /desktop/github-user', () => {
   it('returns the id + login from `gh api user`', async () => {

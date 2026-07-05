@@ -9,7 +9,7 @@
  * therefore delegated to an EPHEMERAL background su agent, one per question:
  *
  *   sentinel calls voice:delegate_deep → THIS module mints a durable claimed
- *   `research-task` work_item (tagged `deep-delegation`) + spawns the background
+ *   `task` work_item (tagged `deep-delegation`) + spawns the background
  *   agent with the question as its brief → the agent answers by COMPLETING the
  *   item (its completion.summary IS the answer) → the settled-events seam fires
  *   sentinel-deep-watch, which injects `[deep-answer WI-NNN] …` back into the
@@ -20,9 +20,10 @@
  * goes here — the user gets the answer back in conversation. The Queen was the
  * wrong tool for cognition: her wake loop is cadenced and placement-shaped.
  *
- * The durable record is deliberately FEATURE-FAMILY `research-task`, matching the
- * research execution lane and making the delegation visible on the normal work
- * surface. To avoid a create→claim race against the frontier, it lands already
+ * The durable record is a `task` (WI-2874: the old feature-family `research-task`
+ * kind was merged into `task` — research/analysis is non-code work), tagged
+ * `deep_delegation`, making the delegation visible on the normal work surface.
+ * To avoid a create→claim race against the frontier, it lands already
  * claimed by the background spawn id in the SAME write; if the launch is refused
  * before the nursery takes over, the claim is released back to `todo`. THE TOOL
  * SPAWNS, NOT THE SENTINEL — the sentinel's own capability envelope still denies
@@ -59,7 +60,7 @@ export interface DeepDelegateInput {
 export interface DeepDelegateDeps {
   /** How many deep-delegation items are currently OPEN (non-terminal). */
   countOpenDelegations(workspaceId: string): Promise<number>;
-  /** Mint the durable claimed work_item (feature-family `research-task`, tagged DEEP_DELEGATION_LABEL). */
+  /** Mint the durable claimed work_item (kind `task`, tagged DEEP_DELEGATION_LABEL). */
   createWorkItem(input: {
     assignee: string;
     title: string;

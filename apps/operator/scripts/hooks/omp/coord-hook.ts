@@ -2235,9 +2235,12 @@ export const MCP_CURL_BLOCK_KILL_AFTER = 10;
  *  route — and prose that merely mentions the path (e.g. a commit message, an echo) — does NOT match.
  *  The client can be: a curl/wget/xh verb at a COMMAND position, OR a scripting HTTP client referenced
  *  anywhere in the command (python urllib/requests/httpx/aiohttp/http.client/urlopen, node
- *  fetch/axios/node-fetch). ornith iter24 (2026-07-04 / WI-2382): a weak leader BLOCKED from `curl
+ *  fetch/axios/node-fetch, or Node's built-in http/https module — `require('http')` / `http.request(`
+ *  / `https.get(`). ornith iter24 (2026-07-04 / WI-2382): a weak leader BLOCKED from `curl
  *  http://…/api/mcp` instantly evaded by POSTing the SAME endpoint via `python3 -c "import
- *  urllib.request; …"` 14× — the curl-only matcher missed it, so the doom-loop ran unbounded. The
+ *  urllib.request; …"` 14× — the curl-only matcher missed it, so the doom-loop ran unbounded; iter28
+ *  (2026-07-05) repeated the class via `node -e "const http=require('http'); http.request(…)"` 5× —
+ *  the python/fetch tokens missed THAT, so Node http/https is now covered too. The
  *  MCP-specific targets:
  *    - `/api/mcp`   the exact MCP endpoint path (copied straight from the model's mcp.json)
  *    - `superuser=` the MCP superuser query param (MCP-only)
@@ -2254,6 +2257,11 @@ export function isMcpEndpointCurl(cmd: string): boolean {
   const httpClient =
     /(?:^|[;&|\n(`]|&&|\|\|)\s*(?:curl|wget|xh)\b/.test(c) ||
     /\b(?:urllib|requests|httpx|aiohttp|http\.client|httplib|urlopen|node-fetch|axios)\b/.test(c) ||
+    // Node's built-in http/https module via `node -e` (ornith iter28, 2026-07-05 / WI-2382): the
+    // model POSTed the MCP endpoint with `require('http')` + `http.request(...)`, which the python /
+    // fetch tokens above never covered — the same evasion class as the iter24 urllib pivot, via Node.
+    /\bhttps?\.(?:request|get)\s*\(/.test(c) ||
+    /\brequire\(\s*['"](?:node:)?https?['"]\s*\)/.test(c) ||
     /\bfetch\s*\(/.test(c);
   if (!httpClient) return false;
   if (c.includes('/api/mcp')) return true;

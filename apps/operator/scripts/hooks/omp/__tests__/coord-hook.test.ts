@@ -749,11 +749,25 @@ describe('isMcpEndpointCurl + mcpCurlBlockReason (MCP-endpoint-curl guard, ornit
     expect(isMcpEndpointCurl(`python3 -c "import httpx; httpx.post('http://localhost:3070/mcp')"`)).toBe(true);
     expect(isMcpEndpointCurl(`node -e "fetch('http://localhost:3070/api/mcp?superuser=1')"`)).toBe(true);
   });
+  it('ALSO matches the Node built-in http module evasion (iter28: fetch/curl blocked → require("http"))', () => {
+    // The exact iter28 shape: node -e "const http = require('http'); http.request(…/api/mcp…)"
+    expect(
+      isMcpEndpointCurl(
+        `cd /repo && node -e "const http = require('http'); const req = http.request('http://127.0.0.1:9071/api/mcp', {method:'POST'})"`,
+      ),
+    ).toBe(true);
+    // https module + .get(, double-quoted require, and the node: scheme form
+    expect(isMcpEndpointCurl(`node -e "const https=require(\\"https\\"); https.request('http://localhost:3070/api/mcp?superuser=1')"`)).toBe(true);
+    expect(isMcpEndpointCurl(`node -e "require('node:http').get('http://127.0.0.1:9071/api/mcp')"`)).toBe(true);
+    expect(isMcpEndpointCurl(`node -e "http.get('http://localhost:3170/mcp')"`)).toBe(true);
+  });
   it('a scripting HTTP client to a NON-MCP target is still not matched (marker still required)', () => {
     expect(isMcpEndpointCurl(`python3 -c "import requests; requests.get('https://api.github.com')"`)).toBe(false);
     expect(
       isMcpEndpointCurl(`python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:3070/api/health')"`),
     ).toBe(false);
+    // Node http module to a NON-MCP local route (health check) — client present, no marker → not matched
+    expect(isMcpEndpointCurl(`node -e "require('http').get('http://127.0.0.1:3070/api/health')"`)).toBe(false);
   });
   it('does NOT match a legitimate external curl or a non-MCP local API probe', () => {
     expect(isMcpEndpointCurl('curl https://api.github.com/repos/x/y')).toBe(false);

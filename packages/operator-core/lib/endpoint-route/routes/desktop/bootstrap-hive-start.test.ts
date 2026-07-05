@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import routes from './bootstrap-hive-start';
 
-const post = (routes as Array<{ method: string; handler: (req: unknown) => Promise<Response> }>).find(
+const post = (routes as unknown as Array<{ method: string; handler: (req: unknown) => Promise<Response> }>).find(
   (r) => r.method === 'POST',
 )!;
 

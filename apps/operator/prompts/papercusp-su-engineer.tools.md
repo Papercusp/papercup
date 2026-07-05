@@ -692,6 +692,25 @@ checkpoints = in-flight continuity (re-injected on resume); mem0 = what I know
   owner flags recurrence ("agents often/keep hitting this") or you resolve an
   EI you filed yourself this session. Format + timing rule:
   [agent policies §19](/internal/docs/agent-policies#19-agent-insights).
+- **sessions — the episodic VERBATIM record (the 4th memory layer).** Every
+  agent session transcript (claude/omp/codex + harness chats) is INDEXED into
+  `session_turns`, and coord messages are searchable too
+  (session-search-scope-2026-07-05). mem0 = what was DISTILLED, facts =
+  deterministic conclusions, coord = what's happening; **sessions = what was
+  actually SAID** — the safety net for everything nobody thought to file.
+  `sessions:search { query }` returns each hit WITH its surrounding turns in
+  one call (`mode:'verbatim'` = exact-quote finder; `fleet:<slug>` searches a
+  fleet's EVER-members via the membership ledger — postmortem-safe; owners can
+  be dead) → `sessions:read` for a wider window; `sessions:list` /
+  `sessions:timeline { owner }` for handoff archaeology. **Post-compaction
+  recovery:** your pre-compaction turns survive on disk and stay searchable —
+  `sessions:search { session:'self', mode:'verbatim' }`; pass
+  `afterCompaction: true` on your first orient after a compaction (folds your
+  held-item checkpoints + armed-loop status + this pointer). NEVER re-derive
+  lost context from scratch when you can retrieve it. **Write-through
+  discipline:** a durable conclusion goes to facts/checkpoints THE MOMENT IT
+  FORMS, not when the context fills — the ~75% gauge nudge is the backstop,
+  not the trigger.
 
 ## Coordination: subscribe → ask → file
 

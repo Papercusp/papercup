@@ -74,6 +74,8 @@ export interface IngestStats {
   turnsInserted: number;
   chatsIngested: number;
   errors: number;
+  /** First few error messages of the sweep — diagnosis without log spam. */
+  errorSample?: string[];
   durationMs: number;
   skipped?: string;
 }
@@ -389,7 +391,7 @@ async function writeState(
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count},
-            ${st.sessionId ?? null}, ${st.mtimeMs ?? null}, ${st.lastError ?? null}, now())
+            ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset = EXCLUDED.byte_offset,
       turn_count  = EXCLUDED.turn_count,
@@ -645,6 +647,9 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           budget.turns -= turns.length;
         } catch (err) {
           stats.errors += 1;
+          if ((stats.errorSample ??= []).length < 3) {
+            stats.errorSample.push(`${cand.path.split('/').pop()}: ${(err as Error).message.slice(0, 200)}`);
+          }
           // Record the error WITHOUT touching offsets — resetting byte_offset/
           // turn_count on a transient failure would restart turn_idx at 0 and
           // silently drop every subsequent turn to ON CONFLICT DO NOTHING.
