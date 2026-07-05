@@ -115,24 +115,27 @@ export function maybeEscalateEmbedExhaustion(
   opts: { now?: number; workspaceId?: string } = {},
 ): boolean {
   const now = opts.now ?? Date.now();
-  if (now < alertedUntil) return false;
-  alertedUntil = now + embedExhaustionAlertCooldownMs();
-  active = true;
+  if (now < alertedUntil[kind]) return false; // this KIND's own cooldown — never cross-suppressed by the other kind
+  alertedUntil[kind] = now + embedExhaustionAlertCooldownMs();
+  active[kind] = true;
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const { title, body } = copy(kind);
-  const n: EmbedExhaustionNotification = { kind, title, body, conditionKey: CONDITION_KEY, workspaceId };
+  const n: EmbedExhaustionNotification = { kind, title, body, conditionKey: conditionKeyFor(kind), workspaceId };
   const notify = notifyForTest ?? (process.env.NODE_ENV === 'test' ? null : defaultNotify);
   if (notify) fire(Promise.resolve(notify(n)));
   return true;
 }
 
-export function clearEmbedExhaustionAlertIfActive(opts: { workspaceId?: string } = {}): boolean {
-  if (!active) return false;
-  active = false;
-  alertedUntil = 0;
+export function clearEmbedExhaustionAlertIfActive(
+  kind: EmbedExhaustionKind,
+  opts: { workspaceId?: string } = {},
+): boolean {
+  if (!active[kind]) return false; // this KIND's own state — clearing one kind never touches the other
+  active[kind] = false;
+  alertedUntil[kind] = 0;
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const resolve = resolveForTest ?? (process.env.NODE_ENV === 'test' ? null : defaultResolve);
-  if (resolve) fire(Promise.resolve(resolve({ conditionKey: CONDITION_KEY, workspaceId })));
+  if (resolve) fire(Promise.resolve(resolve({ conditionKey: conditionKeyFor(kind), workspaceId })));
   return true;
 }

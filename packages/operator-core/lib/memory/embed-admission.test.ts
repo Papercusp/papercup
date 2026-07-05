@@ -192,7 +192,7 @@ describe('createEmbedAdmission — daily spend cap', () => {
     await expect(adm.acquire('a'.repeat(40), 'memory')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
 
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'daily_cap', conditionKey: 'embed-exhaustion' });
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'daily_cap', conditionKey: 'embed-exhaustion:daily_cap' });
   });
 
   it('enforces the cap EVEN WITH the admission flag OFF (a spend ceiling is not flag-defeatable)', async () => {

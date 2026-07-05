@@ -294,7 +294,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         });
         adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
         if (r.ok) {
-          clearEmbedExhaustionAlertIfActive();
+          clearEmbedExhaustionAlertIfActive('openai_billing');
           const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
           return j.data[0].embedding;
         }
@@ -354,6 +354,10 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
     // is longer than we can wait — the exact sustained org-wide TPM-drain shape this ticket
     // reports) — a SUSTAINED exhaustion, not a short spike. Prefer local for a cooldown.
     markOpenAiEmbedFailure();
+    // EI-7475: this is the OTHER sustained-exhaustion shape (retry budget exhausted rather
+    // than a hard insufficient_quota) — escalate here too, not just on the hard-billing branch
+    // above, so a fleet riding out a long reset window still tells the owner.
+    maybeEscalateEmbedExhaustion('openai_billing');
     throw lastErr ?? new Error('openai_embed_failed: retries exhausted');
   };
 }

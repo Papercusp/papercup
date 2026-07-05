@@ -134,12 +134,27 @@ describe('buildOpenAiEmbedder — owner alert on quota exhaustion', () => {
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0][0]).toMatchObject({
       kind: 'openai_billing',
-      conditionKey: 'embed-exhaustion',
+      conditionKey: 'embed-exhaustion:openai_billing',
     });
 
     await expect(embed('recovered')).resolves.toEqual([1, 2, 3]);
     expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve.mock.calls[0][0]).toMatchObject({ conditionKey: 'embed-exhaustion' });
+    expect(resolve.mock.calls[0][0]).toMatchObject({ conditionKey: 'embed-exhaustion:openai_billing' });
+  });
+
+  it('EI-7475: also escalates when the RETRY BUDGET exhausts (not just a hard insufficient_quota)', async () => {
+    const notify = vi.fn();
+    __setEmbedExhaustionNotifierForTest(notify);
+
+    // A transient 500 that never recovers within the (tiny, test) retry budget — exhausts
+    // attempts without ever hitting the insufficient_quota branch.
+    const fetchM = vi.fn().mockResolvedValue(new Response('server error', { status: 500 }));
+    vi.stubGlobal('fetch', fetchM);
+
+    const embed = buildOpenAiEmbedder('sk-test', { maxAttempts: 2, maxTotalWaitMs: 1000, sleep: async () => {} });
+    await expect(embed('still down')).rejects.toThrow(/openai_embed_failed_500/);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'openai_billing' });
   });
 });
 
