@@ -111,7 +111,8 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
 - **Ch 2 — Directing work**: ⑤ plans · ⑥ work items + the queue (claiming,
   assignment; DETAILS tier: the dag filter + get_next scheduler) · ⑦ loops ·
   ⑧ routines (and how they relate to plans) · ⑨ modes: AUTO, COLD AUTO,
-  IDEATE, DRAIN.
+  IDEATE, DRAIN, GRADE (official + visible to other agents; AUTO/COLD-AUTO
+  exclude each other, the rest stack).
 - **Ch 3 — The colony**: ⑩ the queen system vs SU agents · ⑪ fleets
   (members/leaders, coordination) + presence · ⑫ coordination primitives +
   file locks (what a blocked edit looks like).

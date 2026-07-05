@@ -352,6 +352,49 @@ pausing the hive. Pull live fleet state on demand with `hive:get-steering`; a fl
 is paused only by an explicit `fleet:*` / owner action, never as a side-effect of a
 hive pause you happened to read.
 
+## Modes — official state, offers, and the new-project intake
+
+Modes are **first-class data**, not prose: your active modes are visible to peers
+(`coord:presence` rows carry `modes`; every change is audited), and `coord:orient`
+**re-injects the full binding contract** of each mode you are in at every wake — so
+only this index lives here. Enter/exit with **`mode:set { mode, reason }`** (pass
+`ownerDirected:true` ONLY when the human owner explicitly instructed the mode — it
+arms a sticky guard a peer cannot override; a peer-set always delivers its reason
+to the target). Read anyone's with `mode:get { agent }`. Same-axis modes
+auto-switch (auto ↔ cold-auto); overlays stack (ideate + drain is legal — e.g.
+ideating on why the drain isn't working).
+
+- **auto** (autonomy): act on your own judgment; replace questions with disclosures; loop open-ended work.
+- **cold-auto** (autonomy): AUTO across fresh-context wakes — the carry-note is your continuity.
+- **ideate** (overlay): deliberate ideation passes; file net-new proposals; with auto on, build the strongest.
+- **drain** (overlay): drive the agreed backlog to terminal — kickoff question first (which pile?, with live numbers); implies auto.
+- **grade** (overlay): rubric-graded monitoring — reuse a rubric (or ratify a new one only on a real gap); scorecards on a loop.
+
+**Offer the mode/feature when the ask smells like one** — name it, one-line pitch,
+ask opt-in; respect "no, just do it manually" without re-offering: "keep doing X
+periodically" → an engine loop · wall-clock recurrence → `plans:set-schedule` /
+routines · "tell me when X happens" → `events:await` / a watch · "second opinion /
+decide between" → `coord:deliberate` / vote · "have N agents try independently" →
+work-item redundancy · "research this thoroughly" → the research harness/fleet ·
+"how is X doing / monitor quality" → **grade mode** · "work in parallel" /
+"clear this backlog" → a fleet / **drain mode** · brainstorm / think-bigger →
+**ideate mode** · act-don't-ask language → **auto mode** · "make a plan" →
+`plans:new` · shelving in-flight work to resume later → **`work_items:park
+{ id, checkpoint, reason }`** (checkpoint + release + broadcast in one verb).
+
+**New-project intake.** Whenever the user is EMBARKING on a new project/pot/hive —
+not only when they literally say "create a pot" — walk a short intake (≤5
+questions, "skip" always honored; **never ask about budget/accounts**):
+1. *What kind of pot?* — list installed launchable blueprints LIVE from
+   `blueprint:catalog` (never a hardcoded list), and offer "or search the Cupboard?".
+2. *Want app templates?* — list installed templates + the Cupboard's Templates
+   section, always labeled **"(not ready yet — in development)"** while the
+   one-click materializer is unshipped (today an agent composes from the GUIDE).
+3. *Repo?* — existing repo / fresh / repo-less (research-style pots need none).
+4. *Autonomy level?* — manual / supervised / auto (seeds the wake schedule +
+   queen-autonomy defaults).
+5. *Name + one-line goal* — seeds the hive steering.
+
 ## Stretch discipline — flush to proceed (gate on state, not turn-count)
 
 How you sequence units of work across a turn. Gate on the **state invariant**

@@ -252,20 +252,25 @@ def fmt_interval(sec):
 
 
 def loop_part(g):
-    """The ⟳ <interval> loop chip when THIS session is on an engine loop (loop:arm), from the
-    glance payload's `self.loop` (loop-status-display-2026-06-23). ADDITIVE + FAIL-OPEN: None when
-    not on a loop, or the operator predates the field, so the existing render is untouched."""
+    """The ⟳ loop chip from the glance payload's `self.loop` (loop-status-display-2026-06-23).
+    ALWAYS shows loop-armed state when the operator supports the field, so a human can tell at a
+    glance whether THIS session is looping (owner ask 2026-07-05): `⟳ <interval>` when on an engine
+    loop (loop:arm), `⟳ off` when not. FAIL-OPEN: None only when `self.loop` is absent entirely
+    (operator predates the field ⇒ unknown, stay quiet), so the existing render is untouched there."""
     if not isinstance(g, dict):
         return None
-    lp = (g.get('self') or {}).get('loop')
+    self_obj = g.get('self')
+    if not isinstance(self_obj, dict) or 'loop' not in self_obj:
+        return None  # old operator / field absent ⇒ unknown, not "off"
+    lp = self_obj.get('loop')
     if not isinstance(lp, dict) or not lp.get('active'):
-        return None
+        return '⟳ off'  # field present but no loop armed ⇒ show it EXPLICITLY
     # WI-655: a loop that fired but reached nobody (no-session-now) / whose wake turn died
     # reads `reachable: False` — surface it LOUDLY so a black-holed loop isn't invisible in
     # the bottom display. `reachable` absent (older operator) ⇒ unknown ⇒ no scary text (fail-open).
     if lp.get('reachable') is False:
-        return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop ⚠unreachable'
-    return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop'
+        return f'⟳ {fmt_interval(lp.get("intervalSec"))} ⚠unreachable'
+    return f'⟳ {fmt_interval(lp.get("intervalSec"))}'
 
 
 def context_part(g):
