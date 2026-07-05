@@ -119,7 +119,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
   const { sql } = getOrgPg();
   const rows = await sql<ClaimDbRow[]>`
     INSERT INTO harness_shared.work_item_claims
-      (workspace_id, harness_slug, work_item_id, hive_slug, owner, owner_label, holder_pubkey,
+      (workspace_id, harness_slug, work_item_id, pot_slug, owner, owner_label, holder_pubkey,
        intent, ttl_sec, acquired_ts, expires_ts, last_activity_ts)
     VALUES
       (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.hiveSlug ?? null},
@@ -128,7 +128,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
        clock_timestamp() + make_interval(secs => ${ttlSec}), clock_timestamp())
     ON CONFLICT (workspace_id, harness_slug, work_item_id) DO UPDATE SET
       claim_id         = gen_random_uuid(),
-      hive_slug        = EXCLUDED.hive_slug,
+      pot_slug         = EXCLUDED.pot_slug,
       owner            = EXCLUDED.owner,
       owner_label      = EXCLUDED.owner_label,
       holder_pubkey    = EXCLUDED.holder_pubkey,
@@ -139,7 +139,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
       last_activity_ts = clock_timestamp()
     WHERE harness_shared.work_item_claims.expires_ts <= clock_timestamp()
        OR harness_shared.work_item_claims.owner = EXCLUDED.owner
-    RETURNING workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    RETURNING workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
            owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
   `;
@@ -149,7 +149,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
   // on a freed item (race condition: two agents both get null from getClaim(), then both
   // execute INSERT). The lock ensures only one agent can proceed if the row was just released.
   const held = await sql<ClaimDbRow[]>`
-    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
            owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
       FROM harness_shared.work_item_claims
@@ -166,7 +166,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
   // were acquiring the lock, we'll get 0 rows back and fall through to the final check.
   const retry = await sql<ClaimDbRow[]>`
     INSERT INTO harness_shared.work_item_claims
-      (workspace_id, harness_slug, work_item_id, hive_slug, owner, owner_label, holder_pubkey,
+      (workspace_id, harness_slug, work_item_id, pot_slug, owner, owner_label, holder_pubkey,
        intent, ttl_sec, acquired_ts, expires_ts, last_activity_ts)
     VALUES
       (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.hiveSlug ?? null},
@@ -174,7 +174,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
        ${opts.intent ?? ''}, ${ttlSec}, clock_timestamp(),
        clock_timestamp() + make_interval(secs => ${ttlSec}), clock_timestamp())
     ON CONFLICT (workspace_id, harness_slug, work_item_id) DO NOTHING
-    RETURNING workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    RETURNING workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
            owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
   `;
@@ -417,7 +417,7 @@ export async function getClaim(
 ): Promise<WorkItemClaim | null> {
   const { sql } = getOrgPg();
   const rows = await sql<ClaimDbRow[]>`
-    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
              owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
              last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
       FROM harness_shared.work_item_claims
@@ -440,7 +440,7 @@ export async function getActiveClaimForOwner(
 ): Promise<WorkItemClaim | null> {
   const { sql } = getOrgPg();
   const rows = await sql<ClaimDbRow[]>`
-    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
              owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
              last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
       FROM harness_shared.work_item_claims
@@ -519,11 +519,11 @@ export async function listActiveClaimFreshnessForOwner(
 export async function listLiveClaimsForHive(workspaceId: string, hiveSlug: string): Promise<WorkItemClaim[]> {
   const { sql } = getOrgPg();
   const rows = await sql<ClaimDbRow[]>`
-    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+    SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
              owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
              last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
       FROM harness_shared.work_item_claims
-     WHERE workspace_id = ${workspaceId} AND hive_slug = ${hiveSlug}
+     WHERE workspace_id = ${workspaceId} AND pot_slug = ${hiveSlug}
        AND expires_ts > clock_timestamp()
      ORDER BY work_item_id
   `;
@@ -552,7 +552,7 @@ interface ClaimDbRow {
   workspace_id: string;
   harness_slug: string;
   work_item_id: string;
-  hive_slug: string | null;
+  pot_slug: string | null;
   claim_id: string;
   owner: string;
   owner_label: string | null;
@@ -569,7 +569,7 @@ function claimFromDb(r: ClaimDbRow): WorkItemClaim {
     workspaceId: r.workspace_id,
     harnessSlug: r.harness_slug,
     workItemId: r.work_item_id,
-    hiveSlug: r.hive_slug,
+    hiveSlug: r.pot_slug,
     claimId: r.claim_id,
     owner: r.owner,
     ownerLabel: r.owner_label,
