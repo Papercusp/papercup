@@ -38,6 +38,7 @@ import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
+import { startConditionStalenessAlarm } from '@papercusp/operator-core/lib/system-health/condition-staleness-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
 import {
   startWorkerHeartbeat,
@@ -296,7 +297,12 @@ function startRequestServers(): void {
   //  • lag self-restart (R4-4 / EI-1598): recycles THIS worker when its loop stays
   //    critical for a sustained window — DEFAULT-OFF, arm with PAPERCUSP_LAG_SELF_RESTART=1
   //    once validated under load (the other reusePort workers serve through the recycle).
+  //  • condition-staleness alarm (WI-2965): the periodic ACTOR for coord:conditions —
+  //    a condition-keyed severe-event that stays OPEN past a threshold gets ONE reminder
+  //    escalation, durably deduped/auto-resolved (mirrors the liveness alarm's EI-2146
+  //    dedup shape). Closes the coord-conditions signal-actor-registry waiver.
   startInfraLivenessAlarm();
+  startConditionStalenessAlarm();
   startSinglePrimaryGuard();
   startLagSelfRestart();
 }

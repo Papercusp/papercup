@@ -239,6 +239,12 @@ export const AGENT_KIND_GLYPH: Record<string, string> = {
   sentinel: '🥤',
   planner: '📋',
   su: '🛠',
+  // Renamed agent kinds (WI-2932) — same glyphs as their pre-rename twins so
+  // mixed-generation rows read identically during the expand phase.
+  mug: '🍵',
+  kettle: '🫖',
+  cup: '☕',
+  papercup: '🥤',
 };
 
 // Cast members whose LABEL routes through the active brand pack. classic/Pot →

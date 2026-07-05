@@ -22,7 +22,7 @@ vi.mock('node:os', async (orig) => {
   return { ...actual, homedir: () => '/home/u' };
 });
 
-import { claudeSignedIn, codexSignedIn, ompSignedIn, ompAuthStatus, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
+import { claudeSignedIn, claudeKeychainSignedIn, codexSignedIn, ompSignedIn, ompAuthStatus, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
 
 /** Mark exactly the given absolute paths as existing. */
 function onlyExist(...present: string[]) {
@@ -48,6 +48,41 @@ describe('claudeSignedIn', () => {
   it('false when none exist', () => {
     onlyExist();
     expect(claudeSignedIn()).toBe(false);
+  });
+});
+
+describe('claudeKeychainSignedIn (P-004 — macOS Keychain-aware detection)', () => {
+  it('is a no-op off macOS (never spawns `security`)', () => {
+    expect(claudeKeychainSignedIn('linux')).toBe(false);
+    expect(claudeKeychainSignedIn('win32')).toBe(false);
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('on darwin, true when `security find-generic-password` finds Claude Code\'s item (status 0)', () => {
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'security' && args[0] === 'find-generic-password' && args[2] === 'Claude Code-credentials') {
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      return { status: 44, stdout: '', stderr: 'could not be found' };
+    });
+    expect(claudeKeychainSignedIn('darwin')).toBe(true);
+  });
+
+  it('on darwin, reads WITHOUT `-w` so no secret is fetched (no Keychain-unlock prompt)', () => {
+    spawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    claudeKeychainSignedIn('darwin');
+    const args = spawnSync.mock.calls[0][1] as string[];
+    expect(args).not.toContain('-w');
+  });
+
+  it('on darwin, false when no service label matches (all non-zero)', () => {
+    spawnSync.mockReturnValue({ status: 44, stdout: '', stderr: 'could not be found' });
+    expect(claudeKeychainSignedIn('darwin')).toBe(false);
+  });
+
+  it('fails SAFE: a throwing `security` spawn is swallowed → false', () => {
+    spawnSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    expect(claudeKeychainSignedIn('darwin')).toBe(false);
   });
 });
 

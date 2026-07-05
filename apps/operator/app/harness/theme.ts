@@ -156,6 +156,14 @@ const _AGENT_KIND_TABLE = {
   // overwatch-role-2026-06-15 B-01: the autonomous system-health supervisor (a sibling to
   // the Queen). Indigo — distinct from the queen's amber so the roster separates them.
   overwatch: { solid: '#6366f1', bg: 'rgba(99,102,241,0.15)',  text: '#a5b4fc', label: 'Overwatch' },
+  // Renamed agent kinds (WI-2932 pot-rename) — same hues as their pre-rename
+  // twins so mixed-generation rows read as one roster during the expand phase.
+  // (AgentKindPill pack-routes the LABEL via AGENT_KIND_TERM; these labels are
+  // the no-lexicon fallback.)
+  mug:      { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Mug' },
+  cup:      { solid: 'var(--accent)', bg: 'color-mix(in oklab, var(--accent), transparent 86%)',  text: 'var(--accent-strong, var(--accent))', label: 'Cup' },
+  papercup: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Papercup' },
+  kettle:   { solid: '#6366f1', bg: 'rgba(99,102,241,0.15)',  text: '#a5b4fc', label: 'Kettle' },
 } as const;
 
 export const AGENT_KIND = new Proxy(_AGENT_KIND_TABLE as Record<string, StatusMeta>, {

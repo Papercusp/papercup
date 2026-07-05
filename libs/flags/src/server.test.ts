@@ -23,10 +23,6 @@ import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS } from './types';
 // default behavior regardless of what the invoking shell happens to have exported — the same
 // class of ambient-env leak could hit ANY future key, on ANY dev box or CI runner, so this
 // guards the whole class rather than special-casing the one key that happened to diverge here.
-// NOTE (2026-07-05, su-16455): this exact block was silently dropped from the shared tree once
-// already (a concurrent full-file write raced the original landing before git-sync could commit
-// it) — if you find this comment missing again, that's the recurrence, not a sign the fix was
-// never needed.
 function ambientFlagEnvKeys(): string[] {
   return Object.keys(process.env).filter(
     (k) => k.startsWith('PAPERCUSP_FLAG_') || k === 'PAPERCUSP_PLATFORM_MODE',

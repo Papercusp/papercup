@@ -15,7 +15,39 @@ function anyExists(paths: readonly string[]): boolean {
   return paths.some((p) => existsSync(p));
 }
 
+/**
+ * On macOS, Claude Code stores its OAuth credential in the login KEYCHAIN — NOT in
+ * ~/.claude/.credentials.json. A pure file probe therefore reports a genuinely
+ * signed-in Mac user as "logged out", which is what drove the packaged-app agent to
+ * spelunk the Keychain and agonize over a perfectly normal desktop state (P-004,
+ * cross-platform-hardening-and-agent-ergonomics-2026-07-05).
+ *
+ * We probe the Keychain for the EXISTENCE of Claude Code's generic-password item
+ * (`-s <service>` WITHOUT `-w`, so we read metadata only — no secret fetch, hence no
+ * Keychain-unlock GUI prompt). The probe fails SAFE: any error — a wrong service label,
+ * a locked keychain, or the `security` binary being absent off-macOS — returns false and
+ * falls through to the existing file check, so this NEVER regresses current behavior.
+ *
+ * ⚠ Mac-VM verify: the `-s` service labels below are Claude Code's current ones; if a
+ * future Claude Code release renames the item, add the new label here.
+ */
+const CLAUDE_KEYCHAIN_SERVICES = ['Claude Code-credentials', 'Claude Code'] as const;
+
+export function claudeKeychainSignedIn(platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'darwin') return false;
+  for (const service of CLAUDE_KEYCHAIN_SERVICES) {
+    try {
+      const r = spawnSync('security', ['find-generic-password', '-s', service], { timeout: 5000 });
+      if (r.status === 0) return true; // the item exists → signed in
+    } catch {
+      /* security absent / errored → fall through to the next label / file probe */
+    }
+  }
+  return false;
+}
+
 export function claudeSignedIn(): boolean {
+  if (claudeKeychainSignedIn()) return true;
   const home = homedir();
   return anyExists([
     join(home, '.claude', '.credentials.json'),

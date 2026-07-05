@@ -39,6 +39,15 @@ export interface GlanceTipContext {
   wakeDefault: 'auto' | 'manual';
   /** Total staged (manual-mode) wakes across all agents. */
   stagedTotal: number;
+  /**
+   * The CALLER's own resolved owner id, when resolvable (EI-7696) — null for an
+   * audience/context with no single identifiable owner (e.g. an unauthenticated
+   * human view). `coord:wake-queue`'s `release_all` REQUIRES an `agent` arg (it
+   * drains one agent's queue, never the whole fleet's), so a rule that suggests
+   * it must either supply this or omit the ready-made command entirely — never
+   * emit a command that's guaranteed to fail with `agent-required`.
+   */
+  selfOwnerId: string | null;
   /** Nursery spawns currently running with a fresh heartbeat. */
   beesRunning: number;
   /** Governor bucket keys currently paused (e.g. 'anthropic:opus'). */
@@ -94,11 +103,21 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     id: 'staged-wakes-under-auto',
     audiences: ['user', 'su', 'mug'],
     when: (c) => c.wakeDefault === 'auto' && c.stagedTotal > 0,
-    render: (c) => ({
-      text: `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:`,
-      command: '/mcp__papercusp-su__tool:coord:wake-queue action=release_all',
-      invoke: { tool: 'coord:wake-queue', args: { action: 'release_all' } },
-    }),
+    render: (c) => {
+      const text = `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:`;
+      // EI-7696: release_all is PER-AGENT (coord:wake-queue rejects it with
+      // `agent-required` when omitted) while stagedTotal is a FLEET-WIDE count —
+      // so the ready-made command can only ever release the CALLER's own queue,
+      // never "everyone's". Emit it ONLY when we know who the caller is; a null
+      // selfOwnerId (no single identifiable owner) falls back to text-only
+      // rather than a command that's guaranteed to fail.
+      if (!c.selfOwnerId) return { text };
+      return {
+        text,
+        command: `/mcp__papercusp-su__tool:coord:wake-queue action=release_all agent=${c.selfOwnerId}`,
+        invoke: { tool: 'coord:wake-queue', args: { action: 'release_all', agent: c.selfOwnerId } },
+      };
+    },
   },
   {
     id: 'governor-paused',

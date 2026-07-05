@@ -109,6 +109,20 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // joining its topic), the mechanism behind WI-1910's 0 peer_connected. Adding it here +
   // to DARK_FLAGS restores its always-intended default-OFF. Count 13 → 14.
   'papercusp-substrate-sidecar',
+  // 2026-07-05 (EI-7685) — NOT a new post-inversion darkening: the same bug-fix class as
+  // papercusp-watchdog-auto-close / papercusp-substrate-sidecar above (THIRD instance).
+  // papercusp-reclaim-stalled's OWN code comments (work-items-stale-claims.ts,
+  // dbos/in-process-periodic.ts, plan-items/stale-claims.ts, fleet/spawn-reclaim.ts) have
+  // ALWAYS said "default OFF" / "DARK because freeing a LIVE agent's claim changes live
+  // placement on a fleet-critical hot path (D-003: land it attended)" (agent-activity-
+  // liveness-truth-2026-06-21 P-003) but it was never actually added to DARK_FLAGS, so it
+  // silently derived default-ON both before and after the P-011 inversion. Confirmed LIVE
+  // via flags:get = true. Live-evidenced harm (EI-7685): an alive agent mid an uninterrupted
+  // ~20min build had its work-item claim reclaimed by the "stalled" leg for merely not
+  // calling work_items:checkpoint in the window, wiping its checkpoint and reassigning to an
+  // idle peer. Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
+  // Count 14 → 15.
+  'papercusp-reclaim-stalled',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -230,7 +244,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-05 (WI-1994) — papercusp-substrate-sidecar: BUG-FIX correction (own comment
     // always said dark, never actually added — see PRE_INVERSION_DEFAULT_OFF above), not a
     // new darkening. Count 13 → 14.
-    expect(offCount).toBe(14);
+    // 2026-07-05 (EI-7685) — papercusp-reclaim-stalled: same BUG-FIX correction class (own
+    // comment always said dark, never actually added — see PRE_INVERSION_DEFAULT_OFF above),
+    // not a new darkening. Count 14 → 15.
+    expect(offCount).toBe(15);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

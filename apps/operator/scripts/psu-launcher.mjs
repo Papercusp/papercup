@@ -1080,6 +1080,10 @@ export function parkRoleScopedMcpJson(cwd) {
 // is a plain node script with no TS imports, so the list is inlined, not imported).
 export const OMP_CORE_MCP_TOOL_NAMES = [
   'coord:orient', 'coord:inbox', 'coord:ack', 'coord:send', 'coord:glance', 'coord:ask',
+  // plans:new (P-002, cross-platform-hardening-and-agent-ergonomics-2026-07-05) authors a
+  // whole plan in ONE call (P-001 `body` arg) so an agent never hunts for a create verb —
+  // the Mac-app plan-authoring fumble (owner: "plans should be a core trimmed tool").
+  'plans:new',
   'plans:get', 'plans:set-status', 'plans:items',
   'work_items:list', 'work_items:claim',
   // EI-6770: self-pull (claim_next) + read (get) + finish (complete) — the rest of the

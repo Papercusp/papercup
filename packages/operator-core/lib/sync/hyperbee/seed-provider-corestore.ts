@@ -184,7 +184,20 @@ export function createCorestoreSeedProvider(): SeedProvider {
       const coreKeys = (entry.meta as CorestoreSeedMeta | undefined)?.coreKeys ?? [];
       await mkdir(targetStoreDir, { recursive: true });
       const target = new Corestore(targetStoreDir);
-      const seedStore = new Corestore(seedPath);
+      // WI-2902: the SEED store MUST open `readOnly` — a bundled seed is a COPIED
+      // payload (built into the .deb, dpkg-extracted to a root-owned read-only
+      // `/usr/lib/<Product>/seed`), and corestore 7.x's storage layer guards every
+      // writable open with a `device-file` (the `CORESTORE` header + a
+      // `user.device-file` xattr). A copy loses the xattr and changes the inode, so
+      // a default (writable) open throws "Invalid device file, was moved unsafely"
+      // BEFORE it even hits the EACCES from the read-only dir — which is exactly why
+      // every packaged install logged `restored=[]`. `readOnly:true` skips both the
+      // device-file guard and the RocksDB LOCK/LOG writes (hypercore-storage gates
+      // them on `!readOnly`), so the seed opens read-only and still serves its blocks
+      // over replication. Proven: a moved+read-only seed replicates all 108633 blocks
+      // into a fresh target. (Do NOT use `writable:false` — corestore forwards only
+      // `readOnly` to Hypercore.defaultStorage, not `writable`.)
+      const seedStore = new Corestore(seedPath, { readOnly: true });
       await target.ready();
       await seedStore.ready();
       // Pre-open each core in the seed store so it is served over replication.

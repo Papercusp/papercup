@@ -15,6 +15,7 @@ const ctx = (over: Partial<GlanceTipContext> = {}): GlanceTipContext => ({
   audience: 'user',
   wakeDefault: 'auto',
   stagedTotal: 0,
+  selfOwnerId: 'su-caller',
   beesRunning: 0,
   governorPausedKeys: [],
   state: {},
@@ -40,12 +41,23 @@ describe('evaluateTips — default rules', () => {
     expect(tips[0].text).not.toContain('staged');
   });
 
-  it('staged wakes under auto → the release tip (not the wake-mode tip)', () => {
-    const tips = evaluateTips(ctx({ stagedTotal: 1 }));
+  it('staged wakes under auto → the release tip scoped to the CALLER (release_all is per-agent, EI-7696)', () => {
+    const tips = evaluateTips(ctx({ stagedTotal: 1, selfOwnerId: 'su-caller' }));
     expect(tips.map((t) => t.id)).toEqual(['staged-wakes-under-auto']);
     expect(tips[0].text).toContain('1 staged wake ');
-    expect(tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-queue action=release_all');
-    expect(tips[0].invoke).toEqual({ tool: 'coord:wake-queue', args: { action: 'release_all' } });
+    expect(tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-queue action=release_all agent=su-caller');
+    expect(tips[0].invoke).toEqual({
+      tool: 'coord:wake-queue',
+      args: { action: 'release_all', agent: 'su-caller' },
+    });
+  });
+
+  it('staged wakes under auto with NO resolvable caller → text-only, never the guaranteed-to-fail bare command', () => {
+    const tips = evaluateTips(ctx({ stagedTotal: 1, selfOwnerId: null }));
+    expect(tips.map((t) => t.id)).toEqual(['staged-wakes-under-auto']);
+    expect(tips[0].text).toContain('1 staged wake ');
+    expect(tips[0].command).toBeNull();
+    expect(tips[0].invoke).toBeNull();
   });
 
   it('governor pause → tip for every audience including bees', () => {

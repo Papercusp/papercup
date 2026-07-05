@@ -158,19 +158,20 @@ defineSignal({
     "coord:conditions folds condition-keyed alarm/resolution broadcasts (severe-event-broadcast.ts) " +
     'into current open/resolved state — the live "what is wrong RIGHT NOW" view (EI-6138).',
   source: 'packages/operator-core/lib/agent-tools/coordination/tools/conditions.ts (computeConditionStates)',
-  // Confirmed GAP, not an oversight: service-health-events.ts's own comment says it plainly —
-  // "conditions.ts is a read-only FOLD … it never fires on a transition". Nothing in the codebase
-  // periodically re-evaluates computeConditionStates() and escalates a long-open condition; every
-  // caller is an on-demand READ (an agent checking "what's wrong right now"). This is the exact
-  // EI-7347 read-only-signal trap, caught by building this registry rather than left implicit.
-  waiver: {
-    reason:
-      'No actor exists yet. Building one safely needs a design call this bug-drain pass should not ' +
-      'make unilaterally: what open-duration threshold escalates, and how it avoids double-alarming ' +
-      'conditions that severe-event-broadcast.ts (the alarm source) may already independently escalate ' +
-      'elsewhere. Tracked as a scoped follow-up rather than a silent gap.',
-    expiresAt: '2026-07-19T00:00:00.000Z',
-    acceptedBy: 'su-e958e416 (backlog-drain-0705 fleet, EI-7347)',
-    followUp: 'WI-2965: wire a periodic actor for coord:conditions (extend evaluateLivenessAlarm, or a dedicated tick)',
-  },
+  // WI-2965 (closed): condition-staleness-alarm.ts is the periodic ACTOR — it re-folds
+  // computeConditionStates() on a managedSetInterval tick (startConditionStalenessAlarm,
+  // wired in apps/operator/bin/hono-host.ts alongside startInfraLivenessAlarm) and fires ONE
+  // durably-deduped/auto-resolved reminder escalation for any condition still OPEN past
+  // staleMs (default 45min) — deliberately NOT a re-alert on every open condition (each
+  // source watchdog already fires its own immediate owner alert at open-time; this only
+  // catches the "stayed open and nobody actioned it" gap, namespaced stale-condition:<key>
+  // so it can never collide with a source's own signature).
+  actingConsumer:
+    'condition-staleness-alarm.ts: startConditionStalenessAlarm() ticks runConditionStalenessTick() ' +
+    'every 5min (default), escalating any condition open > 45min (default) with a debounced, ' +
+    'durably-deduped reminder, and auto-resolving it once the condition clears.',
+  consumerRefs: [
+    'packages/operator-core/lib/system-health/condition-staleness-alarm.ts',
+    'apps/operator/bin/hono-host.ts',
+  ],
 });

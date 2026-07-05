@@ -72,7 +72,7 @@ describe('autonomy:record_disposition tool', () => {
   it('writes a disposition row carrying the decision, workspace, harness, and actor context', async () => {
     await callTool(
       { action: 'plans:add-item', disposition: 'reject', why: 'duplicate of P-001' },
-      { principal: { workspaceId: 'ws-prin', slug: 'queen' }, harnessSlug: 'papercup', role: 'operator', transport: 'mcp' },
+      { principal: { workspaceId: 'ws-prin', slug: 'mug' }, harnessSlug: 'papercup', role: 'operator', transport: 'mcp' },
     );
     expect(mockRecord).toHaveBeenCalledWith(
       expect.objectContaining({

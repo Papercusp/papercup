@@ -11,6 +11,7 @@ import {
   CONNECT_PREFLIGHT_MS,
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
+  probeBgHostCodeDrift,
   BG_HOST_STALE_MS,
   type ProbeResult,
 } from './service-health';
@@ -231,6 +232,30 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
   it('drift is floored at ~1m so a seconds-level drift never rounds to "~0m"', () => {
     const res = evaluateBgHostCodeDrift(NOW - 10_000, NOW - 5_000, 'abc');
     expect(res.note).toMatch(/~1m AFTER/);
+  });
+});
+
+describe('probeBgHostCodeDrift — platform guard (P-005, cross-platform hardening)', () => {
+  const realPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) =>
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  afterEach(() => setPlatform(realPlatform));
+
+  it('on macOS short-circuits to an HONEST not-applicable present:false (no systemctl spawn, no "probe failed")', async () => {
+    setPlatform('darwin');
+    const res = await probeBgHostCodeDrift();
+    expect(res.name).toBe('bg-host-code');
+    expect(res.up).toBe(true); // never a fabricated DOWN
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/Linux\/systemd-only/);
+    expect(res.note).not.toMatch(/probe failed/); // the misleading note the old catch produced off-Linux
+  });
+
+  it('on win32 (non-WSL) also short-circuits — not applicable', async () => {
+    setPlatform('win32');
+    const res = await probeBgHostCodeDrift();
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/not applicable on this platform/);
   });
 });
 

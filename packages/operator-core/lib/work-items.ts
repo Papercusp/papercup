@@ -1252,6 +1252,66 @@ export async function setWorkItemState(
   return result;
 }
 
+/** The alias/no-op discriminator every lifecycle verb's result row should carry (EI-7712). */
+export interface LifecycleAliasInfo {
+  /** True when the item's PERSISTED state (post-write, read back off the row) differs
+   *  from what the caller asked for — an ok:true response can still mean "not what you asked". */
+  aliased: boolean;
+  /** Exactly what the caller passed, before any normalization. */
+  requestedState: string;
+  /** The state actually persisted (workItem.state read back after the write), or null
+   *  when the item was not found (setWorkItemState returned null — a separate failure
+   *  mode from aliasing, surfaced by the caller's own `ok:false` path). */
+  appliedState: string | null;
+  /** Present only when aliased — a human-readable one-liner (kept for callers/tests
+   *  already matching on this string; `aliased`/`appliedState` are the structured form). */
+  aliasNote?: string;
+}
+
+/**
+ * setWorkItemState wrapped to ALWAYS report the alias/no-op discriminator (EI-7712,
+ * extending the EI-7125/WI-2573 onAlias plumbing that only fired for the ONE mismatch
+ * class `normalizeWorkItemState` itself detects). This compares the ACTUAL persisted
+ * `workItem.state` read back after the write against what the caller asked for — a
+ * strictly BROADER check than trusting `onAlias` alone, so a future silent-divergence
+ * bug in a DIFFERENT layer (not the normalize step) still shows up as `aliased:true`
+ * instead of a repeat of the WI-2381 incident (ok:true, state silently stayed 'open',
+ * only discovered by an unrelated list read 10min later).
+ *
+ * The shared helper both work_items:set_state and work_items:complete call, so every
+ * lifecycle verb inherits the SAME contract instead of each hand-rolling its own
+ * onAlias wiring (which is how the gap stayed needs-human-only for as long as it did).
+ */
+export async function setWorkItemStateWithAliasInfo(
+  id: string,
+  requestedState: string,
+  opts: Parameters<typeof setWorkItemState>[2] = {},
+): Promise<{ workItem: WorkItem | null } & LifecycleAliasInfo> {
+  let onAliasInfo: { requested: string; resolved: string } | undefined;
+  const workItem = await setWorkItemState(id, requestedState, {
+    ...opts,
+    onAlias: (info) => {
+      onAliasInfo = info;
+      opts.onAlias?.(info);
+    },
+  });
+  const appliedState = workItem ? workItem.state : null;
+  const aliased = appliedState !== null && appliedState !== requestedState;
+  return {
+    workItem,
+    aliased,
+    requestedState,
+    appliedState,
+    ...(aliased
+      ? {
+          aliasNote: onAliasInfo
+            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.`
+            : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`,
+        }
+      : {}),
+  };
+}
+
 // ── completion-integrity metric (work-item-completion-integrity-2026-07-01 WI-1405,
 // contract C-1 consumer) ─────────────────────────────────────────────────────────
 //

@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemState } from '../../work-items';
+import { setWorkItemStateWithAliasInfo } from '../../work-items';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent } from '../_bulk';
 
@@ -50,7 +50,7 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias and return `aliasNote`. Reopening another agent\'s terminal completion into non-terminal is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliasNote? | error }], counts }.',
+    'Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. Reopening another agent\'s terminal completion into non-terminal is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — `ok:true` only means the WRITE succeeded; check `aliased`/`appliedState`, not just `ok`, for whether it landed as requested (EI-7712).',
   guidance: {
     when: 'Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. To park issue-family blocked/needs-human work, release { claimHold:true } plus a reason; set_state aliases it to open. If "already terminally completed", read terminalOwner/ref before any `force:true` reopen.',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',
@@ -106,22 +106,30 @@ export default defineTool({
           harness,
           it.decision,
         ).catch(() => null);
-        // EI-7125 / WI-2573: capture a requested->resolved alias (e.g. issue-family
-        // 'blocked' -> 'open') so the caller sees it instead of a silent no-op-looking
-        // ok:true with the state unchanged from their ask.
-        let aliasNote: string | undefined;
-        const workItem = await setWorkItemState(it.id, it.state, {
-          harness,
-          by: ident.ownerId,
-          completionRef: it.completionRef,
-          force: it.force,
-          onAlias: ({ requested, resolved }) => {
-            aliasNote = `requested state '${requested}' has no distinct representation for this item's family — recorded as '${resolved}' instead.`;
-          },
-        });
+        // EI-7712 (extends EI-7125/WI-2573): ALWAYS report the alias/no-op discriminator —
+        // requestedState/appliedState/aliased on every result row, not just when the
+        // normalize-layer onAlias fires — so a careless caller reading `ok` alone can no
+        // longer be told ok:true for a write that landed somewhere other than what it asked
+        // (the WI-2381 incident: set_state->blocked returned ok:true, state silently stayed
+        // 'open', discovered only by an unrelated list read 10min later).
+        const { workItem, aliased, requestedState, appliedState, aliasNote } =
+          await setWorkItemStateWithAliasInfo(it.id, it.state, {
+            harness,
+            by: ident.ownerId,
+            completionRef: it.completionRef,
+            force: it.force,
+          });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
         return workItem
-          ? { ok: true as const, id: it.id, workItem, ...(aliasNote ? { aliasNote } : {}) }
+          ? {
+              ok: true as const,
+              id: it.id,
+              workItem,
+              aliased,
+              requestedState,
+              appliedState,
+              ...(aliasNote ? { aliasNote } : {}),
+            }
           : { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
       },
       { keyOf: (it) => ({ id: it.id }) },

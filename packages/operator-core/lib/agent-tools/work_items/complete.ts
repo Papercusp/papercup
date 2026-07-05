@@ -32,7 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
-import { getWorkItem, setWorkItemState, workItemObjectRef, mergeWorkItemOutputPayload } from '../../work-items';
+import { getWorkItem, setWorkItemStateWithAliasInfo, workItemObjectRef, mergeWorkItemOutputPayload } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -148,18 +148,26 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   let workItem = existing;
   let stateError: string | undefined;
   let aliasNote: string | undefined;
+  // EI-7712: same shared discriminator as work_items:set_state — compares the
+  // ACTUALLY-persisted state against what the caller asked for, not just whether the
+  // normalize-layer onAlias fired. Only meaningful when a terminal `state` was passed;
+  // a bare completion (no state transition) has nothing to compare, so both stay unset.
+  let aliased: boolean | undefined;
+  let requestedState: string | undefined;
+  let appliedState: string | null | undefined;
   if (it.state) {
     try {
-      workItem =
-        (await setWorkItemState(it.id, it.state, {
-          harness: it.harness,
-          by: ident.ownerId,
-          completionRef: it.completion.summary,
-          completionEvidence: completionEvidenceFromRecord(it.completion),
-          onAlias: ({ requested, resolved }) => {
-            aliasNote = `requested state '${requested}' has no distinct representation for this item's family — recorded as '${resolved}' instead.`;
-          },
-        })) ?? existing;
+      const res = await setWorkItemStateWithAliasInfo(it.id, it.state, {
+        harness: it.harness,
+        by: ident.ownerId,
+        completionRef: it.completion.summary,
+        completionEvidence: completionEvidenceFromRecord(it.completion),
+      });
+      workItem = res.workItem ?? existing;
+      aliasNote = res.aliasNote;
+      aliased = res.aliased;
+      requestedState = res.requestedState;
+      appliedState = res.appliedState;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);
     }
@@ -238,6 +246,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(aliased !== undefined ? { aliased, requestedState, appliedState } : {}),
     ...(aliasNote ? { aliasNote } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),

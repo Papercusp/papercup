@@ -301,10 +301,15 @@ export async function teardownHiveLearningLoop(
     /* best-effort */
   }
 
-  // (c) learning-governor registrants gym:<hive> + scout:<hive>.
+  // (c) learning-governor registrants gym:<hive> + blender:<hive>.
   try {
     await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(hiveSlug) });
     await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(hiveSlug) });
+    // Pre-rename registrant rows (WI-2932): scoutLoopId minted `scout:<hive>`
+    // before the blender rename — delete the legacy row too so a dissolve never
+    // strands an orphaned governor registrant. DELETE this line when the S2
+    // contract migration rewrites/reaps the legacy loop ids.
+    await deleteLearningLoop(sql, { workspaceId, loopId: `scout:${hiveSlug}` });
     result.governorRegistrants = true;
   } catch {
     /* best-effort */

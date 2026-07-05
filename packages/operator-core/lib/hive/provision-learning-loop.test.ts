@@ -248,13 +248,15 @@ describe('teardownHiveLearningLoop (P-021 — the pot:dissolve inverse)', () => 
     expect(gitSyncDelete!.values).toContain('alpha');
     expect(gitSyncDelete!.values).toContain('w1');
 
-    // The two governor registrant deletes — keyed gym:<hive> and scout:<hive>.
+    // The governor registrant deletes — keyed gym:<hive> + blender:<hive>, plus
+    // the legacy pre-rename scout:<hive> row (WI-2932 expand; drops at S2).
     const govDeletes = calls.filter((c) =>
       c.text.includes('DELETE FROM harness_shared.learning_governor_loops'),
     );
-    expect(govDeletes).toHaveLength(2);
+    expect(govDeletes).toHaveLength(3);
     const govLoopIds = govDeletes.flatMap((c) => c.values);
     expect(govLoopIds).toContain('gym:alpha');
+    expect(govLoopIds).toContain('blender:alpha');
     expect(govLoopIds).toContain('scout:alpha');
   });
 

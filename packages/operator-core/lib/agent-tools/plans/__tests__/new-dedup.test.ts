@@ -59,4 +59,60 @@ describe('findSimilarPlans', () => {
     }));
     expect(findSimilarPlans(['locks', 'grant'], many)).toHaveLength(5);
   });
+
+  // P-003 (cross-platform-hardening-and-agent-ergonomics-2026-07-05): precision fixes.
+
+  it('matches on TOKENS, not substrings — `cross` does not match `across`', () => {
+    const rows = [
+      { planSlug: 'across-the-board-refactor-2026-05-01', title: 'Across the board refactor', status: 'active', archived: false },
+    ];
+    // Old substring matcher (`hay.includes('cross')`) wrongly matched "across".
+    expect(findSimilarPlans(['cross'], rows)).toEqual([]);
+  });
+
+  describe('corpus-generic token suppression (large index only)', () => {
+    // A large index where `agent` (~20/28) and `platform` (~9/28) are ubiquitous
+    // project words, plus two distinctive plans. DF suppression only engages at
+    // ≥25 rows — below that, every token is treated as distinctive (old behavior).
+    const bigRows = [
+      ...Array.from({ length: 18 }, (_, i) => ({
+        planSlug: `agent-widget-${i}-2026-01-0${(i % 9) + 1}`,
+        title: `Agent widget ${i}`,
+        status: 'active',
+        archived: false,
+      })),
+      ...Array.from({ length: 8 }, (_, i) => ({
+        planSlug: `platform-thing-${i}-2026-02-0${(i % 8) + 1}`,
+        title: `Platform thing ${i}`,
+        status: 'active',
+        archived: false,
+      })),
+      { planSlug: 'agent-platform-shell-2026-03-01', title: 'Agent platform shell', status: 'active', archived: false },
+      { planSlug: 'gateway-hardening-2026-03-02', title: 'Gateway hardening agent', status: 'active', archived: false },
+    ];
+
+    it('does NOT flag when overlap is ONLY corpus-generic tokens (the false-positive fix)', () => {
+      // `agent` + `platform` are both ubiquitous → no distinctive overlap → no match,
+      // even against `agent-platform-shell` which shares both.
+      expect(findSimilarPlans(['agent', 'platform'], bigRows)).toEqual([]);
+    });
+
+    it('STILL flags a genuine duplicate that shares a DISTINCTIVE token (EI-134 preserved)', () => {
+      // Shares `agent` (generic) + `hardening` (distinctive, 1/28) → flagged.
+      const similar = findSimilarPlans(['agent', 'platform', 'hardening'], bigRows);
+      expect(similar.map((s) => s.slug)).toContain('gateway-hardening-2026-03-02');
+      expect(similar.map((s) => s.slug)).not.toContain('agent-platform-shell-2026-03-01');
+    });
+
+    it('below the large-corpus threshold, generic suppression is OFF (small index keeps old behavior)', () => {
+      // Same two rows only (2 < 25) → `agent`+`platform` are NOT treated as generic,
+      // so an agent-platform overlap DOES flag (no DF data to trust on a tiny corpus).
+      const smallRows = [
+        { planSlug: 'agent-platform-shell-2026-03-01', title: 'Agent platform shell', status: 'active', archived: false },
+      ];
+      expect(findSimilarPlans(['agent', 'platform'], smallRows).map((s) => s.slug)).toEqual([
+        'agent-platform-shell-2026-03-01',
+      ]);
+    });
+  });
 });

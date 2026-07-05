@@ -49,11 +49,11 @@ describe('signal-actor-registry', () => {
     }
   });
 
-  it('the coord-conditions gap is tracked (confirmed no-actor) via a waiver, not silently uncovered', () => {
+  it('the coord-conditions gap is CLOSED (WI-2965): condition-staleness-alarm.ts is the acting consumer, no waiver needed', () => {
     const cc = getSignal('coord-conditions');
     expect(cc, 'coord-conditions must stay registered').toBeTruthy();
-    expect(cc!.actingConsumer, 'coord-conditions has no actor yet — this is the confirmed gap').toBeUndefined();
-    expect(cc!.waiver, 'coord-conditions must carry a waiver while it has no actor').toBeTruthy();
+    expect(cc!.actingConsumer, 'coord-conditions now has a periodic actor (condition-staleness-alarm.ts)').toBeTruthy();
+    expect(cc!.waiver, 'the waiver was dropped once the actor landed — WI-2965 is closed, not just extended').toBeUndefined();
   });
 
   it('isSignalCovered: actingConsumer wins even with no waiver', () => {

@@ -288,6 +288,31 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it("EI-7297 real shape: an orphaned loop-su-* row at EXACTLY the threshold (6, routine GC'd → owner-id null) is suppressed by its role name", () => {
+    // EI-7297 (loop-su-91ee2629-23c8-46f6-89ad-ada8b13bf44c@*, red 6 consecutive fires): filed
+    // 2026-07-04, BEFORE the EI-7220 role-name guard (`isLoopArmOwnerRole`) landed 2026-07-05.
+    // Byte-for-byte the SAME class as EI-7299 (loop-su-cd477d93…) and EI-7220 (loop-su-c2b2ece8…):
+    // the dead su session's loop:arm routine was reaped while its stale-red autoloop_state row
+    // lingered, so the LEFT JOIN yields BOTH routine_active = NULL and routine_target_owner_id =
+    // NULL (the fragile owner-id marker fails open), and it fired recently enough that the
+    // staleness guard doesn't catch it either. Pre-fix (owner-id marker only) it would escalate as
+    // if a witness-less fixed system role; the role-NAME marker (`loop-su-…` begins with `loop-`)
+    // is join-independent and suppresses it. A distinct real-incident pin at the exact chronic
+    // threshold (6) guarding against a `> threshold` slip re-opening this loop-su-* flood.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-91ee2629-23c8-46f6-89ad-ada8b13bf44c',
+        consecutive_errors: 6, // exactly the threshold — "red 6 consecutive fires"
+        last_status: 'loop-stuck-backstop',
+        routine_active: null, // routine GC'd — no matching routines row
+        routine_target_owner_id: null, // JOIN yielded null — the fragile owner-id marker fails open
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(), // fired 1min ago — not stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it("EI-6727 real shape: a LIVE (routine active, recently fired) loop:arm owner loop is NOT escalated — pre-pause window", () => {
     // EI-6727 (loop-su-dad90f05…) and 27 siblings: a dead su session's loop:arm loop climbs
     // past the chronic threshold (6) and the sweep escalates it in the WINDOW before the

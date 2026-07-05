@@ -145,10 +145,10 @@ describe('computeFullLoopVerdict', () => {
           ],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['cup'] }, // F-002@bee never reached the queen
+      queenTurn2SawDone: { 'F-001': ['cup'] }, // F-002@cup never reached the queen
     });
     expect(v.steering.queenSawAllRemoteCompletions).toBe(false);
-    expect(v.steering.queenMissedItems).toEqual(['F-002@bee']);
+    expect(v.steering.queenMissedItems).toEqual(['F-002@cup']);
   });
 
   it('flags out-of-steer-order grants', () => {

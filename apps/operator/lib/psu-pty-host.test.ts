@@ -20,6 +20,7 @@ import {
   compactCommandForAgent,
   compactStartMs,
   compactBusyCapMs,
+  submitVerifyQuietMs,
   fireSessionCompactedEvent,
   SESSION_COMPACTED_EMIT_ENTRY,
   fleetOscFromEnv,
@@ -264,6 +265,20 @@ describe('compactBusyCapMs (WI-1872 (1) — dedicated compaction completion budg
     expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '900000' })).toBe(900_000);
     expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: 'nope' })).toBe(600_000);
     expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '-5' })).toBe(600_000);
+  });
+});
+
+describe('submitVerifyQuietMs (WI-2975 — decoupled from OUTPUT_QUIET_MS)', () => {
+  it('defaults to 6000ms; env override wins; a bad override falls back', () => {
+    expect(submitVerifyQuietMs({})).toBe(6_000);
+    expect(submitVerifyQuietMs({ PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '9000' })).toBe(9_000);
+    expect(submitVerifyQuietMs({ PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: 'nope' })).toBe(6_000);
+    expect(submitVerifyQuietMs({ PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '-5' })).toBe(6_000);
+  });
+
+  it('is a DIFFERENT default than the busy-gate\'s OUTPUT_QUIET_MS (1500ms) — the WI-2975 fix is precisely that these no longer share one value', () => {
+    expect(submitVerifyQuietMs({})).not.toBe(1_500);
+    expect(submitVerifyQuietMs({})).toBeGreaterThan(1_500);
   });
 });
 
@@ -702,6 +717,28 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     const r = await v.verify();
     expect(r.aborted).toBe('human-input');
     expect(crs).toEqual([100]); // the one pre-abort resubmit only
+  });
+
+  it('WI-2975: an ordinary silent "thinking" gap spanning a poll boundary no longer misfires at the new, decoupled default quietMs — but WOULD have under the old (reused OUTPUT_QUIET_MS=1500) default', async () => {
+    // Production-realistic pollMs (5000ms, the real SUBMIT_VERIFY_POLL_MS default).
+    // The submitted turn genuinely starts, but produces no output at all for the
+    // first 5.5s (a normal thinking/network-latency gap that straddles the first
+    // 5s poll) before flowing continuously from then on.
+    const output = (t: number) => (t >= 5_500 ? t : 0);
+
+    // OLD behavior (bug): reusing the busy-gate's short 1500ms threshold reads
+    // that ordinary gap as "nothing happened" at the first poll and resubmits.
+    const old = rig({ output, pollMs: 5_000, polls: 3, quietMs: 1_500 });
+    const rOld = await old.v.verify();
+    expect(rOld.resubmits).toBeGreaterThan(0);
+
+    // NEW behavior (fixed): the verifier's own, larger, decoupled quiet bar
+    // (matching the new SUBMIT_VERIFY_QUIET_MS default of 6000ms) recognizes the
+    // same gap as ordinary turn latency — zero spurious resubmits.
+    const fresh = rig({ output, pollMs: 5_000, polls: 3, quietMs: 6_000 });
+    const rNew = await fresh.v.verify();
+    expect(rNew.resubmits).toBe(0);
+    expect(fresh.crs).toEqual([]);
   });
 
   it('a writeCr throw (child exited mid-verify) never rejects', async () => {

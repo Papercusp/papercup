@@ -192,10 +192,23 @@ export default defineTool({
       .filter((b) => b.state.pausedUntil > now)
       .map((b) => ({ key: b.key, pausedUntil: new Date(b.state.pausedUntil).toISOString() }));
 
+    // Resolved early (EI-7696) so the tips engine can scope a per-agent action
+    // (coord:wake-queue release_all) to the CALLER instead of the fleet-wide
+    // stagedTotal it's evaluated against. Re-thrown failures never surface —
+    // same fail-open contract as every other self.* signal below, which reuses
+    // this same value rather than re-resolving it.
+    let selfOwnerId: string | null = null;
+    try {
+      selfOwnerId = resolveAgentIdentity(ctx).ownerId ?? null;
+    } catch {
+      selfOwnerId = null;
+    }
+
     const tips = evaluateTips({
       audience,
       wakeDefault,
       stagedTotal,
+      selfOwnerId,
       beesRunning,
       governorPausedKeys: governorPaused.map((g) => g.key),
       state: args.state ?? {},
@@ -233,11 +246,10 @@ export default defineTool({
     // ['auto','ideate']), so the statusline/GUI can render mode chips every tick with
     // NO extra call (EI-7626). Empty when none set. FAIL-OPEN like its siblings.
     let selfModes: string[] = [];
-    // Hoisted for the display render below — the caller's resolved owner id.
-    let selfOwnerId: string | null = null;
+    // selfOwnerId is already resolved above (hoisted for the tips engine,
+    // EI-7696) — reused here rather than re-resolved.
     try {
-      const { ownerId } = resolveAgentIdentity(ctx);
-      selfOwnerId = ownerId ?? null;
+      const ownerId = selfOwnerId;
       if (ownerId) {
         const wipRows = await sql<Array<{ title: string }>>`
           SELECT title FROM harness_shared.work_items

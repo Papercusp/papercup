@@ -263,6 +263,23 @@ export function evaluateBgHostCodeDrift(
  *  phantom drift). */
 export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
   const start = Date.now();
+  // Linux/systemd-only probe: MainPID via `systemctl --user`, elapsed via `ps etimes`,
+  // newest mtime via GNU `find -printf` — none of which exist on macOS. Short-circuit to an
+  // HONEST "not applicable on this platform" instead of spawning a missing `systemctl` and
+  // returning the scary "probe failed" note (P-005,
+  // cross-platform-hardening-and-agent-ergonomics-2026-07-05). NOTE: a Windows desktop runs
+  // this sidecar as a Linux process under WSL (process.platform === 'linux'), so it is NOT
+  // short-circuited here — the inner try/catch stays the backstop for WSL-without-systemd.
+  if (process.platform !== 'linux') {
+    return {
+      name: 'bg-host-code',
+      up: true,
+      status: null,
+      latencyMs: Date.now() - start,
+      present: false,
+      note: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
+    };
+  }
   try {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');

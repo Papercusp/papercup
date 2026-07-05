@@ -102,10 +102,36 @@ const CODEX_TURN_RESUBMIT_CR_DELAY_MS =
  *  and, at each poll that finds the output QUIET (no turn running — a submitted
  *  turn repaints continuously), injects one bare resubmit CR. A bare CR at an
  *  idle prompt with an EMPTY composer is a no-op, so a redundant resubmit is
- *  harmless; one with staged text is exactly the Enter a human would press. */
+ *  harmless; one with staged text is exactly the Enter a human would press.
+ *  WI-2975 ADDENDUM: "harmless" covered the retype-safety, not the noise — the
+ *  quiet check originally reused OUTPUT_QUIET_MS (the busy-gate's short
+ *  "back-at-prompt" threshold), so an ordinary silent thinking/latency gap
+ *  after a genuine submit was misread as a stall on nearly every compaction,
+ *  printing spurious "submit not confirmed" resubmit lines even on a fully
+ *  successful compact + carry-note. The verifier now uses its own, larger,
+ *  independently-tunable SUBMIT_VERIFY_QUIET_MS for that check. */
 const SUBMIT_VERIFY_POLL_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) || 5_000;
 const SUBMIT_VERIFY_POLLS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS) || 6;
 const SUBMIT_VERIFY_MAX_RESUBMITS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR) || 3;
+/** WI-2975: the verifier's OWN "is a turn genuinely running" quiet threshold —
+ *  deliberately DECOUPLED from OUTPUT_QUIET_MS. OUTPUT_QUIET_MS is tuned SHORT
+ *  (1500ms) for a different question — "has the agent gone back to an idle
+ *  prompt?" — where reacting fast matters. Reusing that same short threshold
+ *  here was the bug: a genuinely-submitted turn commonly goes silent for
+ *  several seconds (network latency / silent "thinking" before the first
+ *  repaint, especially right after a large-transcript /compact), which is
+ *  completely normal — but at 1500ms almost ANY such gap landing on a 5s poll
+ *  boundary read as "nothing happened" and fired a resubmit CR. Live evidence
+ *  (WI-2975): a fully successful /compact + carry-note + COMPACTED-RESUMED
+ *  STILL printed three "submit not confirmed" resubmit lines — pure noise,
+ *  every single compaction, on every backend (not only omp/codex). Defaulting
+ *  this to a full poll interval means "quiet" requires an ENTIRE poll cycle of
+ *  zero output — a much stronger "truly nothing happened" signal — while a
+ *  submit that really was swallowed is still caught within the same bounded
+ *  window (just one poll later). Env-tunable independently of both
+ *  OUTPUT_QUIET_MS and SUBMIT_VERIFY_POLL_MS. */
+const SUBMIT_VERIFY_QUIET_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS) || 6_000;
 
 /** Mid-turn inject safety (coord-wake-mid-turn-2026-06-30). A wake `turn` (text +
  *  CR) written into a TUI that is MID-TURN — the agent is generating / mid
@@ -406,6 +432,15 @@ export function makeAgentBusyGate({
  * that let the carry through — exactly the trap that strands the text. Polling
  * the full window costs seconds on a rare path and covers it.
  *
+ * `quietMs` (WI-2975) is deliberately NOT the busy-gate's OUTPUT_QUIET_MS — that
+ * threshold is tuned short, for "has the agent returned to an idle prompt?", a
+ * different question. Here it means "did this submit start a turn at all?",
+ * and a genuinely-running turn routinely goes silent for a few seconds (network
+ * latency / silent thinking) without being stalled — treating that ordinary gap
+ * as failure was the WI-2975 bug (spurious resubmit noise on every compaction,
+ * including fully successful ones). Default to the caller's own
+ * SUBMIT_VERIFY_QUIET_MS, not OUTPUT_QUIET_MS.
+ *
  * Human-input abort: any human keystroke after verification starts cancels the
  * remaining polls (never fight a human who is editing the staged line —
  * `lastInputAt` is the same signal makeIdleGate defers on).
@@ -416,7 +451,7 @@ export function makeSubmitVerifier({
   lastOutputAt,
   writeCr,
   lastInputAt = () => 0,
-  quietMs = OUTPUT_QUIET_MS,
+  quietMs = SUBMIT_VERIFY_QUIET_MS,
   pollMs = SUBMIT_VERIFY_POLL_MS,
   polls = SUBMIT_VERIFY_POLLS,
   maxResubmits = SUBMIT_VERIFY_MAX_RESUBMITS,
@@ -599,6 +634,15 @@ export function contextClearCommandForAgent(agent) {
  *  Session-env tunable, module default as fallback. */
 export function clearSettleMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS, CLEAR_SETTLE_MS);
+}
+
+/** The submit-verifier's OWN "is a turn genuinely running" quiet threshold
+ *  (WI-2975) — deliberately independent of OUTPUT_QUIET_MS (the busy-gate's
+ *  short "back at an idle prompt" threshold; see SUBMIT_VERIFY_QUIET_MS above
+ *  for the false-positive this decoupling fixes). Session-env tunable, module
+ *  default as fallback. Pure — exported for tests. */
+export function submitVerifyQuietMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS, SUBMIT_VERIFY_QUIET_MS);
 }
 
 /** The compaction command for a backend (post-compaction auto-continuation, WI-1804).
@@ -914,7 +958,11 @@ export function hostThroughPty(o) {
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
       writeCr: () => child.write('\r'),
-      quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
+      // WI-2975: NOT OUTPUT_QUIET_MS (that's the busy-gate's short "back at an
+      // idle prompt" threshold) — the verifier's own, deliberately-larger quiet
+      // bar, so an ordinary post-submit thinking/latency gap is never mistaken
+      // for a swallowed CR. See SUBMIT_VERIFY_QUIET_MS above.
+      quietMs: submitVerifyQuietMs(env),
       pollMs: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS, SUBMIT_VERIFY_POLL_MS),
       polls: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS, SUBMIT_VERIFY_POLLS),
       maxResubmits: positiveNumber(

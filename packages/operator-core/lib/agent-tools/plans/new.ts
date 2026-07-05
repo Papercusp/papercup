@@ -188,11 +188,33 @@ export interface SimilarPlan {
 }
 
 /**
+ * A token is "corpus-generic" only on a LARGE index — it appears in more than
+ * GENERIC_DF_FRACTION of all plans. On a small corpus, document-frequency is
+ * noise, so DF suppression is skipped entirely (nothing is generic) and the
+ * matcher behaves exactly like the pre-P-003 absolute-count version.
+ *
+ * WHY (cross-platform-hardening-and-agent-ergonomics-2026-07-05 P-003): the old
+ * matcher flagged `similar_exists` on any two shared tokens, so a plan like
+ * `cross-platform-hardening-and-agent-ergonomics` false-matched unrelated plans
+ * that merely also contain the project-ubiquitous words `agent`/`platform` — the
+ * false positive that forced a spurious `force: true`. Suppressing corpus-generic
+ * tokens (self-tuning, no stopword maintenance) fixes the class without regressing
+ * EI-134 dup detection: a GENUINE duplicate always shares a *distinctive* topic
+ * word (by definition not ubiquitous), so it still flags.
+ */
+const GENERIC_MIN_CORPUS = 25;
+const GENERIC_DF_FRACTION = 0.25;
+
+/**
  * Search-first dedup for plans:new (audit P-049 / EI-134) — like
  * improvements:capture, surface overlapping existing plans BEFORE a
  * duplicate splits the project history. Pure scoring over the index
- * rows' slug+title (no content): a candidate matches when it shares ≥2
- * topic tokens (or the single token, for one-token proposals). Top 5 by
+ * rows' slug+title (no content).
+ *
+ * A candidate matches when it shares ≥2 TOPIC TOKENS (or the single token, for
+ * one-token proposals) AND at least one shared token is DISTINCTIVE — i.e. not
+ * corpus-generic (P-003). Matching is on tokenized SETS, not raw substrings, so
+ * `cross` no longer matches `across` (the substring false-match class). Top 5 by
  * overlap, ties to non-archived.
  */
 export function findSimilarPlans(
@@ -200,24 +222,43 @@ export function findSimilarPlans(
   rows: Array<{ planSlug: string; title: string | null; status: string | null; archived: boolean }>,
 ): SimilarPlan[] {
   if (tokens.length === 0) return [];
-  const threshold = Math.min(2, tokens.length);
-  const scored: Array<SimilarPlan & { n: number }> = [];
-  for (const r of rows) {
-    const hay = `${r.planSlug} ${r.title ?? ''}`.toLowerCase();
-    const shared = tokens.filter((t) => hay.includes(t));
-    if (shared.length >= threshold) {
-      scored.push({
-        slug: r.planSlug,
-        title: r.title,
-        status: r.status,
-        archived: r.archived,
-        sharedTokens: shared,
-        n: shared.length,
-      });
-    }
+
+  // Tokenize every row ONCE (reusing the same stopword/date/short-token filter),
+  // then compute per-token document frequency across the corpus.
+  const rowTokenSets = rows.map((r) => new Set(dedupTokens(r.planSlug, r.title ?? '')));
+  const df = new Map<string, number>();
+  for (const set of rowTokenSets) {
+    for (const t of set) df.set(t, (df.get(t) ?? 0) + 1);
   }
-  scored.sort((a, b) => b.n - a.n || Number(a.archived) - Number(b.archived));
-  return scored.slice(0, 5).map(({ n: _n, ...rest }) => rest);
+  const bigCorpus = rows.length >= GENERIC_MIN_CORPUS;
+  const isGeneric = (t: string): boolean =>
+    bigCorpus && (df.get(t) ?? 0) / rows.length > GENERIC_DF_FRACTION;
+
+  const threshold = Math.min(2, tokens.length);
+  const scored: Array<SimilarPlan & { n: number; d: number }> = [];
+  for (let i = 0; i < rows.length; i++) {
+    const rowSet = rowTokenSets[i]!;
+    // Token-SET intersection (not substring): `cross` ∉ "across".
+    const shared = tokens.filter((t) => rowSet.has(t));
+    if (shared.length < threshold) continue;
+    // Require ≥1 distinctive (non-corpus-generic) shared token. On a small corpus
+    // isGeneric is always false, so this is a no-op and old behavior is preserved.
+    const distinctive = shared.filter((t) => !isGeneric(t));
+    if (distinctive.length === 0) continue;
+    const r = rows[i]!;
+    scored.push({
+      slug: r.planSlug,
+      title: r.title,
+      status: r.status,
+      archived: r.archived,
+      sharedTokens: shared,
+      n: shared.length,
+      d: distinctive.length,
+    });
+  }
+  // Rank: most distinctive overlap first, then most total overlap, then live plans.
+  scored.sort((a, b) => b.d - a.d || b.n - a.n || Number(a.archived) - Number(b.archived));
+  return scored.slice(0, 5).map(({ n: _n, d: _d, ...rest }) => rest);
 }
 
 export default defineTool({

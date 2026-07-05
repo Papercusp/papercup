@@ -166,7 +166,7 @@ describe('recordScoutTickToGovernor', () => {
     );
     expect(out).toEqual({ applied: true });
     expect(calls.register[0]).toMatchObject({
-      loopId: 'scout:papercup',
+      loopId: 'blender:papercup',
       budgetKind: 'per-cycle',
       budgetUsd: 1.5,
       enforcement: 'native',
@@ -174,7 +174,7 @@ describe('recordScoutTickToGovernor', () => {
     expect(calls.spend).toEqual([
       {
         workspaceId: 'w',
-        loopId: 'scout:papercup',
+        loopId: 'blender:papercup',
         costUsd: 0.4,
         runRef: 'scout-9',
         note: 'scout ideation cycle',
