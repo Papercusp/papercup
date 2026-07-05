@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "savedAt": 1782847674234,
-  "keychainId": "4242:m",
-  "devicePubkeyBase64": "PUBKEY==",
-  "githubUserId": 4242,
-  "githubLogin": "alice",
-  "attestationGistId": "gist-cached"
-}

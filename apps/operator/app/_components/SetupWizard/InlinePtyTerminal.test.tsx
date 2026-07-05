@@ -30,7 +30,7 @@ vi.mock('@papercusp/operator-core/lib/tauri-bindings', () => ({
   },
 }));
 
-import { InlinePtyTerminal, shouldShowPtyPlaceholder } from './InlinePtyTerminal';
+import { InlinePtyTerminal, chunkHasRealOutput, shouldShowPtyPlaceholder } from './InlinePtyTerminal';
 
 beforeEach(() => {
   tauriNative = true;
@@ -64,6 +64,29 @@ describe('shouldShowPtyPlaceholder', () => {
   it('hides once the process has exited (both 0 and non-zero)', () => {
     expect(shouldShowPtyPlaceholder({ hasOutput: false, error: null, exitedCode: 0 })).toBe(false);
     expect(shouldShowPtyPlaceholder({ hasOutput: false, error: null, exitedCode: 3 })).toBe(false);
+  });
+});
+
+describe('chunkHasRealOutput (WI-3033 ConPTY handshake)', () => {
+  const HANDSHAKE = [0x1b, 0x5b, 0x36, 0x6e]; // \x1b[6n
+  it('rejects an empty chunk', () => {
+    expect(chunkHasRealOutput(new Uint8Array(0))).toBe(false);
+  });
+  it('rejects the bare ConPTY handshake — the wedge signature must not count as output', () => {
+    expect(chunkHasRealOutput(new Uint8Array(HANDSHAKE))).toBe(false);
+    expect(chunkHasRealOutput(new Uint8Array([...HANDSHAKE, ...HANDSHAKE]))).toBe(false);
+  });
+  it('accepts real bytes, including after a leading handshake', () => {
+    const hello = Array.from(new TextEncoder().encode('hello'));
+    expect(chunkHasRealOutput(new Uint8Array(hello))).toBe(true);
+    expect(chunkHasRealOutput(new Uint8Array([...HANDSHAKE, ...hello]))).toBe(true);
+  });
+  it('accepts other escape sequences — only the exact \\x1b[6n quad is stripped', () => {
+    // \x1b[2J (clear screen) is REAL child output.
+    expect(chunkHasRealOutput(new Uint8Array([0x1b, 0x5b, 0x32, 0x4a]))).toBe(true);
+    // A handshake split across chunks: the fragment alone is "real" by design —
+    // better to reveal the terminal early than hide real output forever.
+    expect(chunkHasRealOutput(new Uint8Array([0x1b, 0x5b]))).toBe(true);
   });
 });
 

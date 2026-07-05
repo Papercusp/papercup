@@ -102,3 +102,22 @@ apps/operator/docs/plans/**/*.md
 pnpm-lock.yaml
 yarn.lock
 .pnpm-workspace-state-v1.json
+
+# WI-2911 (2026-07-05): ~1.85GB of never-source content was tracked into the shared
+# tree — the bulk of `git archive HEAD` and of the release seed bundle. Untracked
+# index-only (files stay on disk); these entries keep it from re-entering.
+# Agent scratch/temp under .papercusp (scratch/ + vitest-tmp/ already ignored above).
+.papercusp/tmp/
+.papercusp/tmp-*/
+.papercusp/logs/
+.papercusp/bench-reports/
+.papercusp/pi-sessions/
+# Derived voice-runtime assets — copied out of node_modules by apps/operator's
+# postinstall (scripts/setup-{vad,wake}-runtime.sh); every fresh install regenerates.
+apps/operator/public/vad-runtime/
+apps/operator/public/wake-runtime/
+apps/operator/public/ort-wasm-*
+apps/operator/public/silero_vad_*.onnx
+apps/operator/public/vad.worklet.bundle.min.js
+# Stale duplicate docs backup trees under the served internal docs.
+apps/operator/public/internal/docs.old.*/

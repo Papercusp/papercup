@@ -10,11 +10,18 @@
  * prompt, all in this one pane, so the user's very first experience is the
  * daily one — a conversation, not a wizard.
  *
+ * On WINDOWS the concierge runs in an EXTERNAL Windows Terminal window
+ * instead of the embedded pane (WI-3033): the embedded path (pty_spawn →
+ * portable_pty ConPTY → wsl.exe) wedges on legacy inbox WSL before the
+ * child ever writes a byte, while a real terminal window is the
+ * proven-working host (console_launch, WI-2955). This pane then shows a
+ * launch panel with continue/focus controls.
+ *
  * The GUI Setup Wizard is the standing fallback: a footer link here, the
  * automatic non-Tauri fallback (a browser can't spawn a pty), and the
  * spec-missing fallback all route to `/setup?force=1`.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 import { InlinePtyTerminal } from './SetupWizard/InlinePtyTerminal';
 
@@ -28,10 +35,42 @@ interface SpawnSpec {
 /** Rows that comfortably fill a desktop window; xterm scrolls beyond them. */
 const CONSOLE_ROWS = 40;
 
+/**
+ * Exact title of the external onboarding terminal window — shared contract
+ * with the Rust side: external_console_run titles the window with it and
+ * focus_window_by_title finds it by exact match.
+ */
+export const EXTERNAL_CONSOLE_TITLE = 'Papercusp Onboarding';
+
+/**
+ * True when the onboarding concierge must run in an EXTERNAL terminal
+ * window instead of the embedded pane (WI-3033, Windows-only — see the
+ * module doc). Detection is the WEBVIEW's user agent: the operator (and
+ * `process.platform`) run inside the WSL distro and always say linux, so
+ * only the client knows it's rendering on Windows. Pure + exported for
+ * unit tests.
+ */
+export function shouldRouteExternalConsole(isTauri: boolean, ua: string): boolean {
+  return isTauri && ua.includes('Windows NT');
+}
+
+type ExternalState = 'idle' | 'launching' | 'running' | 'error';
+
+interface WindowWithTauriInvoke extends Window {
+  // Raw invoke: tauri-bindings.ts is specta-GENERATED ("do not edit") and
+  // stale — it predates external_console_run / focus_window_by_title. Raw
+  // invoke returns the command's Ok value directly and rejects with the Err.
+  __TAURI_INTERNALS__?: {
+    invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+  };
+}
+
 export function OnboardingConsole() {
   const [tauri, setTauri] = useState<boolean | null>(null);
   const [spec, setSpec] = useState<SpawnSpec | null | 'loading'>('loading');
   const [exited, setExited] = useState<number | null>(null);
+  const [external, setExternal] = useState<ExternalState>('idle');
+  const [externalError, setExternalError] = useState<string | null>(null);
 
   useEffect(() => {
     setTauri(isTauriNative());
@@ -63,6 +102,48 @@ export function OnboardingConsole() {
     if (exited !== null && exited === 0) window.location.href = '/';
   }, [exited]);
 
+  const routeExternal =
+    tauri === true &&
+    typeof navigator !== 'undefined' &&
+    shouldRouteExternalConsole(true, navigator.userAgent);
+
+  const launchExternal = useCallback(async (s: SpawnSpec) => {
+    setExternal('launching');
+    setExternalError(null);
+    try {
+      const invoke = (window as WindowWithTauriInvoke).__TAURI_INTERNALS__?.invoke;
+      if (!invoke) throw new Error('Tauri invoke unavailable');
+      await invoke('external_console_run', {
+        spec: {
+          command: s.command,
+          args: s.args,
+          cwd: s.cwd,
+          env: s.env,
+          title: EXTERNAL_CONSOLE_TITLE,
+        },
+      });
+      setExternal('running');
+    } catch (e) {
+      setExternalError(String((e as Error)?.message ?? e));
+      setExternal('error');
+    }
+  }, []);
+
+  // Auto-launch the external window ONCE when routing external and the
+  // spawn spec has arrived. Re-launch only via the explicit Try-again.
+  useEffect(() => {
+    if (!routeExternal || external !== 'idle') return;
+    if (spec === 'loading' || spec === null) return;
+    void launchExternal(spec);
+  }, [routeExternal, external, spec, launchExternal]);
+
+  // USER-INITIATED focus (button click) — mirrors focus_window_by_title's
+  // no-focus-steal contract; never call from an automated driver.
+  const focusExternal = useCallback(() => {
+    const invoke = (window as WindowWithTauriInvoke).__TAURI_INTERNALS__?.invoke;
+    void invoke?.('focus_window_by_title', { title: EXTERNAL_CONSOLE_TITLE });
+  }, []);
+
   if (tauri === false || spec === null) {
     return (
       <div className="pc-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
@@ -89,6 +170,50 @@ export function OnboardingConsole() {
       <div style={{ flex: 1, minHeight: 0 }}>
         {spec === 'loading' ? (
           <p style={{ opacity: 0.7, padding: 24 }}>Starting onboarding…</p>
+        ) : routeExternal ? (
+          <div style={{ display: 'grid', placeItems: 'center', height: '100%', minHeight: 360 }}>
+            <div style={{ maxWidth: 560, textAlign: 'center' }}>
+              <h1 style={{ fontSize: 20, marginBottom: 8 }}>Welcome to Papercusp</h1>
+              {external === 'error' ? (
+                <>
+                  <p style={{ opacity: 0.8, marginBottom: 16 }}>
+                    Couldn&apos;t open the onboarding terminal
+                    {externalError ? `: ${externalError}` : '.'}
+                  </p>
+                  <button
+                    type="button"
+                    className="pc-btn pc-btn--primary"
+                    onClick={() => void launchExternal(spec)}
+                  >
+                    Try again
+                  </button>
+                </>
+              ) : external === 'running' ? (
+                <>
+                  <p style={{ opacity: 0.8, marginBottom: 16 }}>
+                    Onboarding is running in the &ldquo;{EXTERNAL_CONSOLE_TITLE}&rdquo; terminal
+                    window — finish the conversation there, then continue here.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+                    <button
+                      type="button"
+                      className="pc-btn pc-btn--primary"
+                      onClick={() => {
+                        window.location.href = '/';
+                      }}
+                    >
+                      I&apos;ve finished — continue
+                    </button>
+                    <button type="button" className="pc-btn" onClick={focusExternal}>
+                      Bring console to front
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p style={{ opacity: 0.8 }}>Opening the onboarding terminal window…</p>
+              )}
+            </div>
+          </div>
         ) : (
           <InlinePtyTerminal
             command={spec.command}

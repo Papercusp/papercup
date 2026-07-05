@@ -277,10 +277,10 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
     expect('error' in seeded).toBe(false);
 
     // Queen injects the bug to head-of-line (writer 'queen' — the propose/dispose audit).
-    const moved = await reorderWorkItem('FA-TEST-B1', 0, { writer: 'queen' });
+    const moved = await reorderWorkItem('FA-TEST-B1', 0, { writer: 'mug' });
     if ('error' in moved) throw new Error(moved.error);
     expect(moved.rank).toBe(0);
-    expect(moved.writer).toBe('queen');
+    expect(moved.writer).toBe('mug');
     expect(moved.queue.map((q) => q.id)).toEqual([
       'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
     ]);
@@ -302,7 +302,7 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
     await reorderWorkItem('FA-TEST-F1', 0);
     await reorderWorkItem('FA-TEST-F2', 1);
     await reorderWorkItem('FA-TEST-F3', 2);
-    await reorderWorkItem('FA-TEST-B1', 0, { writer: 'queen' }); // Queen head-of-line
+    await reorderWorkItem('FA-TEST-B1', 0, { writer: 'mug' }); // Queen head-of-line
 
     const rows = await listFleetAssignments({ workspaceId: WS, agent: 'su-bee' });
     // every work-item row carries its rank + writer off the view
@@ -310,13 +310,13 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
     expect(wiRows.length).toBe(4);
     const head = wiRows.find((r) => r.assigneeRank === 0);
     expect(head?.workItemId).toBe('FA-TEST-B1');
-    expect(head?.rankWriter).toBe('queen');
+    expect(head?.rankWriter).toBe('mug');
 
     const grouped = groupByAgent(rows);
     const bee = grouped.find((g) => g.agentId === 'su-bee')!;
     expect(bee.load).toBe(4);
     expect(bee.doing?.id).toBe('FA-TEST-B1'); // head-of-line
-    expect(bee.doing?.rankWriter).toBe('queen');
+    expect(bee.doing?.rankWriter).toBe('mug');
     expect(bee.queued.map((q) => q.id)).toEqual([
       'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
     ]);
