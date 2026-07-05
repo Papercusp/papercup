@@ -151,7 +151,10 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       COALESCE(payload->'_ei'->>'signal_origin', 'local') AS signal_origin,
       fed_hlc,
       terminal_owner,
-      terminal_completion_ref
+      terminal_completion_ref,
+      -- WI-2990/WI-3006 (migration 509): the real item-scoped progress signal,
+      -- mirroring the feature-family's last_progress_at.
+      last_progress_at
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb;
@@ -163,8 +166,8 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     v_slug := CASE WHEN COALESCE(NEW.scope,'operator') LIKE 'harness:%' THEN substr(NEW.scope,9) ELSE '' END;
     v_ei := jsonb_strip_nulls(jsonb_build_object('scope',NEW.scope,'severity',NEW.severity,'source',NEW.source,'found_during',NEW.found_during,'linked_feature_id',NEW.linked_feature_id,'created_by',NEW.created_by,'assigned_by',NEW.assigned_by,'signal_origin',NEW.signal_origin));
     IF TG_OP = 'INSERT' THEN
-      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref)
-      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, COALESCE(NEW.payload,'{}'::jsonb) || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref);
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at)
+      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, COALESCE(NEW.payload,'{}'::jsonb) || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref, NEW.last_progress_at);
       RETURN NEW;
     ELSE
       -- Mig 499: release-cooldown provenance (mirrors the feature-family release stamp) —
@@ -172,6 +175,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       UPDATE harness_shared.work_items SET harness_slug=v_slug, title=NEW.title, summary=COALESCE(NEW.body,''), status=NEW.state, taken_by=NEW.assignee, taken_at=NEW.assigned_at,
         last_released_by = CASE WHEN NEW.assignee IS NULL AND OLD.assignee IS NOT NULL THEN OLD.assignee ELSE last_released_by END,
         last_released_at = CASE WHEN NEW.assignee IS NULL AND OLD.assignee IS NOT NULL THEN now() ELSE last_released_at END,
+        -- WI-2990/WI-3006 (migration 509): thread last_progress_at through the view's
+        -- UPDATE path (parity with the app-side markIssueProgress direct base-table write).
+        last_progress_at = NEW.last_progress_at,
         item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(COALESCE(NEW.payload,'{}'::jsonb) - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref WHERE workspace_id=OLD.workspace_id AND feature_id=OLD.issue_id AND item_kind IN ('bug','change','task');
       RETURN NEW;
     END IF;

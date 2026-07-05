@@ -2,18 +2,57 @@
  * Unit tests for `system:telemetry-retention` (infra-audit R2 / plan P-006).
  * The prune is mocked — we assert config resolution, the per-target retention
  * windows, the drain loop (re-call while `partial`), and dry-run propagation.
+ *
+ * EI-7482 (index-bloat maintenance): also covers the reindex-target resolver,
+ * the weekly cadence gate, and `reindexBloatedIndexes` (tested directly with an
+ * injected fake sql/guard — no real PG needed). The base retention tests default
+ * `reindex_enabled:false` in `ctx()` so their behavior never depends on which
+ * calendar day the suite happens to run on (the cadence default is Sunday UTC —
+ * without this, a Sunday test run would exercise the live `@papercusp/db-org` /
+ * `resource-lock-guard` dynamic imports for every pre-existing prune test).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** Mirrors the module-under-test's local `Sql` type (not exported) — the
+ *  minimal postgres.js tagged-template shape `reindexBloatedIndexes` needs. */
+type TestSql = {
+  (strings: TemplateStringsArray, ...vals: unknown[]): Promise<Array<Record<string, unknown>>>;
+  unsafe: (q: string) => Promise<Array<Record<string, unknown>>>;
+};
 
 const pruneMock = vi.fn();
 vi.mock('../../storage/prune', () => ({
   pruneStorageCategory: (...args: unknown[]) => pruneMock(...args),
 }));
 
-// Import AFTER the mock so the module's registerSystemAction side-effect binds the
-// mocked prune.
+const sqlUnsafeMock = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
+const sqlTagMockFn = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
+const sqlTagMock = Object.assign(sqlTagMockFn, { unsafe: sqlUnsafeMock }) as unknown as TestSql;
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: sqlTagMock }),
+}));
+
+const guardResourceMock = vi.fn(async (_spec: unknown, run: () => Promise<unknown>) => ({
+  acquired: true,
+  result: await run(),
+  lock_id: 'lock-1',
+}));
+vi.mock('../../agent-tools/locks/resource-lock-guard', () => ({
+  guardResource: (...args: [unknown, () => Promise<unknown>]) => guardResourceMock(...args),
+}));
+
+// Import AFTER the mocks so the module's registerSystemAction side-effect binds
+// the mocked prune / db-org / resource-lock-guard.
 import { getSystemAction } from './system-actions';
-import { resolveTargets, DEFAULT_RETENTION_TARGETS } from './telemetry-retention-action';
+import {
+  resolveTargets,
+  DEFAULT_RETENTION_TARGETS,
+  resolveReindexTargets,
+  DEFAULT_REINDEX_TARGETS,
+  shouldRunReindex,
+  reindexBloatedIndexes,
+  type ReindexTarget,
+} from './telemetry-retention-action';
 
 const okResult = (over: Record<string, unknown> = {}) => ({
   ok: true,
@@ -30,7 +69,10 @@ const okResult = (over: Record<string, unknown> = {}) => ({
 const ctx = (triggerConfig: Record<string, unknown>) => ({
   installSlug: 'papercup',
   workspaceId: 'ws-1',
-  triggerConfig,
+  // Default the reindex step OFF for tests that aren't exercising it — the
+  // cadence gate defaults to "today is Sunday UTC", which would otherwise make
+  // every pre-existing prune test's behavior depend on the real calendar day.
+  triggerConfig: { reindex_enabled: false, ...triggerConfig },
   payloadTemplate: null,
 });
 
@@ -65,9 +107,140 @@ describe('resolveTargets', () => {
   });
 });
 
+describe('resolveReindexTargets (EI-7482)', () => {
+  it('defaults to the two audit-identified bloated indexes', () => {
+    expect(resolveReindexTargets({})).toEqual([...DEFAULT_REINDEX_TARGETS]);
+    expect(resolveReindexTargets({ reindex_indexes: [] })).toEqual([...DEFAULT_REINDEX_TARGETS]);
+  });
+
+  it('honors a configured index list + drops malformed entries', () => {
+    const out = resolveReindexTargets({
+      reindex_indexes: [
+        { schema: 'harness_shared', index: 'some_other_idx' },
+        { schema: 'harness_shared' }, // no index → dropped
+        { index: 'no_schema_idx' }, // no schema → dropped
+      ],
+    });
+    expect(out).toEqual([{ schema: 'harness_shared', index: 'some_other_idx' }]);
+  });
+});
+
+describe('shouldRunReindex (EI-7482)', () => {
+  const sunday = new Date('2026-07-05T12:00:00.000Z'); // getUTCDay() === 0
+  const monday = new Date('2026-07-06T12:00:00.000Z'); // getUTCDay() === 1
+
+  it('defaults to the Sunday-UTC weekly cadence', () => {
+    expect(shouldRunReindex({}, sunday)).toBe(true);
+    expect(shouldRunReindex({}, monday)).toBe(false);
+  });
+
+  it('honors a configured reindex_day_of_week', () => {
+    expect(shouldRunReindex({ reindex_day_of_week: 1 }, monday)).toBe(true);
+    expect(shouldRunReindex({ reindex_day_of_week: 1 }, sunday)).toBe(false);
+  });
+
+  it('reindex_now forces a run regardless of cadence', () => {
+    expect(shouldRunReindex({ reindex_now: true }, monday)).toBe(true);
+  });
+
+  it('reindex_enabled:false disables the step even on the matching day (and even with reindex_now)', () => {
+    expect(shouldRunReindex({ reindex_enabled: false }, sunday)).toBe(false);
+    expect(shouldRunReindex({ reindex_enabled: false, reindex_now: true }, sunday)).toBe(false);
+  });
+});
+
+describe('reindexBloatedIndexes (EI-7482)', () => {
+  const target: ReindexTarget = { schema: 'harness_shared', index: 'route_invocations_ws_time_idx' };
+
+  function fakeSql(staleRows: Array<Record<string, unknown>> = []) {
+    const unsafe = vi.fn(async () => []);
+    const tag = vi.fn(async () => staleRows) as unknown as ((s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>) & {
+      unsafe: typeof unsafe;
+    };
+    tag.unsafe = unsafe;
+    return { sql: tag, unsafe };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('issues REINDEX INDEX CONCURRENTLY for a well-formed target under an acquired guard', async () => {
+    const { sql, unsafe } = fakeSql();
+    const guard = vi.fn(async (_reason: string, run: () => Promise<unknown>) => ({
+      acquired: true as const,
+      result: await run(),
+    }));
+    await reindexBloatedIndexes([target], sql, guard);
+
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(guard.mock.calls[0][0]).toContain('REINDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx');
+    expect(unsafe).toHaveBeenCalledWith('REINDEX INDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx');
+  });
+
+  it('drops a leftover invalid _ccnew index before reindexing', async () => {
+    const { sql, unsafe } = fakeSql([{ name: 'route_invocations_ws_time_idx_ccnew' }]);
+    const guard = vi.fn(async (_reason: string, run: () => Promise<unknown>) => ({
+      acquired: true as const,
+      result: await run(),
+    }));
+    await reindexBloatedIndexes([target], sql, guard);
+
+    expect(unsafe).toHaveBeenNthCalledWith(
+      1,
+      'DROP INDEX CONCURRENTLY IF EXISTS harness_shared.route_invocations_ws_time_idx_ccnew',
+    );
+    expect(unsafe).toHaveBeenNthCalledWith(2, 'REINDEX INDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx');
+  });
+
+  it('ignores a stale-index row that fails identifier validation (never interpolates it)', async () => {
+    const { sql, unsafe } = fakeSql([{ name: 'not an identifier; DROP TABLE x' }]);
+    const guard = vi.fn(async (_reason: string, run: () => Promise<unknown>) => ({
+      acquired: true as const,
+      result: await run(),
+    }));
+    await reindexBloatedIndexes([target], sql, guard);
+
+    // Only the final REINDEX call — no DROP INDEX for the unsafe name.
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    expect(unsafe).toHaveBeenCalledWith('REINDEX INDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx');
+  });
+
+  it('skips a target with an invalid schema/index identifier without touching sql or guard', async () => {
+    const { sql, unsafe } = fakeSql();
+    const guard = vi.fn();
+    await reindexBloatedIndexes([{ schema: 'harness_shared; DROP TABLE x', index: 'y' }], sql, guard);
+    expect(guard).not.toHaveBeenCalled();
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it('logs (not throws) when the guard fails to acquire the lock', async () => {
+    const { sql, unsafe } = fakeSql();
+    const guard = vi.fn(async () => ({ acquired: false as const, reason: 'held_shared' }));
+    await expect(reindexBloatedIndexes([target], sql, guard)).resolves.toBeUndefined();
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it('logs (not throws) when the guarded run rejects, and continues to the next target', async () => {
+    const { sql } = fakeSql();
+    const other: ReindexTarget = { schema: 'harness_shared', index: 'tool_invocations_quota_idx' };
+    const guard = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ acquired: true, result: true });
+    await expect(reindexBloatedIndexes([target, other], sql, guard)).resolves.toBeUndefined();
+    expect(guard).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('system:telemetry-retention action', () => {
   beforeEach(() => {
     pruneMock.mockReset();
+    sqlUnsafeMock.mockReset().mockResolvedValue([]);
+    sqlTagMockFn.mockReset().mockResolvedValue([]);
+    guardResourceMock.mockClear();
     // The action logs warn() on the invalid/failed-prune branches exercised below;
     // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
     // capture it (the real assertions are on pruneMock / non-throwing).
@@ -101,6 +274,8 @@ describe('system:telemetry-retention action', () => {
       dryRun: false,
       workspaceId: 'ws-1',
     });
+    // reindex_enabled:false (the ctx() default) — the reindex path never fires.
+    expect(guardResourceMock).not.toHaveBeenCalled();
   });
 
   it('drains a category: re-calls while the prune reports partial', async () => {
@@ -135,5 +310,26 @@ describe('system:telemetry-retention action', () => {
       action!(ctx({ targets: [{ category: 'bogus', retention_days: 7 }] })),
     ).resolves.toBeUndefined();
     expect(pruneMock).toHaveBeenCalledTimes(1);
+  });
+
+  // EI-7482: wiring — the registered action actually reaches reindexBloatedIndexes
+  // (via the real db-org/resource-lock-guard dynamic imports, mocked above) when
+  // forced on, and stays fully off by default in this suite's ctx().
+  it('reindex_now:true reaches the guarded REINDEX path through the real action', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    const action = getSystemAction('telemetry-retention');
+    await action!(ctx({ targets: [], reindex_enabled: true, reindex_now: true }));
+
+    expect(guardResourceMock).toHaveBeenCalledTimes(DEFAULT_REINDEX_TARGETS.length);
+    expect(sqlUnsafeMock).toHaveBeenCalledWith(
+      expect.stringContaining('REINDEX INDEX CONCURRENTLY harness_shared.'),
+    );
+  });
+
+  it('dry_run logs the plan and never reaches guardResource even when the cadence matches', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    const action = getSystemAction('telemetry-retention');
+    await action!(ctx({ targets: [], dry_run: true, reindex_enabled: true, reindex_now: true }));
+    expect(guardResourceMock).not.toHaveBeenCalled();
   });
 });

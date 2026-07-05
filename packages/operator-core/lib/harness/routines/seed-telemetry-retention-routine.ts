@@ -1,12 +1,13 @@
 /**
  * Seed the `telemetry-retention` routine — the periodic janitor for the unbounded
- * high-volume diagnostic tables (`route_invocations`, `tool_invocations`) the
+ * high-volume diagnostic tables (`route_invocations`, `tool_invocations`, …) the
  * 2026-06-18 infra audit found growing without bound (R2; handler in
  * `telemetry-retention-action.ts`, prune logic in `storage/prune.ts`).
  *
  *   - `telemetry-retention` (daily 04:00): prune route-invocations >7d +
- *     tool-invocations >14d via the shared storage prune (chunked + VACUUM).
- *     Pure DB maintenance — spawns no agent, makes no network call.
+ *     tool-invocations >14d + harness-run-output >14d + agent-activity >7d
+ *     via the shared storage prune (chunked + VACUUM). Pure DB maintenance —
+ *     spawns no agent, makes no network call.
  *
  * SEEDED INACTIVE by default (mirrors seed-session-dir-gc-routine). Bring-up is
  * human-confirmed; idempotent (upsert). After deploy:
@@ -15,8 +16,15 @@
  *   tsx seed-telemetry-retention-routine.ts --active     # seed + enable the daily prune
  *
  * trigger_config knobs (optional, editable via the routines admin):
- *   - targets   — [{ category, retention_days }]; default route-invocations@7d +
- *                 tool-invocations@14d.
+ *   - targets   — [{ category, retention_days }]; MUST be kept in sync with
+ *                 `DEFAULT_RETENTION_TARGETS` (telemetry-retention-action.ts) —
+ *                 `resolveTargets()` prefers this STORED array whenever it's
+ *                 non-empty, so a code-only default change has ZERO effect on
+ *                 any existing install until this seed is re-run (EI-7499:
+ *                 found harness-run-output/EI-7491's code default had drifted
+ *                 from the live stored config for exactly this reason — fixed
+ *                 here by re-adding it alongside agent-activity, not just the
+ *                 new target).
  *   - dry_run   — plan + log, delete nothing.
  */
 
@@ -36,9 +44,14 @@ async function main(): Promise<void> {
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
   const triggerConfig = {
     cron: CRON,
+    // Keep in lockstep with DEFAULT_RETENTION_TARGETS (telemetry-retention-action.ts) —
+    // see the file-top note: the STORED array here always wins over the code
+    // default once seeded, so drift between the two silently un-prunes a table.
     targets: [
       { category: 'route-invocations', retention_days: 7 },
       { category: 'tool-invocations', retention_days: 14 },
+      { category: 'harness-run-output', retention_days: 14 },
+      { category: 'agent-activity', retention_days: 7 },
     ],
   };
   await sql`

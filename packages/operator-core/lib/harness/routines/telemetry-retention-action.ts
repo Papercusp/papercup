@@ -169,6 +169,14 @@ export const DEFAULT_RETENTION_TARGETS: readonly RetentionTarget[] = [
   { category: 'route-invocations', retention_days: 7 },
   { category: 'tool-invocations', retention_days: 14 },
   { category: 'harness-run-output', retention_days: 14 },
+  // agent-activity (EI-7499): the last unpruned local-diagnostic table in this
+  // class — 270MB / ~48K rows-a-day, unbounded. 7d matches its longest real
+  // reader lookback (fleet-ekg/scan.ts's readSessionEvents, embedDays default
+  // 3d; every other reader — reconcile-loop-routines.ts, loop.ts,
+  // watchdog.ts's collectLoopStalledSignals — bounds by routines.last_fired_at,
+  // always recent) — verified by grepping every `harness_shared.agent_activity`
+  // reader before picking the window, not by copying the sibling default.
+  { category: 'agent-activity', retention_days: 7 },
 ];
 
 /** Bound the per-tick prune loop so a backlog can never run a tick away; the

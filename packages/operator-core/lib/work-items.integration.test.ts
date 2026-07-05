@@ -697,6 +697,38 @@ describe('unified work_items surface (real PG)', () => {
     expect((await wi.getWorkItem(bug.id))?.takenAt).toBeNull();
   });
 
+  // WI-3006 (follow-up to WI-2990): a claimed issue-family item's lastProgressAt was
+  // ALWAYS null (issueToWorkItem hardcoded it, and work_items:checkpoint's progress-bump
+  // only ever matched feature-family rows) — so classifyItemActivity fell back to takenAt
+  // forever and degraded any issue-family claim held past STALE_MS with zero checkpoints
+  // to 'stalled'/reclaimable, even while genuinely being worked. markIssueProgress (mirroring
+  // markFeatureProgress) + issueToWorkItem now reading the real column fixes this.
+  it('markIssueProgress bumps lastProgressAt for a claimed issue-family item; no-ops elsewhere', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+
+    // Unclaimed issue-family row: no-op (matches markFeatureProgress's own guard).
+    expect(await wi.markIssueProgress(bug.id)).toBe(false);
+    expect((await wi.getWorkItem(bug.id))?.lastProgressAt).toBeNull();
+
+    await wi.claimWorkItem(bug.id, 'agC');
+    // Freshly claimed: takenAt is real (su-3c289535's WI-2990 fix), lastProgressAt still null.
+    const freshlyClaimed = await wi.getWorkItem(bug.id);
+    expect(freshlyClaimed?.takenAt).not.toBeNull();
+    expect(freshlyClaimed?.lastProgressAt).toBeNull();
+
+    // A checkpoint-equivalent progress bump on the CLAIMED row persists.
+    expect(await wi.markIssueProgress(bug.id)).toBe(true);
+    const progressed = await wi.getWorkItem(bug.id);
+    expect(progressed?.lastProgressAt).not.toBeNull();
+
+    // Cross-family no-op: markIssueProgress never touches a feature-family row (item_kind
+    // filter excludes it), even when claimed — markFeatureProgress owns that row instead.
+    await wi.claimWorkItem(feat.id, 'agB', { harness: 'papercup' });
+    expect(await wi.markIssueProgress(feat.id)).toBe(false);
+    expect((await db.sql`SELECT last_progress_at FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].last_progress_at).toBeNull();
+  });
+
   it('cross-kind blocking: a bug blocks a feature via one coord_links edge (D-003)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'blocked feat', harness: 'papercup', createdBy: 'agA' });

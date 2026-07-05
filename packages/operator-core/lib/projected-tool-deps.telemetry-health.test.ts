@@ -82,6 +82,11 @@ describe("telemetry health counters (EI-7431)", () => {
   });
 
   it("counts swallowed telemetry insert failures and stamps the last failure time", async () => {
+    // WI-2995: the flush path intentionally console.warns on a swallowed
+    // insert failure (that's what this test exercises) — spy it so the
+    // expected warning doesn't trip vitest's fail-on-console.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
     expect(getTelemetryHealth()).toEqual({
       droppedRows: 0,
       insertErrorCount: 0,
@@ -96,5 +101,6 @@ describe("telemetry health counters (EI-7431)", () => {
     expect(health.droppedRows).toBe(0);
     expect(health.insertErrorCount).toBe(1);
     expect(Date.parse(health.lastInsertErrorAt ?? "")).toBeGreaterThan(0);
+    expect(warn).toHaveBeenCalled();
   });
 });
