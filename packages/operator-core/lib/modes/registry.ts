@@ -11,15 +11,17 @@
  *     wake — the checkpoint re-injection pattern), so a mode's depth costs
  *     context only while you are IN it.
  *
- * AXES (D-006): same-axis modes exclude each other — mode:set AUTO-SWITCHES
- * (replaces the same-axis incumbent, auditing the displacement); cross-axis
- * modes stack ("auto + ideate" is the canonical legal stack). Overlays each
- * get their own axis key so overlays stack with everything including each
- * other. Absence of a row on an axis = that axis's default posture (manual /
- * directed), deliberately NOT stored.
+ * AXES (D-006, corrected by owner 2026-07-05): same-axis modes exclude each
+ * other — mode:set AUTO-SWITCHES (replaces the same-axis incumbent, auditing
+ * the displacement); everything else STACKS. The ONLY exclusive family is
+ * autonomy (auto vs cold-auto — one dial, two positions). Ideate, drain, and
+ * grade are overlays, each with its own axis key, stackable with everything —
+ * including each other (owner's example: ideate on why the drain isn't
+ * working). Absence of a row on an axis = that axis's default posture
+ * (manual / no-overlay), deliberately NOT stored.
  */
 
-export type ModeAxis = 'autonomy' | 'work-source' | 'overlay';
+export type ModeAxis = 'autonomy' | 'overlay';
 
 export interface ModeDef {
   /** Stable id — what mode:set takes and agent_modes.mode stores. */
@@ -68,7 +70,7 @@ are in one or the other, never both.)`,
   },
   {
     id: 'ideate',
-    axis: 'work-source',
+    axis: 'overlay',
     title: 'IDEATE — invent net-new, don’t just patch',
     oneLiner: 'run deliberate ideation passes and file net-new feature proposals; with AUTO on, build the strongest',
     contract: `## IDEATE mode — binding contract
@@ -77,12 +79,12 @@ observations, curation:state-of-hive, rubric freshness/trends, and past graded
 proposals — and file net-new feature proposals via improvements:capture
 { kind: "feature" }. Blue-sky is licensed; no quality gate or quota. With AUTO
 also on, BUILD the strongest ideas (flag-ON, disclosed), don't just file them.
-(Same axis as DRAIN — inventing new work and clearing existing backlog are
-opposite directions; setting one clears the other.)`,
+(Overlay: stacks with anything — including DRAIN; ideating on why the drain
+itself isn't working is a legitimate combination.)`,
   },
   {
     id: 'drain',
-    axis: 'work-source',
+    axis: 'overlay',
     title: 'DRAIN — drive the queue to terminal',
     oneLiner: 'take a work-item backlog and drive every item to a terminal state; completion integrity over speed',
     contract: `## DRAIN mode — binding contract
@@ -96,8 +98,8 @@ canary items — a kind, a harness, oldest-first, or everything?"). Then: triage
 claim-spec (never hand-assignment) · monitor each wake · wind down with a
 residue report of what genuinely needs the owner. Completion integrity
 outranks burn-down speed — nothing goes terminal without evidence. DRAIN
-implies AUTO on the autonomy axis.
-(Same axis as IDEATE; setting one clears the other.)`,
+implies AUTO: if the autonomy axis is empty, also mode:set auto — a drain runs
+autonomously. (Overlay: stacks with anything, including IDEATE.)`,
   },
   {
     id: 'grade',

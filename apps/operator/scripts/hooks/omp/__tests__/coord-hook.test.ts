@@ -614,6 +614,24 @@ describe('isMcpEndpointCurl + mcpCurlBlockReason (MCP-endpoint-curl guard, ornit
     expect(isMcpEndpointCurl('cd /tmp && curl http://localhost:9071/api/mcp')).toBe(true);
     expect(isMcpEndpointCurl('xh POST 127.0.0.1:9071/api/mcp')).toBe(true);
   });
+  it('ALSO matches the python/node HTTP-client evasion (iter24: curl blocked → python urllib)', () => {
+    // The exact iter24 shape: python3 -c "import urllib.request; …Request('…/api/mcp?superuser=1')"
+    expect(
+      isMcpEndpointCurl(
+        `python3 -c "import json, urllib.request; urllib.request.Request('http://localhost:3070/api/mcp?superuser=1', data=b'{}')"`,
+      ),
+    ).toBe(true);
+    // requests, httpx, node fetch, aiohttp — any scripting client hitting the MCP endpoint
+    expect(isMcpEndpointCurl(`python3 -c "import requests; requests.post('http://127.0.0.1:9071/api/mcp', json={})"`)).toBe(true);
+    expect(isMcpEndpointCurl(`python3 -c "import httpx; httpx.post('http://localhost:3070/mcp')"`)).toBe(true);
+    expect(isMcpEndpointCurl(`node -e "fetch('http://localhost:3070/api/mcp?superuser=1')"`)).toBe(true);
+  });
+  it('a scripting HTTP client to a NON-MCP target is still not matched (marker still required)', () => {
+    expect(isMcpEndpointCurl(`python3 -c "import requests; requests.get('https://api.github.com')"`)).toBe(false);
+    expect(
+      isMcpEndpointCurl(`python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:3070/api/health')"`),
+    ).toBe(false);
+  });
   it('does NOT match a legitimate external curl or a non-MCP local API probe', () => {
     expect(isMcpEndpointCurl('curl https://api.github.com/repos/x/y')).toBe(false);
     expect(isMcpEndpointCurl('curl -s https://example.com/mcp-docs')).toBe(false); // remote host, mcp-docs not a /mcp path

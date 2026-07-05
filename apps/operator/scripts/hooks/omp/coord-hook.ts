@@ -2165,22 +2165,25 @@ export function isMcpEndpointCurl(cmd: string): boolean {
 export function mcpCurlBlockReason(count = 1): string {
   if (count <= MCP_CURL_BLOCK_ESCALATE_AFTER) {
     return (
-      'mcp-curl-blocked: you tried to reach the Papercusp MCP server over HTTP (curl/wget). The ' +
-      'Papercusp tools are NOT an HTTP endpoint you curl — they are TOOLS you call directly, the ' +
-      'same way you call Bash. To read your plan, call `plans:get` directly (or `tools:invoke ' +
-      '{name:"plans:get", args:{slug:"<your plan slug>", harness:"papercusp"}}`); for any other ' +
-      'Papercusp tool use `tools:invoke {name:"<group>:<verb>", args:{…}}`. Do NOT curl ' +
-      'localhost / :9071 / /api/mcp — retry your intended action as a direct tool call now.'
+      'mcp-curl-blocked: you tried to reach the Papercusp MCP server over HTTP (curl / wget / a ' +
+      'python or node http client). The Papercusp tools are NOT an HTTP endpoint you fetch — they ' +
+      'are TOOLS you call directly, the same way you call Bash. Do NOT curl OR script an HTTP ' +
+      'request (urllib / requests / fetch) to localhost / :9071 / /api/mcp — it will never work. ' +
+      'To read your plan, call `plans:get` directly (or `tools:invoke {name:"plans:get", ' +
+      'args:{slug:"<your plan slug>", harness:"papercusp"}}`); for any other Papercusp tool use ' +
+      '`tools:invoke {name:"<group>:<verb>", args:{…}}`. Retry your intended action as a direct ' +
+      'tool call now.'
     );
   }
   return (
-    `mcp-curl-blocked (×${count}): STOP — you have tried to curl the Papercusp MCP endpoint ` +
-    `${count} times and every attempt is blocked. The MCP server is NOT reachable by curl from ` +
-    'here and never will be; the Papercusp tools are TOOLS you invoke directly. Your next action ' +
-    'must be EXACTLY: `tools:invoke {name:"plans:get", args:{slug:"<your plan slug>", ' +
-    'harness:"papercusp"}}` to read your plan, or `tools:invoke {name:"<group>:<verb>", args:{…}}` ' +
-    'for any other tool. Do NOT run curl/wget against localhost again. If you genuinely cannot ' +
-    'proceed, report the blocker via `coord:send` to your launcher.'
+    `mcp-curl-blocked (×${count}): STOP — you have tried to reach the Papercusp MCP endpoint over ` +
+    `HTTP ${count} times (curl and/or a python/node http client) and every attempt is blocked. The ` +
+    'MCP server is NOT reachable over HTTP from here and never will be; the Papercusp tools are ' +
+    'TOOLS you invoke directly. Your next action must be EXACTLY: `tools:invoke {name:"plans:get", ' +
+    'args:{slug:"<your plan slug>", harness:"papercusp"}}` to read your plan, or `tools:invoke ' +
+    '{name:"<group>:<verb>", args:{…}}` for any other tool. Do NOT curl OR script an HTTP request ' +
+    'to localhost again. If you genuinely cannot proceed, report the blocker via `coord:send` to ' +
+    'your launcher.'
   );
 }
 
