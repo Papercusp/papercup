@@ -298,10 +298,10 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     summary: i.body,
     state: i.state,
     assignee: i.assignee,
-    // Issue-family has no claim-time / progress columns (it isn't the dispatched,
-    // lease-held backlog) — agent-activity-liveness-truth P-001 applies only to the
-    // feature family. classifyItemActivity returns 'free' for a null-taken item anyway.
-    takenAt: null,
+    // Issue-family uses engineer_issues.assigned_at as its claim-time anchor.
+    // The unified work-item surface must expose it as takenAt so assignment
+    // views/reapers do not read a live issue claim as unanchored.
+    takenAt: i.assignedAt,
     lastProgressAt: null,
     assignedBy: i.assignedBy,
     severity: i.severity,

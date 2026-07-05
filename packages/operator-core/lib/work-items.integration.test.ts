@@ -684,10 +684,17 @@ describe('unified work_items surface (real PG)', () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     expect((await wi.claimWorkItem(feat.id, 'agB', { harness: 'papercup' }))?.assignee).toBe('agB');
-    expect((await wi.claimWorkItem(bug.id, 'agC'))?.assignee).toBe('agC');
+    const claimedBug = await wi.claimWorkItem(bug.id, 'agC');
+    expect(claimedBug?.assignee).toBe('agC');
+    expect(claimedBug?.takenAt).not.toBeNull();
     expect((await db.sql`SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].taken_by).toBe('agB');
+    const [claimedBugRow] = await db.sql<{ assignee: string | null; assigned_at: Date | null }[]>`
+      SELECT assignee, assigned_at FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`;
+    expect(claimedBugRow.assignee).toBe('agC');
+    expect(claimedBugRow.assigned_at).not.toBeNull();
     expect((await wi.releaseWorkItem(feat.id, { harness: 'papercup' }))?.assignee).toBeNull();
     expect((await wi.releaseWorkItem(bug.id))?.assignee).toBeNull();
+    expect((await wi.getWorkItem(bug.id))?.takenAt).toBeNull();
   });
 
   it('cross-kind blocking: a bug blocks a feature via one coord_links edge (D-003)', async () => {
@@ -786,6 +793,7 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
     expect(task.family).toBe('issue');
     expect(task.assignee).toBe('bee-3');
     expect(task.assignedBy).toBe('queen'); // the durable delegator
+    expect(task.takenAt).not.toBeNull();
     const [row] = await db.sql<{ assignee: string | null; assigned_by: string | null; assigned_at: Date | null }[]>`
       SELECT assignee, assigned_by, assigned_at FROM harness_shared.engineer_issues WHERE issue_id = ${task.id}`;
     expect(row.assignee).toBe('bee-3');
