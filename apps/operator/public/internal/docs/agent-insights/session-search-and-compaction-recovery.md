@@ -42,7 +42,9 @@ Two moves:
    call context — you never discover your own transcript path — and a live-tail
    fallback scans the un-ingested tail of your own JSONL so even the last few
    minutes are searchable. `mode:'verbatim'` is the exact-quote finder;
-   `mode:'hybrid'` (default) is the semantic/paraphrase finder.
+   `mode:'hybrid'` (default) is the semantic/paraphrase finder. Both modes cover
+   pre-compaction turns just the same — compaction only removes them from your
+   live context window, never from the index.
 
 The compaction summary you produce should **say this out loud** so the successor
 knows to retrieve. The rendered compaction floor
