@@ -72,8 +72,8 @@ describe('shared_session_presence (real PG, mig 434)', () => {
   });
 
   async function rowsFor(devicePubkey: string) {
-    return db.sql<{ owner_id: string; intent: string | null; hive_slug: string | null }[]>`
-      SELECT owner_id, intent, hive_slug FROM harness_shared.shared_session_presence
+    return db.sql<{ owner_id: string; intent: string | null; pot_slug: string | null }[]>`
+      SELECT owner_id, intent, pot_slug FROM harness_shared.shared_session_presence
       WHERE workspace_id = ${WS} AND device_pubkey = ${devicePubkey} ORDER BY owner_id`;
   }
 
@@ -92,7 +92,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     );
     const rows = await rowsFor('dev-A');
     expect(rows.map((r) => r.owner_id)).toEqual(['s-bee-1', 'su-a1']);
-    expect(rows[0].hive_slug).toBe('hive-home');
+    expect(rows[0].pot_slug).toBe('hive-home');
   });
 
   it('the next frame REPLACES the set: absentees dropped, arrivals upserted, survivors updated', async () => {
@@ -201,7 +201,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
       { workspaceId: WS, hiveSlug: 'hive-home', staleMs: 24 * 60 * 60 * 1000, nowMs },
       db.sql,
     );
-    expect(wide.every((r) => r.hive_slug === 'hive-home')).toBe(true);
+    expect(wide.every((r) => r.pot_slug === 'hive-home')).toBe(true);
     expect(wide.length).toBeGreaterThan(0);
   });
 

@@ -11,7 +11,7 @@ const NOW = 1_700_000_000_000;
 const row = {
   workspace_id: 'ws-1',
   harness_slug: 'papercup',
-  hive_slug: 'papercup-hive',
+  pot_slug: 'papercup-hive',
   github_user_id: 4242,
   machine_label: 'thinkpad',
   device_pubkey: 'pubAAA',
@@ -84,7 +84,7 @@ describe('queryFederatedPresenceRows — filtering', () => {
 describe('mapSessionPresenceRow (P-006 session-grain roster leg)', () => {
   const row = {
     workspace_id: 'ws1',
-    hive_slug: 'hive-home',
+    pot_slug: 'hive-home',
     harness_slug: 'hive-home',
     owner_id: 'su-abc12345-6789',
     kind: 'su',
