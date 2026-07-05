@@ -447,7 +447,15 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     try { await callTool(sharedClient, 'locks:release', { all_mine: true }); } catch {}
   });
 
-  itLive('same ?client=, different Mcp-Session-Id → distinct owners (session 2 busy)', async () => {
+  itLive('same ?client=, different Mcp-Session-Id → SAME owner (explicit SID outranks transport id, EI-7066)', async () => {
+    // EXPLICIT-SID-BEFORE-TRANSPORT-ID (EI-7066, 2026-07-03): an explicit per-launch
+    // SID (`x-papercusp-client` header or `?client=`) now ALWAYS outranks the
+    // per-CONNECTION Mcp-Session-Id — a reconnecting claude session (cold-loop
+    // recycle, dropped transport) must keep ONE identity, and a shell's interactive
+    // calls + its lock hook (separate connections) must share one owner (no
+    // manual-claim-vs-hook self-deadlock). So two connections with the same
+    // ?client= are the SAME owner regardless of transport id: the second acquire
+    // is a same-owner refresh (stable lock_id), never busy.
     const r1 = await callTool(sharedClient, 'locks:acquire', {
       paths: [identPath], intent: 'session 1', ttl_sec: 60,
     }, { mcpSessionId: 'e2e-sess-1' });
@@ -457,8 +465,25 @@ describe('§12 per-session identity via Mcp-Session-Id', () => {
     const r2 = await callTool(sharedClient, 'locks:acquire', {
       paths: [identPath], intent: 'session 2', ttl_sec: 60,
     }, { mcpSessionId: 'e2e-sess-2' });
+    expect(r2.ok).toBe(true);
+    expect(r2.lock_id).toBe(sess1Lock);
+  }, 20_000);
+
+  itLive('no explicit SID at all → Mcp-Session-Id fallback still separates owners (session 2 busy)', async () => {
+    // The transport id remains the LAST-resort identity for callers that supplied
+    // no SID — there it must still isolate per-connection owners.
+    const noSidPath = uniquePath('s12/identity/no-sid.ts');
+    const r1 = await callTool('', 'locks:acquire', {
+      paths: [noSidPath], intent: 'anon session 1', ttl_sec: 60,
+    }, { mcpSessionId: 'e2e-anon-1' });
+    expect(r1.ok).toBe(true);
+
+    const r2 = await callTool('', 'locks:acquire', {
+      paths: [noSidPath], intent: 'anon session 2', ttl_sec: 60,
+    }, { mcpSessionId: 'e2e-anon-2' });
     expect(r2.ok).toBe(false);
     expect((r2.busy as unknown[])?.length).toBeGreaterThanOrEqual(1);
+    try { await callTool('', 'locks:release', { all_mine: true }, { mcpSessionId: 'e2e-anon-1' }); } catch { /* cleanup */ }
   }, 20_000);
 
   itLive('same ?client=, no Mcp-Session-Id → same owner (refresh, stable lock_id)', async () => {
