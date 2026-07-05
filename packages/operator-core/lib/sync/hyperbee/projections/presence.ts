@@ -92,7 +92,7 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
-       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts, fed_hlc,
+       intent, current_view, last_seen_at, schema_version, pot_slug, fed_ts, fed_hlc,
        author_pubkey)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
@@ -106,7 +106,7 @@ async function writeToPg(
       current_view = EXCLUDED.current_view,
       last_seen_at = EXCLUDED.last_seen_at,
       schema_version = EXCLUDED.schema_version,
-      hive_slug = EXCLUDED.hive_slug,
+      pot_slug = EXCLUDED.pot_slug,
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc,
       author_pubkey = EXCLUDED.author_pubkey
