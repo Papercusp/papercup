@@ -39,7 +39,7 @@ import {
 } from "../workspace-brain-scope";
 
 /** The overwatch role id (C-2, B-01). */
-export const OVERWATCH_ROLE = "overwatch";
+export const OVERWATCH_ROLE = "kettle";
 
 /** The hive blueprint overwatch monitors (D-005 per-hive scope; v1 = one hive). */
 export const OVERWATCH_BLUEPRINT_ID = "coding";

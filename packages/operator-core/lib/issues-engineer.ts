@@ -113,7 +113,7 @@ export interface EngineerIssue {
   assigneeRank: number | null;
   /** Who last set assigneeRank — 'bee' | 'queen' (+ dual-accept twins 'cup' | 'mug';
    *  the propose/dispose audit, D-008). */
-  rankWriter: 'bee' | 'queen' | 'cup' | 'mug' | null;
+  rankWriter: 'cup' | 'mug' | null;
   /** When assigneeRank was last written. */
   rankUpdatedAt: string | null;
   /** Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403):
@@ -262,7 +262,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     signalOrigin: (r.signal_origin ?? DEFAULT_SIGNAL_ORIGIN) as SignalOrigin,
     assigneeRank: r.assignee_rank,
     rankWriter:
-      r.rank_writer === 'bee' || r.rank_writer === 'queen' || r.rank_writer === 'cup' || r.rank_writer === 'mug'
+      r.rank_writer === 'cup' || r.rank_writer === 'mug'
         ? r.rank_writer
         : null,
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),

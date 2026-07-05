@@ -34,13 +34,13 @@ export default defineTool({
   name: 'work_items:reorder',
   profile: 'engineer',
   description:
-    "Move one OR many work-items to a position (`rank`, 0-based, 0 = head-of-line) within their assignee's ordered work-list — peers shift down. Single: { id, rank }. Many: items:[{ id, rank, writer?, harness? }]. `writer`='bee' (default, a bee resequencing its own list) | 'queen' (Queen overlay). Returns { ok, results:[{ ok, id, … | error }], counts }.",
+    "Move one OR many work-items to a position (`rank`, 0-based, 0 = head-of-line) within their assignee's ordered work-list — peers shift down. Single: { id, rank }. Many: items:[{ id, rank, writer?, harness? }]. `writer`='cup' (default, a cup resequencing its own list) | 'mug' (Mug overlay). Returns { ok, results:[{ ok, id, … | error }], counts }.",
   guidance: {
     when: "You are a bee resequencing your own work-list, or the Queen injecting/rebalancing — for one item or several at once. Claim items first; rank is per-assignee.",
     notWhen:
       'You only want to START an item (work_items:claim) or change its lifecycle state (work_items:set_state). Reorder changes ORDER, not ownership or state.',
     chaining:
-      'work_items:claim → work_items:reorder → fleet:assignments { agent } to see the ordered queue. The Queen: fleet:assignments → work_items:reorder { writer:"queen", items:[…] }.',
+      'work_items:claim → work_items:reorder → fleet:assignments { agent } to see the ordered queue. The Mug: fleet:assignments → work_items:reorder { writer:"mug", items:[…] }.',
     seeAlso: [
       'work_items:set_priority (GLOBAL backlog order, pre-claim — not a per-assignee rank)',
       'work_items:co_locate (pin work to a Swarm rather than order a queue)',
@@ -55,7 +55,7 @@ export default defineTool({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `rank`)'),
       rank: z.number().int().min(0).optional().describe('single shorthand: target position (use with `id`)'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('reorder many items at once — each { id, rank, writer?, harness? }'),
-      writer: z.enum([...RANK_WRITERS] as [string, ...string[]]).optional().describe('default writer for the inline/items (bee default)'),
+      writer: z.enum([...RANK_WRITERS] as [string, ...string[]]).optional().describe('default writer for the inline/items (cup default)'),
       harness: z.string().max(80).optional(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && a.rank !== undefined), {
@@ -72,7 +72,7 @@ export default defineTool({
       items,
       async (it) => {
         const result = await reorderWorkItem(it.id, it.rank, {
-          writer: ((it.writer ?? args.writer) as 'bee' | 'queen' | undefined) ?? 'bee',
+          writer: ((it.writer ?? args.writer) as 'cup' | 'mug' | undefined) ?? 'cup',
           harness: it.harness ?? args.harness,
         });
         return 'error' in result

@@ -90,6 +90,30 @@ export function shouldShowPtyPlaceholder(s: {
   return !s.hasOutput && !s.error && s.exitedCode === null;
 }
 
+/**
+ * True iff the chunk contains bytes beyond the Windows ConPTY init
+ * handshake `\x1b[6n` (cursor-position query). On Windows, portable_pty's
+ * ConPTY emits that quad before the child writes anything — and when
+ * wsl.exe wedges under ConPTY it is the ONLY thing ever emitted (WI-3033),
+ * so counting it as output hid the placeholder over a permanently dead
+ * pane. Mirrors pty.rs `contains_real_output`, which keeps the Rust-side
+ * silent-wedge watchdog armed through the same bytes. Pure + exported for
+ * unit tests (same rationale as shouldShowPtyPlaceholder above).
+ */
+export function chunkHasRealOutput(bytes: Uint8Array): boolean {
+  let i = 0;
+  while (
+    i + 4 <= bytes.length &&
+    bytes[i] === 0x1b &&
+    bytes[i + 1] === 0x5b &&
+    bytes[i + 2] === 0x36 &&
+    bytes[i + 3] === 0x6e
+  ) {
+    i += 4;
+  }
+  return i < bytes.length;
+}
+
 export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
   const { command, args, cwd, env, readOnly = false, rows = 20, cols = 100, onExit, onSpawnError, placeholder = 'Starting…' } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -184,11 +208,15 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
       }
       unlistenData = await listen<{ id: string; data: string }>('pty-data', (ev) => {
         if (ev.payload.id !== id) return;
-        if (!hasOutputRef.current) {
+        const bytes = base64ToBytes(ev.payload.data);
+        // Only REAL child output reveals the terminal — the bare ConPTY
+        // handshake must keep the placeholder up (WI-3033, see
+        // chunkHasRealOutput). Every byte is still written to xterm.
+        if (!hasOutputRef.current && chunkHasRealOutput(bytes)) {
           hasOutputRef.current = true;
-          setHasOutput(true); // first byte → reveal the terminal, hide placeholder
+          setHasOutput(true); // first real byte → reveal terminal, hide placeholder
         }
-        term.write(base64ToBytes(ev.payload.data));
+        term.write(bytes);
       });
       unlistenExit = await listen<{ id: string; code: number }>('pty-exit', (ev) => {
         if (ev.payload.id !== id) return;

@@ -242,7 +242,7 @@ export function liveBeeRunDeps(args: {
       const res = await spawnAgentInHarness({
         workspaceId: args.workspaceId,
         harness: args.harness,
-        role: 'bee',
+        role: 'cup',
         brief,
         parentSpawnId: args.parentSpawnId ?? null,
         parentRole: 'apiary-runner',

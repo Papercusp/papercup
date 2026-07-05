@@ -89,7 +89,7 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
         const out = await spawnAgentInHarness({
           workspaceId: activeWorkspaceId(),
           harness,
-          role: 'bee',
+          role: 'cup',
           spawnId,
           brief,
           tier: 'deep',

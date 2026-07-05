@@ -36,7 +36,7 @@ export interface BgHostJournalMetrics {
 }
 
 export interface RoleTurnSuccess {
-  role: 'bee' | 'queen' | 'overwatch';
+  role: 'cup' | 'mug' | 'kettle';
   totalTerminalTurns: number;
   successfulTurns: number;
   successRate: number | null;
@@ -191,7 +191,7 @@ export function computeSoakReport(input: SoakReportInput): HiveSoakReport {
 }
 
 type SpawnAggRow = {
-  child_role: 'bee' | 'queen' | 'overwatch';
+  child_role: 'cup' | 'mug' | 'kettle';
   total_terminal: number;
   successful: number;
 };
@@ -241,7 +241,7 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
 
 function roleSuccessRowsToView(rows: SpawnAggRow[]): RoleTurnSuccess[] {
   const byRole = new Map(rows.map((row) => [row.child_role, row]));
-  return (['bee', 'queen', 'overwatch'] as const).map((role) => {
+  return (['cup', 'mug', 'kettle'] as const).map((role) => {
     const row = byRole.get(role);
     const totalTerminalTurns = Number(row?.total_terminal ?? 0);
     const successfulTurns = Number(row?.successful ?? 0);
@@ -298,15 +298,15 @@ export async function readHiveSoakReport(
     probeBgHostTicker(),
     readBgHostJournal(windowHours),
     sql<SpawnAggRow[]>`
-      SELECT child_role,
+      SELECT CASE child_role WHEN 'bee' THEN 'cup' WHEN 'queen' THEN 'mug' WHEN 'overwatch' THEN 'kettle' ELSE child_role END AS child_role,
              count(*) FILTER (WHERE status IN ('done', 'failed', 'cancelled', 'reaped'))::int AS total_terminal,
              count(*) FILTER (WHERE status = 'done')::int AS successful
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ANY(${sql.array(surveySlugs)})
-         AND child_role IN ('bee', 'queen', 'overwatch')
+         AND child_role IN ('bee', 'queen', 'overwatch', 'cup', 'mug', 'kettle')
          AND started_at >= now() - make_interval(hours => ${windowHours})
-       GROUP BY child_role
+       GROUP BY 1
     `,
     sql<CurseAggRow[]>`
       SELECT count(*)::int AS placements_seen,

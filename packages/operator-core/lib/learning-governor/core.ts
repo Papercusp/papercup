@@ -174,8 +174,8 @@ export function scoutLoopId(harnessSlug: string): string {
   return `scout:${harnessSlug}`;
 }
 
-/** The `scout:` loop_id prefix — the workspace-ceiling rule sums every registrant under it. */
-export const SCOUT_LOOP_ID_PREFIX = 'scout:';
+/** The `blender:` loop_id prefix — the workspace-ceiling rule sums every registrant under it. */
+export const SCOUT_LOOP_ID_PREFIX = 'blender:';
 
 /** Is this a per-hive scout registrant (`scout:<hive>`)? Used to scope the workspace ceiling. */
 export function isScoutLoopId(loopId: string): boolean {

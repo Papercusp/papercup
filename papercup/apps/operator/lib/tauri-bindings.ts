@@ -112,6 +112,12 @@ export const commands = {
 	 *  No-op returning false on non-Windows (Linux focus stays the wmctrl path).
 	 */
 	focusWindowByTitle: (title: string) => __TAURI_INVOKE<boolean>("focus_window_by_title", { title }),
+	/**
+	 *  Run `spec` in a new external Windows Terminal window (conhost fallback).
+	 *  Returns the launcher pid when one is observable. Windows-only by design:
+	 *  on macOS/Linux the embedded pty terminal works and stays the UX.
+	 */
+	externalConsoleRun: (spec: ExternalConsoleSpec) => typedError<number | null, string>(__TAURI_INVOKE("external_console_run", { spec })),
 	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),
 	// Show/hide the native sibling terminal. Returns the new running state.
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
@@ -212,6 +218,23 @@ export type EnvInfo = {
 	tooltip: string,
 	reachable: boolean,
 	isSelf: boolean,
+};
+
+/**
+ *  A command to run in an external native terminal window. Mirror of the
+ *  TS-side spec assembled in OnboardingConsole.tsx (camelCase over the wire).
+ */
+export type ExternalConsoleSpec = {
+	command: string,
+	args?: string[],
+	// Linux path INSIDE the WSL distro (the operator + command live there).
+	cwd: string,
+	env?: { [key in string]: string },
+	/**
+	 *  Exact window title — the frontend focuses the window by this title
+	 *  later (focus_window_by_title), so it must be stable per surface.
+	 */
+	title: string,
 };
 
 export type NativeTerminalStatus = {

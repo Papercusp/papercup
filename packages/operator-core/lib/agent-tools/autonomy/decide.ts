@@ -92,7 +92,7 @@ export default defineTool({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ ok: true, workspaceId: ws, role: 'overwatch', decision }, null, 2),
+            text: JSON.stringify({ ok: true, workspaceId: ws, role: 'kettle', decision }, null, 2),
           },
         ],
       };

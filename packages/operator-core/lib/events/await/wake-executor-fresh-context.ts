@@ -93,7 +93,7 @@ async function defaultSpawnFreshBee(input: {
   const res = await spawnAgentInHarness({
     workspaceId: input.workspaceId,
     harness: input.harness,
-    role: 'bee',
+    role: 'cup',
     featureId: input.workItemId,
     brief: input.brief,
     parentSpawnId: input.parentSpawnId,

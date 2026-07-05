@@ -250,8 +250,15 @@ function startRequestServers(): void {
           ? proactiveGcMbEnv
           : undefined,
       onTrip: ({ rssMb }) => {
+        // INVOCATION_ID = running under systemd (Restart=always). The tauri-dev
+        // OWN-PORT operator is instead supervised by dev-operator-ifneeded.sh's
+        // restart loop (WI-3042) — name the actual supervisor so a recycle in
+        // either context reads correctly in the log.
+        const supervisor = process.env.INVOCATION_ID
+          ? 'systemd will restart'
+          : 'expecting the spawning wrapper (dev-operator-ifneeded.sh restart loop) to restart';
         console.warn(
-          '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',
+          `[memory-watchdog] RSS high-water mark tripped — draining + recycling host (${supervisor})`,
           { rssMb, rssLimitMb: limitMb },
         );
         // Drain in-flight HTTP + tear down the P2P substrate (Hypercores,

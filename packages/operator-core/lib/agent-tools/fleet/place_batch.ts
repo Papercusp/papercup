@@ -403,7 +403,7 @@ export async function executeBatch(opts: {
     const res = await spawnAgentInHarness({
       workspaceId,
       harness: task.harness,
-      role: 'bee',
+      role: 'cup',
       spawnId: reservedSpawnId,
       featureId: task.id,
       itemId: task.id,
@@ -456,7 +456,7 @@ export async function executeBatch(opts: {
         placements.push({ task: d.task.id, action: 'inject-raced', bee, reason: 'item was claimed by another agent first — left as-is' });
         continue;
       }
-      await reorderWorkItem(d.task.id, d.rank ?? 0, { writer: 'queen', harness });
+      await reorderWorkItem(d.task.id, d.rank ?? 0, { writer: 'mug', harness });
       const summary = `Queen warm-inject: ${d.task.id}`;
       // The lane's own brief (payload.brief) + the Queen's batch overlay — so the
       // injected bee gets ITS wave lane's missing context, not just a generic note

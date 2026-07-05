@@ -28,7 +28,7 @@
  */
 
 /** The coord-owner prefix for the Scout role (mirrors `queen:`/`bee:` role scoping). */
-export const SCOUT_COORD_PREFIX = 'scout:';
+export const SCOUT_COORD_PREFIX = 'blender:';
 
 /**
  * The stable coord owner id the Scout cycle for `hiveSlug` reads-as and the Queen
