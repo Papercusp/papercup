@@ -601,7 +601,8 @@ export async function reconcileLoopRoutines(
         if (via === 'stuck-backstop') {
           console.warn(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
-              `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry (circuit fed 'error')`,
+              `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry ` +
+              `(circuit fed 'error'${quickRetry ? ', WI-2714 quick-retry leg' : ''})`,
           );
         }
       }
