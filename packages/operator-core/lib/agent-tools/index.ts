@@ -720,6 +720,10 @@ import './work_items/claim';
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
 import './work_items/release';
+// Park a work-item resumably: checkpoint + release + broadcast in one verb
+// (modes-and-intake-ux-2026-07-05 P-004 — the named form of "parked with a
+// complete resume checkpoint").
+import './work_items/park';
 // (work_items:batch RETIRED — bulk-endpoint-standardization-2026-06-21 P-002: every
 // verb it multiplexed — claim/release/set_state/set_priority/tag/subscribe — is now
 // itself dual-arity (items[]/ids[] via _bulk), so the op-multiplexer is redundant.)
