@@ -80,10 +80,15 @@ export default defineTool({
               already_running: true,
               unit: a.unit,
               candidate: a.candidate ?? null,
+              current_head: a.current_head ?? null,
+              current_candidate: a.current_candidate ?? null,
+              candidate_stale: a.candidate_stale ?? false,
+              quiet_cut_sec: a.quiet_cut_sec ?? null,
               started_at: a.started_at ?? null,
               eta_sec: a.eta_sec ?? null,
-              note:
-                'A checkpoint run for this root is already in flight; its quiet-cut auto-judges the newest tip anyway once it finishes, so a re-fire is usually unnecessary — wait for it, or pass force:true to launch a second one anyway.',
+              note: a.candidate_stale
+                ? 'A checkpoint run for this root is already in flight, but it is judging an older candidate than the current quiet-cut-eligible staging state; pass force:true to launch a fresh run if you need the newer commits judged now.'
+                : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is usually unnecessary — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
         ],

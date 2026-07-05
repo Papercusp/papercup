@@ -97,6 +97,10 @@ describe('release:checkpoint-run', () => {
         active: true,
         unit: 'papercup-green-checkpoint-manual-1fxzuva',
         candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+        current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        candidate_stale: true,
+        quiet_cut_sec: 240,
         started_at: '2026-07-02T10:44:43Z',
         eta_sec: 2100,
       },
@@ -112,10 +116,14 @@ describe('release:checkpoint-run', () => {
       already_running: true,
       unit: 'papercup-green-checkpoint-manual-1fxzuva',
       candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+      current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+      current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+      candidate_stale: true,
+      quiet_cut_sec: 240,
       started_at: '2026-07-02T10:44:43Z',
       eta_sec: 2100,
     });
-    expect(String(b.note)).toMatch(/already in flight|force:true/i);
+    expect(String(b.note)).toMatch(/older candidate|force:true/i);
   });
 
   it('passes force:true through to the launch primitive', async () => {

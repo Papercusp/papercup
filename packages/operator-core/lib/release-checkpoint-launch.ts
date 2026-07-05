@@ -76,6 +76,16 @@ export interface ActiveCheckpointCheck {
   /** Best-effort candidate sha the live run is judging (parsed from its log's first
    *  "checkpointing candidate <sha>" line) — null if the log isn't readable yet/at all. */
   candidate?: string | null;
+  /** Current integration checkout HEAD at status-read time. */
+  current_head?: string | null;
+  /** Current quiet-cut-eligible candidate at status-read time. May differ from `candidate`
+   *  while a long checkpoint run is active and newer quiet commits landed after it started. */
+  current_candidate?: string | null;
+  /** True when the active run's parsed candidate is older/different than the current
+   *  quiet-cut-eligible candidate. */
+  candidate_stale?: boolean;
+  /** Quiet-cut window used to resolve `current_candidate`; null when it could not be checked. */
+  quiet_cut_sec?: number | null;
   /** ISO timestamp the unit actually started running (systemd ExecMainStartTimestamp). */
   started_at?: string | null;
   /** Seconds remaining before the suite's own runtime ceiling (CHECKPOINT_MAX_RUNTIME_SEC)
@@ -112,6 +122,58 @@ function parseSystemctlShow(stdout: string): Record<string, string> {
   return out;
 }
 
+function quietCutSecFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.PAPERCUSP_QUIET_CUT === '0') return 0;
+  const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 240;
+}
+
+function gitOutput(root: string, args: string[], execFn: ExecSyncLike): string | null {
+  const r = execFn('git', ['-C', root, ...args]);
+  if (r.status !== 0) return null;
+  const out = r.stdout.trim();
+  return out.length > 0 ? out : null;
+}
+
+function gitOk(root: string, args: string[], execFn: ExecSyncLike): boolean {
+  return execFn('git', ['-C', root, ...args]).status === 0;
+}
+
+function shaMatches(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): {
+  current_head: string | null;
+  current_candidate: string | null;
+  quiet_cut_sec: number | null;
+} {
+  const currentHead = gitOutput(root, ['rev-parse', 'HEAD'], execFn);
+  if (!currentHead) return { current_head: null, current_candidate: null, quiet_cut_sec: null };
+
+  const quietSec = quietCutSecFromEnv();
+  if (quietSec <= 0) return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
+
+  const tipTimeRaw = gitOutput(root, ['show', '-s', '--format=%ct', currentHead], execFn);
+  const tipTime = tipTimeRaw == null ? NaN : Number(tipTimeRaw);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(tipTime) || nowSec - tipTime >= quietSec) {
+    return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
+  }
+
+  const cutoff = String(nowSec - quietSec);
+  const aged = gitOutput(root, ['rev-list', '-1', `--before=@${cutoff}`, 'HEAD'], execFn);
+  if (!aged || aged === currentHead) return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
+
+  const ready = gitOutput(root, ['rev-parse', '--verify', 'ready'], execFn);
+  if (ready && !gitOk(root, ['merge-base', '--is-ancestor', ready, aged], execFn)) {
+    return { current_head: currentHead, current_candidate: currentHead, quiet_cut_sec: quietSec };
+  }
+
+  return { current_head: currentHead, current_candidate: aged, quiet_cut_sec: quietSec };
+}
+
 /**
  * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
  * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
@@ -146,10 +208,14 @@ export function checkActiveCheckpointRun(
   const etaSec = elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null;
   const logHead = readLogHead(`/tmp/${unit}.log`);
   const candidateMatch = logHead?.match(/checkpointing candidate (\S+)/);
+  const candidate = candidateMatch ? candidateMatch[1] : null;
+  const current = currentCheckpointCandidate(root, execFn);
   return {
     active: true,
     unit,
-    candidate: candidateMatch ? candidateMatch[1] : null,
+    candidate,
+    ...current,
+    candidate_stale: Boolean(candidate && current.current_candidate && !shaMatches(candidate, current.current_candidate)),
     started_at: startedAt,
     eta_sec: etaSec,
   };

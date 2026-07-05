@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
+import { acquireWithContentionRetry } from './contention-retry';
 
 export default defineTool({
   name: 'locks:queue',
@@ -34,12 +35,20 @@ export default defineTool({
     await ensureBootstrap();
     const sql = getTxPool();
 
-    const result = await readQueue(sql, {
-      coordinationDomain,
-      paths: args.paths,
-      owner: args.owner,
-      includeCompleted: args.include_completed,
-    });
+    // EI-7454: readQueue scopes a 1s statement_timeout to this read (plan §6.1) —
+    // under fleet-load DB contention a plain indexed SELECT can transiently trip
+    // it (pg 57014) even though the query itself is cheap. Retry-with-backoff
+    // (same helper file-lock-guard.ts already uses for the analogous acquire-path
+    // 57014/55P03) rides out the dip instead of surfacing a raw tool error to a
+    // diagnostic-only read.
+    const result = await acquireWithContentionRetry(() =>
+      readQueue(sql, {
+        coordinationDomain,
+        paths: args.paths,
+        owner: args.owner,
+        includeCompleted: args.include_completed,
+      }),
+    );
 
     return {
       content: [

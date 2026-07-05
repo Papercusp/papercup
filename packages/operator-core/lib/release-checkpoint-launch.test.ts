@@ -102,17 +102,50 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
 
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
-    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })(cmd, args);
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n...');
     const r = checkActiveCheckpointRun('/tree', execFn, readLogHead);
 
     expect(r.active).toBe(true);
     expect(r.unit).toBe(checkpointUnitForRoot('/tree'));
     expect(r.candidate).toBe('98817077');
+    expect(r.current_head).toBe('98817077fd79af9dfee00076a1c6e90445d268af');
+    expect(r.current_candidate).toBe('98817077fd79af9dfee00076a1c6e90445d268af');
+    expect(r.candidate_stale).toBe(false);
     expect(r.started_at).toBe(startedAt);
     expect(r.eta_sec).toBeGreaterThan(0);
     expect(r.eta_sec).toBeLessThanOrEqual(CHECKPOINT_MAX_RUNTIME_SEC);
     expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
+  });
+
+  it('marks an active run stale when its log candidate differs from the current quiet-cut candidate', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const oldCandidate = '1111111111111111111111111111111111111111';
+    const currentHead = '3333333333333333333333333333333333333333';
+    const quietCandidate = '2222222222222222222222222222222222222222';
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })(cmd, args);
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('ready')) return { status: 1, stdout: '', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    const r = checkActiveCheckpointRun('/tree', execFn, () => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`);
+
+    expect(r).toMatchObject({
+      active: true,
+      candidate: oldCandidate.slice(0, 8),
+      current_head: currentHead,
+      current_candidate: quietCandidate,
+      candidate_stale: true,
+      quiet_cut_sec: 240,
+    });
   });
 
   it('treats activating/reloading as active too, and tolerates an unreadable log (candidate:null)', () => {
