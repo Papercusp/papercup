@@ -340,6 +340,65 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(p2.forceCompacted).toEqual(['hot']); // retried, succeeded
     expect(injectMock).toHaveBeenCalledTimes(2);
   });
+
+  it('over limit but inside the grace band ⇒ warned, NOT forced (owner grace 2026-07-04)', async () => {
+    // sonnet = 200k window ⇒ forceAt = min(158k × 1.3 ≈ 205k, 200k − 10k) = 190k.
+    specMock.mockResolvedValue('sonnet');
+    estimateMock.mockResolvedValue(170_000); // over the 158k limit, under 190k
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.overLimit).toEqual(['hot']); // the 100% warn band is unchanged
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('the window cap bites before 130% on a 200k-window session (forces at window − margin)', async () => {
+    specMock.mockResolvedValue('sonnet'); // 200k window ⇒ cap 190k, though 1.3 × 158k ≈ 205k
+    estimateMock.mockResolvedValue(195_000); // past the cap, still under 1.3 × limit
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.forceCompacted).toEqual(['hot']);
+  });
+
+  it('a [1m] session gets the full 130% band: forced at ≥390k on a 300k limit, not before', async () => {
+    specMock.mockResolvedValue('sonnet[1m]'); // 1M window ⇒ forceAt = 300k × 1.3 = 390k
+    estimateMock.mockImplementation(async (owner: string) => (owner === 'past' ? 400_000 : 350_000));
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/wide.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          { owner_id: 'warm', owner_label: 'su · warm', compaction_limit: 300_000 },
+          { owner_id: 'past', owner_label: 'su · past', compaction_limit: 300_000 },
+        ],
+      }),
+    );
+    expect(out.overLimit).toEqual(['warm', 'past']); // both past 100%
+    expect(out.forceCompacted).toEqual(['past']); // only the ≥130% one is forced
+  });
+
+  it('unknown window ⇒ falls back to the overshoot-factor bound (limit × 1.2); a spawn-record [1m] spec restores the full band', async () => {
+    specMock.mockResolvedValue(null); // fs/argv resolver blind (the fleet-bee case)
+    estimateMock.mockResolvedValue(370_000); // 300k limit: ≥ 1.2 × 300k = 360k, < 1.3 × 300k = 390k
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/bee.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const seeded300 = [{ owner_id: 'bee', owner_label: 'bee · b', compaction_limit: 300_000 }];
+    // No spawn record ⇒ window unknown ⇒ conservative 360k bound ⇒ forced at 370k.
+    const blind = await checkCompactionCompliance(fakeSql({ seeded: seeded300 }));
+    expect(blind.forceCompacted).toEqual(['bee']);
+    resetForceCompactedForTests();
+    // Same session WITH a [1m] spawn record ⇒ real 1M window ⇒ full 390k band ⇒ not forced yet.
+    const known = await checkCompactionCompliance(
+      fakeSql({
+        seeded: seeded300,
+        spawnRecords: { bee: { model_spec: 'claude-fable-5[1m]', model_tier: null } },
+      }),
+    );
+    expect(known.overLimit).toEqual(['bee']);
+    expect(known.forceCompacted).toEqual([]);
+  });
 });
 
 describe('live-config reach (agent-managed-compaction P-017)', () => {

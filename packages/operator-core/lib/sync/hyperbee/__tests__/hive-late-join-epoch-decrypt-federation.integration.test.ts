@@ -14,6 +14,8 @@
  *   1. OWNER authors a plan + a work_item, ENCRYPTED-on-write under the current
  *      epoch (the real `buildEpochEncryptCapability` over the real
  *      XChaCha20-Poly1305 + sealed-box crypto, `resolveHiveEpochCrypto(true)`).
+ *      WI-2102: epoch 0 is the plaintext BASELINE (encryptOp returns null there),
+ *      so the owner first advances to epoch 1 and encrypts the content under it.
  *   2. The epoch ADVANCES (real `advanceHiveEpoch`, federated hive_settings).
  *   3. A MEMBER joins AFTER the advance — so it missed the boundary wrap and holds
  *      NO epoch keys. The owner's ciphertext replicates to the joiner first; the
@@ -27,7 +29,7 @@
  *      the joiner through the REAL `hive-epoch-keys` projection, whose
  *      `onEpochKeyApplied` hook queues the (hive, epoch) for the drain.
  *   5. `drainQueuedEpochContent` re-runs the joiner's DEFERRED content ops through
- *      the SAME decrypt gate — now the joiner can unwrap its epoch-0 key, decrypt,
+ *      the SAME decrypt gate — now the joiner can unwrap its epoch-1 key, decrypt,
  *      and the REAL plan + work_item projections land the PLAINTEXT rows in the
  *      joiner's PG.
  *
@@ -257,7 +259,7 @@ function workItemValue(): EngineerIssueRow {
 
 describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an epoch advance ends with the owner’s decrypted plan + work_item (hermetic, testcontainer PG)', () => {
   it(
-    'owner encrypts plan+work_item @epoch0 → epoch advances → member joins (no keys, content DEFERS) → WI-887 reconcile grants [0..current] → drain decrypts both rows into the joiner PG',
+    'owner encrypts plan+work_item @epoch1 → epoch advances → member joins (no keys, content DEFERS) → WI-887 reconcile grants [0..current] → drain decrypts both rows into the joiner PG',
     async () => {
       const crypto = await resolveHiveEpochCrypto(true); // the prod flip’s real crypto
       const dbOwner = await freshDb('wi894Owner');
@@ -435,7 +437,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       expect(drainQueue.length, 'each applied key row queued its (hive, epoch) for the drain').toBeGreaterThan(0);
 
       // ── 6. DRAIN: re-run the deferred content through the SAME gate — the joiner can
-      //       now unwrap epoch-0 → decrypt → the real projections land the plaintext rows. ──
+      //       now unwrap epoch-1 → decrypt → the real projections land the plaintext rows. ──
       const reapplied = await drainQueuedEpochContent({ pending, drainQueue, applyImpl: joinerApply });
       expect(reapplied, 'both deferred content ops re-applied + converged').toBe(2);
       expect(pending.size(), 'the defer buffer drained — no silent loss').toBe(0);

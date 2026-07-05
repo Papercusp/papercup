@@ -125,6 +125,15 @@ export default defineConfig({
       // Shim node:module so createRequire EXISTS (no-op) in the browser; the require it
       // returns throws only if called, which never happens in the SPA.
       { find: /^node:module$/, replacement: resolve(import.meta.dirname, 'src/shims/node-module-browser.ts') },
+      // Server-only test-infra native addons: testcontainers → dockerode /
+      // ssh-remote-port-forward → ssh2 → cpu-features. ssh2 + cpu-features each
+      // require() a native `.node` binary at module scope, which Rolldown
+      // HARD-FAILS to resolve during its full-graph scan (even though the whole
+      // subtree is tree-shaken out of the SPA) — this was failing the
+      // operator-vite build and freezing every deploy at green-checkpoint.
+      // Shim the two native packages; the pure-JS layers above them externalize
+      // cleanly. The SPA never runs Docker/SSH test-container code.
+      { find: /^(ssh2|cpu-features)(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/testcontainers-native-browser.ts') },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

@@ -165,6 +165,28 @@ describe('resolveHiveReleaseEnv', () => {
     expect(res.env.PAPERCUSP_GREEN_CMD).toBe(DEFAULT_GREEN_CMD); // coding greenCmd null + no testCommand
   });
 
+  it('WI-2828: a subject hive with NO explicit frontend/spaBuildWorkspace knob still gets an ' +
+    'explicit SKIP — never silently inherits @papercusp/operator-vite via omission', async () => {
+    // The exact quartermaster-shaped trap: a plain coding hive that declares neither
+    // `fromRepo.frontend: false` NOR an explicit `releaseGate.spaBuildWorkspace`. Before the
+    // durable fix, PAPERCUSP_SPA_BUILD_WORKSPACE was left UNSET here, and release-config.ts's
+    // own fallback silently assumed '@papercusp/operator-vite' — red-pinning any hive whose
+    // tree doesn't carry that workspace. The opt-in-only default must set it to '' explicitly.
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'quartermaster-shaped', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('quartermaster-shaped', 'default');
+    expect(res.env.PAPERCUSP_SPA_BUILD_WORKSPACE).toBe('');
+  });
+
+  it('WI-2828: an explicit releaseGate.spaBuildWorkspace opt-in is threaded verbatim', async () => {
+    const dir = makeHiveDir('coding', { extraKnobs: '  releaseGate:\n    spaBuildWorkspace: "@my-org/my-spa"', git: true });
+    registryProjects = [{ slug: 'has-own-spa', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('has-own-spa', 'default');
+    expect(res.env.PAPERCUSP_SPA_BUILD_WORKSPACE).toBe('@my-org/my-spa');
+  });
+
   it('greenCmd defaults to the testCommand knob when set (the gate runs the SAME test command)', async () => {
     const dir = makeHiveDir('coding', { git: true, extraKnobs: '  testCommand: npm run test:affected' });
     registryProjects = [{ slug: 'mycode', path: dir, self_repo: true }];

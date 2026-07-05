@@ -25,7 +25,10 @@ import {
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import {
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
+  COMPACTION_OVERSHOOT_FACTOR,
+  COMPACTION_WINDOW_MARGIN_TOKENS,
   defaultCompactionLimitForSpec,
+  modelWindowForSpec,
   type ModelTier,
 } from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
@@ -34,8 +37,18 @@ import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cach
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
-/** At/over this fraction of the limit ⇒ the agent should have compacted already. */
+/** At/over this fraction of the limit ⇒ the agent should have compacted already —
+ *  the WARN + surface band (over-limit log, unflushed-claim surfacing). */
 const OVER_LIMIT_FRACTION = 1.0;
+/** The P-012 FORCE-COMPACT rung fires only past this fraction of the limit (owner
+ *  directive 2026-07-04: let an agent run a little over before the watchdog seizes
+ *  the turn — the soft limit is a nudge target, not a hard wall). ALWAYS capped at
+ *  the hard window − margin: 130% of the 158k default on a 200k window is ~205k,
+ *  PAST the window, so an uncapped force would fire only after the session died on
+ *  "Prompt is too long" — the cap forces at ~190k instead. Window unresolvable ⇒
+ *  fall back to limit × COMPACTION_OVERSHOOT_FACTOR, the bound clampCompactionLimit
+ *  already guarantees safe for whatever window legally produced that limit. */
+const FORCE_COMPACT_FRACTION = 1.3;
 /** Max limit-less live sessions seeded per pass — bounds fs/PG work per sweep. */
 const MAX_SEEDS_PER_PASS = 25;
 
@@ -178,18 +191,21 @@ const FORCE_COMPACT_FOCUS =
 /** The continuation-turn text opened on the compacted context (WI-1804 auto-continue
  *  hosts) — re-orient first (a compaction is a stale-snapshot boundary). */
 const FORCE_COMPACT_CONTINUE_NOTE =
-  'The compaction watchdog compacted you because you ran PAST your soft context limit without ' +
-  'self-compacting. This is a fresh turn on the compacted context: first re-run coord:orient to ' +
-  'reconcile live fleet/claim/inbox state, then resume your current unit of work.';
+  'The compaction watchdog compacted you because you ran PAST your soft context limit — through ' +
+  'the ~30% grace band above it — without self-compacting. This is a fresh turn on the compacted ' +
+  'context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then resume your ' +
+  'current unit of work.';
 
 /**
  * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE-COMPACT
- * rung. An over-limit session has ignored the per-turn reminder (rendered since 85%)
- * AND crossed its own soft limit, so the watchdog TYPES `/compact` into its OWN live
- * psu-pty TUI — idle-gated by the host (mode:'turn'/'compact' runs AFTER the current
- * turn ends), so it is safe to fire mid-turn. This catches a non-self-managing session
- * at ~100% instead of letting it drift toward the model window (the 2026-07-04 836k
- * incident). Best-effort; returns true only when the inject actually reached a live host.
+ * rung. An over-limit session has ignored the per-turn reminder (rendered since 85%),
+ * crossed its own soft limit, AND run through the FORCE_COMPACT_FRACTION grace band
+ * (owner 2026-07-04), so the watchdog TYPES `/compact` into its OWN live psu-pty TUI —
+ * idle-gated by the host (mode:'turn'/'compact' runs AFTER the current turn ends), so
+ * it is safe to fire mid-turn. This catches a non-self-managing session at ~130% of
+ * its limit (window-capped) instead of letting it drift toward the model window (the
+ * 2026-07-04 836k incident). Best-effort; returns true only when the inject actually
+ * reached a live host.
  *
  * Flag-gated (COMPACTION_WATCHDOG_FORCE_COMPACT, default ON) — a runtime kill-switch
  * for this invasive rung. No live psu-pty host (a dead/beating session, or a non-psu
@@ -280,14 +296,48 @@ async function resolveSpawnRecordLimit(
   }
 }
 
+/**
+ * Best-effort hard-window resolve for the force-threshold cap, mirroring the
+ * limit-seeding precedence (spawn record's spec/tier beats the fs/argv resolver —
+ * a fleet bee's settings.json rarely names the model, and mis-reading a [1m]
+ * member as 200k would silently collapse its force grace back to ~100%).
+ * null ⇒ unknown window (caller falls back to the overshoot-factor bound).
+ */
+async function resolveWindowForOwner(
+  sql: Sql,
+  ownerId: string,
+  tierMenu: () => Promise<readonly ModelTier[] | undefined>,
+): Promise<number | null> {
+  try {
+    const rows = await sql<{ model_spec: string | null; model_tier: string | null }[]>`
+      SELECT model_spec, model_tier
+        FROM harness_shared.spawned_agents
+       WHERE spawn_id = ${ownerId} OR session_owner = ${ownerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const row = rows[0];
+    let spec = row?.model_spec ?? null;
+    if (!spec && row?.model_tier) {
+      const tiers = await tierMenu();
+      spec = tiers?.find((t) => t.name === row.model_tier)?.spec ?? null;
+    }
+    spec ??= await resolveModelSpecForOwner(ownerId);
+    return spec ? modelWindowForSpec(spec) : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface CompactionComplianceResult {
   /** owners whose estimate was refreshed this pass. */
   estimated: string[];
   /** owners currently over their compaction_limit. */
   overLimit: string[];
   /** P-012: over-limit owners the watchdog FORCE-COMPACTED this pass (injected
-   *  /compact into their live psu-pty). Subset of overLimit — excludes owners with
-   *  no live host, an already-in-flight force (deduped), or the flag OFF. */
+   *  /compact into their live psu-pty). Subset of overLimit — excludes owners still
+   *  inside the FORCE_COMPACT_FRACTION grace band, with no live host, an
+   *  already-in-flight force (deduped), or the flag OFF. */
   forceCompacted: string[];
   /** P-017: running sessions whose STALE-above-cap compaction_limit was lowered to
    *  the current shaped default this pass (a policy change reaching a live session
@@ -506,12 +556,23 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
               `should have called session:request_compaction.${flushNote}`,
           );
         }
-        // P-012 L2 mechanical backstop: the agent ran past its soft limit without
-        // self-compacting — force it now (idle-gated inject into its own psu-pty).
-        // Deduped per crossing; a failed/hostless attempt is NOT recorded, so it
-        // retries next pass until it lands (or the session recovers below).
+        // P-012 L2 mechanical backstop — but only past the FORCE grace band
+        // (owner 2026-07-04): warned at 100%, forced at min(limit × 1.3,
+        // window − margin). Deduped per crossing; a failed/hostless/under-band
+        // attempt is NOT recorded, so it retries next pass until it lands (or
+        // the session recovers below).
         if (!forceCompactedOwners.has(r.owner_id)) {
-          if (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit)) {
+          const window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+          const forceAt = Math.min(
+            r.compaction_limit * FORCE_COMPACT_FRACTION,
+            window != null
+              ? window - COMPACTION_WINDOW_MARGIN_TOKENS
+              : r.compaction_limit * COMPACTION_OVERSHOOT_FACTOR,
+          );
+          if (
+            est >= forceAt &&
+            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit))
+          ) {
             forceCompactedOwners.add(r.owner_id);
             out.forceCompacted.push(r.owner_id);
           }

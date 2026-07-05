@@ -36,7 +36,9 @@ export interface HiveReleaseGate {
   releaseRef: string;
   /** Explicit green command, or null to fall back to testCommand → DEFAULT_GREEN_CMD. */
   greenCmd: string | null;
-  /** Empty string skips the operator SPA build for repos that have no operator frontend. */
+  /** WI-2828: opt-in only — defaults to '' (skip the operator-SPA build leg) unless the
+   *  hive's blueprint explicitly sets releaseGate.spaBuildWorkspace to the workspace it
+   *  actually carries. Never silently defaults to '@papercusp/operator-vite'. */
   spaBuildWorkspace?: string | null;
   /** Deploy target (leg 3). null/undefined ⇒ green-gate only (no release-trigger). */
   deploy: { systemdUnit?: string; healthUrl?: string } | null;
@@ -75,12 +77,25 @@ export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null
   const codingProfile = outputKind === 'repo-commit' && knobs.requiresRepo !== false;
   const enabled = gate.enabled === true || (gate.enabled !== false && codingProfile);
   const fromRepo = (knobs.fromRepo ?? {}) as Record<string, unknown>;
+  // WI-2828 durable fix (opt-in polarity): default to SKIPPING the operator-SPA build leg
+  // for every subject hive, unless it EXPLICITLY opts in via releaseGate.spaBuildWorkspace.
+  // The old default (null, when neither `fromRepo.frontend:false` nor an explicit
+  // spaBuildWorkspace knob was set) left PAPERCUSP_SPA_BUILD_WORKSPACE unset, and
+  // release-config.ts's OWN fallback then silently assumed '@papercusp/operator-vite' —
+  // so ANY foreign/subject hive that doesn't carry that workspace (e.g. quartermaster,
+  // whose frontend is apps/desktop) had its gate's SPA-build leg try to build a workspace
+  // that doesn't exist in its tree and red-pin the whole gate (21 consecutive reds before
+  // the quartermaster blueprint's own `fromRepo.frontend:false` bridge unblocked it).
+  // `fromRepo.frontend === false` still forces the skip explicitly (kept for clarity /
+  // back-compat with existing blueprints that already set it); the operator-home
+  // (papercusp itself) is unaffected — it returns via the isOperatorHome early exit in
+  // resolveHiveReleaseEnv before this value is ever read.
   const spaBuildWorkspace =
     fromRepo.frontend === false
       ? ''
       : typeof gate.spaBuildWorkspace === 'string'
         ? gate.spaBuildWorkspace
-        : null;
+        : '';
   return {
     enabled,
     integrationBranch: typeof gate.integrationBranch === 'string' ? gate.integrationBranch : 'staging',
@@ -164,9 +179,10 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
-  if (gate.spaBuildWorkspace != null) {
-    env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace;
-  }
+  // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate
+  // defaults it to '' rather than null) so a subject hive can never fall through to
+  // release-config.ts's own '@papercusp/operator-vite' fallback by omission.
+  env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace ?? '';
   return {
     enabled: true,
     env,
