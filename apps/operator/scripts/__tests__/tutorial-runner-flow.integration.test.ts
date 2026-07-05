@@ -90,6 +90,18 @@ function startOperator(sections: unknown[]): Promise<{
           res.end(JSON.stringify(wizardState));
           return;
         }
+        if (url.pathname === '/api/desktop/docs-qa') {
+          // WI-2844: Q&A is answered SERVER-SIDE now — the runner POSTs the
+          // question here and streams the answer. Emit an SSE citation + delta so
+          // the test proves the ask flow round-trips to the operator (no CLI spawn).
+          res.setHeader('content-type', 'text/event-stream');
+          res.end(
+            'event: citation\ndata: {"slug":"system/harness","title":"Harness","url":"/internal/docs/system/harness"}\n\n' +
+              'event: delta\ndata: {"text":"FAKE_DOCS_QA_ANSWER: a harness is a project crew."}\n\n' +
+              'event: done\ndata: {}\n\n',
+          );
+          return;
+        }
         res.statusCode = 404;
         res.end('{}');
       });
@@ -198,7 +210,7 @@ describe('deterministic tutorial runner — end to end', () => {
   );
 
   it(
-    '[2] shows Details verbatim; a free-form question one-shots the agent, then [1] continues',
+    '[2] shows Details verbatim; a free-form question hits the docs-qa endpoint, then [1] continues',
     async () => {
       const { server, port } = await startOperator(TWO_SECTIONS);
       try {
@@ -210,8 +222,10 @@ describe('deterministic tutorial runner — end to end', () => {
         expect(r.code, r.stderr).toBe(0);
         // [2] rendered the section's Details verbatim.
         expect(r.stdout).toContain('DETAILS_ONE_VERBATIM.');
-        // The free-form question was routed to the (fake) agent one-shot and surfaced.
-        expect(r.stdout).toContain('FAKE_AGENT_ANSWER');
+        // The free-form question was routed to POST /api/desktop/docs-qa and the
+        // streamed answer + its doc citation surfaced (WI-2844).
+        expect(r.stdout).toContain('FAKE_DOCS_QA_ANSWER');
+        expect(r.stdout).toContain('/internal/docs/system/harness');
       } finally {
         server.close();
       }

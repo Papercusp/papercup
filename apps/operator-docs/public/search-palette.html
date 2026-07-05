@@ -407,7 +407,21 @@
         if (answer && cites.length) {
           for (const c of cites) {
             const a = document.createElement('a');
-            a.href = c.url || `/internal/docs/${c.slug}`;
+            // Citations arrive from the agent answer stream — only http(s) may become
+            // an href (a javascript: URI here is click-to-XSS), and the slug fallback
+            // is stripped to path-safe chars so it can't smuggle a scheme or traversal.
+            let href = '';
+            if (c.url) {
+              try {
+                const u = new URL(c.url, location.origin);
+                if (u.protocol === 'https:' || u.protocol === 'http:') href = u.href;
+              } catch { /* invalid URL — fall back to the slug */ }
+            }
+            if (!href) {
+              const slug = String(c.slug || '').replace(/[^A-Za-z0-9/_-]/g, '').replace(/^\/+/, '');
+              href = `/internal/docs/${slug}`;
+            }
+            a.href = href;
             a.textContent = c.title || c.slug;
             citesEl.appendChild(a);
           }

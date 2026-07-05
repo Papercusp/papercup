@@ -3,12 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   OPTION_LINE,
   SHELL_TABS,
-  buildQaCommand,
-  buildQaPrompt,
   chapterEmoji,
+  consumeSse,
   defaultTab,
   firstIndexOfChapter,
-  installedQaBackends,
   interpretReply,
   nextTab,
   parseArgs,
@@ -69,59 +67,54 @@ describe('interpretReply — the deterministic navigation (NO LLM decides this)'
   });
 });
 
-describe('buildQaCommand — one-shot to the installed CLI', () => {
-  it('claude/omp use print mode; codex uses exec', () => {
-    expect(buildQaCommand('claude', '/abs/claude', 'Q')).toEqual({
-      command: '/abs/claude',
-      args: ['-p', 'Q'],
-    });
-    expect(buildQaCommand('codex', '/abs/codex', 'Q')).toEqual({
-      command: '/abs/codex',
-      args: ['exec', 'Q'],
-    });
-    expect(buildQaCommand('omp', null, 'Q').args).toEqual(['-p', 'Q']);
-  });
-  it('falls back to the bare command name when no absolute bin is known', () => {
-    expect(buildQaCommand('claude', null, 'Q').command).toBe('claude');
-  });
-});
+describe('consumeSse — parses the docs-qa SSE stream (WI-2844)', () => {
+  // Build a fetch-style body whose getReader() yields the given string parts.
+  function bodyOf(...parts) {
+    const enc = new TextEncoder();
+    let i = 0;
+    return {
+      getReader() {
+        return {
+          read() {
+            return i < parts.length
+              ? Promise.resolve({ done: false, value: enc.encode(parts[i++]) })
+              : Promise.resolve({ done: true, value: undefined });
+          },
+        };
+      },
+    };
+  }
 
-describe('buildQaPrompt — grounds the answer in the section', () => {
-  const section = {
-    title: 'Plans',
-    brief: 'A plan is a durable list of items.',
-    details: 'Plans live in Postgres and agents work from them.',
-    docSlugs: ['system/plans'],
-  };
-  it('includes the section title, its details, its docs, and the question', () => {
-    const p = buildQaPrompt(section, 'how do I start one?');
-    expect(p).toContain('Plans'); // section title
-    expect(p).toContain('Plans live in Postgres'); // section details
-    expect(p).toContain('/internal/docs/system/plans'); // linked docs, as a path
-    expect(p).toContain('User question: how do I start one?');
-  });
-  it('instructs the agent to use our doc tooling and NOT force the section (B2-#2)', () => {
-    const p = buildQaPrompt(section, 'how do I start one?');
-    expect(p).toContain('docs:search');
-    expect(p).toContain('docs:get');
-    expect(p).toMatch(/do NOT assume it is about this section|something else entirely/);
-  });
-  it('degrades gracefully with no section', () => {
-    expect(buildQaPrompt(null, 'hi')).toContain('User question: hi');
-  });
-});
-
-describe('installedQaBackends — which agents can answer (B2-#3)', () => {
-  it('returns only backends with a resolved path, in preference order', () => {
-    expect(installedQaBackends({ claude: '/u/claude', codex: null, omp: '/u/omp', pi: '/u/pi' })).toEqual([
-      'claude',
-      'omp',
+  it('emits (event, JSON-parsed data) per frame', async () => {
+    const events = [];
+    await consumeSse(
+      bodyOf(
+        'event: citation\ndata: {"slug":"system/plans","title":"Plans"}\n\n' +
+          'event: delta\ndata: {"text":"hi "}\n\nevent: delta\ndata: {"text":"there"}\n\n',
+      ),
+      (e, d) => events.push([e, d]),
+    );
+    expect(events).toEqual([
+      ['citation', { slug: 'system/plans', title: 'Plans' }],
+      ['delta', { text: 'hi ' }],
+      ['delta', { text: 'there' }],
     ]);
   });
-  it('is empty when nothing is installed (caller routes to setup — B2-#3b)', () => {
-    expect(installedQaBackends({ claude: null, codex: null, omp: null, pi: null })).toEqual([]);
-    expect(installedQaBackends({})).toEqual([]);
-    expect(installedQaBackends(undefined)).toEqual([]);
+
+  it('reassembles a frame split across chunks (needs_backend)', async () => {
+    const events = [];
+    await consumeSse(bodyOf('event: needs_bac', 'kend\ndata: {"message":"none"}\n\n'), (e, d) =>
+      events.push([e, d]),
+    );
+    expect(events).toEqual([['needs_backend', { message: 'none' }]]);
+  });
+
+  it('ignores frames with no data line (heartbeats)', async () => {
+    const events = [];
+    await consumeSse(bodyOf(': keep-alive\n\nevent: error\ndata: {"message":"boom"}\n\n'), (e, d) =>
+      events.push([e, d]),
+    );
+    expect(events).toEqual([['error', { message: 'boom' }]]);
   });
 });
 

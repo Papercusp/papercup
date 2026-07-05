@@ -119,6 +119,45 @@ function stuckParkMs(intervalMs: number): number {
   return Math.max(base, intervalMs * 4);
 }
 
+/**
+ * QUICK-RETRY leg (WI-2714 — "recover-then-escalate, not escalate-only"). The classic
+ * stuck-park backstop above only attempts its first re-fire after a generous ~30min dwell
+ * (right, for the TERMINATION decision — a legitimately long turn must never be mistaken for
+ * a dead owner) but that same generous dwell was also gating the RETRY itself, so a member
+ * whose turn wedged on something recoverable (e.g. a stale `events:await` the wake-executor's
+ * inject channel can actually unstick) sat fully idle for the whole window, and 3 separate
+ * live incidents needed a leader to manually `coord:wake` it faster than the backstop would
+ * have on its own (throughput loss + leader toil + noisy human escalation).
+ *
+ * The fix decouples "safe to ATTEMPT another wake" from "safe to conclude the owner is dead":
+ * termination (checkUnreachableTerminalGuard) keeps its full dwell + reachability veto
+ * UNCHANGED below — this only adds an EARLIER, BOUNDED opportunity to retry the exact same
+ * re-arm-and-refire the classic path already performs, for the SAME quiet-parked candidates
+ * (`looksDeadOrStuck`, i.e. zero presence activity since the fire — a genuinely busy turn is
+ * never touched by either leg). Bounded by `quickRetryMaxAttempts()` consecutive errors so a
+ * truly-dead owner falls through to the classic (slower, dwell-gated) path — and from there,
+ * unchanged, to the reachability-vetoed terminal guard — rather than quick-retrying forever.
+ */
+const DEFAULT_QUICK_RETRY_PARK_MS = 10 * 60_000; // 10min — comfortably past a normal build/test/install tool call
+const DEFAULT_QUICK_RETRY_MAX_ATTEMPTS = 3;
+
+/** Floor for the quick-retry leg: env-overridable, floored at 3× the loop's own interval (same
+ *  "give a short-interval loop several real cycles first" idiom as `stuckParkMs`'s 4×, one less
+ *  since this is the SHORTER, earlier-firing leg). */
+function quickRetryParkMs(intervalMs: number): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_QUICK_RETRY_MS);
+  const base = Number.isFinite(env) && env > 0 ? env : DEFAULT_QUICK_RETRY_PARK_MS;
+  return Math.max(base, intervalMs * 3);
+}
+
+/** How many consecutive quick-retry attempts before falling back to the classic (dwell-gated)
+ *  stuck-park path. Env-overridable; <=0 disables the quick-retry leg entirely (fail-soft to
+ *  today's behavior — the classic path is untouched either way). */
+function quickRetryMaxAttempts(): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS);
+  return Number.isFinite(env) ? env : DEFAULT_QUICK_RETRY_MAX_ATTEMPTS;
+}
+
 /** WI-2339 (fix E) — the synthetic system principal the loud dead-loop escalation is attributed
  *  to, mirroring INFRA_LIVENESS_IDENTITY. Attributable + dedupable in the human inbox. */
 export const LOOP_DEATH_WATCHDOG_IDENTITY: AgentIdentity = {
@@ -410,6 +449,17 @@ export async function reconcileLoopRoutines(
         const consecutiveErrors = priorState?.consecutiveErrors ?? 0;
         const circuitOpen = consecutiveErrors >= circuitThreshold();
         const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
+        // WI-2714 quick-retry leg: eligible ONLY before the classic dwell (stuckParkElapsed
+        // already subsumes it), never once the circuit is open (that path is reserved for the
+        // terminal guard's decoupled fast path below — quick-retrying a circuit-open loop would
+        // just fight the circuit's own backoff), and only for a bounded few attempts.
+        const quickRetryElapsed = nowMs - lastFiredMs >= quickRetryParkMs(intervalMs);
+        const quickRetryEligible =
+          quickRetryElapsed &&
+          !stuckParkElapsed &&
+          !circuitOpen &&
+          quickRetryMaxAttempts() > 0 &&
+          consecutiveErrors < quickRetryMaxAttempts();
 
         // Consult the dead-owner terminal guard when the loop is stuck-park OR circuit-open. Before
         // re-arming into the void yet again, check whether the owner is PERMANENTLY unreachable (no
@@ -483,15 +533,17 @@ export async function reconcileLoopRoutines(
           }
         }
 
-        // Not terminated. Re-arm to retry ONLY when the stuck-park dwell has actually elapsed (the
-        // original backstop behavior). A circuit-open-but-not-breached loop that has NOT yet reached
-        // the dwell window is left untouched — the fire-gate owns its cadence; re-arming it here would
-        // only fight the circuit's backoff.
-        if (!stuckParkElapsed) {
+        // Not terminated. Re-arm to retry when EITHER the classic stuck-park dwell has elapsed
+        // (the original backstop behavior) OR the WI-2714 quick-retry leg is eligible (a bounded
+        // early attempt, well before the classic dwell — see quickRetryEligible's doc above). A
+        // circuit-open-but-not-breached loop that has reached neither is left untouched — the
+        // fire-gate owns its cadence; re-arming it here would only fight the circuit's backoff.
+        if (!stuckParkElapsed && !quickRetryEligible) {
           continue;
         }
         completedAt = lastFiredMs;
         via = 'stuck-backstop';
+        if (quickRetryEligible && !stuckParkElapsed) quickRetry = true;
       }
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's
