@@ -21,6 +21,7 @@ import {
   detectContextDeathForOwner,
   estimateContextTokensForOwner,
   resolveModelSpecForOwner,
+  resolveSessionRef,
 } from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import {
@@ -546,6 +547,16 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
         nullEstimateStreak.set(r.owner_id, streak);
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
+          // A null estimate is BY DESIGN for OMP (self-compacts natively) and Codex (no
+          // compaction) — estimateContextTokensForOwner returns null for those agents
+          // (compaction-usage.ts), so they are NOT blind Claude sessions and must never
+          // raise a dark-telemetry alarm (false-positive fix, WI-2910). Only a genuinely
+          // blind Claude session (unreadable transcript / unresolved model spec) escalates.
+          const ref = await resolveSessionRef(r.owner_id);
+          if (ref?.agent === 'omp' || ref?.agent === 'codex') {
+            nullEstimateStreak.delete(r.owner_id); // by-design null — don't accumulate a streak
+            continue;
+          }
           out.bootConfigAlerts.push({ owner: r.owner_id, kind: 'dark-telemetry', detail: `${streak} null sweeps` });
           await escalateBootConfig(
             r.owner_id,
