@@ -186,10 +186,18 @@ function initialRoleBackends(): Record<string, SurfaceChoice> {
 export default function AgentSettingsPage() {
   const t = useLexicon();
   // ROLE_ROUTING_ROWS is a module-level const, so the role's DISPLAY label routes
-  // here at render (queen→brain). The `role` id (row.role) stays raw (D-001); other
-  // roles (overwatch/scout/su) have no TermKey so their label is unchanged.
+  // here at render to the active cast (classic/Pot: Mug / Kettle / Blender). The
+  // `role` id (row.role) stays raw (D-001). Note the scanner row IS the Scout/
+  // Blender role (its role id is 'scanner'); doc-steward/merge/etc have no cast
+  // key so their label is unchanged.
   const displayLabel = (row: { role: string; label: string }): string =>
-    row.role === 'queen' ? t('brain') : row.label;
+    row.role === 'queen'
+      ? t('brain')
+      : row.role === 'overwatch'
+        ? t('overwatch')
+        : row.role === 'scanner'
+          ? t('scout')
+          : row.label;
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);

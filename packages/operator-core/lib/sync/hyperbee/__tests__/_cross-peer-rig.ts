@@ -103,7 +103,7 @@ export async function rigAfterEach(): Promise<void> {
   __resetRemotePeersCacheForTests();
 }
 
-function makeWorkspaceRoot(prefix: string): string {
+export function makeWorkspaceRoot(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   cleanups.push(() => {
     try {
@@ -119,7 +119,7 @@ function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publ
   return (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
 }
 
-function makeIdentity(login: string, userId: number, keychainId: string) {
+export function makeIdentity(login: string, userId: number, keychainId: string) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const devicePubkey = rawPubkeyBase64(publicKey);
   return {
@@ -137,7 +137,7 @@ function makeIdentity(login: string, userId: number, keychainId: string) {
   };
 }
 
-function makeSwarm(bootstrap: unknown): HyperswarmLike {
+export function makeSwarm(bootstrap: unknown): HyperswarmLike {
   const swarm = new Hyperswarm({ bootstrap }) as unknown as HyperswarmLike & { destroy(): Promise<void> };
   cleanups.push(async () => {
     try {
@@ -149,7 +149,7 @@ function makeSwarm(bootstrap: unknown): HyperswarmLike {
   return swarm;
 }
 
-async function makeTestnet() {
+export async function makeTestnet() {
   const testnet = await createTestnet(3);
   cleanups.push(async () => {
     try {

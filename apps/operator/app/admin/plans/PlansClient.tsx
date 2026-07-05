@@ -36,6 +36,7 @@ import NewPlanButton from './NewPlanButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
+import { resolveLex } from '@/app/adv/create/use-create-data';
 import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
 import { queueTabs, queenLogLayers } from './queue-authorizer';
@@ -143,7 +144,8 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   improvement: 'Improvements',
   'standing-approval': 'Approvals',
   conversation: 'Questions',
-  'scout-grade': 'Scout',
+  // {scout} → active cast word at render ("Blender" in classic/Pot) via resolveLex.
+  'scout-grade': '{scout}',
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -527,7 +529,7 @@ export default function PlansClient() {
 
   // Heading text for the item list — reflects the active facets.
   const itemTitle = istatus.length
-    ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
+    ? istatus.map((s) => resolveLex(ITEM_FILTER_LABEL[s], t)).join(' · ')
     : 'All items';
 
   // Search-scope chips in PlanSearchResults (plans with needs-human /
@@ -1068,6 +1070,7 @@ function QueueFilterBar({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useLexicon();
   const activeCount =
     kinds.length + (showTodos ? 1 : 0) + (showBlocked ? 1 : 0) + (tierFilter !== 'all' ? 1 : 0);
   return (
@@ -1105,7 +1108,7 @@ function QueueFilterBar({
                 aria-pressed={active}
                 onClick={() => onToggleKind(k)}
               >
-                <span className="pc-queue__filter-label">{ITEM_FILTER_LABEL[k as ItemStatusFilter]}</span>
+                <span className="pc-queue__filter-label">{resolveLex(ITEM_FILTER_LABEL[k as ItemStatusFilter], t)}</span>
                 <span className="pc-queue__filter-count">{counts[k] ?? 0}</span>
               </button>
             );

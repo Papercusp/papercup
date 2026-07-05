@@ -1078,6 +1078,148 @@ describe('onToolCall irc guard (agent sessions only)', () => {
   });
 });
 
+describe('isTodoCall + todoLoopReason (todo doom-loop guard, ornith iter19 / WI-2382)', () => {
+  it('matches the legit todo tool in every spelling, strips a group prefix', () => {
+    expect(isTodoCall('todo')).toBe(true);
+    expect(isTodoCall('todo_write')).toBe(true);
+    expect(isTodoCall('todowrite')).toBe(true);
+    expect(isTodoCall('TodoWrite')).toBe(true); // case-insensitive
+    expect(isTodoCall('x:todo')).toBe(true); // strips a group prefix
+  });
+  it('does NOT sweep up the already-blocked task* panel tools or unrelated names', () => {
+    expect(isTodoCall('task')).toBe(false);
+    expect(isTodoCall('taskcreate')).toBe(false);
+    expect(isTodoCall('taskupdate')).toBe(false);
+    expect(isTodoCall('todos')).toBe(false); // bare verb `todos`, not `todo`/`todowrite`
+    expect(isTodoCall('plans:get')).toBe(false);
+    expect(isTodoCall('')).toBe(false);
+  });
+  it('the reason redirects to the next real action (plans:get) and escalates to a hard STOP', () => {
+    const base = todoLoopReason(TODO_LOOP_LIMIT + 1);
+    expect(base).toContain('todo-loop');
+    expect(base).toContain('plans:get');
+    expect(base).not.toContain('STOP —');
+    const hard = todoLoopReason(TODO_LOOP_ESCALATE_AFTER + 1);
+    expect(hard).toContain('STOP');
+    expect(hard).toContain('plans:get');
+  });
+});
+
+describe('onToolCall todo guard (agent sessions only)', () => {
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetTodoLoopState();
+  });
+  afterEach(() => {
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetTodoLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  // VARIED input each call — the whole point: the generic identical-call breaker cannot catch a
+  // todo loop whose list keeps CHANGING (iter19's leader rewrote its list every turn), so these must
+  // accumulate on the input-agnostic counter, not the identical-repeat one. Vary the list LENGTH
+  // (`(i % 3) + 1` → 1,2,3,1,2,3…, never 3 consecutive equal): toolCallLoopKey uses a replacer array
+  // that strips nested object keys, so ONLY a top-level-visible change (list length) makes the keys
+  // differ — matching how a real rewrite loop slips past the identical-repeat breaker.
+  const todoCall = (i: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'todo_write',
+      toolCallId: `t${i}`,
+      input: {
+        todos: Array.from({ length: (i % 3) + 1 }, (_, k) => ({ content: `s${k}`, status: 'pending' })),
+      },
+    });
+  const productiveCall = (i: number) =>
+    onToolCall({ type: 'tool_call', toolName: 'read', toolCallId: `r${i}`, input: { file_path: `/x/${i}` } });
+
+  it('allows the first TODO_LOOP_LIMIT todo calls, then blocks with an input-agnostic redirect', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let i = 0; i < TODO_LOOP_LIMIT; i++) {
+      expect((await todoCall(i)).block).toBeUndefined();
+    }
+    const over = await todoCall(TODO_LOOP_LIMIT);
+    expect(over.block).toBe(true);
+    expect(over.reason).toContain('todo-loop');
+  });
+
+  it('a productive non-todo tool call RESETS the run (legit interleaved todos never trip)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    // Right up to the limit…
+    for (let i = 0; i < TODO_LOOP_LIMIT; i++) expect((await todoCall(i)).block).toBeUndefined();
+    // …then a real action resets it, so the next full run of todos is allowed again.
+    expect((await productiveCall(0)).block).toBeUndefined();
+    for (let i = 0; i < TODO_LOOP_LIMIT; i++) {
+      expect((await todoCall(100 + i)).block).toBeUndefined();
+    }
+    // Only a run with NO productive call between finally trips.
+    expect((await todoCall(200)).block).toBe(true);
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    for (let i = 0; i < TODO_LOOP_LIMIT + 5; i++) {
+      expect((await todoCall(i)).block).toBeUndefined();
+    }
+  });
+
+  it('escalates the message to a hard STOP once the session ignores it past the threshold', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < TODO_LOOP_ESCALATE_AFTER + 1; i++) reason = (await todoCall(i)).reason ?? '';
+    expect(reason).toContain('STOP');
+  });
+
+  it('feeds the SHARED reflexive-block backstop — a pure todo loop HALTS after the threshold', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Warm-up: the allowed calls do NOT feed the backstop.
+      for (let i = 0; i < TODO_LOOP_LIMIT; i++) await todoCall(i);
+      // Now the blocked calls each note a reflexive block; one short of the kill threshold.
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        expect((await todoCall(1000 + i)).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      // The Kth reflexive block halts the runaway.
+      expect((await todoCall(2000)).block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('todo');
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < TODO_LOOP_LIMIT + REFLEXIVE_BLOCK_KILL_AFTER + 3; i++) {
+        expect((await todoCall(i)).block).toBeUndefined();
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('noteTodoCall / resetTodoLoopState behave as a simple counter (unit)', () => {
+    resetTodoLoopState();
+    expect(noteTodoCall()).toBe(1);
+    expect(noteTodoCall()).toBe(2);
+    resetTodoLoopState();
+    expect(noteTodoCall()).toBe(1);
+  });
+});
+
 describe('isShellTool + shellBudgetReason (per-turn shell budget)', () => {
   it('recognizes bash/shell (case-insensitive), not other tools', () => {
     expect(isShellTool('bash')).toBe(true);
