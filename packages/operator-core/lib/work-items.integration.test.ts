@@ -110,7 +110,7 @@ describe('per-family state normalization (EI-24)', () => {
   it("issue-family takes the canonical vocabulary: 'done'→resolved, 'dropped'→closed, 'todo'→open", async () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });
     expect((await wi.setWorkItemState(task.id, 'done', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
-    expect((await wi.setWorkItemState(task.id, 'todo'))?.state).toBe('open');
+    expect((await wi.setWorkItemState(task.id, 'todo', { by: 'agA' }))?.state).toBe('open');
     expect((await wi.setWorkItemState(task.id, 'dropped', { by: 'agA', completionRef: 'test' }))?.state).toBe('closed');
   });
 
@@ -124,7 +124,7 @@ describe('per-family state normalization (EI-24)', () => {
   it("feature-family maps 'done'→passed / 'dropped'→deprecated and passes pipeline states through", async () => {
     const f = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup' });
     expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('passed');
-    expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup' }))?.state).toBe('validating');
+    expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup', by: 'agA' }))?.state).toBe('validating');
     expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('deprecated');
   });
 

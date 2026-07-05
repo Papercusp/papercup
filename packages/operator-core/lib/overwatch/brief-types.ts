@@ -122,6 +122,16 @@ export interface OverwatchCrossMonitor {
   overwatchAlive: boolean;
 }
 
+/** Owner steering relevant to anomaly interpretation. */
+export interface OverwatchOwnerSteering {
+  /** True when the owner has paused starting new work right now (explicit pause or active pausedUntil). */
+  pauseNewWork: boolean;
+  /** Epoch ms the pause auto-expires at, or null. */
+  pausedUntil: number | null;
+  /** Plan slugs still eligible under the steering pause; empty means no plan lift. */
+  eligiblePlans: string[];
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
  * Anomalies — the detected drift + the action overwatch would take.
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -209,6 +219,8 @@ export interface OverwatchBrief {
   plans: OverwatchPlanHealth;
   observations: OverwatchObservationHealth;
   crossMonitor: OverwatchCrossMonitor;
+  /** Owner steering that can make an otherwise idle Queen/work-feed state intentional. */
+  ownerSteering: OverwatchOwnerSteering;
   /** The detected anomalies + each one's suggested action — the actionable payload. */
   anomalies: Anomaly[];
   /** Coord messages addressed to the overwatch since its last wake — pre-folded so
@@ -237,13 +249,44 @@ export const DEFAULT_OVERWATCH_BRIEF_CAPS: OverwatchBriefCaps = {
 export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
   return {
     hiveSlug,
-    queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null, consecutiveZeroTokenWakes: 0 },
-    bees: { running: 0, completed: 0, churning: 0, deadClaims: 0, invalidModelFailures: 0 },
-    workFeed: { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
-    tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false },
+    queen: {
+      lastWakeAt: null,
+      stalled: false,
+      cadenceOk: true,
+      workingTracked: 0,
+      nextFireAt: null,
+      coordOwner: null,
+      consecutiveZeroTokenWakes: 0,
+    },
+    bees: {
+      running: 0,
+      completed: 0,
+      churning: 0,
+      deadClaims: 0,
+      invalidModelFailures: 0,
+    },
+    workFeed: {
+      frontier: 0,
+      autoEligibleStuck: 0,
+      deadRoutines: 0,
+      blockedStranded: 0,
+    },
+    tokens: {
+      pausedBuckets: [],
+      gatewayFailovers: 0,
+      gw429s: 0,
+      accountsAvailable: 0,
+      gatewayWedged: false,
+      gatewaySustainedThrottle: false,
+    },
     plans: { active: 0, stalledItems: 0, agingEscalations: 0 },
     observations: { laneCount: 0, recentByRole: {} },
     crossMonitor: { queenAlive: true, overwatchAlive: true },
+    ownerSteering: {
+      pauseNewWork: false,
+      pausedUntil: null,
+      eligiblePlans: [],
+    },
     anomalies: [],
   };
 }
@@ -389,7 +432,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
       "the hive's Queen, bees, work-feed, tokens, plans, and observation lane, plus the " +
       'anomalies detected and the action suggested for each. Act on the anomalies: NUDGE the ' +
       'relevant agent (`coord:send`), record an OBSERVATION (`improvements:capture` ' +
-      "lane:observation), or ESCALATE a structural issue you must NOT auto-fix (`coord:escalate`). " +
+      'lane:observation), or ESCALATE a structural issue you must NOT auto-fix (`coord:escalate`). ' +
       'You NUDGE agents; you never re-place work — that is the Queen.',
   );
 
@@ -431,28 +474,17 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   const q = brief.queen;
   out.push('');
   out.push('### Queen');
-  out.push(
-    `- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` +
-      `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`,
-  );
+  out.push(`- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` + `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`);
   // Queen nudges use the stable role slot. A concrete coordOwner is diagnostic
   // only: Queen sessions are fresh-per-wake and direct owner sends can race the
   // session ending before Overwatch sends.
-  out.push(
-    `- nudge the Queen via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`,
-  );
-  out.push(
-    q.coordOwner
-      ? `- latest Queen session owner (diagnostic only): ${q.coordOwner}`
-      : `- latest Queen session owner: unknown (role-slot nudge still parks for the next Queen wake)`,
-  );
+  out.push(`- nudge the Queen via \`coord:send { to: ['@role:queen'], wake: 'optimistic', summary, body }\` (role-slot drains into her next wake brief)`);
+  out.push(q.coordOwner ? `- latest Queen session owner (diagnostic only): ${q.coordOwner}` : `- latest Queen session owner: unknown (role-slot nudge still parks for the next Queen wake)`);
 
   const b = brief.bees;
   out.push('');
   out.push('### Bees (Queen-placed only — NOT the whole fleet)');
-  out.push(
-    `- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims} · invalid-model failures ${b.invalidModelFailures}`,
-  );
+  out.push(`- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims} · invalid-model failures ${b.invalidModelFailures}`);
   // EI-6493: this panel counts ONLY nursery rows with child_role='bee'
   // (gatherLiveBees's own WHERE clause) — su fleet members, autonomous loop
   // sessions, and other roles (queen/overwatch/scout) are NEVER counted here,
@@ -463,18 +495,13 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   // prior wake. Say so explicitly so a reader (or a carry-note) never mistakes
   // "no Queen-dispatched bees this window" for "nothing is happening".
   if (b.running === 0) {
-    out.push(
-      "  (zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle; cross-check fleet:assignments/coord:presence before reading this as a stall)",
-    );
+    out.push('  (zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle; cross-check fleet:assignments/coord:presence before reading this as a stall)');
   }
 
   const wf = brief.workFeed;
   out.push('');
   out.push('### Work feed');
-  out.push(
-    `- frontier ${wf.frontier} ready · ${wf.autoEligibleStuck} auto-eligible stuck · ` +
-      `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`,
-  );
+  out.push(`- frontier ${wf.frontier} ready · ${wf.autoEligibleStuck} auto-eligible stuck · ` + `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`);
 
   const t = brief.tokens;
   out.push('');

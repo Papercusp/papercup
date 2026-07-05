@@ -198,16 +198,19 @@ export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
  *
  *  Fix: THIS process arms its own watchdog on startup. If it fires, the parent
  *  is presumed dead (a live parent's SIGTERM+SIGKILL would have landed well
- *  before this — see the margin below), so this process releases its own lock
- *  and SIGKILLs its OWN process group (`-process.pid`, covering itself + every
+ *  before this — see the margin below), so this process releases its own lock,
+ *  emits a loud red verdict through the normal checkpoint result path, and then
+ *  SIGKILLs its OWN process group (`-process.pid`, covering itself + every
  *  runCmd-spawned vitest/tsx worker in one shot) — no orphan can outlive it.
  *
  *  INVARIANT: strictly greater than the parent's full kill window (55m SIGTERM
  *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
- *  this watchdog is a pure backstop, never a competing timeout. Also strictly
- *  less than CHECKPOINT_LOCK_STALE_MS (65m) so THIS run terminates itself
- *  (and frees its lock) before a peer attempt would need to force-reclaim it. */
-export const SELF_WATCHDOG_MS = 58 * 60_000;
+ *  this watchdog is a pure backstop, never a competing timeout. Keep it at or
+ *  above 3h for long-load checkpoint runs so the outer launch cap cannot cut the
+ *  suite off before the red verdict path can run. Also strictly less than
+ *  CHECKPOINT_LOCK_STALE_MS (65m) so THIS run terminates itself (and frees its
+ *  lock) before a peer attempt would need to force-reclaim it. */
+export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
 export function snapshotCheckpointProcessGroup(pid: number): string | null {
   try {
@@ -243,6 +246,7 @@ export function armSelfWatchdog(
     pid?: number;
     log?: (msg: string) => void;
     snapshotProcessGroup?: (pid: number) => string | null;
+    onFire?: () => void;
   } = {},
 ): { cancel: () => void } {
   const ms = opts.ms ?? SELF_WATCHDOG_MS;
@@ -268,6 +272,11 @@ export function armSelfWatchdog(
       lock.release();
     } catch {
       /* best-effort — a missing/already-gone lock must not stop the kill below */
+    }
+    try {
+      opts.onFire?.();
+    } catch {
+      /* best-effort — emit the loud red verdict first, even if the hook fails */
     }
     try {
       kill(-pid, 'SIGKILL'); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
@@ -1695,7 +1704,51 @@ if (require.main === module) {
     // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
     // canceled on every normal exit path below, so it only ever fires on a genuine
     // wedge (see armSelfWatchdog's doc comment).
-    const watchdog = armSelfWatchdog(lock);
+    const watchdog = armSelfWatchdog(lock, {
+      onFire: () => {
+        const red: CheckpointResult = {
+          advanced: false,
+          candidate: candidateArg ?? cfg.integrationBranch,
+          from: null,
+          green: false,
+          reason: 'not-green',
+          summary:
+            `self-watchdog fired after ${Math.round(SELF_WATCHDOG_MS / 60_000)}m with no normal exit — ` +
+            `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
+        };
+        emitResult(red);
+        void import('@papercusp/operator-core/lib/events/await/engine')
+          .then(async ({ emitAwaitedEvent }) => {
+            const pipeline = pipelineName(cfg.integrationRoot);
+            const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary };
+            await emitAwaitedEvent({
+              key: 'green-checkpoint:red',
+              summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+              payload,
+              source: 'green-checkpoint',
+            });
+            await emitAwaitedEvent({
+              key: `green-checkpoint:red:${pipeline}`,
+              summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+              payload,
+              source: 'green-checkpoint',
+            });
+          })
+          .catch(() => {});
+        void import('../../attention-notify')
+          .then(async ({ notifyAttention }) => {
+            await notifyAttention({
+              kind: 'intervention',
+              title: 'Release pipeline RED — green-checkpoint self-watchdog fired',
+              body: red.summary,
+              importance: 'urgent',
+              workspaceId: cfg.workspaceId,
+              data: { candidate: red.candidate, reason: red.reason },
+            });
+          })
+          .catch(() => {});
+      },
+    });
     const releaseAndExit = (code: number): never => {
       watchdog.cancel();
       lock.release();

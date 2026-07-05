@@ -28,6 +28,7 @@ import {
   attemptWorkerCrashAbsorption,
   WORKER_CRASH_MAX_WORKSPACES,
   GREEN_CHECKPOINT_MAX_FORKS,
+  SELF_WATCHDOG_MS,
   type CheckpointDeps,
   type FailingFile,
   type IsolationResult,
@@ -216,6 +217,10 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('keeps the self-watchdog at the 3h long-run floor', () => {
+    expect(SELF_WATCHDOG_MS).toBeGreaterThanOrEqual(3 * 60 * 60_000);
+  });
+
   it('does nothing before the deadline', () => {
     const release = vi.fn();
     const kill = vi.fn();
@@ -232,6 +237,18 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     vi.advanceTimersByTime(1000);
     expect(release).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  it('runs the onFire hook before the process-group kill so the watchdog can emit a loud red verdict', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {}, onFire });
+    vi.advanceTimersByTime(1000);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(onFire).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+    expect(onFire.mock.invocationCallOrder[0]).toBeLessThan(kill.mock.invocationCallOrder[0]);
   });
 
   it('logs a process-group snapshot before killing a wedged checkpoint run (WI-2957)', () => {

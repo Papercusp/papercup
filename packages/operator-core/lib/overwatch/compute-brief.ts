@@ -30,6 +30,10 @@ import type { Anomaly, OverwatchBrief } from './brief-types';
 import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
 
+function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
+  return brief.ownerSteering.pauseNewWork && brief.ownerSteering.eligiblePlans.length === 0;
+}
+
 /**
  * Detect the system-health drifts in a populated brief and attach a suggested
  * action to each. Pure + deterministic — same brief in, same anomalies out (no
@@ -49,6 +53,7 @@ import type { SystemHealth } from '../system-health/types';
 export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
   const out: Anomaly[] = [];
   const { queen, bees, workFeed, tokens, plans, observations, crossMonitor } = brief;
+  const newWorkPaused = newWorkPausedByOwnerSteering(brief);
 
   // ── Queen liveness + cadence ───────────────────────────────────────────────
   // Cross-monitor "dark" (no heartbeat) is the harder signal and takes precedence
@@ -62,8 +67,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'nudge',
         target: 'queen',
-        message:
-          'Queen — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Queen that will not wake is structural.',
+        message: 'Queen — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Queen that will not wake is structural.',
       },
     });
   } else if (queen.stalled) {
@@ -71,14 +75,11 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'queen-stalled',
       severity: 'critical',
       subject: 'queen',
-      detail:
-        `Queen last woke ${queen.lastWakeAt ?? 'unknown'} and is past her cadence` +
-        `${queen.workingTracked > 0 ? ` with ${queen.workingTracked} placement(s) in flight` : ''}.`,
+      detail: `Queen last woke ${queen.lastWakeAt ?? 'unknown'} and is past her cadence` + `${queen.workingTracked > 0 ? ` with ${queen.workingTracked} placement(s) in flight` : ''}.`,
       suggestedAction: {
         type: 'nudge',
         target: 'queen',
-        message:
-          'Queen — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
+        message: 'Queen — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
       },
     });
   }
@@ -94,7 +95,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     queenPlacementStalled({
       consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
       frontier: workFeed.frontier,
-      paused: false,
+      paused: newWorkPaused,
       beesBusy: bees.running,
     })
   ) {
@@ -102,9 +103,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'queen-placement-stalled',
       severity: 'warning',
       subject: 'queen',
-      detail:
-        `Queen is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` +
-        `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
+      detail: `Queen is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` + `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
@@ -131,9 +130,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         suggestedAction: {
           type: 'escalate',
           target: 'owner',
-          message:
-            `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` +
-            '(scale-out or rate config). Overwatch cannot rebind the gateway or flip rate config.',
+          message: `All paused (${buckets}) with zero fallback accounts — a structural rate/account fix is needed ` + '(scale-out or rate config). Overwatch cannot rebind the gateway or flip rate config.',
         },
       });
     } else {
@@ -160,8 +157,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'gateway-wedge',
       severity: 'critical',
       subject: 'inference gateway',
-      detail:
-        'Inference gateway WEDGED — every admission slot pinned with a growing queue and a frozen request counter. The watchdog auto-restarts it, but a recurring wedge is a capacity problem (opus demand exceeds the account pool).',
+      detail: 'Inference gateway WEDGED — every admission slot pinned with a growing queue and a frozen request counter. The watchdog auto-restarts it, but a recurring wedge is a capacity problem (opus demand exceeds the account pool).',
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
@@ -174,12 +170,10 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'gateway-throttle',
       severity: 'warning',
       subject: 'inference gateway',
-      detail:
-        'Inference gateway sustained-throttling — AIMD has cut admission concurrency below its cap, or the pool is fail-fast shedding (all accounts throttled). Capacity pressure, not yet a wedge.',
+      detail: 'Inference gateway sustained-throttling — AIMD has cut admission concurrency below its cap, or the pool is fail-fast shedding (all accounts throttled). Capacity pressure, not yet a wedge.',
       suggestedAction: {
         type: 'observe',
-        message:
-          'Gateway throttling under sustained upstream 429s (AIMD adapting). Watching — escalate if it persists across wakes or tips into a wedge.',
+        message: 'Gateway throttling under sustained upstream 429s (AIMD adapting). Watching — escalate if it persists across wakes or tips into a wedge.',
       },
     });
   }
@@ -208,7 +202,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
   // chronic false "Queen drove 0 placements" readings + recurring false HUMAN escalations
   // whenever the dispatcher backlog was non-empty while the frontier was 0 (the Queen had
   // nothing to place) — see EI-2357 / EI-2130 / EI-2238.
-  if (workFeed.frontier > 0 && workFeed.deadRoutines === 0) {
+  if (!newWorkPaused && workFeed.frontier > 0 && workFeed.deadRoutines === 0) {
     out.push({
       kind: 'work-feed-stuck',
       severity: 'warning',
@@ -222,7 +216,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     });
   }
   // Work blocked on a constraint that has since resolved — re-open it (the canonical nudge).
-  if (workFeed.blockedStranded > 0) {
+  if (!newWorkPaused && workFeed.blockedStranded > 0) {
     out.push({
       kind: 'work-feed-stuck',
       severity: 'warning',
@@ -259,8 +253,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'invalid-model-config',
       severity: 'critical',
       subject: 'agent model config',
-      detail:
-        `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed before a turn because the selected model is unavailable or inaccessible.`,
+      detail: `${bees.invalidModelFailures} recent autonomous-role spawn(s) failed before a turn because the selected model is unavailable or inaccessible.`,
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
@@ -272,7 +265,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
   }
 
   // ── Escalations aging ──────────────────────────────────────────────────────
-  if (plans.agingEscalations > 0) {
+  if (!newWorkPaused && plans.agingEscalations > 0) {
     out.push({
       kind: 'escalation-aging',
       severity: 'warning',
@@ -411,8 +404,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
     brief.tokens = {
       // TokensHealth exposes a COUNT, not names; surface a descriptor so the
       // detector trips (length>0) and the nudge reads informatively until names land.
-      pausedBuckets:
-        tokens.pausedBuckets > 0 ? [`${tokens.pausedBuckets} of ${tokens.totalBuckets} bucket(s)`] : [],
+      pausedBuckets: tokens.pausedBuckets > 0 ? [`${tokens.pausedBuckets} of ${tokens.totalBuckets} bucket(s)`] : [],
       // Gateway telemetry now sourced from the gateway's own /stats (B-GW-5). null = gateway
       // unreachable / not in the egress path → fail-soft defaults (no false alarm).
       gatewayFailovers: tokens.gateway?.failovers ?? 0,
@@ -467,16 +459,28 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
  * so the wake still fires with a coherent, non-alarming brief rather than failing
  * the launch (mirrors `computeQueenWakeBrief`'s graceful degradation).
  */
-export async function computeOverwatchBrief(
-  workspaceId: string,
-  hiveSlug: string,
-  opts: { wokeBy?: string } = {},
-): Promise<OverwatchBrief> {
+export async function computeOverwatchBrief(workspaceId: string, hiveSlug: string, opts: { wokeBy?: string } = {}): Promise<OverwatchBrief> {
   const wokeBy = opts.wokeBy?.trim();
   try {
     const health = await computeSystemHealth(workspaceId);
     const brief = mapSystemHealthToBrief(health, hiveSlug);
     if (wokeBy) brief.wokeBy = wokeBy;
+    // Fold owner steering before anomaly detection so an intentional full
+    // pause suppresses "Queen should place/triage" nudges while structural
+    // alarms (dead routines, token starvation, gateway wedge, etc.) stay live.
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { getOwnerSteering, isPausedNow } = await import('../owner-steering');
+      const { sql } = getOrgPg();
+      const steering = await getOwnerSteering(workspaceId, hiveSlug, sql);
+      brief.ownerSteering = {
+        pauseNewWork: isPausedNow(steering, Date.now()),
+        pausedUntil: steering.pausedUntil,
+        eligiblePlans: [...steering.eligiblePlans],
+      };
+    } catch (e) {
+      console.warn(`[overwatch-brief] could not read owner steering for '${hiveSlug}' — pause-aware anomaly suppression disabled:`, e instanceof Error ? e.message : e);
+    }
     // Resolve the Queen's coord owner so the overwatch can address a nudge to her
     // (it lands in her next wake brief's inbox — the SAME resolveQueenOwner the
     // Queen's own brief reads, so addressing it delivers). Fail-soft: any error
@@ -487,10 +491,7 @@ export async function computeOverwatchBrief(
       const { sql } = getOrgPg();
       brief.queen.coordOwner = await resolveQueenOwner(sql, workspaceId, hiveSlug);
     } catch (e) {
-      console.warn(
-        `[overwatch-brief] could not resolve the Queen coord owner for '${hiveSlug}' — nudges will escalate:`,
-        e instanceof Error ? e.message : e,
-      );
+      console.warn(`[overwatch-brief] could not resolve the Queen coord owner for '${hiveSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
     }
     // Pre-fold the overwatch's OWN coord inbox (mirrors the Queen's brief) so it sees
     // replies / owner directives without a separate coord:inbox call. The owner is the
@@ -514,21 +515,19 @@ export async function computeOverwatchBrief(
           .filter((e) => !e.category) // drop ambient (service-health / governor) like coord:inbox default
           .slice(-10)
           .reverse() // newest-first
-          .map((e) => ({ kind: e.kind, from: e.from, summary: (e.summary ?? e.body ?? '').slice(0, 200) }));
+          .map((e) => ({
+            kind: e.kind,
+            from: e.from,
+            summary: (e.summary ?? e.body ?? '').slice(0, 200),
+          }));
         if (items.length > 0) brief.inbox = items;
       }
     } catch (e) {
-      console.warn(
-        `[overwatch-brief] could not fold the overwatch inbox for '${hiveSlug}':`,
-        e instanceof Error ? e.message : e,
-      );
+      console.warn(`[overwatch-brief] could not fold the overwatch inbox for '${hiveSlug}':`, e instanceof Error ? e.message : e);
     }
     return withAnomalies(brief);
   } catch (err) {
-    console.warn(
-      `[overwatch-brief] computeSystemHealth failed for hive '${hiveSlug}' — returning the neutral fail-soft brief:`,
-      err instanceof Error ? err.message : err,
-    );
+    console.warn(`[overwatch-brief] computeSystemHealth failed for hive '${hiveSlug}' — returning the neutral fail-soft brief:`, err instanceof Error ? err.message : err);
     const fallback = emptyOverwatchBrief(hiveSlug);
     if (wokeBy) fallback.wokeBy = wokeBy;
     return fallback;

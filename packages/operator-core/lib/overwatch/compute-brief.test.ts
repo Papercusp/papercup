@@ -3,19 +3,7 @@ import assert from 'node:assert/strict';
 import { computeSystemHealth } from '../system-health';
 import { detectAnomalies, withAnomalies, mapSystemHealthToBrief, computeOverwatchBrief } from './compute-brief';
 import { emptyOverwatchBrief, renderOverwatchBrief, type Anomaly, type OverwatchBrief } from './brief-types';
-import type {
-  SystemHealth,
-  HealthPanel,
-  PanelKey,
-  PanelStatus,
-  QueenHealth,
-  BeesHealth,
-  WorkFeedHealth,
-  TokensHealth,
-  PlansHealth,
-  EscalationsHealth,
-  ObservationsHealth,
-} from '../system-health/types';
+import type { SystemHealth, HealthPanel, PanelKey, PanelStatus, QueenHealth, BeesHealth, WorkFeedHealth, TokensHealth, PlansHealth, EscalationsHealth, ObservationsHealth } from '../system-health/types';
 
 // Mock ONLY the runtime aggregator (the index's computeSystemHealth) — the mapper
 // tests are pure (no DB), and the wrapper tests drive this mock. The SystemHealth
@@ -25,7 +13,11 @@ import type {
 // one from the DB-free './thresholds' module so the mapper derives correctly here.
 vi.mock('../system-health', async () => {
   const real = await vi.importActual<typeof import('../system-health/thresholds')>('../system-health/thresholds');
-  return { computeSystemHealth: vi.fn(), deriveQueenAlive: real.deriveQueenAlive, queenPlacementStalled: real.queenPlacementStalled };
+  return {
+    computeSystemHealth: vi.fn(),
+    deriveQueenAlive: real.deriveQueenAlive,
+    queenPlacementStalled: real.queenPlacementStalled,
+  };
 });
 
 // computeOverwatchBrief resolves the Queen's coord owner (the nudge address) AND
@@ -37,11 +29,29 @@ const owner = vi.hoisted(() => ({
   resolveQueenOwner: vi.fn(),
   readInbox: vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>),
   ownerRows: [] as Array<{ coord_owner_id: string }>,
+  getOwnerSteering: vi.fn(async () => ({
+    pauseNewWork: false,
+    pausedUntil: null,
+    eligiblePlans: [],
+  })),
+  isPausedNow: vi.fn((s: { pauseNewWork: boolean; pausedUntil: number | null }, nowMs: number) => s.pauseNewWork || (s.pausedUntil != null && nowMs < s.pausedUntil)),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve(owner.ownerRows) }) }));
-vi.mock('../hive/placement-watchdog', () => ({ resolveQueenOwner: owner.resolveQueenOwner }));
-vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => owner.readInbox(...a) }));
-vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: () => Promise.resolve(owner.ownerRows) }),
+}));
+vi.mock('../hive/placement-watchdog', () => ({
+  resolveQueenOwner: owner.resolveQueenOwner,
+}));
+vi.mock('../agent-tools/coordination/messages', () => ({
+  readInbox: (...a: unknown[]) => owner.readInbox(...a),
+}));
+vi.mock('../workspace-als', () => ({
+  runWithWorkspace: (_ws: string, fn: () => unknown) => fn(),
+}));
+vi.mock('../owner-steering', () => ({
+  getOwnerSteering: owner.getOwnerSteering,
+  isPausedNow: owner.isPausedNow,
+}));
 
 /** A healthy brief we mutate one panel at a time to trip exactly one detector. */
 function base(): OverwatchBrief {
@@ -60,7 +70,15 @@ test('detectAnomalies — healthy brief trips nothing', () => {
 
 test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-11)', () => {
   const b = base();
-  b.queen = { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: null, coordOwner: null, consecutiveZeroTokenWakes: 0 };
+  b.queen = {
+    lastWakeAt: '2026-06-15T01:00:00Z',
+    stalled: true,
+    cadenceOk: false,
+    workingTracked: 2,
+    nextFireAt: null,
+    coordOwner: null,
+    consecutiveZeroTokenWakes: 0,
+  };
   const a = only(detectAnomalies(b), 'queen-stalled');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'nudge');
@@ -81,7 +99,14 @@ test('detectAnomalies — a dark Queen → queen-dark, and it SUPPRESSES queen-s
 
 test('detectAnomalies — a paused bucket WITH accounts → token-paused warning OBSERVE (transient)', () => {
   const b = base();
-  b.tokens = { pausedBuckets: ['opus'], gatewayFailovers: 0, gw429s: 5, accountsAvailable: 2, gatewayWedged: false, gatewaySustainedThrottle: false };
+  b.tokens = {
+    pausedBuckets: ['opus'],
+    gatewayFailovers: 0,
+    gw429s: 5,
+    accountsAvailable: 2,
+    gatewayWedged: false,
+    gatewaySustainedThrottle: false,
+  };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'observe');
@@ -90,7 +115,14 @@ test('detectAnomalies — a paused bucket WITH accounts → token-paused warning
 
 test('detectAnomalies — a paused bucket with ZERO accounts → token-paused critical ESCALATE (starvation)', () => {
   const b = base();
-  b.tokens = { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 1, gw429s: 9, accountsAvailable: 0, gatewayWedged: false, gatewaySustainedThrottle: false };
+  b.tokens = {
+    pausedBuckets: ['opus', 'sonnet'],
+    gatewayFailovers: 1,
+    gw429s: 9,
+    accountsAvailable: 0,
+    gatewayWedged: false,
+    gatewaySustainedThrottle: false,
+  };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'escalate');
@@ -126,7 +158,12 @@ test('detectAnomalies — a wedge SUPPRESSES the throttle anomaly (wedge is the 
 
 test('detectAnomalies — a dead routine → work-feed-stuck critical ESCALATE (B-11)', () => {
   const b = base();
-  b.workFeed = { frontier: 3, autoEligibleStuck: 4, deadRoutines: 1, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 3,
+    autoEligibleStuck: 4,
+    deadRoutines: 1,
+    blockedStranded: 0,
+  };
   const hits = detectAnomalies(b).filter((a) => a.kind === 'work-feed-stuck');
   // Dead-routine present → the structural escalate fires; the placeable-but-stuck
   // nudge is suppressed (deadRoutines>0 guards it) to avoid double-flagging.
@@ -139,12 +176,75 @@ test('detectAnomalies — placeable frontier unplaced with routines alive → wo
   const b = base();
   // EI-2357: the nudge keys off the genuinely Queen-placeable FRONTIER, not the
   // dispatcher lane. frontier:3 (real placeable work) + routines alive → nudge fires.
-  b.workFeed = { frontier: 3, autoEligibleStuck: 5, deadRoutines: 0, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 3,
+    autoEligibleStuck: 5,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
   const a = only(detectAnomalies(b), 'work-feed-stuck');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'nudge');
   assert.equal(a.suggestedAction.target, 'queen');
   assert.match(a.detail, /placeable frontier/);
+});
+
+test('detectAnomalies — owner pause with no eligible plans suppresses new-work nudges (EI-7467)', () => {
+  const b = base();
+  b.ownerSteering = {
+    pauseNewWork: true,
+    pausedUntil: null,
+    eligiblePlans: [],
+  };
+  b.queen.consecutiveZeroTokenWakes = 4;
+  b.workFeed = {
+    frontier: 8,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 2,
+  };
+  b.plans = { active: 1, stalledItems: 0, agingEscalations: 3 };
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(!kinds.includes('queen-placement-stalled'), 'paused owner steering is intentional idleness, not placement stall');
+  assert.ok(!kinds.includes('work-feed-stuck'), 'paused owner steering suppresses Queen placement/re-open nudges');
+  assert.ok(!kinds.includes('escalation-aging'), 'paused owner steering suppresses escalation triage nudges');
+});
+
+test('detectAnomalies — eligible plans lift owner pause suppression (EI-7467)', () => {
+  const b = base();
+  b.ownerSteering = {
+    pauseNewWork: true,
+    pausedUntil: null,
+    eligiblePlans: ['clear-papercusp-backlog-2026-07-02'],
+  };
+  b.workFeed = {
+    frontier: 8,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
+  b.plans = { active: 1, stalledItems: 0, agingEscalations: 3 };
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.equal(kinds.filter((kind) => kind === 'work-feed-stuck').length, 1);
+  assert.equal(kinds.filter((kind) => kind === 'escalation-aging').length, 1);
+});
+
+test('detectAnomalies — dead work-feed routines still escalate during owner pause (EI-7467)', () => {
+  const b = base();
+  b.ownerSteering = {
+    pauseNewWork: true,
+    pausedUntil: null,
+    eligiblePlans: [],
+  };
+  b.workFeed = {
+    frontier: 8,
+    autoEligibleStuck: 0,
+    deadRoutines: 1,
+    blockedStranded: 0,
+  };
+  const a = only(detectAnomalies(b), 'work-feed-stuck');
+  assert.equal(a.severity, 'critical');
+  assert.equal(a.suggestedAction.type, 'escalate');
 });
 
 test('detectAnomalies — EI-2357 recurrence guard: dispatcher-lane backlog with frontier=0 does NOT nudge/escalate the Queen', () => {
@@ -154,7 +254,12 @@ test('detectAnomalies — EI-2357 recurrence guard: dispatcher-lane backlog with
   // Must raise NO work-feed-stuck anomaly (this was the chronic false "Queen drove 0
   // placements" + recurring false HUMAN escalations; a stalled dispatcher is surfaced
   // separately by the dispatcher-staleness watchdog).
-  b.workFeed = { frontier: 0, autoEligibleStuck: 126, deadRoutines: 0, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 0,
+    autoEligibleStuck: 126,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
   const hits = detectAnomalies(b).filter((a) => a.kind === 'work-feed-stuck');
   assert.equal(hits.length, 0);
 });
@@ -165,7 +270,12 @@ test('detectAnomalies — Queen alive + on cadence but 0-token wakes with placea
   // silent-stall gap the existing queen-stalled / queen-dark detectors MISS: she wakes on
   // cadence but her wakes run 0 LLM tokens (the LLM never executes — infra/rate-limit loss).
   b.queen.consecutiveZeroTokenWakes = 3;
-  b.workFeed = { frontier: 7, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 7,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
   const a = only(detectAnomalies(b), 'queen-placement-stalled');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'escalate');
@@ -177,20 +287,35 @@ test('detectAnomalies — Queen alive + on cadence but 0-token wakes with placea
 test('detectAnomalies — queen-placement-stalled does NOT fire when frontier=0 (nothing to place)', () => {
   const b = base();
   b.queen.consecutiveZeroTokenWakes = 5;
-  b.workFeed = { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 0,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
   assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
 });
 
 test('detectAnomalies — queen-placement-stalled does NOT fire on <3 zero-token wakes (one-off blip)', () => {
   const b = base();
   b.queen.consecutiveZeroTokenWakes = 2;
-  b.workFeed = { frontier: 7, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 };
+  b.workFeed = {
+    frontier: 7,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
   assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
 });
 
 test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-open', () => {
   const b = base();
-  b.workFeed = { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 2 };
+  b.workFeed = {
+    frontier: 0,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 2,
+  };
   const a = only(detectAnomalies(b), 'work-feed-stuck');
   assert.equal(a.subject, 'stranded work');
   assert.equal(a.suggestedAction.type, 'nudge');
@@ -199,7 +324,13 @@ test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-
 
 test('detectAnomalies — bees churning / dead claims → bees-churning NUDGE queen', () => {
   const b = base();
-  b.bees = { running: 4, completed: 2, churning: 1, deadClaims: 1, invalidModelFailures: 0 };
+  b.bees = {
+    running: 4,
+    completed: 2,
+    churning: 1,
+    deadClaims: 1,
+    invalidModelFailures: 0,
+  };
   const a = only(detectAnomalies(b), 'bees-churning');
   assert.equal(a.severity, 'warning'); // dead claims present → warning, not info
   assert.equal(a.suggestedAction.type, 'nudge');
@@ -248,7 +379,13 @@ test('withAnomalies — populates the brief and renders most-severe-first end-to
   const b = base();
   b.queen.stalled = true; // critical
   b.plans.agingEscalations = 2; // warning
-  b.bees = { running: 2, completed: 0, churning: 1, deadClaims: 0, invalidModelFailures: 0 }; // info
+  b.bees = {
+    running: 2,
+    completed: 0,
+    churning: 1,
+    deadClaims: 0,
+    invalidModelFailures: 0,
+  }; // info
   b.observations.laneCount = 5; // suppress observation-dark so we isolate the 3 tiers
   const populated = withAnomalies(b);
   assert.equal(populated.anomalies.length, 3);
@@ -273,7 +410,14 @@ function hp<T>(key: PanelKey, data: T | null, status: PanelStatus = data == null
 
 /** A greyed/unreadable panel (T inferred from the assignment's contextual type). */
 function naPanel<T>(key: PanelKey): HealthPanel<T> {
-  return { key, label: key, status: 'unknown', summary: '', metrics: [], data: null };
+  return {
+    key,
+    label: key,
+    status: 'unknown',
+    summary: '',
+    metrics: [],
+    data: null,
+  };
 }
 
 const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -381,7 +525,10 @@ function fakeHealth(
     workspaceId: 'ws',
     evaluatedAt: 0,
     overall: 'ok',
-    crossMonitor: { queenAlive: true, overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive },
+    crossMonitor: {
+      queenAlive: true,
+      overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive,
+    },
     panels: {
       queen: hp('queen', pick(p.queen, queenData())),
       bees: hp('bees', pick(p.bees, beesData())),
@@ -420,12 +567,25 @@ test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + m
       nextFireAt: Date.parse('2026-06-15T01:30:00.000Z'),
       workingTracked: 3,
     }),
-    bees: beesData({ running: 5, stale: 2, orphanedClaims: 1, invalidModelFailures: 2, placements: { recovering: 0, cursed: 0, stranded: 4, workingTracked: 3 } }),
+    bees: beesData({
+      running: 5,
+      stale: 2,
+      orphanedClaims: 1,
+      invalidModelFailures: 2,
+      placements: { recovering: 0, cursed: 0, stranded: 4, workingTracked: 3 },
+    }),
     workFeed: workFeedData({ frontier: 7, deadRoutines: 1 }),
-    tokens: tokensData({ pausedBuckets: 2, totalBuckets: 5, accountsAvailable: 3 }),
+    tokens: tokensData({
+      pausedBuckets: 2,
+      totalBuckets: 5,
+      accountsAvailable: 3,
+    }),
     plans: plansData({ active: 9, stalledPlans: 2 }),
     escalations: escalationsData({ aging: 4 }),
-    observations: observationsData({ laneCount: 6, recentByRole: { queen: 2, worker: 4 } }),
+    observations: observationsData({
+      laneCount: 6,
+      recentByRole: { queen: 2, worker: 4 },
+    }),
   });
   const b = mapSystemHealthToBrief(h, 'papercup-hive');
   assert.equal(b.queen.lastWakeAt, '2026-06-15T01:00:00.000Z');
@@ -447,7 +607,15 @@ test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + m
 });
 
 test('mapSystemHealthToBrief — unreadable panels (data:null) degrade to neutral defaults, never an alarm', () => {
-  const h = fakeHealth({ queen: null, bees: null, workFeed: null, tokens: null, plans: null, escalations: null, observations: null });
+  const h = fakeHealth({
+    queen: null,
+    bees: null,
+    workFeed: null,
+    tokens: null,
+    plans: null,
+    escalations: null,
+    observations: null,
+  });
   const b = withAnomalies(mapSystemHealthToBrief(h, 'papercup-hive'));
   assert.deepEqual(b, withAnomalies(emptyOverwatchBrief('papercup-hive'))); // identical to the neutral brief
   assert.deepEqual(b.anomalies, []); // a greyed source never fabricates an anomaly
@@ -455,12 +623,26 @@ test('mapSystemHealthToBrief — unreadable panels (data:null) degrade to neutra
 
 test('mapSystemHealthToBrief — token count→descriptor trips the detector + honors the starvation split', () => {
   // Paused with accounts left → transient observe.
-  const transient = withAnomalies(mapSystemHealthToBrief(fakeHealth({ tokens: tokensData({ pausedBuckets: 1, accountsAvailable: 2 }) }), 'h'));
+  const transient = withAnomalies(
+    mapSystemHealthToBrief(
+      fakeHealth({
+        tokens: tokensData({ pausedBuckets: 1, accountsAvailable: 2 }),
+      }),
+      'h',
+    ),
+  );
   const t1 = only(transient.anomalies, 'token-paused');
   assert.equal(t1.severity, 'warning');
   assert.equal(t1.suggestedAction.type, 'observe');
   // Paused with ZERO accounts → starvation escalate.
-  const starved = withAnomalies(mapSystemHealthToBrief(fakeHealth({ tokens: tokensData({ pausedBuckets: 2, accountsAvailable: 0 }) }), 'h'));
+  const starved = withAnomalies(
+    mapSystemHealthToBrief(
+      fakeHealth({
+        tokens: tokensData({ pausedBuckets: 2, accountsAvailable: 0 }),
+      }),
+      'h',
+    ),
+  );
   const t2 = only(starved.anomalies, 'token-paused');
   assert.equal(t2.severity, 'critical');
   assert.equal(t2.suggestedAction.type, 'escalate');
@@ -468,26 +650,53 @@ test('mapSystemHealthToBrief — token count→descriptor trips the detector + h
 
 test('mapSystemHealthToBrief — queenAlive derivation keeps queen-dark and queen-stalled DISTINCT', () => {
   // started, ARMED, stalled → ALIVE (the loop exists) → queen-stalled, NOT queen-dark.
-  const armedLate = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: true }) }), 'h'));
+  const armedLate = withAnomalies(
+    mapSystemHealthToBrief(
+      fakeHealth({
+        queen: queenData({ stalled: true, cadenceOk: false, armed: true }),
+      }),
+      'h',
+    ),
+  );
   assert.equal(armedLate.crossMonitor.queenAlive, true);
   assert.equal(armedLate.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
   assert.equal(armedLate.anomalies.filter((a) => a.kind === 'queen-dark').length, 0);
 
   // started, NOT armed, stalled → DARK (no next wake AND stale = the loop is gone).
-  const dark = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: false }) }), 'h'));
+  const dark = withAnomalies(
+    mapSystemHealthToBrief(
+      fakeHealth({
+        queen: queenData({ stalled: true, cadenceOk: false, armed: false }),
+      }),
+      'h',
+    ),
+  );
   assert.equal(dark.crossMonitor.queenAlive, false);
   assert.equal(dark.anomalies.filter((a) => a.kind === 'queen-dark').length, 1);
   assert.equal(dark.anomalies.filter((a) => a.kind === 'queen-stalled').length, 0); // suppressed by precedence
 
   // paused (not started) → intentional, ALIVE, no queen anomaly (never a false dark alarm).
-  const paused = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ started: false, armed: false, cadenceOk: false }) }), 'h'));
+  const paused = withAnomalies(
+    mapSystemHealthToBrief(
+      fakeHealth({
+        queen: queenData({ started: false, armed: false, cadenceOk: false }),
+      }),
+      'h',
+    ),
+  );
   assert.equal(paused.crossMonitor.queenAlive, true);
   assert.equal(paused.anomalies.filter((a) => a.kind.startsWith('queen')).length, 0);
 });
 
 test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + attaches anomalies + wokeBy', async () => {
-  vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: true }) }));
-  const b = await computeOverwatchBrief('ws', 'papercup-hive', { wokeBy: 'timer' });
+  vi.mocked(computeSystemHealth).mockResolvedValue(
+    fakeHealth({
+      queen: queenData({ stalled: true, cadenceOk: false, armed: true }),
+    }),
+  );
+  const b = await computeOverwatchBrief('ws', 'papercup-hive', {
+    wokeBy: 'timer',
+  });
   assert.equal(b.hiveSlug, 'papercup-hive');
   assert.equal(b.wokeBy, 'timer');
   assert.equal(b.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
@@ -498,6 +707,37 @@ test('computeOverwatchBrief — resolves the Queen coord owner into the brief (t
   owner.resolveQueenOwner.mockResolvedValue('s-queen-1781-abc');
   const b = await computeOverwatchBrief('ws', 'papercup-hive');
   assert.equal(b.queen.coordOwner, 's-queen-1781-abc'); // the overwatch can now coord:send the Queen here
+});
+
+test('computeOverwatchBrief — folds owner steering before anomaly detection (EI-7467)', async () => {
+  vi.mocked(computeSystemHealth).mockResolvedValue(
+    fakeHealth({
+      workFeed: workFeedData({ frontier: 8 }),
+      escalations: escalationsData({ aging: 3 }),
+    }),
+  );
+  owner.getOwnerSteering.mockResolvedValue({
+    pauseNewWork: true,
+    pausedUntil: null,
+    eligiblePlans: [],
+  });
+  owner.isPausedNow.mockReturnValue(true);
+  try {
+    const b = await computeOverwatchBrief('ws', 'papercup-hive');
+    assert.deepEqual(b.ownerSteering, {
+      pauseNewWork: true,
+      pausedUntil: null,
+      eligiblePlans: [],
+    });
+    assert.equal(b.anomalies.filter((a) => a.kind === 'work-feed-stuck' || a.kind === 'escalation-aging').length, 0);
+  } finally {
+    owner.getOwnerSteering.mockResolvedValue({
+      pauseNewWork: false,
+      pausedUntil: null,
+      eligiblePlans: [],
+    });
+    owner.isPausedNow.mockImplementation((s: { pauseNewWork: boolean; pausedUntil: number | null }, nowMs: number) => s.pauseNewWork || (s.pausedUntil != null && nowMs < s.pausedUntil));
+  }
 });
 
 test('computeOverwatchBrief — Queen-owner resolution is fail-soft → coordOwner null (persona escalates instead)', async () => {
@@ -518,7 +758,12 @@ test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping am
   owner.ownerRows = [{ coord_owner_id: 's-overwatch-1' }]; // the inbox-owner SELECT resolves
   owner.readInbox.mockResolvedValue([
     { kind: 'message', from: 'queen', summary: 're: nudge — re-opened' },
-    { kind: 'notify', from: 'sys', summary: 'governor pause', category: 'service-health' }, // ambient → dropped
+    {
+      kind: 'notify',
+      from: 'sys',
+      summary: 'governor pause',
+      category: 'service-health',
+    }, // ambient → dropped
   ]);
   try {
     const b = await computeOverwatchBrief('ws', 'papercup-hive');
@@ -545,7 +790,9 @@ test('computeOverwatchBrief — a thrown aggregator degrades to the neutral fail
   // The degraded path logs a single warn (the catastrophic-failure breadcrumb) — assert it.
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   try {
-    const b = await computeOverwatchBrief('ws', 'papercup-hive', { wokeBy: 'backstop' });
+    const b = await computeOverwatchBrief('ws', 'papercup-hive', {
+      wokeBy: 'backstop',
+    });
     assert.deepEqual(b.anomalies, []); // no fabricated anomalies on catastrophic failure
     assert.equal(b.wokeBy, 'backstop'); // wokeBy preserved on the fallback
     const { wokeBy: _w, ...rest } = b;
