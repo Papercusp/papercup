@@ -60,7 +60,7 @@ describe('SEVERITY_ICON / ISSUE_STATUS_ICON maps', () => {
 
   it('KIND_ICON covers exactly the canonical work-item kinds', () => {
     expect(Object.keys(KIND_ICON).sort()).toEqual(
-      ['feature', 'research-task', 'chunk', 'bug', 'change', 'task'].sort(),
+      ['feature', 'chunk', 'bug', 'change', 'task'].sort(),
     );
   });
 
