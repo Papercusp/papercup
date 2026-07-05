@@ -16,8 +16,13 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { rerankProseHits } from './rerank';
+import { searchFilterArgs, resolveSearchFilters } from './filters';
+import { resolveAgentIdentity } from '../coordination/identity';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'work_item', 'all'] as const;
+const SCOPE_CHOICES = [
+  'escalations', 'brainstorm', 'turns', 'decisions', 'work_item',
+  'session_turn', 'coord_message', 'all',
+] as const;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
@@ -52,19 +57,30 @@ export default defineTool({
     scope: z.array(z.enum(SCOPE_CHOICES)).optional(),
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(20).optional(),
+    ...searchFilterArgs,
   }),
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
-    // EI-6984: 'work_item' is opt-in only, kept OUT of the historic no-scope default
-    // (unscoped callers keep the same 4-source result shape they've always gotten) —
-    // but an EXPLICIT scope:['all'] means "every source", so it expands to all five.
+    // EI-6984: 'work_item' (and now the session/coord corpora) are opt-in only,
+    // kept OUT of the historic no-scope default (unscoped callers keep the same
+    // 4-source result shape they've always gotten) — but an EXPLICIT
+    // scope:['all'] means "every source", so it expands to all seven.
     const scope =
       args.scope?.includes('all')
-        ? ['escalations', 'brainstorm', 'turns', 'decisions', 'work_item']
+        ? SEARCH_SOURCES.map((s) => s.name)
         : !args.scope?.length
           ? ['escalations', 'brainstorm', 'turns', 'decisions']
           : args.scope;
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
+
+    // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
+    // also live-tails the caller's own transcript — compaction recovery).
+    const { filters } = await resolveSearchFilters(
+      ctx.tx,
+      args,
+      resolveAgentIdentity(ctx).ownerId ?? '',
+      { workspaceId: ctx.workspaceId ?? '' },
+    );
 
     const { results, totalHits } = await runFullTextSearch(sources, {
       sql: ctx.tx,
@@ -72,6 +88,7 @@ export default defineTool({
       workspaceId: ctx.workspaceId ?? '',
       scopeFilter: args.harness_slug ?? null,
       limit,
+      filters,
       log: ctx.log,
     });
 

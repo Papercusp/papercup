@@ -19,8 +19,13 @@ import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { buildQueryEmbedder } from './embedder';
 import { rerankProseHits } from './rerank';
+import { searchFilterArgs, resolveSearchFilters } from './filters';
+import { resolveAgentIdentity } from '../coordination/identity';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
+const SCOPE_CHOICES = [
+  'escalations', 'brainstorm', 'turns', 'decisions', 'work_item',
+  'session_turn', 'coord_message', 'all',
+] as const;
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
@@ -56,15 +61,29 @@ export default defineTool({
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(20).optional(),
     mode: z.enum(MODE_CHOICES).optional(),
+    ...searchFilterArgs,
   }),
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
     const mode = args.mode ?? 'hybrid';
+    // Historic no-scope default stays the 4 original surfaces; an EXPLICIT
+    // scope:['all'] expands to every registered source (EI-6984 precedent).
     const scope =
-      args.scope?.includes('all') || !args.scope?.length
-        ? ['escalations', 'brainstorm', 'turns', 'decisions']
-        : args.scope;
+      args.scope?.includes('all')
+        ? SEARCH_SOURCES.map((s) => s.name)
+        : !args.scope?.length
+          ? ['escalations', 'brainstorm', 'turns', 'decisions']
+          : args.scope;
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
+
+    // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
+    // also live-tails the caller's own transcript — compaction recovery).
+    const { filters } = await resolveSearchFilters(
+      ctx.tx,
+      args,
+      resolveAgentIdentity(ctx).ownerId ?? '',
+      { workspaceId: ctx.workspaceId ?? '' },
+    );
 
     const embedder = await buildQueryEmbedder();
     const { results, totalHits, embedderAvailable } = await runHybridSearch(sources, {
@@ -75,6 +94,7 @@ export default defineTool({
       limit,
       mode,
       embedder,
+      filters,
       log: ctx.log,
     });
 

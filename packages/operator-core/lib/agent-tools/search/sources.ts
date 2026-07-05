@@ -1,11 +1,14 @@
 /**
- * The four Papercusp prose search surfaces, as `@papercusp/search`
+ * The Papercusp prose search surfaces, as `@papercusp/search`
  * `SearchSource`s. Each owns its own SQL (table, tsvector/embedding
  * columns, ts_headline, row→hit mapping); both `search:fulltext` (BM25)
  * and `search:semantic` (hybrid) consume this one registry, so the BM25
  * SQL lives in exactly one place.
  *
  * Extraction per papercusp-systems-abstraction-2026-05-29 (P-013/P-020).
+ * session_turn + coord_message added per session-search-scope-2026-07-05
+ * (D-001: new data source = new SearchSource here; a new WAY OF SCOPING =
+ * a filter in the shared filter bag, never a new search verb).
  */
 
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
@@ -324,5 +327,162 @@ const workItem: SearchSource = {
   },
 };
 
-/** The five prose surfaces, keyed by `scope` name. */
-export const SEARCH_SOURCES: SearchSource[] = [escalations, brainstorm, turns, decisions, workItem];
+/**
+ * session_turn — the episodic verbatim transcript index (session-search-scope-
+ * 2026-07-05 P-004 / D-003): claude/omp/codex JSONL + agent_chat transcripts,
+ * ingested by search/session-ingest.ts into harness_shared.session_turns.
+ *
+ * Notes:
+ *   * workspace predicate is (workspace_id = $ws OR workspace_id = 'default'):
+ *     local transcript files carry no workspace identity and are stamped
+ *     'default' (the agent_chats_consolidated convention) — host-global data,
+ *     visible from any workspace-scoped search on this box.
+ *   * FULL filter-bag support (P-002): owners / speaker / sessionId /
+ *     sourceKind / since / until — each null-guarded so an absent filter
+ *     never narrows.
+ *   * scopeFilter (harness_slug) narrows agent_chat rows; file-sourced rows
+ *     have NULL harness_slug and are excluded by a harness-scoped search —
+ *     intentional: "search this harness" should not surface unrelated
+ *     desktop-session chatter.
+ */
+const sessionTurnFilterSql = (p: SearchSourceParams) => {
+  const f = p.filters ?? {};
+  return {
+    owners: f.owners && f.owners.length ? f.owners : null,
+    speaker: f.speaker ?? null,
+    sessionId: f.sessionId ?? null,
+    sourceKind: f.sourceKind ?? null,
+    since: f.since ?? null,
+    until: f.until ?? null,
+  };
+};
+
+const sessionTurn: SearchSource = {
+  name: 'session_turn',
+  async bm25(p: SearchSourceParams): Promise<Listing> {
+    const f = sessionTurnFilterSql(p);
+    const rows = (await p.sql`
+      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
+             ts_rank_cd(text_tsv, plainto_tsquery('english', ${p.query})) AS rank,
+             ts_headline('english', left(text, 4000),
+               plainto_tsquery('english', ${p.query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
+         AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
+         AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
+         AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+         AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
+         AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
+         AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
+         AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+         AND text_tsv @@ plainto_tsquery('english', ${p.query})
+    ORDER BY rank DESC LIMIT ${p.limit}
+    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string }>;
+    return rows.map((r) => ({
+      key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
+      score: r.rank,
+      row: {
+        source: 'session_turn',
+        source_id: `${r.source_kind}:${r.session_id}:${r.turn_idx}`,
+        ...(r.harness_slug ? { scope: r.harness_slug } : {}),
+        excerpt: `[${r.speaker}${r.owner ? ` ${r.owner}` : ''}${r.ts ? ` ${r.ts}` : ''}] ${trunc(r.text)}`,
+        highlight: r.highlight,
+        score: r.rank,
+        rankers: ['bm25'],
+      },
+    }));
+  },
+  async embedding(p): Promise<Listing> {
+    const f = sessionTurnFilterSql(p);
+    const rows = (await p.sql`
+      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
+             1 - (text_embedding <=> ${p.qVec}::vector) AS sim,
+             ts_headline('english', left(text, 4000),
+               plainto_tsquery('english', ${p.query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
+         AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
+         AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
+         AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+         AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
+         AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
+         AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
+         AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+         AND text_embedding IS NOT NULL
+    ORDER BY text_embedding <=> ${p.qVec}::vector
+       LIMIT ${p.limit}
+    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; sim: number; highlight: string }>;
+    return rows.map((r) => ({
+      key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
+      score: r.sim,
+      row: {
+        source: 'session_turn',
+        source_id: `${r.source_kind}:${r.session_id}:${r.turn_idx}`,
+        ...(r.harness_slug ? { scope: r.harness_slug } : {}),
+        excerpt: `[${r.speaker}${r.owner ? ` ${r.owner}` : ''}${r.ts ? ` ${r.ts}` : ''}] ${trunc(r.text)}`,
+        highlight: r.highlight,
+        score: r.sim,
+        rankers: ['embeddings'],
+      },
+    }));
+  },
+};
+
+/**
+ * coord_message — ranked recall over the coord message stream (P-009): the
+ * `messages` surface of harness_shared.coord_event_log. BM25-ONLY by design —
+ * 120k+ envelope rows are not worth embedding; the expression GIN index
+ * (migration 501) matches the EXACT to_tsvector expression below. With the
+ * fleet→owners filter this answers "find where fleet X discussed Y" across
+ * what members SAID TO EACH OTHER (this source) + what they said in their
+ * sessions (session_turn) in one call.
+ */
+const coordMessage: SearchSource = {
+  name: 'coord_message',
+  async bm25(p: SearchSourceParams): Promise<Listing> {
+    const f = sessionTurnFilterSql(p);
+    const rows = (await p.sql`
+      SELECT msg_id, ts, harness_slug,
+             body->>'from' AS from_owner,
+             body->>'kind' AS kind,
+             left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 4000) AS msgtext,
+             ts_rank_cd(
+               to_tsvector('english', left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 20000)),
+               plainto_tsquery('english', ${p.query})) AS rank,
+             ts_headline('english',
+               left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 4000),
+               plainto_tsquery('english', ${p.query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.coord_event_log
+       WHERE surface = 'messages'
+         AND (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
+         AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
+         AND (${f.owners}::text[] IS NULL OR body->>'from' = ANY(${f.owners}::text[]))
+         AND (${f.since}::timestamptz IS NULL OR ts >= ${f.since}::timestamptz)
+         AND (${f.until}::timestamptz IS NULL OR ts < ${f.until}::timestamptz)
+         AND to_tsvector('english', left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 20000))
+             @@ plainto_tsquery('english', ${p.query})
+    ORDER BY rank DESC LIMIT ${p.limit}
+    `) as unknown as Array<{ msg_id: string; ts: string; harness_slug: string | null; from_owner: string | null; kind: string | null; msgtext: string; rank: number; highlight: string }>;
+    return rows.map((r) => ({
+      key: `coord_message:${r.msg_id}`,
+      score: r.rank,
+      row: {
+        source: 'coord_message',
+        source_id: r.msg_id,
+        ...(r.harness_slug ? { scope: r.harness_slug } : {}),
+        excerpt: `[${r.kind ?? 'message'}${r.from_owner ? ` from ${r.from_owner}` : ''} ${r.ts}] ${trunc(r.msgtext)}`,
+        highlight: r.highlight,
+        score: r.rank,
+        rankers: ['bm25'],
+      },
+    }));
+  },
+};
+
+/** The seven prose surfaces, keyed by `scope` name. */
+export const SEARCH_SOURCES: SearchSource[] = [
+  escalations, brainstorm, turns, decisions, workItem, sessionTurn, coordMessage,
+];

@@ -985,7 +985,7 @@ export class CompositionRig {
   /** Seed backlog items on a cell (status todo, origin local → they federate). */
   async seedBacklog(
     cell: SwarmCell,
-    items: Array<{ id: string; title?: string; kind?: 'feature' | 'research-task' | 'chunk'; redundancy?: number }>,
+    items: Array<{ id: string; title?: string; kind?: 'feature' | 'chunk'; redundancy?: number }>,
   ): Promise<void> {
     const base = this.now();
     for (let i = 0; i < items.length; i++) {

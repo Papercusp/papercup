@@ -90,9 +90,9 @@ export async function runScheduledPlanFire(
     return null;
   }
   const template = tpl[0];
-  // Executor kind (D-006/P-009): a non-coding plan mints a lighter frontier kind
-  // ('research-task' → research spine) instead of the coding-spine 'feature' default.
-  // Authored on schedule.executorKind; validated against the feature-family kinds.
+  // Executor kind (D-006/P-009): authored on schedule.executorKind; validated against
+  // the feature-family kinds (feature|chunk). An invalid or removed kind (e.g. the
+  // retired research-task) falls back to the coding-spine 'feature' default.
   const rawKind = template.schedule?.executorKind;
   const itemKind = rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind) ? rawKind : 'feature';
 
