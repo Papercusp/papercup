@@ -135,3 +135,44 @@ watchdogKey/paths classifies `tier=human`. I did NOT implement it — it lives i
 - Nothing to re-verify for EI-402 itself (no code changed this run).
 - EI-815 carries the repro + the precise classifier gap; it should be picked up
   as a human-tier fix (the protected-path gate on its `paths` keeps it human).
+
+---
+
+# Worker log — EI-7472 (green-stall-watchdog dedup flag clobbered ~hourly)
+
+**Item:** EI-7472 (kind=bug) — `gate_health.watchdogAlerted` clobbered every red
+green-checkpoint tick → fleet re-spammed the STALLED severe-event ~hourly.
+**Outcome:** FIXED + regression test; affected tests green.
+
+## Root cause (confirmed against source)
+`trackGateStall` (`packages/operator-core/lib/harness/routines/release-actions.ts`)
+final write is `UPDATE … SET metadata = COALESCE(metadata,'{}') || $2::jsonb` with
+`$2 = {gate_health: next}` — a SHALLOW top-level jsonb merge that REPLACES the whole
+`gate_health` key with `next`. Both the red and reset `next` objects omitted
+`watchdogAlerted` (owned by the separate green-stall-watchdog sweep), so every hourly
+red fire dropped it back to absent → the watchdog (designed one-shot-until-recovery)
+re-fired its `green-stall:<slug>` severe-event ~hourly to every live session.
+
+## Fix (minimal, no schema change, behavior-neutral for the deploy decision)
+release-actions.ts `trackGateStall`:
+- widened the inline `gh` row type to include `watchdogAlerted?: boolean`;
+- RED path `next`: `watchdogAlerted: gh.watchdogAlerted ?? false` (preserve);
+- RESET/green path `next`: `watchdogAlerted: false` (recovery clears it, matching
+  the watchdog's own recovery-clear);
+- exported `trackGateStall` for the regression test.
+New test `release-actions.gate-health.test.ts` captures the real `sql.unsafe` UPDATE
+params (partial `@papercusp/db-org` mock overriding only lazy `getOrgPg`) and asserts
+the flag survives a red tick and clears on green.
+
+## Verification
+- `vitest run release-actions.gate-health.test.ts release-actions.test.ts green-stall-watchdog.test.ts`
+  → 60 passed (3 new).
+- Fails-before proven: temporarily reverted the red-path field → 2 red-path tests
+  failed; restored → green.
+- `tsc --noEmit` (operator-core): no errors reference the touched files.
+
+## Validator re-verify (live)
+After a red green-checkpoint fire on a still-stalled slug,
+`metadata->'gate_health'->>'watchdogAlerted'` should stay `true` (not null), and no
+second `green-stall:<slug>` severe-event for the same unbroken red streak. Did NOT
+touch the underlying red suites (separate content issues, out of scope).
