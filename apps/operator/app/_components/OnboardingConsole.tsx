@@ -96,6 +96,7 @@ export function OnboardingConsole() {
             cwd={spec.cwd}
             env={spec.env}
             rows={CONSOLE_ROWS}
+            placeholder="Starting onboarding…"
             onExit={(code) => setExited(code)}
             onSpawnError={() => setSpec(null)}
           />

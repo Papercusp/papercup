@@ -328,6 +328,32 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).not.toContain('unreachable');
   });
 
+  it('EI-7626: self.modes renders the ▣ standing-modes chip (autonomy + overlays joined)', () => {
+    const out = render({
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: null, modes: ['auto', 'ideate'] },
+    });
+    expect(out).toContain('▣ auto+ideate');
+  });
+
+  it('EI-7626: empty / absent self.modes → no ▣ chip (fail-open on an older operator)', () => {
+    const base = {
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+    };
+    expect(render({ ...base, self: { objective: null, modes: [] } })).not.toContain('▣');
+    expect(render({ ...base, self: { objective: null } })).not.toContain('▣');
+  });
+
   it('garbage fixture prints nothing and exits 0', () => {
     expect(render([1, 2, 3])).toBe('');
   });

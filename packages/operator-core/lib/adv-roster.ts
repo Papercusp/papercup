@@ -104,6 +104,10 @@ export interface RosterEntry {
    *  loop row targeting this ownerId). A loop-armed agent counts as "live" (it keeps
    *  working on a cadence) even when its presence has gone idle between wakes. */
   loopArmed: boolean;
+  /** OFFICIAL standing modes (harness_shared.agent_modes ids, e.g. ['auto','ideate']) —
+   *  the mode-rail state for the GUI mode chips (EI-7626). Distinct from `mode` below,
+   *  which is the psu LAUNCH-time flag on the adv_sessions row. Empty when none set. */
+  modes: string[];
   /** The machine this agent runs on. For a LOCAL agent: this machine's fingerprint;
    *  for a FEDERATED (cross-machine, shared-hive) agent: its announced machine_label.
    *  The key the roster groups/tabs by. */
@@ -365,6 +369,7 @@ export function mergeRosterEntries(
   fleetByOwner: Map<string, { fleetSlug: string | null; fleetColor: string | null }> = new Map(),
   runInfoByOwner: Map<string, { runId: string; harness: string }> = new Map(),
   loopArmedOwners: Set<string> = new Set(),
+  modesByOwner: Map<string, string[]> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -421,6 +426,7 @@ export function mergeRosterEntries(
       liveness,
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),
+      modes: modesByOwner.get(p.ownerId) ?? [],
       // Federated (cross-machine) rows carry federated:true + machineLabel; local
       // rows get their machine label stamped in mergeRosterWithAssignments.
       machineLabel: (p as { federated?: boolean }).federated
@@ -742,8 +748,12 @@ export async function mergeRosterWithAssignments(
   } catch {
     presence = localPresence;
   }
-  // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping.
-  const fleetInfoByOwner = await resolveFleetInfoByOwner(presence);
+  // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
+  // and the official standing-modes read (EI-7626), both batched, in parallel.
+  const [fleetInfoByOwner, modesByOwner] = await Promise.all([
+    resolveFleetInfoByOwner(presence),
+    agentModesByOwner(presence),
+  ]);
   const entries = mergeRosterEntries(
     presence,
     advByOwner,
@@ -757,6 +767,7 @@ export async function mergeRosterWithAssignments(
     fleetInfoByOwner,
     runInfoByOwner,
     loopArmedOwners,
+    modesByOwner,
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their

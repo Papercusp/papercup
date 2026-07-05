@@ -49,6 +49,13 @@ export interface InlinePtyTerminalProps {
    * dead pane (found live 2026-06-12). Captured in a ref like onExit.
    */
   readonly onSpawnError?: (message: string) => void;
+  /**
+   * Text shown — with a small spinner — centered over the empty pane until
+   * the pty writes its first byte, so a slow-to-start, sign-in-gated, or
+   * network-waiting command never reads as a dead black box (the
+   * "blank setup terminal" report, WI-2934). Defaults to "Starting…".
+   */
+  readonly placeholder?: string;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -68,13 +75,34 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
+/**
+ * The pane shows the placeholder until the pty produces its first byte — and
+ * stops once there's output, a spawn/attach error, or the process has exited.
+ * Pure + exported so every show/hide branch is unit-tested WITHOUT booting
+ * xterm in jsdom (its dynamic import is not reliably mockable under vitest —
+ * see TerminalTab.test.tsx).
+ */
+export function shouldShowPtyPlaceholder(s: {
+  hasOutput: boolean;
+  error: string | null;
+  exitedCode: number | null;
+}): boolean {
+  return !s.hasOutput && !s.error && s.exitedCode === null;
+}
+
 export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
-  const { command, args, cwd, env, readOnly = false, rows = 20, cols = 100, onExit, onSpawnError } = props;
+  const { command, args, cwd, env, readOnly = false, rows = 20, cols = 100, onExit, onSpawnError, placeholder = 'Starting…' } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
   const onSpawnErrorRef = useRef(onSpawnError);
   const [error, setError] = useState<string | null>(null);
   const [exitedCode, setExitedCode] = useState<number | null>(null);
+  // False until the pty writes its first byte — drives the placeholder so the
+  // pane is never a blank black box while a slow or sign-in-gated command spins
+  // up (WI-2934). The ref mirror avoids a setState on every subsequent pty-data
+  // event and a stale-closure read inside the listener.
+  const [hasOutput, setHasOutput] = useState(false);
+  const hasOutputRef = useRef(false);
 
   // Keep latest callbacks accessible without making useEffect respawn.
   useEffect(() => { onExitRef.current = onExit; }, [onExit]);
@@ -83,6 +111,10 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
   useEffect(() => {
     if (!isTauriNative() || !containerRef.current) return;
     const container = containerRef.current;
+
+    // Re-arm the placeholder for this (re)spawn.
+    hasOutputRef.current = false;
+    setHasOutput(false);
 
     /** Set as soon as ptySpawn resolves successfully. Used by cleanup
      *  to kill the pty even if cleanup races ahead of the post-spawn
@@ -152,6 +184,10 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
       }
       unlistenData = await listen<{ id: string; data: string }>('pty-data', (ev) => {
         if (ev.payload.id !== id) return;
+        if (!hasOutputRef.current) {
+          hasOutputRef.current = true;
+          setHasOutput(true); // first byte → reveal the terminal, hide placeholder
+        }
         term.write(base64ToBytes(ev.payload.data));
       });
       unlistenExit = await listen<{ id: string; code: number }>('pty-exit', (ev) => {
@@ -212,18 +248,58 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
 
   if (!isTauriNative()) return null;
 
+  const showPlaceholder = shouldShowPtyPlaceholder({ hasOutput, error, exitedCode });
+
   return (
     <div style={{ marginTop: 12 }}>
-      <div
-        ref={containerRef}
-        style={{
-          background: '#101418',
-          borderRadius: 6,
-          padding: 8,
-          height: rows * 16 + 16,
-          overflow: 'hidden',
-        }}
-      />
+      <div style={{ position: 'relative' }}>
+        <div
+          ref={containerRef}
+          style={{
+            background: '#101418',
+            borderRadius: 6,
+            padding: 8,
+            height: rows * 16 + 16,
+            overflow: 'hidden',
+          }}
+        />
+        {showPlaceholder && (
+          <div
+            aria-live="polite"
+            data-testid="inline-pty-placeholder"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              // Never intercept keystrokes meant for the (already-focused)
+              // terminal underneath — interactive sign-in flows can accept
+              // input before the first byte is echoed back.
+              pointerEvents: 'none',
+              color: 'var(--fg-mute, #9a9aa3)',
+              fontSize: 13,
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                display: 'inline-block',
+                width: 14,
+                height: 14,
+                border: '2px solid currentColor',
+                borderTopColor: 'transparent',
+                borderRadius: '50%',
+                animation: 'inline-pty-spin 0.7s linear infinite',
+              }}
+            />
+            <span>{placeholder}</span>
+            <style>{`@keyframes inline-pty-spin { to { transform: rotate(360deg) } }`}</style>
+          </div>
+        )}
+      </div>
       {error && (
         <p style={{ marginTop: 6, color: 'var(--pc-color-danger, #d33)', fontSize: 12 }}>
           {error}

@@ -218,11 +218,17 @@ async function writeToPg(
     -- completed the same item in the same clock tick SWAPPED values on heal
     -- (each applied the other's write, echo suppression froze the swap, and
     -- convergence reported a fixed point over divergent replicas —
-    -- composition-chaos P-002). fed_apply_wins mirrors lwwPick's clock-tie
-    -- writer rule, so every replica settles on the same writer's value.
+    -- composition-chaos P-002). fed_apply_wins breaks the tie by writer-pair
+    -- when both are known, else by the SYMMETRIC content digest (local rows are
+    -- author_pubkey-NULL by design, mig 214), so every replica settles on the
+    -- same value in one exchange. The digest covers CONTENT columns only.
     WHERE harness_shared.fed_apply_wins(
             EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
-            work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey)
+            md5(concat_ws('|', EXCLUDED.item_kind, EXCLUDED.title, EXCLUDED.summary,
+                          EXCLUDED.status, EXCLUDED.taken_by, EXCLUDED.payload::text)),
+            work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey,
+            md5(concat_ws('|', work_items.item_kind, work_items.title, work_items.summary,
+                          work_items.status, work_items.taken_by, work_items.payload::text)))
   `;
 }
 

@@ -145,6 +145,47 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(relreplident).toBe('f');
   });
 
+  it('WI-2914: agent_facts DELETE succeeds under the real zero_harness publication (generated col fed_key + REPLICA IDENTITY FULL)', async () => {
+    // The REPLICA IDENTITY FULL assertion above is necessary but NOT sufficient:
+    // the actual sweep/GC DELETE only fails once the table is in a delete-publishing
+    // publication — which the embedded/federated operator creates at boot but the
+    // dev box's native PG never does (why the bug never reproduced on :5432). So run
+    // the REAL boot-path publication DDL (ensureZeroHarnessPublication — the same fn
+    // index.js calls at boot), then prove a full insert→delete round-trip works.
+    //
+    // Without the WI-2914 publish_generated_columns=stored fix this DELETE throws:
+    //   "cannot delete from table agent_facts:
+    //    Replica identity must not contain unpublished generated columns"
+    // (agent_facts's FULL replica identity contains the STORED generated column
+    // fed_key from mig 462). This test goes red if that fix is removed/regressed.
+    await ensureZeroHarnessPublication(sql);
+
+    // The fix's mechanism: the publication now publishes generated columns.
+    const [{ pubgencols }] = await sql.unsafe(
+      `SELECT pubgencols FROM pg_publication WHERE pubname = 'zero_harness'`,
+    );
+    expect(pubgencols).toBe('s'); // 's' = STORED generated columns published
+
+    // The real thing the sweep does: insert an (expired) fact, then delete it.
+    await sql.unsafe(`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, key, body, created_by, expires_at)
+      VALUES ('wi2914-guard-ws', 'workspace', 'wi2914-guard-key', 'guard', 'test',
+              now() - interval '1 day')
+    `);
+    await expect(
+      sql.unsafe(
+        `DELETE FROM harness_shared.agent_facts
+          WHERE workspace_id = 'wi2914-guard-ws' AND key = 'wi2914-guard-key'`,
+      ),
+    ).resolves.toBeDefined();
+    const [{ n }] = await sql.unsafe(
+      `SELECT count(*)::int AS n FROM harness_shared.agent_facts
+        WHERE workspace_id = 'wi2914-guard-ws'`,
+    );
+    expect(n).toBe(0);
+  });
+
   it('grants the runtime app role access (harness_app can read its tables — migration 109)', async () => {
     // --no-privileges stripped every grant from the baseline; 109 restores them. Connect AS
     // harness_app (not the migration superuser) to prove a fresh boot doesn't lock the app out.

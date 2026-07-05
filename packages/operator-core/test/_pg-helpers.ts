@@ -68,19 +68,23 @@ export const FED_ORDER_KEY_DDL = `
   RETURNS text LANGUAGE sql IMMUTABLE AS $fed_order_key$
     SELECT COALESCE(hlc, lpad(COALESCE(ts, 0)::text, 15, '0') || ':00000');
   $fed_order_key$;
-  -- WI-2923 (mig 504): the apply-guard's writer tie-break at an equal order key —
-  -- keep the body word-for-word in sync with
+  -- WI-2923 (mig 504): the apply-guard's tie-break at an equal order key —
+  -- writer-pair when both known, else the symmetric content digest (local rows
+  -- carry author_pubkey NULL, mig 214 stamps fed_ts only). Keep the body
+  -- word-for-word in sync with
   -- libs/papercusp/libs/db/sql/504-fed-apply-writer-tiebreak.sql.
   CREATE OR REPLACE FUNCTION harness_shared.fed_apply_wins(
-    excluded_hlc text, excluded_ts bigint, excluded_writer text,
-    local_hlc    text, local_ts    bigint, local_writer    text
+    excluded_hlc text, excluded_ts bigint, excluded_writer text, excluded_digest text,
+    local_hlc    text, local_ts    bigint, local_writer    text, local_digest    text
   ) RETURNS boolean LANGUAGE sql IMMUTABLE AS $fed_apply_wins$
     SELECT CASE
       WHEN harness_shared.fed_order_key(excluded_hlc, excluded_ts)
          > harness_shared.fed_order_key(local_hlc, local_ts) THEN true
       WHEN harness_shared.fed_order_key(excluded_hlc, excluded_ts)
          < harness_shared.fed_order_key(local_hlc, local_ts) THEN false
-      ELSE COALESCE(excluded_writer, '') >= COALESCE(local_writer, '')
+      WHEN excluded_writer IS NOT NULL AND local_writer IS NOT NULL
+           AND excluded_writer <> local_writer THEN excluded_writer > local_writer
+      ELSE COALESCE(excluded_digest, '') >= COALESCE(local_digest, '')
     END;
   $fed_apply_wins$;
 `;

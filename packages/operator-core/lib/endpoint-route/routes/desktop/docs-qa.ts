@@ -77,9 +77,9 @@ export async function retrieveDocsContext(
   question: string,
   opts: { docSlugs?: string[]; limit?: number; deepen?: number; bodyChars?: number; signal?: AbortSignal } = {},
 ): Promise<DocsContextBlock[]> {
-  const limit = opts.limit ?? 6;
-  const deepen = opts.deepen ?? 2;
-  const bodyChars = opts.bodyChars ?? 1800;
+  const limit = opts.limit ?? 8;
+  const deepen = opts.deepen ?? 3;
+  const bodyChars = opts.bodyChars ?? 2200;
   const adapter = engineeringAdapter;
 
   let hits: Array<{ slug: string; url?: string; title?: string; excerpt?: string }> = [];
