@@ -2187,7 +2187,14 @@ export async function claimNextIssueWorkItem(
                 OR wi.last_released_at IS NULL
                 OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
             : sql`TRUE`}
-        ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
+        -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
+        -- this function's own doc above — "the Queen can now steer issues too, P-007" — with
+        -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated
+        -- behavior). The swarm-affinity tie-break stays swarmId-gated (meaningless without
+        -- it); the fix moves feature_order OUT of that ternary so a plain, lease-less
+        -- work_items:set_priority actually changes this query's pull order instead of
+        -- silently no-op'ing on ordering while still reporting written:true.
+        ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : sql``} wi.feature_order ASC NULLS LAST, wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )

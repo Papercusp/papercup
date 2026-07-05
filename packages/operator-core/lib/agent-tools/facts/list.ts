@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { listFacts, FACT_SCOPES } from '../../agent-facts/store';
-import { resolveScopeRefFromCtx } from './scope-ctx';
+import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:list',
@@ -26,13 +26,17 @@ export default defineTool({
   args: z.object({
     scope: z.enum(FACT_SCOPES),
     scopeRef: z.string().max(120).optional(),
+    scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
+    ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
+    harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
     limit: z.number().int().positive().max(100).optional(),
   }),
   async handler(args, ctx) {
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
     // harness = this harness, role = my role) so `facts:list { scope: 'owner' }`
     // lists YOUR facts without having to pass your own id — symmetry with assert.
-    const scopeRef = await resolveScopeRefFromCtx(args.scope, args.scopeRef, ctx);
+    // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
+    const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
     const facts = await listFacts(
       { scope: args.scope, scopeRef: scopeRef ?? null },
       { limit: args.limit ?? 50 },

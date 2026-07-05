@@ -222,6 +222,21 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag ON: issues self-pickable, readines
     const second = (await wi.claimNextWorkItem({ harness: H, assignee: 'w-on-5b' }))?.id ?? null;
     expect(second).toBe('EI-5');
   });
+
+  it('EI-7407: honors a Queen-set feature_order for issue-family claims WITHOUT a swarmId (P-007 promises unconditional issue steering, unlike the feature path\'s P-010 lease gate)', async () => {
+    // EI-older is the OLDER row (would win on plain oldest-first); EI-newer is YOUNGER but
+    // given a LOWER feature_order via work_items:set_priority (setWorkItemPriority) — the
+    // Queen steering the issue backlog with no Multi-Swarm lease active (no swarmId passed
+    // anywhere in this test, matching the vast majority of real scheduler:get_next callers).
+    await seedIssue('EI-older', { state: 'open', createdTs: 50 });
+    await seedIssue('EI-newer', { state: 'open', createdTs: 100 });
+    const set = await wi.setWorkItemPriority('EI-newer', 1, { harness: H });
+    expect(set?.applicable).toBe(true); // written:true, per the set_priority tool contract
+    // Before the EI-7407 fix, claimNextIssueWorkItem's ORDER BY only included feature_order
+    // inside a `filter.swarmId ?` ternary, so this call (no swarmId) fell through to plain
+    // `created_ts ASC` and claimed EI-older regardless of the priority write.
+    expect(await claimOne('w-on-priority')).toBe('EI-newer');
+  });
 });
 
 describe('SCHEDULER_ISSUES_CLAIMABLE — flag OFF: issues NOT claimable, byte-identical to feature-only', () => {

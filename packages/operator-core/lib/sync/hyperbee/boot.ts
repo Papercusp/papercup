@@ -2748,11 +2748,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // (b) Drop the already-admitted log for this pubkey, if any.
     const logKey = pubkeyToLogKey.get(devicePubkey);
     if (logKey) {
+      const revokedLog = admitted.get(logKey);
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
       dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       pubkeyToLogKey.delete(devicePubkey);
       admittedIdentities.delete(logKey);
+      // WI-1856 (G9): the Hypercore SESSION `openRemoteLog` opened for this peer
+      // is never used again once dropped from `admitted` — without an explicit
+      // close it leaks (each `store.get({key})` call is a distinct session, not
+      // shared/refcounted by key). Best-effort + optional (a hand-rolled
+      // RemoteLog test fixture may not implement `close`); a close failure must
+      // never abort revoke() — the peer is refused regardless.
+      if (revokedLog && typeof revokedLog.close === 'function') {
+        try {
+          await revokedLog.close();
+        } catch (e) {
+          console.error(
+            `[boot] revoke: closing session for ${peerLabel(logKey)} failed (non-fatal):`,
+            e,
+          );
+        }
+      }
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,

@@ -151,6 +151,17 @@ export interface RemoteLog {
    * test fixtures elsewhere in the codebase don't need a stub.
    */
   peersCount?(): number | undefined;
+  /**
+   * WI-1856 (G9): release the underlying Hypercore SESSION this replica opened
+   * via `store.get({ key })`. Each `openRemoteLog` call creates a fresh session
+   * (Corestore sessions are per-`.get()`, not per-key) — leaving it open after
+   * the replica is no longer referenced (e.g. dropped from `boot.ts`'s
+   * `admitted` map on `revoke()`) leaks the session's replicator/file-handle
+   * state for the life of the process. Idempotent (Hypercore no-ops a repeat
+   * `close()`). Optional — feature-detected by the caller, so hand-rolled
+   * `RemoteLog` test fixtures elsewhere in the codebase don't need a stub.
+   */
+  close?(): Promise<void>;
 }
 
 /**
@@ -183,6 +194,8 @@ interface CoreLike {
   readonly length: number;
   readonly key: Buffer;
   readonly writable: boolean;
+  /** Release this Corestore session. Present on real cores (WI-1856). */
+  close?(): Promise<void>;
 }
 
 function getCore(store: Corestore, opts: { name: string } | { key: Buffer }): CoreLike {
@@ -279,6 +292,12 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
     },
     peersCount(): number | undefined {
       return Array.isArray(core.peers) ? core.peers.length : undefined;
+    },
+    // WI-1856 (G9): release this session's Hypercore replicator/file-handle
+    // state. Best-effort from the caller's side (revoke() swallows a throw
+    // here) — `core.close()` itself is idempotent on a real Hypercore.
+    async close(): Promise<void> {
+      await core.close?.();
     },
   };
 }

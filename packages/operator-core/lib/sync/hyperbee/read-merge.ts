@@ -43,6 +43,14 @@ export interface AdmittedLog {
   readonly keyHex: string;
   readonly length: number;
   get(i: number): Promise<PeerLogOp | null>;
+  /**
+   * WI-1856 (G9): release the underlying Hypercore session (present on a
+   * `RemoteLog` from `openRemoteLog`; the own writable log is never revoked so
+   * it need not implement this). Optional + feature-detected by callers (e.g.
+   * `boot.ts`'s `revoke()`) so hand-rolled `AdmittedLog`/`RemoteLog` test
+   * fixtures elsewhere in the codebase don't need a stub.
+   */
+  close?(): Promise<void>;
 }
 
 /** Default per-op read timeout. A connected-but-withholding peer's

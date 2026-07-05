@@ -310,7 +310,19 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(coord_event_log.fed_hlc, coord_event_log.fed_ts)
+    -- WI-2933 (extends mig 504 fed_apply_wins): the bare ">=" applied unconditionally
+    -- on an EXACT clock tie, so two cells applying ops for the SAME msg_id in the
+    -- same tick could symmetrically swap which body/surface won (composition-chaos
+    -- P-002 class) -- unlikely given msg_id is generated globally-unique per send,
+    -- but the guard should still converge deterministically rather than assume it
+    -- never happens. fed_apply_wins breaks the tie by writer pubkey when both sides
+    -- carry one and differ, else by the SYMMETRIC content digest.
+    WHERE harness_shared.fed_apply_wins(
+            EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
+            md5(concat_ws('|', EXCLUDED.surface, EXCLUDED.writer_key, EXCLUDED.body::text, EXCLUDED.ts::text)),
+            coord_event_log.fed_hlc, coord_event_log.fed_ts, coord_event_log.author_pubkey,
+            md5(concat_ws('|', coord_event_log.surface, coord_event_log.writer_key,
+                          coord_event_log.body::text, coord_event_log.ts::text)))
     -- xmax = 0 ⇔ this statement INSERTED a brand-new row (an ON CONFLICT
     -- update or LWW-rejected no-op returns inserted=false / no row) — the
     -- exactly-once gate for the EI-279 wake fan below.

@@ -55,7 +55,8 @@ export default defineTool({
     // self-scoped cases (owner = me, harness = this harness, role = my role), so
     // the common "assert a fact about just myself" doesn't error on a missing
     // ref the tool can infer. An explicit scopeRef always wins.
-    const scopeRef = resolveFactScopeRef(args.scope, args.scopeRef, {
+    const aliasedScopeRef = resolveScopeRefAlias(args.scope, args);
+    const scopeRef = resolveFactScopeRef(args.scope, aliasedScopeRef, {
       ownerId: identity.ownerId,
       harnessSlug: ctx.harnessSlug,
       role: deriveAgentRole(identity),

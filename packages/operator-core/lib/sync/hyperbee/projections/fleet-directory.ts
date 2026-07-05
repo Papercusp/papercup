@@ -201,7 +201,23 @@ async function writeToPg(
       updated_at           = ${now}
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() (mirrors lwwPick exactly).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.p2p_fleet_directory.fed_hlc, harness_shared.p2p_fleet_directory.fed_ts)
+    -- WI-2933 (extends mig 504 fed_apply_wins): the bare ">=" applied unconditionally
+    -- on an EXACT clock tie (two cells signing/publishing the same fleet record in
+    -- the same tick), so both cells could apply the OTHER's write and swap
+    -- (composition-chaos P-002 class). fed_apply_wins breaks the tie by writer
+    -- pubkey when both sides carry one and differ, else by the SYMMETRIC content
+    -- digest — both cells compute it identically, converging in one exchange.
+    WHERE harness_shared.fed_apply_wins(
+            EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
+            md5(concat_ws('|', EXCLUDED.record_json, EXCLUDED.signer_device_pubkey,
+                          EXCLUDED.signature, EXCLUDED.record_version::text, EXCLUDED.archived::text)),
+            harness_shared.p2p_fleet_directory.fed_hlc, harness_shared.p2p_fleet_directory.fed_ts,
+            harness_shared.p2p_fleet_directory.author_pubkey,
+            md5(concat_ws('|', harness_shared.p2p_fleet_directory.record_json,
+                          harness_shared.p2p_fleet_directory.signer_device_pubkey,
+                          harness_shared.p2p_fleet_directory.signature,
+                          harness_shared.p2p_fleet_directory.record_version::text,
+                          harness_shared.p2p_fleet_directory.archived::text)))
   `;
 }
 

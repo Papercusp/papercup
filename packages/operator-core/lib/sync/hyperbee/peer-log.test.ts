@@ -86,4 +86,48 @@ describe('peer-log', () => {
     expect(remote.length).toBe(1);
     expect(await remote.get(0)).toMatchObject({ hbKey: 'R-1' });
   });
+
+  // WI-1856 (G9): openRemoteLog's session must be genuinely releasable — the
+  // caller (boot.ts's revoke()) drops the RemoteLog reference on revocation,
+  // but the underlying Hypercore session was never closed, leaking its
+  // replicator/file-handle state for the process lifetime. Each `store.get()`
+  // call opens a DISTINCT session on the shared core (Corestore sessions are
+  // per-open, not per-key/refcounted-by-key) — `core.sessions` is Corestore's
+  // own live-session bookkeeping, so asserting it decrements by exactly one
+  // per `close()` proves this releases THIS session specifically, without
+  // tearing down the underlying core (a second, still-open session on the
+  // same key keeps working).
+  it('close() releases the underlying Hypercore session without affecting a sibling session (WI-1856)', async () => {
+    const s1 = makeStore('mb-close-w-'); await s1.ready();
+    const s2 = makeStore('mb-close-r-'); await s2.ready();
+    const own = await openOwnLog(s1);
+    await own.append({ type: 'put', table: 'features_consolidated', hbKey: 'R-1', value: {}, ts: 10, schema_version: 1, author_pubkey: 'A' });
+    type Pipeable = { pipe<T extends Pipeable>(dest: T): T };
+    const a = s1.replicate(true) as unknown as Pipeable;
+    const b = s2.replicate(false) as unknown as Pipeable;
+    a.pipe(b).pipe(a);
+
+    const remote = await openRemoteLog(s2, own.keyHex);
+    await remote.update();
+    // A sibling session on the SAME key (simulates e.g. a stall-detector reader
+    // outliving one particular RemoteLog handle) — closing `remote` must not
+    // disturb it.
+    const sibling = await openRemoteLog(s2, own.keyHex);
+    await sibling.update();
+
+    type CoreWithSessions = { sessions?: { length: number } };
+    const core = (s2 as unknown as { get(o: Record<string, unknown>): CoreWithSessions }).get({
+      key: Buffer.from(own.keyHex, 'hex'),
+    });
+    const sessionsBefore = core.sessions?.length ?? -1;
+    expect(sessionsBefore).toBeGreaterThan(0);
+
+    expect(typeof remote.close).toBe('function');
+    await remote.close!();
+
+    expect(core.sessions?.length).toBe(sessionsBefore - 1); // exactly ONE session released
+    // The sibling session is untouched — still readable.
+    expect(sibling.length).toBe(1);
+    expect(await sibling.get(0)).toMatchObject({ hbKey: 'R-1' });
+  });
 });

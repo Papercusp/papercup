@@ -110,7 +110,25 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(contributors.fed_hlc, contributors.fed_ts)
+    -- WI-2933 (extends mig 504 fed_apply_wins): the bare ">=" applied unconditionally
+    -- on an EXACT clock tie, so two cells writing the same contributor in the same
+    -- tick could symmetrically swap values (composition-chaos P-002 class). This
+    -- table has no author_pubkey/writer column (contributors never stamped one), so
+    -- fed_apply_wins falls straight to its SYMMETRIC content-digest tiebreak, which
+    -- both cells compute identically and so converge on the same row in one exchange.
+    WHERE harness_shared.fed_apply_wins(
+            EXCLUDED.fed_hlc, EXCLUDED.fed_ts, NULL::text,
+            md5(concat_ws('|', EXCLUDED.github_username, EXCLUDED.display_name, EXCLUDED.avatar_url,
+                          EXCLUDED.device_attestations::text, array_to_string(EXCLUDED.revoked_pubkeys, ','),
+                          EXCLUDED.last_seen_at::text, EXCLUDED.binding_status, EXCLUDED.channel1_verified_at::text,
+                          EXCLUDED.channel2_verified_at::text, EXCLUDED.channel2_branch_ref,
+                          EXCLUDED.binding_last_checked_at::text, EXCLUDED.schema_version::text)),
+            contributors.fed_hlc, contributors.fed_ts, NULL::text,
+            md5(concat_ws('|', contributors.github_username, contributors.display_name, contributors.avatar_url,
+                          contributors.device_attestations::text, array_to_string(contributors.revoked_pubkeys, ','),
+                          contributors.last_seen_at::text, contributors.binding_status, contributors.channel1_verified_at::text,
+                          contributors.channel2_verified_at::text, contributors.channel2_branch_ref,
+                          contributors.binding_last_checked_at::text, contributors.schema_version::text)))
   `;
 }
 

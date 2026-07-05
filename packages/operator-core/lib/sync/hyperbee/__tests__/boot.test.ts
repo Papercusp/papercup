@@ -1389,6 +1389,69 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
     expect(handle.admitted.has(peerOwn.keyHex)).toBe(false);
   });
 
+  // WI-1856 (G9): revoke() must not just drop the map entry — it must CLOSE
+  // the underlying Hypercore session `openRemoteLog` opened for the peer, or
+  // that session (replicator state + file handles) leaks for the rest of the
+  // process's life on a long-lived owner node (revokes are rare but the leak
+  // is unbounded/cumulative). Uses the REAL openRemoteLog (no override) so
+  // this exercises the actual production close-wiring, not a fake's spy.
+  it('revoke() closes the revoked peer\'s Hypercore session (WI-1856)', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-revoke-close-host-'),
+      workspaceId: 'ws-1',
+      harnessSlug: 'revoke-close-1',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+    });
+    cleanups.push(() => handle.close());
+
+    const peerDir = tmpDir('mb-revoke-close-peer-');
+    const peerStore = new Corestore(peerDir);
+    cleanups.push(() => { void peerStore.close(); });
+    await peerStore.ready();
+    const peerOwn = await openOwnLog(peerStore);
+    const P = makeDevice('peer-close', 4243);
+    await peerOwn.append({
+      type: 'put', table: 'mb_revoke_close_table', hbKey: 'C-1',
+      value: { id: 'C-1' }, ts: 100, schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: P.devicePubkey,
+    });
+    replicate(peerStore, handle.store);
+
+    const announce = await buildAnnounce(
+      {
+        device_pubkey: P.devicePubkey,
+        github_user_id: P.githubUserId,
+        github_login: P.githubLogin,
+        attestation_gist_id: 'gist-test',
+        log_core_key: peerOwn.keyHex,
+      },
+      P.sign,
+    );
+    const admitDecision = await handle.onAnnounce(announce);
+    expect(admitDecision.admit).toBe(true);
+
+    // Capture the admitted RemoteLog + the underlying core's session count
+    // BEFORE revoke — asserting the count drops by exactly one is what proves
+    // close() released THIS session (not a no-op, not the whole core).
+    const admittedLog = handle.admitted.get(peerOwn.keyHex)!;
+    expect(admittedLog).toBeDefined();
+    expect(typeof admittedLog.close).toBe('function');
+    type CoreWithSessions = { sessions?: { length: number } };
+    const core = (handle.store as unknown as {
+      get(o: Record<string, unknown>): CoreWithSessions;
+    }).get({ key: Buffer.from(peerOwn.keyHex, 'hex') });
+    const sessionsBefore = core.sessions?.length ?? -1;
+    expect(sessionsBefore).toBeGreaterThan(0);
+
+    await handle.revoke(P.devicePubkey);
+
+    expect(handle.admitted.has(peerOwn.keyHex)).toBe(false);
+    expect(core.sessions?.length).toBe(sessionsBefore - 1);
+  });
+
   it('revoking an unknown pubkey is a no-op (idempotent) but still blocks a future announce', async () => {
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpDir('mb-revoke-unknown-'),
