@@ -44,7 +44,12 @@
  *     all (the wake was never delivered / the session died silently) is re-armed off
  *     `last_fired_at + interval` so the next fire RETRIES (and then flows through the
  *     fire-gate / cost-cap on the fire side, which can auto-pause a dead loop) — never
- *     wedge at infinity forever.
+ *     wedge at infinity forever. WI-2714 adds a BOUNDED, EARLIER quick-retry leg ahead of
+ *     this layer's own generous dwell (see quickRetryParkMs/quickRetryEligible below) —
+ *     recover-then-escalate instead of dwell-then-recover-then-escalate — while leaving the
+ *     dead-owner TERMINATION decision (checkUnreachableTerminalGuard) and its dwell/
+ *     reachability veto completely untouched: quick-retry only ever attempts another wake,
+ *     never a pause.
  *
  * ## Invariants
  *  - IDEMPOTENT + NEVER-BACKWARDS (pure loop) — `created_at > last_fired_at` excludes an
