@@ -207,8 +207,8 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
  *  - worsening  — severity rose (e.g. healthy → degraded → broken)
  *  - stable     — first and latest assessable ratings are equal
  *  - unknown    — fewer than 2 assessable ratings (can't tell a direction)
- * It is the NET first→latest trend; the full `series` is returned alongside so a
- * consumer can see within-window oscillation the single direction summarises.
+ * It is the NET first→latest trend; the RLE `series` (opt-in, `includeSeries`) shows
+ * the within-window oscillation the single direction summarises.
  */
 export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'unknown';
 
@@ -237,6 +237,38 @@ export function computeTrendDirection(series: readonly { at: string; rating: str
   return 'stable';
 }
 
+/**
+ * One run of consecutive identical ratings — the series' run-length encoding.
+ * A 500-scorecard series is mostly long runs of one rating, so RLE keeps the
+ * within-window oscillation signal at ~10× less payload than per-scorecard
+ * entries (WI-2943: the raw series made every realistic rubrics:trend result
+ * blow the MCP token cap).
+ */
+export interface SeriesRun {
+  rating: string;
+  /** Timestamp of the first scorecard in the run (chronological). */
+  from: string;
+  /** Timestamp of the last scorecard in the run. */
+  to: string;
+  /** # consecutive scorecards in the run. */
+  n: number;
+}
+
+/** Run-length encode a chronological rating series (WI-2943). Pure; exported for tests. */
+export function compressSeries(series: readonly { at: string; rating: string }[]): SeriesRun[] {
+  const runs: SeriesRun[] = [];
+  for (const s of series) {
+    const last = runs[runs.length - 1];
+    if (last && last.rating === s.rating) {
+      last.to = s.at;
+      last.n += 1;
+    } else {
+      runs.push({ rating: s.rating, from: s.at, to: s.at, n: 1 });
+    }
+  }
+  return runs;
+}
+
 /** One criterion's standing over the window: its rating series + trend direction. */
 export interface CriterionTrend {
   criterion: string;
@@ -244,14 +276,24 @@ export interface CriterionTrend {
   count: number;
   /** rating value → how many scorecards gave it. */
   distribution: Record<string, number>;
+  /**
+   * # in-window ratings that are IDLE-tagged unknowns: rating 'unknown' with
+   * evidence prefixed `idle:` — the grader saying "this stage did not RUN in the
+   * window" (no signal), not "I cannot assess it" (drift signal). Excluded from
+   * the staleness calc (EI-7624: an idle/frozen hive flatlined 6 criteria to
+   * 'unknown' and false-positived the model-drift detector).
+   */
+  idleCount: number;
   /** The earliest rating in the window (chronological). */
   first: { rating: string; at: string };
   /** The most-recent rating in the window. */
   latest: { rating: string; at: string };
   /** Net first→latest trend (see {@link TrendDirection}). */
   direction: TrendDirection;
-  /** The full chronological series (oldest → newest). */
-  series: { at: string; rating: string }[];
+  /** The chronological series as RLE runs (oldest → newest). Only present when
+   *  requested (`includeSeries`, WI-2943) — the summary fields above are the
+   *  default payload. */
+  series?: SeriesRun[];
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -272,10 +314,12 @@ export interface CriterionTrend {
 /** One criterion flagged as stale (persistently unassessable). */
 export interface CriterionStaleness {
   criterion: string;
-  /** Fraction of in-window ratings that are a "stale" rating (default 'unknown'). */
+  /** Fraction of NON-IDLE in-window ratings that are a "stale" rating (default 'unknown'). */
   staleFraction: number;
-  /** # in-window ratings for this criterion (the evidence base). */
+  /** # non-idle in-window ratings for this criterion (the evidence base). */
   samples: number;
+  /** # idle-tagged unknowns excluded from the calc (see {@link CriterionTrend.idleCount}). */
+  idleExcluded: number;
   reason: string;
 }
 
@@ -324,18 +368,26 @@ export function computeRubricStaleness(
 
   const staleCriteria: CriterionStaleness[] = [];
   for (const c of criteria) {
-    if (c.count < minSamples) continue; // too little evidence → not "stale", just quiet
-    const staleCount = Object.entries(c.distribution).reduce(
+    // Idle-tagged unknowns are "the stage did not run" — no signal either way
+    // (EI-7624). Exclude them from BOTH sides of the fraction, so a mostly-idle
+    // window neither manufactures staleness nor dilutes a real drift signal in
+    // the few non-idle samples.
+    const idle = staleRatings.has('unknown') ? (c.idleCount ?? 0) : 0;
+    const samples = c.count - idle;
+    if (samples < minSamples) continue; // too little non-idle evidence → not "stale", just quiet
+    const rawStale = Object.entries(c.distribution).reduce(
       (n, [rating, k]) => (staleRatings.has(rating.toLowerCase()) ? n + k : n),
       0,
     );
-    const fraction = staleCount / c.count;
+    const staleCount = rawStale - idle;
+    const fraction = staleCount / samples;
     if (fraction >= staleFraction) {
       staleCriteria.push({
         criterion: c.criterion,
         staleFraction: fraction,
-        samples: c.count,
-        reason: `${staleCount}/${c.count} recent ratings are ${[...staleRatings].join('/')} — the criterion's model may no longer match how the system works`,
+        samples,
+        idleExcluded: idle,
+        reason: `${staleCount}/${samples} recent non-idle ratings are ${[...staleRatings].join('/')}${idle > 0 ? ` (${idle} idle-tagged excluded)` : ''} — the criterion's model may no longer match how the system works`,
       });
     }
   }
@@ -377,6 +429,13 @@ export interface ScorecardTrendFilter {
   since?: string;
   /** Max scorecards to aggregate (newest-first read; default 500). */
   limit?: number;
+  /**
+   * Include each criterion's chronological series as RLE runs (WI-2943). Default
+   * FALSE: the raw per-scorecard series dominated the payload (~84% at 200
+   * scorecards × 14 criteria, guaranteed over the MCP result cap at the default
+   * limit) while every known consumer wants the summary fields.
+   */
+  includeSeries?: boolean;
 }
 
 /**
@@ -395,11 +454,14 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...rows].reverse();
 
-  const byCriterion = new Map<string, { at: string; rating: string }[]>();
+  const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
       const arr = byCriterion.get(criterion) ?? [];
-      arr.push({ at: sc.createdAt, rating: entry.rating });
+      // `idle:` evidence prefix on an unknown = "stage did not run" (EI-7624) —
+      // counted separately so staleness can tell no-signal from can't-assess.
+      const idle = entry.rating.toLowerCase() === 'unknown' && /^\s*idle\s*:/i.test(entry.evidence ?? '');
+      arr.push({ at: sc.createdAt, rating: entry.rating, idle });
       byCriterion.set(criterion, arr);
     }
   }
@@ -413,10 +475,11 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         criterion,
         count: series.length,
         distribution,
+        idleCount: series.reduce((n, s) => n + (s.idle ? 1 : 0), 0),
         first: { rating: series[0].rating, at: series[0].at },
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
         direction: computeTrendDirection(series),
-        series,
+        ...(filter.includeSeries ? { series: compressSeries(series) } : {}),
       };
     });
 

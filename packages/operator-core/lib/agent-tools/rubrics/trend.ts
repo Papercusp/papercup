@@ -19,7 +19,7 @@ export default defineTool({
   name: 'rubrics:trend',
   profile: 'engineer',
   description:
-    'The qualitative health TREND for a rubric — aggregate the every-turn Overwatch scorecard rating time-series per criterion over time, each with a direction (improving | worsening | stable | unknown), a rating distribution, first/latest rating, and the full chronological series. The health-over-time view ("queen-placement-health: degraded, worsening over 5 ratings"). Also returns a `staleness` signal (P-011): criteria the Overwatch persistently CANNOT assess (rated "unknown") — the rubric\'s model may have drifted from reality and should re-enter the queen↔scout loop for re-ratification. Reads the scorecards (P-013) — no new data.',
+    'The qualitative health TREND for a rubric — aggregate the every-turn Overwatch scorecard rating time-series per criterion over time, each with a direction (improving | worsening | stable | unknown), a rating distribution, and first/latest rating (chronological series as compact RLE runs only when includeSeries=true). The health-over-time view ("queen-placement-health: degraded, worsening over 5 ratings"). Also returns a `staleness` signal (P-011): criteria the Overwatch persistently CANNOT assess (rated "unknown") — the rubric\'s model may have drifted from reality and should re-enter the queen↔scout loop for re-ratification. Idle-tagged unknowns (evidence prefixed `idle:` = the stage did not run) are excluded from staleness. Reads the scorecards (P-013) — no new data.',
   guidance: {
     when: 'You want to see how a rubric\'s criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.',
     notWhen:
@@ -49,6 +49,12 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('max scorecards to aggregate (newest-first read; default 500)'),
+    includeSeries: z
+      .boolean()
+      .optional()
+      .describe(
+        'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
+      ),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
@@ -57,6 +63,7 @@ export default defineTool({
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,
+      includeSeries: args.includeSeries,
     });
     return {
       content: [

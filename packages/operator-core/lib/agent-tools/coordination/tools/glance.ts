@@ -35,8 +35,43 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { getFleet, listFleetsLedBy, resolveFleetScheme } from '../../../agent-fleets-store';
 import { nearestColorSquareEmoji } from '../../../console-color-schemes';
 import { getModes } from '../../../modes/store';
+import { renderStatusDisplay, type StatusDisplayGlance } from '../status-display';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
+
+/**
+ * The pool account that served this owner's most-recent turn, from the
+ * inference gateway's GET /admin/route?owner=<id> (routed-account visibility,
+ * 2026-06-22). Historically each CLIENT statusline fetched this per tick; the
+ * single-source display render (tui-status-parity-single-source-2026-07-05)
+ * moves it server-side so the ⇢ chip is rendered ONCE for every TUI. Cheap +
+ * fail-open: short timeout, 30s per-owner TTL cache (misses cached too, so a
+ * down gateway costs one probe per TTL, not one per statusline tick).
+ */
+const ROUTED_ACCOUNT_TTL_MS = 30_000;
+const routedAccountCache = new Map<string, { value: string | null; at: number }>();
+
+async function fetchRoutedAccount(ownerId: string | null): Promise<string | null> {
+  if (!ownerId) return null;
+  const cached = routedAccountCache.get(ownerId);
+  if (cached && Date.now() - cached.at < ROUTED_ACCOUNT_TTL_MS) return cached.value;
+  let value: string | null = null;
+  try {
+    const base = process.env.PAPERCUSP_GATEWAY_URL?.replace(/\/$/, '')
+      ?? `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}`;
+    const res = await fetch(`${base}/admin/route?owner=${encodeURIComponent(ownerId)}`, {
+      signal: AbortSignal.timeout(500),
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { account?: unknown } | null;
+      value = typeof body?.account === 'string' && body.account ? body.account : null;
+    }
+  } catch {
+    value = null; // gateway down / owner unseen — the chip just isn't shown
+  }
+  routedAccountCache.set(ownerId, { value, at: Date.now() });
+  return value;
+}
 
 /** Nursery heartbeats are supervisor-maintained; stale running rows are dead. */
 const BEE_FRESH_MS = 15 * 60_000;
@@ -198,8 +233,11 @@ export default defineTool({
     // ['auto','ideate']), so the statusline/GUI can render mode chips every tick with
     // NO extra call (EI-7626). Empty when none set. FAIL-OPEN like its siblings.
     let selfModes: string[] = [];
+    // Hoisted for the display render below — the caller's resolved owner id.
+    let selfOwnerId: string | null = null;
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
+      selfOwnerId = ownerId ?? null;
       if (ownerId) {
         const wipRows = await sql<Array<{ title: string }>>`
           SELECT title FROM harness_shared.work_items
@@ -280,35 +318,48 @@ export default defineTool({
       selfObjective = null;
     }
 
+    const payload: StatusDisplayGlance & Record<string, unknown> = {
+      ok: true,
+      now: new Date(now).toISOString(),
+      wake: {
+        default: wakeDefault,
+        stagedTotal,
+        stagedOwners: stagedByOwner.size,
+      },
+      // `running` = host-process alive (heartbeat_at) — cheap but can include
+      // parked/idle sessions (EI-3226). `working` = confirmed actively
+      // generating output (last_output_at fresh) — the honest subset; a
+      // caller doing real fleet-health assessment should prefer it over
+      // `running`, or cross-check coord:presence for the full picture.
+      bees: { running: beesRunning, working: beesWorking },
+      governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
+      activity,
+      tips,
+      self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext, modes: selfModes },
+      // Loud tier marker (D-004): a non-full session sees the smaller
+      // activity window is tier-derived (widen via activity_limit /
+      // payloadTier:"full").
+      ...(sessionTier && sessionTier !== 'full' ? { payload_tier: sessionTier } : {}),
+    };
+
+    // The SINGLE-SOURCE display render (tui-status-parity-single-source-2026-07-05):
+    // server-rendered title + statusline lines + injectable tip notice that every
+    // client hook (Claude statusline, Codex/OMP title + notice pipes) prints
+    // VERBATIM — one place to change what all TUIs show. Only for the human
+    // status-surface audience; agent callers ('su'/'queen'/'bee') keep the lean
+    // structured payload.
+    if (audience === 'user') {
+      payload.display = renderStatusDisplay(payload, {
+        ownerId: selfOwnerId,
+        account: await fetchRoutedAccount(selfOwnerId),
+      });
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            now: new Date(now).toISOString(),
-            wake: {
-              default: wakeDefault,
-              stagedTotal,
-              stagedOwners: stagedByOwner.size,
-            },
-            // `running` = host-process alive (heartbeat_at) — cheap but can include
-            // parked/idle sessions (EI-3226). `working` = confirmed actively
-            // generating output (last_output_at fresh) — the honest subset; a
-            // caller doing real fleet-health assessment should prefer it over
-            // `running`, or cross-check coord:presence for the full picture.
-            bees: { running: beesRunning, working: beesWorking },
-            governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
-            activity,
-            tips,
-            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext, modes: selfModes },
-            // Loud tier marker (D-004): a non-full session sees the smaller
-            // activity window is tier-derived (widen via activity_limit /
-            // payloadTier:"full").
-            ...(sessionTier && sessionTier !== 'full'
-              ? { payload_tier: sessionTier }
-              : {}),
-          }),
+          text: JSON.stringify(payload),
         },
       ],
     };

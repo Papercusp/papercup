@@ -183,8 +183,8 @@ describe('listScorecards (P-013) — real PG', () => {
 
   // ── scorecardTrend (P-010) — end-to-end aggregation over the same seeded data.
   //    papercusp end-to-end-flow: partial(10:00, degraded) → complete(12:00, broken) = worsening.
-  it('scorecardTrend: groups per criterion, chronological series, worsening direction (P-010)', async () => {
-    const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
+  it('scorecardTrend: groups per criterion, RLE series when requested, worsening direction (P-010)', async () => {
+    const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp', includeSeries: true });
     expect(trend.rubricRef).toBe(RUBRIC);
     expect(trend.sourceHive).toBe('papercusp');
     expect(trend.scorecardCount).toBe(2); // complete + partial (generic-test excluded by sourceHive)
@@ -194,14 +194,16 @@ describe('listScorecards (P-013) — real PG', () => {
 
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
     expect(e2e.count).toBe(2);
+    // WI-2943: the series is RLE runs (oldest first), opt-in via includeSeries.
     expect(e2e.series).toEqual([
-      { at: '2026-06-20T10:00:00.000Z', rating: 'degraded' }, // oldest first
-      { at: '2026-06-20T12:00:00.000Z', rating: 'broken' },
+      { rating: 'degraded', from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T10:00:00.000Z', n: 1 },
+      { rating: 'broken', from: '2026-06-20T12:00:00.000Z', to: '2026-06-20T12:00:00.000Z', n: 1 },
     ]);
     expect(e2e.first).toEqual({ rating: 'degraded', at: '2026-06-20T10:00:00.000Z' });
     expect(e2e.latest).toEqual({ rating: 'broken', at: '2026-06-20T12:00:00.000Z' });
     expect(e2e.direction).toBe('worsening');
     expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
+    expect(e2e.idleCount).toBe(0); // no idle-tagged unknowns seeded
 
     // Single-point criteria (only the complete scorecard rated them) → unknown direction.
     const single = trend.criteria.find((c) => c.criterion === 'ideation-quality')!;
@@ -209,13 +211,24 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(single.direction).toBe('unknown');
   });
 
+  it('scorecardTrend: series is OMITTED by default (WI-2943 — summary fields are the payload)', async () => {
+    const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
+    expect(trend.criteria.length).toBeGreaterThan(0);
+    for (const c of trend.criteria) expect(c.series).toBeUndefined();
+    // The summary fields still fully describe the criterion.
+    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
+    expect(e2e.direction).toBe('worsening');
+    expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
+  });
+
   it('scorecardTrend: cross-hive (no sourceHive) folds every source into one series', async () => {
-    const trend = await scorecardTrend({ rubricRef: RUBRIC });
+    const trend = await scorecardTrend({ rubricRef: RUBRIC, includeSeries: true });
     expect(trend.scorecardCount).toBe(3); // papercusp complete + partial + generic-test
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
     // degraded(10:00, papercusp) → healthy(11:00, generic) → broken(12:00, papercusp): net first→latest = worsening.
     expect(e2e.count).toBe(3);
-    expect(e2e.series.map((p) => p.rating)).toEqual(['degraded', 'healthy', 'broken']);
+    expect(e2e.series!.map((p) => p.rating)).toEqual(['degraded', 'healthy', 'broken']);
+    expect(e2e.series!.every((p) => p.n === 1)).toBe(true);
     expect(e2e.direction).toBe('worsening');
   });
 });

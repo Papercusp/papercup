@@ -7,23 +7,25 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries } from './scorecards';
 import type { CriterionTrend } from './scorecards';
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
 
-/** Build a minimal CriterionTrend from a rating list (only the fields staleness reads). */
-const crit = (criterion: string, ...ratings: string[]): CriterionTrend => {
+/** Build a minimal CriterionTrend from a rating list (only the fields staleness reads).
+ *  `idleCount` = how many of the 'unknown' ratings are idle-tagged (EI-7624). */
+const crit = (criterion: string, ...ratings: string[]): CriterionTrend => critIdle(criterion, 0, ...ratings);
+const critIdle = (criterion: string, idleCount: number, ...ratings: string[]): CriterionTrend => {
   const distribution: Record<string, number> = {};
   for (const r of ratings) distribution[r] = (distribution[r] ?? 0) + 1;
   return {
     criterion,
     count: ratings.length,
     distribution,
+    idleCount,
     first: { rating: ratings[0] ?? 'unknown', at: '2026-06-20T00:00:00.000Z' },
     latest: { rating: ratings[ratings.length - 1] ?? 'unknown', at: '2026-06-20T01:00:00.000Z' },
     direction: 'unknown',
-    series: ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating })),
   };
 };
 
@@ -123,5 +125,83 @@ describe('computeRubricStaleness (P-011)', () => {
     const r = computeRubricStaleness([]);
     expect(r.stale).toBe(false);
     expect(r.staleCriteria).toEqual([]);
+  });
+
+  // EI-7624: idle-tagged unknowns ("the stage did not run") are no-signal, not
+  // drift-signal — excluded from BOTH sides of the fraction.
+  describe('idle-tagged unknowns (EI-7624)', () => {
+    it('a mostly-idle window does not manufacture staleness', () => {
+      // 9 idle-unknowns + 3 healthy: pre-fix 9/12 = stale; post-fix 0/3 → fresh.
+      const c = critIdle('bee-execution', 9, ...Array(9).fill('unknown'), 'healthy', 'healthy', 'healthy');
+      expect(computeRubricStaleness([c]).stale).toBe(false);
+    });
+
+    it('idle exclusion does not dilute a real drift signal in the non-idle samples', () => {
+      // 9 idle-unknowns + 3 bare-unknowns + 1 healthy: the non-idle base is 4,
+      // of which 3 are unassessable → 0.75 ≥ 0.5 → stale.
+      const c = critIdle('drifted', 9, ...Array(12).fill('unknown'), 'healthy');
+      const r = computeRubricStaleness([c]);
+      expect(r.stale).toBe(true);
+      expect(r.staleCriteria[0].samples).toBe(4);
+      expect(r.staleCriteria[0].staleFraction).toBe(0.75);
+      expect(r.staleCriteria[0].idleExcluded).toBe(9);
+      expect(r.staleCriteria[0].reason).toMatch(/9 idle-tagged excluded/);
+    });
+
+    it('idle exclusion applies to the minSamples gate (all-idle window → quiet, not stale)', () => {
+      const c = critIdle('paused-stage', 5, ...Array(5).fill('unknown'));
+      expect(computeRubricStaleness([c]).stale).toBe(false); // 0 non-idle samples < 3
+    });
+
+    it('idleExcluded is 0 and the reason unchanged when nothing was idle-tagged', () => {
+      const r = computeRubricStaleness([crit('c', 'unknown', 'unknown', 'unknown')]);
+      expect(r.staleCriteria[0].idleExcluded).toBe(0);
+      expect(r.staleCriteria[0].reason).not.toMatch(/idle/);
+    });
+
+    it('idleCount is ignored when unknown is not in the staleRatings set', () => {
+      // staleRatings ['broken']: idle-unknowns are irrelevant to that calc.
+      const c = critIdle('c', 2, 'unknown', 'unknown', 'broken', 'broken', 'broken');
+      const r = computeRubricStaleness([c], { staleRatings: ['broken'] });
+      expect(r.stale).toBe(true);
+      expect(r.staleCriteria[0].samples).toBe(5); // no idle exclusion
+      expect(r.staleCriteria[0].staleFraction).toBe(0.6);
+    });
+  });
+});
+
+describe('compressSeries (WI-2943)', () => {
+  const at = (i: number) => `2026-06-20T${String(i).padStart(2, '0')}:00:00.000Z`;
+
+  it('empty → no runs', () => {
+    expect(compressSeries([])).toEqual([]);
+  });
+
+  it('a single rating is one run of 1', () => {
+    expect(compressSeries([{ at: at(0), rating: 'healthy' }])).toEqual([
+      { rating: 'healthy', from: at(0), to: at(0), n: 1 },
+    ]);
+  });
+
+  it('collapses consecutive identical ratings into runs with from/to/n', () => {
+    const series = [
+      { at: at(0), rating: 'unknown' },
+      { at: at(1), rating: 'unknown' },
+      { at: at(2), rating: 'unknown' },
+      { at: at(3), rating: 'healthy' },
+      { at: at(4), rating: 'unknown' },
+    ];
+    expect(compressSeries(series)).toEqual([
+      { rating: 'unknown', from: at(0), to: at(2), n: 3 },
+      { rating: 'healthy', from: at(3), to: at(3), n: 1 },
+      { rating: 'unknown', from: at(4), to: at(4), n: 1 },
+    ]);
+  });
+
+  it('preserves the total count across runs (lossless on n)', () => {
+    const ratings = ['a', 'a', 'b', 'a', 'c', 'c', 'c', 'b'];
+    const series = ratings.map((rating, i) => ({ at: at(i), rating }));
+    const runs = compressSeries(series);
+    expect(runs.reduce((n, r) => n + r.n, 0)).toBe(ratings.length);
   });
 });
