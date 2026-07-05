@@ -1289,7 +1289,7 @@ function capActivityInput(input: Record<string, unknown> | undefined): Record<st
   return out;
 }
 
-const ACTIVITY_TODO_TOOLS = new Set(['todo_write', 'todowrite', 'taskcreate', 'taskupdate']);
+const ACTIVITY_TODO_TOOLS = new Set(['todo', 'todo_write', 'todowrite', 'taskcreate', 'taskupdate']);
 
 /**
  * Build the `activity:report` args from an OMP tool_call event. A todo tool forwards
@@ -1951,6 +1951,65 @@ export function ircBlockReason(count = 1): string {
     'calling it again only wastes the turn. Your next action must be to READ YOUR PLAN: ' +
     '`tools:invoke {name:"plans:get", args:{slug:"<your plan slug>", harness:"papercusp"}}`, then ' +
     'go through your routing gate. If you truly need peers, use `coord:presence` — never `irc`.'
+  );
+}
+
+/** True when an agent session is invoking its todo-list tool (`todo` / `todo_write` in any
+ *  spelling). Normalizes like the other name-matchers (lowercase, strip `[_-]`, drop a `group:`
+ *  prefix) so `todo`, `todo_write`, `todowrite`, `TodoWrite` all match. Deliberately does NOT match
+ *  the `task*` panel tools — those are already hard-blocked (blockedTaskTools) at the top of
+ *  onToolCall — so it only ever sees the LEGITIMATE todo tool. Pure. */
+export function isTodoCall(toolName: string): boolean {
+  const bare = (toolName || '').toLowerCase().replace(/[_-]/g, '').replace(/^.*:/, '');
+  return bare === 'todo' || bare === 'todowrite';
+}
+
+/** SESSION-cumulative consecutive-todo counter with a PRODUCTIVE RESET (ornith iter19,
+ *  2026-07-04 / WI-2382 — failure mode #6). Unlike eval/irc/ask, `todo_write` is a LEGITIMATE tool:
+ *  omp's own guidance redirects the blocked `task` panel → "use todo_write for task tracking
+ *  instead," so it can NOT be name-blocked. But a weak local model (ornith IQ3_M) doom-loops on it —
+ *  iter19 leader session 10476 rewrote its todo list 264× in 7.5 min, never read its plan, never
+ *  routed, 0 productive calls. The generic consecutive-identical breaker missed it for the same
+ *  reason eval/irc did: each rewrite carried a DIFFERENT list, so the runs were non-adjacent. So this
+ *  counter is input-AGNOSTIC (it counts consecutive todo calls regardless of content) and is RESET
+ *  by any productive non-todo tool call — which distinguishes "10 varied todos in a row with no real
+ *  work between" (a loop) from "10 legit todos interleaved with edits / reads / tools:invoke" (real
+ *  work). Session-scoped, NOT turn-reset: each todo call is its own OMP turn, so a turn-reset would
+ *  zero the run forever and it would never trip (same lesson as the eval / fleet-launch budgets). */
+export const TODO_LOOP_LIMIT = 6;
+/** Past this many consecutive todo calls the block MESSAGE hardens from the polite redirect to a
+ *  copy-pasteable STOP (mirrors EVAL_BLOCK_ESCALATE_AFTER). Above TODO_LOOP_LIMIT so the polite
+ *  redirect gets a couple of turns to land before the hard directive. */
+export const TODO_LOOP_ESCALATE_AFTER = 8;
+let _consecutiveTodoCalls = 0;
+
+/** Count a consecutive todo call; returns the new run length. */
+export function noteTodoCall(): number {
+  return ++_consecutiveTodoCalls;
+}
+
+/** Reset the consecutive-todo run — called on ANY productive (non-todo) agent tool call, and a
+ *  test seam. */
+export function resetTodoLoopState(): void {
+  _consecutiveTodoCalls = 0;
+}
+
+/** The redirect returned once an agent session exceeds its consecutive-todo budget. Escalates the
+ *  message on repeats (mirrors askBlockReason / ircBlockReason). Pure. */
+export function todoLoopReason(count: number): string {
+  const base =
+    `todo-loop: you have rewritten your todo list ${count} times in a row without DOING anything ` +
+    'between the rewrites — tracking is not progress. STOP editing todos and take the NEXT REAL ' +
+    'ACTION now: read your plan (`tools:invoke {name:"plans:get", args:{slug:"<your plan slug>", ' +
+    'harness:"papercusp"}}`), present your routing gate as plain TEXT, or edit the file the task is ' +
+    'about. A single todo update is fine — but only AFTER a real step. Do not call todo again until ' +
+    'you have called a different, productive tool.';
+  if (count <= TODO_LOOP_ESCALATE_AFTER) return base;
+  return (
+    `todo-loop (×${count}): STOP — ${count} straight todo rewrites, ZERO real work between them. ` +
+    'Your todo list is not the task. Do NOT touch it again. Your very next call MUST be a productive ' +
+    'tool: `tools:invoke {name:"plans:get", …}` to read your plan, `tools:invoke` for a real action, ' +
+    'or an `edit`/`read` on the file. Rewriting your todos again only wastes the session and will end it.'
   );
 }
 

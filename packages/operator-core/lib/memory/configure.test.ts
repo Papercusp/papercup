@@ -1,4 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// EI-7279: mem0-client.ts caches the built client for a 1-HOUR TTL, so the
+// `resolveEmbedderWith` cascade (which correctly prefers local during an
+// OpenAI cooldown, per the EI-3381 tests below) is only ever RE-EVALUATED
+// when the client is rebuilt. Without forcing a rebuild, a 60s cooldown flag
+// sat inert for up to an hour: the already-built client kept routing every
+// embed through the same dead OpenAI key. `markOpenAiEmbedFailure` must force
+// that rebuild by invalidating the cached client — spy on the real
+// `@papercusp/memory` export (keep everything else real) to pin it.
+const invalidateMemoryClient = vi.fn();
+vi.mock('@papercusp/memory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/memory')>();
+  return { ...actual, invalidateMemoryClient: (...a: unknown[]) => invalidateMemoryClient(...a) };
+});
+
 import {
   resolveEmbedderWith,
   readEmbedderPreference,
@@ -56,6 +71,7 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  invalidateMemoryClient.mockClear();
   __resetOpenAiEmbedCooldownForTest();
 });
 
@@ -79,6 +95,18 @@ describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 coold
     markOpenAiEmbedFailure(1_000_000);
     markOpenAiEmbedFailure(1_000_010); // fired again shortly after, e.g. two callers racing
     expect(isOpenAiEmbedInCooldown(1_000_010)).toBe(true);
+  });
+
+  it('EI-7279: invalidates the cached mem0 client so the cascade is re-evaluated on the VERY NEXT call, not up to an hour late (the client TTL)', () => {
+    expect(invalidateMemoryClient).not.toHaveBeenCalled();
+    markOpenAiEmbedFailure(1_000_000);
+    expect(invalidateMemoryClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-7279: a second failure invalidates again (never leaves a stale client cached across repeated failures)', () => {
+    markOpenAiEmbedFailure(1_000_000);
+    markOpenAiEmbedFailure(1_000_010);
+    expect(invalidateMemoryClient).toHaveBeenCalledTimes(2);
   });
 });
 

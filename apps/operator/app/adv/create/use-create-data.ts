@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import type { BoundLexicon } from '@papercusp/lexicon';
 import {
   usePlanList,
   usePlanItems,
@@ -96,7 +97,10 @@ export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: st
   { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
   { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
   { id: 'conversation', label: 'Questions', hint: 'Open agent questions / coord:ask conversations awaiting an answer.' },
-  { id: 'scout-grade', label: 'Scout', hint: 'Routed Scout ideas awaiting your optional grade.' },
+  // {scout} resolves to the active cast word at the render site ("Blender" in
+  // classic/Pot) — module-level consts can't call the useLexicon hook. Same
+  // {token} convention as {pot} above; resolve BOTH via resolveLex().
+  { id: 'scout-grade', label: '{scout}', hint: 'Routed {scout} ideas awaiting your optional grade.' },
 ];
 
 export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
@@ -110,8 +114,20 @@ export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   improvement: 'Improvements',
   'standing-approval': 'Approvals',
   conversation: 'Questions',
-  'scout-grade': 'Scout',
+  'scout-grade': '{scout}',
 };
+
+/**
+ * Resolve lexicon {tokens} in a filter label/hint at the render site (module
+ * consts can't call the useLexicon hook). Extends the existing {pot} convention
+ * to the cup cast (restore-pot-lexicon D-006). Every consumer of these labels
+ * MUST route the string through here so no literal "{scout}" leaks to the UI.
+ */
+export function resolveLex(s: string, t: BoundLexicon): string {
+  return s
+    .replace(/\{pot\}/g, t('pot'))
+    .replace(/\{scout\}/g, t('scout'));
+}
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';

@@ -40,6 +40,7 @@ import {
   useItemPlanFilter,
   ITEM_FILTERS,
   ITEM_FILTER_LABEL,
+  resolveLex,
   type ItemStatusFilter,
 } from './use-create-data';
 

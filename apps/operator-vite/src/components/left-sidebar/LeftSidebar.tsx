@@ -25,7 +25,7 @@ import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, PanelLeftOpen } from 'lucide-react';
+import { Users, AudioLines, Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -64,9 +64,12 @@ const SentinelTab = lazy(() => import('./SentinelTab'));
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
-  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Crown, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <QueenTab active={a} /> },
-  { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Eye, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
-  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: Radio, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <SentinelTab active={a} /> },
+  // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
+  // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
+  // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
+  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
+  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <SentinelTab active={a} /> },
   { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <HivesTab active={a} /> },
