@@ -1053,6 +1053,16 @@ export async function setWorkItemState(
      * when the requested state is already canonical.
      */
     onAlias?: (info: { requested: string; resolved: string }) => void;
+    /**
+     * EI-7422: a target that is ALREADY terminally completed (terminalOwner +
+     * terminalCompletionRef stamped, e.g. via a peer's work_items:complete that
+     * raced past a stale claimable/orient snapshot) requires an explicit `force`
+     * to reopen into a non-terminal state. Without this, a stale-claim caller
+     * silently stomps a peer's completion (no claim_conflict fires because the
+     * peer completed without holding a claim) — the item flips back open with
+     * no signal that another session's finished work was just discarded.
+     */
+    force?: boolean;
   } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
@@ -1071,6 +1081,25 @@ export async function setWorkItemState(
   } else {
     throw new Error(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
+    );
+  }
+  // EI-7422: refuse to silently REOPEN an item that is already terminally
+  // completed (terminalOwner + terminalCompletionRef stamped) unless the
+  // caller explicitly forces it. A stale-claim caller (claimed off a snapshot
+  // that predates a peer's completion) hits this the same way a live claim
+  // hits claim_conflict — the peer's finished work is evidence another session
+  // beat you to it, not something a plain set_state should be able to discard.
+  if (
+    !opts.force &&
+    wi.terminalOwner &&
+    wi.terminalCompletionRef &&
+    isSettledWorkItemState(wi.state) &&
+    !isSettledWorkItemState(state)
+  ) {
+    throw new Error(
+      `work_item '${id}' is already terminally completed (by ${wi.terminalOwner}: "${wi.terminalCompletionRef}") — ` +
+        `reopening into '${state}' would silently discard that completion. Pass { force: true } if you are ` +
+        `deliberately reopening it (e.g. the completion was wrong), otherwise investigate the peer's completion first.`,
     );
   }
   let result: WorkItem | null;

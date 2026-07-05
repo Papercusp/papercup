@@ -38,15 +38,21 @@ const itemSpec = z.object({
     .describe(
       'Completion evidence (summary / commit / coord or plan-item ref) — REQUIRED alongside a terminal state (feature: passed|deprecated; issue: resolved|closed). Prefer work_items:complete for a structured completion record.',
     ),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      'EI-7422: required to REOPEN an item that already carries a terminal completion (terminalOwner + terminalCompletionRef) — without it the write is REJECTED rather than silently discarding a peer\'s completion. Only needed when the target is already terminal AND you are deliberately reopening it.',
+    ),
 });
 
 export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set the lifecycle state of one OR many work-items. feature-family: a feature status (todo|in_progress|passed|failing|deprecated…). issue-family: open|resolved|closed ONLY — the family has no blocked/needs-human/in_progress state, so those (and wip/todo/done/dropped) ALIAS onto open/resolved/closed instead of erroring; a per-item `aliasNote` in the result names the alias when one fired, so it never reads as a silent no-op. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision? }]. Returns { ok, results:[{ ok, id, workItem?, aliasNote? | error }], counts } — correlate by id; a not-found item never fails the rest.',
+    'Set the lifecycle state of one OR many work-items. feature-family: a feature status (todo|in_progress|passed|failing|deprecated…). issue-family: open|resolved|closed ONLY — the family has no blocked/needs-human/in_progress state, so those (and wip/todo/done/dropped) ALIAS onto open/resolved/closed instead of erroring; a per-item `aliasNote` in the result names the alias when one fired, so it never reads as a silent no-op. Reopening an item that already carries a terminal completion (terminalOwner + terminalCompletionRef) into a non-terminal state is REJECTED unless you pass `force: true` (EI-7422) — a stale claim racing past a peer\'s completion should not silently discard it. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliasNote? | error }], counts } — correlate by id; a not-found item never fails the rest.',
   guidance: {
-    when: 'You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…]. To durably PARK an issue-family item (needs a human / blocked on something external), state:\'blocked\' aliases to \'open\' (it stays claimable) — use work_items:release { claimHold:true } to park it out of self-select, plus a comment for the reason.',
+    when: 'You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…]. To durably PARK an issue-family item (needs a human / blocked on something external), state:\'blocked\' aliases to \'open\' (it stays claimable) — use work_items:release { claimHold:true } to park it out of self-select, plus a comment for the reason. If this errors with "already terminally completed", a peer finished the item while you held a stale claim — read the named terminalOwner/terminalCompletionRef before deciding whether to `force: true` a genuine reopen.',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
@@ -71,6 +77,10 @@ export default defineTool({
         .max(2000)
         .optional()
         .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('applied to the inline id / every id in `ids` (see itemSpec.force) — required to reopen an already-terminally-completed item'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.state) && ((a.ids?.length ?? 0) > 0 || Boolean(a.id))), {
       message: 'pass { id, state } for one, { ids:[…], state } for many of the same state, or items:[{ id, state }] for many',
@@ -80,8 +90,8 @@ export default defineTool({
     const list = args.items?.length
       ? args.items
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef }))
-        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef }];
+        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, force: args.force }))
+        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, force: args.force }];
     const env = await runBulk(
       list,
       async (it) => {
@@ -104,6 +114,7 @@ export default defineTool({
           harness,
           by: ident.ownerId,
           completionRef: it.completionRef,
+          force: it.force,
           onAlias: ({ requested, resolved }) => {
             aliasNote = `requested state '${requested}' has no distinct representation for this item's family — recorded as '${resolved}' instead.`;
           },
