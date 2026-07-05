@@ -13,7 +13,7 @@ plans:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="What changed in v1.1 (2026-05-06)">
-- §1.10: dashboard policy clarified — Restart admin `/tests`,
+- §1.10: dashboard policy clarified — an internal reference app's admin `/tests`,
   `/load-tests`, `/tester` are explicitly in scope (cross-project,
   separate surface).
 - §1.6: integration tests live in a sibling `test/` directory, not
@@ -714,8 +714,8 @@ full run is ~25 min cold, ~12 min warm.
 ## 1.10 Test UI
 
 Three free, idiomatic surfaces. **No custom dashboard inside the
-operator.** A cross-project status dashboard on the **Restart admin
-web app** (`:3001`) is explicitly in scope and already shipped at
+operator.** A cross-project status dashboard on an **internal reference app's
+admin web app** (`:3001`) is explicitly in scope and already shipped at
 `/tests`, `/load-tests`, `/tester` — those pages aggregate JUnit
 output, drive k6 runs, and proxy ad-hoc API calls. They complement,
 do not replace, the three surfaces below.
@@ -832,10 +832,10 @@ Correctness alone misses "this PR made the wholesale grid 2× slower."
 Two layers, both nightly-only (never per-PR):
 
 - **k6 HTTP baselines** for `apps/shop-api` Typesense search, wholesale
-  grid filter aggregation, and `@restart/com` request paths. Scripts
+  grid filter aggregation, and internal-app request paths. Scripts
   live colocated with their owning project (`apps/<app>/perf/*.js`)
   *or* in a workspace-root `load-tests/scripts/` directory when they
-  cross project boundaries. The Restart-side `/load-tests` dashboard
+  cross project boundaries. The internal reference app's `/load-tests` dashboard
   on `:3001` is the runner — it reads from `<projectRoot>/load-tests/scripts/`
   per the `?project=` switcher (see §1.10) and falls back to the
   workspace-root location for legacy scripts. Nightly job runs against

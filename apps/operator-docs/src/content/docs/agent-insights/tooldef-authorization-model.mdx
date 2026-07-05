@@ -36,6 +36,6 @@ An `authorize` hook and the audit event run at **dispatch**, so they only get th
 
 They live on different objects (`tool` vs `principal`) and answer different questions. The RFC deliberately did **not** rename `tool.roles`→`tool.agentRoles` (a 189-callsite churn) because the new `requireRoles` field doesn't collide — but the conceptual overload is real, so name your variables carefully.
 
-## tooldef + tooldef-http are libs/generic submodules (shared with Restart)
+## tooldef + tooldef-http are libs/generic submodules (shared with another internal app)
 
-In papercup, `libs/generic/tooldef` and `libs/generic/tooldef-http` are **git submodules** of `Papercusp/tooldef` and `Papercusp/tooldef-http` — the same shared repos Restart consumes. They are no longer in-tree (the in-tree-vs-mirror fork is resolved as of the P-054 conversion, 2026-05-31): edit tooldef in the submodule and push to the shared repo as usual; there is no separate in-tree copy to keep in sync.
+In papercup, `libs/generic/tooldef` and `libs/generic/tooldef-http` are **git submodules** of `Papercusp/tooldef` and `Papercusp/tooldef-http` — the same shared repos another internal app consumes. They are no longer in-tree (the in-tree-vs-mirror fork is resolved as of the P-054 conversion, 2026-05-31): edit tooldef in the submodule and push to the shared repo as usual; there is no separate in-tree copy to keep in sync.

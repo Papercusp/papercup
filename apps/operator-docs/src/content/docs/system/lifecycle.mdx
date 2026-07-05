@@ -632,7 +632,7 @@ The orchestrator emits `DONE` when every feature in `harness_features` has statu
    | `@papercupai/slack-notifier` | `mission-done`, `action-failed` |
    | `starlight`, `pi-coding`, `postgres-manager`, `vscode-server` | none — UI tabs / manual actions only (the docs-tab plugin is `starlight`, at `libs/papercusp/plugins/starlight`; there is no `fumadocs` plugin) |
 
-   *briefings is not a plugin* — it's a separate app at `Restart/apps/briefings`; the `afterDone` hook can't reach it directly.
+   *briefings is not a plugin* — it's a separate app in a separate internal project; the `afterDone` hook can't reach it directly.
 7. **Notify** — `notify_event('done', 'Mission complete: all features passed after N iterations')`.
    - TS (`log.ts:33`): appends `[ts] body` to `<eventsDir>/done.log` and writes `EVENT done: …` into run.log.
    - Bash: runs `$NOTIFY <kind> <message> <project-dir>` if `$NOTIFY` is set (e.g. `pushnotify`, `slack-send`); otherwise just logs.
