@@ -40,21 +40,32 @@ function pickForm(
  * Resolve `key` against an explicit pack. The pack may be a {@link BrandPack}
  * or a {@link BrandPackId}.
  */
-export function resolveTerm(
-  pack: BrandPack | BrandPackId,
-  key: TermKey,
+export function resolveTerm(pack: BrandPackId, key: TermKey, opts?: TermOptions): string;
+export function resolveTerm<TCustom extends string = never>(
+  pack: BrandPack<TCustom>,
+  key: TermKey<TCustom>,
+  opts?: TermOptions,
+): string;
+export function resolveTerm<TCustom extends string = never>(
+  pack: BrandPack<TCustom> | BrandPackId,
+  key: TermKey<TCustom>,
   opts?: TermOptions,
 ): string {
-  const resolved = typeof pack === 'string' ? getPack(pack) : pack;
+  const resolved = (typeof pack === 'string' ? getPack(pack) : pack) as BrandPack<TCustom>;
   const forms = resolved.terms[key];
   return applyCase(pickForm(forms, opts), opts?.lower);
 }
 
 /** A resolver bound to one pack — `t('pot')` style ergonomics. */
-export type BoundLexicon = (key: TermKey, opts?: TermOptions) => string;
+export type BoundLexicon<TCustom extends string = never> = (key: TermKey<TCustom>, opts?: TermOptions) => string;
 
 /** Build a resolver bound to a single pack id. */
 export function lexiconFor(packId: BrandPackId): BoundLexicon {
   const pack = getPack(packId);
+  return (key, opts) => resolveTerm(pack, key, opts);
+}
+
+/** Build a resolver bound to an explicit pack, including app-specific term keys. */
+export function lexiconFromPack<TCustom extends string = never>(pack: BrandPack<TCustom>): BoundLexicon<TCustom> {
   return (key, opts) => resolveTerm(pack, key, opts);
 }

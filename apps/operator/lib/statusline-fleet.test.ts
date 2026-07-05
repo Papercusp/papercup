@@ -457,6 +457,92 @@ describe('statusline-fleet render (fixture mode)', () => {
   });
 });
 
+describe('SINGLE-SOURCE display pipe (tui-status-parity-single-source-2026-07-05)', () => {
+  // A full legacy-shaped glance so the fallback path is exercisable when display is absent/empty.
+  const legacy = {
+    ok: true,
+    wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+    bees: { running: 0 },
+    governor: { anyPaused: false, paused: [] },
+    activity: [],
+    tips: [],
+    self: { objective: null },
+  };
+  const display = {
+    title: '👑 roman 🟪 · ⟳1m · ▶ · su-9859e · 🔭 wire the pipe',
+    statusline: [
+      '🔭 wire the pipe · ◇ su-9859e · ▶ auto · solo',
+      '💡 Wake mode is manual — back to auto: /mcp__papercusp-su__tool:coord:wake-mode mode=auto',
+      '⋯ run /mcp__papercusp-su__tool:coord:glance for detail',
+    ],
+    notice: { id: 'wake-mode-manual', text: '💡 Wake mode is manual — back to auto: coord:wake-mode mode=auto' },
+  };
+
+  it('prints display.statusline VERBATIM — the hook is a dumb pipe, no local assembly', () => {
+    // Deliberately MINIMAL glance (no wake/tips/activity): the server-rendered
+    // display alone must drive the render — proof nothing is assembled locally.
+    const out = render({ ok: true, display });
+    expect(out.split('\n')).toEqual(display.statusline);
+  });
+
+  it('display rows win over the legacy assembly when both are present', () => {
+    const out = render({ ...legacy, display, self: { objective: 'LOCAL objective (must not render)' } });
+    expect(out.split('\n')).toEqual(display.statusline);
+    expect(out).not.toContain('LOCAL objective');
+  });
+
+  it('💡 rows WRAP at COLUMNS (never silently clipped); chip rows clip', () => {
+    const out = render({ ok: true, display }, { COLUMNS: '44' });
+    const lines = out.split('\n');
+    for (const line of lines) expect([...line].length).toBeLessThanOrEqual(44);
+    // The wrapped tip re-joins to the full text — nothing the server sent is lost.
+    const tipRows = lines.filter((l, i) => i > 0 && !l.startsWith('⋯'));
+    const rejoined = tipRows.map((l) => l.trim()).join(' ').replace(/\s+/g, ' ');
+    expect(rejoined).toContain('Wake mode is manual');
+    expect(rejoined.replace(/ /g, '')).toContain('coord:wake-modemode=auto');
+  });
+
+  it('blank / non-string rows are skipped, real rows survive', () => {
+    const out = render({ ok: true, display: { ...display, statusline: ['   ', 42, '◇ real row'] } });
+    expect(out).toBe('◇ real row');
+  });
+
+  it('mirrors display.title into the OS title VERBATIM', () => {
+    expect(titleOf({ ok: true, display })).toBe(display.title);
+  });
+
+  it('control chars in display.title are stripped (OSC safety, mirrors the codex hook)', () => {
+    const title = titleOf({ ok: true, display: { ...display, title: 'safe\x1b]0;pwn\x07 title' } });
+    expect(title).toBe('safe]0;pwn title');
+  });
+
+  it('display WITHOUT a title falls back to the legacy term_title (statusline still piped)', () => {
+    const glance = {
+      ...legacy,
+      display: { ...display, title: null },
+      self: { objective: null, fleets: [{ slug: 'roman', label: 'roman', role: 'leader', square: '🟪' }] },
+    };
+    const titleFile = join(dir, `${Math.random().toString(36).slice(2)}.title`);
+    const out = render(glance, { PAPERCUSP_STATUSLINE_TITLE_OUT: titleFile });
+    expect(out.split('\n')).toEqual(display.statusline); // body: still the server rows
+    const title = readFileSync(titleFile, 'utf8');
+    expect(title).toContain('👑 roman 🟪'); // title: locally assembled fallback
+    expect(title).toContain('su-me');
+  });
+
+  it('an EMPTY display.statusline falls back to the full legacy render', () => {
+    const out = render({ ...legacy, display: { title: 'ignored', statusline: [] } });
+    expect(out).toContain('▶ auto');
+    expect(out).toContain('◇ su-me');
+  });
+
+  it('absent display (older operator) → legacy render unchanged', () => {
+    const out = render(legacy);
+    expect(out).toContain('▶ auto');
+    expect(out).toContain('solo');
+  });
+});
+
 describe('statusline-fleet OS title — multi-fleet identity (WI-1963)', () => {
   const base = {
     ok: true,

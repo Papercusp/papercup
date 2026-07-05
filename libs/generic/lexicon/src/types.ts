@@ -12,12 +12,16 @@
 export type BrandPackId = 'classic' | 'the-hive';
 
 /**
- * Canonical term keys. These are the brand-neutral concept names; the pack
+ * Built-in term keys. These are the brand-neutral Papercusp concept names; the pack
  * supplies the user-facing label. Keep this list the single source of truth —
- * every pack must provide forms for every key (enforced by the type system
+ * every shipped pack must provide forms for every key (enforced by the type system
  * and the pack tests).
+ *
+ * App templates can add their own nouns without editing this union by using
+ * `TermKey<'invoice' | 'customer'>` and `BrandPack<'invoice' | 'customer'>`.
+ * The built-in packs stay exhaustive for the built-in keys only.
  */
-export type TermKey =
+export type BuiltInTermKey =
   | 'pot' // the top-level project / deployable grouping
   | 'fleet' // the live set of agents at work
   | 'operator' // the always-on coordination layer that can wake the brain
@@ -34,6 +38,9 @@ export type TermKey =
   | 'harness' // one managed work-pipeline (kept in both packs)
   | 'signal'; // agent signals / handoffs
 
+/** A term key set = Papercusp built-ins plus optional app-specific keys. */
+export type TermKey<TCustom extends string = never> = BuiltInTermKey | TCustom;
+
 /**
  * The display forms for one term. Forms are stored Title-Cased; the resolver
  * derives lowercase on demand. Plural is explicit (not derived) so irregulars
@@ -47,13 +54,13 @@ export interface TermForms {
 }
 
 /** A complete brand pack: every term key mapped to its display forms. */
-export interface BrandPack {
+export interface BrandPack<TCustom extends string = never> {
   /** Stable id of the pack. */
   id: BrandPackId;
   /** Human-readable name, for admin/debug surfaces. */
   label: string;
   /** Term key → display forms. Must cover every {@link TermKey}. */
-  terms: Record<TermKey, TermForms>;
+  terms: Record<TermKey<TCustom>, TermForms>;
 }
 
 /** Options controlling which form/casing a resolution returns. */

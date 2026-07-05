@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { getPack, lexiconFor, resolveTerm } from './resolver';
+import { getPack, lexiconFor, lexiconFromPack, resolveTerm } from './resolver';
 import { BRAND_PACKS, CLASSIC_PACK, THE_HIVE_PACK } from './packs';
+import type { BrandPack } from './types';
 
 describe('resolveTerm', () => {
   it('resolves singular by default', () => {
@@ -71,6 +72,24 @@ describe('resolveTerm', () => {
   it('accepts an explicit BrandPack object', () => {
     expect(resolveTerm(THE_HIVE_PACK, 'fleet')).toBe('Colony');
     expect(resolveTerm(CLASSIC_PACK, 'fleet')).toBe('Fleet');
+  });
+
+  it('supports app-specific term keys with an explicit custom pack', () => {
+    type AppTermKey = 'invoice' | 'customer';
+    const appPack: BrandPack<AppTermKey> = {
+      id: 'classic',
+      label: 'Classic + app nouns',
+      terms: {
+        ...CLASSIC_PACK.terms,
+        invoice: { one: 'Invoice', other: 'Invoices' },
+        customer: { one: 'Customer', other: 'Customers' },
+      },
+    };
+
+    expect(resolveTerm(appPack, 'invoice')).toBe('Invoice');
+    const t = lexiconFromPack(appPack);
+    expect(t('customer', { plural: true, lower: true })).toBe('customers');
+    expect(t('pot')).toBe('Pot');
   });
 
   it('applies the bee lexicon (D-002, revised by D-007) across all renamed terms', () => {

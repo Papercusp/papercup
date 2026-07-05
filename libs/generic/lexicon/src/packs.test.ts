@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BRAND_PACKS, BRAND_PACK_IDS, DEFAULT_PACK_ID } from './packs';
-import type { TermKey } from './types';
+import type { BuiltInTermKey } from './types';
 
 // The full set of canonical term keys — kept in sync with TermKey by the
 // exhaustiveness check below. If a key is added to TermKey, add it here and
 // every pack must cover it (or this test fails to compile / fails at runtime).
-const ALL_TERM_KEYS: TermKey[] = [
+const ALL_TERM_KEYS: BuiltInTermKey[] = [
   'pot',
   'fleet',
   'operator',

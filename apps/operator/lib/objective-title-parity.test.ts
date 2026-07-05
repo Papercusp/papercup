@@ -104,6 +104,90 @@ const base = {
 const CC_STDIN = JSON.stringify({ model: { display_name: 'Opus 4.8 (1M context)' }, effort: 'xhigh' });
 const CODEX_SPEC = 'opus[1m]:xhigh';
 
+describe('SINGLE-SOURCE display pipe — title parity BY CONSTRUCTION (tui-status-parity 2026-07-05)', () => {
+  const display = {
+    title: '👑 windows-parity 🟦 · ⟳1m · ⏸ ✉4 · ☕2 · 2p · su-9859e · 🔭 Resume Linux release readiness',
+    statusline: ['🔭 Resume Linux release readiness · ◇ su-9859e'],
+    notice: null,
+  };
+
+  it('both CLIs print display.title VERBATIM — byte-identical, zero local assembly', () => {
+    // A local self.objective that WOULD render differently is present — the display
+    // block must win on both sides, proving the pipe (not the fallback) ran.
+    const glance = { ...base, display, self: { objective: 'LOCAL objective (must not render)' } };
+    const cc = claudeTitle(glance, CC_STDIN);
+    const cx = codexTitle(glance, CODEX_SPEC);
+    expect(cc).toBe(display.title);
+    expect(cx).toBe(display.title);
+  });
+
+  it('control chars in display.title are stripped IDENTICALLY on both sides (OSC safety)', () => {
+    const glance = { ...base, display: { ...display, title: 'safe\x1b]0;pwn\x07 title' } };
+    const cc = claudeTitle(glance, '{}');
+    const cx = codexTitle(glance, '');
+    expect(cx).toBe(cc);
+    expect(cc).toBe('safe]0;pwn title');
+  });
+
+  it('a display block WITHOUT a title falls back to the shared legacy render on both sides', () => {
+    const glance = { ...base, display: { ...display, title: null }, self: { objective: 'fallback objective' } };
+    const cc = claudeTitle(glance, '{}');
+    const cx = codexTitle(glance, '');
+    expect(cx).toBe(cc);
+    expect(cc).toContain('fallback objective');
+  });
+});
+
+describe('Codex 💡 tip notice — PostToolUse additionalContext injection (P-003 codex leg)', () => {
+  const noticeGlance = {
+    ...base,
+    display: {
+      title: 'su-9859e',
+      statusline: ['◇ su-9859e'],
+      notice: { id: 'wake-mode-manual', text: '💡 Wake mode is manual — back to auto: coord:wake-mode mode=auto' },
+    },
+  };
+
+  it('a NEW notice emits the PostToolUse additionalContext JSON on stdout', () => {
+    const { stdout } = codexRun(noticeGlance, '');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('papercusp-status-tip');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Wake mode is manual');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('coord:glance for detail');
+  });
+
+  it('the SAME notice is deduped by the per-session cursor (second run stays silent)', () => {
+    const cache = { PAPERCUSP_LOCKS_CACHE_DIR: join(dir, `cache-dedup-${Math.random().toString(36).slice(2)}`) };
+    expect(codexRun(noticeGlance, '', cache).stdout.trim()).not.toBe('');
+    expect(codexRun(noticeGlance, '', cache).stdout.trim()).toBe('');
+  });
+
+  it('a CHANGED notice re-emits through the same cursor', () => {
+    const cache = { PAPERCUSP_LOCKS_CACHE_DIR: join(dir, `cache-chg-${Math.random().toString(36).slice(2)}`) };
+    expect(codexRun(noticeGlance, '', cache).stdout.trim()).not.toBe('');
+    const changed = {
+      ...base,
+      display: {
+        ...noticeGlance.display,
+        notice: { id: 'governor-paused', text: '💡 Rate governor paused — turns queue' },
+      },
+    };
+    const { stdout } = codexRun(changed, '', cache);
+    expect(stdout).toContain('Rate governor paused');
+  });
+
+  it('PAPERCUSP_TIP_NOTICE=0 disables the channel', () => {
+    expect(codexRun(noticeGlance, '', { PAPERCUSP_TIP_NOTICE: '0' }).stdout.trim()).toBe('');
+  });
+
+  it('no notice → no stdout (the title leg still runs)', () => {
+    const { stdout, title } = codexRun({ ...base, display: { title: 'su-9859e', statusline: [], notice: null } }, '');
+    expect(stdout.trim()).toBe('');
+    expect(title).toBe('su-9859e');
+  });
+});
+
 describe('Codex/OMP title ⟷ Claude statusline title PARITY (WI-1963 #3)', () => {
   it('a multi-fleet leader renders an identical title on both CLIs', () => {
     const glance = {

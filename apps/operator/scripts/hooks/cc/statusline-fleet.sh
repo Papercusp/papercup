@@ -478,6 +478,12 @@ def set_title(title):
     which it captures as the statusline body). Fail-open: no tty / not permitted → skip silently."""
     if not title:
         return
+    # Strip control chars that could break out of the OSC string (defensive — the server
+    # render already strips them; this guards a buggy display.title + the legacy paths,
+    # and mirrors the codex hook so titles stay byte-identical across CLIs).
+    title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
+    if not title:
+        return
     # Test seam: the real target (/dev/tty) is NOT captured by the fixture-mode test harness, so
     # when PAPERCUSP_STATUSLINE_TITLE_OUT names a file we also record the computed title there —
     # the only way to assert the title render. Unset in production → this is a no-op.

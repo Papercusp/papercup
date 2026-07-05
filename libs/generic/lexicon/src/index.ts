@@ -14,6 +14,7 @@
 export type {
   BrandPack,
   BrandPackId,
+  BuiltInTermKey,
   TermForms,
   TermKey,
   TermOptions,
@@ -30,6 +31,7 @@ export {
 export {
   type BoundLexicon,
   getPack,
+  lexiconFromPack,
   lexiconFor,
   resolveTerm,
 } from './resolver';

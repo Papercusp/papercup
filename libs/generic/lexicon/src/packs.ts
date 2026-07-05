@@ -13,9 +13,9 @@
  * a different word today, fix the label here — never the callsite — so flag-off
  * stays identical.
  */
-import type { BrandPack, BrandPackId, TermKey } from './types';
+import type { BrandPack, BrandPackId, BuiltInTermKey } from './types';
 
-const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
+const CLASSIC_TERMS: Record<BuiltInTermKey, { one: string; other: string }> = {
   // Owner directive 2026-07-04: public release ships the POT (Papercup) lexicon.
   // This REVERTS the 2026-06-16 "Pots are now Hives" baseline override — the
   // top-level grouping is a POT again in the classic/public pack (the full bee
@@ -48,7 +48,7 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
   signal: { one: 'Signal', other: 'Signals' },
 };
 
-const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
+const THE_HIVE_TERMS: Record<BuiltInTermKey, { one: string; other: string }> = {
   pot: { one: 'Hive', other: 'Hives' },
   // Canon (owner revision 2026-06-08, the-hive-lexicon D-007 supersedes the
   // D-002 Fleet→Swarm row): the live collective of working agents is the
