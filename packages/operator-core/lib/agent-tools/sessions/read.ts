@@ -96,7 +96,7 @@ export default defineTool({
           session_id: sessionId,
           ...(selfNote ? { note: selfNote } : {}),
           turn_count: rows.length,
-          turns: rows.map((r) => ({
+          turns: rows.map((r: { source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
             turn_idx: r.turn_idx, speaker: r.speaker,
             ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
             text: r.text,
