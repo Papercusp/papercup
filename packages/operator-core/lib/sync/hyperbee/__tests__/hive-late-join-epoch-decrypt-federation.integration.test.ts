@@ -431,7 +431,9 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
 
       // ── 6. DRAIN: re-run the deferred content through the SAME gate — the joiner can
       //       now unwrap epoch-0 → decrypt → the real projections land the plaintext rows. ──
+      console.error('DEBUG drainQueue epochs:', drainQueue.map(d => d.epoch), 'pending buckets:', pending.bucketCount(), 'size:', pending.size());
       const reapplied = await drainQueuedEpochContent({ pending, drainQueue, applyImpl: joinerApply });
+      console.error('DEBUG reapplied:', reapplied, 'pending after:', pending.size(), 'plan:', await readPlan(dbJoiner.sql), 'wi:', await readWorkItem(dbJoiner.sql));
       expect(reapplied, 'both deferred content ops re-applied + converged').toBe(2);
       expect(pending.size(), 'the defer buffer drained — no silent loss').toBe(0);
 
