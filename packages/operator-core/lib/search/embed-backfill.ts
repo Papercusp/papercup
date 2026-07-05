@@ -192,10 +192,22 @@ const TARGETS: BackfillTarget[] = [
   },
 ];
 
+/**
+ * WI-2905 fairness cap: max rows one table may consume in ONE sweep. Without it
+ * the per-table `while(true)` drains until the DAILY budget exhausts, so the
+ * first backlogged table in the order eats the whole day's tokens and every
+ * later table gets 0 — session_turns' 70k-row backlog sat at 1 embedded row
+ * while operator_turns burned the cap every day. 4 batches/table/sweep at a
+ * 5-min cadence still clears ~48×BATCH_SIZE rows/table/day, but no table can
+ * starve another; the daily cap now spreads across ALL targets.
+ */
+const MAX_ROWS_PER_TARGET_PER_SWEEP = BATCH_SIZE * 4;
+
 async function backfillTable(
   sql: Sql,
   target: BackfillTarget,
   embed: (t: string) => Promise<number[]>,
+  maxRows: number = MAX_ROWS_PER_TARGET_PER_SWEEP,
 ): Promise<BackfillStats> {
   const started = Date.now();
   const stats: BackfillStats = {
@@ -215,7 +227,7 @@ async function backfillTable(
   // request 429s during a quota outage, or an over-long body 400s) stays NULL and is re-SELECTed
   // by the next `WHERE … IS NULL LIMIT` pull, spinning this `while(true)` forever and re-burning
   // tokens. Breaking on no-progress bounds the sweep and lets the next 5-min tick retry. (cost-audit-2026-06-29.)
-  while (true) {
+  while (stats.scanned < maxRows) {
     // All PK columns here are text/uuid and the body is text → every selected value is a string.
     const batch = await sql.unsafe<Array<Record<string, string>>>(
       `SELECT ${keySelect}, (${target.bodySql}) AS body
@@ -223,7 +235,7 @@ async function backfillTable(
         WHERE ${target.embedCol} IS NULL
           AND length(${target.bodySql}) > 0
         LIMIT $1`,
-      [BATCH_SIZE],
+      [Math.min(BATCH_SIZE, maxRows - stats.scanned)],
     );
     if (!batch.length) break;
 
