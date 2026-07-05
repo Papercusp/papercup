@@ -751,7 +751,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
         SELECT count(*)::text AS n
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ws} AND harness_slug = ${homePrefix}
-           AND child_role = 'queen' AND status IN ('running','restarting')`;
+           AND child_role IN ('queen', 'mug') AND status IN ('running','restarting')`;
       return Number(rows[0]?.n ?? 0) || 0;
     },
 

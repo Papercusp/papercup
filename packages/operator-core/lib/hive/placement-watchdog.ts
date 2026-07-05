@@ -1608,7 +1608,7 @@ export async function latestQueenWakeAt(workspaceId: string, hiveSlug: string): 
       SELECT max(started_at) AS t
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${workspaceId}
-         AND child_role = 'queen'
+         AND child_role IN ('queen', 'mug')
          AND harness_slug = ${hiveSlug}`;
     const t = rows[0]?.t;
     return t ? new Date(t).toISOString() : null;

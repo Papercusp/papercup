@@ -55,7 +55,7 @@ async function listBeesProd(workspaceId: string): Promise<BeeTranscriptMetrics[]
     SELECT spawn_id, session_id, harness_slug
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
-       AND child_role = 'bee'
+       AND child_role IN ('bee', 'cup')
        AND status IN ('running', 'restarting')`;
 
   // Idle signal: a bee parked on an inbox-wake (awaitingEvent) is drained/between-tasks.
