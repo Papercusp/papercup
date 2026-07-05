@@ -501,6 +501,13 @@ import './coordination/tools/glance';
 // COMPOUND agent wake-orientation read (code-execution B-CX-1B): my assignments +
 // claimable backlog + inbox summary in one round-trip (the work-centric sibling of glance).
 import './coordination/tools/orient';
+// Official session modes as first-class data (modes-and-intake-ux-2026-07-05):
+// catalog/index (mode:list), point read (mode:get), and the axis-aware setter
+// with the owner-sticky guard + same-axis auto-switch (mode:set). Presence/orient
+// surface active modes ambiently; contracts inject at activation, not in the base prompt.
+import './mode/list';
+import './mode/get';
+import './mode/set';
 // Dispatch a slash-exposed tool command AT another agent via deliver-and-wake
 // (WI-126) — the cross-session leg of slash exposure; the wake-mode gate stages
 // dispatched commands for manual-mode targets.

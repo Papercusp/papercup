@@ -2123,23 +2123,33 @@ export function resetMcpCurlBudget(): void {
  *  curling the endpoint to debug is never touched (D-003). */
 export const MCP_CURL_BLOCK_KILL_AFTER = 10;
 
-/** True when a bash command is an agent trying to reach the papercusp MCP server over HTTP
- *  (curl / wget / xh) rather than calling the tool it wants directly. Requires BOTH an HTTP-client
- *  verb at a COMMAND position (start, or after a real separator ; && || | newline ( `) AND an
- *  MCP-specific target, so a legitimate curl to a real external API or an app health route — and
- *  prose that merely mentions "curl" and "/api/mcp" (e.g. a commit message) — does NOT match:
+/** True when a bash command is an agent trying to reach the papercusp MCP server over HTTP — by ANY
+ *  client, not just curl — rather than calling the tool it wants directly. Requires BOTH an HTTP-client
+ *  INVOCATION and an MCP-specific target, so a legitimate call to a real external API or an app health
+ *  route — and prose that merely mentions the path (e.g. a commit message, an echo) — does NOT match.
+ *  The client can be: a curl/wget/xh verb at a COMMAND position, OR a scripting HTTP client referenced
+ *  anywhere in the command (python urllib/requests/httpx/aiohttp/http.client/urlopen, node
+ *  fetch/axios/node-fetch). ornith iter24 (2026-07-04 / WI-2382): a weak leader BLOCKED from `curl
+ *  http://…/api/mcp` instantly evaded by POSTing the SAME endpoint via `python3 -c "import
+ *  urllib.request; …"` 14× — the curl-only matcher missed it, so the doom-loop ran unbounded. The
+ *  MCP-specific targets:
  *    - `/api/mcp`   the exact MCP endpoint path (copied straight from the model's mcp.json)
  *    - `superuser=` the MCP superuser query param (MCP-only)
  *    - `:9071`      the papercusp MCP bundle-server port (agents have no other use for it)
  *    - a `/mcp` path aimed at a local host / operator port (localhost / 127.0.0.1 / :30x0 / :9071)
- *  Pure. */
+ *  Pure. (Name kept for import stability; it now covers any HTTP client, not only curl.) */
 export function isMcpEndpointCurl(cmd: string): boolean {
   const c = (cmd || '').toLowerCase();
-  // Must actually INVOKE an HTTP client from the shell at a command position — the verb must sit
-  // at the start or right after a real command separator (; && || | newline ( `), NOT after any
-  // plain space, so `curl` mentioned inside a quoted argument (a commit message, an echo, prose)
-  // does not false-positive. A bare `http(s)://` in some other command's args never counts.
-  if (!/(?:^|[;&|\n(`]|&&|\|\|)\s*(?:curl|wget|xh)\b/.test(c)) return false;
+  // Must actually INVOKE an HTTP client — either a curl/wget/xh verb at a command position (start or
+  // right after a real separator ; && || | newline ( `), NOT after a plain space, so `curl` inside a
+  // quoted arg / commit message / echo does not false-positive), OR a scripting HTTP-client token
+  // (python urllib/requests/…, node fetch/axios). A bare mention of the path with no client never
+  // counts (an echo / commit-message reference stays un-blocked).
+  const httpClient =
+    /(?:^|[;&|\n(`]|&&|\|\|)\s*(?:curl|wget|xh)\b/.test(c) ||
+    /\b(?:urllib|requests|httpx|aiohttp|http\.client|httplib|urlopen|node-fetch|axios)\b/.test(c) ||
+    /\bfetch\s*\(/.test(c);
+  if (!httpClient) return false;
   if (c.includes('/api/mcp')) return true;
   if (c.includes('superuser=')) return true;
   if (c.includes(':9071')) return true;
