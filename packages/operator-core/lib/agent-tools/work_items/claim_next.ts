@@ -10,6 +10,8 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
@@ -22,6 +24,7 @@ import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item
 import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -86,6 +89,12 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const assignee = args.assignee ?? ident.ownerId;
+    // WI-2971: claim_next is an older public self-pull surface. In a fleet with a
+    // leader-authored claim spec, letting this wrapper call the raw oldest-first primitive
+    // bypasses the fleet lane and can hand feature/plan work to a bug-drain member. When the
+    // scheduler claim flag is ON, route through the same getNextForBee path as
+    // scheduler:get_next. The OFF path is the existing no-breakage degrade.
+    const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     // P-002 co-location lever: under the per-Hive claim lease, honor each item's
     // swarm_affinity by passing THIS Swarm's id — the claim then skips work affined to
     // another Swarm and prefers work affined to us. Flag OFF (default) ⇒ swarmId omitted
@@ -103,9 +112,33 @@ export default defineTool({
     // while it fails arbitration for everyone but its dead prior owner. Capture the last such loss
     // so missResult can name it truthfully. Observability ONLY — no claim/release-semantics change.
     let lastLeaseLoss: { id: string } | null = null;
+    const claimViaScheduler = async () => {
+      const res = await getNextForBee({
+        beeId: assignee,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        harness: args.harness,
+        states: args.states,
+        swarmId,
+        excludeRedundant,
+        rigAvailable: args.rigAvailable,
+      });
+      const wi = res?.workItem ?? null;
+      if (wi && leaseOn) {
+        const leased = await leaseClaimedWorkItem({ harness: args.harness, workItemId: wi.id, owner: assignee });
+        if (!leased) {
+          await releaseWorkItem(wi.id, { harness: args.harness });
+          lastLeaseLoss = { id: wi.id };
+          return null;
+        }
+      }
+      return res;
+    };
     /** One race-free claim (the existing path) incl. the cross-Swarm lease arbitration.
      *  Returns the claimed item, or null when nothing was (or could be) claimed. */
     const claimOne = async () => {
+      if (specOn) {
+        return claimViaScheduler();
+      }
       const wi = await claimNextWorkItem({
         harness: args.harness,
         assignee,
@@ -177,8 +210,12 @@ export default defineTool({
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
-      const wi = await claimOne();
-      const result = wi ? { ok: true as const, workItem: wi } : await missResult();
+      const claimed = await claimOne();
+      const result = claimed
+        ? 'workItem' in claimed
+          ? { ok: true as const, workItem: claimed.workItem, claimedUnder: claimed.claimedUnder }
+          : { ok: true as const, workItem: claimed }
+        : await missResult();
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     }
 
@@ -188,9 +225,9 @@ export default defineTool({
     // an array (possibly shorter than `count`, possibly empty).
     const claimed = [];
     for (let i = 0; i < count; i += 1) {
-      const wi = await claimOne();
-      if (!wi) break;
-      claimed.push(wi);
+      const res = await claimOne();
+      if (!res) break;
+      claimed.push('workItem' in res ? { workItem: res.workItem, claimedUnder: res.claimedUnder } : res);
     }
     // EI-5919: on an EMPTY sweep, attach the same drained-vs-pending diagnosis so a batch
     // caller can also distinguish a truly-drained queue from a full-but-gated backlog.
