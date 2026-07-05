@@ -1,16 +1,43 @@
 ---
-title: Session modes — AUTO, IDEATE, DRAIN
-description: The owner-switchable standing modes an interactive (su) agent session runs under — what each authorizes, how they compose, and how to turn them on and off.
+title: Session modes — AUTO, COLD AUTO, IDEATE, DRAIN, GRADE
+description: The owner-switchable standing modes an agent session runs under — official first-class state (mode:set / mode:get, presence-visible, audited), what each authorizes, the axis model, and how they compose.
 plans:
   - agent-first-onboarding-2026-07-03
+  - modes-and-intake-ux-2026-07-05
 ---
 
-An interactive agent session (an su / engineer-collaborator) runs under a set of
-**standing modes** the owner switches with plain words. A mode is a session-wide
-grant — it carries across turns and topics until explicitly turned off, the
-session ends, or the goal completes. The canonical, binding statement of each
-mode lives in the su playbook (the persona every su session is launched with);
-this page is the orientation view.
+An agent session runs under a set of **standing modes** the owner switches with
+plain words. A mode is a session-wide grant — it carries across turns and topics
+until explicitly turned off, the session ends, or the goal completes.
+
+Since `modes-and-intake-ux-2026-07-05`, modes are **official first-class state**,
+not prompt prose: the current mode set lives in `harness_shared.agent_modes`, is
+**visible to peers** (`coord:presence` rows carry `modes`; `coord:orient` shows
+your own), and every transition is **audited** (`agent_mode_changes`). The tools:
+
+- **`mode:set { mode, reason, enabled?, agent?, ownerDirected? }`** — enter/exit a
+  mode for yourself **or a peer**. A peer-set delivers the mandatory `reason` (plus
+  the mode's full contract) to the target as a coord message, and takes effect at
+  the target's **next turn boundary** (orient re-injects contracts each wake).
+  `ownerDirected:true` (self-set only, on explicit owner instruction) arms the
+  **owner-sticky guard**: a peer's attempt to override is refused and downgraded
+  to a request.
+- **`mode:get { agent?, contracts? }`** — anyone's current modes; **`mode:list`** —
+  the catalog index.
+
+## The axis model — what excludes, what stacks
+
+The ONLY mutually-exclusive pair is the **autonomy** dial: **AUTO** vs **COLD
+AUTO** (one dial, two positions — setting one auto-switches the other off, both
+recorded in the audit). Everything else is an **overlay** that stacks freely:
+IDEATE, DRAIN, and GRADE combine with the autonomy modes and **with each other**
+— e.g. ideating on why a drain isn't working is a legitimate combination.
+
+The **full binding contract** of each mode is data in the mode registry
+(`packages/operator-core/lib/modes/registry.ts`) and is **injected at
+activation** (mode:set returns it; coord:orient re-injects active contracts every
+wake) — the always-present prompt carries only a one-line-per-mode index. Adding
+a future mode costs one index line, not a prompt section.
 
 ## AUTO — "act, don't ask"
 
@@ -52,6 +79,29 @@ launch, then the fleet · feed by claim-spec (never hand-assignment) · a leader
 monitor loop each wake · wind down with a residue report. Completion integrity
 outranks burn-down speed — nothing goes terminal without evidence.
 
+## COLD AUTO — AUTO across fresh-context wakes
+
+**On:** "cold auto", a `loop:arm { carry:'cold' }` lifecycle. Same autonomy axis
+as AUTO (never both).
+
+Everything AUTO grants, carried across scheduled wakes with no human present and
+**no transcript continuity** — each cold fire reconstructs from the carry-note
+(`loop:checkpoint { did, left, insight, next }`) and per-item checkpoints. The
+checkpoint layer IS the continuity; flushing it every wake is part of the mode's
+contract, not optional hygiene.
+
+## GRADE — rubric-graded monitoring
+
+**On:** "grade mode", "monitor X and score it". An overlay; stacks with anything.
+
+GRADE stands up monitoring of whatever the owner named on the rubric/scorecard
+system: **reuse first** (`rubrics:search`; propose + ratify a new rubric only on
+a real gap — proliferation is the failure mode), then a loop whose wakes gather
+evidence → emit a complete scorecard (every criterion rated, with evidence) →
+read `rubrics:trend`. Prefer deterministic evidence (SQL counters, freshness
+checks) over per-wake LLM judgment: the cheapest grading is compute, not
+inference. Cadence + exit criteria come from the owner at entry.
+
 ## How they compose
 
 | | AUTO off | AUTO on |
@@ -59,12 +109,15 @@ outranks burn-down speed — nothing goes terminal without evidence.
 | **IDEATE off** | File observations; fixes wait for approval. | Implement fixes/improvements you encountered. |
 | **IDEATE on** | Run ideation passes; file proposals, don't build. | Run passes AND build the strongest ideas, disclosed. |
 
-DRAIN layers the queue→terminal mission on top of whichever cell is active.
+DRAIN layers the queue→terminal mission — and GRADE the scoring lens — on top of
+whichever cell is active; overlays also combine with each other.
 
 ## Where the truth lives
 
-The full binding rules (what each mode suspends, the anti-footgun rail, the
-end-of-turn test, loop cadence) are in the su persona/playbook sources — see
+The full binding contract of each mode lives in the **mode registry**
+(`packages/operator-core/lib/modes/registry.ts`) and is injected at activation
+(mode:set / coord:orient). The su playbook carries the one-line mode index plus
+the offer/intake discipline; see
 [prompt assembly](/internal/docs/agents/prompt-assembly) for how those reach a
 live session, and the
 [su-persona render + edit path](/internal/docs/agent-insights/su-persona-render-and-edit-path)
