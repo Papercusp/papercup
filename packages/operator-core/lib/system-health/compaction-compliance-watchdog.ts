@@ -601,15 +601,17 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // the session recovers below).
         if (!forceCompactedOwners.has(r.owner_id)) {
           const window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
-          const forceAt = Math.min(
-            r.compaction_limit * FORCE_COMPACT_FRACTION,
+          const fractionAt = r.compaction_limit * FORCE_COMPACT_FRACTION;
+          const capAt =
             window != null
               ? window - COMPACTION_WINDOW_MARGIN_TOKENS
-              : r.compaction_limit * COMPACTION_OVERSHOOT_FACTOR,
-          );
+              : r.compaction_limit * COMPACTION_OVERSHOOT_FACTOR;
+          const forceAt = Math.min(fractionAt, capAt);
+          const bound: ForceBound =
+            fractionAt <= capAt ? 'fraction' : window != null ? 'window' : 'overshoot';
           if (
             est >= forceAt &&
-            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit, forceAt))
+            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit, forceAt, bound))
           ) {
             forceCompactedOwners.add(r.owner_id);
             out.forceCompacted.push(r.owner_id);

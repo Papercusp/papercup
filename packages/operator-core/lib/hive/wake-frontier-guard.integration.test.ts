@@ -51,7 +51,7 @@ describe('listUnplacedHiveFrontier (EI-309)', () => {
   it('returns todo + unassigned feature-family ids in the home harness, oldest-first', async () => {
     await seed(HIVE, 'WI-117', { createdTs: 2 });
     await seed(HIVE, 'WI-116', { createdTs: 1 });
-    await seed(HIVE, 'WI-115', { kind: 'research-task', createdTs: 0 });
+    await seed(HIVE, 'WI-115', { kind: 'chunk', createdTs: 0 });
     const frontier = await listUnplacedHiveFrontier(db.sql as unknown as postgres.Sql, 'default', HIVE);
     expect(frontier).toEqual(['WI-115', 'WI-116', 'WI-117']); // oldest-first by created_ts
   });

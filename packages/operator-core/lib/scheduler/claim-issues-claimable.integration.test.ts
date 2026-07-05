@@ -5,7 +5,7 @@
  * BYTE-IDENTICALLY NON-claimable (feature-only) when it is OFF.
  *
  * Today the decentralized claim (`claimNextWorkItem`) is feature-family-only: the shared
- * `claimFloorsWhereSql` floor pins `item_kind IN ('feature','research-task','chunk')` and
+ * `claimFloorsWhereSql` floor pins `item_kind IN ('feature','chunk')` and
  * the UPDATE targets the feature view, so an issue can BLOCK a feature but can never itself
  * be claimed. P-007 adds an ADDITIVE issue-claim branch (a separate query over the work_items
  * base for issue kinds, run only when no feature is claimable AND the flag is on). Readiness
@@ -74,7 +74,7 @@ const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + issues live here
 let db: FreshPgDb;
 
-/** A feature-FAMILY row (item_kind feature|research-task|chunk, default 'feature') —
+/** A feature-FAMILY row (item_kind feature|chunk, default 'feature') —
  *  claimable through the feature path at tier 1/2 of the WI-1407 ladder. */
 async function seedFeature(
   id: string,
@@ -137,7 +137,7 @@ async function claimOne(assignee: string): Promise<string | null> {
  *  claim (tests assert the id then move on). */
 async function claimOneKind(
   assignee: string,
-  kind: 'feature' | 'research-task' | 'chunk',
+  kind: 'feature' | 'chunk',
 ): Promise<string | null> {
   return (await wi.claimNextWorkItem({ harness: H, assignee, kind }))?.id ?? null;
 }
@@ -255,12 +255,12 @@ describe('claimNextWorkItem fallback ladder — a kind-narrowed caller still wid
 
   it('tier 1 exact match wins when present (no widening needed)', async () => {
     await seedFeature('F-exact', { createdTs: 100, kind: 'feature' });
-    await seedFeature('RT-older', { createdTs: 10, kind: 'research-task' }); // older, but wrong kind
+    await seedFeature('RT-older', { createdTs: 10, kind: 'chunk' }); // older, but wrong kind
     expect(await claimOneKind('w-t1', 'feature')).toBe('F-exact');
   });
 
-  it('tier 2: kind="feature" narrowed and DRY widens to a research-task item within the feature family', async () => {
-    await seedFeature('RT-1', { createdTs: 100, kind: 'research-task' });
+  it('tier 2: kind="feature" narrowed and DRY widens to a chunk item within the feature family', async () => {
+    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
     expect(await claimOneKind('w-t2', 'feature')).toBe('RT-1');
   });
 

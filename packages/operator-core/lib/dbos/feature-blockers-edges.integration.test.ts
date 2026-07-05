@@ -163,7 +163,7 @@ describe('readFrontierFeatures — started-plan + auditor gates (real PG)', () =
   it('only kind=feature reaches the feature-pipeline frontier (other work-item kinds are skipped)', async () => {
     await seedFeature({ id: 'F-feat', itemKind: 'feature' });
     await seedFeature({ id: 'B-bug', itemKind: 'bug' });
-    await seedFeature({ id: 'RT-task', itemKind: 'research-task' });
+    await seedFeature({ id: 'CH-chunk', itemKind: 'chunk' });
     const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
     expect(frontierIds(frontier)).toEqual(['F-feat']);
   });

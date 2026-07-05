@@ -403,7 +403,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
 
   it('tier 1: an exact kind match wins outright — no widening needed', async () => {
     await seedFeature('F-exact', { createdTs: 100, kind: 'feature' });
-    await seedFeature('RT-older', { createdTs: 10, kind: 'research-task' }); // older, wrong kind
+    await seedFeature('RT-older', { createdTs: 10, kind: 'chunk' }); // older, wrong kind
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-feature',
@@ -414,8 +414,8 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
   });
 
-  it('tier 2: kind="feature" narrowed and DRY widens (widenPastKind) to a research-task item', async () => {
-    await seedFeature('RT-1', { createdTs: 100, kind: 'research-task' });
+  it('tier 2: kind="feature" narrowed and DRY widens (widenPastKind) to a chunk item', async () => {
+    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-feature-widen',
@@ -429,8 +429,8 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   });
 
   it('tier 2: a co-existing tags narrowing SURVIVES the widen (only the kind leaf is dropped)', async () => {
-    await seedFeature('RT-sync', { createdTs: 100, kind: 'research-task', tags: ['sync'] });
-    await seedFeature('RT-docs', { createdTs: 10, kind: 'research-task', tags: ['docs'] }); // older, wrong tag
+    await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'] });
+    await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'] }); // older, wrong tag
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-and-tag',
@@ -520,7 +520,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   // widenPastKind's "widen to the rest of the feature family" (tier 2) is meaningful only when
   // the dropped kind constraint admitted a feature-family kind — an issue-only kind='bug' spec
   // has no feature-family sibling to widen to (its lane is issues), so tier 2 must be a no-op and
-  // the bug-only member must NOT claim a feature/research-task/chunk.
+  // the bug-only member must NOT claim a feature/chunk.
   it('tier 2 (EI-7481): a bug-only kind spec does NOT widen into the feature family', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
     await seedFeature('F-in-backlog', { createdTs: 100 }); // a claimable feature the bug spec must ignore
