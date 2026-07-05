@@ -515,4 +515,43 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     });
     expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
+
+  // EI-7481: a bug-only spec (an ISSUE-family kind) must never leak into the FEATURE family.
+  // widenPastKind's "widen to the rest of the feature family" (tier 2) is meaningful only when
+  // the dropped kind constraint admitted a feature-family kind — an issue-only kind='bug' spec
+  // has no feature-family sibling to widen to (its lane is issues), so tier 2 must be a no-op and
+  // the bug-only member must NOT claim a feature/research-task/chunk.
+  it('tier 2 (EI-7481): a bug-only kind spec does NOT widen into the feature family', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
+    await seedFeature('F-in-backlog', { createdTs: 100 }); // a claimable feature the bug spec must ignore
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'bugs-only-drain',
+      revision: 3,
+      view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    // Tier 1 dry (no bug in the feature table), tier 2 must not widen to F-in-backlog, tier 3 off.
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
+
+  // EI-7481 (the reported shape): under a bare-leaf `kind='bug'` spec with the issue lane ON, the
+  // whole ladder must stay in the bug lane — never a feature (tier-2 leak) and never a `task`
+  // (tier-3 leak, WI-2118's ping-pong): it claims the open BUG and only the bug.
+  it('tier 3 (EI-7481): a bare-leaf bug spec claims the bug — never a feature or a task', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedFeature('F-feature-lane', { createdTs: 1 }); // oldest — would win tier-2 widen if it leaked
+    await seedIssue('WI-2118', { state: 'open', createdTs: 10, kind: 'task' }); // the forbidden task
+    await seedIssue('EI-real-bug', { state: 'open', createdTs: 100, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'bugs-only-drain',
+      revision: 3,
+      view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-real-bug');
+    expect(r?.workItem.kind).toBe('bug');
+  });
 });
