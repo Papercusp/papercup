@@ -127,7 +127,7 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
   await sql`
     INSERT INTO harness_shared.bench_runs
       (id, workspace_id, arm, task_set_id, suite, model, status, source, config,
-       hive_slug, task_count, recovered, started_at, created_at, updated_at)
+       pot_slug, task_count, recovered, started_at, created_at, updated_at)
     VALUES
       (${init.id}, ${ws}, ${init.arm}, ${init.taskSetId}, ${suite}, ${init.model}, ${status}, ${source},
        ${jb(init.config ?? null)}::text::jsonb, ${init.hiveSlug ?? null}, ${init.taskCount ?? null},
@@ -136,7 +136,7 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
     ON CONFLICT (id) DO UPDATE SET
       arm = EXCLUDED.arm, task_set_id = EXCLUDED.task_set_id, suite = EXCLUDED.suite,
       model = EXCLUDED.model, status = EXCLUDED.status, source = EXCLUDED.source,
-      config = EXCLUDED.config, hive_slug = EXCLUDED.hive_slug, task_count = EXCLUDED.task_count,
+      config = EXCLUDED.config, pot_slug = EXCLUDED.pot_slug, task_count = EXCLUDED.task_count,
       recovered = EXCLUDED.recovered, updated_at = now()
   `;
   await invalidate(init.id);
@@ -146,7 +146,7 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
 export async function setBenchRunHive(runId: string, hiveSlug: string, opts: DbScope = {}): Promise<void> {
   const { sql, ws } = resolveDb(opts);
   await sql`
-    UPDATE harness_shared.bench_runs SET hive_slug = ${hiveSlug}, updated_at = now()
+    UPDATE harness_shared.bench_runs SET pot_slug = ${hiveSlug}, updated_at = now()
      WHERE id = ${runId} AND workspace_id = ${ws}
   `;
   await invalidate(runId);
@@ -669,7 +669,7 @@ function toListEntry(r: RunRow): BenchRunListEntry {
     wallMs: r.wall_ms == null ? null : Number(r.wall_ms),
     recovered: Boolean(r.recovered),
     runError: r.run_error,
-    hiveSlug: r.hive_slug,
+    hiveSlug: r.pot_slug,
     fleetRunId: r.fleet_run_id,
     startedAt: r.started_at,
     finishedAt: r.finished_at,
@@ -703,7 +703,7 @@ interface RunRow {
   run_error: string | null;
   config: unknown;
   fleet_run_id: string | null;
-  hive_slug: string | null;
+  pot_slug: string | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

@@ -306,8 +306,8 @@ export async function cancelBenchRun(
   const { sql, ws } = resolveDb(scope);
   const dissolve = deps.dissolve ?? dissolveBenchHive;
 
-  const rows = await sql<{ status: string; hive_slug: string | null }[]>`
-    SELECT status, hive_slug FROM harness_shared.bench_runs
+  const rows = await sql<{ status: string; pot_slug: string | null }[]>`
+    SELECT status, pot_slug FROM harness_shared.bench_runs
      WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
   `;
   const row = rows[0];
@@ -321,7 +321,7 @@ export async function cancelBenchRun(
 
   // Dissolve every known hive (the in-flight set + the persisted slug).
   const slugs = new Set<string>(active?.hiveSlugs ?? []);
-  if (row.hive_slug) slugs.add(row.hive_slug);
+  if (row.pot_slug) slugs.add(row.pot_slug);
   for (const slug of slugs) await dissolve(slug, ws).catch(() => {});
 
   return { cancelled: true };
@@ -352,16 +352,16 @@ export async function reapStaleBenchRuns(
   const dissolve = deps.dissolve ?? dissolveBenchHive;
   const staleAfterSec = deps.staleAfterSec ?? 180;
 
-  const rows = await sql<{ id: string; hive_slug: string | null }[]>`
-    SELECT id, hive_slug FROM harness_shared.bench_runs
+  const rows = await sql<{ id: string; pot_slug: string | null }[]>`
+    SELECT id, pot_slug FROM harness_shared.bench_runs
      WHERE workspace_id = ${ws}
        AND status = ANY(${ACTIVE_STATES as unknown as string[]})
        AND updated_at < now() - make_interval(secs => ${staleAfterSec})
   `;
   const reaped: string[] = [];
   for (const r of rows) {
-    if (r.hive_slug) {
-      await dissolve(r.hive_slug, ws).catch(() => {});
+    if (r.pot_slug) {
+      await dissolve(r.pot_slug, ws).catch(() => {});
     }
     await setBenchRunStatus(
       r.id,

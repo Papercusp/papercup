@@ -47,7 +47,7 @@ export interface UnifiedPresenceRecord extends PresenceRecord {
 interface SharedPresenceDbRow {
   workspace_id: string;
   harness_slug: string;
-  hive_slug: string | null;
+  pot_slug: string | null;
   github_user_id: number;
   machine_label: string;
   device_pubkey: string;
@@ -93,11 +93,11 @@ export function mapSharedPresenceRow(
     heartbeatAt: iso,
     // A federated peer reports only last_seen (heartbeat-equivalent) — we don't
     // get its activity/keepalive split or role, so those stay null at the
-    // federation boundary. hive_slug IS available (shared_presence is hive-keyed,
+    // federation boundary. pot_slug IS available (shared_presence is hive-keyed,
     // mig 187) — it's the federated leg of the P-004 hive-scoped read.
     lastActiveAt: null,
     agentRole: null,
-    hiveSlug: row.hive_slug,
+    hiveSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,
@@ -117,7 +117,7 @@ export async function queryFederatedPresenceRows(
   opts: { workspaceId?: string | null; harnessSlug?: string | null; hiveSlug?: string | null } = {},
 ): Promise<SharedPresenceDbRow[]> {
   const rows = (await sql`
-    SELECT workspace_id, harness_slug, hive_slug, github_user_id, machine_label, device_pubkey,
+    SELECT workspace_id, harness_slug, pot_slug, github_user_id, machine_label, device_pubkey,
            intent, current_view,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
@@ -127,7 +127,7 @@ export async function queryFederatedPresenceRows(
     .map((r) => ({
       workspace_id: String(r.workspace_id ?? ''),
       harness_slug: String(r.harness_slug ?? ''),
-      hive_slug: r.hive_slug == null ? null : String(r.hive_slug),
+      pot_slug: r.pot_slug == null ? null : String(r.pot_slug),
       github_user_id: Number(r.github_user_id),
       machine_label: String(r.machine_label ?? ''),
       device_pubkey: String(r.device_pubkey ?? ''),
@@ -137,7 +137,7 @@ export async function queryFederatedPresenceRows(
     }))
     .filter((r) => (opts.workspaceId ? r.workspace_id === opts.workspaceId : true))
     .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true))
-    .filter((r) => (opts.hiveSlug ? r.hive_slug === opts.hiveSlug : true));
+    .filter((r) => (opts.hiveSlug ? r.pot_slug === opts.hiveSlug : true));
 }
 
 /**
@@ -164,7 +164,7 @@ export function mapSessionPresenceRow(
     heartbeatAt: iso,
     lastActiveAt: iso,
     agentRole: row.kind,
-    hiveSlug: row.hive_slug,
+    hiveSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,

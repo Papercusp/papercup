@@ -5,7 +5,7 @@
  * fleet — the Queen's survival (status/age/reclaims), bee status counts, the
  * model-leak check (opus-only), cumulative spend, wall-clock — from
  * spawned_agents / agent_usage_samples scoped to the run's spawned hive
- * (hive_slug), plus the per-task progress from bench_run_tasks. This replaces the
+ * (pot_slug), plus the per-task progress from bench_run_tasks. This replaces the
  * hand-run SELECTs that drove the benchmark.
  *
  * The AGGREGATION is a pure function (aggregateBenchRunLiveState) so it is unit-
@@ -150,8 +150,8 @@ export function aggregateBenchRunLiveState(args: {
  *  scoped to its hive + bench_run_tasks). Returns null if the run is unknown. */
 export async function getBenchRunLiveState(runId: string, opts: DbScope = {}): Promise<BenchRunLiveState | null> {
   const { sql, ws } = resolveDb(opts);
-  const runRows = await sql<{ status: string; hive_slug: string | null; started_at: string | null }[]>`
-    SELECT status, hive_slug, started_at FROM harness_shared.bench_runs
+  const runRows = await sql<{ status: string; pot_slug: string | null; started_at: string | null }[]>`
+    SELECT status, pot_slug, started_at FROM harness_shared.bench_runs
      WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
   `;
   const run = runRows[0];
@@ -166,11 +166,11 @@ export async function getBenchRunLiveState(runId: string, opts: DbScope = {}): P
 
   let agents: LiveSpawnRow[] = [];
   let samples: LiveSampleRow[] = [];
-  if (run.hive_slug) {
+  if (run.pot_slug) {
     const agentRows = await sql<{ child_role: string; status: string; started_at: string | null; finished_at: string | null; restart_count: number | null }[]>`
       SELECT child_role, status, started_at, finished_at, restart_count
         FROM harness_shared.spawned_agents
-       WHERE workspace_id = ${ws} AND harness_slug = ${run.hive_slug}
+       WHERE workspace_id = ${ws} AND harness_slug = ${run.pot_slug}
     `;
     agents = agentRows.map((a) => ({
       childRole: a.child_role,
@@ -181,7 +181,7 @@ export async function getBenchRunLiveState(runId: string, opts: DbScope = {}): P
     }));
     const sampleRows = await sql<{ model: string | null; model_class: string | null; cost_usd: number | null }[]>`
       SELECT model, model_class, cost_usd FROM harness_shared.agent_usage_samples
-       WHERE workspace_id = ${ws} AND harness_slug = ${run.hive_slug}
+       WHERE workspace_id = ${ws} AND harness_slug = ${run.pot_slug}
     `;
     samples = sampleRows.map((s) => ({ model: s.model, modelClass: s.model_class, costUsd: s.cost_usd == null ? null : Number(s.cost_usd) }));
   }
@@ -189,7 +189,7 @@ export async function getBenchRunLiveState(runId: string, opts: DbScope = {}): P
   return aggregateBenchRunLiveState({
     runId,
     status: run.status,
-    hiveSlug: run.hive_slug,
+    hiveSlug: run.pot_slug,
     startedAtMs: run.started_at ? Date.parse(run.started_at) : null,
     nowMs: Date.now(),
     agents,
