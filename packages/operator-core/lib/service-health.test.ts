@@ -6,6 +6,8 @@ import {
   diffHealth,
   HEALTH_ENDPOINTS,
   probeEndpoint,
+  tcpPreflight,
+  CONNECT_PREFLIGHT_MS,
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
   BG_HOST_STALE_MS,

@@ -8,6 +8,7 @@
  * `diffHealth` is pure (unit-tested); `probeAll` does the I/O.
  */
 
+import { connect as netConnect } from 'node:net';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
@@ -68,8 +69,71 @@ export interface ProbeResult {
   recentErrors?: number;
 }
 
+/**
+ * EI-7462: fast TCP-level preflight budget, separate from the (per-endpoint,
+ * up to 10s for vite — EI-6902) HTTP response budget. A dead/wedged listener
+ * (nothing bound to the port, or its accept queue/backlog is stuck) fails a
+ * raw connect fast; only a *live* listener that then answers HTTP slowly gets
+ * the generous response budget. Kept short + fixed (not derived from the
+ * endpoint's own timeoutMs) because a real localhost handshake completes in
+ * low single-digit ms — 400ms is already generous slack for a connect that
+ * will actually succeed, so genuinely down/wedged never has to wait out the
+ * full response timeout.
+ */
+export const CONNECT_PREFLIGHT_MS = 400;
+
+type NetConnect = typeof netConnect;
+
+/**
+ * Raw TCP connect check — resolves true iff a connection completes within
+ * `timeoutMs`, false on connect-refused OR on timeout (a wedged/backlog-full
+ * listener that never finishes the handshake). `connectFn` is injectable for
+ * tests; production callers use the real `node:net` connect.
+ */
+export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, connectFn: NetConnect = netConnect): Promise<boolean> {
+  let host: string;
+  let port: number;
+  try {
+    const u = new URL(url);
+    host = u.hostname;
+    port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
+  } catch {
+    // Unparseable URL (shouldn't happen for our fixed HEALTH_ENDPOINTS list) —
+    // never let a preflight bug block the real probe; fall through as reachable.
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = connectFn({ host, port });
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.removeAllListeners?.('connect');
+      socket.removeAllListeners?.('error');
+      socket.destroy?.();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
 export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeoutMs ?? 3000): Promise<ProbeResult> {
   const start = Date.now();
+  const reachable = await tcpPreflight(spec.url);
+  if (!reachable) {
+    // Fails fast (≤ CONNECT_PREFLIGHT_MS) instead of waiting out the full
+    // (possibly 10s) response budget for a port that isn't even accepting.
+    return {
+      name: spec.name,
+      up: false,
+      status: null,
+      latencyMs: Date.now() - start,
+      note: `connect refused or did not complete within ${CONNECT_PREFLIGHT_MS}ms preflight (not a slow-response case)`,
+    };
+  }
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {

@@ -729,6 +729,33 @@ export async function releaseFixerSpawnAlive(sql: postgres.Sql, spawnId: string 
 }
 
 /**
+ * EI-7443: render each CURRENTLY-failing test file's 7d flake stats (from
+ * `flagFlakeSuspects`) as a one-line-per-file annotation the release-fixer's
+ * kickoff can lead with — so it sees flake-vs-regression immediately instead of
+ * re-deriving it from scratch. Pure (no PG) so it's unit-testable without a live
+ * DB; the DB round-trip (`testFlakeRollup`) lives in the thin caller below.
+ * Returns undefined when no failing file matches a flagged suspect (the common
+ * case — most gate reds ARE real regressions, not flakes) so callers can skip
+ * the annotation entirely rather than append an empty section.
+ */
+export function annotateFailingTestsWithFlakeStats(
+  failingTests: string[] | undefined,
+  suspects: FlakeSuspect[],
+): string | undefined {
+  if (!failingTests?.length || !suspects.length) return undefined;
+  const byFile = new Map(suspects.map((s) => [s.file_path, s]));
+  const lines = failingTests
+    .map((f) => byFile.get(f))
+    .filter((s): s is FlakeSuspect => !!s)
+    .map((s) => `  - ${s.file_path}: ${s.fails}F/${s.passes}P over 7d, ${s.both_status_shas} commit(s) with both a pass and a fail (flake_rate=${s.flake_rate})`);
+  if (lines.length === 0) return undefined;
+  return (
+    `FLAKE SIGNAL (EI-7443, from the last 7d of harness_shared.test_runs — check this BEFORE assuming a regression):\n` +
+    lines.join('\n')
+  );
+}
+
+/**
  * P-006 + P-014: dispatch a release-fixer agent for a held (not-green) gate,
  * mirroring git-sync's merge-resolver. Fires the `release-fix` launch blueprint
  * from the `green-checkpoint:red` trigger via fireLaunchBlueprintForEvent — the
@@ -797,6 +824,18 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, fai
     }
   }
 
+  // EI-7443: best-effort flake annotation for the CURRENTLY-failing files, from the
+  // 7d harness_shared.test_runs rollup — never blocks/fails the dispatch (a rollup
+  // hiccup just means no annotation, same as today).
+  let flakeAnnotation: string | undefined;
+  try {
+    const { testFlakeRollup, flagFlakeSuspects } = await import('../../dev-data');
+    const { entries } = await testFlakeRollup(7);
+    flakeAnnotation = annotateFailingTestsWithFlakeStats(failingTests, flagFlakeSuspects(entries, 7));
+  } catch (e) {
+    console.warn(`[green-checkpoint] flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`);
+  }
+
   // P-006/P-014: fire the release-fixer via the canonical spawn-recording, DBOS-durable
   // path (fireLaunchBlueprintForEvent) so the fixer is liveness-trackable + survives a crash.
   const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
@@ -805,7 +844,9 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, fai
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
       workspaceId: ctx.workspaceId,
-      kickoff: `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`,
+      kickoff:
+        `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.` +
+        (flakeAnnotation ? `\n\n${flakeAnnotation}` : ''),
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
       // the old 280s; the invoke-route ceiling is 1200s. 900s. The liveness-aware dedup

@@ -326,12 +326,16 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.insights_first_visit': ['insightsFirstVisit.byHarness'],
 };
 
-/** The PG-trigger payload shape (`emit_change_notify`, migration 368). */
+/** The PG-trigger payload shape (`emit_change_notify`, migrations 368 + 507). */
 export interface TriggerEventArgs {
   workspace_id?: unknown;
   op?: unknown;
   /** The changed row's `id` PK; absent (JSON null) for id-less tables. */
   id?: unknown;
+  /** Natural-key fallback (mig 507, EI-7433) for id-less tables — currently
+   *  only `harness_plans` carries this column; JSON null for every other
+   *  triggered table. */
+  plan_slug?: unknown;
 }
 
 /** A bridged invalidation target: a bare name (full-bust) or name + scoped
@@ -356,6 +360,21 @@ function workspaceIdOf(args: TriggerEventArgs | undefined): string | undefined {
   const raw = args?.workspace_id;
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
+
+/** Natural-key fallback (mig 507, EI-7433): non-empty string `args.plan_slug`,
+ *  else undefined. Absent (JSON null) for every table but `harness_plans`. */
+function planSlugOf(args: TriggerEventArgs | undefined): string | undefined {
+  const raw = args?.plan_slug;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
+/** Scope builder for `plans.get` (EI-7433) — the resolved key IS the plan
+ *  slug (harness_plans has no `id`, so {@link queryNamesForTriggerEvent}
+ *  resolves the natural-key fallback into the same "key" slot `resolveBridgeTarget`
+ *  passes as this function's first argument). Returns a SUBSET of the
+ *  consumer's real args (`{ slug, mode, harness? }`) — see the file-top note
+ *  on why a matching subset is sufficient for `invalidateQueries`. */
+const planSlugScope: ScopeKeyBuilder = (slug) => (slug ? { slug } : null);
 
 /**
  * Resolve ONE mapped target against an event's row id + workspace.
@@ -435,7 +454,12 @@ export function queryNamesForTriggerEvent(
   const targets = TABLE_TO_QUERY_NAMES[tableKey];
   if (targets === undefined) return [];
 
-  const rowId = rowIdOf(triggerArgs);
+  // EI-7433: prefer the true row PK; fall back to the natural-key (mig 507)
+  // for id-less tables (today: harness_plans's plan_slug). Whichever is
+  // present becomes the "key" resolveBridgeTarget hands to a target's
+  // `scope` builder — a target's own scope function decides what it means
+  // (an id-keyed scope treats it as a PK; planSlugScope treats it as a slug).
+  const rowId = rowIdOf(triggerArgs) ?? planSlugOf(triggerArgs);
   const workspaceId = workspaceIdOf(triggerArgs);
   return targets.map((t) => resolveBridgeTarget(t, rowId, workspaceId));
 }
