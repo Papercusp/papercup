@@ -216,6 +216,17 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.harness_registry (
       workspace_id text PRIMARY KEY, payload jsonb, updated_at bigint)`);
+  // resolvePlanScope's Hive gate (plans are Hive-scoped) resolves the child's hive
+  // home from this payload (hiveHomeSlugForHarness: harness_kind 'hive' ⇒ itself).
+  // Production registration (papercusp init / pot:create) stamps the entry; the
+  // stubbed scaffold dep here doesn't, so declare the child a hive home up front —
+  // BEFORE anything reads the registry (loadHarnessRegistry read-cache would pin
+  // an earlier empty read).
+  await db.sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload, updated_at)
+    VALUES (${WS}, ${JSON.stringify({ projects: [{ slug: CHILD_SLUG, harness_kind: 'hive' }] })}::jsonb,
+            ${Date.now()})
+    ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
 }, 90_000);
 
 afterAll(async () => {
