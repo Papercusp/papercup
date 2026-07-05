@@ -108,6 +108,44 @@ describe('evaluateGreenStall', () => {
     expect(v.verdictStale).toBe(false);
     expect(v.reason).toBeNull();
   });
+
+  // EI-7505: the alarm reason previously never named WHICH test(s) are failing
+  // the verdict, forcing a responder to hand-spelunk harness_shared.test_runs
+  // (inconclusive — mixes every agent's local dev-test runs with the verdict
+  // run) during a live deploy-freeze. gate_health.failingTests (persisted by
+  // trackGateStall in release-actions.ts) is now threaded into the reason.
+  it('EI-7505: a verdict-stale alarm names the failing test(s) when gate_health carries them', () => {
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: NOW - 20 * 60 * 1000,
+        lastGreenAt: NOW - 13 * H,
+        watchdogAlerted: false,
+        failingTests: ['pkgA/foo.test.ts', 'pkgB/bar.test.ts'],
+      },
+      NOW,
+    );
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain('no GREEN verdict');
+    expect(v.reason).toContain('Failing verdict test(s): pkgA/foo.test.ts, pkgB/bar.test.ts');
+  });
+
+  it('EI-7505: truncates the reason to the first 5 tests with a "+N more" tail', () => {
+    const tests = Array.from({ length: 8 }, (_, i) => `pkg/file-${i}.test.ts`);
+    const v = evaluateGreenStall(
+      { lastFiredMs: NOW - 20 * 60 * 1000, lastGreenAt: NOW - 13 * H, watchdogAlerted: false, failingTests: tests },
+      NOW,
+    );
+    expect(v.reason).toContain('pkg/file-0.test.ts, pkg/file-1.test.ts, pkg/file-2.test.ts, pkg/file-3.test.ts, pkg/file-4.test.ts');
+    expect(v.reason).toContain('(+3 more)');
+  });
+
+  it('EI-7505: no failing-test suffix when the list is absent/empty', () => {
+    const v = evaluateGreenStall(
+      { lastFiredMs: NOW - 20 * 60 * 1000, lastGreenAt: NOW - 13 * H, watchdogAlerted: false },
+      NOW,
+    );
+    expect(v.reason).not.toContain('Failing verdict test(s)');
+  });
 });
 
 describe('greenStallEscalationBody', () => {
@@ -131,5 +169,42 @@ describe('greenStallEscalationBody', () => {
     expect(body.verdictStale).toBe(true);
     expect(body.lastFiredAt).toBe(new Date(NOW - 4 * H).toISOString());
     expect(body.detail).toContain('silent stall');
+  });
+
+  it('EI-7505: includes failingTests (truncated to 20) in the escalation body when present', () => {
+    const failingTests = Array.from({ length: 25 }, (_, i) => `pkg/file-${i}.test.ts`);
+    const verdict = evaluateGreenStall(
+      { lastFiredMs: NOW - 20 * 60 * 1000, lastGreenAt: NOW - 13 * H, watchdogAlerted: false, failingTests },
+      NOW,
+    );
+    const body = JSON.parse(
+      greenStallEscalationBody({
+        installSlug: 'papercusp',
+        verdict,
+        lastFiredMs: NOW - 20 * 60 * 1000,
+        lastGreenAt: NOW - 13 * H,
+        nowMs: NOW,
+        failingTests,
+      }),
+    );
+    expect(body.failingTests).toHaveLength(20);
+    expect(body.failingTests).toEqual(failingTests.slice(0, 20));
+  });
+
+  it('EI-7505: failingTests defaults to an empty array when omitted', () => {
+    const verdict = evaluateGreenStall(
+      { lastFiredMs: NOW - 4 * H, lastGreenAt: NOW - 26 * H, watchdogAlerted: false },
+      NOW,
+    );
+    const body = JSON.parse(
+      greenStallEscalationBody({
+        installSlug: 'papercusp',
+        verdict,
+        lastFiredMs: NOW - 4 * H,
+        lastGreenAt: NOW - 26 * H,
+        nowMs: NOW,
+      }),
+    );
+    expect(body.failingTests).toEqual([]);
   });
 });
