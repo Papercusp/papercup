@@ -157,6 +157,35 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it('EI-6692 real shape: a dead loop:arm owner loop reaped via a NON-terminal path, at the HIGHEST real streak (221), is NOT re-escalated', () => {
+    // EI-6692 (loop-su-34db408d-fe89-4c3b-b6aa-c3e4651a5e0a@*): the pinned su session
+    // (adv_sessions 6767, started 2026-06-24) died WITHOUT a clean end marker — ended_at
+    // stayed NULL (a stale-active orphan, the dbos-executor-reaper non-terminal path from
+    // EI-6698), so last_status stayed the non-terminal 'loop-stuck-backstop' rather than the
+    // WI-1399 marker. The loop stuck-backstopped 221 consecutive times before its routine went
+    // active:false, its last fire freezing 2026-07-01 (~3 days stale). All three exclusion axes
+    // still apply — loop:arm OWNER loop (target_owner_id non-null), routine auto-paused
+    // (active:false), AND a >6h-stale frozen watermark — so the collector reads only
+    // autoloop_state + routines (never adv_sessions), and the NULL ended_at is irrelevant to
+    // suppression. This is the HIGHEST real-world streak pinned in this file (prior max was
+    // EI-6694 at 220) and re-confirms suppression is INDEPENDENT of both last_status text and
+    // the owner-session end-marker state. Live proof it stays suppressed: hive_watchdog_fires
+    // shows exactly ONE autoloop-chronic fire for this row (2026-07-02, the one that filed
+    // EI-6692) and none since, despite the row still carrying 221 errors.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-34db408d-fe89-4c3b-b6aa-c3e4651a5e0a',
+        consecutive_errors: 221,
+        last_status: 'loop-stuck-backstop',
+        routine_active: false,
+        routine_target_owner_id: 'su-34db408d-fe89-4c3b-b6aa-c3e4651a5e0a',
+        last_fired_at: new Date(NOW - 3 * 24 * HOUR_MS).toISOString(), // ~3 days stale frozen watermark
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
