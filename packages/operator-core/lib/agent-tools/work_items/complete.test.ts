@@ -447,6 +447,46 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
   });
 
+  describe('EI-7311: a JSON-STRINGIFIED completion object is parsed back into an object, not swallowed as one giant summary', () => {
+    it('a JSON-object-shaped string is parsed and every field survives (the exact EI-6516/EI-6528 shape)', () => {
+      const jsonString = JSON.stringify({
+        summary: 'Stale summary-lag observation — all 3 cited placements completed successfully.',
+        status: 'resolved',
+        whatLanded: ['WI-1088, WI-1502, WI-1503 all now state=passed'],
+        tests: 'N/A — investigation only. Verified via work_items:get on all 3 cited ids.',
+        coordNotes: 'closing as resolved',
+      });
+      const out = coerceCompletionShape(jsonString) as {
+        summary: string;
+        status: string;
+        whatLanded: unknown;
+        tests: string;
+        coordNotes: string;
+      };
+      expect(out.summary).toBe('Stale summary-lag observation — all 3 cited placements completed successfully.');
+      expect(out.tests).toBe('N/A — investigation only. Verified via work_items:get on all 3 cited ids.');
+      expect(out.whatLanded).toEqual(['WI-1088, WI-1502, WI-1503 all now state=passed']);
+      expect(out.coordNotes).toBe('closing as resolved');
+    });
+
+    it('a JSON-stringified completion with mis-shaped sub-fields still runs through the normal array/string coercion (recurses, not a one-shot parse)', () => {
+      const jsonString = JSON.stringify({ summary: 's', tests: ['67 green', 'vitest'], whatLanded: 'one file' });
+      const out = coerceCompletionShape(jsonString) as { tests: unknown; whatLanded: unknown };
+      expect(out.tests).toBe('67 green; vitest');
+      expect(out.whatLanded).toEqual(['one file']);
+    });
+
+    it('genuine prose that merely starts/ends with braces but is not valid JSON still falls back to the bare-string summary path', () => {
+      const prose = '{fixed the thing, verified it works}';
+      expect(coerceCompletionShape(prose)).toEqual({ summary: prose });
+    });
+
+    it('a JSON ARRAY string (not an object) is not mistaken for the object shape — falls back to bare-string summary', () => {
+      const jsonArrayString = JSON.stringify(['a', 'b']);
+      expect(coerceCompletionShape(jsonArrayString)).toEqual({ summary: jsonArrayString });
+    });
+  });
+
   describe('gatherFlatCompletion (unit)', () => {
     it('gathers flat completion fields under `completion` when there is no wrapper', () => {
       expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', whatLanded: ['a'] })).toEqual({
