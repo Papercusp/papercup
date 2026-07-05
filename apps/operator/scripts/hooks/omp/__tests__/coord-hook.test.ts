@@ -2428,6 +2428,50 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     }
   });
 
+  it('feeds the shared reflexive backstop so a reflexive task-loop HALTS + redirects to fleet:launch-on-plan (mode #10)', async () => {
+    const prev = process.env.PAPERCUSP_AGENT_SESSION;
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    resetReflexiveBlockBudget();
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((r) => halts.push(r));
+    try {
+      const taskCall = () =>
+        onToolCall({ type: 'tool_call', toolName: 'task', toolCallId: 'tk', input: { description: 'spawn a worker' } });
+      const first = await taskCall();
+      expect(first.block).toBe(true);
+      expect(first.reason).toContain('fleet:launch-on-plan'); // the delegating leader is pointed at the RIGHT tool
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 2; i++) expect((await taskCall()).block).toBe(true);
+      expect(halts).toHaveLength(0);
+      await taskCall(); // the REFLEXIVE_BLOCK_KILL_AFTER-th blocked task call
+      expect(halts).toHaveLength(1);
+    } finally {
+      setHaltForTest(prevHalt);
+      resetReflexiveBlockBudget();
+      if (prev === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+      else process.env.PAPERCUSP_AGENT_SESSION = prev;
+    }
+  });
+
+  it('blocks task for the owner too but NEVER halts them (marker unset — D-003)', async () => {
+    const prev = process.env.PAPERCUSP_AGENT_SESSION;
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    resetReflexiveBlockBudget();
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((r) => halts.push(r));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER + 3; i++) {
+        expect((await onToolCall({ type: 'tool_call', toolName: 'task', toolCallId: 'tk', input: {} })).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+      resetReflexiveBlockBudget();
+      if (prev === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+      else process.env.PAPERCUSP_AGENT_SESSION = prev;
+    }
+  });
+
   it('caches lock_id on ok and releases on tool_result', async () => {
     const calls: Array<{ name: string; args: unknown }> = [];
     global.fetch = (async (_url: unknown, init: { body: string }) => {

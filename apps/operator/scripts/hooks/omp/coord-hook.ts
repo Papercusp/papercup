@@ -2365,10 +2365,23 @@ export async function onToolCall(
 ): Promise<{ block?: boolean; reason?: string }> {
   const blockedTaskTools = new Set(['task', 'taskcreate', 'taskupdate', 'taskget', 'tasklist']);
   if (blockedTaskTools.has(event.toolName.toLowerCase())) {
+    // Bound a reflexive task-tool loop (ornith iter26, 2026-07-04 / WI-2382 — failure mode #10): a
+    // weak leader trying to DELEGATE reaches for the Claude task/subagent tool, gets this block, and
+    // re-issues it despite the block (iter26: 131×, thrashing). This block predated the shared
+    // reflexive backstop and was never wired to it — so it never halted. Feed noteReflexiveBlock so a
+    // reflexive task-loop self-terminates at REFLEXIVE_BLOCK_KILL_AFTER (same as irc/ask/eval).
+    // isAgentSession-gated so an owner's own session is blocked but never SIGTERM'd (D-003). The
+    // redirect now points a DELEGATING leader at the RIGHT tool (fleet:launch-on-plan), not just the
+    // task-TRACKING tool (todo_write) — the old message was useless for the delegation case.
+    if (isAgentSession()) noteReflexiveBlock('task');
     return {
       block: true,
       reason:
-        'Do not use Claude task-panel or subagent Task tools in OMP. Use todo_write for task tracking instead.',
+        'The Claude task / subagent tools are DISABLED in OMP and will never work here. To DELEGATE ' +
+        'work to a fleet, call `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
+        'plan:"<plan-slug>", count:<n>, agent:"omp", model:"<your own local model>"}}` (the member ' +
+        'model must match yours). To TRACK your own tasks, use `todo_write`. Do NOT call the ' +
+        'task/subagent tools again.',
     };
   }
 
