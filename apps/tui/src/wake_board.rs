@@ -91,7 +91,7 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
     // pane stays unadorned.
     let scope = match &app.wake_filter {
         crate::app::WakeFilter::All => String::new(),
-        crate::app::WakeFilter::Queen => " · ♛ queen".to_string(),
+        crate::app::WakeFilter::Queen => " · 🍵 mug".to_string(),
         crate::app::WakeFilter::Owner(id) => format!(" · {}", trunc(id, 14)),
         crate::app::WakeFilter::Hive(h) => format!(" · ⬡ {}", trunc(h, 14)),
     };
@@ -259,7 +259,10 @@ mod tests {
     fn renders_groups_queen_first_with_coalesced_counts() {
         let app = board_app();
         let s = render(&app);
-        assert!(s.contains("♛ queen su-75cee"), "queen header: {s}");
+        // 🍵 (Mug) is a double-width glyph — the test backend pads a cell after it
+        // (same as the ☕ bee glyph below), so assert glyph + label separately.
+        assert!(s.contains("🍵"), "queen glyph: {s}");
+        assert!(s.contains("queen su-75cee"), "queen header: {s}");
         assert!(
             s.contains("Watchdog wake (boot) (×30)"),
             "coalesced count: {s}"
@@ -306,7 +309,7 @@ mod tests {
         let mut app = board_app();
         app.wake_filter = crate::app::WakeFilter::Queen;
         let s = render(&app);
-        assert!(s.contains("Staged wakes · ♛ queen"), "{s}");
+        assert!(s.contains("Staged wakes · 🍵"), "{s}"); // 🍵 = Mug (queen scope)
         // …and an owner-pinned pane shows the (truncated) id.
         let mut app = App::new();
         app.tab = crate::app::Tab::Wake;

@@ -288,7 +288,12 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   **`dev:pg_query`** (read-only SELECT — read-only txn + `statement_timeout` + row
   cap) or a server-side `*:list` filter — never fetch a whole `*:list` and
   `jq`/python a spilled projection. (su can also `psql` the admin URL directly:
-  `getHarnessAdminUrl()` / the live operator's `DATABASE_URL`.)
+  `getHarnessAdminUrl()` / the live operator's `DATABASE_URL`.) ⚠ Multi-tenant
+  tables (`harness_plans`, the `*_consolidated` tables, …) key on
+  `(workspace_id, harness_slug, <slug/id>)` — a raw filter on just the slug/id
+  can silently hit a different tenant's row and look like a stale/diverged
+  store when it isn't:
+  [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
 - ⚠ **Apply migrations via the runner (`db:migrate`)** — a raw `psql -f` runs
   DDL without recording it in `harness_shared.schema_migrations`, so every
   deploy re-runs it; a lock-contending re-run trips the deploy's 15s

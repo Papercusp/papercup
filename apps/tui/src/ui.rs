@@ -4980,7 +4980,7 @@ mod tests {
     fn operator_leads_strip_on_digit_one() {
         let app = App::new(); // default tab = Operator, now on digit '1' (D-002)
         let text = render(&app, 220, 8);
-        assert!(text.contains("1:Operator"));
+        assert!(text.contains("1:Papercup"));
     }
 
     #[test]
