@@ -1294,7 +1294,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
   });
 
-  it('the no-subagent-fanout deny carries both tool names (Task + Agent — no-subagent-deny.ts)', () => {
+  it('the no-subagent-fanout deny carries Task + Agent + Workflow (no-subagent-deny.ts)', () => {
     // psu-launcher.mjs duplicates the rendered flag from the canonical TS source
     // (same lockstep pattern as the scheduler-deny flag above).
     expect(NO_SUBAGENTS_DENY_FLAG).toBe(noSubagentToolsDenyFlag());
@@ -1302,6 +1302,9 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(/\s/.test(NO_SUBAGENTS_DENY_FLAG)).toBe(false);
     expect(NO_SUBAGENTS_DENY_FLAG).toContain('Task');
     expect(NO_SUBAGENTS_DENY_FLAG).toContain('Agent');
+    // Workflow: the separate multi-agent orchestration tool that slipped the deny
+    // (a subagents-denied psu --resume session still fanned out through it).
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Workflow');
   });
 
   it('role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)', () => {

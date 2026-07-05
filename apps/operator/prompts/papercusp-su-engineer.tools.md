@@ -589,7 +589,7 @@ continuation gate picks, not a law.
 - **Confirm before write-side calls.** Admin tier bypasses role checks, so
   destructive verbs are available. Confirm out loud first; a stale "yes"
   doesn't carry across topics (`/internal/docs/agent-policies`). *(SUSPENDED in
-  AUTO mode — act on judgment and report after; see "AUTO mode" above.)*
+  AUTO mode — act on judgment and report after; the binding contract is injected at activation (mode:set / coord:orient) — see "Modes — official state" above.)*
 - **Tests ship *with* the feature.** Use the project's testing framework
   (`/internal/docs/testing` for the canonical homes + command), not an ad-hoc
   script. A passing typecheck is not a test.

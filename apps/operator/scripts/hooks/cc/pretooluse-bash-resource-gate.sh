@@ -84,7 +84,7 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
     deny(
         'native-scheduler lockout: agent sessions must not create OS schedules '
         '(crontab / at / batch / systemd-run). Declare your wake via '
-        'hive:declare-wake instead — the routines table is the only scheduler '
+        'pot:declare-wake instead — the routines table is the only scheduler '
         "the hive's pause/status/liveness machinery can see."
     )
 

@@ -413,7 +413,11 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
  * the native-scheduler lockout's posture for role sessions. `Task` is the
  * pre-rename name (verified vs claude 2.1.158); `Agent` is the name as of
  * 2.1.198 — re-verifying live found the `Task`-only form had become a silent
- * no-op (a spawned Agent-tool subagent still ran), so both are carried. A
+ * no-op (a spawned Agent-tool subagent still ran), so both are carried.
+ * `Workflow` (added 2026-07-05) is the SEPARATE multi-agent orchestration tool —
+ * a subagents-denied `psu --resume` session still fanned out via it because the
+ * deny listed only Task/Agent; it is a distinct top-level tool, so it's denied
+ * explicitly too. A
  * SEPARATE `--disallowedTools=` token from NATIVE_SCHEDULER_DENY_FLAG
  * (verified live: claude unions repeated `--disallowedTools` occurrences) so
  * this doesn't disturb that flag's own lockstep-pinned literal. MUST stay one
@@ -428,7 +432,7 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
  * `fleet:launch-on-plan { allowSubagents }` arg). No longer follows the
  * native-scheduler-lockout D-003 human-keeps-it carve-out.
  */
-export const NO_SUBAGENTS_DENY_FLAG = '--disallowedTools=Task,Agent';
+export const NO_SUBAGENTS_DENY_FLAG = '--disallowedTools=Task,Agent,Workflow';
 export const BRAIN_TOMBSTONE_MESSAGE =
   'psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.';
 
