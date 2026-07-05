@@ -7,8 +7,8 @@ How an agent declares a NEW entity type (a datatype) or a NEW tool at runtime an
 
 Papercusp can be extended **from inside the running system**: an agent declares a new
 **datatype** (a named entity TYPE) or a new **tool** (a capability), and the platform
-treats it as first-class — no engineer, no redeploy. The point: a domain (oddsmith first)
-models its own concepts *on* the self-improvement substrate instead of building a bespoke
+treats it as first-class — no engineer, no redeploy. The point: a domain (an internal
+reference app was the first) models its own concepts *on* the self-improvement substrate instead of building a bespoke
 system beside it. Design anchors D-001..D-011 (the plan); the decisive ones are inlined below.
 
 ## Datatypes — the extension flow

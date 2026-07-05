@@ -191,9 +191,20 @@ export function parseCodexLine(line: string): ParsedTurn | null {
 /* Adapter registry                                                     */
 /* ------------------------------------------------------------------ */
 
+/** A transcript root + how many DIRECTORY levels sit between it and the
+ * .jsonl files. Depth-bounded traversal is load-bearing: a blind
+ * `readdir({recursive:true})` over ~/.papercusp/session-claude descends into
+ * 15k+ per-session Claude-config clones (statsig caches, todos, …) — millions
+ * of dentries, observed HANGING the sweep for minutes (2026-07-05). The
+ * transcript layouts are fixed-shape, so we only walk the known levels. */
+interface RootSpec {
+  root: string;
+  dirDepth: number;
+}
+
 interface FileAdapter {
   sourceKind: Exclude<SourceKind, 'agent_chat'>;
-  roots: () => string[];
+  roots: () => RootSpec[];
   parseLine: (line: string) => ParsedTurn | null;
   /** Best-effort provenance derived from the file path. */
   meta: (filePath: string) => { sessionId: string; owner: string | null };
@@ -204,7 +215,12 @@ const HOME = homedir();
 export const FILE_ADAPTERS: FileAdapter[] = [
   {
     sourceKind: 'claude',
-    roots: () => [join(HOME, '.claude', 'projects'), join(HOME, '.papercusp', 'session-claude')],
+    roots: () => [
+      // ~/.claude/projects/<munged-cwd>/<uuid>.jsonl
+      { root: join(HOME, '.claude', 'projects'), dirDepth: 1 },
+      // ~/.papercusp/session-claude/<ownerId>/projects/<munged-cwd>/<uuid>.jsonl
+      { root: join(HOME, '.papercusp', 'session-claude'), dirDepth: 3 },
+    ],
     parseLine: parseClaudeLine,
     meta: (filePath) => {
       // psu isolation dir carries the launching session's owner dir:
@@ -215,7 +231,8 @@ export const FILE_ADAPTERS: FileAdapter[] = [
   },
   {
     sourceKind: 'omp',
-    roots: () => [join(HOME, '.omp', 'agent', 'sessions')],
+    // ~/.omp/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
+    roots: () => [{ root: join(HOME, '.omp', 'agent', 'sessions'), dirDepth: 1 }],
     parseLine: parseOmpLine,
     meta: (filePath) => {
       // <ts>_<uuid>.jsonl — the uuid is the session id.
@@ -226,7 +243,8 @@ export const FILE_ADAPTERS: FileAdapter[] = [
   },
   {
     sourceKind: 'codex',
-    roots: () => [join(HOME, '.codex', 'sessions')],
+    // ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+    roots: () => [{ root: join(HOME, '.codex', 'sessions'), dirDepth: 3 }],
     parseLine: parseCodexLine,
     meta: (filePath) => {
       // rollout-<ts>-<uuid>.jsonl → uuid tail is the session id.
@@ -237,6 +255,33 @@ export const FILE_ADAPTERS: FileAdapter[] = [
   },
 ];
 
+/** Collect *.jsonl exactly `dirDepth` directory levels under `root` (BFS,
+ * never descending past the known layout — see RootSpec). */
+async function jsonlAtDepth(root: string, dirDepth: number): Promise<string[]> {
+  let dirs = [root];
+  for (let d = 0; d < dirDepth; d += 1) {
+    const next: string[] = [];
+    for (const dir of dirs) {
+      try {
+        for (const e of await readdir(dir, { withFileTypes: true })) {
+          if (e.isDirectory()) next.push(join(dir, e.name));
+        }
+      } catch { /* absent / raced — skip */ }
+    }
+    dirs = next;
+    if (!dirs.length) return [];
+  }
+  const files: string[] = [];
+  for (const dir of dirs) {
+    try {
+      for (const e of await readdir(dir, { withFileTypes: true })) {
+        if (e.isFile() && e.name.endsWith('.jsonl')) files.push(join(dir, e.name));
+      }
+    } catch { /* skip */ }
+  }
+  return files;
+}
+
 /* ------------------------------------------------------------------ */
 /* Tailer                                                               */
 /* ------------------------------------------------------------------ */
@@ -246,7 +291,8 @@ interface TurnRow {
   source_kind: string;
   session_id: string;
   turn_idx: number;
-  ts: Date | null;
+  /** ISO string — postgres-js's sql(rows) bulk-insert helper rejects Date values. */
+  ts: string | null;
   owner: string | null;
   harness_slug: string | null;
   cwd: string | null;
@@ -259,16 +305,9 @@ async function listCandidateFiles(
   sinceMs: number,
 ): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
   const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
-  for (const root of adapter.roots()) {
-    let names: string[];
-    try {
-      names = (await readdir(root, { recursive: true })) as string[];
-    } catch {
-      continue; // root absent on this box (e.g. no codex installed)
-    }
-    for (const rel of names) {
-      if (!rel.endsWith('.jsonl')) continue;
-      const p = join(root, rel);
+  for (const spec of adapter.roots()) {
+    const paths = await jsonlAtDepth(spec.root, spec.dirDepth);
+    for (const p of paths) {
       try {
         const s = await stat(p);
         if (!s.isFile() || s.mtimeMs < sinceMs || s.size === 0) continue;
@@ -366,7 +405,7 @@ async function writeState(
  * on the caller's own transcript so the last few minutes are never a blind
  * spot — client-neutral (compaction-context-loss D-002). */
 export async function ingestFileNow(filePath: string): Promise<{ inserted: number }> {
-  const adapter = FILE_ADAPTERS.find((a) => a.roots().some((r) => filePath.startsWith(r)));
+  const adapter = FILE_ADAPTERS.find((a) => a.roots().some((r) => filePath.startsWith(r.root)));
   if (!adapter) return { inserted: 0 };
   const { sql } = getOrgPg();
   let inserted = 0;
@@ -382,7 +421,7 @@ export async function ingestFileNow(filePath: string): Promise<{ inserted: numbe
       source_kind: adapter.sourceKind,
       session_id: t.sessionId ?? meta.sessionId,
       turn_idx: st.turn_count + i,
-      ts: t.ts,
+      ts: t.ts ? t.ts.toISOString() : null,
       owner: meta.owner,
       harness_slug: null,
       cwd: t.cwd ?? null,
@@ -455,7 +494,7 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
         source_kind: 'agent_chat',
         session_id: chat.id,
         turn_idx: i,
-        ts: parseTs(t.ts),
+        ts: parseTs(t.ts)?.toISOString() ?? null,
         owner: null,
         harness_slug: chat.harness_slug,
         cwd: null,
@@ -588,7 +627,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             source_kind: adapter.sourceKind,
             session_id: t.sessionId ?? meta.sessionId,
             turn_idx: st.turn_count + i,
-            ts: t.ts,
+            ts: t.ts ? t.ts.toISOString() : null,
             owner: meta.owner,
             harness_slug: null,
             cwd: t.cwd ?? null,

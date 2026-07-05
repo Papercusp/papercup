@@ -390,7 +390,7 @@ Per-IP download throttling
 
 At the API edge:
 
-`GET /catalog` and read endpoints: 600 requests/minute/IP (matches the Restart admin's tunneled mirror; calibrated to allow a busy CI but reject scrapers).
+`GET /catalog` and read endpoints: 600 requests/minute/IP (matches an internal admin's tunneled mirror; calibrated to allow a busy CI but reject scrapers).
 `GET /download/:slug/:version`: 60 tarballs/hour/IP. Caches don't count (signed R2 URLs, see §11.5 outstanding work).
 `POST /publish/:slug/:version`: 5/minute/authenticated user. Prevents accidental loops.
 

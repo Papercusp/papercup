@@ -121,7 +121,7 @@ glob" step is still pending for them.
 
 ## Borrowable libraries — generic, domain-free, reusable anywhere
 
-A growing set of our libraries carry **zero Papercusp/Restart domain coupling** —
+A growing set of our libraries carry **zero Papercusp domain coupling** —
 any project can borrow them. Where a host-specific value is needed it's injected
 through a small seam (a `configure*()` call or a prop); Papercusp maps its own
 domain onto that seam in the operator, so the lib itself names no consuming app.

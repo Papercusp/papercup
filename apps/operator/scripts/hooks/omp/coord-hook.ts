@@ -2603,6 +2603,24 @@ export async function onToolCall(
     }
   }
 
+  // Backlog-wandering containment (ornith iter27, 2026-07-04 / WI-2382 → WI-2046 — failure mode #11):
+  // a LOCAL-model (ornith) agent meant to work its ASSIGNED behaviour-test plan instead called
+  // work_items:claim_next, which pulls a RANDOM item off the SHARED REAL backlog — it grabbed the
+  // live WI-2046 and then FALSELY marked it done, corrupting real project state (had to be reopened
+  // by hand). A weak local model cannot be trusted to correctly complete + close a real backlog item
+  // it self-selected, so deny the blind pull on call #1 with a work-your-assigned-plan redirect
+  // (a specifically-assigned item is still reachable by id via work_items:claim — only the blind
+  // "next available" pull is blocked). Feeds the shared reflexive backstop so a leader that ignores
+  // the redirect self-halts after REFLEXIVE_BLOCK_KILL_AFTER. Scoped to LOCAL-model sessions,
+  // mirroring the fleet-model guard above: getOwnLaunchedModel fails OPEN, so an indeterminate/cloud
+  // model is never blocked. Agent sessions only (D-003).
+  if (isAgentSession() && isClaimNextCall(event.toolName, event.input)) {
+    if (isLocalModel(getOwnLaunchedModel())) {
+      noteReflexiveBlock('claim-next');
+      return { block: true, reason: claimNextBlockReason() };
+    }
+  }
+
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the
   // Nth CONSECUTIVE identical (toolName+args) call from an agent session — the
   // deterministic backstop against a weak model wedging in a degenerate tool loop.

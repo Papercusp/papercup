@@ -49,6 +49,8 @@ import {
   getOwnLaunchedModel,
   fleetLaunchMemberModel,
   fleetLaunchModelReason,
+  isClaimNextCall,
+  claimNextBlockReason,
   isAgentSession,
   isEvalCall,
   evalBlockReason,
@@ -1806,6 +1808,123 @@ describe('onToolCall fleet-launch member-model guard (ornith mode #8 / WI-2382)'
       expect((await launch({ name: 'f-final', plan: 'p' })).block).toBe(true);
       expect(halts).toHaveLength(1);
       expect(halts[0]).toContain('fleet-model');
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+});
+
+describe('isClaimNextCall + claimNextBlockReason (backlog-wandering containment #11 / WI-2382)', () => {
+  it('matches claim_next in direct + tools:invoke-wrapped spellings', () => {
+    expect(isClaimNextCall('mcp__papercusp_su_work_items_claim_next', {})).toBe(true);
+    expect(isClaimNextCall('work_items:claim_next', {})).toBe(true);
+    expect(isClaimNextCall('work-items-claim-next', {})).toBe(true);
+    expect(
+      isClaimNextCall('mcp__papercusp_su_tools_invoke', { name: 'work_items:claim_next' }),
+    ).toBe(true);
+    expect(isClaimNextCall('tools:invoke', { name: 'work_items:claim_next' })).toBe(true);
+  });
+  it('does NOT match the by-id claim path or unrelated tools', () => {
+    // work_items:claim (specific assigned item) stays open — it is NOT claim_next.
+    expect(isClaimNextCall('work_items:claim', {})).toBe(false);
+    expect(isClaimNextCall('mcp__papercusp_su_tools_invoke', { name: 'work_items:claim' })).toBe(false);
+    expect(isClaimNextCall('work_items:claim_replica', {})).toBe(false);
+    expect(isClaimNextCall('plans:get', {})).toBe(false);
+    expect(isClaimNextCall('mcp__papercusp_su_tools_invoke', { name: 'plans:get' })).toBe(false);
+    // a bash command merely mentioning claim_next is not a claim_next tool call
+    expect(isClaimNextCall('bash', { command: 'echo claim_next' })).toBe(false);
+  });
+  it('claimNextBlockReason steers to the assigned plan + names the by-id escape hatch', () => {
+    const r = claimNextBlockReason();
+    expect(r).toContain('claim_next');
+    expect(r).toContain('plans:get');
+    expect(r).toContain('work_items:claim');
+    expect(r).toContain('WI-2046');
+  });
+});
+
+describe('onToolCall claim_next containment guard (ornith mode #11 / WI-2382)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  const prevArgv = process.argv;
+  const ORNITH = 'ollama-cc/maxwell1500/ornith-35b:IQ3_M';
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.argv = prevArgv;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const withOwnModel = (m: string) => {
+    process.argv = ['bun', '/home/x/.bun/bin/omp', '--no-lsp', '--model', m];
+  };
+  const claimNext = (id: string) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_tools_invoke',
+      toolCallId: id,
+      input: { name: 'work_items:claim_next', args: {} },
+    });
+
+  it('blocks claim_next for a LOCAL-model agent session (the iter27 WI-2046 bug)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    const r = await claimNext('cn1');
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('claim_next');
+    expect(r.reason).toContain('plans:get');
+  });
+
+  it('ALLOWS the by-id claim path for the same local-model session', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_tools_invoke',
+      toolCallId: 'cbyid',
+      input: { name: 'work_items:claim', args: { id: 'WI-2046' } },
+    });
+    expect(r.block).toBeUndefined();
+  });
+
+  it('does NOT fire for a CLOUD-model omp session (own model not local)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel('opus:high');
+    expect((await claimNext('cn-cloud')).block).toBeUndefined();
+  });
+
+  it('does NOT fire when the own model is undetectable — fail-open (no --model in argv)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    process.argv = ['bun', 'omp', '--no-lsp'];
+    expect((await claimNext('cn-noarg')).block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    withOwnModel(ORNITH);
+    expect((await claimNext('cn-owner')).block).toBeUndefined();
+  });
+
+  it('feeds the SHARED reflexive backstop — a persistent claim_next loop HALTS (naming claim-next)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    withOwnModel(ORNITH);
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        expect((await claimNext('cn-loop' + i)).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      expect((await claimNext('cn-final')).block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('claim-next');
     } finally {
       setHaltForTest(prevHalt);
     }

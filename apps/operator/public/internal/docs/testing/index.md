@@ -5,7 +5,7 @@ URL: /internal/docs/testing/index
 
 import { Aside } from '@astrojs/starlight/components';
 
-* §1.10: dashboard policy clarified — Restart admin `/tests`,
+* §1.10: dashboard policy clarified — an internal reference app's admin `/tests`,
   `/load-tests`, `/tester` are explicitly in scope (cross-project,
   separate surface).
 * §1.6: integration tests live in a sibling `test/` directory, not
@@ -190,11 +190,11 @@ Every project — every app, every lib — slots its tests into one of
 three layers. Layers differ in what they touch, how fast they run,
 and when CI gates on them.
 
-| Layer           | Touches                                                                                       | Speed target       | CI gate                                     | File pattern            |
-| --------------- | --------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------- | ----------------------- |
-| **Unit**        | Pure logic only. No DB, no network, no filesystem beyond fixtures.                            | \< 10s per project | Per-PR                                      | `*.test.ts`             |
-| **Integration** | Real Postgres (testcontainers), real `@restart/com` calls, real Drizzle. No outbound network. | \< 60s per project | Per-PR (affected only)                      | `*.integration.test.ts` |
-| **End-to-end**  | Real running services + browser. Tests entire user flows.                                     | \< 5 min per suite | Per-PR for critical paths; nightly for full | `*.spec.ts`             |
+| Layer           | Touches                                                                                         | Speed target       | CI gate                                     | File pattern            |
+| --------------- | ----------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------- | ----------------------- |
+| **Unit**        | Pure logic only. No DB, no network, no filesystem beyond fixtures.                              | \< 10s per project | Per-PR                                      | `*.test.ts`             |
+| **Integration** | Real Postgres (testcontainers), real internal-package calls, real Drizzle. No outbound network. | \< 60s per project | Per-PR (affected only)                      | `*.integration.test.ts` |
+| **End-to-end**  | Real running services + browser. Tests entire user flows.                                       | \< 5 min per suite | Per-PR for critical paths; nightly for full | `*.spec.ts`             |
 
 The split is **non-negotiable**: do not mix layers in one file. A test
 that touches Postgres goes in `*.integration.test.ts`; a test that
@@ -244,7 +244,7 @@ Rejected alternatives:
 * **A single shared `papercusp_test` Postgres** — fast, but tests
   pollute each other through orphan rows and leaked connections.
   Workable for small suites; falls over fast.
-* **Mocking Drizzle / `@restart/com`** — mocks drift from reality and
+* **Mocking Drizzle / internal packages** — mocks drift from reality and
   produce false greens. The whole point of integration tests is to
   catch what mocks would miss.
 
@@ -318,7 +318,7 @@ behind a single helper.
 | Visual regression                         | **Lost Pixel**                                                | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in.                                                                                                                                                                                                                                                                                                                                         | MIT              |
 | React / DOM assertions                    | **@testing-library/react** + **user-event**                   | Standard React testing utilities.                                                                                                                                                                                                                                                                                                                                                                                   | MIT              |
 | Property-based                            | **fast-check**                                                | For payload encoders, validators, slug rewriters — anywhere example tests undercount.                                                                                                                                                                                                                                                                                                                               | MIT              |
-| Mutation testing (quarterly)              | **Stryker**                                                   | Health check on critical libs (`@restart/com`, `libs/papergrid`). Not in PR gate.                                                                                                                                                                                                                                                                                                                                   | Apache 2.0       |
+| Mutation testing (quarterly)              | **Stryker**                                                   | Health check on critical libs (`libs/papergrid` and internal packages). Not in PR gate.                                                                                                                                                                                                                                                                                                                             | Apache 2.0       |
 | Dead-test detection                       | **Knip**                                                      | Finds unused exports, files, deps, tests. Soft warning in CI.                                                                                                                                                                                                                                                                                                                                                       | ISC              |
 | Coverage                                  | **@vitest/coverage-v8**                                       | Native to Vitest, tracks trend without gating %.                                                                                                                                                                                                                                                                                                                                                                    | MIT              |
 | Orchestration                             | **NX** (`nx affected -t test`)                                | Already adopted; computes the dependency graph.                                                                                                                                                                                                                                                                                                                                                                     | MIT              |
@@ -702,8 +702,8 @@ full run is \~25 min cold, \~12 min warm.
 ## 1.10 Test UI
 
 Three free, idiomatic surfaces. **No custom dashboard inside the
-operator.** A cross-project status dashboard on the **Restart admin
-web app** (`:3001`) is explicitly in scope and already shipped at
+operator.** A cross-project status dashboard on an **internal reference app's
+admin web app** (`:3001`) is explicitly in scope and already shipped at
 `/tests`, `/load-tests`, `/tester` — those pages aggregate JUnit
 output, drive k6 runs, and proxy ad-hoc API calls. They complement,
 do not replace, the three surfaces below.
@@ -820,10 +820,10 @@ Correctness alone misses "this PR made the wholesale grid 2× slower."
 Two layers, both nightly-only (never per-PR):
 
 * **k6 HTTP baselines** for `apps/shop-api` Typesense search, wholesale
-  grid filter aggregation, and `@restart/com` request paths. Scripts
+  grid filter aggregation, and internal-app request paths. Scripts
   live colocated with their owning project (`apps/<app>/perf/*.js`)
   *or* in a workspace-root `load-tests/scripts/` directory when they
-  cross project boundaries. The Restart-side `/load-tests` dashboard
+  cross project boundaries. The internal reference app's `/load-tests` dashboard
   on `:3001` is the runner — it reads from `<projectRoot>/load-tests/scripts/`
   per the `?project=` switcher (see §1.10) and falls back to the
   workspace-root location for legacy scripts. Nightly job runs against

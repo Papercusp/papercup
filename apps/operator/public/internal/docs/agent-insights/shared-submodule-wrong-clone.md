@@ -1,7 +1,7 @@
 # A shared git submodule has multiple checkouts — an agent can edit the WRONG clone
 URL: /internal/docs/agent-insights/shared-submodule-wrong-clone
 
-papergrid is one submodule (github.com/Papercusp/papergrid.git) vendored by BOTH papercup (libs/generic/papergrid) and the Restart project (libs/papergrid). A workflow/agent whose cwd or git root resolves to the Restart clone will "find" grid-core there and edit it — silently overriding an absolute papercup path in its prompt, so the papercup-side build never sees the change. Guard by asserting `git rev-parse --show-toplevel` before editing a shared-submodule file.
+papergrid is one submodule (github.com/Papercusp/papergrid.git) vendored by BOTH papercup (libs/generic/papergrid) and a second internal project (libs/papergrid). A workflow/agent whose cwd or git root resolves to the other clone will "find" grid-core there and edit it — silently overriding an absolute papercup path in its prompt, so the papercup-side build never sees the change. Guard by asserting `git rev-parse --show-toplevel` before editing a shared-submodule file.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -14,7 +14,7 @@ the one you intended:
 
 ```
 filesTouched: [
-  "/home/marsh-office/Restart/libs/papergrid/grid-core/src/column-filter.ts",
+  "/home/marsh-office/other-project/libs/papergrid/grid-core/src/column-filter.ts",
   ...
 ]
 // …but you asked it to edit
@@ -33,22 +33,22 @@ Downstream consumers in the *intended* repo then fail to typecheck with
 | Superproject                                   | Submodule path           | Branch/commit     |
 | ---------------------------------------------- | ------------------------ | ----------------- |
 | `papercup` (`~/papercupai-workspace/papercup`) | `libs/generic/papergrid` | its own pin       |
-| `Restart` (`~/Restart`)                        | `libs/papergrid`         | a *different* pin |
+| the other project (`~/other-project`)          | `libs/papergrid`         | a *different* pin |
 
 They are two working-tree checkouts of the **same upstream repo**, at different
 commits. So `grid-core/src/RichGrid.tsx` exists at **two absolute paths**, with
 slightly different contents.
 
 When a workflow or agent's **working directory** (or the value of
-`git rev-parse --show-toplevel`) resolves to the `Restart` checkout, an agent
+`git rev-parse --show-toplevel`) resolves to the other project's checkout, an agent
 that is told to "edit `grid-core`" will discover it under *its own* cwd's clone
 and edit there — **overriding the absolute path you gave it in the prompt**.
 An absolute path in the prompt is a hint, not a guarantee; the agent's cwd wins.
 
 The Phase-1 agent of plan `generic-column-filters-2026-06-14` was given the
 absolute `…/papercup/libs/generic/papergrid/grid-core` path and still wrote the
-new `column-filter.ts` engine into `…/Restart/libs/papergrid/grid-core`, because
-the workflow's cwd git-root was `~/Restart`. Phase 2/3 (correctly in papercup)
+new `column-filter.ts` engine into `…/other-project/libs/papergrid/grid-core`, because
+the workflow's cwd git-root was `~/other-project`. Phase 2/3 (correctly in papercup)
 then could not resolve `@papercusp/grid-core`'s new exports. The fix was a manual
 verbatim port of the two new files + re-applying the additive `RichGrid.tsx` /
 `index.ts` edits into the papercup clone. (Plan decision **D-007**.)

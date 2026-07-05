@@ -45,8 +45,8 @@ finally { await probe.end({ timeout: 2 }).catch(() => {}); }
 
 ## 3. Turn off the admin server — it defaults to :3001 and EADDRINUSE-es
 
-DBOS starts an HTTP admin server on **:3001** by default. This box also runs Restart,
-whose shop-api binds :3001 — so `DBOS.launch()` dies with `EADDRINUSE` before any
+DBOS starts an HTTP admin server on **:3001** by default. This box also runs an internal
+reference app, whose shop-api binds :3001 — so `DBOS.launch()` dies with `EADDRINUSE` before any
 workflow runs. We don't use the admin server. Set `runAdminServer: false` in
 `DBOS.setConfig`. (Even without a port clash, leave it off unless you're using it.)
 
