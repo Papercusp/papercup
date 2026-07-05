@@ -1,12 +1,12 @@
 # Harness-provided dispatched ops — a blueprint declares an op, the operator dispatches it to the harness runtime
 URL: /internal/docs/agent-insights/harness-provided-dispatched-ops
 
-How a blueprint's `ops:` manifest becomes a runnable deterministic cadence step the HARNESS owns (not operator-core): on admission the operator registers a PROXY CoordOp per op whose run() POSTs /api/op/<name> to the harness sidecar, which executes against its own connectors/DB and returns a result validated against the manifest resultSchema. Covers the two registration timings, the transport resolution order, the work-items enqueue seam, and the oddsmith:prospect/ingest migrations.
+How a blueprint's `ops:` manifest becomes a runnable deterministic cadence step the HARNESS owns (not operator-core): on admission the operator registers a PROXY CoordOp per op whose run() POSTs /api/op/<name> to the harness sidecar, which executes against its own connectors/DB and returns a result validated against the manifest resultSchema. Covers the two registration timings, the transport resolution order, the work-items enqueue seam, and a worked prospect/ingest example.
 
 ## The shape
 
 A deterministic cadence step-op used to be either a built-in coord-op (compiled into
-operator-core) or — for `oddsmith:prospect` — a hard-coded operator-core file that bridged
+operator-core) or — for `myapp:prospect` — a hard-coded operator-core file that bridged
 into a separate repo. That was a **platform leak**: operator-core can't import a harness's
 engine code (separate repo / process / DB), and it shouldn't run arbitrary harness TypeScript
 in the multi-tenant `:3070` process.
@@ -18,19 +18,19 @@ in an `ops:` manifest, and the op executes **out-of-process in the harness's own
 # blueprint.yaml
 spine:
   steps:
-    - { id: sweep, op: oddsmith:prospect, bind: sweep }
+    - { id: sweep, op: myapp:prospect, bind: sweep }
 ops:
-  - name: oddsmith:prospect
+  - name: myapp:prospect
     description: one prospector tick …
     argsSchema:   { type: object, properties: { limit: { type: [number, string] } } }
     resultSchema: { type: object, properties: { enqueued: { type: integer } }, required: [enqueued] }
     handler: { kind: dispatch }
 ```
 
-On admission the operator registers a **proxy CoordOp** named `oddsmith:prospect` into the SAME
+On admission the operator registers a **proxy CoordOp** named `myapp:prospect` into the SAME
 coord-op registry the built-ins use — so `validateBlueprint({knownOps})` resolves it and
 `coordProgramWorkflow` checkpoints it exactly like a built-in. The proxy's `run()` does **not**
-run harness code; it `POST`s `/api/op/oddsmith:prospect` to the harness sidecar, which runs the
+run harness code; it `POST`s `/api/op/myapp:prospect` to the harness sidecar, which runs the
 real op against its connectors/DB and returns a result the proxy validates against
 `resultSchema` (the trust boundary). The proxy is the only new shape — registry/runner/DBOS
 layers are byte-unchanged.
@@ -74,55 +74,55 @@ operator-side validator is safe.
    silently). A registry-read blip is also treated as "not registered" (cron retries next tick).
 
 The sidecar advertises via `POST /api/harness/:slug/endpoint` → `registerHarnessLocalEndpoint`
-(operator-core route `endpoint.ts`). It learns the operator's URL from `ODDSMITH_OPERATOR_URL`
+(operator-core route `endpoint.ts`). It learns the operator's URL from `MYAPP_OPERATOR_URL`
 (the same env the engine↔ops-hive bridge already used).
 
-## The harness side (oddsmith)
+## The harness side (the example app)
 
 * `apps/desktop/src/_hono/op-registry.ts` + `routes/op.ts` — the generic `POST /api/op/:opName`
   endpoint + a name→handler map. Always mounted but inert until a handler registers (an
   unregistered op 404s). Envelope: `{ok:true,result}` | `{ok:false,error}` (200 for a handler
   fault the operator surfaces; non-2xx for routing/transport faults it retries).
-* `apps/desktop/src/lib/harness-ops-wiring.ts` — the `oddsmith:prospect` op handler (reads the
-  bet-analysis backlog over HTTP for dedup, runs the live read-only `@oddsmith/prospector`
+* `apps/desktop/src/lib/harness-ops-wiring.ts` — the `myapp:prospect` op handler (reads the
+  the app's analysis backlog over HTTP for dedup, runs the live read-only `@myapp/prospector`
   sweep, enqueues one generic `kind:'task'` work item per survivor via
-  `POST /api/harness/:slug/work-items`), the `oddsmith:ingest` op (one `@oddsmith/ingestion`
+  `POST /api/harness/:slug/work-items`), the `myapp:ingest` op (one `@myapp/ingestion`
   `controller.tick()` per dispatch), and the boot advert.
 
 The enqueue + dedup cross back to papercusp `work_items` over HTTP (`/api/harness/:slug/work-items`
 GET for dedup, POST — added as the generic write seam — for enqueue), so the harness owns the op
-end-to-end without operator-core importing any `@oddsmith` engine code. The old operator-core
-`blueprint-steps/ops/oddsmith-prospect.ts` is **deleted**.
+end-to-end without operator-core importing any `@myapp` engine code. The old operator-core
+`blueprint-steps/ops/myapp-prospect.ts` is **deleted**.
 
 ### Ingest cadence mode (P-008)
 
-`ODDSMITH_INGEST_MODE=local` (default) runs the in-process setInterval loop unchanged.
+`MYAPP_INGEST_MODE=local` (default) runs the in-process setInterval loop unchanged.
 `=central` builds the SAME ingestion controller but leaves the local loop OFF — the central
-routines engine fires `oddsmith:ingest` (the `oddsmith-ingest` blueprint, singleton cron seeded
+routines engine fires `myapp:ingest` (the `myapp-ingest` blueprint, singleton cron seeded
 INACTIVE), which `.tick()`s the controller once per dispatch. Discovery/DATA cadence → central
 is acceptable (D-002: a platform-down window just pauses the producer).
 
 ## Arming (paper / fail-dark)
 
-Both `oddsmith-prospector` (15m) and `oddsmith-ingest` (15s) blueprints are **seeded INACTIVE**
+Both `myapp-prospector` (15m) and `myapp-ingest` (15s) blueprints are **seeded INACTIVE**
 (`triggers.schedule[].singletonActive: false`). To arm a cadence after the sidecar is up with
-`ODDSMITH_OPERATOR_URL` set (and `ODDSMITH_PROSPECT_API_ENABLED=1` / `ODDSMITH_INGEST_MODE=central`
+`MYAPP_OPERATOR_URL` set (and `MYAPP_PROSPECT_API_ENABLED=1` / `MYAPP_INGEST_MODE=central`
 respectively, so the op is registered + advertised):
 
 ```sql
 UPDATE harness_shared.routines SET active = true
  WHERE install_slug = '@singleton' AND target_role = 'system:blueprint-run'
-   AND payload_template->>'blueprintId' IN ('oddsmith-prospector','oddsmith-ingest');
+   AND payload_template->>'blueprintId' IN ('myapp-prospector','myapp-ingest');
 ```
 
 Verify: the sidecar logs `registered harness op …` + `harness endpoint advert → …: accepted`;
 the operator's routines tick dispatches; `GET {sidecar}/api/op` lists the registered ops; a
-prospect tick creates `bet-analysis` work\_items; an ingest tick upserts `markets`. No real-money
+prospect tick creates `analysis` work\_items; an ingest tick upserts `markets`. No real-money
 path is touched (both ops are read-only/propose-only).
 
 ## Engine trading tick + live-loop → LOCAL DBOS (P-009 / D-005)
 
-The engine TRADING tick (`@oddsmith/engine`, via `engine-wiring.startEngine`) and the live-loop
+The engine TRADING tick (`@myapp/engine`, via `engine-wiring.startEngine`) and the live-loop
 producer (`./live-loop`, via `live-loop-wiring`) are the money-path loops. D-005 (inviolable): they
 must keep running even when operator-core is down — so, UNLIKE the discovery/data cadences
 (prospect/ingest, which ride the CENTRAL routines engine via dispatched ops), they get durability
@@ -141,10 +141,10 @@ workflow fires it on a crontab derived from the loop's `intervalMs` (`intervalTo
 recovered on restart. `SchedulerMode.ExactlyOncePerIntervalWhenActive` SKIPS make-up work for slots
 missed while the sidecar was down — a restart never replays a backlog of stale trading ticks.
 
-**Gate:** `ODDSMITH_ENGINE_DBOS=1` (default-OFF). OFF ⇒ the engine + live-loop run their existing
+**Gate:** `MYAPP_ENGINE_DBOS=1` (default-OFF). OFF ⇒ the engine + live-loop run their existing
 in-process loops byte-for-byte and DBOS is never imported/launched (D-005 unchanged). ON ⇒
 `serve.ts` builds them in `dbosMode`, then `launchLocalDbos` registers a scheduled workflow per
 ENABLED cadence and launches; the DBOS scheduler is stopped FIRST in the shutdown sequence so no
 tick fires into a half-torn-down engine. Verified live (`local-dbos-wiring.integration.test.ts`):
-DBOS boots against a real PG, runs its migrations, and the scheduled `oddsmithEngineTick` workflow
+DBOS boots against a real PG, runs its migrations, and the scheduled `myappEngineTick` workflow
 fires the bound tick on the crontab.

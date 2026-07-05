@@ -7,7 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Migrating a workspace package from one npm scope to another — here
 `@restart/{grid,grid-core,bloom-grid,kv-persist,kv-persist-indexeddb,sync}` →
-`@papercusp/*` in the sibling Restart monorepo — looks like a mechanical
+`@papercusp/*` in a sibling internal monorepo — looks like a mechanical
 find-and-replace of import statements. It isn't. The imports are the *easy*
 references; the ones that bite are the bare strings that no import-grep matches.
 
@@ -39,9 +39,9 @@ occurrence, scanning every line of every code + json file (excluding
 `node_modules`, `dist`, the auto-generated `package-lock.json`, and historical
 docs). That single pattern catches imports, deps, tsconfig maps, and config
 strings uniformly. Make it **targeted** when some names in the old scope are
-legitimate (Restart still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only
+legitimate (the other app still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only
 the migrated basenames, allow the rest. See `scripts/check-no-restart-imports.mjs`
-(papercup), wired as a gating CI step. (The Restart-side equivalent
+(papercup), wired as a gating CI step. (The other app's equivalent
 `scripts/check-no-restart-scope.mjs` was since removed.)
 
 ## Bonus gotcha: `grep -v <substring>` self-exclusion

@@ -361,12 +361,12 @@ CREATE INDEX idx_package_versions_published_at ON package_versions(published_at 
 
 ### Marketplace operator dashboard ✅ SHIPPED
 
-**Status:** Live at `http://localhost:3001/papercusp-marketplace-ops` (Restart admin).
+**Status:** Live at `http://localhost:3001/papercusp-marketplace-ops` (internal reference app admin).
 
 **What shipped:**
 
 * Marketplace API endpoint `GET /v1/admin/overview` (operator-token-gated) — returns aggregate health: package counts by state, authors, reviews, downloads-today, SBOM scan backlog, vulnerability severity histogram, webhook subscription health, R2 status, recent publishes (10), recent retractions (10).
-* Admin route `/papercusp-marketplace-ops` (Restart admin) — server-renders the dashboard reading the operator token from `~/.papercusp/marketplace-secrets.env` (token never reaches browser).
+* Admin route `/papercusp-marketplace-ops` (internal reference app admin) — server-renders the dashboard reading the operator token from `~/.papercusp/marketplace-secrets.env` (token never reaches browser).
 * API proxy at `/api/marketplace-ops-overview` — used for the 30s client-side polling.
 * New nav entry "Marketplace Ops" under the Agents group.
 * Card UI: 8 metric tiles + 2 activity tables. Counts go red when severity warrants (failed webhooks, critical vulns, etc.).
@@ -521,7 +521,7 @@ CREATE INDEX idx_package_versions_published_at ON package_versions(published_at 
 | No multi-registry resolution                   | ✅ **Shipped 2026-04-27**                              | M13       |
 | No SBOM attestation / CVE scanning             | ❌ Missing                                             | M14       |
 
-> **2026-04-27** — marketplace extracted into its own private repo at [papercupai/papercusp-registry](https://github.com/papercupai/papercusp-registry). Substrate ([papercupai/papercusp](https://github.com/papercupai/papercusp)) keeps the open-source self-hostable runtime; marketplace stays operator-only with OAuth secrets, signing keys, sessions DB. Restart now has both as sibling submodules at `libs/papercusp/` and `../papercusp-registry/`.
+> **2026-04-27** — marketplace extracted into its own private repo at [papercupai/papercusp-registry](https://github.com/papercupai/papercusp-registry). Substrate ([papercupai/papercusp](https://github.com/papercupai/papercusp)) keeps the open-source self-hostable runtime; marketplace stays operator-only with OAuth secrets, signing keys, sessions DB. The internal reference app now has both as sibling submodules at `libs/papercusp/` and `../papercusp-registry/`.
 
 ### What landed this round (M3 + M10 + M13)
 
@@ -925,7 +925,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON papercusp_marketplace.package_attestatio
 
 * **Reviews UI** — see M8 above; deferred until M8 is in progress.
 * **Spec docs site relocation** — the spec is now embedded as the Fumadocs `(docs)` route group inside `apps/papercusp` (served at `localhost:3055/docs`). After v1.0 freeze, consider moving the `content/docs/` source to `papercupai/papercusp` so it travels with the substrate. (The legacy Starlight version at `apps/papercusp-spec/` remains in the tree but is no longer the canonical site.)
-* **`apps/papercusp-marketplace`** in Restart's old workspace exclusions — verify `package.json` workspaces still ignore it (the dir is gone, but the negation is harmless).
+* **`apps/papercusp-marketplace`** in the internal reference app's old workspace exclusions — verify `package.json` workspaces still ignore it (the dir is gone, but the negation is harmless).
 * **OAuth secret rotation** — pasted in chat 2026-04-27. Status: probably still original secret. Rotate at github.com → Developer Settings → "Papercusp Marketplace" → Generate new client secret → update `~/.papercusp/marketplace-secrets.env` line `GITHUB_OAUTH_CLIENT_SECRET=...` → restart marketplace-api.
 
 ## Quick-start for a future agent
@@ -933,15 +933,15 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON papercusp_marketplace.package_attestatio
 If you're picking this up cold, here's the 5-minute orientation:
 
 1. **Where the code lives**:
-   * Substrate: `papercupai/papercusp` repo → submodule at `Restart/libs/papercusp/`
-   * Marketplace: `papercupai/papercusp-registry` repo → submodule at `Restart/../papercusp-registry/`
-   * Spec docs: embedded in `Restart/apps/papercusp/content/docs/` and served at `localhost:3055/docs` (Fumadocs). Legacy Starlight source still in `Restart/apps/papercusp-spec/`.
+   * Substrate: `papercupai/papercusp` repo → submodule at `<reference-app>/libs/papercusp/`
+   * Marketplace: `papercupai/papercusp-registry` repo → submodule at `<reference-app>/../papercusp-registry/`
+   * Spec docs: embedded in `<reference-app>/apps/papercusp/content/docs/` and served at `localhost:3055/docs` (Fumadocs). Legacy Starlight source still in `<reference-app>/apps/papercusp-spec/`.
    * Substrate UI: `libs/papercusp/apps/web/` (lives at `localhost:3055`)
    * CLI: `libs/papercusp/packages/cli/src/papercusp.ts`
 
 2. **How to start everything**:
    ```bash
-   cd /home/marsh-office/Restart
+   cd ~/reference-app
    # marketplace-api (port 3057):
    bash -c 'set -a; source $HOME/.papercusp/marketplace-secrets.env; set +a; nohup npm run dev:marketplace > /tmp/marketplace-api.log 2>&1 &'
    # spec docs are now served by apps/papercusp at /docs (no separate process):
@@ -949,7 +949,7 @@ If you're picking this up cold, here's the 5-minute orientation:
    # admin web (port 3001):
    cd apps/web/.next/standalone/apps/web && PORT=3001 HOSTNAME=0.0.0.0 nohup node server.js > /tmp/web-prod.log 2>&1 &
    # substrate web (port 3055):
-   cd /home/marsh-office/Restart && nohup npm run dev:papercusp > /tmp/papercusp-web.log 2>&1 &
+   cd ~/reference-app && nohup npm run dev:papercusp > /tmp/papercusp-web.log 2>&1 &
    ```
 
 3. **How to verify everything is up**:
