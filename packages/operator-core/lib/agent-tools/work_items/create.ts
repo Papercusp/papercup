@@ -2,7 +2,7 @@
  * work_items:create — create a work-item of any kind on the unified surface
  * (unify-work-items-2026-06-04, D-001/D-002/D-007). One `work_item` type; `kind`
  * discriminates. Mints a kind-independent WI-NNN id (D-008). Dispatches by kind:
- * bug/change file an issue (engineer_issues); feature/research-task/chunk land in
+ * bug/change/task file an issue (engineer_issues); feature/chunk land in
  * the harness work queue (harness_features_consolidated). A `chunk` carries a
  * `parent` (D-004).
  *
@@ -31,14 +31,34 @@ import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 
+/**
+ * Heuristic: does this work-item text smell like CODE work? Used ONLY for a
+ * NON-BLOCKING nudge when kind='task' (which is non-code only, WI-2874). A false
+ * positive is harmless — it's a suggestion the creator can ignore — so we bias
+ * toward a few reliable STRUCTURAL signals (a repo source path, a code file
+ * extension, a backticked camelCase identifier) plus a short set of code-edit
+ * verbs, rather than a fragile generic-verb net. Pure + exported for its test.
+ */
+export function codeSmellsLikeCode(title: string, summary?: string): boolean {
+  const text = `${title ?? ''}\n${summary ?? ''}`;
+  return (
+    /\b(packages|libs|apps|src|scripts)\/[\w./-]+/i.test(text) || // a repo source path
+    /\.(ts|tsx|rs|mjs|cjs|js|jsx|sql|py|go|sh)\b/.test(text) || // a code file extension
+    /`[^`]*[a-z][A-Z][^`]*`/.test(text) || // a backticked camelCase identifier
+    /\b(implement|refactor|re-?kind|patch|hotfix|typecheck|recompile|null-?check|regression test|stack ?trace|zod schema|unit test|integration test|code path|endpoint|migration)\b/i.test(
+      text,
+    )
+  );
+}
+
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
   // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
-  kind: z.string().min(1).max(80).describe('built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
+  kind: z.string().min(1).max(80).describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
-  harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
+  harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
   hive: hiveArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
   parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
@@ -57,10 +77,10 @@ export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
   description:
-    'Create ONE or MANY work-items of any kind — feature | research-task | chunk | bug | change. Returns kind-independent WI-NNN ids. bug/change file a tracked issue; feature/research-task/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.',
+    'Create ONE or MANY work-items of any kind — feature | chunk | bug | change | task. Returns kind-independent WI-NNN ids. bug/change/task file a tracked issue; feature/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.',
   guidance: {
-    when: 'You want to track unit(s) of work an agent will do. Pick the kind: bug (broken), change (DX ask / one-off), feature (pipeline work-unit), research-task, or chunk (sub-unit, pass `parent`). File several at once via items:[…] instead of a round-trip each.',
-    notWhen: 'A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
+    when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, a manual verification / ops step). File several at once via items:[…] instead of a round-trip each.',
+    notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
     chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
     seeAlso: [
       'work_items:list (dedup against existing items before filing)',
@@ -102,10 +122,10 @@ export default defineTool({
       // Built-in kind OR a workspace-registered generic-kind datatype — validated in
       // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
       // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
-      kind: z.string().min(1).max(80).optional().describe('built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
+      kind: z.string().min(1).max(80).optional().describe('built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
-      harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
+      harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
       hive: hiveArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
       parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
@@ -160,15 +180,25 @@ export default defineTool({
       list,
       async (spec) => {
         const res = await createOneWorkItem(spec, createCtx);
-        return res.ok
-          ? { ok: true as const, id: res.workItem.id, title: spec.title, workItem: res.workItem }
-          : {
-              ok: false as const,
-              title: spec.title,
-              error: res.error,
-              ...(res.message !== undefined ? { message: res.message } : {}),
-              ...(res.existing !== undefined ? { existing: res.existing } : {}),
-            };
+        if (!res.ok) {
+          return {
+            ok: false as const,
+            title: spec.title,
+            error: res.error,
+            ...(res.message !== undefined ? { message: res.message } : {}),
+            ...(res.existing !== undefined ? { existing: res.existing } : {}),
+          };
+        }
+        // WI-2874 non-blocking nudge: `task` is NON-CODE only. If a fresh task smells
+        // like code, attach a warning (never block) so the creator can re-kind it.
+        const codeTaskWarning =
+          spec.kind === 'task' && codeSmellsLikeCode(spec.title, spec.summary)
+            ? {
+                warning:
+                  'This looks like CODE work, but `task` is NON-CODE only (research / a decision / manual verification / ops). If it edits code, re-kind to `change` (or `feature` if pipeline-sized) via work_items:update.',
+              }
+            : {};
+        return { ok: true as const, id: res.workItem.id, title: spec.title, workItem: res.workItem, ...codeTaskWarning };
       },
       { keyOf: (spec) => ({ title: spec.title }) },
     );

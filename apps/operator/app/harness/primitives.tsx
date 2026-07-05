@@ -201,7 +201,6 @@ export function IssueStatusPill({
 // Work-item kind → icon. Same fallback discipline as SEVERITY_ICON.
 export const KIND_ICON: Record<WorkItemKindKey, LucideIcon> = {
   feature: Sparkles,
-  'research-task': FlaskConical,
   chunk: Puzzle,
   bug: Bug,
   change: FileDiff,
