@@ -87,11 +87,15 @@ import {
 } from './issues-engineer';
 
 // ── Kinds ───────────────────────────────────────────────────────────────────────
-export type FeatureFamilyKind = 'feature' | 'research-task' | 'chunk';
+export type FeatureFamilyKind = 'feature' | 'chunk';
 export type WorkItemKind = FeatureFamilyKind | IssueStoreKind;
 export type WorkItemFamily = 'feature' | 'issue';
 
-export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'research-task', 'chunk'];
+export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'chunk'];
+// research-task (a former feature-family kind) was RETIRED 2026-07-05 (WI-2874):
+// it duplicated `task` (non-code work) and `feature` (pipeline work) with no distinct
+// use. Removing it from the family shrinks the kind-choice surface so agents pick the
+// right kind. Any `research-task` create now falls through to `unknown_kind`.
 // `task` (collapse-delegate D-001) is an issue-family work_item kind — the operator's
 // delegated-work record. It lives in engineer_issues alongside bug|change but is
 // excluded from the issues:* surface (listIssues default).
@@ -454,7 +458,7 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  * datatype is visible without necessarily auto-placing a bee per instance (placement is opt-in).
  */
 function featureFamilyKindClause(sql: OrgSql, workspaceId: string) {
-  return sql`(item_kind IN ('feature', 'research-task', 'chunk')
+  return sql`(item_kind IN ('feature', 'chunk')
        OR item_kind IN (
          SELECT work_item_kind FROM harness_shared.datatype_registry
           WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'
@@ -2518,7 +2522,7 @@ export async function bumpWorkItemPriority(
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${wi.harness}
        AND workspace_id = ${ws}
-       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND item_kind IN ('feature', 'chunk')
        AND feature_id <> ${id}`;
   const min = ext[0]?.min_ord ?? null;
   const max = ext[0]?.max_ord ?? null;

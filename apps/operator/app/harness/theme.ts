@@ -121,8 +121,8 @@ export const ISSUE_STATUS = new Proxy(_ISSUE_STATUS_TABLE as Record<string, Stat
 
 export type IssueStatusKey = keyof typeof _ISSUE_STATUS_TABLE;
 
-// Unified work_items `kind` coloring — feature-family {feature, research-task,
-// chunk} + issue-family {bug, change, task} (unify-work-items D-001). The
+// Unified work_items `kind` coloring — feature-family {feature, chunk} +
+// issue-family {bug, change, task} (unify-work-items D-001). The
 // SINGLE source for kind chips (<KindPill> in primitives.tsx), same hue
 // discipline + Proxy fallback as SEVERITY / ISSUE_STATUS above so the
 // Work-items table's pill columns speak one visual language.
