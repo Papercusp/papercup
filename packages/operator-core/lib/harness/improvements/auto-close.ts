@@ -117,14 +117,25 @@ export function decideAutoClose(
   if (!AUTO_CLOSE_ELIGIBLE_SOURCES.has(watchdogSourceOf(c.watchdogKey))) {
     return { close: false, reason: 'ineligible-source' };
   }
-  if (c.assignee != null) return { close: false, reason: 'assigned' };
+  // EI-7317: an `assignee` alone must NOT block retirement — only a LIVE in-flight
+  // dispatch means genuinely active work. Once a dispatch resolves (or a watchdog
+  // routine it was chasing is deactivated/deleted) the `assignee` column is never
+  // cleared, so a signal that has verifiably stopped firing was staying open+assigned
+  // forever and getting re-dispatched indefinitely (concrete case: EI-3901 — the
+  // underlying loop was deactivated 2026-07-01, but the EI re-dispatched on
+  // 2026-07-04, burning a full worker run to rediscover the bug was already gone).
+  // inFlightDispatch is the only signal that means "do not touch, someone is on it".
   if (c.inFlightDispatch) return { close: false, reason: 'in-flight-dispatch' };
   if (ctx.ranTickCount < minTicks) return { close: false, reason: 'insufficient-tick-history' };
   if (!Number.isFinite(c.createdAtMs) || ctx.nowMs - c.createdAtMs < minAge) {
     return { close: false, reason: 'too-new' };
   }
   if (ctx.seenKeys.has(c.watchdogKey)) return { close: false, reason: 'still-firing' };
-  return { close: true, reason: `signal absent from known-open keys for ≥${minTicks} ran-ticks — evidence cleared` };
+  const abandonedAssignmentNote = c.assignee != null ? ' (assignee present but no live in-flight dispatch — abandoned assignment, not active work)' : '';
+  return {
+    close: true,
+    reason: `signal absent from known-open keys for ≥${minTicks} ran-ticks — evidence cleared${abandonedAssignmentNote}`,
+  };
 }
 
 export interface AutoCloseOutcome {

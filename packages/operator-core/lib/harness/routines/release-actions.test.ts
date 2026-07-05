@@ -89,6 +89,24 @@ describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   });
 });
 
+describe('shouldWarnOnStallClearMiss (WI-2825: harden the silent 0-row clear no-op)', () => {
+  it('warns when an escalation was believed active but the clear matched nothing', () => {
+    expect(shouldWarnOnStallClearMiss(true, 0)).toBe(true);
+  });
+
+  it('stays silent on the everyday case: no prior escalation, nothing to clear', () => {
+    expect(shouldWarnOnStallClearMiss(false, 0)).toBe(false);
+  });
+
+  it('stays silent when the clear genuinely matched a row (the expected happy path)', () => {
+    expect(shouldWarnOnStallClearMiss(true, 1)).toBe(false);
+  });
+
+  it('stays silent for a stallAlerted=false clear that unexpectedly matched a row (nothing suspicious about a stray match)', () => {
+    expect(shouldWarnOnStallClearMiss(false, 1)).toBe(false);
+  });
+});
+
 describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red streak)', () => {
   it('a real green verdict resets', () => {
     expect(classifyGateStallStatus('advanced', false)).toBe('reset');
