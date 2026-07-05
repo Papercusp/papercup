@@ -57,10 +57,14 @@ describe('operator-report source (real PG)', () => {
       createdAt: number,
       text = 'say text',
     ) => {
+      // operator_turns.workspace_id is NOT NULL (session-search prose-recall
+      // confinement) — stamp each turn with its conversation's workspace, the
+      // way production ingest does.
+      const ws = conv === otherConvId ? 'ws-other' : h.ws;
       await sql`
         INSERT INTO harness_shared.operator_turns
-          (conversation_id, seq, role, text, created_at, report)
-        VALUES (${conv}, ${seq}, ${role}, ${text}, ${createdAt},
+          (workspace_id, conversation_id, seq, role, text, created_at, report)
+        VALUES (${ws}, ${conv}, ${seq}, ${role}, ${text}, ${createdAt},
                 ${report === null ? null : JSON.stringify(report)}::text::jsonb)
       `;
     };

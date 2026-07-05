@@ -547,14 +547,21 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
         nullEstimateStreak.set(r.owner_id, streak);
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
-          // A null estimate is BY DESIGN for OMP (self-compacts natively) and Codex (no
-          // compaction) — estimateContextTokensForOwner returns null for those agents
-          // (compaction-usage.ts), so they are NOT blind Claude sessions and must never
-          // raise a dark-telemetry alarm (false-positive fix, WI-2910). Only a genuinely
-          // blind Claude session (unreadable transcript / unresolved model spec) escalates.
+          // A null estimate is a FALSE POSITIVE for two owner classes — neither is a blind
+          // Claude session, so neither may raise a dark-telemetry alarm:
+          //   (1) OMP (self-compacts natively) / Codex (no compaction): estimateContextTokensForOwner
+          //       returns null for those agents BY DESIGN (compaction-usage.ts) — WI-2910.
+          //   (2) a SYNTHETIC principal that is not a launched agent session at all — an MCP-call
+          //       principal (`mcp-call-<pid>`), a bare-UUID UI client, etc. It has NO adv_sessions
+          //       row, so resolveSessionRef returns null; with no session/transcript to compact a
+          //       null estimate is meaningless, not "blind" — WI-2917. (These get a compaction_limit
+          //       seeded by the pass above purely because they carry a live presence heartbeat.)
+          // A REAL Claude session whose transcript merely won't resolve DOES have an adv_sessions
+          // row (ref non-null, agent 'claude'/unknown), so it still escalates below — the
+          // 836k-overflow signal this detector exists for is preserved.
           const ref = await resolveSessionRef(r.owner_id);
-          if (ref?.agent === 'omp' || ref?.agent === 'codex') {
-            nullEstimateStreak.delete(r.owner_id); // by-design null — don't accumulate a streak
+          if (!ref || ref.agent === 'omp' || ref.agent === 'codex') {
+            nullEstimateStreak.delete(r.owner_id); // by-design / synthetic null — don't accumulate a streak
             continue;
           }
           out.bootConfigAlerts.push({ owner: r.owner_id, kind: 'dark-telemetry', detail: `${streak} null sweeps` });

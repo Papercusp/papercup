@@ -106,7 +106,7 @@ pub(crate) fn draw_tasklist(
 
     let body = if items.is_empty() {
         let msg = if asn.is_some() {
-            "(no work-items claimed — this bee holds nothing right now)"
+            "(no work-items claimed — this cup holds nothing right now)"
         } else {
             "(loading task list…)"
         };
@@ -212,7 +212,7 @@ pub(crate) fn draw_inbox(f: &mut Frame, app: &App, area: Rect, sel: Option<usize
     draw_mail(
         f,
         area,
-        &format!(" ↘ inbox ({total}) — to this bee "),
+        &format!(" ↘ inbox ({total}) — to this cup "),
         entries,
         app.bee.mail.is_some(),
         true,
@@ -228,7 +228,7 @@ pub(crate) fn draw_outbox(f: &mut Frame, app: &App, area: Rect, sel: Option<usiz
     draw_mail(
         f,
         area,
-        &format!(" ↗ outbox ({total}) — from this bee "),
+        &format!(" ↗ outbox ({total}) — from this cup "),
         entries,
         app.bee.mail.is_some(),
         false,

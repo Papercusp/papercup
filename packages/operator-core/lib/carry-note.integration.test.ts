@@ -141,10 +141,19 @@ describe('the three roles converge on ONE store, isolated by scope + workspace',
     expect(await getLoopCarryNote(LOOP)).toBe('loop note');
   });
 
-  it('workspace-scoped: another workspace is invisible here', async () => {
-    await setLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' }, 'theirs');
-    expect(await getLoopCarryNote(LOOP)).toBeNull(); // default ws
-    expect(await getLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' })).toBe('theirs');
+  it('base store is workspace-scoped; LOOP notes are workspace-PINNED + skew-tolerant', async () => {
+    // The generic store isolates by workspace…
+    await setCarryNote({ scope: 'iso-scope', workspaceId: 'other-ws' }, 'theirs', { journal: false });
+    expect(await getCarryNote({ scope: 'iso-scope' })).toBeNull(); // default ws
+    expect(await getCarryNote({ scope: 'iso-scope', workspaceId: 'other-ws' })).toBe('theirs');
+    // …but the LOOP wrapper deliberately PINS the coord workspace on write and
+    // falls back to any-workspace on read (2026-07-03 cold-auto host-skew fix:
+    // the producer and the wake-executor must address the same row no matter
+    // which host/ctx they run under) — a caller-supplied workspaceId is ignored,
+    // so the note resolves for the same (harness, ownerId) from ANY ctx.
+    await setLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' }, 'mine');
+    expect(await getLoopCarryNote(LOOP)).toBe('mine');
+    expect(await getLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' })).toBe('mine');
   });
 
   it('loopScope keys by ownerId — two loops on the same harness do not collide', async () => {

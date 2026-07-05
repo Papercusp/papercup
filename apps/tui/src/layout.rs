@@ -239,7 +239,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
     // P-010: prefix the per-type glyph into the zellij pane NAME (zellij has no
     // per-pane color — D-008 — so the glyph is how a type reads at a glance).
-    // colony (the driver) is infrastructure, not an agent type → left unglyphed.
+    // the cups stack (the driver) is infrastructure, not an agent type → unglyphed.
     use crate::agent_pane_kind::AgentPaneKind;
     let glyph_name = |term: &str, fallback: &str, kind: AgentPaneKind| {
         let n = kdl_pane_name(&lex.lex(term), fallback);
@@ -266,6 +266,13 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // (RosterEntry::dock_pane_argv → claude --resume). Named via the `fleet`
     // lexicon term.
     let driver_name = kdl_pane_name(&lex.lex("fleet"), "fleet");
+    // The worker-stack CONTAINER (was "🐝 colony", old bee-brand). It is
+    // infrastructure, not an agent type, so it MUST stay UNGLYPHED — every cup
+    // glyph (☕🍵🫖🥤) is a kind-glyph, and a ☕ prefix here makes
+    // AgentPaneKind::from_glyph_prefix mis-read the driver as a worker Bee/Cup and
+    // pull it into the P-011 regroup (the icon-pass 🐝→☕ sed, 7beaba771c, did
+    // exactly that). Lexicon-routed so it reads "cups"/"bees" per active pack.
+    let cups_name = kdl_pane_name(&lex.lex_plural("contributor"), "cups");
     // 12-space indent: the driver is a member of the `chat` stack, which is
     // nested one level deep inside the queen|stack split.
     let driver_pane_block = format!(
@@ -304,8 +311,8 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // (--role=overwatch MUST use `=`; psu-launcher drops a space-separated --role).
     // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
     // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22):
-    // top-to-bottom (owner ask 2026-06-22): 🛡 sentinel (the front-door agent leads
-    // the dock), 👁 overwatch, ♛ queen, ☕ colony (dock-driver + its bee TUIs), ⏸ wakes.
+    // top-to-bottom (owner ask 2026-06-22): 🥤 sentinel (the front-door agent leads
+    // the dock), 🫖 overwatch, 🍵 queen, cups (dock-driver + its worker TUIs), ⏸ wakes.
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
@@ -340,7 +347,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                 }}
             }}
         }}
-        pane name="☕ colony" stacked=true size="12%" {{{driver_pane_block}
+        pane name="{cups_name}" stacked=true size="12%" {{{driver_pane_block}
         }}{wake_pane_block}
     }}"#
         )
@@ -844,7 +851,7 @@ mod tests {
         // must never reappear.
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
-        assert!(kdl.contains("name=\"☕ colony\""));
+        assert!(kdl.contains("name=\"cups\"")); // worker-stack container, UNGLYPHED (infra, not an agent kind)
         assert!(kdl.contains("name=\"🥤 papercup\"")); // lex("operator")=Papercup, P-010 glyph
         assert!(kdl.contains("name=\"🍵 mug\""));
         assert!(kdl.contains("stacked=true"));
@@ -1063,20 +1070,20 @@ mod tests {
         assert!(on.contains("args \"network-pane\""));
         assert!(on.contains("args \"plans-pane\""));
         // Order: brain precedes her side column; the queen split precedes the
-        // ☕ colony stack; the dock-driver is inside that colony stack.
+        // cups stack; the dock-driver is inside that cups stack.
         let queen_at = on.find("name=\"🍵 mug\"").expect("queen container");
         let stack_at = on
-            .find("name=\"☕ colony\" stacked=true")
-            .expect("colony stack");
+            .find("name=\"cups\" stacked=true")
+            .expect("cups stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");
         assert!(
             work_at < stack_at,
-            "the queen split precedes the colony stack"
+            "the queen split precedes the cups stack"
         );
         assert!(
             stack_at < driver_at,
-            "the driver is inside the colony stack"
+            "the driver is inside the cups stack"
         );
     }
 
