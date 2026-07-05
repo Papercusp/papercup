@@ -22,7 +22,7 @@
  * identity) returns 503 `directory_unavailable` rather than pretending.
  *
  * `auth: 'loopback'` (auth-tier Wave 1), same perimeter as
- * /discovery/set-hive — the desktop webview is cookie-less.
+ * /discovery/set-pot — the desktop webview is cookie-less.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseHiveInviteLink } from '../../../harness/hive-invite-link';

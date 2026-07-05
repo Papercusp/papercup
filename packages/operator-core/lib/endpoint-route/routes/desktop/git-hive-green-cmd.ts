@@ -1,5 +1,5 @@
 /**
- * POST /api/desktop/git/hive-green-cmd
+ * POST /api/desktop/git/pot-green-cmd
  *
  * The /admin/git per-hive green-command EDIT (per-hive-git-and-release-gate-2026-06-29 P-014).
  * Sets (or clears) a hive's per-install green-command override — stored in hive_settings
@@ -33,7 +33,7 @@ function json(body: unknown, status: number): Response {
 export default [
   defineTool({
     method: 'POST',
-    path: '/desktop/git/hive-green-cmd',
+    path: '/desktop/git/pot-green-cmd',
     auth: 'loopback',
     async handler(req) {
       // CSRF guard: refuse a cross-site browser request before any side effect.

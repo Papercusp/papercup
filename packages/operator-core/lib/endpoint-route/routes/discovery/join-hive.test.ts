@@ -1,5 +1,5 @@
 /**
- * join-hive.test.ts — POST /api/discovery/join-hive (hive-from-repo-hardening
+ * join-hive.test.ts — POST /api/discovery/join-pot (hive-from-repo-hardening
  * P-007 / D-007), the directory panel's "Join the HIVE" action. This is the
  * side-effecting discovery route (N member joins = N read-only clones +
  * admission/federation), so the test pins that a malformed body 400s BEFORE
@@ -26,7 +26,7 @@ import joinHiveRoute from './join-hive';
 const LINK = 'papercusp://harness?topic=' + 'a'.repeat(64);
 
 async function post(body: unknown, { raw }: { raw?: string } = {}) {
-  const req = new Request('http://127.0.0.1/api/discovery/join-hive', {
+  const req = new Request('http://127.0.0.1/api/discovery/join-pot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: raw !== undefined ? raw : JSON.stringify(body),
@@ -41,7 +41,7 @@ beforeEach(() => {
   joinHiveAsView.mockResolvedValue({ ok: true, members: [{ slug: 'm', ok: true }], viewSlug: 'acme' });
 });
 
-describe('POST /api/discovery/join-hive (Gap 9)', () => {
+describe('POST /api/discovery/join-pot (Gap 9)', () => {
   it('declares the loopback auth tier (auth-tier Wave 1)', () => {
     expect((joinHiveRoute as { auth?: unknown }).auth).toBe('loopback');
   });

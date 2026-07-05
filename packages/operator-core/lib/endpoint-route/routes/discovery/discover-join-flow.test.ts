@@ -10,7 +10,7 @@
  *   set-hive visibility → which topic the announce lands on
  *     (public → the GLOBAL directory topic; invite → a SECRET-gated topic;
  *      private → never on the wire)
- *   → discovery:hives (GET /api/discovery/hives) lists a DISCOVERED public hive
+ *   → discovery:hives (GET /api/discovery/pots) lists a DISCOVERED public hive
  *   → join-hive forwards the DISCOVERED memberLinks into joinHiveAsView
  *   → join-invite (secret) surfaces an invite hive a global browser can't see
  *   → a PRIVATE hive is never discoverable (and a forged private frame is
@@ -81,7 +81,7 @@ let clock: { ms: number };
 /** topicHex → the directories subscribed to it (the gossip bus). */
 let bus: Map<string, Set<HiveDirectory>>;
 let owner: HiveDirectory; // announces its owned hives
-let joiner: HiveDirectory; // the GET /discovery/hives singleton — browses
+let joiner: HiveDirectory; // the GET /discovery/pots singleton — browses
 let ownerPubkeyB64: string;
 let ownerSign: (bytes: Buffer) => Promise<Buffer>;
 
@@ -134,14 +134,14 @@ function registerOwnedHive(
 
 async function getHives(): Promise<{ status: number; body: any }> {
   const res = (await hivesRoute.handler(
-    new Request('http://127.0.0.1/api/discovery/hives') as never,
+    new Request('http://127.0.0.1/api/discovery/pots') as never,
     {} as never,
   )) as Response;
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
 async function postJoinHive(body: unknown): Promise<{ status: number; body: any }> {
-  const req = new Request('http://127.0.0.1/api/discovery/join-hive', {
+  const req = new Request('http://127.0.0.1/api/discovery/join-pot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -173,7 +173,7 @@ beforeEach(() => {
   ownerSign = async (bytes) => nodeSign(null, bytes, privateKey);
 
   owner = new HiveDirectory(ownerDeps());
-  // configureHiveDirectoryForTest installs the singleton the GET /discovery/hives
+  // configureHiveDirectoryForTest installs the singleton the GET /discovery/pots
   // route reads via getHiveDirectory().
   joiner = configureHiveDirectoryForTest(joinerDeps());
   // The joiner browses the global directory by default.
@@ -246,7 +246,7 @@ describe('discover→join flow (shared-hive-release T2)', () => {
     });
   });
 
-  describe('discovery:hives (GET /api/discovery/hives)', () => {
+  describe('discovery:hives (GET /api/discovery/pots)', () => {
     it('lists a discovered public hive with its memberLinks', async () => {
       registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
       await owner.announceLocalHive('acme');

@@ -1,5 +1,5 @@
 /**
- * GET /api/discovery/hive-meta?hiveId=… — the OWNER side of one hive's share
+ * GET /api/discovery/pot-meta?hiveId=… — the OWNER side of one hive's share
  * state (comb-hive-native-sharing-2026-06-11 P-004/P-005).
  *
  * Projects the workspace's OWNED directory meta for one hive (the
@@ -13,14 +13,14 @@
  *
  * `auth: 'loopback'` — this is the owner's own workspace state served to the
  * desktop webview; the loopback bind is the perimeter, same as
- * /discovery/set-hive. The invite secret stays inside that perimeter (it
+ * /discovery/set-pot. The invite secret stays inside that perimeter (it
  * never rides an announce).
  */
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
   method: 'GET',
-  path: '/discovery/hive-meta',
+  path: '/discovery/pot-meta',
   auth: 'loopback',
   async handler(req) {
     const url = new URL(req.url);

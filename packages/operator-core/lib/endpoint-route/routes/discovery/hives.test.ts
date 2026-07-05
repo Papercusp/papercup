@@ -1,5 +1,5 @@
 /**
- * hives.test.ts — the GET /api/discovery/hives HTTP route (p2p-hive-directory P-007).
+ * hives.test.ts — the GET /api/discovery/pots HTTP route (p2p-hive-directory P-007).
  *
  * The desktop HiveDirectoryPanel fetches this loopback route. Verifies it
  * projects the directory's verified list, gates non-loopback callers with 403,
@@ -60,11 +60,11 @@ afterEach(() => {
   if (savedEnv !== undefined) process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = savedEnv;
 });
 
-describe('GET /api/discovery/hives route (P-007)', () => {
+describe('GET /api/discovery/pots route (P-007)', () => {
   it('serves the discovered list to a loopback caller', async () => {
     const dir = configureHiveDirectoryForTest(fakeDeps());
     await dir.ingestAnnounce(await announce({ hive_id: 'ash', title: 'Ash Hive', member_links: ['papercusp://harness?topic=a'] }));
-    const { status, body } = await call('http://127.0.0.1/api/discovery/hives');
+    const { status, body } = await call('http://127.0.0.1/api/discovery/pots');
     expect(status).toBe(200);
     expect(body.count).toBe(1);
     expect(body.rows[0]).toMatchObject({ hiveId: 'ash', title: 'Ash Hive', memberLinks: ['papercusp://harness?topic=a'] });
@@ -75,7 +75,7 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     const pk = 'K'.repeat(43) + '=';
     await dir.ingestAnnounce(await announce({ hive_id: 'keyed', hive_pubkey: pk }));
     await dir.ingestAnnounce(await announce({ hive_id: 'unkeyed' }));
-    const { body } = await call('http://127.0.0.1/api/discovery/hives');
+    const { body } = await call('http://127.0.0.1/api/discovery/pots');
     const rows = body.rows as Array<{ hiveId: string; hivePubkey: string | null }>;
     expect(rows.find((r) => r.hiveId === 'keyed')?.hivePubkey).toBe(pk);
     expect(rows.find((r) => r.hiveId === 'unkeyed')?.hivePubkey).toBeNull();
@@ -91,7 +91,7 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     const app = new Hono();
     registerRoute(app, hivesRoute as never);
     configureHiveDirectoryForTest(fakeDeps());
-    const res = await app.request('http://evil.example.com/discovery/hives');
+    const res = await app.request('http://evil.example.com/discovery/pots');
     expect(res.status).toBe(403);
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     expect(body?.error).toBe('loopback_only');
@@ -99,7 +99,7 @@ describe('GET /api/discovery/hives route (P-007)', () => {
 
   it('returns an empty list when nothing discovered', async () => {
     configureHiveDirectoryForTest(fakeDeps());
-    const { status, body } = await call('http://localhost/api/discovery/hives');
+    const { status, body } = await call('http://localhost/api/discovery/pots');
     expect(status).toBe(200);
     expect(body).toMatchObject({ count: 0, rows: [] });
   });
@@ -112,7 +112,7 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     const dir = configureHiveDirectoryForTest(fakeDeps());
     await dir.ingestAnnounce(await announce({ hive_id: 'pub', visibility: 'public' }));
     await dir.ingestAnnounce(await announce({ hive_id: 'secret', visibility: 'private' }));
-    const { status, body } = await call('http://127.0.0.1/api/discovery/hives');
+    const { status, body } = await call('http://127.0.0.1/api/discovery/pots');
     expect(status).toBe(200);
     const ids = (body.rows as Array<{ hiveId: string }>).map((r) => r.hiveId);
     expect(ids).toContain('pub');
@@ -122,7 +122,7 @@ describe('GET /api/discovery/hives route (P-007)', () => {
   it('maps an invite-visibility hive to visibility:"invite" (joinable-by-link, still listed)', async () => {
     const dir = configureHiveDirectoryForTest(fakeDeps());
     await dir.ingestAnnounce(await announce({ hive_id: 'inv', visibility: 'invite' }));
-    const { body } = await call('http://127.0.0.1/api/discovery/hives');
+    const { body } = await call('http://127.0.0.1/api/discovery/pots');
     const row = (body.rows as Array<{ hiveId: string; visibility: string }>).find((r) => r.hiveId === 'inv');
     expect(row?.visibility).toBe('invite');
   });

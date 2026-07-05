@@ -1058,7 +1058,7 @@ export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOp
   );
 }
 
-/** The /api/discovery/hives row shape (the directory's HTTP projection). */
+/** The /api/discovery/pots row shape (the directory's HTTP projection). */
 interface DirectoryHiveRow {
   hiveId: string;
   title: string;
@@ -1105,7 +1105,7 @@ export function HiveRollupHeaderCard({
 
   const loadDirectory = useCallback(async () => {
     try {
-      const res = await fetch('/api/discovery/hives');
+      const res = await fetch('/api/discovery/pots');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { rows?: DirectoryHiveRow[] };
       setDirRows(data.rows ?? []);
@@ -1138,7 +1138,7 @@ export function HiveRollupHeaderCard({
     // every member join and materializes the local hive view (same treatment
     // as the workbench directory panel).
     try {
-      const res = await fetch('/api/discovery/join-hive', {
+      const res = await fetch('/api/discovery/join-pot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

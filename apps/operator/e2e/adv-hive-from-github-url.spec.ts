@@ -33,7 +33,7 @@
  *
  * Hermetic: stubs `/api/flags/bootstrap` (pins HIVE_FROM_GITHUB_URL +
  * THE_HIVE so copy is deterministic), `/api/harness/projects/lite` + the
- * benign dock fetches, and MOCKS POST /api/harness/hives/from-repo — the spec
+ * benign dock fetches, and MOCKS POST /api/harness/pots/from-repo — the spec
  * never clones a repository or writes anything. The projects/join-link POSTs
  * are stubbed to fail loudly so a mis-route can never hit the real backend.
  *
@@ -120,14 +120,14 @@ async function stubBase(page: Page): Promise<void> {
 }
 
 /**
- * MOCK POST /api/harness/hives/from-repo (the spec never clones): responses
+ * MOCK POST /api/harness/pots/from-repo (the spec never clones): responses
  * are served in order (the last repeats), and every request body is captured —
  * the force:true / visibility / no-network oracles.
  */
 async function stubFromRepo(page: Page, responses: Array<Record<string, unknown>>): Promise<FromRepoCapture> {
   const cap: FromRepoCapture = { bodies: [] };
   let i = 0;
-  await page.route('**/api/harness/hives/from-repo', async (route) => {
+  await page.route('**/api/harness/pots/from-repo', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.continue();
       return;

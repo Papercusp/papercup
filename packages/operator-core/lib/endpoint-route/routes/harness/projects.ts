@@ -422,7 +422,7 @@ const create = defineTool({
  */
 const createHive = defineTool({
   method: 'POST',
-  path: '/harness/hives',
+  path: '/harness/pots',
   auth: 'loopback',
   async handler(req) {
     let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null; blueprintId?: string } = {};
@@ -483,7 +483,7 @@ const createHive = defineTool({
  */
 const createHiveFromRepoRoute = defineTool({
   method: 'POST',
-  path: '/harness/hives/from-repo',
+  path: '/harness/pots/from-repo',
   // Mutating route → loopback per the Wave-1 rule (auth-tier rollout).
   auth: 'loopback',
   // Clone + the blueprint test-verify run can far exceed the default route timeout.

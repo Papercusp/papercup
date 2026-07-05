@@ -1236,7 +1236,7 @@ pub struct App {
     /// shared_presence rows; grouped per-machine at render) + the list cursor.
     pub hives: Vec<crate::models::PresenceRow>,
     /// The P2P hive directory (p2p-hive-directory P-006) — discovered hives to
-    /// browse + join, via `GET /api/discovery/hives`. `hive_dir_sel` is the
+    /// browse + join, via `GET /api/discovery/pots`. `hive_dir_sel` is the
     /// selected directory row (for the Join CTA).
     pub hive_directory: Vec<crate::models::DiscoveredHiveRow>,
     pub hive_dir_sel: usize,

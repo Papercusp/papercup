@@ -2864,7 +2864,7 @@ async fn hive_dossier_fetch(key: String, tx: UnboundedSender<Event>) {
     let _ = tx.send(Event::HiveDossier { beacons, asks });
 }
 
-/// Fetch the P2P hive directory (`GET /api/discovery/hives`) and emit
+/// Fetch the P2P hive directory (`GET /api/discovery/pots`) and emit
 /// `Event::HiveDirectory` — the Hives tab's browseable directory list
 /// (p2p-hive-directory P-006). Best-effort: a fetch failure keeps the prior list.
 async fn fetch_hive_directory(tx: UnboundedSender<Event>) {

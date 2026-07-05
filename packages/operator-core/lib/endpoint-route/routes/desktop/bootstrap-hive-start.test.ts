@@ -1,5 +1,5 @@
 /**
- * CSRF guard for POST /desktop/bootstrap-hive/start. `auth: 'loopback'` is
+ * CSRF guard for POST /desktop/bootstrap-pot/start. `auth: 'loopback'` is
  * source-IP based, so a cross-site browser POST must be refused BEFORE the
  * side-effecting startBootstrapPapercuspHive() runs.
  */
@@ -10,9 +10,9 @@ const post = (routes as Array<{ method: string; handler: (req: unknown) => Promi
   (r) => r.method === 'POST',
 )!;
 
-describe('POST /desktop/bootstrap-hive/start — CSRF guard', () => {
+describe('POST /desktop/bootstrap-pot/start — CSRF guard', () => {
   it('refuses a cross-site request with 403 (no side effect)', async () => {
-    const req = new Request('http://127.0.0.1/api/desktop/bootstrap-hive/start', {
+    const req = new Request('http://127.0.0.1/api/desktop/bootstrap-pot/start', {
       method: 'POST',
       headers: { 'sec-fetch-site': 'cross-site' },
     });
@@ -22,7 +22,7 @@ describe('POST /desktop/bootstrap-hive/start — CSRF guard', () => {
   });
 
   it('serves no Access-Control-Allow-Origin (same-origin only)', async () => {
-    const req = new Request('http://127.0.0.1/api/desktop/bootstrap-hive/start', {
+    const req = new Request('http://127.0.0.1/api/desktop/bootstrap-pot/start', {
       method: 'POST',
       headers: { 'sec-fetch-site': 'cross-site' },
     });

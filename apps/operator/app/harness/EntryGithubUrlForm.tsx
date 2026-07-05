@@ -8,7 +8,7 @@
  *
  * Two modes (the P-012 creation fork — every created Pot is a hive, so the
  * plain-harness "standalone" path is RETIRED):
- *   new-hive   (the headline, default) → POST /api/harness/hives/from-repo:
+ *   new-hive   (the headline, default) → POST /api/harness/pots/from-repo:
  *              clone → blueprint detect → hive home + member → visibility-gated
  *              auto-publish (D-002/D-003).
  *   into-hive  same route with `intoHive` — adds the repo as a member of the
@@ -484,7 +484,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     startOptimistic(steps);
 
     try {
-      const res = await fetch('/api/harness/hives/from-repo', {
+      const res = await fetch('/api/harness/pots/from-repo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -573,7 +573,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
 
     if (offer.kind === 'hive') {
       try {
-        const res = await fetch('/api/discovery/join-hive', {
+        const res = await fetch('/api/discovery/join-pot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

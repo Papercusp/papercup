@@ -125,7 +125,7 @@ export function runBootstrap(): void {
           '@papercusp/operator-core/lib/harness/bootstrap-papercusp-hive'
         );
         // Single-flight: shares ONE run with the wizard's post-gh-auth
-        // /api/desktop/bootstrap-hive/start trigger (no double clone).
+        // /api/desktop/bootstrap-pot/start trigger (no double clone).
         const res = await startBootstrapPapercuspHive().done;
         if (res.state !== 'skipped') {
           console.log(

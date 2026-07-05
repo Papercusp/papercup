@@ -188,7 +188,7 @@ async function browse(args: Record<string, unknown> = {}) {
 }
 
 async function postJoinHive(body: unknown) {
-  const req = new Request('http://127.0.0.1/api/discovery/join-hive', {
+  const req = new Request('http://127.0.0.1/api/discovery/join-pot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

@@ -11,7 +11,7 @@
  * blueprint → a small create form (slug · parent dir · learning pack) →
  * INSTANTIATE = install the blueprint into the installed tier
  * (`POST /api/cupboard/install-blueprint`) then stand up a new hive running it
- * (`POST /api/harness/hives` with the installed `blueprintId`). The tier-aware
+ * (`POST /api/harness/pots` with the installed `blueprintId`). The tier-aware
  * resolver (P-014/D-006) then resolves that blueprint's prompts via the
  * installed tier — no per-id baking.
  *
@@ -232,7 +232,7 @@ export function CombBlueprintForm({ onBack, onCreated, hiveLabel }: CombBlueprin
       const blueprintId = instBody.id;
       // 2) CREATE the hive running the freshly-installed blueprint.
       setBusyLabel(`Creating ${hiveLower}…`);
-      const res = await fetch('/api/harness/hives', {
+      const res = await fetch('/api/harness/pots', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

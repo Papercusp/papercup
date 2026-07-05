@@ -1775,6 +1775,44 @@ export function fleetLaunchModelReason(ownModel: string): string {
   );
 }
 
+/** True for a `work_items:claim_next` call in either surface spelling — the direct MCP call
+ *  (`work_items:claim_next`) or the tools:invoke wrapper (`{name:"work_items:claim_next"}`). Matches
+ *  ONLY claim_next (the blind "give me the next backlog item" pull), NOT `work_items:claim` (claim a
+ *  SPECIFIC assigned item by id) — `claim_next` is a distinctive substring that `work_items_claim`
+ *  never contains, so the by-id path stays open. Pure. */
+export function isClaimNextCall(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/-/g, '_');
+  const t = norm(toolName);
+  if (t.includes('claim_next')) return true;
+  if (t.endsWith('tools_invoke') || t === 'tools:invoke') {
+    const inner = input && typeof input.name === 'string' ? norm(input.name) : '';
+    return inner.includes('claim_next');
+  }
+  return false;
+}
+
+/** The redirect returned when a LOCAL-model (ornith) agent calls work_items:claim_next (ornith iter27,
+ *  2026-07-04 / WI-2382 → WI-2046 — failure mode #11). claim_next pulls a RANDOM item off the SHARED
+ *  REAL backlog, not the session's assigned work — an ornith leader that was meant to work its
+ *  behaviour-test plan claim_next'd the live WI-2046 and then FALSELY marked it done, corrupting real
+ *  project state (it had to be reopened by hand). A weak local model cannot be trusted to correctly
+ *  complete + close a real backlog item it self-selected, so the blind pull is denied outright; a
+ *  specifically-assigned item is still reachable by id via work_items:claim. Pure. */
+export function claimNextBlockReason(): string {
+  return (
+    'work_items:claim_next is DISABLED for local-model (ornith) agent sessions. It pulls a RANDOM ' +
+    'item off the SHARED REAL backlog — not your assigned work — and a weak local model that claims ' +
+    "one then mis-marks it done CORRUPTS live project state (iter27: an ornith leader claim_next'd " +
+    'WI-2046 and falsely closed it; it had to be reopened by hand). Work ONLY your ASSIGNED plan: ' +
+    'call `plans:get {slug:"<your --plan>"}` to read your items, then edit the file(s) those items ' +
+    'name. If your launcher/owner assigned you a SPECIFIC real item, claim that ONE by id with ' +
+    '`work_items:claim {id:"WI-..."}` — never claim_next. Do NOT call claim_next again.'
+  );
+}
+
 /** True when the current process is a Papercusp AGENT session, so the coord-hook
  *  guards below (doom-loop breaker, per-turn shell + session fleet-launch budgets,
  *  eval + native-tool-search redirects, native-scheduler lockout, destructive-git

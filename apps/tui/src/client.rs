@@ -976,9 +976,9 @@ impl OperatorClient {
     }
 
     /// The P2P hive directory — verified hives announced on the well-known
-    /// directory topic (`GET /api/discovery/hives`, p2p-hive-directory P-006).
+    /// directory topic (`GET /api/discovery/pots`, p2p-hive-directory P-006).
     pub async fn discovered_hives(&self) -> Result<Vec<crate::models::DiscoveredHiveRow>> {
-        let v = self.get_json("/api/discovery/hives").await?;
+        let v = self.get_json("/api/discovery/pots").await?;
         let resp: crate::models::DiscoveredHivesResponse =
             serde_json::from_value(v).context("parse discovered-hives response")?;
         Ok(resp.rows)

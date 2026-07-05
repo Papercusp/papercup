@@ -21,4 +21,5 @@ for (const a of mod.FILE_ADAPTERS) {
   for (const root of a.roots()) { try { n += ((await readdir(root, { recursive: true })) as string[]).filter((x: string) => x.endsWith('.jsonl')).length; } catch {} }
   log(`${a.sourceKind}: ${n} jsonl in ${Date.now() - t}ms`);
 }
+log('done');
 process.exit(0);

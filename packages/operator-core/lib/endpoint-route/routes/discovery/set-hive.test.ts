@@ -1,5 +1,5 @@
 /**
- * set-hive.test.ts — POST /api/discovery/set-hive (hive-from-github-url P-015),
+ * set-hive.test.ts — POST /api/discovery/set-pot (hive-from-github-url P-015),
  * the hive header strip's create/edit/visibility-flip. Following the
  * join-invite.test.ts template: assert the loopback tier, the body validation
  * 400s (each fired WITHOUT touching the side-effecting setHiveListing), and the
@@ -18,7 +18,7 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-tes
 import setHiveRoute from './set-hive';
 
 async function post(body: unknown, { raw }: { raw?: string } = {}) {
-  const req = new Request('http://127.0.0.1/api/discovery/set-hive', {
+  const req = new Request('http://127.0.0.1/api/discovery/set-pot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: raw !== undefined ? raw : JSON.stringify(body),
@@ -32,7 +32,7 @@ beforeEach(() => {
   setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: true });
 });
 
-describe('POST /api/discovery/set-hive (Gap 9)', () => {
+describe('POST /api/discovery/set-pot (Gap 9)', () => {
   it('declares the loopback auth tier (auth-tier Wave 1)', () => {
     expect((setHiveRoute as { auth?: unknown }).auth).toBe('loopback');
   });

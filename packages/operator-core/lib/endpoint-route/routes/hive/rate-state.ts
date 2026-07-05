@@ -1,5 +1,5 @@
 /**
- * GET /api/hive/:id/policy/rate — live EN-2 per-member rate observability
+ * GET /api/pot/:id/policy/rate — live EN-2 per-member rate observability
  * (shared-hive-owner-enforcement-2026-06-19 EN-1 "Remaining for full release" /
  * findings-EN-4.md "EN-1 GUI snapshot surface — fast follow"; closes WI-253).
  *
@@ -53,7 +53,7 @@ export async function runGetRateState(
 
 const get = defineTool({
   method: 'GET',
-  path: '/hive/:id/policy/rate',
+  path: '/pot/:id/policy/rate',
   auth: 'public',
   async handler(_req, ctx) {
     const hiveHomeSlug = ctx.params.id as string;

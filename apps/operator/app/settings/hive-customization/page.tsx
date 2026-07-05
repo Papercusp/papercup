@@ -16,7 +16,7 @@
  *      over the Hive peer-log; the per-hive scout cycle layers it onto its run
  *      (scout-cycle-action merges it into the tick payload's `scout` block).
  *
- * Both halves write through the loopback `/api/agent-mcp/hive-override-set` route (which
+ * Both halves write through the loopback `/api/agent-mcp/pot-override-set` route (which
  * federates via hive_settings + invalidates `hive.overrides`); the page reads
  * `hive.overrides` via useSyncQuery. nuqs holds the hive / role / section selectors
  * (the agent → UI control surface reads the URL — repo convention). Flag-gated behind
@@ -69,7 +69,7 @@ const SCOUT_PLACEHOLDER = `{
 
 /** REST fallback the sync-mutate hook calls (every transport on desktop SSE). */
 async function hiveOverrideSetRest(args: SetArgs): Promise<SetResp> {
-  const r = await fetch('/api/agent-mcp/hive-override-set', {
+  const r = await fetch('/api/agent-mcp/pot-override-set', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(args),

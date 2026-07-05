@@ -252,7 +252,7 @@ export function bridgeLabel(r: Pick<GitPipelineHiveRow, 'hiveGitMode' | 'bridge'
 }
 
 /** The per-hive pipelines section: a row per gated coding hive + an inline editor that wires
- *  the green-command edit to the per-hive override (POST /api/desktop/git/hive-green-cmd).
+ *  the green-command edit to the per-hive override (POST /api/desktop/git/pot-green-cmd).
  *  The selected hive lives in the URL (nuqs) so it's deep-linkable + agent-driveable. */
 function PerHiveSection() {
   const sync = useSyncQuery<GitPipelineHiveRow>({ queryName: 'dev.gitPipelineHives', staleTime: 30_000 });
@@ -275,7 +275,7 @@ function PerHiveSection() {
     setSaving(true);
     setErr(null);
     try {
-      const res = await fetch('/api/desktop/git/hive-green-cmd', {
+      const res = await fetch('/api/desktop/git/pot-green-cmd', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ slug: sel.slug, greenCmd: clear ? '' : draft }),

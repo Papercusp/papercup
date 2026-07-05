@@ -186,7 +186,7 @@ describe('new-hive mode', () => {
   it('auto-closes on a clean create — onCreated fires with no lingering success view (modal-lifecycle-2026-06-17)', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -208,7 +208,7 @@ describe('new-hive mode', () => {
     expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
 
     // Visibility is derived server-side — the frontend no longer sends it.
-    const createdBody = postedBodies('/api/harness/hives/from-repo')[0];
+    const createdBody = postedBodies('/api/harness/pots/from-repo')[0];
     expect(createdBody).toMatchObject({ githubUrl: VALID_URL });
     expect(createdBody).not.toHaveProperty('visibility');
   });
@@ -216,7 +216,7 @@ describe('new-hive mode', () => {
   it('test-verify is opt-in (hardening D-001): unchecked sends no runTests; checked sends true', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
@@ -226,13 +226,13 @@ describe('new-hive mode', () => {
     expect(optin.checked).toBe(false); // default OFF — running repo code is opt-in
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('runTests');
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('runTests');
 
     cleanup();
     mockFetch.mockClear();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
@@ -241,14 +241,14 @@ describe('new-hive mode', () => {
     await user.click(screen.getByTestId('verify-tests-optin'));
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ runTests: true });
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ runTests: true });
   });
 
   it('learning pack: default selection submits papercusp-default; "none" submits null (learning-packs P-006)', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -269,8 +269,8 @@ describe('new-hive mode', () => {
     expect(picker.value).toBe('papercusp-default');
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: 'papercusp-default' });
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ learningPack: 'papercusp-default' });
     // A clean seeded create auto-closes (modal-lifecycle-2026-06-17): the
     // "started with N learnings" summary lives in the Learning tab now, not a
     // lingering dialog. (The seeded-line render itself stays covered by the
@@ -281,7 +281,7 @@ describe('new-hive mode', () => {
     cleanup();
     mockFetch.mockClear();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
@@ -290,14 +290,14 @@ describe('new-hive mode', () => {
     await user.selectOptions(screen.getByTestId('learning-pack-picker').querySelector('select')!, 'none');
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: null });
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ learningPack: null });
   });
 
   it('the status beacon is AUTO (no opt-in): a known-public repo shows an info note and sends NO beaconConsent', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
@@ -310,8 +310,8 @@ describe('new-hive mode', () => {
     screen.getByText(/A live status beacon .* is published .* automatic for public/);
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    const body = postedBodies('/api/harness/hives/from-repo')[0];
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    const body = postedBodies('/api/harness/pots/from-repo')[0];
     // Beacon is derived server-side from repo privacy — the client sends nothing.
     expect(body).not.toHaveProperty('beaconConsent');
     expect(body).not.toHaveProperty('visibility');
@@ -320,7 +320,7 @@ describe('new-hive mode', () => {
   it('a known-private repo shows NO beacon note and sends no beaconConsent (Private ⇒ no broadcast)', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, inviteSecret: 's3cret', cupboard: { attempted: false, skipped: 'invite' } } },
       },
@@ -330,8 +330,8 @@ describe('new-hive mode', () => {
     expect(screen.queryByTestId('beacon-auto-note')).toBeNull();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    const body = postedBodies('/api/harness/hives/from-repo')[0];
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    const body = postedBodies('/api/harness/pots/from-repo')[0];
     expect(body).not.toHaveProperty('beaconConsent');
     expect(body).not.toHaveProperty('visibility');
   });
@@ -339,7 +339,7 @@ describe('new-hive mode', () => {
   it('beacon consent: an UNKNOWN-privacy repo (pasted URL) hides the question and sends no beaconConsent', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
@@ -348,14 +348,14 @@ describe('new-hive mode', () => {
     expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('beaconConsent');
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('beaconConsent');
   });
 
   it('shows the invite secret for a Private (invite) hive — derived from a private repo', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -383,14 +383,14 @@ describe('new-hive mode', () => {
     expect(seeded.textContent).toContain('Started with 28 default learnings');
     expect(seeded.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&lhive=web-hive');
     // The frontend sends no visibility — the backend derives invite from repo privacy.
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('visibility');
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('visibility');
   });
 
   it('shows + copies the FULL invite link when present, instead of the bare secret (hardening P-006)', async () => {
     const user = userEvent.setup();
     const inviteLink = `papercusp://hive?pubkey=${encodeURIComponent('B'.repeat(43) + '=')}&secret=${'ab12'.repeat(8)}&title=web-hive`;
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -423,7 +423,7 @@ describe('new-hive mode', () => {
   it('shows the duplicateOf warning when force-created past an existing hive', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -448,7 +448,7 @@ describe('new-hive mode', () => {
   it('keeps the success view (does NOT auto-close) when the binding is unverified — a warning to read (modal-lifecycle-2026-06-17)', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -479,7 +479,7 @@ describe('error rendering', () => {
   it('maps clone_auth_required to the gh-auth copy and offers retry', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 401,
         body: { error: 'authentication required', code: 'clone_auth_required' },
       },
@@ -496,7 +496,7 @@ describe('error rendering', () => {
   it('maps slug_exhausted to the customize-slug copy', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 409,
         body: { error: 'no free slug', code: 'slug_exhausted' },
       },
@@ -530,11 +530,11 @@ describe('join offer (existing hive)', () => {
     },
   });
 
-  it('renders the confirm card and joins the HIVE via /api/discovery/join-hive (P-007 hardening)', async () => {
+  it('renders the confirm card and joins the HIVE via /api/discovery/join-pot (P-007 hardening)', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': { status: 200, body: existingHive([memberLink('web', 1), memberLink('api', 2)]) },
-      '/api/discovery/join-hive': {
+      '/api/harness/pots/from-repo': { status: 200, body: existingHive([memberLink('web', 1), memberLink('api', 2)]) },
+      '/api/discovery/join-pot': {
         status: 200,
         body: { ok: true, hiveSlug: 'acme-web', members: [{ ok: true }, { ok: true }] },
       },
@@ -553,7 +553,7 @@ describe('join offer (existing hive)', () => {
 
     // ONE composed call carrying every member link — the route runs the
     // per-link joins AND materializes the local remote-hive view (D-007).
-    const joins = postedBodies('/api/discovery/join-hive');
+    const joins = postedBodies('/api/discovery/join-pot');
     expect(joins).toHaveLength(1);
     expect(joins[0]).toMatchObject({
       hiveId: 'hive-1', // the offer's hiveId, passed through verbatim
@@ -574,9 +574,9 @@ describe('join offer (existing hive)', () => {
     // close (onCreated is the parent's close path), even with no slug to focus.
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': { status: 200, body: existingHive([memberLink('web', 1)]) },
+      '/api/harness/pots/from-repo': { status: 200, body: existingHive([memberLink('web', 1)]) },
       // join succeeded (members ok) but the route returned NO hiveSlug
-      '/api/discovery/join-hive': { status: 200, body: { ok: true, members: [{ ok: true }] } },
+      '/api/discovery/join-pot': { status: 200, body: { ok: true, members: [{ ok: true }] } },
     });
     const { onCreated, onBack } = renderForm();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
@@ -595,7 +595,7 @@ describe('join offer (existing hive)', () => {
     let call = 0;
     mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-      if (url.includes('/api/harness/hives/from-repo')) {
+      if (url.includes('/api/harness/pots/from-repo')) {
         call += 1;
         if (call === 1) return new Response(JSON.stringify(existingHive([])), { status: 200 });
         return new Response(
@@ -624,7 +624,7 @@ describe('join offer (existing hive)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Create anyway' }));
     await waitFor(() => screen.getByText(/Created as a duplicate/));
-    const bodies = postedBodies('/api/harness/hives/from-repo');
+    const bodies = postedBodies('/api/harness/pots/from-repo');
     expect(bodies).toHaveLength(2);
     expect(bodies[0].force).toBeUndefined();
     expect(bodies[1].force).toBe(true);
@@ -633,7 +633,7 @@ describe('join offer (existing hive)', () => {
   it('renders a legacy shared-harness offer with its single join link', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -681,7 +681,7 @@ describe('into-hive mode', () => {
   it('sends intoHive (no visibility) and reports the membership to onCreated', async () => {
     const user = userEvent.setup();
     respondByUrl({
-      '/api/harness/hives/from-repo': {
+      '/api/harness/pots/from-repo': {
         status: 200,
         body: {
           ok: true,
@@ -701,7 +701,7 @@ describe('into-hive mode', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
     expect(screen.queryByRole('heading', { name: /Added to acme/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
-    const body = postedBodies('/api/harness/hives/from-repo')[0];
+    const body = postedBodies('/api/harness/pots/from-repo')[0];
     expect(body).toMatchObject({ githubUrl: VALID_URL, intoHive: 'acme' });
     expect(body.visibility).toBeUndefined();
   });

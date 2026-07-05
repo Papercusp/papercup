@@ -14,7 +14,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  *
  * Share (comb-hive-native-sharing-2026-06-11 P-004/P-005): a formal Hive home
  * (kind 'hive') carries a directory-state badge — Public / Invite / Private /
- * unpublished, read from the OWNED registry meta via /api/discovery/hive-meta
+ * unpublished, read from the OWNED registry meta via /api/discovery/pot-meta
  * — and a **Share** button opening the ShareHiveDialog (visibility choice with
  * consequence copy, title/description, member repos, invite artifact). The
  * legacy `is_shared` (shared.json) badge remains only on non-hive pots until
@@ -70,7 +70,7 @@ export interface HiveHeaderStripProps {
   /**
    * P-005: the directory-state read seam — the OWNED registry meta behind the
    * Public/Invite/Private/unpublished badge. Tests inject; default GETs
-   * /api/discovery/hive-meta. Only invoked for a formal Hive home.
+   * /api/discovery/pot-meta. Only invoked for a formal Hive home.
    */
   fetchShareMeta?: (hiveSlug: string) => Promise<HiveShareMeta | null>;
   /** P-004: the Share-Hive dialog's write seam (tests inject). */

@@ -62,7 +62,7 @@ type Step = 'picker' | EntryStep;
 
 /**
  * Blueprint id for the "New work hive" domain heading (domain-generic-hive
- * P-006 / Brief 3). The coding path OMITS blueprintId — `/api/harness/hives`
+ * P-006 / Brief 3). The coding path OMITS blueprintId — `/api/harness/pots`
  * + createHiveHarness default to the coding `hive`, so only the work id is
  * sent from the UI. Brief 6 (rename `hive`→`coding`, `generic-hive`→`work`)
  * updates this constant; its extends-resolver alias keeps the old id resolving
@@ -191,7 +191,7 @@ function ErrorBanner({ message }: { message: string }) {
 // ── Entry 1 form — new local directory ────────────────────────────────────
 //
 // A new local directory IS a hive: when NOT adding into an existing hive the
-// form stands up a kind:'hive' home (the Queen blueprint) via /api/harness/hives.
+// form stands up a kind:'hive' home (the Queen blueprint) via /api/harness/pots.
 // When a `hive` scope IS passed (into-hive member) it posts a plain member
 // harness to /api/harness/projects, reusing the slug as the folder name. The
 // folder is the slug in both branches — there is no separate folder-name field.
@@ -243,7 +243,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
             // (formal hive_slug / legacy parent_slug). The folder is the slug.
             body: JSON.stringify({ slug, parentDir, folderName: slug, hive }),
           })
-        : await fetch('/api/harness/hives', {
+        : await fetch('/api/harness/pots', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             // P-006: a work hive passes its blueprintId; coding omits it (the
@@ -377,7 +377,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
 //
 // An existing local repo IS a hive: when NOT adding into an existing hive the
 // form LINKS the repo in place AND stands up a kind:'hive' home (the Queen
-// blueprint) via /api/harness/hives with a non-empty `path` (the contract:
+// blueprint) via /api/harness/pots with a non-empty `path` (the contract:
 // `path` set ⇒ link-in-place as a new hive). When a `hive` scope IS passed
 // (into-hive member) it posts a plain member harness to /api/harness/projects,
 // stamping the membership edge. The repo never moves in either branch.
@@ -423,7 +423,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ slug, path, hive }),
           })
-        : await fetch('/api/harness/hives', {
+        : await fetch('/api/harness/pots', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ slug, path, learningPack: learningPack === 'none' ? null : learningPack }),

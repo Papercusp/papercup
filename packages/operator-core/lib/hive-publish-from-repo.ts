@@ -60,7 +60,7 @@ export interface PublishCreatedHiveOutcome {
    * below) and the `existing` join-offer surfaces (lookup-hive-for-repo
    * HiveHit.memberLinks). Surfaced on the outcome so a freshly-created hive's
    * `created` response yields a join target a joiner can pass straight to POST
-   * /api/discovery/join-hive `{ hiveId, memberLinks, hivePubkey }` WITHOUT a
+   * /api/discovery/join-pot `{ hiveId, memberLinks, hivePubkey }` WITHOUT a
    * second directory round-trip (WI-931). Absent when no joinable topic exists
    * (no hive pubkey) or no id-bearing member repo is registered yet.
    */

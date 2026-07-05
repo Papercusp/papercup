@@ -1,5 +1,5 @@
 /**
- * Unit tests for POST /api/agent-mcp/hive-override-set (domain-generic-hive-architecture
+ * Unit tests for POST /api/agent-mcp/pot-override-set (domain-generic-hive-architecture
  * -2026-06-18 P-015). Mocks the IO deps (workspace-registry / hive-settings-store /
  * sync-sse) but uses the REAL scout/config parser so the scout validation feedback
  * (accepted / resolved / dropped) is exercised for real. Asserts: the loopback guard,
@@ -35,7 +35,7 @@ async function callPost(body: unknown, opts?: { loopback?: boolean }): Promise<R
   // x-forwarded-for=127.0.0.1 makes isLoopbackRequest pass without relying on the
   // (undici-stripped) Host header; omit it to exercise the forbidden branch.
   if (opts?.loopback !== false) headers['x-forwarded-for'] = '127.0.0.1';
-  const req = new Request('http://localhost:3070/api/agent-mcp/hive-override-set', {
+  const req = new Request('http://localhost:3070/api/agent-mcp/pot-override-set', {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -49,7 +49,7 @@ beforeEach(() => {
   deleteConfigMock.mockResolvedValue(true);
 });
 
-describe('POST /agent-mcp/hive-override-set', () => {
+describe('POST /agent-mcp/pot-override-set', () => {
   it('rejects a non-loopback request', async () => {
     const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'su', value: 'x' }, { loopback: false });
     expect(res.status).toBe(403);

@@ -50,7 +50,7 @@ describe('CombBlueprintForm', () => {
       if (url.includes('/api/cupboard/install-blueprint')) {
         return new Response(JSON.stringify({ ok: false, error: 'clone failed' }), { status: 500 });
       }
-      // /api/harness/hives — should never be reached on an install failure.
+      // /api/harness/pots — should never be reached on an install failure.
       return new Response(JSON.stringify({ ok: true, project: { slug: 'x', path: '/x' } }), { status: 200 });
     });
     render(<CombBlueprintForm onBack={vi.fn()} onCreated={onCreated} hiveLabel="Hive" />);
@@ -62,7 +62,7 @@ describe('CombBlueprintForm', () => {
 
     await screen.findByRole('alert');
     expect(onCreated).not.toHaveBeenCalled();
-    expect(mockFetch).not.toHaveBeenCalledWith('/api/harness/hives', expect.anything());
+    expect(mockFetch).not.toHaveBeenCalledWith('/api/harness/pots', expect.anything());
   });
 
   it('the Back button returns to the picker (onBack)', async () => {

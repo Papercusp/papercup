@@ -159,7 +159,7 @@ pub enum Event {
     /// every remote peer announced into `shared_presence`, via `coord:presence`.
     Hives(Vec<crate::models::PresenceRow>),
     /// The P2P hive directory (p2p-hive-directory P-006) — verified hives
-    /// announced on the directory topic, via `GET /api/discovery/hives`.
+    /// announced on the directory topic, via `GET /api/discovery/pots`.
     HiveDirectory(Vec<crate::models::DiscoveredHiveRow>),
     /// The cross-Hive network board (hive-network-surface-2026-06-11 B-09) —
     /// one pinned-C-3 row per hive-context over the capability ladder, from

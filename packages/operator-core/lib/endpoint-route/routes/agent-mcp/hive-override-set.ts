@@ -1,5 +1,5 @@
 /**
- * POST /api/agent-mcp/hive-override-set — the per-hive customization write path
+ * POST /api/agent-mcp/pot-override-set — the per-hive customization write path
  * (domain-generic-hive-architecture-2026-06-18 P-015 / D-005, D-007).
  *
  * One owner-surface write for BOTH halves of a hive's settings-resident override:
@@ -40,7 +40,7 @@ const SCOUT_CONFIG_KEYS = ['lenses', 'novelty', 'buckets', 'routing'] as const;
 
 export default defineTool({
   method: 'POST',
-  path: '/agent-mcp/hive-override-set',
+  path: '/agent-mcp/pot-override-set',
   auth: 'loopback',
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {

@@ -9,7 +9,7 @@
  * surface for the publish-flow consent question. Writes route through the shared
  * `beacon-consent` accessor so the value federates to every Swarm of the Hive.
  *
- * `auth: 'loopback'` (auth-tier Wave 1), exactly like /discovery/set-hive — the
+ * `auth: 'loopback'` (auth-tier Wave 1), exactly like /discovery/set-pot — the
  * desktop webview is cookie-less and the loopback bind is the perimeter.
  */
 import { defineTool } from '@papercusp/agent-mcp';

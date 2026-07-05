@@ -19,8 +19,8 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * centered via ShareHiveDialog (a Modal wrapper). Data flows through
  * injectable seams for tests:
  *
- *   - fetchShareMeta: GET /api/discovery/hive-meta (prefill + pubkey + repos)
- *   - setHiveListing: POST /api/discovery/set-hive (the one flip composition)
+ *   - fetchShareMeta: GET /api/discovery/pot-meta (prefill + pubkey + repos)
+ *   - setHiveListing: POST /api/discovery/set-pot (the one flip composition)
  */
 
 import React, { useEffect, useState } from 'react';
@@ -34,7 +34,7 @@ import { TextArea, TextInput } from './TextInput';
 
 export type HiveShareVisibility = 'public' | 'invite' | 'private';
 
-/** The owner's share-state projection (GET /api/discovery/hive-meta). */
+/** The owner's share-state projection (GET /api/discovery/pot-meta). */
 export interface HiveShareMeta {
   hiveId: string;
   /** false = never published (the "unpublished" chrome state). */
@@ -61,10 +61,10 @@ export interface SetHiveOutcome {
   error?: string;
 }
 
-/** Default meta read: GET /api/discovery/hive-meta. null on any failure. */
+/** Default meta read: GET /api/discovery/pot-meta. null on any failure. */
 export async function defaultFetchShareMeta(hiveSlug: string): Promise<HiveShareMeta | null> {
   try {
-    const res = await fetch(`/api/discovery/hive-meta?hiveId=${encodeURIComponent(hiveSlug)}`);
+    const res = await fetch(`/api/discovery/pot-meta?hiveId=${encodeURIComponent(hiveSlug)}`);
     if (!res?.ok) return null;
     const body = (await res.json()) as Partial<HiveShareMeta>;
     return {
@@ -85,7 +85,7 @@ export async function defaultFetchShareMeta(hiveSlug: string): Promise<HiveShare
   }
 }
 
-/** Default write: POST /api/discovery/set-hive (the one flip composition). */
+/** Default write: POST /api/discovery/set-pot (the one flip composition). */
 export async function defaultSetHiveListing(input: {
   hiveId: string;
   title: string;
@@ -94,7 +94,7 @@ export async function defaultSetHiveListing(input: {
   inviteSecret?: string;
 }): Promise<SetHiveOutcome> {
   try {
-    const res = await fetch('/api/discovery/set-hive', {
+    const res = await fetch('/api/discovery/set-pot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),

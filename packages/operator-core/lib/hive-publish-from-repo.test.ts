@@ -177,7 +177,7 @@ describe('publishCreatedHive (P-007)', () => {
     const { deps, calls } = fakes();
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     // The from-repo `created` response can now hand a joiner everything POST
-    // /api/discovery/join-hive needs — { hiveId, memberLinks, hivePubkey } —
+    // /api/discovery/join-pot needs — { hiveId, memberLinks, hivePubkey } —
     // WITHOUT a second directory round-trip. Same set the announce broadcast.
     expect(out.memberLinks).toEqual(calls.published[0].memberLinks);
     expect(out.hivePubkey).toBe(HIVE_PUBKEY);

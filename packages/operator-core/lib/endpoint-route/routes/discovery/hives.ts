@@ -1,5 +1,5 @@
 /**
- * GET /api/discovery/hives → { count, rows: DiscoveredHiveRow[] }
+ * GET /api/discovery/pots → { count, rows: DiscoveredHiveRow[] }
  *
  * The HTTP projection of the P2P hive directory for the desktop webview's
  * HiveDirectoryPanel (p2p-hive-directory-2026-06-06 P-007). Mirrors the
@@ -16,7 +16,7 @@ import { getHiveDirectory } from '../../../hive-directory-deps';
 
 export default defineTool({
   method: 'GET',
-  path: '/discovery/hives',
+  path: '/discovery/pots',
   auth: 'loopback',
   async handler(req) {
     // Lazy-wire the directory (fire-and-forget): a box that gh-authenticated

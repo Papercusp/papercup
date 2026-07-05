@@ -168,7 +168,7 @@ describe('P-006 — domain-first hive-native picker layout (flag on)', () => {
 // ── P-006 — New work hive (domain-generic-hive Brief 3) ─────────────────────
 
 describe('P-006 — New work hive', () => {
-  it('opens the work form and POSTs /api/harness/hives with blueprintId generic-hive', async () => {
+  it('opens the work form and POSTs /api/harness/pots with blueprintId generic-hive', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     mockCreateOk({ slug: 'my-work', path: '/tmp/my-work' });
@@ -184,7 +184,7 @@ describe('P-006 — New work hive', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-work'));
     // The work domain sends the work blueprint id; coding would omit it.
     expect(lastCreateBody()).toMatchObject({ slug: 'my-work', blueprintId: 'work' });
-    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/pots', expect.objectContaining({ method: 'POST' }));
   });
 
   it('a work hive ignores any selected hive scope (always a NEW top-level hive)', async () => {
@@ -203,7 +203,7 @@ describe('P-006 — New work hive', () => {
     // Single-arg onCreated (a root hive), not the {hive} member shape.
     expect(onCreated).toHaveBeenCalledWith('my-work');
     // Posts to the hives route (new hive), never the member projects route.
-    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/pots', expect.objectContaining({ method: 'POST' }));
     expect(mockFetch).not.toHaveBeenCalledWith('/api/harness/projects', expect.anything());
   });
 });
@@ -230,7 +230,7 @@ describe('P-006 — New hive from a Comb blueprint', () => {
       if (url.includes('/api/cupboard/install-blueprint')) {
         return new Response(JSON.stringify({ ok: true, id: 'research-hive' }), { status: 200 });
       }
-      // /api/harness/hives
+      // /api/harness/pots
       return new Response(JSON.stringify({ ok: true, project: { slug: 'my-research', path: '/tmp/my-research' } }), { status: 200 });
     });
     renderPicker({ onCreated });
@@ -249,7 +249,7 @@ describe('P-006 — New hive from a Comb blueprint', () => {
     expect(mockFetch).toHaveBeenCalledWith('/api/cupboard/install-blueprint', expect.objectContaining({ method: 'POST' }));
     const hivesCall = mockFetch.mock.calls.find((c) => {
       const u = typeof c[0] === 'string' ? c[0] : (c[0] as URL).toString();
-      return u.includes('/api/harness/hives');
+      return u.includes('/api/harness/pots');
     });
     expect(hivesCall).toBeDefined();
     expect(JSON.parse((hivesCall![1] as RequestInit).body as string)).toMatchObject({
@@ -363,14 +363,14 @@ describe('P-012b — new-local happy path', () => {
     await user.click(screen.getByText('New local directory'));
 
     // A new local dir IS a new hive (no scope): slug + parentDir only, posts to
-    // /api/harness/hives (the Queen blueprint), no separate folder-name field.
+    // /api/harness/pots (the Queen blueprint), no separate folder-name field.
     await user.type(screen.getByPlaceholderText('my-project'), 'my-proj');
     await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
     await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-proj'));
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/harness/hives',
+      '/api/harness/pots',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -379,7 +379,7 @@ describe('P-012b — new-local happy path', () => {
 // ── P-012c — Entry 3 happy path ───────────────────────────────────────────
 
 describe('P-012c — existing-local happy path', () => {
-  it('with no scope, LINKS the existing repo in place as a NEW hive (POST /api/harness/hives with {path})', async () => {
+  it('with no scope, LINKS the existing repo in place as a NEW hive (POST /api/harness/pots with {path})', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     mockCreateOk({ slug: 'existing', path: '/repos/existing' });
@@ -392,7 +392,7 @@ describe('P-012c — existing-local happy path', () => {
     await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('existing'));
-    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/pots', expect.objectContaining({ method: 'POST' }));
     // A non-empty `path` links the existing dir in place as a hive (the contract);
     // no membership edge (no hive scope).
     expect(lastCreateBody()).toMatchObject({ slug: 'existing', path: '/repos/existing' });
@@ -637,7 +637,7 @@ describe('P-011 — add into hive stamps the membership', () => {
     expect(lastCreateBody()).toMatchObject({ slug: 'web', hive: 'acme' });
   });
 
-  it('switching to New-<hive> creates a new top-level hive (single-arg onCreated, posts /api/harness/hives)', async () => {
+  it('switching to New-<hive> creates a new top-level hive (single-arg onCreated, posts /api/harness/pots)', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     mockCreateOk({ slug: 'solo', path: '/tmp/solo' });
@@ -649,7 +649,7 @@ describe('P-011 — add into hive stamps the membership', () => {
     await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('solo'));
-    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/pots', expect.objectContaining({ method: 'POST' }));
     expect(lastCreateBody().hive).toBeUndefined();
   });
 });

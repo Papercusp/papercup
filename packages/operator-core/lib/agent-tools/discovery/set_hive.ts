@@ -60,7 +60,7 @@ export default defineTool({
     }),
   async handler(args) {
     // The composition (save → withdraw|publish) is shared with the HTTP face
-    // (POST /api/discovery/set-hive) — one flip surface (P-015).
+    // (POST /api/discovery/set-pot) — one flip surface (P-015).
     const { setHiveListing } = await import('../../hive-set-listing');
     const res = await setHiveListing(
       {

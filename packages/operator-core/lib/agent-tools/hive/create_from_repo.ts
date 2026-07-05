@@ -9,7 +9,7 @@
  * ROOT-ONLY like pot:create — hives are peers, never nested.
  * The composition lives in `_create_from_repo.ts` (seam-injected, unit-tested);
  * this is the guard + arg surface. The HTTP face for the CreateHarnessPicker is
- * POST /harness/hives/from-repo (routes/harness/projects.ts).
+ * POST /harness/pots/from-repo (routes/harness/projects.ts).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';

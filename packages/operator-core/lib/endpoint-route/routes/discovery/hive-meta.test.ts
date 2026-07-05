@@ -1,5 +1,5 @@
 /**
- * hive-meta.test.ts — GET /api/discovery/hive-meta (comb-hive-native-sharing
+ * hive-meta.test.ts — GET /api/discovery/pot-meta (comb-hive-native-sharing
  * P-004/P-005), the owner's share-state projection behind the Share-Hive
  * dialog and the hive header's published-state chrome.
  *
@@ -38,7 +38,7 @@ vi.mock('../../../hive-member-repos', () => ({
 }));
 
 async function get(qs: string) {
-  const req = new Request(`http://127.0.0.1/api/discovery/hive-meta${qs}`);
+  const req = new Request(`http://127.0.0.1/api/discovery/pot-meta${qs}`);
   const res = (await hiveMetaRoute.handler(req as never, {} as never)) as Response;
   return {
     status: res.status,
@@ -54,7 +54,7 @@ beforeEach(() => {
   reposThrow = false;
 });
 
-describe('GET /api/discovery/hive-meta (P-004/P-005)', () => {
+describe('GET /api/discovery/pot-meta (P-004/P-005)', () => {
   it('declares the loopback auth tier (auth-tier Wave 1)', () => {
     expect((hiveMetaRoute as { auth?: unknown }).auth).toBe('loopback');
   });

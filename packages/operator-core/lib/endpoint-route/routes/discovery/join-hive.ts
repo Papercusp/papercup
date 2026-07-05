@@ -1,5 +1,5 @@
 /**
- * POST /api/discovery/join-hive — join a discovered hive AS A HIVE
+ * POST /api/discovery/join-pot — join a discovered hive AS A HIVE
  * (hive-from-repo-hardening-2026-06-11 P-007 / D-007).
  *
  * Body: { hiveId, title?, hivePubkey?, memberLinks: string[] }
@@ -15,7 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
   method: 'POST',
-  path: '/discovery/join-hive',
+  path: '/discovery/join-pot',
   // The formal Wave-1 tier (auth-posture standing gate) — N member joins =
   // N read-only clones, desktop-webview-only like its discovery siblings.
   auth: 'loopback',

@@ -193,7 +193,7 @@ export function bootstrapStepLabel(step: BootstrapStep | undefined): string {
 /** Fire-and-forget trigger for the dogfood clone (idempotent, single-flight). */
 export async function startDogfoodBootstrap(): Promise<{ ok: boolean; started?: boolean; progressId?: string }> {
   try {
-    const res = await fetch('/api/desktop/bootstrap-hive/start', { method: 'POST' });
+    const res = await fetch('/api/desktop/bootstrap-pot/start', { method: 'POST' });
     return (await res.json().catch(() => ({ ok: res.ok }))) as {
       ok: boolean;
       started?: boolean;

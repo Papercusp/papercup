@@ -85,7 +85,7 @@ async function stubAndCapture(page: Page): Promise<CreateCapture> {
     await route.continue();
   });
   // The new-hive create (separate endpoint) — capture + succeed.
-  await page.route('**/api/harness/hives', async (route) => {
+  await page.route('**/api/harness/pots', async (route) => {
     if (route.request().method() === 'POST') {
       cap.bodies.push({ __hivesEndpoint: true, ...JSON.parse(route.request().postData() ?? '{}') });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, project: { slug: 'e2e-new-hive' } }) });

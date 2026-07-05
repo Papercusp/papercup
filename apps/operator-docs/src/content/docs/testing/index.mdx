@@ -205,7 +205,7 @@ and when CI gates on them.
 | Layer | Touches | Speed target | CI gate | File pattern |
 |---|---|---|---|---|
 | **Unit** | Pure logic only. No DB, no network, no filesystem beyond fixtures. | < 10s per project | Per-PR | `*.test.ts` |
-| **Integration** | Real Postgres (testcontainers), real `@restart/com` calls, real Drizzle. No outbound network. | < 60s per project | Per-PR (affected only) | `*.integration.test.ts` |
+| **Integration** | Real Postgres (testcontainers), real internal-package calls, real Drizzle. No outbound network. | < 60s per project | Per-PR (affected only) | `*.integration.test.ts` |
 | **End-to-end** | Real running services + browser. Tests entire user flows. | < 5 min per suite | Per-PR for critical paths; nightly for full | `*.spec.ts` |
 
 The split is **non-negotiable**: do not mix layers in one file. A test
@@ -256,7 +256,7 @@ Rejected alternatives:
 - **A single shared `papercusp_test` Postgres** — fast, but tests
   pollute each other through orphan rows and leaked connections.
   Workable for small suites; falls over fast.
-- **Mocking Drizzle / `@restart/com`** — mocks drift from reality and
+- **Mocking Drizzle / internal packages** — mocks drift from reality and
   produce false greens. The whole point of integration tests is to
   catch what mocks would miss.
 
@@ -330,7 +330,7 @@ behind a single helper.
 | Visual regression | **Lost Pixel** | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in. | MIT |
 | React / DOM assertions | **@testing-library/react** + **user-event** | Standard React testing utilities. | MIT |
 | Property-based | **fast-check** | For payload encoders, validators, slug rewriters — anywhere example tests undercount. | MIT |
-| Mutation testing (quarterly) | **Stryker** | Health check on critical libs (`@restart/com`, `libs/papergrid`). Not in PR gate. | Apache 2.0 |
+| Mutation testing (quarterly) | **Stryker** | Health check on critical libs (`libs/papergrid` and internal packages). Not in PR gate. | Apache 2.0 |
 | Dead-test detection | **Knip** | Finds unused exports, files, deps, tests. Soft warning in CI. | ISC |
 | Coverage | **@vitest/coverage-v8** | Native to Vitest, tracks trend without gating %. | MIT |
 | Orchestration | **NX** (`nx affected -t test`) | Already adopted; computes the dependency graph. | MIT |

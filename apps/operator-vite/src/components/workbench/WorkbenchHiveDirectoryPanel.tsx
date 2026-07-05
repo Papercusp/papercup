@@ -3,9 +3,9 @@
  * browser (p2p-hive-directory-2026-06-06 P-007).
  *
  * Browses the hives this peer has discovered on the well-known directory topic
- * (GET /api/discovery/hives — the HTTP projection of the directory service) and
+ * (GET /api/discovery/pots — the HTTP projection of the directory service) and
  * offers a Join CTA per hive. Joining runs the composed hive-join flow
- * (POST /api/discovery/join-hive — every member link in one call) — so a
+ * (POST /api/discovery/join-pot — every member link in one call) — so a
  * one-click join needs the hive to carry full member links; a topic-only hive
  * lists fine but its Join is disabled with a "link required" hint (D-002: the
  * directory is discovery; joining still runs the full admission flow).
@@ -14,7 +14,7 @@
  * P-009): the directory is push-driven — a withdrawn hive drops out / a new
  * announce appears off the directory's own invalidations (the ingest path +
  * announce/withdraw/beacon writers), NOT the old 30s poll. The resolver serves
- * the SAME row shape the GET /api/discovery/hives endpoint did, so rendering is
+ * the SAME row shape the GET /api/discovery/pots endpoint did, so rendering is
  * identical. joining is lifecycle state (useState per the nuqs rule). Registered
  * as `workbench:hive-directory` via the workbench route.
  */
@@ -71,7 +71,7 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
     api.setTitle(t('pot', { plural: true }));
   }, [api, t]);
   // P-009: push-driven directory. The resolver serves the same flat HiveRow[] the
-  // /api/discovery/hives endpoint did; a withdrawn hive drops out / a new announce
+  // /api/discovery/pots endpoint did; a withdrawn hive drops out / a new announce
   // appears off the directory's invalidations, no poll. While the first push is in
   // flight (or no provider is mounted) `data` is undefined → the loading state below.
   const { data, error, invalidate } = useSyncQuery({ queryName: 'network.hiveDirectory' });
@@ -87,7 +87,7 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
     // harnesses — one composed call that runs every member join AND
     // materializes the local hive view (grouping/rail/strip on our side).
     try {
-      const res = await fetch('/api/discovery/join-hive', {
+      const res = await fetch('/api/discovery/join-pot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hiveId: hive.hiveId, title: hive.title, memberLinks: hive.memberLinks }),

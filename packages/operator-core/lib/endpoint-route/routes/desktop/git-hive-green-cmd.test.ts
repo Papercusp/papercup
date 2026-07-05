@@ -1,5 +1,5 @@
 /**
- * POST /desktop/git/hive-green-cmd — the /admin/git per-hive green-command edit (P-014).
+ * POST /desktop/git/pot-green-cmd — the /admin/git per-hive green-command edit (P-014).
  * The resolver + the override store are mocked; the route's guards + set/clear dispatch are
  * the unit under test.
  */
@@ -24,7 +24,7 @@ const post = (routes as unknown as Array<{ method: string; handler: (req: unknow
 )!;
 
 function jsonReq(body: unknown, headers: Record<string, string> = {}) {
-  return new Request('http://127.0.0.1/api/desktop/git/hive-green-cmd', {
+  return new Request('http://127.0.0.1/api/desktop/git/pot-green-cmd', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -37,7 +37,7 @@ beforeEach(() => {
   deleteMock.mockReset().mockResolvedValue(true);
 });
 
-describe('POST /desktop/git/hive-green-cmd', () => {
+describe('POST /desktop/git/pot-green-cmd', () => {
   it('refuses a cross-site request with 403 (no write)', async () => {
     const res = await post.handler(jsonReq({ slug: 'h', greenCmd: 'x' }, { 'sec-fetch-site': 'cross-site' }));
     expect(res.status).toBe(403);

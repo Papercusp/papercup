@@ -1,5 +1,5 @@
 /**
- * POST /api/hive/:id/policy — author the owner-signed Hive policy
+ * POST /api/pot/:id/policy — author the owner-signed Hive policy
  * (shared-hive-owner-enforcement-2026-06-19 EN-1, build step 4).
  *
  * GATE (the authoring authority, brief EN-1): ONLY when the Hive's binding is
@@ -239,7 +239,7 @@ const realDeps: SetPolicyDeps = {
 
 const post = defineTool({
   method: 'POST',
-  path: '/hive/:id/policy',
+  path: '/pot/:id/policy',
   auth: 'loopback',
   async handler(req, ctx) {
     const hiveHomeSlug = ctx.params.id as string;
@@ -252,7 +252,7 @@ const post = defineTool({
 
 const get = defineTool({
   method: 'GET',
-  path: '/hive/:id/policy',
+  path: '/pot/:id/policy',
   auth: 'public',
   async handler(_req, ctx) {
     const hiveHomeSlug = ctx.params.id as string;

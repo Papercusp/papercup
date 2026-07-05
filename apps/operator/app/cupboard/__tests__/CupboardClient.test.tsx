@@ -320,10 +320,10 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
   function directoryResponds(rows: unknown[]) {
     fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url);
-      if (u.includes('/api/discovery/hives')) {
+      if (u.includes('/api/discovery/pots')) {
         return new Response(JSON.stringify({ count: rows.length, rows }), { status: 200 });
       }
-      if (u.includes('/api/discovery/join-hive')) {
+      if (u.includes('/api/discovery/join-pot')) {
         const body = JSON.parse(String(init?.body ?? '{}')) as { memberLinks?: string[] };
         return new Response(
           JSON.stringify({ ok: true, hiveSlug: 'demo-hive', members: (body.memberLinks ?? []).map(() => ({ ok: true })) }),

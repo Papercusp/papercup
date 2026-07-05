@@ -4141,7 +4141,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // network.hiveDirectory — the P2P hive-directory browse list (data-sync-push-
   // completion P-009): the SAME un-muted, un-expired, non-private discovered set
-  // GET /api/discovery/hives serves to the desktop WorkbenchHiveDirectoryPanel,
+  // GET /api/discovery/pots serves to the desktop WorkbenchHiveDirectoryPanel,
   // moved onto the sync rail so a withdrawn hive drops out / a new announce
   // appears WITHOUT the old 30s poll. Reuses the directory's own
   // listDiscoveredHives builder + the endpoint's exact row shape (so the panel
@@ -4172,7 +4172,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           createdAt: h.createdAt,
           lastSeenMs: h.lastSeenMs,
           // The hive's identity pubkey (raw-32-byte base64) — parity with the
-          // /discovery/hives endpoint so the Comb's ?hive= rollup can match.
+          // /discovery/pots endpoint so the Comb's ?hive= rollup can match.
           hivePubkey: h.hivePubkey ?? null,
         }));
     },

@@ -2,7 +2,7 @@
 //
 // WorkbenchHiveDirectoryPanel render + Join CTA gating (p2p-hive-directory P-007).
 // P-009 (data-sync-push-completion): the directory is now push-driven via the
-// `network.hiveDirectory` sync query (not the old /api/discovery/hives poll), so
+// `network.hiveDirectory` sync query (not the old /api/discovery/pots poll), so
 // the directory data is mocked through useSyncQuery (the AdvNowRunning pattern);
 // only the Join POST still goes through fetch. Refresh now calls the query's
 // invalidate().
@@ -46,10 +46,10 @@ const panelProps = {
 function mockJoinFetch() {
   return vi.fn(async (url: string, init?: RequestInit) => {
     // D-007 (hive-from-repo-hardening): Join makes ONE composed call to
-    // /api/discovery/join-hive (join the HIVE + materialize the local view),
+    // /api/discovery/join-pot (join the HIVE + materialize the local view),
     // not N per-link /api/harness/join-link POSTs. Response carries per-member
     // results so the panel can report "<okCount>/<total> member(s)".
-    if (typeof url === 'string' && url === '/api/discovery/join-hive') {
+    if (typeof url === 'string' && url === '/api/discovery/join-pot') {
       const body = JSON.parse((init?.body as string) ?? '{}') as { memberLinks?: string[]; hiveId?: string };
       const members = (body.memberLinks ?? []).map(() => ({ ok: true }));
       return {
@@ -112,7 +112,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('Join makes ONE composed POST to /api/discovery/join-hive carrying every member link (D-007)', async () => {
+  it('Join makes ONE composed POST to /api/discovery/join-pot carrying every member link (D-007)', async () => {
     dirRows = [
       { hiveId: 'joinable', title: 'Joinable', description: '', owner: 'cat', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
     ];
@@ -124,7 +124,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     // The panel reports the hive slug + member tally from the composed response.
     await waitFor(() => expect(screen.getByText(/Joined pot .* 2\/2 member/)).toBeTruthy());
     // Exactly ONE join-hive call (not N loose join-link calls), carrying both links.
-    const joinCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/discovery/join-hive');
+    const joinCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/discovery/join-pot');
     expect(joinCalls).toHaveLength(1);
     const sent = JSON.parse((joinCalls[0][1] as RequestInit).body as string) as { hiveId: string; memberLinks: string[] };
     expect(sent.hiveId).toBe('joinable');

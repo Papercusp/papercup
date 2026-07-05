@@ -1,5 +1,5 @@
 /**
- * POST /api/desktop/bootstrap-hive/start
+ * POST /api/desktop/bootstrap-pot/start
  *
  * Trigger the `papercusp` dogfood clone-on-first-boot RIGHT NOW (don't wait for
  * the next operator boot). The setup wizard fires this once the GitHub step
@@ -17,7 +17,7 @@
  * passes it, so loopback alone does NOT stop a malicious web page from POSTing
  * here. So this route, unlike its sibling desktop/install routes:
  *   - serves NO CORS — the only legitimate caller is the SAME-ORIGIN setup wizard
- *     (a relative-URL `fetch('/api/desktop/bootstrap-hive/start')`), which needs
+ *     (a relative-URL `fetch('/api/desktop/bootstrap-pot/start')`), which needs
  *     no `Access-Control-Allow-Origin`; advertising `*` only helped an attacker.
  *   - REJECTS any request whose `Sec-Fetch-Site` is `cross-site` (every modern
  *     browser, incl. the Tauri webview, stamps it), so a forged cross-origin POST
@@ -37,7 +37,7 @@ const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json
 export default [
   defineTool({
     method: 'POST',
-    path: '/desktop/bootstrap-hive/start',
+    path: '/desktop/bootstrap-pot/start',
     auth: 'loopback',
     async handler(req) {
       // CSRF guard: refuse a cross-site browser request before any side effect.

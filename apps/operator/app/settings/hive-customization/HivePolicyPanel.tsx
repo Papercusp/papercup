@@ -9,8 +9,8 @@
  * non-claimant sees a read-only view + the reason. nuqs holds the panel open-state
  * (?hivePolicy=) so it is deep-linkable + agent-driveable (repo convention).
  *
- * Reads GET /api/hive/:id/policy (the owner-signed policy, or null = permissive) and
- * writes POST /api/hive/:id/policy { policy } — the server re-checks the claim gate +
+ * Reads GET /api/pot/:id/policy (the owner-signed policy, or null = permissive) and
+ * writes POST /api/pot/:id/policy { policy } — the server re-checks the claim gate +
  * signs with the Hive key, so this UI gate is a hint, the real gate is server-side.
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -108,7 +108,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
     if (!open || !hive) return;
     let cancel = false;
     setLoading(true);
-    fetch(`/api/hive/${encodeURIComponent(hive)}/policy`)
+    fetch(`/api/pot/${encodeURIComponent(hive)}/policy`)
       .then((r) => (r.ok ? (r.json() as Promise<{ ok: boolean; policy: ResolvedPolicy | null }>) : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j) => {
         if (cancel) return;
@@ -132,7 +132,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
   useEffect(() => {
     if (!open || !hive) return;
     let cancel = false;
-    fetch(`/api/hive/${encodeURIComponent(hive)}/policy/rate`)
+    fetch(`/api/pot/${encodeURIComponent(hive)}/policy/rate`)
       .then((r) => (r.ok ? (r.json() as Promise<RateStateResponse>) : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j) => {
         if (!cancel) setRateState(j);
@@ -166,7 +166,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
     if (!hive || !canEdit) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/hive/${encodeURIComponent(hive)}/policy`, {
+      const res = await fetch(`/api/pot/${encodeURIComponent(hive)}/policy`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ policy: buildPolicy() }),

@@ -767,7 +767,7 @@ pub struct CupboardListingsResponse {
     pub listings: Vec<CupboardListing>,
 }
 
-/// One discovered hive from `GET /api/discovery/hives` (p2p-hive-directory P-006).
+/// One discovered hive from `GET /api/discovery/pots` (p2p-hive-directory P-006).
 /// The verified, browseable directory listing the Hives tab renders + joins.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DiscoveredHiveRow {
@@ -788,7 +788,7 @@ pub struct DiscoveredHiveRow {
     pub member_count: u32,
 }
 
-/// `GET /api/discovery/hives` response envelope.
+/// `GET /api/discovery/pots` response envelope.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DiscoveredHivesResponse {
     #[serde(default)]

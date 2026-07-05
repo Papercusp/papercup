@@ -6,12 +6,12 @@
  * assert each {ok:false,error} variant lands on the documented status, plus the
  * malformed-body fast-fails before any side effect.
  *
- *   Gap 7 — POST /harness/hives/from-repo (createHiveFromRepoRoute, :470-540):
+ *   Gap 7 — POST /harness/pots/from-repo (createHiveFromRepoRoute, :470-540):
  *     invalid_url|invalid_slug→400, hive_not_found→404, slug_exhausted/
  *     clone_dest_exists*→409, clone_auth_required→401, clone_not_found→404,
  *     else→502; malformed body (no githubUrl)→400 invalid_url; bogus visibility
  *     coerced to 'public'.
- *   Gap 8 — POST /harness/hives (createHive, :423-461): invalid slug→400
+ *   Gap 8 — POST /harness/pots (createHive, :423-461): invalid slug→400
  *     invalid_slug, slug_exists/dest_exists→409, other error→400.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -43,8 +43,8 @@ const byPath = (path: string) => {
   return r as unknown as { path: string; auth?: string; handler: (req: Request, ctx: unknown) => Promise<Response> };
 };
 
-const fromRepoRoute = byPath('/harness/hives/from-repo');
-const createHiveRoute = byPath('/harness/hives');
+const fromRepoRoute = byPath('/harness/pots/from-repo');
+const createHiveRoute = byPath('/harness/pots');
 
 async function post(
   route: { path: string; handler: (req: Request, ctx: unknown) => Promise<Response> },
@@ -65,8 +65,8 @@ beforeEach(() => {
   createHiveHarness.mockReset();
 });
 
-// ── Gap 7: POST /harness/hives/from-repo status map ──────────────────────────
-describe('POST /api/harness/hives/from-repo — error→status map (Gap 7)', () => {
+// ── Gap 7: POST /harness/pots/from-repo status map ──────────────────────────
+describe('POST /api/harness/pots/from-repo — error→status map (Gap 7)', () => {
   it('declares the loopback auth tier (mutating route, Wave 1)', () => {
     expect(fromRepoRoute.auth).toBe('loopback');
   });
@@ -139,8 +139,8 @@ describe('POST /api/harness/hives/from-repo — error→status map (Gap 7)', () 
   });
 });
 
-// ── Gap 8: POST /harness/hives status map ────────────────────────────────────
-describe('POST /api/harness/hives — createHive error→status map (Gap 8)', () => {
+// ── Gap 8: POST /harness/pots status map ────────────────────────────────────
+describe('POST /api/harness/pots — createHive error→status map (Gap 8)', () => {
   it('declares the loopback auth tier', () => {
     expect(createHiveRoute.auth).toBe('loopback');
   });

@@ -128,7 +128,7 @@ vi.mock('@/app/harness/PublishHiveCard', () => ({
     <div data-testid="publish-hive-card" data-slug={hiveSlug} />
   ),
 }));
-// The active hive's directory share-meta (GET /api/discovery/hive-meta) drives
+// The active hive's directory share-meta (GET /api/discovery/pot-meta) drives
 // the header's Share-button → Shared-badge swap (comb-hive-native-sharing).
 // Seed `hiveShareMeta` per test; default null = never published (unshared → the
 // Share button shows). `public`/`invite` = shared → the Shared badge shows.

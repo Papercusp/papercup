@@ -15,7 +15,7 @@
  * the same split as buildNetworkBoard behind network.board + `network:board`). The
  * full honesty contract lives on that builder.
  *
- * `auth: 'loopback'` — same perimeter as /api/discovery/hives: the cookie-less
+ * `auth: 'loopback'` — same perimeter as /api/discovery/pots: the cookie-less
  * desktop webview over the loopback bind. Read-only; lists nothing private.
  */
 import { defineTool } from '@papercusp/agent-mcp';
