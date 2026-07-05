@@ -18,10 +18,14 @@ vi.mock('../../work-item-checkpoint', () => ({
 }));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
-  // checkpoint.ts fire-and-forgets markFeatureProgress (last_progress_at bump); the
-  // mock must export it or the `void markFeatureProgress(...)` call throws (undefined)
-  // and the handler returns ok:false (agent-activity-liveness-truth integration).
+  // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress (last_progress_at
+  // bump on the matching family; WI-3006). The mock MUST export BOTH or the `void markX(...)`
+  // call throws (undefined is not callable) — the throw lands inside the per-item runBulk fn,
+  // AFTER a successful setWorkItemCheckpoint, so every item that actually WRITES fails ok:false
+  // (agent-activity-liveness-truth integration). Missing markIssueProgress here red-pinned the
+  // 4 write-path tests deterministically (WI-2900 gate triage).
   markFeatureProgress: () => Promise.resolve(true),
+  markIssueProgress: () => Promise.resolve(true),
 }));
 
 import checkpoint from './checkpoint';
