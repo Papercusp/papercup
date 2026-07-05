@@ -9,9 +9,12 @@
  * is gone. If it recurs, the watchdog simply re-files it (search-first dedup).
  *
  * SAFETY: auto-closing real improvement items is dangerous, so the decision is heavily
- * guarded (open + watchdog-keyed + organic + UNassigned + no in-flight dispatch +
- * eligible source + old enough + enough tick history) AND the whole sweep is gated by a
+ * guarded (open + watchdog-keyed + organic + no LIVE in-flight dispatch + eligible
+ * source + old enough + enough tick history) AND the whole sweep is gated by a
  * DEFAULT-OFF flag (`FLAGS.WATCHDOG_AUTO_CLOSE`) — inert until the owner enables it.
+ * NOTE (EI-7317): a bare `assignee` does NOT block retirement on its own — only a live
+ * `in-flight-dispatch` row means someone is genuinely still working it. An assignee left
+ * over from a resolved/abandoned dispatch is not active work; see decideAutoClose.
  */
 
 import { FLAGS } from '@papercusp/flags';

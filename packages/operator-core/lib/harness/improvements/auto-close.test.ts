@@ -40,8 +40,11 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
     expect(decideAutoClose({ ...baseCandidate, signalOrigin: 'drill' }, baseCtx)).toMatchObject({ close: false, reason: 'non-organic' });
     // service-down is a live-state source, deliberately NOT in the eligible allowlist.
     expect(decideAutoClose({ ...baseCandidate, watchdogKey: 'service-down:operator' }, baseCtx)).toMatchObject({ close: false, reason: 'ineligible-source' });
-    expect(decideAutoClose({ ...baseCandidate, assignee: 'su-abc' }, baseCtx)).toMatchObject({ close: false, reason: 'assigned' });
     expect(decideAutoClose({ ...baseCandidate, inFlightDispatch: true }, baseCtx)).toMatchObject({ close: false, reason: 'in-flight-dispatch' });
+    // EI-7317: an assignee WITH a live in-flight dispatch still blocks (real active work) —
+    // 'in-flight-dispatch' wins regardless of assignee, since that's the actual "someone is
+    // on it" signal now.
+    expect(decideAutoClose({ ...baseCandidate, assignee: 'su-abc', inFlightDispatch: true }, baseCtx)).toMatchObject({ close: false, reason: 'in-flight-dispatch' });
     expect(decideAutoClose(baseCandidate, { ...baseCtx, ranTickCount: 5 })).toMatchObject({ close: false, reason: 'insufficient-tick-history' });
     expect(decideAutoClose({ ...baseCandidate, createdAtMs: NOW - 10 * 60_000 }, baseCtx)).toMatchObject({ close: false, reason: 'too-new' });
     expect(decideAutoClose(baseCandidate, { ...baseCtx, seenKeys: new Set([baseCandidate.watchdogKey]) })).toMatchObject({ close: false, reason: 'still-firing' });

@@ -435,3 +435,62 @@ describe('cross-machine-rig exclusion — an item needing a live ≥2-machine ri
     expect(diag.readyUnclaimed).toBe(0);
   });
 });
+
+describe('claim-hold exclusion — a do-not-opportunistically-claim item is NOT self-selected, but stays directly claimable by id (WI-2797)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  /** Seed an issue-family bug carrying payload._claimHold: true. */
+  async function seedHeldIssue(id: string, createdTs = 100) {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'bug', 'open', ${WS}, ${createdTs}, 0,
+              ${db.sql.json({ _claimHold: true })})`;
+  }
+
+  it('a claim-held item is NOT self-selected by claim_next', async () => {
+    await seedHeldIssue('WI-HOLD-1');
+    expect(await claimOne('drain-member')).toBeNull();
+  });
+
+  it('a claim-held item IS still claimable directly by id (claimWorkItem carries no claimHold predicate)', async () => {
+    await seedHeldIssue('WI-HOLD-2');
+    // Self-select excludes it (same assertion as the prior test, for contrast in this block).
+    expect(await claimOne('drain-member')).toBeNull();
+    // The DIRECT-by-id claim path (work_items:claim tool → claimWorkItem → claimIssue) has no
+    // claimHold predicate at all — a held item stays fully claimable when named explicitly.
+    const claimed = await wi.claimWorkItem('WI-HOLD-2', 'named-claimant', { harness: H });
+    expect(claimed?.id).toBe('WI-HOLD-2');
+  });
+
+  it('setWorkItemClaimHold(true) then (false) round-trips — clearing the hold makes the item self-selectable again', async () => {
+    await seedIssue('EI-HOLD-3', { state: 'open', createdTs: 100 });
+    const held = await wi.setWorkItemClaimHold('EI-HOLD-3', true, { harness: H });
+    expect(held?.applicable).toBe(true);
+    expect(await claimOne('drain-member')).toBeNull();
+    await wi.setWorkItemClaimHold('EI-HOLD-3', false, { harness: H });
+    expect(await claimOne('drain-member')).toBe('EI-HOLD-3');
+  });
+
+  it('setWorkItemClaimHold on a feature-family id is a no-op (applicable:false) — issue-family only', async () => {
+    await seedFeature('F-HOLD-4', { status: 'todo', createdTs: 100 });
+    const held = await wi.setWorkItemClaimHold('F-HOLD-4', true, { harness: H });
+    expect(held?.applicable).toBe(false);
+  });
+
+  it('an ordinary issue (no hold tag, NULL payload) is unaffected by the floor', async () => {
+    await seedIssue('EI-HOLD-5', { state: 'open', createdTs: 100 });
+    expect(await claimOne('drain-member')).toBe('EI-HOLD-5');
+  });
+
+  it('claim_next MISS diagnosis (diagnoseClaimNextMiss) also excludes a held item from readyUnclaimed for the caller', async () => {
+    await seedHeldIssue('WI-HOLD-6');
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'drain-member' });
+    // present in the pool (pendingUnclaimed) but NOT counted ready — matches what the
+    // claim itself would (not) serve, so the miss diagnosis never disagrees with claim_next.
+    expect(diag.pendingUnclaimed).toBeGreaterThan(0);
+    expect(diag.readyUnclaimed).toBe(0);
+  });
+});
