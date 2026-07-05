@@ -259,6 +259,24 @@ describe('SessionsRosterView', () => {
     });
   });
 
+  it('EI-7626: renders one --mode chip per official standing mode; none when modes is empty/absent', async () => {
+    syncState.roster = {
+      active: [
+        entry({ ownerId: 'a', label: 'worker-188', modes: ['auto', 'ideate'] }),
+        entry({ ownerId: 'b', label: 'worker-189' }), // modes absent (older operator payload)
+      ],
+      ended: [],
+    };
+    const { container, findByText } = render(
+      <SessionsRosterView planFilters={[]} onSelectAgent={vi.fn()} />,
+    );
+    await findByText('worker-188');
+    const chips = [...container.querySelectorAll('.pc-roster__chip--mode')].map(
+      (c) => c.textContent,
+    );
+    expect(chips).toEqual(['auto', 'ideate']);
+  });
+
   it('clicking a row calls onSelectAgent with the owner id (P-007 selection)', async () => {
     const onSelectAgent = vi.fn();
     const { findByText } = render(

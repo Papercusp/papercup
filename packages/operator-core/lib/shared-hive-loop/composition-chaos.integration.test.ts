@@ -104,11 +104,6 @@ describe('P-002 — partition mid-feature: fail-open claims, heal, reconcile to 
       await rig.runFakePipeline(b, 'F-004');
 
       // ── HEAL → convergence resumes, reaches and HOLDS a fixed point. ──
-      // TEMP DEBUG su-8dc11 pre-heal state
-      for (const [nm, cell] of [['a', a], ['b', b]] as const) {
-        const r = await cell.sql`SELECT taken_by, fed_ts, fed_hlc, author_pubkey, origin FROM harness_shared.work_items WHERE feature_id = 'F-003'`;
-        console.log('PRE', nm, JSON.stringify(r));
-      }
       rig.setPartitioned(false);
       const heal = await rig.converge({ maxPasses: 16 });
       expect(heal.fixedPoint, 'post-heal merge+drain never settled (echo loop?)').toBe(true);
@@ -122,11 +117,6 @@ describe('P-002 — partition mid-feature: fail-open claims, heal, reconcile to 
       const reversed = reconcileAll([...completions].reverse()).find((r) => r.workItemId === 'F-003')!;
       expect(reversed.winner.claimId).toBe(contested[0].winner.claimId);
 
-      // TEMP DEBUG su-8dc11 — remove before commit
-      for (const [nm, cell] of [['a', a], ['b', b]] as const) {
-        const r = await cell.sql`SELECT taken_by, fed_ts, fed_hlc, author_pubkey, origin FROM harness_shared.work_items WHERE feature_id = 'F-003'`;
-        console.log('DBG', nm, JSON.stringify(r));
-      }
       const winnerCell = contested[0].winner.holderPubkey === a.electionPubkey ? 'a' : 'b';
       const verdict = evaluateCompositionOracles({
         backlogIds: BACKLOG,

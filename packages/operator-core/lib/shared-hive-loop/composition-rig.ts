@@ -485,13 +485,26 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       WITH CASCADED CHECK OPTION;
   `);
 
-  // Migration 214's stamp_local_federated_write function VERBATIM (sliced
-  // before its 11-table attach loop — this schema has two of the eleven), then
-  // attached to the two tables present here.
-  const mig214 = readFileSync(join(SQL_DIR, '214-federated-fed-ts-local-stamp.sql'), 'utf8');
-  const fnEnd = mig214.indexOf('DO $body$');
-  if (fnEnd < 0) throw new Error('composition-rig: migration 214 shape changed — update the slice point');
-  await sql.unsafe(mig214.slice(0, fnEnd));
+  // WI-2923: install migration 314's SUPERSEDING clock + stamp function, NOT the
+  // obsolete 214 slice. 214's stamp refreshed fed_ts but left a previously-applied
+  // fed_hlc in place — and fed_order_key PREFERS the hlc — so a locally-rewritten
+  // row's LWW key regressed to the stale hlc and ANY remote op (even strictly
+  // older) overwrote newer local content on heal: the exact F-003 winner a/b swap
+  // this rig's P-002 chaos leg kept red. Production runs 314's function (local
+  // writes stamp fed_hlc := hlc_now(), recv-advanced past every seen remote hlc,
+  // so keys never regress); the rig must match. Slices: §1 (hlc_clock singleton +
+  // hlc_now/hlc_recv) and §3 (the stamp fn); §2's 11-table ALTERs are skipped —
+  // this schema's two tables already carry fed_hlc.
+  const mig314 = readFileSync(join(SQL_DIR, '314-d001-hlc-ordering-key.sql'), 'utf8');
+  const s1 = mig314.indexOf('-- \u2500\u2500 1.');
+  const s2 = mig314.indexOf('-- \u2500\u2500 2.');
+  const s3 = mig314.indexOf('-- \u2500\u2500 3.');
+  const s3b = mig314.indexOf('-- \u2500\u2500 3b.');
+  if (s1 < 0 || s2 < 0 || s3 < 0 || s3b < 0) {
+    throw new Error('composition-rig: migration 314 shape changed — update the slice points');
+  }
+  await sql.unsafe(mig314.slice(s1, s2));
+  await sql.unsafe(mig314.slice(s3, s3b));
   await sql.unsafe(`
     CREATE TRIGGER stamp_local_federated_write_trg
       BEFORE INSERT OR UPDATE ON harness_shared.work_items
