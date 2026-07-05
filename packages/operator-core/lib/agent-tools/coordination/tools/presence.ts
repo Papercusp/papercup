@@ -19,6 +19,7 @@ import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
+import { getModesForOwners } from '../../../modes/store';
 
 export default defineTool({
   name: 'coord:presence',
@@ -148,10 +149,28 @@ export default defineTool({
     // which agent is itself without a separate coord:whoami. Best-effort: an
     // unattributable caller just gets no marker (`self` omitted).
     const self = resolveSelfRef(ctx);
+    // modes-and-intake-ux-2026-07-05 P-007: ambient mode visibility — attach each
+    // ACTIVE row's official modes (e.g. modes:['auto','grade']) in ONE batched read,
+    // AFTER the byte-stable snapshot (mode churn is deliberately etag-excluded, same
+    // as liveness churn — a `since:` stub may lag a mode flip; mode:get is the fresh
+    // point read). Best-effort: a mode-read failure never degrades the roster.
+    let active = markSelfRows(snapshot.active, self);
+    try {
+      const ids = active.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
+      if (ids.length) {
+        const modeMap = await getModesForOwners(c.workspaceId ?? 'default', ids);
+        if (modeMap.size) {
+          active = active.map((r) => {
+            const m = modeMap.get(String((r as { ownerId?: unknown }).ownerId ?? ''));
+            return m?.length ? { ...r, modes: m.map((x) => x.mode) } : r;
+          });
+        }
+      }
+    } catch { /* fail-soft */ }
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),
-      active: markSelfRows(snapshot.active, self),
+      active,
     };
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui roster panes) still read identical lossless JSON text.

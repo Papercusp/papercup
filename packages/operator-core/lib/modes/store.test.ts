@@ -26,7 +26,9 @@ function mockSql() {
   const key = (ws: string, o: string, a: string) => `${ws}|${o}|${a}`;
 
   const fn = (first: unknown, ...vals: unknown[]): unknown => {
-    if (!Array.isArray(first)) return { __in: first }; // sql(array) helper — the IN (...) fragment
+    // A tagged-template call receives a TemplateStringsArray (has .raw);
+    // sql(array) — the IN (...) helper — receives a plain array.
+    if (!Array.isArray(first) || !('raw' in (first as object))) return { __in: first };
     const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
     if (text.includes('INSERT INTO harness_shared.agent_mode_changes')) {
       const [ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected] = vals;

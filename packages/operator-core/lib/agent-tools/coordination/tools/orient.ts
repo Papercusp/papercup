@@ -38,6 +38,8 @@ import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { readOwnerPresence } from '../../../power-user-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { getModes } from '../../../modes/store';
+import { modeById } from '../../../modes/registry';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -456,7 +458,29 @@ export default defineTool({
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
     // caller. See self-marker.ts for why this is a response-layer overlay.
     const self = resolveSelfRef(ctx);
-    const out = self ? { self, ...(result as object) } : result;
+    // modes-and-intake-ux-2026-07-05 P-008: re-inject the caller's ACTIVE mode
+    // contracts each orient — the always-present prompt carries only the one-line
+    // mode index; orient (the mandated bootstrap read, run every wake) is the
+    // activation-scoped carry surface, same pattern as checkpoint re-injection.
+    // A peer-set mode thus takes effect at the target's next turn boundary.
+    // Best-effort: a mode-read failure never breaks orientation.
+    let modes: { active: Array<Record<string, unknown>>; contracts: string } | undefined;
+    if (ownerId) {
+      try {
+        const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
+        const rows = await getModes(ws, ownerId);
+        if (rows.length) {
+          modes = {
+            active: rows.map((r) => ({ mode: r.mode, reason: r.reason, setBy: r.setBy, ownerDirected: r.ownerDirected, setAt: r.setAt })),
+            contracts: rows
+              .map((r) => modeById(r.mode)?.contract)
+              .filter(Boolean)
+              .join('\n\n'),
+          };
+        }
+      } catch { /* fail-soft */ }
+    }
+    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(result as object) };
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path
