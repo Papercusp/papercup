@@ -9,6 +9,46 @@ import {
 import { setFlagOverridesForTest } from './test';
 import { ALL_FLAG_KEYS, FLAGS, FLAG_DEFAULTS } from './types';
 
+// EI-7686 (watchdog red-test, repeated 4x/6h): `getFlag`/`getAllFlags` deliberately let a
+// `PAPERCUSP_FLAG_<KEY>` / `PAPERCUSP_PLATFORM_MODE` env var override the resolved value
+// (resolveEnvOverride / resolvePlatformModeOverride in server.ts) — that precedence is
+// intentional dev-override behavior, NOT the bug. The actual bug is this file assuming a
+// CLEAN env: this dev host's shell exports several ambient overrides for interactive use
+// (observed: PAPERCUSP_FLAG_PAPERCUSP_DOGFOOD_PAPERCUSP_HIVE_SHARE=0,
+// PAPERCUSP_FLAG_PAPERCUSP_VIDEO_CHANNELS=1, …) that leak into every vitest worker spawned
+// from it, so "returns FLAG_DEFAULTS with no backend" silently diverged from the actual
+// defaults for any key an ambient var happened to override. Root-caused + fixed as a test-
+// isolation bug: snapshot + strip every `PAPERCUSP_FLAG_*` / `PAPERCUSP_PLATFORM_MODE` env
+// var before each test in this file (restoring after), so the suite exercises the CODE's
+// default behavior regardless of what the invoking shell happens to have exported — the same
+// class of ambient-env leak could hit ANY future key, on ANY dev box or CI runner, so this
+// guards the whole class rather than special-casing the one key that happened to diverge here.
+// NOTE (2026-07-05, su-16455): this exact block was silently dropped from the shared tree once
+// already (a concurrent full-file write raced the original landing before git-sync could commit
+// it) — if you find this comment missing again, that's the recurrence, not a sign the fix was
+// never needed.
+function ambientFlagEnvKeys(): string[] {
+  return Object.keys(process.env).filter(
+    (k) => k.startsWith('PAPERCUSP_FLAG_') || k === 'PAPERCUSP_PLATFORM_MODE',
+  );
+}
+let savedFlagEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  savedFlagEnv = {};
+  for (const k of ambientFlagEnvKeys()) {
+    savedFlagEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+});
+afterEach(() => {
+  // Also strip anything a test set (and forgot to clean up) before restoring the snapshot,
+  // so a test's own env mutation never bleeds into the next test.
+  for (const k of ambientFlagEnvKeys()) delete process.env[k];
+  for (const [k, v] of Object.entries(savedFlagEnv)) {
+    if (v !== undefined) process.env[k] = v;
+  }
+});
+
 describe('flag backend in offline-only mode', () => {
   beforeEach(() => {
     initFlagBackend(null);

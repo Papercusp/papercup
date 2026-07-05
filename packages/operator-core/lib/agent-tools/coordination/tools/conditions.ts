@@ -126,8 +126,13 @@ export function computeConditionStates(
   return out;
 }
 
-/** Load every condition-carrying envelope, cheapest available path. */
-async function readConditionEnvelopes(): Promise<Record<string, unknown>[]> {
+/**
+ * Load every condition-carrying envelope, cheapest available path. Exported
+ * (WI-2965) so the coord:conditions staleness actor (system-health/
+ * condition-staleness-alarm.ts) reads the SAME rows this tool's handler folds,
+ * rather than re-deriving its own read path.
+ */
+export async function readConditionEnvelopes(): Promise<Record<string, unknown>[]> {
   // PG pushdown: condition rows are a tiny sliver of the messages surface —
   // filter server-side on the jsonb keys (mirrors readInbox's fast path,
   // including the fall-through to the seam on any error / non-PG backend).
