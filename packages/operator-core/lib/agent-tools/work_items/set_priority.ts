@@ -25,7 +25,8 @@
  * is genuinely unresolvable right now, do NOT try to "deprioritize" it via this tool —
  * for a feature-family item, flip its state to `blocked` (excluded from claim_next's
  * readiness floor) instead; issue-family items (bug/change/task) have no such
- * transient-hold state today (see the WI-1671-sibling follow-up filed for EI-6835).
+ * transient-hold state today (see WI-2797 — the sibling follow-up filed for this gap;
+ * a prior comment here pointed at WI-1671, which is unrelated — that was a stale ref).
  *
  * DISTINCT from `work_items:reorder`, which ranks ONE bee's already-CLAIMED work-list
  * (a per-assignee queue, post-claim). This sets the GLOBAL backlog order (pre-claim).

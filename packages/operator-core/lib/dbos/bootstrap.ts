@@ -43,6 +43,37 @@ const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
 
 const G = globalThis as unknown as { __papercuspDbosStarted?: boolean };
 
+/**
+ * WI-2790: DBOS's own system-database pool (a raw `pg.Pool` inside
+ * @dbos-inc/dbos-sdk, wholly separate from this app's postgres-js pools in
+ * libs/papercusp/libs/db/src/connection.ts) sets no idle-in-transaction GUC of its
+ * own, so it silently inherits the CLUSTER-level default — 60s, per EI-49's
+ * deliberate fleet-wide leak/wedge safety net (an app MCP write whose transport
+ * drops mid-call must not hold a transaction-scoped advisory lock open forever).
+ * That 60s budget assumed "a healthy transaction is never idle this long" — true
+ * at the concurrency EI-49 was tuned for, but this host now regularly runs at
+ * very high load (measured load average ~40-60 under the full agent fleet), where
+ * the Node event loop can legitimately stall a DBOS queue-poller / delayed-workflow
+ * transition past 60s with zero actual leak. Postgres then kills the
+ * still-healthy connection ("Unexpected error in idle client: ... idle-in-transaction
+ * timeout"), and DBOS's own retry logic reconnects and continues — functionally
+ * harmless, but ~114 log lines/2h of noise (the WI-2790 report).
+ *
+ * Fix: widen the timeout ONLY on DBOS's own system-db session, via a startup
+ * `options` GUC appended to its connection string (node-postgres forwards `options`
+ * verbatim as a startup packet, same mechanism connection.ts uses for the app's own
+ * pools — just via the URL instead of a client-options object). The CLUSTER-wide
+ * default (60s) — and therefore the EI-49 safety net for every OTHER connection,
+ * including this app's own pools — is untouched; only DBOS's dedicated system
+ * connections get more slack. A DBOS transaction genuinely wedged for minutes is
+ * still clearly anomalous and still gets killed, just later.
+ */
+function withDbosIdleTxGrace(url: string): string {
+  const graceSec = Math.max(60, Number(process.env.PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC) || 300);
+  const opt = encodeURIComponent(`-c idle_in_transaction_session_timeout=${graceSec * 1000}`);
+  return url + (url.includes('?') ? '&' : '?') + `options=${opt}`;
+}
+
 /** Whether DBOS has actually launched in this process. The route-side A/B fall-back
  *  uses this: a flow flag can be ON while DBOS itself is OFF (PAPERCUSP_DBOS_ENABLE
  *  unset, or PG unreachable so launch was skipped) — in that case callers must use
