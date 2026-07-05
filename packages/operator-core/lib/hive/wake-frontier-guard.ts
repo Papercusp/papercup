@@ -17,6 +17,7 @@
  */
 import type postgres from 'postgres';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
+import { SUMMARY_INACTIVE_UNIT_STATES } from './placement-watchdog';
 
 export interface WakeFrontierGuardInput {
   /** Whether the declaration sets a time component (`at`/`inSeconds`). A timer
@@ -111,9 +112,23 @@ export async function listUnplacedHiveFrontier(
 /**
  * The Queen's non-terminal placements (P-030 drive-to-empty): hive_placements
  * rows in `working`/`recovering` (NOT cursed/stranded — those are escalated to the
- * owner, no longer the Queen's to drive). Best-effort: the table may not exist yet
- * on a host whose migration is pending → return [] (the guard simply doesn't fire
- * on placements there; the unplaced-frontier leg still works).
+ * owner, no longer the Queen's to drive) WHOSE SUBJECT WORK-ITEM IS STILL LIVE.
+ *
+ * EI-7641: a `hive_placements` row does not always converge when its subject unit
+ * reaches terminal (passed/deprecated/resolved/closed) or gets deliberately parked
+ * (blocked/needs-human) — the completion-reconcile GC (evaluateTerminalPlacementReconcile,
+ * `reconcileOneHive`) only revisits units that still have a recent bee-spawn candidate,
+ * not a periodic full sweep (the same staleness `summarizeOpenPlacements` already
+ * guards against for the brief-facing summary). Left un-joined, this guard forced
+ * EVERY no-time Queen wake to `force:true` past a list of ids that were already done,
+ * deprecated, or owner-parked with zero live claim and no policy avenue to progress.
+ * So: LEFT JOIN the live unit and require it to (a) still exist and (b) NOT be in
+ * SUMMARY_INACTIVE_UNIT_STATES (terminal ∪ parked) — mirroring summarizeOpenPlacements'
+ * own join exactly, so the two never diverge on what counts as "still open".
+ *
+ * Best-effort: the table may not exist yet on a host whose migration is pending →
+ * return [] (the guard simply doesn't fire on placements there; the unplaced-frontier
+ * leg still works).
  */
 export async function listNonTerminalPlacements(
   sql: postgres.Sql,
@@ -123,12 +138,17 @@ export async function listNonTerminalPlacements(
 ): Promise<string[]> {
   try {
     const rows = await sql<{ work_item_id: string }[]>`
-      SELECT work_item_id
-        FROM harness_shared.hive_placements
-       WHERE workspace_id = ${workspaceId}
-         AND install_slug = ${installSlug}
-         AND status IN ('working', 'recovering')
-       ORDER BY updated_at ASC
+      SELECT p.work_item_id
+        FROM harness_shared.hive_placements p
+        LEFT JOIN harness_shared.harness_features_consolidated f
+          ON f.workspace_id = p.workspace_id
+         AND f.feature_id = p.work_item_id
+       WHERE p.workspace_id = ${workspaceId}
+         AND p.install_slug = ${installSlug}
+         AND p.status IN ('working', 'recovering')
+         AND f.feature_id IS NOT NULL
+         AND f.status <> ALL(${SUMMARY_INACTIVE_UNIT_STATES}::text[])
+       ORDER BY p.updated_at ASC
        LIMIT ${limit}`;
     return rows.map((r) => r.work_item_id);
   } catch {

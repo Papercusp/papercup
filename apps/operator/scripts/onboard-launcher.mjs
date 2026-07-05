@@ -27,6 +27,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { resolveOperatorBase } from './operator-discovery.mjs';
 
 export const FRAMEWORKS = ['claude', 'codex', 'omp-meridian'];
 
@@ -105,9 +106,9 @@ function say(msg) {
 }
 
 function operatorUrlFrom(args, env = process.env) {
-  return (
-    args.operatorUrl ?? env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3070'
-  ).replace(/\/$/, '');
+  // arg → env → ~/.papercusp/operator.json (packaged installs run the operator
+  // on a per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
+  return resolveOperatorBase(args, env);
 }
 
 async function api(base, path, init) {

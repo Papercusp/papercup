@@ -41,13 +41,13 @@ describe('materializeHiveLocalBlueprint', () => {
     const res = await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
       {
-        readOverrides: async () => ({ queen: 'PAPERCUSP QUEEN SPECIFICS' }),
+        readOverrides: async () => ({ mug: 'PAPERCUSP QUEEN SPECIFICS' }),
         readBuiltinPersona: (role) => (role === 'mug' ? '# Built-in Queen' : null),
       },
     );
     expect(res).not.toBeNull();
     expect(res!.materializedRoles).toEqual(['mug']);
-    const file = join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'queen.md');
+    const file = join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'mug.md');
     expect(readFileSync(file, 'utf8')).toBe('# Built-in Queen\n\n---\n\nPAPERCUSP QUEEN SPECIFICS\n');
   });
 
@@ -55,9 +55,9 @@ describe('materializeHiveLocalBlueprint', () => {
     const hiveDir = tempDir('hlb-solo-');
     const res = await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'work', hiveDir },
-      { readOverrides: async () => ({ bee: 'WORK BEE' }), readBuiltinPersona: () => null },
+      { readOverrides: async () => ({ cup: 'WORK BEE' }), readBuiltinPersona: () => null },
     );
-    const file = join(res!.localRoot, 'blueprints', 'work', 'prompts', 'bee.md');
+    const file = join(res!.localRoot, 'blueprints', 'work', 'prompts', 'cup.md');
     expect(readFileSync(file, 'utf8')).toBe('WORK BEE\n');
   });
 
@@ -66,7 +66,7 @@ describe('materializeHiveLocalBlueprint', () => {
     const res = await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
       {
-        readOverrides: async () => ({ queen: '   ', bee: 'real' }),
+        readOverrides: async () => ({ mug: '   ', cup: 'real' }),
         readBuiltinPersona: () => null,
       },
     );
@@ -77,17 +77,17 @@ describe('materializeHiveLocalBlueprint', () => {
     const hiveDir = tempDir('hlb-clean-');
     await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
-      { readOverrides: async () => ({ queen: 'q', bee: 'b' }), readBuiltinPersona: () => null },
+      { readOverrides: async () => ({ mug: 'q', cup: 'b' }), readBuiltinPersona: () => null },
     );
     // Re-materialize with `bee` removed.
     const res2 = await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
-      { readOverrides: async () => ({ queen: 'q2' }), readBuiltinPersona: () => null },
+      { readOverrides: async () => ({ mug: 'q2' }), readBuiltinPersona: () => null },
     );
     const dir = join(res2!.localRoot, 'blueprints', 'coding', 'prompts');
-    expect(existsSync(join(dir, 'queen.md'))).toBe(true);
-    expect(existsSync(join(dir, 'bee.md'))).toBe(false);
-    expect(readFileSync(join(dir, 'queen.md'), 'utf8')).toBe('q2\n');
+    expect(existsSync(join(dir, 'mug.md'))).toBe(true);
+    expect(existsSync(join(dir, 'cup.md'))).toBe(false);
+    expect(readFileSync(join(dir, 'mug.md'), 'utf8')).toBe('q2\n');
   });
 
   it('does NOT touch a hand-authored .papercusp/blueprints tree (dedicated root)', async () => {
@@ -97,7 +97,7 @@ describe('materializeHiveLocalBlueprint', () => {
     writeFileSync(join(handDir, 'scoper.md'), 'HAND AUTHORED');
     await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
-      { readOverrides: async () => ({ queen: 'q' }), readBuiltinPersona: () => null },
+      { readOverrides: async () => ({ mug: 'q' }), readBuiltinPersona: () => null },
     );
     // The materialized root is separate (.materialized), so the hand-authored file survives.
     expect(readFileSync(join(handDir, 'scoper.md'), 'utf8')).toBe('HAND AUTHORED');
@@ -112,13 +112,13 @@ describe('end-to-end with the tier-aware resolver (P-012 + P-014)', () => {
     const builtin = tempDir('hlb-e2e-builtin-');
     mkdirSync(join(builtin, 'blueprints', 'coding', 'prompts'), { recursive: true });
     writeFileSync(join(builtin, 'blueprints', 'coding', 'blueprint.yaml'), 'id: coding\nextends: base\n');
-    writeFileSync(join(builtin, 'blueprints', 'coding', 'prompts', 'queen.md'), '# Built-in Queen');
+    writeFileSync(join(builtin, 'blueprints', 'coding', 'prompts', 'mug.md'), '# Built-in Queen');
     writeFileSync(join(builtin, 'blueprints', 'coding', 'prompts', 'scoper.md'), '# Built-in Scoper');
 
     const res = await materializeHiveLocalBlueprint(
       { hiveBlueprintId: 'coding', hiveDir },
       {
-        readOverrides: async () => ({ queen: 'HIVE QUEEN DELTA' }),
+        readOverrides: async () => ({ mug: 'HIVE QUEEN DELTA' }),
         readBuiltinPersona: (role) =>
           readFileOrNull(join(builtin, 'blueprints', 'coding', 'prompts', `${role}.md`)),
       },
@@ -133,7 +133,7 @@ describe('end-to-end with the tier-aware resolver (P-012 + P-014)', () => {
     };
     // queen → the materialized local file (override applied)
     expect(resolvePromptFile(ctx, 'mug')).toBe(
-      join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'queen.md'),
+      join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'mug.md'),
     );
     // scoper (not overridden) → falls through to built-in
     expect(resolvePromptFile(ctx, 'scoper')).toBe(

@@ -46,9 +46,16 @@ export const SEED_MANIFEST_FILE = 'manifest.json';
 /**
  * Resource-dir env vars the Tauri sidecar hands the operator (see
  * papercusp-desktop/src-tauri/src/main.rs — each is `sidecar_dir.join("<name>")`).
- * The bundled seed dir is a SIBLING of these (`sidecar_dir.join("seed")`, bundled
- * via the tauri.conf seed resource glob), so it resolves to
- * `<dirname(any of these)>/seed`. Ordered by how reliably each is set on boot.
+ * The bundled seed dir sits either NEXT TO these (`<sidecar>/seed`) or — in every
+ * REAL bundle layout (Linux .deb `usr/lib/<Product>/`, macOS
+ * `Contents/Resources/`) — next to the sidecar dir itself at the RESOURCE ROOT
+ * (`<resourceRoot>/seed`, i.e. `dirname(dirname(any of these))/seed`), because
+ * tauri.conf bundles `seed/**` and `sidecar/**` as sibling resources. Autodetect
+ * probes BOTH (manifest-checked), parent first. Found live on the first seeded
+ * Linux .deb E2E (2026-07-05, WI-2902): only `<sidecar>/seed` was probed, the
+ * installed seed sat at `<resourceRoot>/seed`, and every packaged install
+ * silently cold-joined (network re-clone) with the 3.6 GB seed unused.
+ * Ordered by how reliably each is set on boot.
  */
 const SEED_SIBLING_RESOURCE_ENVS = ['PAPERCUSP_PROMPTS_DIR', 'PAPERCUSP_HARNESS_DIR', 'PAPERCUSP_PG_SQL_DIR'] as const;
 
@@ -71,11 +78,16 @@ export interface ResolveSeedDirResult {
  *
  *   1. `PAPERCUSP_NO_SEED`  → disabled (cold path), regardless of anything else —
  *      the operator's kill-switch + how the cold-join canary forces a real join.
- *   2. `PAPERCUSP_SEED_DIR` → explicit override (release/test hook); honored only
- *      when it actually holds a manifest, else cold path.
- *   3. AUTODETECT the bundled seed dir at `<sidecarResourceRoot>/seed` by deriving
- *      it from a sibling resource dir the sidecar is already handed
- *      (`dirname(<sibling>)/seed`), accepted only when its manifest is present.
+ *   2. `PAPERCUSP_SEED_DIR` → explicit override (release/test hook); honored when
+ *      it actually holds a manifest. A set-but-manifest-less value FALLS THROUGH
+ *      to autodetect (it is a HINT, not a veto) — dead-ending on `env-missing`
+ *      is exactly how the first seeded .deb shipped with its seed unreachable
+ *      (the Rust side passed `<sidecar>/seed` while the bundle held
+ *      `<resourceRoot>/seed`; WI-2902 2026-07-05).
+ *   3. AUTODETECT from a sibling resource dir the sidecar is already handed:
+ *      probe `dirname(<sibling>)/seed` (`<sidecar>/seed`) THEN
+ *      `dirname(dirname(<sibling>))/seed` (`<resourceRoot>/seed` — the real
+ *      .deb/.app layout), accepted only when its manifest is present.
  *   4. Otherwise none — dev boxes + current seed-less packaged builds keep the
  *      unchanged cold join.
  *
@@ -92,19 +104,24 @@ export function resolveSeedDir(
   if (env.PAPERCUSP_NO_SEED) return { seedDir: null, disabled: true, source: 'no-seed' };
 
   const explicit = env.PAPERCUSP_SEED_DIR;
-  if (explicit) {
-    return hasManifest(explicit)
-      ? { seedDir: explicit, disabled: false, source: 'env' }
-      : { seedDir: null, disabled: false, source: 'env-missing' };
+  if (explicit && hasManifest(explicit)) {
+    return { seedDir: explicit, disabled: false, source: 'env' };
   }
 
   for (const key of SEED_SIBLING_RESOURCE_ENVS) {
     const sib = env[key];
     if (!sib) continue;
-    const candidate = join(dirname(sib), 'seed');
-    if (hasManifest(candidate)) return { seedDir: candidate, disabled: false, source: `autodetect:${key}` };
+    // `<sidecar>/seed` first (dev/src-tauri layout), then `<resourceRoot>/seed`
+    // (the real .deb/.app bundle layout — seed and sidecar are sibling resources).
+    for (const candidate of [join(dirname(sib), 'seed'), join(dirname(dirname(sib)), 'seed')]) {
+      if (hasManifest(candidate)) return { seedDir: candidate, disabled: false, source: `autodetect:${key}` };
+    }
   }
 
+  // A set-but-manifest-less explicit dir is reported distinctly (telemetry) once
+  // the autodetect ALSO found nothing — the fallthrough above is the fix for the
+  // wrong-env-path dead end (WI-2902).
+  if (explicit) return { seedDir: null, disabled: false, source: 'env-missing' };
   return { seedDir: null, disabled: false, source: 'none' };
 }
 

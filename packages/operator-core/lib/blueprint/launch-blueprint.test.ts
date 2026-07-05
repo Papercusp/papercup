@@ -188,7 +188,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
 
   it('buildLaunchSpawnRequest stamps a bounded timeout on Queen durable requests by default', async () => {
     const req = await buildLaunchSpawnRequest('coding', { ...opts, kickoff: 'wake' }, 'launch:queen');
-    expect(req.url).toContain('role=queen');
+    expect(req.url).toContain('role=mug');
     expect(req.body.timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
   });
 
@@ -387,10 +387,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       fired.push(input);
     });
     // bee is kind:'harness' — a parent (the Queen) placing it is fine; only hives nest-guard.
-    const target = await fireLaunchBlueprint('cup', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
+    const target = await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
     expect(target.role).toBe('cup');
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'cup', role: 'cup' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'bee', role: 'cup' });
   });
 
   it('honors an overridden blueprint resolver (forked / PG-cache launch blueprint)', async () => {

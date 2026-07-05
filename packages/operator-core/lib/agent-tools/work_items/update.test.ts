@@ -62,6 +62,47 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });
   });
+
+  // EI-7639: a top-level field-edit was previously SILENTLY DROPPED in the
+  // items:[] batch form — `{ kind:'change', items:[{id},{id}] }` returned
+  // ok:true for every item (updated_ts bumped) while applying NO kind change,
+  // because only each item's OWN (undefined) field was used. A top-level
+  // field must now apply as the default for every item that omits its own.
+  describe('top-level field-edit as a batch default (EI-7639)', () => {
+    it('applies a top-level `kind` to every item in items:[] that omits its own', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      await body({ kind: 'change', items: [{ id: 'EI-1' }, { id: 'EI-2' }] });
+      expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ kind: 'change' }), 'me', expect.any(Object));
+      expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ kind: 'change' }), 'me', expect.any(Object));
+    });
+
+    it('a per-item field WINS over the top-level default (per-item is more specific)', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      await body({ kind: 'change', items: [{ id: 'EI-1', kind: 'bug' }, { id: 'EI-2' }] });
+      expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ kind: 'bug' }), 'me', expect.any(Object));
+      expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ kind: 'change' }), 'me', expect.any(Object));
+    });
+
+    it('applies a top-level `harness` default alongside a top-level `severity` default', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      await body({ severity: 'major', harness: 'papercusp', items: [{ id: 'EI-1' }, { id: 'EI-2', harness: 'h2' }] });
+      expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ severity: 'major' }), 'me', { harness: 'papercusp' });
+      expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ severity: 'major' }), 'me', { harness: 'h2' });
+    });
+
+    it('an explicit item-level `null` (clear the field) is NOT overridden by a top-level default', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      await body({ foundDuring: 'wave-1', items: [{ id: 'EI-1', foundDuring: null }, { id: 'EI-2' }] });
+      expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ foundDuring: null }), 'me', expect.any(Object));
+      expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ foundDuring: 'wave-1' }), 'me', expect.any(Object));
+    });
+
+    it('the single-id inline form is unaffected (no items[] present)', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+      await body({ id: 'EI-1', kind: 'change' });
+      expect(updM).toHaveBeenCalledWith('EI-1', expect.objectContaining({ kind: 'change' }), 'me', expect.any(Object));
+    });
+  });
 });
 
 // EI-6060: `status`/`state` are lifecycle fields owned by work_items:set_state. Zod's

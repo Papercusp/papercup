@@ -27,6 +27,25 @@ import {
   __resetEmbedExhaustionAlertForTest,
   __setEmbedExhaustionNotifierForTest,
 } from './embed-exhaustion-alert';
+import { EmbedBudgetExhaustedError } from './embed-admission';
+
+// EI-7596: the 'memory' lane's admission acquire() is what THROWS the daily-spend-cap error —
+// stub it directly (rather than driving the real governor through 5M real tokens) so the test
+// can flip between "cap tripped" and "cap clear" deterministically.
+const mockAcquire = vi.fn(async () => ({ release: () => {} }));
+vi.mock('./embed-admission', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./embed-admission')>();
+  return {
+    ...actual,
+    embedAdmission: () => ({
+      governor: {} as unknown,
+      acquire: mockAcquire,
+      recordResponse: () => {},
+      penalize: () => {},
+      usage: () => ({ day: 0, dayTokens: 0, capTokens: 0, overBudget: false }),
+    }),
+  };
+});
 
 /**
  * GAP 4 — the `resolveEmbedder` cascade (configure.ts) was UNTESTED.
@@ -80,6 +99,8 @@ afterEach(() => {
   invalidateMemoryClient.mockClear();
   __resetOpenAiEmbedCooldownForTest();
   __resetEmbedExhaustionAlertForTest();
+  mockAcquire.mockReset();
+  mockAcquire.mockImplementation(async () => ({ release: () => {} }));
 });
 
 describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 cooldown tracker', () => {
@@ -155,6 +176,34 @@ describe('buildOpenAiEmbedder — owner alert on quota exhaustion', () => {
     await expect(embed('still down')).rejects.toThrow(/openai_embed_failed_500/);
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'openai_billing' });
+  });
+
+  it('EI-7596: our OWN daily spend cap (EmbedBudgetExhaustedError) starts the EI-3381 local-fallback cooldown, not just insufficient_quota', async () => {
+    // Before the fix: the admission throw happened BEFORE the fetch/retry loop's own
+    // markOpenAiEmbedFailure() calls, so this cooldown never engaged and every subsequent
+    // memory:remember/update hard-failed for the rest of the UTC day even though local
+    // (BGE-ONNX) was fully able to serve the request.
+    mockAcquire.mockRejectedValueOnce(new EmbedBudgetExhaustedError('memory'));
+    const fetchM = vi.fn(); // must NEVER be called — the cap throw happens before any HTTP attempt
+    vi.stubGlobal('fetch', fetchM);
+
+    expect(isOpenAiEmbedInCooldown()).toBe(false);
+    const embed = buildOpenAiEmbedder('sk-test', { maxAttempts: 3, maxTotalWaitMs: 1000, sleep: async () => {} });
+    await expect(embed('over budget')).rejects.toThrow(/embed_daily_budget_exhausted/);
+
+    expect(fetchM).not.toHaveBeenCalled();
+    expect(isOpenAiEmbedInCooldown()).toBe(true); // the NEXT resolveEmbedder() call now prefers local
+  });
+
+  it('EI-7596: a plain admission pass-through (no cap hit) does NOT start the cooldown', async () => {
+    const fetchM = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: [1, 2, 3] }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchM);
+
+    const embed = buildOpenAiEmbedder('sk-test', { maxAttempts: 1, maxTotalWaitMs: 1000, sleep: async () => {} });
+    await expect(embed('fine')).resolves.toEqual([1, 2, 3]);
+    expect(isOpenAiEmbedInCooldown()).toBe(false);
   });
 });
 

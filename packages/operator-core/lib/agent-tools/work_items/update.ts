@@ -91,7 +91,14 @@ export default defineTool({
       id: z.string().min(1).optional().describe('single-update shorthand: the work-item id'),
       ...FIELDS,
       ...STATE_FOOTGUN_FIELDS,
-      items: z.array(itemSpec).min(1).max(200).optional().describe('update many work-items at once — each { id, …fields }'),
+      items: z
+        .array(itemSpec)
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
+        ),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
     .superRefine((a, ctx) => {
@@ -105,8 +112,26 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // EI-7639: a top-level field-edit (title/body/severity/kind/foundDuring/
+    // linkedFeatureId/harness) is the DEFAULT for every item in items:[] that
+    // omits its own — previously it was silently dropped in the batch form (the
+    // per-item value was used even when `undefined`, so a top-level `kind` with
+    // items:[{id}, …] applied NO kind change while still reporting ok:true and
+    // bumping updated_ts). `foundDuring`/`linkedFeatureId` are nullable, so an
+    // explicit `null` on the item (clear the field) must NOT be overridden by
+    // the top-level default — only a truly-omitted (`undefined`) field falls
+    // back.
     const list = args.items?.length
-      ? args.items
+      ? args.items.map((it) => ({
+          id: it.id,
+          title: it.title ?? args.title,
+          body: it.body ?? args.body,
+          severity: it.severity ?? args.severity,
+          kind: it.kind ?? args.kind,
+          foundDuring: it.foundDuring !== undefined ? it.foundDuring : args.foundDuring,
+          linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
+          harness: it.harness ?? args.harness,
+        }))
       : [
           {
             id: args.id as string,
@@ -133,7 +158,7 @@ export default defineTool({
             linkedFeatureId: it.linkedFeatureId,
           },
           ident.ownerId,
-          { harness: it.harness ?? args.harness },
+          { harness: it.harness },
         );
         if (res.ok) return { ok: true as const, id: it.id, item: res.item };
         return {

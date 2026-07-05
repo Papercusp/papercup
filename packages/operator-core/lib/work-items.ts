@@ -2295,7 +2295,10 @@ export async function observeWorkItem(id: string, opts: { harness?: string } = {
   return { item: wi, available: !wi.assignee, claimedBy: wi.assignee };
 }
 
-export async function releaseWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
+export async function releaseWorkItem(
+  id: string,
+  opts: { harness?: string; expectedAssignee?: string } = {},
+): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   // Only a release of an actually-CLAIMED item is a `claim:released` transition —
@@ -2318,7 +2321,7 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
     }
   };
   if (wi.family === 'issue') {
-    const updated = await releaseIssue(id);
+    const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
     emitReleased(released);
     return released;
@@ -2346,6 +2349,10 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
            status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
            updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+       -- EI-7588: same atomic compare-and-release guard as the issue-family path above —
+       -- a row held by someone OTHER than expectedAssignee matches 0 rows (null return),
+       -- not a silent steal.
+       AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   emitReleased(released);

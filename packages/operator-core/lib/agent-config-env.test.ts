@@ -24,7 +24,7 @@ describe('applyToProcessEnv — boot-env restore (EI-337)', () => {
     const { applyToProcessEnv } = await freshModule();
 
     // A save with explicit values mutates the live env…
-    applyToProcessEnv({ backend: 'omp', cmd: 'omp -p', models: { bee: 'sonnet' } });
+    applyToProcessEnv({ backend: 'omp', cmd: 'omp -p', models: { cup: 'sonnet' } });
     expect(process.env.AGENT_CMD).toBe('omp -p');
     expect(process.env.AGENT_BACKEND).toBe('omp');
     expect(process.env.AGENT_MODELS).toBe('{"cup":"sonnet"}');

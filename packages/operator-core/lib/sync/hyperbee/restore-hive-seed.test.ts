@@ -119,9 +119,26 @@ describe('resolveSeedDir — bundled-seed-dir resolution (P-010 live-wire 1)', (
     expect(r).toEqual({ seedDir: '/seed', disabled: false, source: 'env' });
   });
 
-  it('PAPERCUSP_SEED_DIR without a manifest ⇒ cold path (source: env-missing), never a broken restore', () => {
+  it('PAPERCUSP_SEED_DIR without a manifest + no autodetect hit ⇒ cold path (source: env-missing), never a broken restore', () => {
     const r = resolveSeedDir({ env: { PAPERCUSP_SEED_DIR: '/seed' }, exists: existsOnly([]) });
     expect(r).toEqual({ seedDir: null, disabled: false, source: 'env-missing' });
+  });
+
+  it('a WRONG PAPERCUSP_SEED_DIR falls through to autodetect instead of dead-ending (WI-2902)', () => {
+    // The first seeded Linux .deb: Rust passed <sidecar>/seed (nothing there)
+    // while the bundle held <resourceRoot>/seed — the env value is a hint, not a veto.
+    const r = resolveSeedDir({
+      env: {
+        PAPERCUSP_SEED_DIR: '/usr/lib/Papercusp GUI/sidecar/seed',
+        PAPERCUSP_PG_SQL_DIR: '/usr/lib/Papercusp GUI/sidecar/db-sql',
+      },
+      exists: existsOnly([`/usr/lib/Papercusp GUI/seed${MANIFEST}`]),
+    });
+    expect(r).toEqual({
+      seedDir: '/usr/lib/Papercusp GUI/seed',
+      disabled: false,
+      source: 'autodetect:PAPERCUSP_PG_SQL_DIR',
+    });
   });
 
   it('autodetects <resourceRoot>/seed from a sibling resource env (dirname + /seed)', () => {
@@ -131,6 +148,27 @@ describe('resolveSeedDir — bundled-seed-dir resolution (P-010 live-wire 1)', (
       exists: existsOnly([`/opt/app/resources/seed${MANIFEST}`]),
     });
     expect(r).toEqual({ seedDir: '/opt/app/resources/seed', disabled: false, source: 'autodetect:PAPERCUSP_PROMPTS_DIR' });
+  });
+
+  it('autodetects the GRANDPARENT <resourceRoot>/seed when the env points inside sidecar/ (the packaged .deb/.app layout)', () => {
+    // Real .deb layout: PAPERCUSP_PROMPTS_DIR=<root>/sidecar/prompts, seed at <root>/seed.
+    const r = resolveSeedDir({
+      env: { PAPERCUSP_PROMPTS_DIR: '/usr/lib/Papercusp GUI/sidecar/prompts' },
+      exists: existsOnly([`/usr/lib/Papercusp GUI/seed${MANIFEST}`]),
+    });
+    expect(r).toEqual({
+      seedDir: '/usr/lib/Papercusp GUI/seed',
+      disabled: false,
+      source: 'autodetect:PAPERCUSP_PROMPTS_DIR',
+    });
+  });
+
+  it('prefers the parent candidate (<sidecar>/seed) over the grandparent when both hold manifests', () => {
+    const r = resolveSeedDir({
+      env: { PAPERCUSP_PROMPTS_DIR: '/root/sidecar/prompts' },
+      exists: existsOnly([`/root/sidecar/seed${MANIFEST}`, `/root/seed${MANIFEST}`]),
+    });
+    expect(r).toEqual({ seedDir: '/root/sidecar/seed', disabled: false, source: 'autodetect:PAPERCUSP_PROMPTS_DIR' });
   });
 
   it('falls through sibling envs to the first whose <root>/seed holds a manifest', () => {

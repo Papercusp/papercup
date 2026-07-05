@@ -13,6 +13,16 @@
  * fire count rides `metadata.fire_count` — so NO migration / new columns (reuse-first: extend
  * the existing jsonb seams rather than widen the routine table). No cap configured ⇒ zero
  * reads, byte-identical to today.
+ *
+ * EI-7613 — the max-duration clock must measure from the LATEST arm, not the routine row's
+ * `created_at`. `materializeLoop` re-arms an EXISTING loop via `upsertRoutine`'s
+ * `INSERT ... ON CONFLICT (id) DO UPDATE` (routines-runtime.ts) — an UPDATE never touches
+ * `created_at` (it's only set by the true INSERT branch), so a loop armed on day 1 and
+ * re-armed on day 2 with a FRESH `maxDurationSec` still measured its duration since day 1: the
+ * re-armed loop was dead on arrival, its very first fire immediately breaching a bound that
+ * had not actually elapsed since the re-arm. `stampLoopArmedAt` records the true latest-arm
+ * instant in `metadata.armed_at` (mirrors the `fire_count` seam — no migration); the dead-man
+ * read below prefers it, falling back to `created_at` for a loop armed before this fix ran.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -62,7 +72,7 @@ export async function checkLoopDeadMan(
   const nowMs = input.nowMs ?? Date.now();
 
   const rows = await db<Array<{ armed_ms: string | number | null; fire_count: string | number | null }>>`
-    SELECT (EXTRACT(EPOCH FROM created_at) * 1000)::bigint AS armed_ms,
+    SELECT (EXTRACT(EPOCH FROM COALESCE((metadata->>'armed_at')::timestamptz, created_at)) * 1000)::bigint AS armed_ms,
            COALESCE((metadata->>'fire_count')::int, 0)    AS fire_count
       FROM harness_shared.routines
      WHERE id = ${input.routineId}`;
@@ -96,6 +106,25 @@ export async function readLoopFireCount(sql: Sql | undefined, routineId: string)
       FROM harness_shared.routines
      WHERE id = ${routineId}`;
   return Number(rows[0]?.fire_count ?? 0);
+}
+
+/**
+ * EI-7613 — stamp the loop's LATEST arm instant (`metadata.armed_at`), called by
+ * `materializeLoop` on EVERY `loop:arm` (a fresh arm and a re-arm alike). The dead-man
+ * max-duration guard must measure "since arm" from the most recent arm — a re-arm goes
+ * through `upsertRoutine`'s `ON CONFLICT DO UPDATE`, which never touches `created_at`, so
+ * without this stamp a re-armed loop's clock kept running from the ORIGINAL arm and a fresh
+ * `maxDurationSec` could breach instantly on the loop's very first post-re-arm fire. Mirrors
+ * the `fire_count` seam (no migration, no new column). Best-effort: a stamp failure must
+ * never fail the arm itself (the caller awaits this after the upsert has already succeeded).
+ */
+export async function stampLoopArmedAt(sql: Sql | undefined, routineId: string, atMs?: number): Promise<void> {
+  const db = sql ?? getOrgPg().sql;
+  const iso = new Date(atMs ?? Date.now()).toISOString();
+  await db`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('armed_at', ${iso}::text)
+     WHERE id = ${routineId}`;
 }
 
 /**

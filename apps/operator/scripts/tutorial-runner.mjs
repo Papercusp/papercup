@@ -47,6 +47,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core';
+import { resolveOperatorBase } from './operator-discovery.mjs';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for tests)
@@ -392,10 +393,9 @@ async function welcomeBanner() {
 }
 
 function operatorUrlFrom(args, env = process.env) {
-  return (args.operatorUrl ?? env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3070').replace(
-    /\/$/,
-    '',
-  );
+  // arg → env → ~/.papercusp/operator.json (packaged installs run the operator
+  // on a per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
+  return resolveOperatorBase(args, env);
 }
 
 async function api(base, path, init) {

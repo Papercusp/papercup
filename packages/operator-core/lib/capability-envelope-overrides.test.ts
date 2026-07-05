@@ -51,7 +51,7 @@ describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => 
     expect(envelopeProtectedAdditions()).toEqual([]);
     // the durable store DID record it — only the hot-path cache is gated off.
     expect((await readEnvelopeOverrides()).roleEnvelopes).toEqual({
-      bee: { denyCapabilities: ['capability:bash'] },
+      cup: { denyCapabilities: ['capability:bash'] },
     });
   });
 
@@ -59,7 +59,7 @@ describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => 
     h.flagOn = true;
     await refreshCapabilityEnvelopeOverrides();
     await setRoleEnvelope('cup', { denyCapabilities: ['capability:bash'] });
-    expect(envelopeRoleOverrides()).toEqual({ bee: { denyCapabilities: ['capability:bash'] } });
+    expect(envelopeRoleOverrides()).toEqual({ cup: { denyCapabilities: ['capability:bash'] } });
   });
 
   it('clear (env=null) removes only that role', async () => {
@@ -67,7 +67,7 @@ describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => 
     await setRoleEnvelope('cup', { denyCapabilities: ['x'] });
     await setRoleEnvelope('kettle', { denyCapabilities: ['y'] });
     await setRoleEnvelope('cup', null);
-    expect(envelopeRoleOverrides()).toEqual({ overwatch: { denyCapabilities: ['y'] } });
+    expect(envelopeRoleOverrides()).toEqual({ kettle: { denyCapabilities: ['y'] } });
   });
 
   it('addProtectedGlobs is tighten-only and deduped (union, never removes)', async () => {

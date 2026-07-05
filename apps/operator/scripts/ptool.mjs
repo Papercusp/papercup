@@ -30,8 +30,11 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { resolveOperatorBase } from './operator-discovery.mjs';
 
-const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070';
+// env → ~/.papercusp/operator.json (packaged installs run the operator on a
+// per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
+const OPERATOR_URL = resolveOperatorBase({}, process.env);
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 

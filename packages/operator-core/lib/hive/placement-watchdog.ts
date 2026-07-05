@@ -79,7 +79,13 @@ const UNIT_PARKED_STATES = new Set(['blocked', 'needs-human']);
  *  brief's "Placements — drive to terminal / re-place NOW" list stops telling her to
  *  re-place a unit a human/owner has deliberately parked, regardless of whether the
  *  underlying placement row has caught up yet. */
-const SUMMARY_INACTIVE_UNIT_STATES = [...TERMINAL_UNIT_STATES, ...UNIT_PARKED_STATES];
+// EI-7641: also consumed by wake-frontier-guard.ts's listNonTerminalPlacements,
+// which hit the exact same staleness this comment describes — the P-030
+// "non-terminal placements" guard trusted hive_placements.status alone (never
+// joining the live unit), so a wake-frontier refusal listed ids whose WORK ITEM
+// had long since gone terminal/deprecated or been parked blocked/needs-human,
+// forcing every no-time Queen wake to force:true past a stale placement list.
+export const SUMMARY_INACTIVE_UNIT_STATES = [...TERMINAL_UNIT_STATES, ...UNIT_PARKED_STATES];
 
 export function isUnitTerminal(status: string | null | undefined): boolean {
   return status != null && TERMINAL_UNIT_STATES.has(status);

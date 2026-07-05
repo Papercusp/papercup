@@ -38,7 +38,7 @@ import {
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
-import { embedAdmission, headersToRecord } from './embed-admission';
+import { embedAdmission, headersToRecord, EmbedBudgetExhaustedError } from './embed-admission';
 import { clearEmbedExhaustionAlertIfActive, maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { buildLearningInstructions } from './learning';
@@ -278,7 +278,24 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
       // succeed, so this lane PASSES THROUGH on a denial (acquire never returns null here) — it
       // only PACES against the shared window + feeds it headers/429s so the high-volume bench
       // path yields to memory rather than starving it. The retry loop below is the 429 backstop.
-      const slot = await adm.acquire(text, 'memory');
+      let slot;
+      try {
+        slot = await adm.acquire(text, 'memory');
+      } catch (e) {
+        // EI-7596: our OWN daily spend cap (embed-admission's EmbedBudgetExhaustedError) tripped.
+        // This is a SUSTAINED-exhaustion shape identical in kind to insufficient_quota — it will
+        // fail IDENTICALLY on every embed until the UTC day rolls over, no retry helps — but unlike
+        // insufficient_quota the local (BGE-ONNX) embedder is fully able to serve the request (it
+        // costs nothing against the OpenAI budget the cap protects). Before this fix, the cap threw
+        // HERE, before the retry loop's own markOpenAiEmbedFailure() calls (hard-billing-stop /
+        // retry-budget-exhausted, below) were ever reached, so the EI-3381 local-fallback cooldown
+        // never engaged and EVERY memory:remember/update hard-failed for the rest of the day even
+        // though a working local embedder was available (EI-7596: reported blocking memory writes
+        // fleet-wide during a heavy-load day). Mark the cooldown now so the NEXT resolveEmbedder()
+        // call (a fresh memory:remember/search) routes to local instead of re-hitting this same cap.
+        if (e instanceof EmbedBudgetExhaustedError) markOpenAiEmbedFailure();
+        throw e;
+      }
       try {
         const r = await fetch('https://api.openai.com/v1/embeddings', {
           method: 'POST',

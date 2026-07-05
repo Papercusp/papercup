@@ -452,7 +452,7 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     const known = await checkCompactionCompliance(
       fakeSql({
         seeded: seeded300,
-        spawnRecords: { bee: { model_spec: 'claude-fable-5[1m]', model_tier: null } },
+        spawnRecords: { cup: { model_spec: 'claude-fable-5[1m]', model_tier: null } },
       }),
     );
     expect(known.overLimit).toEqual(['cup']);

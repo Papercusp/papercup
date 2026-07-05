@@ -102,9 +102,9 @@ describe('computeCodeRunAdoption — end-to-end raw rows → per-(role,day) summ
       ...calls('C', 'cup', '2026-06-26', fanTools),
     ]);
     expect(out.map((s) => `${s.role}/${s.day}`)).toEqual([
-      'bee/2026-06-25',
-      'bee/2026-06-26',
-      'queen/2026-06-26',
+      'cup/2026-06-25',
+      'cup/2026-06-26',
+      'mug/2026-06-26',
     ]);
   });
 });

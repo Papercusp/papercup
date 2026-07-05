@@ -196,7 +196,7 @@ describe('renderFactsFold', () => {
   it('renders one deterministic line per fact with scope, expiry and source', () => {
     const out = renderFactsFold([fact({})], 0);
     expect(out).toContain('### Standing facts');
-    expect(out).toContain('[role:queen] WI-1439 is owner-residue');
+    expect(out).toContain('[role:mug] WI-1439 is owner-residue');
     expect(out).toContain('expires ~3d');
     expect(out).toContain('src WI-1574');
   });

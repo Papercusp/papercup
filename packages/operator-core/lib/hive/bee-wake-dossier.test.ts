@@ -86,7 +86,7 @@ describe('renderBeeDossier (pure)', () => {
     expect(s).toContain('hive, cache');
     expect(s).toContain('### Hive peers');
     expect(s).toContain('su · a');
-    expect(s).toContain('(bee)');
+    expect(s).toContain('(cup)');
   });
 
   it('renders recent comments (newest-first list)', () => {

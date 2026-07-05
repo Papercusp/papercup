@@ -587,7 +587,10 @@ export async function markIssueProgress(id: string): Promise<boolean> {
   }
 }
 
-export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
+export async function releaseIssue(
+  id: string,
+  opts: { expectedAssignee?: string } = {},
+): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = issuesScopeWorkspace();
   // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
@@ -596,9 +599,15 @@ export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const prev = await sql<{ assignee: string | null }[]>`
     SELECT assignee FROM harness_shared.engineer_issues WHERE workspace_id = ${ws} AND issue_id = ${id}`;
   const formerAssignee = prev[0]?.assignee ?? null;
+  // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
+  // the UPDATE itself only touches the row when it is unclaimed OR already held by the
+  // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
+  // someone ELSE matches 0 rows and this returns null, same as "not found"; the caller
+  // (release.ts) re-reads to tell the two apart and report an honest `not_holder` + holder.
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
+       AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

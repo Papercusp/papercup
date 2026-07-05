@@ -156,10 +156,13 @@ export default defineTool({
     when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
+    notWhen:
+      "EI-7589: a row's `assignee:null` does NOT by itself mean 'unclaimed' when the row carries a `plan_item`/`plan_ref` link (payload.plan_item, or the trimmed/standard `plan_ref` field) — a plan-item can be under active coverage (effectiveStatus 'wip', a live worker holding it) while the work-item row's own assignee stays null. Before self-claiming a plan-linked row, cross-check `plans:items { slug }` for that item's effectiveStatus — do not trust the bare assignee field alone, or you risk duplicating in-flight work.",
     seeAlso: [
       'work_items:set_priority (steer the backlog order you just read)',
       'work_items:get (full detail on specific ids)',
       'work_items:claim_next (take the next claimable item)',
+      'plans:items (the effectiveStatus / live-coverage source of truth for a plan-linked row)',
     ],
   },
   capability: "work_items:read",

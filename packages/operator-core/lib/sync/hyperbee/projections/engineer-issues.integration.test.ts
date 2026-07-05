@@ -52,6 +52,55 @@ beforeAll(async () => {
   // projection applies REMOTE-origin ops (echo-guarded), so no capture trigger is needed.
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  // WI-183/WI-2853: the shared _work-items-schema.ts fixture deliberately omits
+  // stamp_local_federated_write_trg (constraints/triggers are added per-test, not in
+  // the shared fixture — see that file's own header). But `work_items` IS a real
+  // production carrier of this trigger: mig 214 attached it to
+  // `harness_features_consolidated`, and mig 374's `ALTER TABLE
+  // harness_features_consolidated RENAME TO work_items` PRESERVES triggers across a
+  // rename — so the trigger is live on prod `work_items` today under its original
+  // name. Attach the CURRENT function body verbatim (mig 490, the latest
+  // CREATE OR REPLACE of stamp_local_federated_write()) so this test exercises the
+  // real prod trigger stack, not a fixture that happens to omit it.
+  await db.sql.unsafe(`
+    -- Minimal stub (real def = mig 314, needs a harness_shared.hlc_clock singleton
+    -- table this fixture doesn't have) — only needs to return a fresh, distinguishable
+    -- value each call so the test can prove the trigger DID/DIDN'T re-stamp the clock.
+    CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text
+      LANGUAGE sql AS $hlc_stub$
+        SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
+      $hlc_stub$;
+
+    CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fn$
+    BEGIN
+      IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN
+        RETURN NEW;
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.fed_ts IS NULL AND COALESCE(NEW.origin, 'local') = 'local' THEN
+          NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+         IS DISTINCT FROM
+         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+      THEN
+        NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        NEW.fed_hlc := harness_shared.hlc_now();
+        NEW.origin := 'local';
+      END IF;
+      RETURN NEW;
+    END;
+    $fn$;
+
+    DROP TRIGGER IF EXISTS stamp_local_federated_write_trg ON harness_shared.work_items;
+    CREATE TRIGGER stamp_local_federated_write_trg
+      BEFORE INSERT OR UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();
+  `);
 });
 afterAll(async () => {
   await db?.cleanup();
@@ -125,5 +174,33 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(await getIssue('EI-11')).not.toBeNull();
     await p.deleteFromPg('EI-11', 200); // newer del — applies
     expect(await getIssue('EI-11')).toBeNull();
+  });
+
+  // WI-183/WI-2845/WI-2853: same-op DOUBLE-APPLY (a replayed/re-folded remote op —
+  // e.g. a projection retry or backfill re-running the identical wire op) must be an
+  // idempotent no-op on the row's federation state. This writes DIRECTLY to
+  // harness_shared.work_items (the P-010 unified base table — engineer_issues is a
+  // compat view over it, projections/engineer-issues.ts's own header), so the
+  // relevant guard is fed_apply_wins() (mig 504) + the writer's explicit
+  // origin/fed_ts/fed_hlc = EXCLUDED.* — NOT the stamp_local_federated_write trigger
+  // (that BEFORE trigger is never attached to work_items post-374; confirmed by
+  // grepping every `CREATE TRIGGER stamp_local_federated_write_trg` migration).
+  it('a same-op double-apply (identical remote op re-folded) does NOT flip origin/fed_ts/fed_hlc', async () => {
+    const p = proj();
+    const op = issueRow({ issue_id: 'EI-183', title: 'stable content', state: 'open' });
+    const provenance = { ts: 500, fedHlc: '500:00000:peer', origin: 'remote' as const, authorPubkey: 'peer' };
+    await p.writeToPg(op, provenance);
+    const first = await getIssue('EI-183');
+    expect(first?.origin).toBe('remote');
+    expect(first?.fed_ts).toBe(500);
+
+    // Re-fold the IDENTICAL op a second time (a retry/backfill re-applying the same
+    // wire op) — must be a no-op on origin/fed_ts, never flip to 'local' nor advance
+    // the LWW clock, even though the write touches bookkeeping columns (updated_ts).
+    await p.writeToPg(op, provenance);
+    const second = await getIssue('EI-183');
+    expect(second?.origin).toBe('remote'); // must NOT flip to 'local'
+    expect(second?.fed_ts).toBe(500); // must NOT advance
+    expect(second?.title).toBe('stable content');
   });
 });

@@ -160,7 +160,7 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
 
     expect(result?.durableSpawns).toHaveLength(1);
     const spawn = result!.durableSpawns![0];
-    expect(spawn.label).toBe('papercusp/queen');
+    expect(spawn.label).toBe('papercusp/mug');
     expect(spawn.spawnRecord).toMatchObject({
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',

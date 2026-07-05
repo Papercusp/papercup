@@ -50,20 +50,104 @@ export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;
 export const PG_READ_QUERY_HARD_TIMEOUT_MS = 30000;
 
 /**
+ * Strip SQL noise a naive `;`-scan would misread as a statement separator:
+ * single-quoted string literals ('...' with '' escaping), double-quoted
+ * identifiers ("..." with "" escaping), dollar-quoted strings ($$...$$ /
+ * $tag$...$tag$), `--` line comments, and `/* … *\/` block comments. Quoted
+ * content is replaced with an equal-length placeholder (never containing a
+ * `;` or quote char) so position/structure is preserved for the caller's
+ * `;`-count check — only the literal's TEXT is discarded, never executed.
+ */
+function stripSqlLiteralsAndComments(sql: string): string {
+  let out = '';
+  let i = 0;
+  const len = sql.length;
+  while (i < len) {
+    const ch = sql[i];
+    // -- line comment: to end of line
+    if (ch === '-' && sql[i + 1] === '-') {
+      let j = sql.indexOf('\n', i);
+      if (j === -1) j = len;
+      i = j;
+      continue;
+    }
+    // /* block comment */ (non-nested)
+    if (ch === '/' && sql[i + 1] === '*') {
+      let j = sql.indexOf('*/', i + 2);
+      j = j === -1 ? len : j + 2;
+      i = j;
+      continue;
+    }
+    // 'single-quoted string' — '' is an escaped quote
+    if (ch === "'") {
+      out += "''";
+      i++;
+      while (i < len) {
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    // "double-quoted identifier" — "" is an escaped quote
+    if (ch === '"') {
+      out += '""';
+      i++;
+      while (i < len) {
+        if (sql[i] === '"') {
+          if (sql[i + 1] === '"') {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    // $$...$$ / $tag$...$tag$ dollar-quoted string
+    if (ch === '$') {
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (m) {
+        const tag = m[0];
+        const end = sql.indexOf(tag, i + tag.length);
+        out += 'x';
+        i = end === -1 ? len : end + tag.length;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
  * Validate the query is a single read statement and return it trimmed (a
  * single trailing `;` is stripped). Throws PgReadQueryError otherwise. The
  * READ ONLY transaction is the real guard — this just rejects obvious misuse
- * early with a clear message.
+ * early with a clear message. Quote-aware: a `;` inside a string literal /
+ * quoted identifier / comment does NOT count as a statement separator (only
+ * the LITERAL, unexecuted text is stripped for this check — the real query
+ * below is unmodified).
  */
 export function assertSingleReadStatement(raw: string): string {
   const q = raw.trim().replace(/;\s*$/, '').trim();
   if (!q) throw new PgReadQueryError('empty query');
-  if (q.includes(';')) {
+  const noiseStripped = stripSqlLiteralsAndComments(q).trim();
+  if (noiseStripped.includes(';')) {
     throw new PgReadQueryError(
       'only a single statement is allowed — remove the `;`-separated statements',
     );
   }
-  if (!/^(select|with)\b/i.test(q)) {
+  if (!/^(select|with)\b/i.test(noiseStripped)) {
     throw new PgReadQueryError(
       'only SELECT / WITH…SELECT queries are allowed (this is a read-only surface; use the documented write verbs to change state)',
     );

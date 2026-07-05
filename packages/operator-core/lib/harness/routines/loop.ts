@@ -38,6 +38,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
+import { stampLoopArmedAt } from './loop-dead-man';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -304,6 +305,16 @@ export async function materializeLoop(
     },
     computeNextFireAt,
   );
+  // EI-7613 — refresh the dead-man clock's arm instant on EVERY materialize (a fresh arm
+  // AND a re-arm alike): the upsert above never touches `created_at` on its ON CONFLICT DO
+  // UPDATE path, so without this a re-armed loop's maxDurationSec bound kept measuring from
+  // the loop's ORIGINAL arm — a fresh bound could breach on the very first post-re-arm fire.
+  // Best-effort; a stamp failure must never fail the arm (materializeLoop already succeeded).
+  try {
+    await stampLoopArmedAt(sql, row.id, now.getTime());
+  } catch (e) {
+    console.warn(`[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`);
+  }
   return { id: row.id, name: row.name, nextFireAt: row.nextFireAt, targetRole: row.targetRole };
 }
 
