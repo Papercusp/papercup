@@ -70,6 +70,12 @@ export interface GreenStallSnapshot {
   watchdogAlerted: boolean;
   /** The root routine engine is stale; infra-liveness owns this root-cause alarm. */
   routineEngineStale?: boolean;
+  /** EI-7505: the failing verdict test(s) from the last red green-checkpoint tick
+   *  (`gate_health.failingTests`, threaded through by `trackGateStall` in
+   *  release-actions.ts), when the stall is verdict-staleness (a failing suite)
+   *  rather than fire-staleness (the routine engine not running). Absent/empty
+   *  when the stall is fire-stale or the field predates this fix. */
+  failingTests?: string[];
 }
 
 export interface GreenStallVerdict {
@@ -122,6 +128,14 @@ export function evaluateGreenStall(
       parts.push(`no GREEN verdict in ~${hrs(now - s.lastGreenAt)}h`);
     }
     reason = parts.join('; ');
+    // EI-7505: name the failing test(s) directly in the alarm reason so a
+    // responder doesn't have to hand-spelunk harness_shared.test_runs (which
+    // mixes every agent's local dev-test runs with the verdict run and is
+    // inconclusive) just to start diagnosing a verdict-staleness stall.
+    const tests = (s.failingTests ?? []).slice(0, 20);
+    if (tests.length) {
+      reason += `. Failing verdict test(s): ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}`;
+    }
   }
   return { stalled, fireStale, verdictStale, reason };
 }

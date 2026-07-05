@@ -86,10 +86,18 @@ describe('dev:build_status', () => {
         sugar: ['deploy:await', 'checkpoint:await'],
       },
     };
-    vi.doMock('../../../dev-data', () => ({ buildStatus: vi.fn(async () => data) }));
+    // build_status also folds a best-effort flake-suspect scan (EI-7443): it
+    // calls testFlakeRollup + flagFlakeSuspects from dev-data. Stub both so the
+    // handler doesn't hit its catch → console.warn (which fails the gate under
+    // vitest-fail-on-console), and expect the additive `flake_suspects` key.
+    vi.doMock('../../../dev-data', () => ({
+      buildStatus: vi.fn(async () => data),
+      testFlakeRollup: vi.fn(async () => ({ entries: [] })),
+      flagFlakeSuspects: vi.fn(() => []),
+    }));
     const { default: tool } = await import('../build_status');
     const result = await tool.handler({}, MAKE_CTX());
-    expect(parsePayload(result as never)).toEqual(data);
+    expect(parsePayload(result as never)).toEqual({ ...data, flake_suspects: [] });
   });
 });
 

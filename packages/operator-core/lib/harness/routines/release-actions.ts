@@ -424,7 +424,7 @@ export async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean } | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[] } | null }>;
   const gh = rows[0]?.gh ?? {};
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
@@ -460,7 +460,9 @@ export async function trackGateStall(
     // the separate green-stall-watchdog sweep — carry it through every `next` here
     // or this whole-object replace silently drops it. On recovery (green) clear it,
     // matching the watchdog's own recovery-clear (green-stall-watchdog.ts).
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false };
+    // EI-7505: clear the failing-test list on recovery — a stale list from the
+    // last red streak must not linger in gate_health once the gate is green again.
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [] };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -544,7 +546,23 @@ export async function trackGateStall(
     // every hourly red fire, so the green-stall-watchdog re-fires its STALLED
     // severe-event ~hourly for the life of a red streak (it is designed one-shot
     // until recovery). This writer does not own the field — carry it through.
-    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: gh.watchdogAlerted ?? false };
+    // EI-7505: persist the failing-verdict-test list into gate_health itself (the
+    // green-checkpoint action already parses it — see `failingTests` above — but
+    // previously discarded it here, forcing responders to hand-spelunk
+    // harness_shared.test_runs during a deploy-freeze, which is inconclusive
+    // because that table mixes every agent's local dev-test runs with the verdict
+    // run). Persisting it lets the green-stall-watchdog alarm body name the
+    // failing test(s) directly, and makes it queryable via
+    // `metadata->'gate_health'->'failingTests'` without any log-spelunking.
+    next = {
+      consecutiveReds,
+      lastGreenAt,
+      firstRedAt,
+      stallAlerted,
+      lastFrom: fromPin ?? gh.lastFrom ?? null,
+      watchdogAlerted: gh.watchdogAlerted ?? false,
+      failingTests: (failingTests ?? []).slice(0, 20),
+    };
   }
   await sql.unsafe(
     `UPDATE harness_shared.routines
