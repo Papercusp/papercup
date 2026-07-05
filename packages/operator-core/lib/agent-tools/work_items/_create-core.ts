@@ -32,7 +32,7 @@ import { validateDatatypePayload } from '../../datatype-payload-validation';
  * must resolve to a hive (auto-resolve-then-require). Issue kinds (bug/change) are
  * deliberately EXCLUDED — they may stay workspace-global (the issues surface).
  */
-export const HIVE_GATED_KINDS: ReadonlySet<string> = new Set(['feature', 'chunk']);
+export const HIVE_GATED_KINDS: ReadonlySet<string> = new Set(['feature', 'research-task', 'chunk']);
 
 /** One per-item create spec — the shared shape `create.ts` accepts (single + items[]). */
 export interface CreateOneWorkItemArgs {
@@ -124,7 +124,7 @@ export async function createOneWorkItem(
           error: 'unknown_kind',
           message:
             `unknown work-item kind "${args.kind}" — use a built-in kind ` +
-            `(feature, chunk, bug, change, task), or first declare it via ` +
+            `(feature, research-task, chunk, bug, change, task), or first declare it via ` +
             `meta:define-datatype (generic-kind tier) in this workspace, then create instances with that kind.`,
         };
       }

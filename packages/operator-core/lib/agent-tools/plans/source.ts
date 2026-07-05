@@ -109,9 +109,10 @@ export interface PlanSchedule {
   costCapCents?: number;
   /**
    * The frontier item_kind each run mints (D-006/P-009). Default 'feature' (coding
-   * spine). Validated against the feature-family kinds at author time (plans:set-schedule).
+   * spine); a repo-less non-coding plan sets 'research-task' for a lighter executor.
+   * Validated against the feature-family kinds at author time (plans:set-schedule).
    */
-  executorKind?: 'feature' | 'chunk';
+  executorKind?: 'feature' | 'research-task' | 'chunk';
 }
 
 export interface PlanRow {

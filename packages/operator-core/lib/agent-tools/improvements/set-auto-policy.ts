@@ -28,7 +28,7 @@ function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
 }
 
-const WORK_ITEM_KINDS = ['feature', 'bug', 'change', 'chunk'] as const;
+const WORK_ITEM_KINDS = ['feature', 'bug', 'change', 'research-task', 'chunk'] as const;
 
 export default defineTool({
   name: 'improvements:set-auto-policy',

@@ -31,9 +31,9 @@ const scheduleSchema = z
     carryState: z.boolean().optional().describe('Stateful watch: seed each run with the prior run’s deliverable (D-007).'),
     costCapCents: z.number().int().nonnegative().optional().describe('Per-plan spend cap (D-012).'),
     executorKind: z
-      .enum(['feature', 'chunk'])
+      .enum(['feature', 'research-task', 'chunk'])
       .optional()
-      .describe("Frontier item_kind each run mints (D-006). Default 'feature' (coding spine)."),
+      .describe("Frontier item_kind each run mints (D-006). Default 'feature' (coding spine); 'research-task' for a lighter non-coding executor."),
   })
   .describe('The recurrence set + policy. Omit/null to clear (un-schedule).');
 
