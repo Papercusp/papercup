@@ -2322,12 +2322,29 @@ const MCP_TOOL_GROUPS = new Set([
  *  position (start, or right after a real separator ; && || | newline ( `) whose group is a known
  *  MCP group — so a URL (`http://…`), a `sed 's:a:b:'`, or prose that merely mentions a tool name
  *  never false-positives. Pure. */
-export function isMcpToolViaBash(cmd: string): boolean {
+export function extractMcpToolViaBash(cmd: string): string | null {
   const m = (cmd || '').match(
     /(?:^|[;&|\n(`]|&&|\|\|)\s*([a-z][a-z0-9_]*):([a-z][a-z0-9][a-z0-9_-]*)/i,
   );
-  if (!m) return false;
-  return MCP_TOOL_GROUPS.has(m[1].toLowerCase());
+  if (!m) return null;
+  if (!MCP_TOOL_GROUPS.has(m[1].toLowerCase())) return null;
+  return `${m[1].toLowerCase()}:${m[2].toLowerCase()}`;
+}
+
+export function isMcpToolViaBash(cmd: string): boolean {
+  return extractMcpToolViaBash(cmd) !== null;
+}
+
+/** OMP flattens every Papercusp MCP tool to a NATIVE callable name `mcp__papercusp_su_<group>_<verb>`
+ *  (server `papercusp-su` → `papercusp_su`; the `:` and any `-` in `group:verb` become `_`). A weak
+ *  local model (ornith IQ3_M) routinely KNOWS the short `group:verb` name — it writes it into its
+ *  reasoning — yet cannot emit it, and keeps typing that short form into bash (WI-2382 iter32:
+ *  `plans:get`/`tools:invoke`/`tools:find` typed as shell, 13 flailing calls, never once emitting the
+ *  native form). The very NEXT fresh sample (iter33) succeeded the instant it emitted
+ *  `mcp__papercusp_su_plans_get` DIRECTLY. So handing the model that exact native name is the
+ *  difference-maker between the fail and the success. Pure. */
+export function nativeMcpToolName(groupVerb: string): string {
+  return `mcp__papercusp_su_${groupVerb.trim().toLowerCase().replace(/[:-]/g, '_')}`;
 }
 
 /** Dedicated escalation counter for failure mode #7 (the block MESSAGE hardens on repeats). The
@@ -2352,27 +2369,37 @@ export function resetMcpToolViaBashBudget(): void {
  *  TOOLS the model calls directly (like Bash / read / edit), NEVER shell commands — this is the
  *  structural version of the live nudge that rescues a stuck leader. ESCALATES past
  *  MCP_TOOL_VIA_BASH_ESCALATE_AFTER into a hard, copy-pasteable direct-tool-call directive. Pure. */
-export function mcpToolViaBashReason(count = 1): string {
+export function mcpToolViaBashReason(count = 1, groupVerb?: string): string {
+  // Name the EXACT native tool the model must emit (WI-2382 iter32→33): a weak model knows the short
+  // `group:verb` but not the flattened `mcp__papercusp_su_*` form omp actually exposes — handing it
+  // that exact name is what turns the flail into a call.
+  const nativeHint = groupVerb
+    ? ` The tool you typed (\`${groupVerb}\`) is exposed to you under the EXACT native name ` +
+      `\`${nativeMcpToolName(groupVerb)}\` — emit THAT tool name directly (the \`${groupVerb}\` colon ` +
+      'form only works INSIDE a tool call, never as a shell command).'
+    : '';
   if (count <= MCP_TOOL_VIA_BASH_ESCALATE_AFTER) {
     return (
       'mcp-tool-via-bash blocked: you tried to run a Papercusp tool (a `group:verb` name like ' +
       '`fleet:launch-on-plan`) as a SHELL command. Papercusp tools are NOT shell commands and are ' +
       'NOT available in bash — they are TOOLS you call DIRECTLY, the same way you call Bash / read / ' +
-      'edit. Do NOT wrap them in bash, python, echo, heredocs, or the `omp` CLI. To launch a fleet, ' +
-      'call the tool directly: `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
-      'plan:"<plan-slug>", count:2, agent:"omp"}}`. To read your plan: `tools:invoke ' +
-      '{name:"plans:get", args:{slug:"<plan-slug>", harness:"papercusp"}}`. Retry as a DIRECT tool ' +
-      'call now — not through bash.'
+      'edit. Do NOT wrap them in bash, python, echo, heredocs, or the `omp` CLI.' +
+      nativeHint +
+      ' To launch a fleet, call the tool directly: `tools:invoke {name:"fleet:launch-on-plan", ' +
+      'args:{name:"<fleet>", plan:"<plan-slug>", count:2, agent:"omp"}}`. To read your plan: ' +
+      '`tools:invoke {name:"plans:get", args:{slug:"<plan-slug>", harness:"papercusp"}}`. Retry as a ' +
+      'DIRECT tool call now — not through bash.'
     );
   }
   return (
     `mcp-tool-via-bash blocked (×${count}): STOP — you have tried ${count} times to invoke a ` +
     'Papercusp tool through the shell and EVERY attempt fails (`command not found` / `syntax ' +
-    'error`). The shell will NEVER run a `group:verb` tool. Emit a DIRECT tool call instead — your ' +
-    'next action must be EXACTLY: `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
-    'plan:"<plan-slug>", count:2, agent:"omp"}}` (or the tool you need via `tools:invoke ' +
-    '{name:"<group>:<verb>", args:{…}}`). Do NOT type the tool into bash again. If you truly cannot ' +
-    'emit a tool call, report the blocker via `coord:send` to your launcher.'
+    'error`). The shell will NEVER run a `group:verb` tool.' +
+    nativeHint +
+    ' Emit a DIRECT tool call instead — e.g. `tools:invoke {name:"fleet:launch-on-plan", ' +
+    'args:{name:"<fleet>", plan:"<plan-slug>", count:2, agent:"omp"}}` (or the tool you need via ' +
+    '`tools:invoke {name:"<group>:<verb>", args:{…}}`). Do NOT type the tool into bash again. If you ' +
+    'truly cannot emit a tool call, report the blocker via `coord:send` to your launcher.'
   );
 }
 
@@ -2489,10 +2516,11 @@ export async function onToolCall(
     // backstop (noteReflexiveBlock) so the doom-loop self-terminates after REFLEXIVE_BLOCK_KILL_AFTER,
     // and a dedicated counter escalates the message. Placed after the curl guard (a curl to /api/mcp
     // is caught there first). Owner sessions unrestricted (D-003).
-    if (isMcpToolViaBash(cmd)) {
+    const mcpToolInBash = extractMcpToolViaBash(cmd);
+    if (mcpToolInBash) {
       const n = noteMcpToolViaBashBlock();
       noteReflexiveBlock('mcp-bash');
-      return { block: true, reason: mcpToolViaBashReason(n) };
+      return { block: true, reason: mcpToolViaBashReason(n, mcpToolInBash) };
     }
   }
 

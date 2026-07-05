@@ -27,6 +27,7 @@ import {
   makeIdleGate,
   makeActivityTracker,
   makeAgentBusyGate,
+  makeSubmitVerifier,
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
@@ -602,5 +603,111 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
       const r = await g.waitUntilBusy(30);
       expect(r.started).toBe(false);
     });
+  });
+});
+
+/**
+ * makeSubmitVerifier (WI-2930): the POST-submit sibling of makeAgentBusyGate. An
+ * injected submit's CR can be swallowed (paste-settle race; a compact/reset carry
+ * typed into a briefly-locked TUI) — the turn text then sits staged in the
+ * composer and the session parks until a human presses Enter (the ~6h Snippets
+ * stall). The verifier polls output activity after the final CR and writes one
+ * bare resubmit CR at each QUIET observation — a bare CR on an empty idle
+ * composer is a no-op, so redundant resubmits are harmless.
+ */
+describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
+  /** Deterministic rig: `sleep` ADVANCES the fake clock; output/input are
+   *  functions of the current fake time. CRs record the time they were sent. */
+  function rig({
+    output,
+    input,
+    pollMs = 100,
+    polls = 4,
+    maxResubmits = 3,
+    quietMs = 50,
+    writeCr,
+  }: {
+    output: (t: number) => number;
+    input?: (t: number) => number;
+    pollMs?: number;
+    polls?: number;
+    maxResubmits?: number;
+    quietMs?: number;
+    writeCr?: () => void;
+  }) {
+    let t = 0;
+    const crs: number[] = [];
+    const resubmitCalls: number[] = [];
+    const v = makeSubmitVerifier({
+      lastOutputAt: () => output(t),
+      lastInputAt: input ? () => input(t) : undefined,
+      writeCr: writeCr ?? (() => crs.push(t)),
+      quietMs,
+      pollMs,
+      polls,
+      maxResubmits,
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
+      onResubmit: (n: number) => resubmitCalls.push(n),
+    });
+    return { v, crs, resubmitCalls };
+  }
+
+  it('a submitted turn (output flowing at every poll) needs no resubmit', async () => {
+    // The turn is running: last output always "just now".
+    const { v, crs } = rig({ output: (t) => t });
+    const r = await v.verify();
+    expect(r).toEqual({ polls: 4, resubmits: 0, aborted: null });
+    expect(crs).toEqual([]);
+  });
+
+  it('a swallowed CR (output stays quiet) is resubmitted, capped at maxResubmits', async () => {
+    // Nothing ever starts: output frozen at 0 → every poll observes quiet.
+    const { v, crs, resubmitCalls } = rig({ output: () => 0, polls: 6, maxResubmits: 3 });
+    const r = await v.verify();
+    expect(r.resubmits).toBe(3);
+    expect(r.aborted).toBeNull();
+    expect(crs).toHaveLength(3);
+    expect(resubmitCalls).toEqual([1, 2, 3]);
+  });
+
+  it('stops resubmitting once a resubmit takes (output starts flowing)', async () => {
+    // Quiet at poll 1 (t=100) → one CR; from t=150 the turn is running.
+    const { v, crs } = rig({ output: (t) => (t >= 150 ? t : 0) });
+    const r = await v.verify();
+    expect(r.resubmits).toBe(1);
+    expect(crs).toEqual([100]);
+  });
+
+  it('covers the compact trap: busy residual output first, THEN the quiet reveal', async () => {
+    // Residual compaction output until t=250 (looks "submitted"), then quiet —
+    // the staged carry is only revealed late; the verifier still catches it
+    // because it never early-exits on a busy observation.
+    const { v, crs } = rig({ output: (t) => (t <= 250 ? t : 250), polls: 6 });
+    const r = await v.verify();
+    // polls at t=100..200 busy; from t=300 on, quiet grows past quietMs → CRs.
+    expect(r.resubmits).toBeGreaterThan(0);
+    expect(crs[0]).toBeGreaterThan(250);
+  });
+
+  it('aborts (and stops writing) the moment a HUMAN keystroke lands mid-window', async () => {
+    // Quiet throughout, but the human types at t=150 — the verifier must never
+    // fight a human who is editing the staged line.
+    const { v, crs } = rig({ output: () => 0, input: (t) => (t >= 150 ? t : 0), polls: 6 });
+    const r = await v.verify();
+    expect(r.aborted).toBe('human-input');
+    expect(crs).toEqual([100]); // the one pre-abort resubmit only
+  });
+
+  it('a writeCr throw (child exited mid-verify) never rejects', async () => {
+    const { v } = rig({
+      output: () => 0,
+      writeCr: () => {
+        throw new Error('child gone');
+      },
+    });
+    await expect(v.verify()).resolves.toMatchObject({ aborted: null });
   });
 });
