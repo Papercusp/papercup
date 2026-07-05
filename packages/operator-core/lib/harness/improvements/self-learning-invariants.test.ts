@@ -313,7 +313,7 @@ describe('P-060.4 — type-route: product → place, process-prompt → gym-or-g
 // ── 5. the never-auto set blocks graduation of a safety-gate path ────────────
 
 describe('P-060.5 — never-auto: graduation cannot promote a safety-gate surface (P-041)', () => {
-  const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'research-task', 'chunk'];
+  const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'chunk'];
   /** The maximal graduation: every kind auto-eligible. The protected sets must STILL gate. */
   const FULLY_GRADUATED: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ALL_KINDS };
 

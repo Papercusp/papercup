@@ -26,7 +26,7 @@ import {
 } from '../harness/improvements/policy';
 import { CAPABILITY_DISPATCH_TCB_PATTERNS } from './tcb';
 
-const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'research-task', 'chunk'];
+const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'chunk'];
 
 /** The maximal graduation: every kind auto-eligible (the dial turned all the way).
  *  The protected set must STILL gate — that is the invariant. */

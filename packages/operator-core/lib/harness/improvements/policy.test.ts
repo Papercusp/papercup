@@ -44,8 +44,8 @@ describe('classifyImprovement — kind gate (D-004)', () => {
   it('HUMAN for kind=feature', () => {
     expect(classifyImprovement(cand({ id: '3', kind: 'feature' })).tier).toBe('human');
   });
-  it('HUMAN for kind=research-task', () => {
-    expect(classifyImprovement(cand({ id: '4', kind: 'research-task' })).tier).toBe('human');
+  it('HUMAN for kind=chunk', () => {
+    expect(classifyImprovement(cand({ id: '4', kind: 'chunk' })).tier).toBe('human');
   });
 });
 

@@ -183,10 +183,10 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     warn.mockRestore();
   });
 
-  it('mints schedule.executorKind (D-006: research-task → lighter non-coding executor)', async () => {
+  it('mints schedule.executorKind (D-006: a non-default feature-family executor kind, e.g. chunk)', async () => {
     await sql`
       UPDATE harness_shared.harness_plans
-         SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z', executorKind: 'research-task' })}::text::jsonb
+         SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z', executorKind: 'chunk' })}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
     const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
@@ -195,7 +195,7 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       SELECT DISTINCT item_kind FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${HARNESS} AND source_plan_slug = ${TEMPLATE}`;
     expect(kinds).toHaveLength(1);
-    expect(kinds[0].item_kind).toBe('research-task');
+    expect(kinds[0].item_kind).toBe('chunk');
   });
 
   it('defaults to feature item_kind when no executorKind is authored', async () => {

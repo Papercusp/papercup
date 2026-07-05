@@ -117,7 +117,7 @@ import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
 // ── shared fixtures ──────────────────────────────────────────────────────────
 
-const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'research-task', 'chunk'];
+const ALL_KINDS: WorkItemKind[] = ['feature', 'bug', 'change', 'chunk'];
 
 /** The maximal graduation: every kind auto-eligible (the Phase 4 dial turned all
  *  the way). The protected sets must STILL gate — that is the invariant. */

@@ -65,9 +65,9 @@ describe('frontier placement opt-in (real PG)', () => {
       tags: ['oddsmith'],
     });
 
-    const admitted = await placeableKinds(db, ws, ['feature', 'research-task', 'chunk', 'bet-analysis', 'note', 'bug']);
+    const admitted = await placeableKinds(db, ws, ['feature', 'chunk', 'bet-analysis', 'note', 'bug']);
     // built-ins + the opted-in 'bet-analysis'; NOT 'note' (untagged) and NOT 'bug' (issue-family).
-    expect(admitted).toEqual(['bet-analysis', 'chunk', 'feature', 'research-task']);
+    expect(admitted).toEqual(['bet-analysis', 'chunk', 'feature']);
   });
 
   it('is workspace-scoped: an opt-in in ws-A does not place ws-B', async () => {

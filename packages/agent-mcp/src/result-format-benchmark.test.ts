@@ -56,7 +56,7 @@ function bench(label: string, data: unknown, formats: ResultFormat[]): Record<Re
 
 /* ─── Fixtures shaped like the real proof-tool payloads ──────────────── */
 
-const KINDS = ['feature', 'bug', 'change', 'chunk', 'research-task', 'task'];
+const KINDS = ['feature', 'bug', 'change', 'chunk', 'task'];
 const STATES = ['todo', 'validating', 'passed', 'failing', 'deprecated', 'wip'];
 
 function workItems(n: number): unknown[] {

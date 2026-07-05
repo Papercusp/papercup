@@ -188,20 +188,42 @@ const FORCE_COMPACT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner ' +
   'confirmation, owner-gated walls, and any in-flight work-item checkpoint; drop resolved tool output ' +
   'and superseded state.';
+/** Which arm of `min(limit × 1.3, window − margin | limit × 1.2)` produced forceAt —
+ *  the note must name the bound that actually bound (a fixed "≈ 1.3 × soft limit"
+ *  gloss renders false math whenever the window cap wins, e.g. "~190k ≈ 1.3 × 400k";
+ *  owner 2026-07-05). */
+type ForceBound = 'fraction' | 'window' | 'overshoot';
 /** The continuation-turn text opened on the compacted context (WI-1804 auto-continue
  *  hosts) — re-orient first (a compaction is a stale-snapshot boundary). Built with
  *  the session's REAL numbers (owner 2026-07-05: the old static text read as "you were
  *  compacted for merely passing the soft limit", which contradicts the model — the
  *  soft limit is the configured NUDGE point; the watchdog seizes only past the FORCE
- *  threshold ≈ 1.3 × soft limit, window-capped). */
-function forceCompactContinueNote(est: number, limit: number, forceAt: number): string {
+ *  threshold), naming whichever bound actually set it. */
+function forceCompactContinueNote(est: number, limit: number, forceAt: number, bound: ForceBound): string {
   const k = (n: number) => `${Math.round(n / 1000)}k`;
+  const threshold =
+    bound === 'fraction'
+      ? `~${k(forceAt)} ≈ 1.3 × your configured soft limit of ${k(limit)}`
+      : bound === 'window'
+        ? `~${k(forceAt)} — the model-window cap (window − safety margin), which on this session ` +
+          `binds below 1.3 × your soft limit of ${k(limit)}`
+        : `~${k(forceAt)} — the conservative bound used when the model window is unknown ` +
+          `(1.2 × your soft limit of ${k(limit)})`;
+  // Window cap AT/BELOW the soft limit ⇒ the configured limit is unreachable on this
+  // model and no self-compact band exists — the standard band advice would be
+  // impossible to follow.
+  const advice =
+    bound === 'window' && forceAt <= limit
+      ? `Your configured soft limit (~${k(limit)}) exceeds what this model's window allows, so ` +
+        `there is no self-compact band — the window cap is the real ceiling. Self-compact ` +
+        `(session:request-compaction) well before ~${k(forceAt)}, and lower the soft limit ` +
+        `(config:set-compaction-limit) so the nudge fires in time.`
+      : `The soft limit itself is only the nudge point — you should self-compact ` +
+        `(session:request-compaction) at a clean stopping point anywhere between it and the FORCE ` +
+        `threshold; the watchdog seizes the turn only when that band is exhausted.`;
   return (
     `The compaction watchdog force-compacted you: your context (~${k(est)} tokens) crossed the ` +
-    `FORCE threshold (~${k(forceAt)} ≈ 1.3 × your configured soft limit of ${k(limit)}, capped by the ` +
-    `model window). The soft limit itself is only the nudge point — you should self-compact ` +
-    `(session:request-compaction) at a clean stopping point anywhere in the 100–130% band; the ` +
-    `watchdog seizes the turn only when that band is exhausted. This is a fresh turn on the ` +
+    `FORCE threshold (${threshold}). ${advice} This is a fresh turn on the ` +
     `compacted context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then ` +
     `resume your current unit of work.`
   );
@@ -232,6 +254,8 @@ async function maybeForceCompact(
   /** The resolved force threshold (min(limit × 1.3, window − margin)) — named in the
    *  continuation note so the compacted agent (and its owner) see the real numbers. */
   forceAt: number = limit * FORCE_COMPACT_FRACTION,
+  /** Which arm produced forceAt — the note words each regime differently. */
+  bound: ForceBound = 'fraction',
 ): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -251,7 +275,7 @@ async function maybeForceCompact(
     const ok = hostSupports(host, 'compact')
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
-          data: forceCompactContinueNote(est, limit, forceAt),
+          data: forceCompactContinueNote(est, limit, forceAt, bound),
           focus: FORCE_COMPACT_FOCUS,
         })
       : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${FORCE_COMPACT_FOCUS}` });
@@ -259,7 +283,7 @@ async function maybeForceCompact(
       console.warn(
         `[compaction-watchdog] FORCE-COMPACTED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
           `(${Math.round((est / limit) * 100)}% of the soft limit; force threshold ~${forceAt}) — ` +
-          `injected /compact after it exhausted the 100–130% self-compaction band (P-012).`,
+          `injected /compact after it exhausted the self-compaction band (soft limit → force threshold; P-012).`,
       );
     }
     return ok;
