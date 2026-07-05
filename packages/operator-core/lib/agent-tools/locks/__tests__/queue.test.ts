@@ -84,4 +84,30 @@ describe('locks:queue handler', () => {
     const out = payload((await tool.handler({ include_completed: true }, ctx)) as never);
     expect(out.completed[0]).toMatchObject({ waiter_id: 'c1', queued_ts: queued.toISOString(), wait_until: waitUntil.toISOString() });
   });
+
+  it('EI-7454: a transient statement_timeout (57014) on readQueue is retried, not surfaced', async () => {
+    let calls = 0;
+    H.readQueue.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const e = new Error('canceling statement due to statement timeout') as Error & { code: string };
+        e.code = '57014';
+        throw e;
+      }
+      return { active_locks: [], waiting: [] };
+    });
+    const out = payload((await tool.handler({}, ctx)) as never);
+    expect(calls).toBe(2);
+    expect(out).toMatchObject({ active_locks: [], waiting: [] });
+  });
+
+  it('a non-contention error is NOT retried — propagates immediately', async () => {
+    let calls = 0;
+    H.readQueue.mockImplementation(async () => {
+      calls += 1;
+      throw new Error('boom: unrelated failure');
+    });
+    await expect(tool.handler({}, ctx)).rejects.toThrow('boom: unrelated failure');
+    expect(calls).toBe(1);
+  });
 });

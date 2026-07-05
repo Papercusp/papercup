@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { buildStatus } from '../../dev-data';
+import { buildStatus, flagFlakeSuspects, testFlakeRollup } from '../../dev-data';
 import { buildKey } from '../../events/await/catalog';
 
 export default defineTool({
@@ -35,6 +35,20 @@ export default defineTool({
       events: [buildKey('deploy'), buildKey('checkpoint')],
       sugar: ['deploy:await', 'checkpoint:await'],
     };
-    return { data: { ...result, awaitable } };
+    // Flake-suspect detector (EI-7443): surface statistically-identifiable repeat
+    // flakes (fails >= 5 AND >= 2 commits with BOTH a pass and a fail) so a
+    // release-fixer sees flake-vs-regression up front instead of re-deriving it
+    // from scratch on every red gate. Additive — best-effort, never blocks the
+    // existing build-status response on a PG hiccup.
+    let flakeSuspects: ReturnType<typeof flagFlakeSuspects> = [];
+    try {
+      const { entries } = await testFlakeRollup(7);
+      flakeSuspects = flagFlakeSuspects(entries, 7);
+    } catch (err) {
+      console.warn(
+        `[dev:build_status] flake-suspect scan skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { data: { ...result, flake_suspects: flakeSuspects, awaitable } };
   },
 });

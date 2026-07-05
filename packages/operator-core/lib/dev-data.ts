@@ -297,6 +297,145 @@ export function flagPollSuspects(
   return suspects;
 }
 
+// ── Test-flake rollup (EI-7443) ─────────────────────────────────────
+
+export interface TestFlakeEntry {
+  file_path: string;
+  fails: number;
+  passes: number;
+  /** Count of DISTINCT commit_sha with BOTH a pass and a fail for this file over the
+   *  window — the flake SIGNATURE (a commit-specific regression only ever fails, never
+   *  passes, on its own sha). */
+  both_status_shas: number;
+  /** fails / (fails + passes), rounded to 3 decimals. */
+  flake_rate: number;
+  last_fail: string | null;
+  last_pass: string | null;
+}
+
+/** A file needs at least this many fails in the window to be worth flagging at all
+ *  (a 1-off fail is noise, not a pattern). */
+export const FLAKE_SUSPECT_MIN_FAILS = 5;
+/** …AND at least this many commits where the SAME file both failed and passed — the
+ *  flake signature. 1 mixed-status commit could be a fixed-then-broken-again regression;
+ *  2+ across DIFFERENT commits is a file that doesn't reliably reflect its own commit. */
+export const FLAKE_SUSPECT_MIN_BOTH_STATUS_SHAS = 2;
+
+/**
+ * Roll up `harness_shared.test_runs` by file_path over the last `days` (default 7):
+ * fails, passes, the flake signature (both_status_shas), flake_rate, and last
+ * fail/pass timestamps. Returns EVERY file with at least one fail in the window —
+ * unfiltered, same shape as `telemetryRollup` — so the threshold decision (which
+ * files are flake SUSPECTS) stays a separate pure function (flagFlakeSuspects),
+ * testable without a live DB.
+ */
+export async function testFlakeRollup(days = 7): Promise<{ entries: TestFlakeEntry[] }> {
+  const d = Math.max(1, Math.min(90, days));
+  const { sql } = getOrgPg();
+  const sinceIso = new Date(Date.now() - d * 24 * 3600 * 1000).toISOString();
+
+  type Row = {
+    file_path: string;
+    fails: number;
+    passes: number;
+    both_status_shas: number;
+    flake_rate: string | number | null;
+    last_fail: string | null;
+    last_pass: string | null;
+  };
+  const rows = (await sql`
+    WITH totals AS (
+      SELECT file_path,
+        count(*) FILTER (WHERE status = 'fail')::int AS fails,
+        count(*) FILTER (WHERE status = 'pass')::int AS passes,
+        max(created_at) FILTER (WHERE status = 'fail') AS last_fail,
+        max(created_at) FILTER (WHERE status = 'pass') AS last_pass
+      FROM harness_shared.test_runs
+      WHERE created_at > ${sinceIso}::timestamptz
+      GROUP BY file_path
+    ),
+    per_sha AS (
+      SELECT file_path, commit_sha,
+        count(*) FILTER (WHERE status = 'fail') AS sha_fails,
+        count(*) FILTER (WHERE status = 'pass') AS sha_passes
+      FROM harness_shared.test_runs
+      WHERE created_at > ${sinceIso}::timestamptz
+        AND commit_sha IS NOT NULL
+      GROUP BY file_path, commit_sha
+    ),
+    both_shas AS (
+      SELECT file_path, count(*)::int AS both_status_shas
+      FROM per_sha
+      WHERE sha_fails > 0 AND sha_passes > 0
+      GROUP BY file_path
+    )
+    SELECT
+      t.file_path,
+      t.fails,
+      t.passes,
+      coalesce(b.both_status_shas, 0) AS both_status_shas,
+      round(t.fails::numeric / nullif(t.fails + t.passes, 0), 3) AS flake_rate,
+      t.last_fail,
+      t.last_pass
+    FROM totals t
+    LEFT JOIN both_shas b ON b.file_path = t.file_path
+    WHERE t.fails > 0
+    ORDER BY t.fails DESC
+    LIMIT 500
+  `) as unknown as Row[];
+
+  return {
+    entries: rows.map((r) => ({
+      file_path: r.file_path,
+      fails: r.fails,
+      passes: r.passes,
+      both_status_shas: r.both_status_shas,
+      flake_rate: r.flake_rate == null ? 0 : Number(r.flake_rate),
+      last_fail: r.last_fail,
+      last_pass: r.last_pass,
+    })),
+  };
+}
+
+export interface FlakeSuspect extends TestFlakeEntry {
+  reason: string;
+}
+
+/**
+ * Flag statistically-identifiable repeat flakes (EI-7443: the gate red-holds burn
+ * release-fixer dispatches re-deriving flake-vs-regression from scratch every time).
+ * Pure so it is unit-testable; `dev:build_status` folds the result into its
+ * response as `flake_suspects` — exact pattern of `flagPollSuspects`/`poll_suspects`.
+ * A file needs BOTH enough fails to matter (not a 1-off) AND the flake SIGNATURE
+ * (≥2 commits where it both passed and failed) — a fail-only file across every
+ * commit it touched is a real regression, not a flake, and is deliberately never
+ * flagged here.
+ */
+export function flagFlakeSuspects(
+  entries: TestFlakeEntry[],
+  days = 7,
+): FlakeSuspect[] {
+  const suspects: FlakeSuspect[] = [];
+  for (const e of entries) {
+    if (
+      e.fails >= FLAKE_SUSPECT_MIN_FAILS &&
+      e.both_status_shas >= FLAKE_SUSPECT_MIN_BOTH_STATUS_SHAS
+    ) {
+      suspects.push({
+        ...e,
+        reason:
+          `${e.fails} fail(s) / ${e.passes} pass(es) over ${days}d, ${e.both_status_shas} ` +
+          `commit(s) with BOTH a pass and a fail — flake-shaped, not commit-specific; ` +
+          `expect flaky test infra (timing, shared state, external dep) rather than a ` +
+          `regression (EI-7443)`,
+      });
+    }
+  }
+  // Worst first: most fails, ties broken by the strongest flake signature.
+  suspects.sort((a, b) => b.fails - a.fails || b.both_status_shas - a.both_status_shas);
+  return suspects;
+}
+
 // ── Served-format adoption (usage-insights P-002/D-002) ────────────
 
 export interface FormatAdoptionInput {

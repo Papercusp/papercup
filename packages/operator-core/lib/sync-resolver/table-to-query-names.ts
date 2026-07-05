@@ -33,17 +33,23 @@
  *     workspace_id / plan_slug etc. — a `byHarness` list isn't keyed by the
  *     changed row's surrogate PK, so per-row scoping can't narrow it.
  *
- *   - A `{ name, scope }` entry → SCOPED when the event carries `args.id`
- *     AND `scope(rowId, workspaceId)` returns a key object. The bridge emits
- *     the name WITH those `args`, so the SSEAdapter exact-matches just the
- *     one consumer key (`['sync', name, args]`). `scope` MUST return the
- *     COMPLETE args object the consumer subscribes with (TanStack hashes the
- *     full key structurally; a partial object matches nothing). Returns
- *     `null` to opt out of scoping for this event → the bridge falls back to
- *     a full-bust for that name. When the event has NO `id` (a table without
- *     an `id` column — most `harness_shared.*` tables key on a natural
- *     composite, so `to_jsonb(row)->'id'` is JSON null), every entry
- *     full-busts regardless.
+ *   - A `{ name, scope }` entry → SCOPED when the event carries an identifying
+ *     key (`args.id`, or a natural-key fallback like `args.plan_slug` for
+ *     id-less tables — EI-7433) AND `scope(key, workspaceId)` returns a key
+ *     object. The bridge emits the name WITH those `args`; the SSEAdapter
+ *     invalidates via `queryClient.invalidateQueries({ queryKey })`, which is
+ *     a NON-exact, PARTIAL match (`@tanstack/react-query`'s
+ *     `partialMatchKey` — verified live against v5.100.5): every key `scope`
+ *     returns must match the consumer's cached args, but the consumer's args
+ *     MAY carry additional keys `scope` omits (e.g. `mode`, `harness`) — they
+ *     are not required to match. So `scope` only needs to return the subset
+ *     of args that uniquely identifies the row (e.g. `{ slug }`), NOT the
+ *     consumer's complete args object — a MISSING key in `scope`'s return is
+ *     fine, a WRONG value for a key it does include is what breaks the
+ *     match. Returns `null` to opt out of scoping for this event → the
+ *     bridge falls back to a full-bust for that name. When the event has NO
+ *     identifying key at all (neither `id` nor a nominated natural key),
+ *     every entry full-busts regardless.
  *
  * The fan-out (and the 90s (name,args) dedupe in the bus) stays cheap: a
  * scoped event dedupes per row, a full-bust dedupes per name.
@@ -99,7 +105,21 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // / plan_runs feed the audit + run panels.
   'harness_shared.harness_plans': [
     'plans.list',
-    'plans.get',
+    // plans.get (EI-7433): scoped by plan slug (mig 507's natural-key
+    // fallback). The one live consumer (usePlan's `live:true` path,
+    // apps/operator/app/admin/plans/plans-api.ts) always subscribes with
+    // `{ slug, mode:'full', ...(harness && {harness}) }` — `scope` only
+    // needs to return `{ slug }` (a MATCHING subset; extra consumer-side
+    // keys like `mode`/`harness` are not required to match — see the
+    // file-top note). `planSlugScope` falls back to full-bust when the
+    // event carries no plan_slug (shouldn't happen for this table, but a
+    // defensive `null` costs nothing).
+    { name: 'plans.get', scope: planSlugScope },
+    // plans.items stays a full-bust: it has NO live useSyncQuery consumer
+    // today (grep apps/operator for queryName:'plans.items' — none), so
+    // there's no confirmed consumer args shape to scope against; scoping a
+    // name with an unconfirmed/no shape risks a silent stop-refreshing bug
+    // the moment a consumer lands with different args. Revisit when one exists.
     'plans.items',
     'plans.attention',
     'plans.search',
