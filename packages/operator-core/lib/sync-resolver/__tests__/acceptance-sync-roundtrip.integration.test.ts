@@ -208,6 +208,11 @@ describe('acceptance: sync read → write → invalidate roundtrip (toastLog.rec
 
     const bridgedBefore = received.filter((e) => e.name === 'toastLog.recent').length;
     await insertToast('fifth toast (trigger)');
+    // TEMP DEBUG (su-8dc11) — remove before commit
+    await new Promise((r) => setTimeout(r, 3000));
+    console.log('DEBUG received names:', JSON.stringify(received.map((e) => e.name)));
+    const trg = await h.sql`SELECT tgname, tgenabled FROM pg_trigger WHERE tgname = 'emit_change_notify_trg'`;
+    console.log('DEBUG trigger row:', JSON.stringify(trg));
 
     // Raw trigger event arrives with the <schema>.<table>.changed name…
     await vi.waitFor(

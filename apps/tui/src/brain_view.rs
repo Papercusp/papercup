@@ -49,10 +49,13 @@ impl Scope {
         }
     }
 
-    fn short_label(&self) -> &'static str {
+    /// The Hive-lexicon term key for this scope's role (Queen→`brain`→"Mug",
+    /// Overwatch→`overwatch`→"Kettle"). The header renders the RESOLVED label via
+    /// `Lexicon::lex` — never a hardcoded brand word (pui-hive-lexicon-2026-06-06).
+    fn lexicon_term(&self) -> &'static str {
         match self {
-            Scope::Queen => "Queen",
-            Scope::Overwatch => "Overwatch",
+            Scope::Queen => "brain",
+            Scope::Overwatch => "overwatch",
         }
     }
 
@@ -103,6 +106,10 @@ impl AttachState {
 #[derive(Debug, Clone)]
 struct BrainViewState {
     scope: Scope,
+    /// Resolved display label for this scope's role (lexicon: brain→Mug,
+    /// overwatch→Kettle). Seeded from CLASSIC in `new`, refreshed once the client
+    /// fetches the active pack — so the header never bypasses the Hive lexicon.
+    label: String,
     status: AttachState,
     current_uuid: Option<String>,
     offset: u64,
@@ -115,6 +122,7 @@ impl BrainViewState {
     fn new(scope: Scope) -> Self {
         Self {
             scope,
+            label: crate::lexicon::Lexicon::default().lex(scope.lexicon_term()),
             status: AttachState::Connecting,
             // Impossible sentinel so the first resolve always renders a transition.
             current_uuid: Some(String::new()),
@@ -277,6 +285,13 @@ async fn run_tui(
         }
     };
 
+    // Resolve this scope's display label through the active Hive lexicon now the
+    // client is up (brain→Mug / overwatch→Kettle under CLASSIC; the-hive → its own
+    // labels). Any fetch error keeps the CLASSIC seed from `new`.
+    if let Ok(pack) = client.lexicon_active_pack().await {
+        state.label = crate::lexicon::Lexicon::from_payload(&pack).lex(scope.lexicon_term());
+    }
+
     loop {
         // (Re)resolve the newest session + its transcript path; a new wake → new uuid.
         let resolved = resolve_session(&client, &scope).await;
@@ -315,7 +330,7 @@ fn header_line(state: &BrainViewState) -> Line<'static> {
     let kind = state.scope.kind();
     let mut spans = vec![
         Span::styled(
-            format!("{} {}", kind.glyph(), state.scope.short_label()),
+            format!("{} {}", kind.glyph(), state.label),
             Theme::title().fg(kind.color()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · live", Theme::dim()),
@@ -671,7 +686,10 @@ mod tests {
         terminal.draw(|f| draw_brain_view(f, &state)).unwrap();
         let text = format!("{:?}", terminal.backend().buffer());
 
-        assert!(text.contains("Queen"), "{text}");
+        // Header renders the lexicon-resolved label (CLASSIC: brain→Mug), never
+        // the hardcoded old brand word "Queen".
+        assert!(text.contains("Mug"), "{text}");
+        assert!(!text.contains("Queen"), "{text}");
         assert!(text.contains("read-only"), "{text}");
         assert!(text.contains("attached abcdef12"), "{text}");
         assert!(text.contains("place the next item"), "{text}");
