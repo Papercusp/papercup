@@ -26,7 +26,7 @@ function fakeSql(ticks: Handler): Sql {
 
 function row(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    hive_slug: 'papercup',
+    pot_slug: 'papercup',
     tick_at: new Date('2026-06-13T08:00:00Z'),
     frontier_depth: 3,
     placements: 2,
@@ -46,8 +46,8 @@ afterEach(() => vi.restoreAllMocks());
 describe('readHiveThroughputSnapshot', () => {
   it('groups ticks by hive: latest cards + recent trend, newest-first', async () => {
     const sql = fakeSql(async () => [
-      row({ hive_slug: 'papercup', tick_at: new Date('2026-06-13T08:01:00Z'), frontier_depth: 1 }),
-      row({ hive_slug: 'papercup', tick_at: new Date('2026-06-13T08:00:00Z'), frontier_depth: 3 }),
+      row({ pot_slug: 'papercup', tick_at: new Date('2026-06-13T08:01:00Z'), frontier_depth: 1 }),
+      row({ pot_slug: 'papercup', tick_at: new Date('2026-06-13T08:00:00Z'), frontier_depth: 3 }),
     ]);
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap.hives).toHaveLength(1);
@@ -63,9 +63,9 @@ describe('readHiveThroughputSnapshot', () => {
   it('separates multiple hives and orders attention-first (stuck/starved before healthy)', async () => {
     const sql = fakeSql(async () => [
       // healthy hive
-      row({ hive_slug: 'alpha', stuck_count: 0, bees_busy: 2, bees_cap: 16, frontier_depth: 0 }),
+      row({ pot_slug: 'alpha', stuck_count: 0, bees_busy: 2, bees_cap: 16, frontier_depth: 0 }),
       // starved hive (busy == cap, work queued) → utilization derives to 1
-      row({ hive_slug: 'zeta', stuck_count: 0, bees_busy: 8, bees_cap: 8, frontier_depth: 5, detail: null }),
+      row({ pot_slug: 'zeta', stuck_count: 0, bees_busy: 8, bees_cap: 8, frontier_depth: 5, detail: null }),
     ]);
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap.hives.map((h) => h.hiveSlug)).toEqual(['zeta', 'alpha']); // attention-first
@@ -74,7 +74,7 @@ describe('readHiveThroughputSnapshot', () => {
   });
 
   it('a stuck latest tick fails operating-well', async () => {
-    const sql = fakeSql(async () => [row({ hive_slug: 'papercup', stuck_count: 2 })]);
+    const sql = fakeSql(async () => [row({ pot_slug: 'papercup', stuck_count: 2 })]);
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap.hives[0]?.operatingWell).toBe(false);
   });

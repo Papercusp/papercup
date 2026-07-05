@@ -108,7 +108,7 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
   it('hive query adds the same loose predicate, scoped on hive_slug', async () => {
     const { sql, calls } = recordingSql([]);
     await queryPresenceRowsForHive(sql, 'my-hive', 10_000);
-    expect(calls[0].text).toMatch(/hive_slug =/);
+    expect(calls[0].text).toMatch(/pot_slug =/);
     expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
     expect(calls[0].values).toEqual(['my-hive', 20]); // 2×10s
   });

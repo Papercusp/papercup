@@ -52,11 +52,11 @@ export async function readHiveThroughputSnapshot(
   try {
     // Cap the scan generously; per-hive trend slicing happens in memory below.
     rows = (await sql`
-      SELECT pot_slug AS hive_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
+      SELECT pot_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
              stuck_count, completed, mttc_ms, question_rungs, detail
         FROM harness_shared.hive_throughput_ticks
        WHERE workspace_id = ${workspaceId}
-         ${opts.hiveSlug ? sql`AND hive_slug = ${opts.hiveSlug}` : sql``}
+         ${opts.hiveSlug ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
        ORDER BY tick_at DESC
        LIMIT 2000
     `) as RawThroughputTickRow[];

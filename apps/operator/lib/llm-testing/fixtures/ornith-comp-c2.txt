@@ -6,11 +6,12 @@ between an array's LENGTH and its last valid INDEX, and fix it so the
 expectations below pass. Change ONLY the one thing that is wrong.
 
 function lastIndex(arr) {
-  return arr.length;
+  return arr.length - 1;
 }
 
 EXPECTED after fix:
   lastIndex([10, 20, 30]) === 2
   lastIndex(["a"])        === 0
   lastIndex([4, 4, 4, 4]) === 3
+
 
