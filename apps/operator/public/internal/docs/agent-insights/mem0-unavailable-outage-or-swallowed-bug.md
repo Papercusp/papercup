@@ -87,6 +87,20 @@ Two defects, both hidden behind `mem0_unavailable` (fixed in `879fc733`):
    the store to mem0's **volatile in-process** provider. Use
    `await import('pg')`.
 
+A **third** patched factory landed since (`mem0-client.ts` `patchLlmFactory`,
+same shape as the two above): mem0ai 3.x's `LLMFactory.create` is also a
+hard-coded provider switch with no `custom` case, needed so session-backed
+extraction can route through the host's own Claude/Anthropic session instead
+of a separately-configured LLM. It follows the identical module-level-fn
+pattern (`_currentExtractionLlm`, not `config`-carried, same Zod-stripping
+reason) and the identical swallow risk — `patchLlmFactory` failing throws
+`warnOnce('mem0 LLMFactory not patchable…')` down the same cause-4 path, not a
+loud error. Pinned against the real `mem0ai` module by
+`extraction-llm.test.ts` so an upstream interface change fails a test, not
+production silently. If you're auditing "which mem0 internals does this repo
+monkey-patch", it's now three: `VectorStoreFactory`, `EmbedderFactory`,
+`LLMFactory` — check all three when mem0ai bumps its version.
+
 ## Prove the full path actually works
 
 Don't trust a passing tsc or a mocked unit test — round-trip the real

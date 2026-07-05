@@ -14461,6 +14461,8 @@ Two defects, both hidden behind `mem0_unavailable` (fixed in `879fc733`):
 1. **Custom embedder unsupported.** The store builds mem0 with `embedder: { provider: 'custom', config: { embed } }`, but mem0ai 3.0.3’s `EmbedderFactory` only knows openai/ollama/lmstudio/google/ azure\_openai/langchain — it throws `Unsupported embedder provider: custom`. We patched `VectorStoreFactory` (for the `canonical` store) but never `EmbedderFactory`. Both are exported from `mem0ai/oss`, so patch both. **Gotcha:** the `custom` embedder must read a module-level fn, **not** `config.embed` — mem0’s `ConfigManager.mergeConfig` strips function-valued config fields during Zod validation (you’ll see `fn is not a function` at dimension auto-detect).
 2. **`require('pg')` under ESM.** `@papercusp/memory` runs as ESM (not in Next’s `transpilePackages`), where `require` is undefined — the pgvector probe threw `require is not defined`, silently downgrading the store to mem0’s **volatile in-process** provider. Use `await import('pg')`.
 
+A **third** patched factory landed since (`mem0-client.ts` `patchLlmFactory`, same shape as the two above): mem0ai 3.x’s `LLMFactory.create` is also a hard-coded provider switch with no `custom` case, needed so session-backed extraction can route through the host’s own Claude/Anthropic session instead of a separately-configured LLM. It follows the identical module-level-fn pattern (`_currentExtractionLlm`, not `config`-carried, same Zod-stripping reason) and the identical swallow risk — `patchLlmFactory` failing throws `warnOnce('mem0 LLMFactory not patchable…')` down the same cause-4 path, not a loud error. Pinned against the real `mem0ai` module by `extraction-llm.test.ts` so an upstream interface change fails a test, not production silently. If you’re auditing “which mem0 internals does this repo monkey-patch”, it’s now three: `VectorStoreFactory`, `EmbedderFactory`, `LLMFactory` — check all three when mem0ai bumps its version.
+
 ## Prove the full path actually works
 
 [Section titled “Prove the full path actually works”](#prove-the-full-path-actually-works)
@@ -24247,6 +24249,38 @@ This is purely a SPA/TypeScript change, so it ships via the operator-vite bundle
 [Section titled “Gotcha: multiple desktop instances / ports”](#gotcha-multiple-desktop-instances--ports)
 
 The dev box runs several desktops at once on different content ports — the `npm run dev` shell (`:3270`, working-tree dist), the fleet staging operator (`:3170`, the separate `papercup-staging` checkout), the green release (`:3070`, `papercup-release`). They serve DIFFERENT SPA builds. A fix in the canonical tree reaches `:3270` immediately (rebuild + reload) but `:3170`/`:3070` only after their own sync + rebuild/deploy. Confirm WHICH port the affected window is on (its address bar) before concluding a fix didn’t land — you may be looking at a stale build.
+
+# Hand-rolled test DDL drift hides behind a best-effort drain catch
+
+> A federation-test row that decrypts (epoch_applied) but never lands in PG is usually a projection INSERT throwing on a column the test hand-rolled DDL lacks — swallowed by drainQueuedEpochContent try/catch, so it looks like a crypto/logic bug.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A hive federation integration test (the `_hive-substrate-rig` / `CONTENT_AND_KEY_DDL` family) fails with a decrypted content op that reaches the decrypt gate’s `epoch_applied` trace **but the row is never in the joiner PG**, and `drainQueuedEpochContent` reports N-1 of N reapplied. It *looks* like a crypto / epoch / decrypt-gate bug. It usually is not.
+
+## Root cause: a swallowed INSERT throw
+
+[Section titled “Root cause: a swallowed INSERT throw”](#root-cause-a-swallowed-insert-throw)
+
+The apply path is `gate → applyOpVia → projection.writeToPg`. `drainQueuedEpochContent` wraps each re-apply in a **best-effort `try/catch`** (a re-apply throw must not abort the merge pass). So when a projection’s `writeToPg` INSERT references a column the test’s **hand-rolled minimal DDL** does not have, the INSERT throws, the drain swallows it, and the row silently vanishes — with **no error surfaced**, only a lower reapplied count. `epoch_applied` fires *before* `inner(op)` runs, so seeing it does NOT mean the row landed.
+
+Concrete instance (EI-7394): `buildEngineerIssuesProjection.writeToPg` INSERTs `terminal_owner` + `terminal_completion_ref` (the P-010 work\_items unification), but the test’s `CONTENT_AND_KEY_DDL` `work_items` table predated those columns. Same class as the `substrate_outbox` / `drained_log_key` (mig 495) drift.
+
+## How to diagnose fast
+
+[Section titled “How to diagnose fast”](#how-to-diagnose-fast)
+
+1. Add `onTrace` to `buildEpochDecryptGate` and collect into an array (do NOT `console.error` — `vitest-fail-on-console` fails the run). If the failing op reaches `epoch_applied`, the decrypt is fine — the problem is downstream in the projection.
+2. Compare the projection’s `writeToPg` INSERT column list against the test’s hand-rolled DDL. Any column in the INSERT but not the DDL throws.
+3. Fix = add the missing column(s) to the test DDL (these minimal test schemas are superset-only by design and drift as projections gain columns).
+
+## Related trap in the same file
+
+[Section titled “Related trap in the same file”](#related-trap-in-the-same-file)
+
+EI-7394 also had a first failure masking this one: WI-2102 made **epoch 0 the plaintext BASELINE**, so `buildEpochEncryptCapability.encryptOp` returns `null` at epoch 0. A test that authors encrypted content must advance to `epoch >= 1` first; asserting a non-null encrypted op at epoch 0 is now wrong.
 
 # Testing lock-authority eviction across machines (the ≥3-peer harness)
 

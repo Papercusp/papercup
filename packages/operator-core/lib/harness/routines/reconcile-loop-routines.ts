@@ -581,6 +581,7 @@ export async function reconcileLoopRoutines(
           completedAt,
           nextFireAt: completedAt + intervalMs,
           via,
+          ...(quickRetry ? { quickRetry: true } : {}),
         });
         // Feed the autoloop circuit (loop-wake-rate-limit-robustness P0b). A completed turn
         // (lifecycle / presence-quiescence) is SUCCESS → recordFire('ok') resets the streak;

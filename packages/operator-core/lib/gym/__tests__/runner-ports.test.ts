@@ -92,6 +92,51 @@ describe('createGymRunnerPorts', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('registerThrowawayHarness (WI-2604): a 409 for the SAME slug at the SAME clone path is idempotent (no throw) — a leftover/replayed throwaway harness', async () => {
+    // gymRunIdentity derives a DETERMINISTIC slug from (task×variant×cycle×repeat) so a
+    // DBOS replay / re-run of the same key intentionally re-registers the same slug.
+    // Nothing tears the project entry down after a successful run, so this 409 is the
+    // COMMON case, not an error — it must resolve, never throw.
+    const { config, reqs } = cfg({
+      fetchFn: (async (url: string, init?: RequestInit) => {
+        reqs.push({ url, init: init ?? {} });
+        if (init?.method === 'POST') {
+          return { ok: false, status: 409, text: async () => '{"error":"slug already exists"}' } as unknown as Response;
+        }
+        // The idempotency-check GET
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ projects: [{ slug: 'gymx', path: '/c/gymx' }] }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch,
+    });
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.registerThrowawayHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' }),
+    ).resolves.toBeUndefined();
+    expect(reqs.some((r) => r.init.method === undefined && r.url.endsWith('/api/harness/projects'))).toBe(true);
+  });
+
+  it('registerThrowawayHarness (WI-2604): a 409 for the SAME slug at a DIFFERENT path still throws (a real collision, not a replay)', async () => {
+    const { config } = cfg({
+      fetchFn: (async (url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return { ok: false, status: 409, text: async () => '{"error":"slug already exists"}' } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ projects: [{ slug: 'gymx', path: '/some/other/unrelated/path' }] }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch,
+    });
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.registerThrowawayHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' }),
+    ).rejects.toThrow(/409|collision/);
+  });
+
   it('startPipeline hits the admin route with the superuser bearer + returns the workflow id', async () => {
     const { config, reqs } = cfg();
     const p = createGymRunnerPorts(config);

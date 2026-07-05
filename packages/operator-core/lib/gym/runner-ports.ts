@@ -60,6 +60,24 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ slug, path: clonePath }),
       });
+      if (res.status === 409) {
+        // WI-2604: gym slugs are DETERMINISTIC (run-identity.ts's gymRunIdentity — same
+        // (task×variant×cycle×repeat) always resolves to the same slug, on purpose, for
+        // idempotent DBOS replay). Nothing tears the throwaway harness project entry down
+        // after a run completes (only a setup failure does), so a later run/replay of the
+        // SAME key hits a live "slug already exists" 409 and the whole cycle fails. Since
+        // the identity is deterministic BY DESIGN, re-registering the same slug at the
+        // same clone path is an idempotent no-op, not a real collision — verify the
+        // existing project really is this same throwaway (path match) before swallowing
+        // the 409, so an unrelated real slug collision still surfaces loudly.
+        const existing = await doFetch(`${cfg.operatorBaseUrl}/api/harness/projects`);
+        if (existing.ok) {
+          const body = (await existing.json().catch(() => ({}))) as { projects?: Array<{ slug: string; path: string }> };
+          const match = body.projects?.find((p) => p.slug === slug);
+          if (match && match.path === clonePath) return; // idempotent re-registration — same throwaway, same path
+        }
+        throw new Error(`registerThrowawayHarness ${slug} → 409: slug already exists at a DIFFERENT path than ${clonePath} (real collision, not idempotent replay)`);
+      }
       if (!res.ok) throw new Error(`registerThrowawayHarness ${slug} → ${res.status}: ${await res.text()}`);
       // The route returns HTTP 200 even when scaffoldHarnessSchema() throws — it
       // reports the failure as `provisioning:{ok:false,error}`. A swallowed scaffold
