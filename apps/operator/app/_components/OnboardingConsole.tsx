@@ -44,14 +44,23 @@ export const EXTERNAL_CONSOLE_TITLE = 'Papercusp Onboarding';
 
 /**
  * True when the onboarding concierge must run in an EXTERNAL terminal
- * window instead of the embedded pane (WI-3033, Windows-only — see the
- * module doc). Detection is the WEBVIEW's user agent: the operator (and
+ * window instead of the embedded pane.
+ *
+ *  - Windows (WI-3033): the embedded path (pty_spawn → ConPTY → wsl.exe)
+ *    wedges on legacy inbox WSL; a real terminal window is the proven host.
+ *  - Linux (owner directive 2026-07-05): the tutorial runs in a real native
+ *    terminal window (the desktop's bundled ghostty), not an embedded
+ *    webview pane — external_console_run has a Linux spawner.
+ *  - macOS keeps the embedded pane (SwiftTerm works and stays the UX).
+ *
+ * Detection is the WEBVIEW's user agent: the operator (and
  * `process.platform`) run inside the WSL distro and always say linux, so
- * only the client knows it's rendering on Windows. Pure + exported for
- * unit tests.
+ * only the client knows what OS it's rendering on. A WebKitGTK desktop
+ * webview says "X11; Linux" / "Wayland; Linux"; a macOS WKWebView says
+ * "Macintosh" (never "Linux"). Pure + exported for unit tests.
  */
 export function shouldRouteExternalConsole(isTauri: boolean, ua: string): boolean {
-  return isTauri && ua.includes('Windows NT');
+  return isTauri && (ua.includes('Windows NT') || ua.includes('Linux'));
 }
 
 type ExternalState = 'idle' | 'launching' | 'running' | 'error';

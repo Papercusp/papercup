@@ -113,9 +113,18 @@ export const commands = {
 	 */
 	focusWindowByTitle: (title: string) => __TAURI_INVOKE<boolean>("focus_window_by_title", { title }),
 	/**
-	 *  Run `spec` in a new external Windows Terminal window (conhost fallback).
-	 *  Returns the launcher pid when one is observable. Windows-only by design:
-	 *  on macOS/Linux the embedded pty terminal works and stays the UX.
+	 *  Run `spec` in a new external NATIVE terminal window.
+	 * 
+	 *   - Windows: a new Windows Terminal window (conhost fallback) — WI-3033
+	 *     (the embedded ConPTY path wedges on legacy inbox WSL).
+	 *   - Linux: a new terminal window — the BUNDLED ghostty first (always shipped
+	 *     with the desktop, so a barebones install needs no system emulator), then
+	 *     $TERMINAL / the known-emulator cascade. Owner directive 2026-07-05: the
+	 *     onboarding tutorial runs in a real native terminal window, not an
+	 *     embedded webview pane.
+	 *   - macOS: unchanged (the embedded SwiftTerm pane works and stays the UX).
+	 * 
+	 *  Returns the launcher pid when one is observable.
 	 */
 	externalConsoleRun: (spec: ExternalConsoleSpec) => typedError<number | null, string>(__TAURI_INVOKE("external_console_run", { spec })),
 	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),

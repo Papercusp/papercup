@@ -202,12 +202,13 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   if (typeof existing === 'string' && existing.trim()) return input.body;
 
   const target = parseInvokeTarget(input);
-  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of `overwatch`
-  // (mug is queen's twin, already present) — accept it alongside so a renamed launch
-  // is not silently rejected here.
+  // pot-rename EXPAND phase (WI-2932): stale durable bodies queued before the
+  // rename still carry role=queen / role=overwatch URLs and re-fire until the
+  // drain + S2 backfill. Dual-accept the old ids so those rows keep refreshing;
+  // DROP the queen/overwatch arms when s2-role-contract.sql lands.
   if (
     !target ||
-    (target.role !== 'mug' && target.role !== 'kettle')
+    (target.role !== 'mug' && target.role !== 'kettle' && target.role !== 'queen' && target.role !== 'overwatch')
   )
     return input.body;
 
@@ -215,7 +216,7 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
     const { getOwnerSteering } = await import('../owner-steering');
     const steering = await getOwnerSteering(target.workspaceId, target.harnessSlug);
     let spawnModel: string | null | undefined = null;
-    if (target.role === 'kettle') {
+    if (target.role === 'kettle' || target.role === 'overwatch') {
       spawnModel = steering.modelOverrides?.overwatch;
     } else {
       const [{ readAgentConfig }, { effectiveTierConfig, resolveRoleOwnModelSpec }] = await Promise.all([

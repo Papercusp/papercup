@@ -22,9 +22,12 @@ describe('shouldRouteExternalConsole', () => {
     expect(shouldRouteExternalConsole(true, WINDOWS_WEBVIEW2_UA)).toBe(true);
   });
 
-  it('keeps the embedded terminal on macOS and Linux Tauri webviews', () => {
+  it('routes external on a Linux Tauri webview — the tutorial runs in a native terminal window (owner directive 2026-07-05)', () => {
+    expect(shouldRouteExternalConsole(true, LINUX_WEBKITGTK_UA)).toBe(true);
+  });
+
+  it('keeps the embedded terminal on a macOS Tauri webview', () => {
     expect(shouldRouteExternalConsole(true, MAC_WKWEBVIEW_UA)).toBe(false);
-    expect(shouldRouteExternalConsole(true, LINUX_WEBKITGTK_UA)).toBe(false);
   });
 
   it('never routes external outside Tauri — a browser cannot invoke the command', () => {
