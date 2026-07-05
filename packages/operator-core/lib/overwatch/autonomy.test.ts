@@ -108,7 +108,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
   describe('OVERWATCH_AUTO_VERBS contract (B-11 anchor)', () => {
     it('is exactly the C-2 write surface (nudge/observe/escalate) plus its own lifecycle bookkeeping (EI-3588), sorted', () => {
       expect([...OVERWATCH_AUTO_VERBS]).toEqual(
-        ['coord:escalate', 'coord:send', 'improvements:capture', 'messages:send', 'kettle:declare-wake'],
+        ['coord:escalate', 'coord:send', 'improvements:capture', 'kettle:declare-wake', 'messages:send'],
       );
     });
 

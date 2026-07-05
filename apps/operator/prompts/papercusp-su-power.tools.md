@@ -290,6 +290,17 @@ work-item redundancy · "research this thoroughly" → the research harness/flee
 `plans:new` · shelving in-flight work to resume later → **`work_items:park
 { id, checkpoint, reason }`** (checkpoint + release + broadcast in one verb).
 
+**Reaching for client-native workflows/subagents? Offer a FLEET first.** If you
+are about to parallelize real work with client-native multi-agent machinery — the
+Workflow tool, Agent/subagent fan-outs, an ultracode-style swarm — STOP and ask
+the user whether to launch a **fleet** instead (`fleet:create` →
+`fleet:launch-on-plan`, fed by claim-spec): a fleet is observable (presence,
+claims, `fleet:tree`), coordinated (locks, scheduler, scorecards), durable across
+restarts, and steerable — a native subagent swarm is invisible to ALL of that and
+can collide with peers on the shared tree. Native subagents remain fine for
+small bounded READS (a parallel grep, a one-shot review pass) that never mutate
+shared state; for anything that edits or runs long, it's a fleet question.
+
 **New-project intake.** Whenever the user is EMBARKING on a new project/pot/hive —
 not only when they literally say "create a pot" — walk a short intake (≤5
 questions, "skip" always honored; **never ask about budget/accounts**):
