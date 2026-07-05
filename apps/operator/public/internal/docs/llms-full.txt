@@ -1782,7 +1782,7 @@ A **cold-loop** wake (a `loop:arm` session PG-parked with its context already re
 The primitive’s remaining friction was **discoverability**, not mechanics: agents kept polling (`dev:pipeline_position`, `dev:build_status`, re-reading a peer’s status) because they never found the event key that already fires. `event-await-discoverability-and-coverage-2026-07-03` closes that gap with two additions layered on top of the same `registerAwait` path — neither is a second subscription system:
 
 * **`events:catalog`** renders the awaitable-key registry (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each row names the family, the key template + a ready `events:await` example, who emits it, whether it fires **today** (`awaitable_now`), the poll it replaces, and its sugar verb. Check it *before* you poll. As of this doc’s last verify every catalogued key is landed (`exists: true` / `awaitable_now: true` for the whole table — the Phase-2 keys that were still “catalogued but not wired” (`plan-item:done:<id>`, `claim:released:<id>`, `fleet:drained:<slug>`, `service:up|down:<name>`, `session:compacted:<owner>`) all fired their emitters since); `awaitable_now` stays the field to check for any *future* addition still being wired, not a currently-true caveat.
-* **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) — `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`, `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers that build the correctly-shaped key from the catalog and then call the exact same `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy, checkpoint) arm both the success and failure keys at once since the two are mutually exclusive, so the agent wakes either way with no double-wake risk.
+* **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) — `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`, `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers that build the correctly-shaped key from the catalog and then call the exact same `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy, checkpoint) arm both the success and failure keys at once since the two are mutually exclusive, so the agent wakes either way with no double-wake risk. Since EI-7646 (2026-07-05) `checkpoint:await` arms the **pipeline-scoped** pair (`release:green:<pipeline>` / `green-checkpoint:red:<pipeline>`) by default — `<pipeline>` defaults to the current dev pipeline (`devDeployState()` → `checkpointPipelineName`, the repo basename of the integration root; both in `sugar.ts`); pass `pipeline` to target another, or `global: true` for the global keys, which fire on EVERY co-hosted pipeline’s verdict (you must then lineage-check `payload.pipeline`/`payload.sha` yourself). The gate dual-emits, so the global names still fire.
 
 Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your turn. This does not change the delivery ladder or cost discipline below — it’s purely a findability layer over the same primitive.
 
@@ -1799,7 +1799,7 @@ Matching reuses `@papercusp/rules`’ mingo-backed `matches` operator — the sa
 [Section titled “The patterns”](#the-patterns)
 
 * **Blocked on a file lock:** `locks:acquire { paths, intent, wake_on_grant: true }` → returns `queued_for_wake` + a ticket — end your turn. The wake carries your `lock_id` with the TTL **already running**: edit, then `locks:release`. The old “pivot/retry” advice is retired.
-* **Blocked on a peer:** they tell you a key (or you agree on one) → you `events:await`, they `events:emit`. Built-in keys that fire today: `work-item:done:<id>`, `work-item:unblocked:<id>` (last blocker settled), `plan-run:finished:<runId>`, `plan:draft-ready:<slug>`, `conversation:answered:<id>` (coord:ask’s miss path names it), `release:green`, `release:deployed` / `release:deploy-failed`, `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`, `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`.
+* **Blocked on a peer:** they tell you a key (or you agree on one) → you `events:await`, they `events:emit`. Built-in keys that fire today: `work-item:done:<id>`, `work-item:unblocked:<id>` (last blocker settled), `plan-run:finished:<runId>`, `plan:draft-ready:<slug>`, `conversation:answered:<id>` (coord:ask’s miss path names it), `release:green` (plus the pipeline-scoped `release:green:<pipeline>` / `green-checkpoint:red:<pipeline>` — prefer the scoped keys on a box hosting several pipelines, EI-7646), `release:deployed` / `release:deploy-failed`, `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`, `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`.
 * **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }` that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** — a loud miss to act on (they’re not running: spawn fresh or pick another addressee), not a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey, the inbox itself) catches a miss — and **name that backstop via the `backstop` arg** (e.g. `backstop: 'queen-survey re-dispatches'`). Without a declared `backstop`, an optimistic miss is now reported just as loudly as a required one (`recipient_absent` + the missed agents’ fresh `sessionState`) — silence must be consciously claimed, never a default; don’t pass a fake backstop just to silence the warning, that recreates the dead-drop trap. Legacy `wake:true` coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable). (directed-wake-honesty-2026-06-14, FF#1)
 * **`events:emit` is honest, not strict (D-001):** emit is fire-and-forget broadcast — a fact-announcer (`release:green`, `work-item:done:<id>`) doesn’t know who’s listening, so “nobody awaiting” is the normal, correct case. It returns an honest `{ woken, notified }` count; the discipline is to **read the count** when you care that someone heard you (a `woken:0` means no live waiter yet), NOT to expect emit to throw. There is deliberately no strict mode on emit — that’s the directed-wake-honesty fix for emit (vs `coord:send`’s loud `recipient_absent` for a *directed* wake). (directed-wake-honesty-2026-06-14)
 * **Wake-at-reset for a rate limit:** you hold a `retryAfterMs` → `events:await { event: 'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout: 'wake' }` — the deadline IS the reset wake; an earlier reset emit just arrives sooner.
@@ -4051,6 +4051,80 @@ Two more sessions are now HARD-EXEMPT from reaping regardless of heartbeat age (
 `wakeRecipients` (`inbox-wake.ts`) caps how many concrete agents ONE send/dispatch will actually re-invoke: `MAX_WAKE_FANOUT` (default 64, `PAPERCUSP_MAX_WAKE_FANOUT`-tunable). Beyond the cap the overflow recipients are still **injected** (durable — they see the note on their next turn) but **not woken** — this stops a `@fleet:`/`@topic:` audience that expands to thousands of agents from turning one message into thousands of billable turns. The result carries `fanoutCapped: string[]` (the overflow ownerIds) alongside `targets`/`keys`/`woken`/`staged`/`stagedTargets` — non-empty only for an oversized audience fan; a normal directed dispatch never hits it.
 
 `stagedTargets` (the named set behind `staged`) lets a leader-steering send/dispatch surface a loud, addressed warning (“wake STAGED, not delivered for `<who>`”) instead of a bare `staged:1` — see `buildStagedWakeNote` and the `coord:dispatch` `staged` handling above.
+
+# Cross-platform feature status — the verified audit
+
+> Which shipped features are (and aren't) cross-platform after the 2026-07-05 hardening: the gateway-supervision fix, macOS Keychain credentials, the WSL answer, and the verified CAT1 runtime table.
+
+# Cross-platform feature status — the verified audit (2026-07-05)
+
+[Section titled “Cross-platform feature status — the verified audit (2026-07-05)”](#cross-platform-feature-status--the-verified-audit-2026-07-05)
+
+Deliverable of plan `cross-platform-hardening-and-agent-ergonomics-2026-07-05` (P-009/P-010/P-011, WI-3059). Trigger: the packaged **Mac** app had no inference gateway and an agent “agonized” over Keychain credentials; owner asked *“I thought everything was cross-platform — I need to know about all features that are not.”* This page is the verified answer, from a 72-file systemd-reference sweep plus code-level verification of every shipped candidate.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+* **The product (Tauri desktop) is cross-platform by architecture.** The Tauri shell spawns + owns the operator sidecar on all three platforms and respawns it on crash (`main.rs` `decide_serve_respawn`: exit + unreachable ⇒ respawn, capped, suppressed during shutdown).
+* **The ONE real shipped gap was inference-gateway supervision** — systemd-only, so packaged macOS/Windows simply had **no gateway**. Fixed 2026-07-05 (see below).
+* Everything else that references systemd is **dev-box / CI / release-pipeline tooling that never ships** (green-checkpoint, deploy-cli, git-sync, bghost-watchdog, the units under `apps/operator/scripts/systemd/`). Those are Linux-only **by design** and should stay that way.
+
+## The gateway gap — closed (P-006/P-007/P-008)
+
+[Section titled “The gateway gap — closed (P-006/P-007/P-008)”](#the-gateway-gap--closed-p-006p-007p-008)
+
+Before: `:8788` (paced OAuth egress for the whole fleet) was supervised ONLY by the `papercup-inference-gateway` systemd `--user` unit → never started on macOS, and not under default WSL either. Agents silently fell back to direct/default credential routing.
+
+Now (`packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts`, wired in `apps/operator/bin/host-bootstrap.ts` beside the spawner-sidecar block):
+
+* **Port-probe-first adoption**: if anything already listens on the gateway port (the systemd unit on the Linux dev box, a sibling operator), the supervisor ADOPTS it — no double-bind, no EADDRINUSE race. systemd is demoted to a Linux-dev optimization, not a dependency.
+* **Managed child otherwise**: spawn + respawn-on-crash with exponential backoff (1s→30s cap) and a 5-crashes-per-5-min circuit breaker — the same shape as `substrate-sidecar-spawn.ts` / `spawner-sidecar-spawn.ts` (third clone; extraction to a shared lib is a tracked follow-up).
+* **Packaged spawn path**: esbuild bundles everything into `serve.mjs`, so the packaged build re-execs itself with `PAPERCUSP_GATEWAY_SIDECAR_MODE=1` (serve.ts diverts to `runGatewaySidecarMain()` in `sidecar-main.ts`); dev spawns `npx tsx bin.ts`. Same divert pattern as the substrate/spawner sidecars.
+* **Gating**: env kill-switch `PAPERCUSP_GATEWAY_SUPERVISE=0` — deliberately NOT `getFlag()` at host-boot (flags resolve false when PostHog is unreachable; the stall-waker lesson).
+
+## macOS credentials (P-004 + the `keychain:` channel)
+
+[Section titled “macOS credentials (P-004 + the keychain: channel)”](#macos-credentials-p-004--the-keychain-channel)
+
+Claude Code on macOS stores its OAuth bundle in the **login Keychain** (service `Claude Code-credentials`), NOT `~/.claude/.credentials.json`. Two consequences, both handled:
+
+* **Sign-in detection** (`agent-auth-detect.ts` `claudeKeychainSignedIn`): metadata-only probe (`security find-generic-password -s <service>` WITHOUT `-w`) — no secret fetch, no unlock prompt, fail-safe fallthrough to the file probe.
+* **Gateway local-fallback credential** (`credential-store.ts` `keychain:` credentialRef kind + `account-resolver.ts` `localLoginCredentialRef()`): when the file bundle is absent on darwin, the `local` fallback account resolves to `keychain:Claude Code-credentials`. The resolver is **read-only by design** — Claude Code owns the item + its refresh; the gateway re-READS near expiry and fails with actionable guidance if the bundle went stale. ⚠ Keychain ACL: the FIRST `security -w` read of an item created by another app raises a GUI “allow access” prompt — click **Always Allow** once.
+
+⚠ **Mac-VM verification pending**: the service labels, the ACL-prompt behavior, and an E2E supervisor smoke (packaged app boots → gateway spawns → keychain credential serves a request).
+
+## Windows / WSL (the P-010 answer)
+
+[Section titled “Windows / WSL (the P-010 answer)”](#windows--wsl-the-p-010-answer)
+
+The Windows desktop runs the sidecar **under WSL**, where `process.platform === 'linux'` but systemd is absent by default. The host-bootstrap supervisor block runs there identically: the port probe finds nothing → it **spawns** the gateway child (bundled re-exec, since the packaged sidecar is the bundle). A WSL user who has enabled systemd + installed the unit gets adopted via the probe instead. No WSL-specific code was needed — the gap closed with P-006. Note: service-health’s bg-host code-drift probe (below) is deliberately NOT short-circuited under WSL, since WSL reports `linux`.
+
+## Verified CAT1 runtime table (P-009)
+
+[Section titled “Verified CAT1 runtime table (P-009)”](#verified-cat1-runtime-table-p-009)
+
+| Surface                                    | Verdict                     | Evidence                                                                                                                                                                                                              |
+| ------------------------------------------ | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host-recycle.ts`                          | ✅ cross-platform            | Mechanism = `process.exit(75)` / `exit(0)` + “supervisor restarts me”. Supervisor exists everywhere: systemd `Restart=always` (Linux dev), Tauri `decide_serve_respawn` (packaged, all OSes — exit-code-agnostic).    |
+| `memory-watchdog.ts`                       | ✅ cross-platform            | RSS via `process.memoryUsage().rss` (pure Node); recycle uses the same exit mechanism. The RSS high-water systemd drop-in (EI-1613) is Linux-dev tuning only; defaults apply elsewhere.                               |
+| `shutdown-state.ts`                        | ✅ cross-platform            | Pure `process.on('SIGTERM'/'SIGINT')` drain latch — POSIX (darwin ✓); Windows runs the sidecar under WSL (= linux signal semantics).                                                                                  |
+| `bghost-watchdog.mjs`                      | 🐧 Linux-only **by design** | Dev-box standalone script + unit watching `papercup-bg-host` via `systemctl`/`journalctl`/`/proc/<pid>/environ`. Not imported by `serve.ts`/`host-bootstrap.ts` ⇒ not in the esbuild bundle ⇒ never ships. Not a gap. |
+| `service-health.ts` `probeBgHostCodeDrift` | ✅ platform-guarded (P-005)  | Non-Linux returns `{ up:true, present:false, note:'Linux/systemd-only…' }` instead of a failed `systemctl` exec.                                                                                                      |
+
+## The rest of the 72-file systemd sweep
+
+[Section titled “The rest of the 72-file systemd sweep”](#the-rest-of-the-72-file-systemd-sweep)
+
+Everything else lives in the dev/CI/release plane and never ships in the desktop bundle: green-checkpoint + deploy-cli + release-trigger, git-sync routines, the `apps/operator/scripts/systemd/` units, dev diagnostics (`dev:*` tools), watchdog scripts. **Keep these Linux-only** — porting them would be effort spent on infrastructure that only ever runs on the Linux dev box.
+
+## Open items
+
+[Section titled “Open items”](#open-items)
+
+1. **Mac-VM E2E smoke** — packaged supervisor boot, Keychain labels + ACL prompt, gateway serving with the `keychain:` credential.
+2. **Windows-VM equivalent** — WSL sidecar boots the supervisor; gateway reachable from agents.
+3. **Sidecar-spawn extraction** — `gateway-sidecar-spawn.ts` is the third copy of the spawn/respawn/backoff shape; extract to a shared lib.
 
 # Workspace-agnostic tools need `crossWorkspace: true` (or they fail on fleet sessions)
 
@@ -10686,7 +10760,7 @@ Any restore failure at any point drops to the **cold path** (right column). A `-
 
 [Section titled “One-paragraph model”](#one-paragraph-model)
 
-The installer ships a **seed**: a checkpoint of the two replicated stores that back the dogfood hive — a set of **git bundles** (superproject + 27 submodules) and a **corestore snapshot** (every author core at its cut length, carrying the federated hive state: plans, work-items, features, issues, coordination, settings/members). On first boot the operator **restores the seed BEFORE the (unmodified) shared-hive join runs**, so the join transfers only the **delta** on top of the checkpoint instead of the whole history. The seed pre-positions **bytes**; the join still does all the **trust** (admission, epoch keys, delta replication) and every store **re-verifies natively** (git object hashes; corestore per-block merkle + author signatures). Nothing about the join changes — a build with no bundled seed, or with the feature flag off, takes the identical **cold** path.
+The installer ships a **seed**: a checkpoint of the two replicated stores that back the dogfood hive — a set of **git bundles** (superproject + 37 submodules) and a **corestore snapshot** (every author core at its cut length, carrying the federated hive state: plans, work-items, features, issues, coordination, settings/members). On first boot the operator **restores the seed BEFORE the (unmodified) shared-hive join runs**, so the join transfers only the **delta** on top of the checkpoint instead of the whole history. The seed pre-positions **bytes**; the join still does all the **trust** (admission, epoch keys, delta replication) and every store **re-verifies natively** (git object hashes; corestore per-block merkle + author signatures). Nothing about the join changes — a build with no bundled seed, or with the feature flag off, takes the identical **cold** path.
 
 ## The pieces (as built)
 
@@ -12345,7 +12419,7 @@ The fix: a **disposable isolated stack** — its own operator on a spare port, i
 
 [Section titled “Recipe (verified 2026-06-18, round-5 E2E)”](#recipe-verified-2026-06-18-round-5-e2e)
 
-All paths relative to `papercupai-workspace/papercup`. Namespace everything (`e2e-r5-*`) so teardown is unambiguous.
+All paths relative to `papercupai-workspace/papercusp`. Namespace everything (`e2e-r5-*`) so teardown is unambiguous.
 
 **1. Fresh DB with a cloned schema.** The operator does NOT auto-migrate a blank DB on boot (`42P01 relation does not exist` at `readOperatorState`). Clone the schema from the shared DB instead of replaying 200+ migrations:
 
@@ -15197,9 +15271,9 @@ Two program shapes, discriminated by the gate (no schema field):
 * Blueprint: `libs/papercusp/packages/harness/blueprints/negative-space/blueprint.yaml`
 * Tests: `packages/operator-core/lib/blueprint-steps/negative-space-blueprint.test.ts`
 
-# Migration-number collisions: the reservation tool and lint:migrations aren't gated
+# Migration-number collisions: use the reservation tool; the lint's FS checks are now gated
 
-> Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs — and the violation counts have grown since discovery, not shrunk. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
+> Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations catches dups + raw BEGIN/COMMIT + unreserved numbers; since 2026-07-04 (EI-6843) its two PG-free checks are gated — lint-migrations.test.ts runs them against the real sql/ dir on every test:affected / green-checkpoint run, after re-baselining ENFORCED_FROM 215→494 to grandfather already-applied ledgered history. Only the PG-backed reservation check still needs a manual run. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
 
 ## What
 
@@ -15215,7 +15289,7 @@ When several agents add SQL migrations concurrently they collide on the leading 
 
 The **real**, verifiable damage from a dup number today:
 
-* **`lint:migrations` goes red** (its `duplicateNumberGroups` check), and since that lint isn’t gated (below), nobody is told.
+* **`lint:migrations` goes red** (its `duplicateNumberGroups` check). Since `2026-07-04` that check IS gated for enforced-era numbers (see gap #3’s resolution below): a new dup ≥494 fails `test:affected` / the green gate immediately; pre-494 historical dups are grandfathered (the runner keys by full filename, so they never collided at runtime).
 * **Coordination confusion** — two unrelated features both claim “319”; tooling and humans that key on the number get the wrong file.
 * **Possible loss at git-merge time** — when the two authors’ divergent branches reconcile, a careless merge can drop one of the same-numbered files (a VCS hazard, not a runner one).
 
@@ -15233,11 +15307,13 @@ The fix layers are therefore **prevention at creation** (the reservation tool/CL
 
 2. ~~**The MCP client is currently dropped.**~~ **Historical note (2026-06-20):** At the time of discovery the harness MCP client was dropped, so even MCP-aware agents couldn’t reach `db:next-migration` and fell back to hand-picking. The npm CLI (`npm run db:next-migration`) was added precisely to fix this (gap #1 fix). The MCP client drop is a session-specific transient; the systematic fix is the CLI + the per-role access expansion (see gap #1 update above).
 
-3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would end the runner’s per-file wrapper txn early), and (c) numbers ≥215 absent from the reservation ledger. But `lint:migrations` is **only an npm script** — it is referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks`. So the guard never runs automatically; the dup-number check (which is PG-free and would run fine in CI) never fires on a PR.
+3. **`lint:migrations` was not gated** (RESOLVED for the PG-free checks, `2026-07-04` — see below). `scripts/lint-migrations.mjs` already detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would end the runner’s per-file wrapper txn early), and (c) numbers ≥`ENFORCED_FROM` absent from the reservation ledger. But it was **only an npm script** — referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks` — so the guard never ran automatically; the dup-number check (which is PG-free and runs fine in CI) never fired on a PR.
 
 As of `2026-06-20`, `node scripts/lint-migrations.mjs` exited **1**: 7 files carried raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and \~10 numbers ≥215 were unreserved (`293, 294, 298, 301, 303–307, 319, 320`).
 
 **Re-verified `2026-07-03` — the guard is still ungated and the violation count has grown, not shrunk** (confirming gap #3 is still open): `node scripts/lint-migrations.mjs` still exits **1**, now with **3 duplicate-number groups** (`357`, `375`, `460` — each has two distinct files sharing the same leading `NNN`, exactly the collision this doc is about), **34 files** carrying raw top-level `BEGIN;`/`COMMIT;`, and **64 numbers ≥215** on disk with no reservation-ledger row. The tree has been shipping with the linter red for weeks with nothing catching it at PR time — direct evidence that gap #3 (below) remains unaddressed.
+
+**Resolved for the PG-free checks (`2026-07-04`, EI-6843):** the duplicate-`NNN` and raw-tx-control scans now run against the REAL `libs/papercusp/libs/db/sql/` directory inside `packages/operator-core/lib/lint-migrations.test.ts` (the “real … sql/ directory (gate wiring)” describe block), which `npm run test:affected` — and therefore the green-checkpoint gate — runs on every candidate. Because the tree was red (worse than at discovery), enforcement was re-baselined FIRST: `ENFORCED_FROM` moved 215→494, grandfathering the already-applied, ledgered history (editing/renaming an applied file would break its recorded checksum), and `duplicateNumberGroups` now takes an `enforcedFrom` boundary so historical same-number pairs don’t red the gate. A FUTURE violation (≥494) fails the suite immediately. The PG-backed reservation check (c) remains CLI-only — as of `2026-07-05` `node scripts/lint-migrations.mjs` still exits 1 with one live violation (migration `510` on disk with no reservation row), so “clean first, gate second” still applies to that check.
 
 ## The two-dirs footgun (bonus)
 
@@ -15272,11 +15348,11 @@ It scans BOTH dirs for the on-disk max **inside** the advisory lock (the `2026-0
 Small, mostly additive; each item is independent:
 
 1. ~~**Add `npm run db:next-migration`.**~~ **DONE (`2026-06-20`)** — `scripts/next-migration.mjs` + the `db:next-migration` npm script. Reservation now works without the MCP client (the highest-leverage gap — it kills the `ls | tail` path at the source). Mirrors the MCP tool via the shared ledger + advisory key. ~~A follow-up could DRY the two onto one exported core~~ — see item 4 below (still open). **Also DONE (`2026-07-03`, EI-6852):** both allocators now read the on-disk max **inside** the advisory-lock transaction instead of before it, closing the TOCTOU window described above.
-2. **Gate `lint:migrations`** (the real detection layer — it already has a `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Still **not done** as of `2026-07-03` — see the re-verified counts above (3 duplicate-number groups, 34 raw-`BEGIN/COMMIT` files, 64 unreserved numbers ≥215). Wire it into CI (and ideally pre-push). NOTE: the tree is red today (worse than at discovery — see above), so this must be sequenced AFTER cleaning the raw `BEGIN/COMMIT` files, resolving the duplicate-number groups, and backfilling the unreserved reservation rows — otherwise the new gate immediately fails. Don’t add the gate first. (Do NOT instead change the boot runner to abort on dup numbers: it currently applies both colliding files by filename, and altering boot-apply semantics — especially the `continueOnError` fleet path — is far riskier than catching the dup at PR time.)
+2. ~~**Gate `lint:migrations`**~~ **DONE for the PG-free checks (`2026-07-04`, EI-6843)** — not via `.github/`/`.husky` but via the vitest suite: `packages/operator-core/lib/lint-migrations.test.ts` scans the real sql/ dir for duplicate numbers + raw tx-control on every `test:affected` / green-checkpoint run. The required “clean first” sequencing was honored by RE-BASELINING instead of editing history: `ENFORCED_FROM` 215→494 grandfathers the applied, ledgered legacy (immutable — recorded checksums), so the gate starts green and only a genuinely NEW violation reds it. Still open: the PG-backed unreserved-number check is not in the gate (needs a live PG; exercised only by the CLI) — backfill the missing reservation rows (e.g. `510` as of `2026-07-05`) before gating it. (Do NOT instead change the boot runner to abort on dup numbers: it currently applies both colliding files by filename, and altering boot-apply semantics — especially the `continueOnError` fleet path — is far riskier than catching the dup at PR time.)
 3. **Mark the sidecar mirror.** Since the mirror dir is itself gitignored, a `README` placed in it wouldn’t be tracked — put the “this is a gitignored build mirror; author migrations in the canonical libs dir” note where it’s visible: the canonical dir’s own README, or `migration-drift.ts` (which already owns `resolveSqlDir`).
 4. **DRY the allocator** (low priority). Export the allocation core from `next_migration.ts` and have both the MCP tool and `scripts/next-migration.mjs` call it, instead of the two mirroring the ledger contract independently. The `2026-07-03` EI-6852 fix had to be hand-applied to **both** files in lockstep (see above) precisely because they’re still two independent implementations of the same contract — live evidence for why this item matters, not just a hypothetical.
 
-Sequencing matters for #3: clean first, gate second.
+Sequencing mattered for the gating item (#2) and was honored via the `2026-07-04` re-baseline; the same rule — clean first, gate second — applies to any future gating of the reservation check.
 
 # Manually-applied migrations must be re-run-safe — guard DDL or the auto-deploy dies on lock timeouts
 
@@ -41599,7 +41675,7 @@ So “wire the wizard to the matrix as source of truth instead of a hardcoded du
 
 [Section titled “What it is”](#what-it-is)
 
-A small terminal-icon button in the chrome header — sibling to the voice button — that opens a real OS-native terminal window. The terminal lands in the active harness’s directory (or workspace root when there’s no active harness), with env vars set and a `.mcp.json` written so any agent the user invokes inside it (`claude`, `codex`, `omp`, …) auto-discovers the operator’s MCP server and gets the full [tool catalog](/internal/docs/endpoint-system/tool-catalog) (434 built-in tools as of this writing, per `.papercusp/tool-catalog.json`).
+A small terminal-icon button in the chrome header — sibling to the voice button — that opens a real OS-native terminal window. The terminal lands in the active harness’s directory (or workspace root when there’s no active harness), with env vars set and a `.mcp.json` written so any agent the user invokes inside it (`claude`, `codex`, `omp`, …) auto-discovers the operator’s MCP server and gets the full [tool catalog](/internal/docs/endpoint-system/tool-catalog) (581 built-in tools as of this writing, per `.papercusp/tool-catalog.json`).
 
 This is the visible end of the [superuser-mode](/internal/docs/endpoint-system/superuser-mode) plumbing — that doc covers the threat model + token mechanics; this page is about how to test it.
 
@@ -41763,7 +41839,7 @@ The `POST /console/launch` route also accepts `resumeSessionId`. When set, the g
 
 [Section titled “What the agent in the terminal can do”](#what-the-agent-in-the-terminal-can-do)
 
-Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), the full built-in surface (434 tools as of this writing) plus the plugin tools are exposed via `?superuser=1`:
+Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), the full built-in surface (581 tools as of this writing) plus the plugin tools are exposed via `?superuser=1`:
 
 * **Read workspace state**: `harness:status`, `tasks:list`, `features:get`, `goals:list`, `issues:list`, `messages:inbox`.
 * **Operator surface**: `operator:audit`, `operator:nudge`.

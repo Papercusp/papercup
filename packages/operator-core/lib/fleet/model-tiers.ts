@@ -102,20 +102,12 @@ function tierRankOfSpec(tiers: readonly ModelTier[], spec: string): number {
  *  `tierCeilings` (and `modelOverrides`) rows persisted BEFORE the rename still
  *  key on the old role ids. Canonical key first, then the legacy alias. DELETE
  *  this map when the S2 config-key migration rewrites the stored rows. */
-const LEGACY_ROLE_KEY: Record<string, string> = {
-  cup: 'bee',
-  mug: 'queen',
-  kettle: 'overwatch',
-  blender: 'scout',
-  papercup: 'sentinel',
-};
-
-/** A role's configured tier ceiling, tolerant of pre-rename stored keys. */
+/** A role's configured tier ceiling. */
 export function roleTierCeiling(
   tierCeilings: Record<string, string> | undefined,
   role: string,
 ): string | undefined {
-  const raw = tierCeilings?.[role] ?? (LEGACY_ROLE_KEY[role] ? tierCeilings?.[LEGACY_ROLE_KEY[role]] : undefined);
+  const raw = tierCeilings?.[role];
   const v = raw?.trim();
   return v ? v : undefined;
 }

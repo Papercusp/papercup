@@ -198,6 +198,31 @@ function freshRate(): AccountRateState {
   return { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 };
 }
 
+/**
+ * Re-hydrate a persisted account row to the full invariant shape: every REQUIRED `rate`
+ * counter present + finite (missing/NaN → the freshRate default), optional observed-budget
+ * fields passed through, `boundTo` defaulted to []. Guards the whole rate-math surface
+ * (`isAvailable`, the penalty `Math.max`, headroom ranking, …) against a partially-written
+ * pool row: a row stored with `rate: {}` used to read as PERMANENTLY PAUSED because
+ * `undefined <= now` is false (WI-3068 — the codex CLI-bridge account). Pure.
+ */
+export function normalizeAccount(account: ClaudeAccount): ClaudeAccount {
+  const r = (account.rate ?? {}) as Partial<AccountRateState>;
+  const fresh = freshRate();
+  const fin = (v: number | undefined, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+  return {
+    ...account,
+    boundTo: account.boundTo ?? [],
+    rate: {
+      ...r,
+      pausedUntil: fin(r.pausedUntil, fresh.pausedUntil),
+      lastPenaltyAt: fin(r.lastPenaltyAt, fresh.lastPenaltyAt),
+      penaltyCount: fin(r.penaltyCount, fresh.penaltyCount),
+      windowStartedAt: fin(r.windowStartedAt, fresh.windowStartedAt),
+    },
+  };
+}
+
 export function getAccount(pool: AccountPool, id: string): ClaudeAccount | undefined {
   return pool.accounts.find((a) => a.id === id);
 }
@@ -426,7 +451,11 @@ export function recordAccountWindow(
 
 /** Is the account usable right now (not currently paused)? */
 export function isAvailable(account: ClaudeAccount, now: number): boolean {
-  return account.rate.pausedUntil <= now;
+  // Tolerate a partially-hydrated row (e.g. a hand-written pool JSON with `rate: {}`): a MISSING
+  // pausedUntil means "never paused", NOT "paused forever" — `undefined <= now` is false, which
+  // made the codex CLI-bridge account read permanently unavailable (WI-3068). loadAccountPool
+  // normalizes rows on read; this is the last-line guard for rows built outside that path.
+  return (account.rate?.pausedUntil ?? 0) <= now;
 }
 
 /**

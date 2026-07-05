@@ -717,6 +717,7 @@ import './scorecards/freshness';
 import './work_items/create';
 import './work_items/get';
 import './work_items/list';
+import './work_items/burn_down';
 import './work_items/search';
 import './work_items/set_state';
 // release-pipeline-resilience-2026-06-09 P-013 — the additive live-verified marker (done=staging vs

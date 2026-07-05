@@ -646,3 +646,36 @@ describe('registerAccount — egressPool round-trips (gateway-per-account-egress
     expect(getAccount(p, 'a')?.egressPool).toEqual([{ proxyUrl: 'http://p2:3128' }]);
   });
 });
+
+describe('partially-hydrated rows (WI-3068 — codex CLI-bridge read as permanently paused)', () => {
+  // A pool row persisted with `rate: {}` (hand-written / partial writer) made `isAvailable`
+  // evaluate `undefined <= now` → false, so the account read paused-forever while its bridge
+  // served fine. Guard BOTH layers: the tolerant predicate and the load-time normalizer.
+  const cliRow = {
+    id: 'chatgpt-sub-cli',
+    provider: 'codex',
+    credentialRef: 'codex-cli:/home/x/.codex',
+    addedAt: T0,
+    boundTo: [],
+    rate: {},
+  } as never as Parameters<typeof isAvailable>[0];
+
+  it('isAvailable treats a missing pausedUntil as "never paused", not "paused forever"', () => {
+    expect(isAvailable(cliRow, T0 + MIN)).toBe(true);
+    // and a genuinely-paused normalized row still reads unavailable
+    const paused = normalizeAccount({ ...cliRow, rate: { pausedUntil: T0 + 10 * MIN } as never });
+    expect(isAvailable(paused, T0 + MIN)).toBe(false);
+  });
+
+  it('normalizeAccount re-hydrates required rate counters and defaults boundTo, keeping observed budget fields', () => {
+    const n = normalizeAccount({ ...cliRow, boundTo: undefined as never, rate: { utilization: 0.4 } as never });
+    expect(n.rate).toMatchObject({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0, utilization: 0.4 });
+    expect(n.boundTo).toEqual([]);
+    // NaN in a required counter is repaired too (would poison the penalty Math.max chain)
+    const nan = normalizeAccount({ ...cliRow, rate: { pausedUntil: Number.NaN } as never });
+    expect(nan.rate.pausedUntil).toBe(0);
+    // a fully-formed row round-trips unchanged
+    const full = getAccount(poolOf('a'), 'a')!;
+    expect(normalizeAccount(full)).toEqual(full);
+  });
+});

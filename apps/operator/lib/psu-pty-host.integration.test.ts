@@ -58,6 +58,20 @@ function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'r
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// WI-2339 defect #2 (2026-07-04) added a process-IDENTITY check to findLiveHost /
+// interruptViaPty: the discovered pid's /proc/<pid>/cmdline must match
+// /psu-(launcher|pty-host)/, so a recycled pid held by an unrelated process can't
+// masquerade as a live host. This file hosts the pty IN-PROCESS (hostThroughPty runs
+// inside the vitest worker, which records `pid: process.pid` — the WORKER's own pid,
+// whose cmdline is the vitest runner, not a psu-launcher/psu-pty-host process), so a
+// bare findLiveHost()/interruptViaPty() call here fails that check post-WI-2339 even
+// though the discovered host is a perfectly valid stand-in for this test — this was a
+// real, deterministic (not flaky) regression: EI-7725. psu-pty-discovery.test.ts's own
+// `ID_OK` seam is the documented fix (see findLiveHost's doc comment: "A test writing
+// `process.pid` as a live-host stand-in injects `() => true`"), already applied in the
+// sibling psu-pty-host-turn.integration.test.ts — mirrored here.
+const ID_OK = { verifyIdentity: () => true } as const;
+
 describe('hostThroughPty real round-trip', () => {
   it(
     'creates socket+meta on start, injects into the live child, cleans up on exit',
@@ -430,7 +444,7 @@ describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-for
 
       await sleep(500);
       // The operator can discover the live session (same lookup the wake-executor uses).
-      expect(findLiveHost(ownerId)).not.toBeNull();
+      expect(findLiveHost(ownerId, undefined, ID_OK)).not.toBeNull();
 
       // Start a 20s foreground job. If the interrupt FAILS, the typed `exit` queues
       // behind it and this test blows its 15s timeout — so a clean finish is itself
@@ -438,7 +452,7 @@ describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-for
       type('sleep 20\n');
       await sleep(600);
 
-      const ok = await interruptViaPty(ownerId, 'sigint');
+      const ok = await interruptViaPty(ownerId, 'sigint', ID_OK);
       expect(ok).toBe(true);
       await sleep(500);
 

@@ -3152,7 +3152,17 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
   if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
   // Run in the ORIGINAL's cwd (the seeded transcript is keyed by it); the fresh
   // bootstrap envelope (config dir / coord id / MCP) makes it a proper SU session.
-  runWrapper({ wrapperBin: bin, args: forkArgs, cwd: session.cwd, envelopeEnv: { ...res.envelopeEnv } });
+  // PAPERCUSP_AGENT_SESSION: a TRACKED fork is launched through bootstrap-su, which
+  // never sets this marker (it's a pure client-side launcher concern — see
+  // buildResumeEnv / the fresh-launch envelopeEnv below). Every OTHER psu launch path
+  // (fresh, resume, fleet/role) folds it in; this one didn't, so a forked su session
+  // silently ran UNMARKED — invisible to the native-scheduler lockout AND the
+  // destructive shared-tree git guard (pretooluse-bash-resource-gate.sh gates both on
+  // this exact env var). That let `git stash` (and reset --hard / clean -f / checkout .)
+  // execute unblocked on the shared staging tree from a forked su session
+  // (2026-07-05 WI-3071). Anything launched through psu is an agent session for hook
+  // purposes — a fork is no exception.
+  runWrapper({ wrapperBin: bin, args: forkArgs, cwd: session.cwd, envelopeEnv: { ...res.envelopeEnv, PAPERCUSP_AGENT_SESSION: '1' } });
 }
 
 /** A session that couldn't be matched to a tracked adv_sessions row — either a

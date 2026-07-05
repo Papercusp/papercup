@@ -11,7 +11,7 @@ terminal lands in the active harness's directory (or workspace root
 when there's no active harness), with env vars set and a `.mcp.json`
 written so any agent the user invokes inside it (`claude`, `codex`,
 `omp`, …) auto-discovers the operator's MCP server and gets the full
-[tool catalog](/internal/docs/endpoint-system/tool-catalog) (434 built-in
+[tool catalog](/internal/docs/endpoint-system/tool-catalog) (581 built-in
 tools as of this writing, per `.papercusp/tool-catalog.json`).
 
 This is the visible end of the [superuser-mode](/internal/docs/endpoint-system/superuser-mode)
@@ -229,7 +229,7 @@ so a resolve-based envelope is always scoped and non-resume.)
 ## What the agent in the terminal can do
 
 Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), the full
-built-in surface (434 tools as of this writing) plus the plugin tools
+built-in surface (581 tools as of this writing) plus the plugin tools
 are exposed via `?superuser=1`:
 
 * **Read workspace state**: `harness:status`, `tasks:list`,

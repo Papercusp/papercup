@@ -9,6 +9,12 @@ export interface GatewayProviderAdapter {
   protocol: GatewayProviderProtocol;
   upstreamBase: string | null;
   pool: AccountPool | null;
+  /** Live count of accounts served OUTSIDE the bearer `pool` — the codex CLI-bridge
+   *  (ChatGPT-subscription) accounts (codex-cli-bridge.ts). A getter, not a snapshot,
+   *  so a pool hot-reload applies to the next diagnostics read. Counted toward
+   *  `configured` in gatewayProviderStatuses (WI-3068: an all-CLI codex deployment has
+   *  `pool: null` BY DESIGN and used to read as "not configured"). */
+  cliAccountCount?: () => number;
   unavailableMessage: string | null;
 }
 
@@ -23,6 +29,8 @@ export interface GatewayProviderStatus {
   label: string;
   protocol: GatewayProviderProtocol;
   configured: boolean;
+  /** Out-of-pool CLI-bridge accounts currently serving this provider (codex ChatGPT-subscription). */
+  cliAccountCount: number;
   upstreamBase: string | null;
   unavailableMessage: string | null;
 }
@@ -34,6 +42,8 @@ const ACCOUNT_HEADER = 'x-papercusp-account';
 export function makeGatewayProviderAdapters(opts: {
   claudePool: AccountPool;
   codexPool?: AccountPool | null;
+  /** Live count of codex CLI-bridge accounts served OUTSIDE the bearer pool (WI-3068). */
+  codexCliAccountCount?: () => number;
   anthropicUpstreamBase: string;
   openaiUpstreamBase: string;
 }): GatewayProviderAdapters {
@@ -52,6 +62,11 @@ export function makeGatewayProviderAdapters(opts: {
       protocol: 'openai-compatible',
       upstreamBase: opts.openaiUpstreamBase,
       pool: opts.codexPool ?? null,
+      cliAccountCount: opts.codexCliAccountCount,
+      // FALLBACK text for a request that finds no serving account at request time (bearer
+      // pool absent AND the CLI-bridge list empty). Whether codex is ACTUALLY unavailable is
+      // decided per-read in gatewayProviderStatuses — a bearer-pool-less gateway whose codex
+      // accounts are all CLI-bridge is fully configured (WI-3068 false negative).
       unavailableMessage: 'inference-gateway: no Codex account pool configured',
     },
     // OMP (pi) is multi-provider and routes by REUSING the existing adapters
@@ -111,13 +126,20 @@ export function providerForGatewayRequest(
 export function gatewayProviderStatuses(adapters: GatewayProviderAdapters): GatewayProviderStatus[] {
   return (['claude', 'codex', 'omp'] as const).map((id) => {
     const adapter = adapters[id];
+    const cliAccountCount = adapter.cliAccountCount?.() ?? 0;
+    // Configured = the provider can actually serve: a bearer pool OR out-of-pool CLI-bridge
+    // accounts. Codex ChatGPT-subscription accounts have NO API bearer (they are deliberately
+    // filtered out of the bearer pool — launch.ts buildBearerEntries), so `pool !== null`
+    // alone reported a working all-CLI codex deployment as unconfigured (WI-3068).
+    const configured = (adapter.pool !== null || cliAccountCount > 0) && adapter.upstreamBase !== null;
     return {
       id: adapter.id,
       label: adapter.label,
       protocol: adapter.protocol,
-      configured: adapter.pool !== null && adapter.upstreamBase !== null,
+      configured,
+      cliAccountCount,
       upstreamBase: adapter.upstreamBase,
-      unavailableMessage: adapter.unavailableMessage,
+      unavailableMessage: configured ? null : adapter.unavailableMessage,
     };
   });
 }

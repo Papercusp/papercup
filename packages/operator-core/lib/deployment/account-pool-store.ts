@@ -40,6 +40,7 @@ import {
   isClassExhausted,
   isSustainedlyLimited,
   manuallyBoundAccount,
+  normalizeAccount,
   recordAccountPenalty,
   selectAccountByHeadroom,
   selectAccountForSpawn,
@@ -80,7 +81,10 @@ async function readAccountOverride(ws: string | undefined): Promise<AccountSessi
 
 export async function loadAccountPool(ws?: string): Promise<AccountPool> {
   const raw = await readOperatorState<AccountPool>('operator_account_pool', ws);
-  return { accounts: raw?.accounts ?? [] };
+  // Normalize every persisted row on read: a partially-written row (e.g. `rate: {}` from a
+  // hand-edited pool) used to read as permanently paused via `undefined <= now` → the codex
+  // CLI-bridge account reported available:false while serving fine (WI-3068).
+  return { accounts: (raw?.accounts ?? []).map(normalizeAccount) };
 }
 
 export async function loadAccountPoolForProvider(provider: AccountProvider, ws?: string): Promise<AccountPool> {

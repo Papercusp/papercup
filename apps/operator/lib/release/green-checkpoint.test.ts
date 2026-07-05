@@ -15,6 +15,7 @@ import {
   sanitizeForkNodeOptions,
   GREEN_CHECKPOINT_FORK_HEAP_MB,
   checkpointFailureSignature,
+  historicalFlakeAnnotations,
   summarizeSuiteOutput,
   parseFailingFilesByWorkspace,
   decideFlakeAbsorption,
@@ -357,6 +358,79 @@ describe('runGreenCheckpoint', () => {
     const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
     expect(r.reason).toBe('not-green');
     expect(messages.some((m) => m.includes('already changed since candidate'))).toBe(false);
+  });
+
+  describe('historicalFlakeAnnotations (WI-2997, pure)', () => {
+    it('renders a line per failing file that has historical stats, flagging known suspects', () => {
+      const note = historicalFlakeAnnotations(
+        {
+          'src/a.test.ts': { fails: 12, passes: 3, bothStatusShas: 4, isSuspect: true },
+          'src/b.test.ts': { fails: 1, passes: 0, bothStatusShas: 0, isSuspect: false },
+        },
+        ['src/a.test.ts', 'src/b.test.ts'],
+      );
+      expect(note).toContain('7d historical flake stats');
+      expect(note).toContain('src/a.test.ts: 12 fail(s) / 3 pass(es) over 7d — ⚠️ known flake-suspect');
+      expect(note).toContain('src/b.test.ts: 1 fail(s) / 0 pass(es) over 7d');
+      expect(note.split('src/b.test.ts')[1]).not.toContain('known flake-suspect');
+    });
+
+    it('omits files with no historical record — never invents a zero-stat line', () => {
+      const note = historicalFlakeAnnotations(
+        { 'src/a.test.ts': { fails: 5, passes: 2, bothStatusShas: 2, isSuspect: true } },
+        ['src/a.test.ts', 'src/never-seen-before.test.ts'],
+      );
+      expect(note).toContain('src/a.test.ts');
+      expect(note).not.toContain('never-seen-before');
+    });
+
+    it('returns empty string when nothing in `files` has a historical record', () => {
+      expect(historicalFlakeAnnotations({}, ['src/a.test.ts'])).toBe('');
+    });
+  });
+
+  it('WI-2997: threads the historical-flake annotation into the not-green broadcast + escalate', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false, ['src/flaky.test.ts']);
+    deps.flakeLookup = async (files) => {
+      expect(files).toEqual(['src/flaky.test.ts']);
+      return { 'src/flaky.test.ts': { fails: 8, passes: 2, bothStatusShas: 3, isSuspect: true } };
+    };
+    const broadcasts: string[] = [];
+    const escalations: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => { broadcasts.push(body ?? ''); };
+    deps.escalate = async (_s: string, body: string) => { escalations.push(body); };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(broadcasts.some((m) => m.includes('7d historical flake stats') && m.includes('src/flaky.test.ts'))).toBe(true);
+    expect(escalations.some((m) => m.includes('7d historical flake stats') && m.includes('src/flaky.test.ts'))).toBe(true);
+  });
+
+  it('WI-2997: no flakeLookup wired (existing stubs) → no annotation, no throw', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false, ['src/flaky.test.ts']); // stubDeps never sets flakeLookup
+    const broadcasts: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => { broadcasts.push(body ?? ''); };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(broadcasts.some((m) => m.includes('historical flake'))).toBe(false);
+  });
+
+  it('WI-2997: a throwing flakeLookup is swallowed — the red path still completes, no annotation', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false, ['src/flaky.test.ts']);
+    deps.flakeLookup = async () => { throw new Error('pg unreachable'); };
+    const broadcasts: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => { broadcasts.push(body ?? ''); };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(broadcasts.some((m) => m.includes('historical flake'))).toBe(false);
   });
 
   it('docs-audit #2: re-broadcasts a rising-urgency alert when the gate has been held >2h', async () => {

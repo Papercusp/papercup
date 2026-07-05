@@ -12,7 +12,7 @@ The AS-BUILT operational runbook for the installer-shipped seed-bundle: how a se
 ## One-paragraph model
 
 The installer ships a **seed**: a checkpoint of the two replicated stores that back
-the dogfood hive — a set of **git bundles** (superproject + 27 submodules) and a
+the dogfood hive — a set of **git bundles** (superproject + 37 submodules) and a
 **corestore snapshot** (every author core at its cut length, carrying the federated
 hive state: plans, work-items, features, issues, coordination, settings/members).
 On first boot the operator **restores the seed BEFORE the (unmodified) shared-hive

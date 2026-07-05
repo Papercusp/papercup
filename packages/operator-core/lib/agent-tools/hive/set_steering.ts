@@ -189,7 +189,7 @@ export default defineTool({
     // own), so the next relaunch picks up the new model. Best-effort.
     void import('../../sentinel-model-file')
       .then(({ materializeSentinelModelFile }) =>
-        materializeSentinelModelFile(steering.modelOverrides?.sentinel ?? null),
+        materializeSentinelModelFile(steering.modelOverrides?.papercup ?? null),
       )
       .catch(() => {});
 

@@ -372,18 +372,18 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(call[2]).toEqual({ launch: true });
   });
 
-  it('refreshes a stale Queen durable body from current owner steering before every /invoke POST', async () => {
+  it('refreshes a stale Mug durable body from current owner steering before every /invoke POST', async () => {
     h.ownerSteering.value = {
       modelTiers: [
         { name: 'quick', spec: 'haiku' },
         { name: 'standard', spec: 'sonnet' },
         { name: 'queen-codex', spec: 'gpt-5.5', backend: 'codex' },
       ],
-      tierCeilings: { queen: 'queen-codex' },
+      tierCeilings: { mug: 'queen-codex' },
       modelOverrides: null,
     };
     await durableSpawnFireImpl({
-      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      url: 'http://x/api/harness/papercusp/invoke?role=mug&ws=papercusp-workspace',
       body: { kickoff: 'old persisted body' },
       idempotencyKey: 'q-stale',
       label: 'papercusp/queen',
@@ -393,17 +393,17 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(JSON.parse(req.body).spawnModel).toBe('gpt-5.5');
   });
 
-  it('records the refreshed Queen spawnModel on the durable spawn row before firing', async () => {
+  it('records the refreshed Mug spawnModel on the durable spawn row before firing', async () => {
     h.ownerSteering.value = {
       modelTiers: [
         { name: 'quick', spec: 'chatgpt:5.5', backend: 'codex' },
         { name: 'standard', spec: 'chatgpt:5.5', backend: 'codex' },
       ],
-      tierCeilings: { queen: 'quick' },
+      tierCeilings: { mug: 'quick' },
       modelOverrides: null,
     };
     await durableSpawnFireImpl({
-      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      url: 'http://x/api/harness/papercusp/invoke?role=mug&ws=papercusp-workspace',
       body: { kickoff: 'owner-directed wake' },
       idempotencyKey: 'q-model-row',
       label: 'papercusp/queen',
@@ -418,7 +418,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
   it('skips a duplicate Queen launch when another Queen is already active in the workspace', async () => {
     h.activeQueenRows.value = [{ spawn_id: 'durable-spawn:q-live', harness_slug: 'papercusp' }];
     await durableSpawnFireImpl({
-      url: 'http://x/api/harness/papercusp/invoke?role=queen&ws=papercusp-workspace',
+      url: 'http://x/api/harness/papercusp/invoke?role=mug&ws=papercusp-workspace',
       body: { kickoff: 'overlapping wake' },
       idempotencyKey: 'q-overlap',
       label: 'papercusp/queen',
@@ -431,10 +431,10 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
   });
 
-  it('refreshes a stale Overwatch durable body from current modelOverrides before every /invoke POST', async () => {
-    h.ownerSteering.value = { modelOverrides: { overwatch: 'gpt-5.5:high' } };
+  it('refreshes a stale Kettle durable body from current modelOverrides before every /invoke POST', async () => {
+    h.ownerSteering.value = { modelOverrides: { kettle: 'gpt-5.5:high' } };
     await durableSpawnFireImpl({
-      url: 'http://x/api/harness/papercusp/invoke?role=overwatch&ws=papercusp-workspace',
+      url: 'http://x/api/harness/papercusp/invoke?role=kettle&ws=papercusp-workspace',
       body: { kickoff: 'old persisted body' },
       idempotencyKey: 'ow-stale',
       label: 'papercusp/overwatch',
@@ -444,9 +444,9 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
   });
 
   it('does not override an explicit caller-provided spawnModel in a durable body', async () => {
-    h.ownerSteering.value = { modelOverrides: { overwatch: 'gpt-5.5:high' } };
+    h.ownerSteering.value = { modelOverrides: { kettle: 'gpt-5.5:high' } };
     await durableSpawnFireImpl({
-      url: 'http://x/api/harness/papercusp/invoke?role=overwatch&ws=papercusp-workspace',
+      url: 'http://x/api/harness/papercusp/invoke?role=kettle&ws=papercusp-workspace',
       body: { kickoff: 'explicit pin', spawnModel: 'sonnet' },
       idempotencyKey: 'ow-explicit',
       label: 'papercusp/overwatch',

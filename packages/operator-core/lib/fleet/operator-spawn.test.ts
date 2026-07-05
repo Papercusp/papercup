@@ -434,14 +434,14 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
 });
 
 describe('spawnAgentInHarness — backend-aware gateway account routing', () => {
-  it('applies owner steering to an unpinned bee spawn instead of falling back to the host Claude command', async () => {
+  it('applies owner steering to an unpinned cup spawn instead of falling back to the host Claude command', async () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     h.ownerSteering.value = {
       modelTiers: [
         { name: 'quick', spec: 'chatgpt:5.5', backend: 'codex' },
         { name: 'standard', spec: 'chatgpt:5.5', backend: 'codex' },
       ],
-      tierCeilings: { bee: 'quick' },
+      tierCeilings: { cup: 'quick' },
       modelOverrides: null,
     };
     try {

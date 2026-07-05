@@ -7,6 +7,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { step2_cloneRepo } from '../join-shared-harness';
 
 // A slug that will not collide with any real clone dir on disk, so the
@@ -36,6 +38,38 @@ describe('step2_cloneRepo — authenticated clone (B4)', () => {
     expect(setUrlCall).toContain('https://github.com/papercupai/private-repo.git');
     // the token-free URL carries no secret
     expect(setUrlCall?.join(' ')).not.toContain('ghs_secret');
+  });
+
+  it('with a token: fails and removes the clone when origin de-tokenization fails', async () => {
+    let cloneDir = '';
+    const exF = vi.fn(async (_file: string, args: string[]) => {
+      if (args[0] === 'clone') {
+        cloneDir = args[args.length - 1];
+        await mkdir(cloneDir, { recursive: true });
+      }
+      if (args.includes('set-url')) {
+        throw new Error('failed for https://x-access-token:ghs_secret@github.com/papercupai/private-repo.git');
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    const err = await step2_cloneRepo({
+      githubFullName: 'papercupai/private-repo',
+      slug: UNIQUE_SLUG + '-tok-reset-fail',
+      token: 'ghs_secret',
+      execFileFn: exF,
+      mkdirFn: vi.fn(async () => undefined),
+    }).catch((e) => e);
+
+    expect(err).toMatchObject({
+      stepId: 'clone_repo',
+      code: 'origin_detokenize_failed',
+    });
+
+    expect(cloneDir).toContain(UNIQUE_SLUG + '-tok-reset-fail');
+    expect(existsSync(cloneDir)).toBe(false);
+    expect(String(err.message)).not.toContain('ghs_secret');
+    expect(String(err.message)).toContain('x-access-token:***@');
   });
 
   it('without a token: anonymous clone and no origin reset', async () => {

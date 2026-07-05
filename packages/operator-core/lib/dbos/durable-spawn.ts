@@ -202,31 +202,22 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   if (typeof existing === 'string' && existing.trim()) return input.body;
 
   const target = parseInvokeTarget(input);
-  // pot-rename EXPAND phase (WI-2932): stale durable bodies queued before the
-  // rename still carry role=queen / role=overwatch URLs and re-fire until the
-  // drain + S2 backfill. Dual-accept the old ids so those rows keep refreshing;
-  // DROP the queen/overwatch arms when s2-role-contract.sql lands.
-  if (
-    !target ||
-    (target.role !== 'mug' && target.role !== 'kettle' && target.role !== 'queen' && target.role !== 'overwatch')
-  )
-    return input.body;
+  if (!target || (target.role !== 'mug' && target.role !== 'kettle')) return input.body;
 
   try {
     const { getOwnerSteering } = await import('../owner-steering');
     const steering = await getOwnerSteering(target.workspaceId, target.harnessSlug);
     let spawnModel: string | null | undefined = null;
-    if (target.role === 'kettle' || target.role === 'overwatch') {
-      spawnModel = steering.modelOverrides?.overwatch;
+    if (target.role === 'kettle') {
+      spawnModel = steering.modelOverrides?.kettle;
     } else {
       const [{ readAgentConfig }, { effectiveTierConfig, resolveRoleOwnModelSpec }] = await Promise.all([
         import('../agent-config'),
         import('../fleet/model-tiers'),
       ]);
       const cfg = await readAgentConfig().catch(() => null);
-      // Resolve with the role the stale body actually carries: a pre-rename
-      // 'queen' body reads the owner's 'queen' tier keys, a 'mug' body the
-      // 'mug' keys (config keys migrate with S2 — see the WI-2932 runbook).
+      // Resolve against the owner's 'mug' tier keys (config keys migrated
+      // with the S2 role contract — see the WI-2932 runbook).
       spawnModel = resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
     }
     return typeof spawnModel === 'string' && spawnModel.trim()
@@ -338,7 +329,7 @@ async function recordDurableSpawnAdmission(
     await recordSpawnPid(db, spawnId, process.pid);
   };
 
-  if (rec.childRole !== 'queen' && rec.childRole !== 'mug') {
+  if (rec.childRole !== 'mug') {
     await writeRecord(sql);
     return { admitted: true };
   }
@@ -349,7 +340,7 @@ async function recordDurableSpawnAdmission(
       SELECT spawn_id, harness_slug
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${rec.workspaceId}
-         AND child_role IN ('queen', 'mug')
+         AND child_role = 'mug'
          AND status IN ('running', 'restarting')
          AND spawn_id <> ${spawnId}
        ORDER BY started_at DESC
@@ -398,7 +389,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
         try {
           return await recordDurableSpawnAdmission(input, rec, spawnId, initialSpawnModel);
         } catch (e) {
-          if (rec.childRole === 'queen' || rec.childRole === 'mug') throw e;
+          if (rec.childRole === 'mug') throw e;
           console.warn(
             `[durable-spawn] record-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
           );

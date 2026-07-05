@@ -95,6 +95,26 @@ describe('gateway provider adapters', () => {
     expect(codex.upstreamBase).toBe('https://openai.test');
   });
 
+  it('counts codex CLI-bridge accounts toward configured when the bearer pool is absent (WI-3068)', () => {
+    // ChatGPT-subscription codex accounts have NO API bearer, so the bearer codexPool is
+    // empty BY DESIGN — the diagnostics must not report a working all-CLI deployment as
+    // "not configured" with the misleading unavailableMessage.
+    let cli = 1;
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexCliAccountCount: () => cli,
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    expect(adapters.codex.pool).toBeNull();
+    const codex = () => gatewayProviderStatuses(adapters).find((s) => s.id === 'codex')!;
+    expect(codex()).toMatchObject({ configured: true, cliAccountCount: 1, unavailableMessage: null });
+    // the count is a live GETTER: a hot-reload that removes the last CLI account flips the
+    // status back to unconfigured (+ the fallback message) on the very next diagnostics read
+    cli = 0;
+    expect(codex()).toMatchObject({ configured: false, cliAccountCount: 0, unavailableMessage: expect.stringMatching(/no Codex account pool/i) });
+  });
+
   it('providerForGatewayPath returns the actual adapter object and matches by PREFIX, not substring', () => {
     const adapters = makeGatewayProviderAdapters({
       claudePool: pool('claude-a'),

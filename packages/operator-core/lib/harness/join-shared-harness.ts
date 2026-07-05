@@ -315,15 +315,18 @@ export async function step2_cloneRepo(opts: {
   }
 
   // De-tokenize origin so the gh token never persists in the cloned repo's
-  // .git/config. Non-fatal — the clone already succeeded; a stale tokenized
-  // origin is a hygiene issue, not a correctness one (gh tokens are short-lived).
+  // .git/config. This is a hard postcondition for authenticated clones: if the
+  // reset fails, remove the clone and report a redacted failure rather than
+  // leaving credentials on disk.
   if (token) {
     try {
       await exF('git', [
         '-C', cloneDir, 'remote', 'set-url', 'origin', cleanCloneUrl(githubFullName),
       ]);
-    } catch {
-      // ignore — clone succeeded; origin de-tokenization is best-effort.
+    } catch (e: unknown) {
+      await rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new JoinStepError('clone_repo', 'origin_detokenize_failed', redactToken(msg).slice(0, 300));
     }
   }
 

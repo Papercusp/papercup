@@ -425,14 +425,14 @@ export async function handleOverwatchLaunch(
     }
 
     // Session model override (model-override-sidebar-2026-06-23): owner-steering
-    // modelOverrides.overwatch pins THIS wake's model, separate from the workspace
+    // modelOverrides.kettle pins THIS wake's model, separate from the workspace
     // agent-config default. Fail-soft → no override (workspace default).
     let spawnModel: string | null = null;
     try {
       const { getOwnerSteering } = await import("../owner-steering");
       spawnModel =
         (await getOwnerSteering(workspaceId, installSlug)).modelOverrides
-          ?.overwatch ?? null;
+          ?.kettle ?? null;
     } catch {
       /* fail-soft — launch at the default model */
     }

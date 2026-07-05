@@ -107,6 +107,19 @@ export interface CheckpointDeps {
    *  null when it can't be computed (caller then declines the salvage, never guesses).
    *  Pure git+graph, NO test run, so the prefix scan is cheap. Optional + injected. */
   affectedWorkspacesForRange?(from: string, to: string): Promise<string[] | null>;
+  /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
+   *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
+   *  show flake-vs-regression immediately instead of the release-fixer
+   *  re-deriving it by hand via `dev:build_status` / testFlakeRollup. NAMING
+   *  NOTE: distinct from the load-flake-isolation `flakeSuspects` concept above
+   *  (files that failed under THIS run's concurrent load but passed in
+   *  isolation) — this is the historical CROSS-RUN `harness_shared.test_runs`
+   *  rollup. Optional + injected (like the other DB-backed deps here) so
+   *  existing stubs need not provide it; best-effort at the call site (any
+   *  error there just skips the annotation, never blocks the red path). */
+  flakeLookup?(
+    files: string[],
+  ): Promise<Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }>>;
   log(s: string): void;
 }
 
@@ -1036,6 +1049,34 @@ async function tryLongestGreenPrefix(
   };
 }
 
+/**
+ * WI-2997 (EI-7443 follow-up, item 3): render a short per-file 7d historical-flake
+ * annotation for the CURRENTLY failing test files, so a release-fixer sees
+ * flake-vs-regression at a glance instead of re-deriving it by hand. Pure +
+ * exported so it is unit-testable without a live DB — `deps.flakeLookup`
+ * supplies the per-file stats; this just formats them. NAMING: distinct from
+ * the load-flake-isolation `flakeSuspects`/`flakeNote` used elsewhere in this
+ * file (a WITHIN-this-run isolation-recheck concept, load-flake-isolation-2026-06-23)
+ * — this is the historical CROSS-RUN `harness_shared.test_runs` rollup (EI-7443).
+ * Returns '' when none of `files` has any historical record (nothing to add).
+ */
+export function historicalFlakeAnnotations(
+  stats: Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }>,
+  files: string[],
+): string {
+  const lines = files
+    .filter((f) => stats[f])
+    .map((f) => {
+      const s = stats[f];
+      return `  - ${f}: ${s.fails} fail(s) / ${s.passes} pass(es) over 7d${
+        s.isSuspect ? ' — ⚠️ known flake-suspect (mixed pass/fail across commits)' : ''
+      }`;
+    });
+  return lines.length
+    ? `\n\n📊 7d historical flake stats for failing file(s) (EI-7443):\n${lines.join('\n')}`
+    : '';
+}
+
 export async function runGreenCheckpoint(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -1130,10 +1171,22 @@ export async function runGreenCheckpoint(
         deps.log(`already-fixed-since check skipped (${e instanceof Error ? e.message : e})`);
       }
     }
+    // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
+    // the failing file(s) — purely informational, same fail-soft shape as the
+    // already-fixed-since check above; any error here just skips the note.
+    let historicalFlakeNote = '';
+    if (failingTests?.length && deps.flakeLookup) {
+      try {
+        const stats = await deps.flakeLookup(failingTests);
+        historicalFlakeNote = historicalFlakeAnnotations(stats, failingTests);
+      } catch (e) {
+        deps.log(`historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`);
+      }
+    }
     await deps
       .broadcast(
         `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
-        summary + alreadyFixedNote,
+        summary + alreadyFixedNote + historicalFlakeNote,
       )
       .catch(() => {});
     // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the
@@ -1145,7 +1198,7 @@ export async function runGreenCheckpoint(
       .then(async ({ emitAwaitedEvent }) => {
         const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
         const pipeline = pipelineName(cfg.integrationRoot);
-        const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote };
+        const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote + historicalFlakeNote };
         // Global key (back-compat) + pipeline-scoped key (EI-7646: a waiter on ONE
         // pipeline's gate must not wake on every OTHER pipeline's verdict) — the
         // release:deployed:<sha> dual-emit precedent (P-102).
@@ -1156,7 +1209,7 @@ export async function runGreenCheckpoint(
     // P-002: durable human-facing escalation (transition-only, cleared on green).
     await deps.escalate?.(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${alreadyFixedNote}`,
+      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${alreadyFixedNote}${historicalFlakeNote}`,
     ).catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
     // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
@@ -1570,6 +1623,29 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
         return Number.isFinite(opened) ? Math.max(0, Date.now() - opened) : null;
       } catch {
         return null; // never let the alarm read break the gate verdict
+      }
+    },
+    // WI-2997 (EI-7443 follow-up): the real historical-flake lookup — 7d
+    // testFlakeRollup + flagFlakeSuspects from dev-data.ts, the exact same
+    // rollup dev:build_status folds into `flake_suspects`. Best-effort: any
+    // error (e.g. no PG in a minimal/CLI context) yields {} — the caller's own
+    // fail-soft wrapping then just skips the annotation.
+    async flakeLookup(files) {
+      try {
+        const { testFlakeRollup, flagFlakeSuspects } = await import('@papercusp/operator-core/lib/dev-data');
+        const { entries } = await testFlakeRollup(7);
+        const suspectPaths = new Set(flagFlakeSuspects(entries, 7).map((s) => s.file_path));
+        const byFile = new Map(entries.map((e) => [e.file_path, e]));
+        const out: Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }> = {};
+        for (const f of files) {
+          const e = byFile.get(f);
+          if (e) {
+            out[f] = { fails: e.fails, passes: e.passes, bothStatusShas: e.both_status_shas, isSuspect: suspectPaths.has(f) };
+          }
+        }
+        return out;
+      } catch {
+        return {};
       }
     },
     // F2 (round-4 P-031): the real perf gate reads the latest perf-signals-v1 capture

@@ -19,7 +19,7 @@ exercise a write path as a user without touching anything real."
 
 ## Recipe (verified 2026-06-18, round-5 E2E)
 
-All paths relative to `papercupai-workspace/papercup`. Namespace everything
+All paths relative to `papercupai-workspace/papercusp`. Namespace everything
 (`e2e-r5-*`) so teardown is unambiguous.
 
 **1. Fresh DB with a cloned schema.** The operator does NOT auto-migrate a blank

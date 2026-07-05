@@ -1195,6 +1195,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const providerAdapters = makeGatewayProviderAdapters({
     claudePool: pool,
     codexPool: deps.codexPool ?? null,
+    // Codex CLI-bridge accounts live OUTSIDE the bearer pool; count them toward codex
+    // availability so an all-CLI codex deployment doesn't read "not configured" (WI-3068).
+    codexCliAccountCount: () => codexCliAccounts().length,
     anthropicUpstreamBase: upstreamBase,
     openaiUpstreamBase,
   });
