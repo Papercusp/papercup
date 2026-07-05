@@ -83,16 +83,29 @@ export function loopRoutineName(ownerId: string): string {
  * create→claim race, no cold dispatch. `topics` is omitted deliberately: a
  * self-owned loop item needs no topic fanout (keeps a high-frequency loop from
  * spamming topic subscribers).
+ *
+ * EI-7674: the template previously hardcoded `kind:'task'` unconditionally — but
+ * work_items:create's own guidance reserves `task` for NON-CODE work only ("NEVER
+ * use `task` for anything that edits code — that is `change`"), and a `task` item
+ * also isn't auto-implement-eligible. Since most loop-driven iteration work IS code
+ * work (a bug fix, a feature build), the hardcoded `task` example was systematically
+ * the WRONG kind for the common case — every code-editing iteration filed under it
+ * got flagged by the create tool's own code-smell nudge and mis-routed out of the
+ * auto-implement lane. The template now tells the agent to PICK the kind by what
+ * the unit actually is, with `change` as the example (the default for most coding
+ * work), rather than baking in a kind that is wrong most of the time.
  */
 export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '🔁 Loop wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session toward: {goal}',
   '',
   'Each wake:',
   "1. Decide the next concrete unit(s) of work. If the goal is DONE or there's nothing left to do, call `loop:end` and stop — do not spin on empty wakes.",
-  '2. Create + SELF-ASSIGN each unit as a work_item in ONE atomic call:',
-  "     work_items:create { kind:'task', title:'…', harness:'{harness}', assign_to:'{ownerId}' }",
+  '2. Create + SELF-ASSIGN each unit as a work_item in ONE atomic call, picking `kind` by what the unit IS —',
+  "   `change` for a code edit/fix (the default for most coding work), `bug` for broken code, `task` ONLY for",
+  '   non-code work (research / a decision / manual verification — NEVER for anything that edits code):',
+  "     work_items:create { kind:'change', title:'…', harness:'{harness}', assign_to:'{ownerId}' }",
   '   (creates AND claims it for you in one write — your work then shows in fleet:assignments, owned, with no create→claim race). Omit `topics` — a self-owned loop item needs no topic fanout.',
-  "3. Do the work, then FINISH each unit with `work_items:complete { id, completion, state:'done' }` (records completion evidence + transitions the item — 'done', not the invalid 'completed'). Update your plan as you go. (Do NOT also call `work_items:set_state { state:'in_progress' }` mid-work — the item you created in step 2 is issue-family (kind:'task'), whose only pre-terminal state is 'open'; 'in_progress' has no distinct representation there and just aliases back to 'open' — EI-7478. It is a wasted round-trip with no progress signal to bump, not a real state advance.)",
+  "3. Do the work, then FINISH each unit with `work_items:complete { id, completion, state:'done' }` (records completion evidence + transitions the item — 'done', not the invalid 'completed'). Update your plan as you go. (Do NOT also call `work_items:set_state { state:'in_progress' }` mid-work — a bug/change/task item is issue-family, whose only pre-terminal state is 'open'; 'in_progress' has no distinct representation there and just aliases back to 'open' — EI-7478. It is a wasted round-trip with no progress signal to bump, not a real state advance.)",
   "4. When this iteration's work is done (or you are blocked), END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
   '',
   'To stop: `loop:end`. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',

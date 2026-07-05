@@ -164,8 +164,8 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       message: validation.parseError ?? 'the hive blueprint failed to resolve/validate',
     };
   }
-  // P-019: a hive MUST run a kind:'hive' blueprint — reject a harness blueprint
-  // (e.g. `research`) passed by mistake, and surface the installable hive templates so
+  // P-019: a pot MUST run a kind:'pot' blueprint — reject a harness blueprint
+  // (e.g. `research`) passed by mistake, and surface the installable pot templates so
   // the choice is discoverable (the "selectable at create" picker's validation backbone).
   if (validation.blueprint.kind !== 'pot') {
     const choices = availableHiveBlueprintIds();
@@ -173,8 +173,8 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       ok: false,
       error: 'not_a_hive_blueprint',
       message:
-        `Blueprint "${blueprintId}" is kind:'${validation.blueprint.kind}', not a hive — pot:create needs a ` +
-        `kind:'hive' blueprint. Available hive blueprints: ${choices.length ? choices.join(', ') : '(none found)'}.`,
+        `Blueprint "${blueprintId}" is kind:'${validation.blueprint.kind}', not a pot — pot:create needs a ` +
+        `kind:'pot' blueprint. Available pot blueprints: ${choices.length ? choices.join(', ') : '(none found)'}.`,
     };
   }
   const requiresRepo = validation.blueprint.knobs.requiresRepo !== false;

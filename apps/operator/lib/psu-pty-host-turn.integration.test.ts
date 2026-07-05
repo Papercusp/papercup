@@ -35,13 +35,93 @@ import {
 import {
   findLiveHost,
   injectIntoHost,
+  PSU_PTY_DIR,
 } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// WI-2339 defect #2 (2026-07-04) added a process-IDENTITY check to findLiveHost:
+// the discovered pid's /proc/<pid>/cmdline must match /psu-(launcher|pty-host)/,
+// so a recycled pid held by an unrelated process can't masquerade as a live host.
+// This test hosts the pty IN-PROCESS (hostThroughPty runs inside the vitest
+// worker, which records `pid: process.pid` — the WORKER's own pid, whose
+// cmdline is the vitest runner, not a psu-launcher/psu-pty-host process), so
+// every bare findLiveHost() call here fails that check post-WI-2339 even
+// though the discovered host is a perfectly valid stand-in for this test.
+// psu-pty-discovery.test.ts's own `ID_OK` seam is the documented fix for
+// exactly this (see findLiveHost's doc comment: "A test writing `process.pid`
+// as a live-host stand-in injects `() => true`") — mirror it here.
+const ID_OK = { verifyIdentity: () => true } as const;
+
+/** Poll findLiveHost until the just-booted host's discovery file is visible, instead
+ *  of a single check after a fixed sleep. A flat `await sleep(400)` occasionally isn't
+ *  enough once several real @lydell/node-pty children have already booted earlier in
+ *  the same run (this file's tests execute back-to-back and share the box's CPU/IO) —
+ *  observed as an intermittent `findLiveHost` null on the LAST test only under
+ *  full-file load, never in isolation. Resolves as soon as the host is discoverable
+ *  (usually the first poll) or null once `timeoutMs` elapses. */
+async function waitForHost(
+  ownerId: string,
+  timeoutMs = 2000,
+): ReturnType<typeof findLiveHost> extends infer T ? Promise<T> : never {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const host = findLiveHost(ownerId, PSU_PTY_DIR, ID_OK);
+    if (host || Date.now() >= deadline) return host;
+    await sleep(25);
+  }
+}
+
 /** A unique ownerId so we never collide with a live fleet session. */
 function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
+}
+
+/** EI-7662 (residual, post-hermeticEnv): poll `capturedFn()` until it contains
+ *  `substr`, instead of injecting the instant `waitForHost` resolves.
+ *  `hostThroughPty` writes the discovery meta file SYNCHRONOUSLY right after
+ *  `pty.spawn()` — well before the freshly-spawned child's own node runtime has
+ *  initialized (a bare `node -e` child measurably takes 100ms+ to emit its first
+ *  byte on this box, more under fleet-wide load — see the EI-7662 completion
+ *  note). So `waitForHost` resolving is NOT evidence the child has started being
+ *  "busy" or has reached a `setRawMode(true)` call: a test that injects right
+ *  after it races ahead of the child, DETERMINISTICALLY (not flakily — the gap
+ *  is wide and consistent) missing the busy-gate / raw-mode-armed
+ *  paste-detection windows these tests exist to exercise. The 3 tests below
+ *  each wait for a genuine readiness signal from the child before injecting.
+ *  Resolves true once `substr` is seen, false at `timeoutMs`. */
+async function waitForOutput(
+  capturedFn: () => string,
+  substr: string,
+  timeoutMs = 3000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (capturedFn().includes(substr)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(15);
+  }
+}
+
+/** `process.env` with the PAPERCUSP_FLEET_* vars stripped, so this test is hermetic
+ *  to whether the AGENT RUNNING IT happens to be a fleet member. `hostThroughPty`
+ *  emits a fleet-recolor OSC banner (fleetOscFromEnv, psu-pty-host.mjs) to the
+ *  child's stdout whenever `PAPERCUSP_FLEET_BG` is set — a plain `...process.env`
+ *  spread inherits it from whatever shell runs the test, so this whole file passed
+ *  cleanly from a non-fleet dev shell but genuinely failed (captured() polluted with
+ *  literal OSC bytes ahead of the child's own output) when run from inside an su
+ *  fleet-member session (PAPERCUSP_FLEET_BG/_FG/_CURSOR set by bootstrap-su for the
+ *  fleet's bound color scheme) — exactly the environment backlog-drain agents run
+ *  `npm run test:affected` in, which is almost certainly why the watchdog saw this
+ *  file red repeatedly. */
+function hermeticEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const {
+    PAPERCUSP_FLEET_BG: _bg,
+    PAPERCUSP_FLEET_FG: _fg,
+    PAPERCUSP_FLEET_CURSOR: _cursor,
+    ...rest
+  } = process.env;
+  return { ...rest, ...extra };
 }
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin.
@@ -122,6 +202,12 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
     "let b='';let last=0;const W=" + pasteWindowMs + ";" +
     "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
     "process.stdin.setEncoding('utf8');process.stdin.resume();" +
+    // EI-7662: an explicit readiness marker — written to stdout directly (not
+    // input-echo, so raw-mode state doesn't affect it) the instant raw mode is
+    // armed + the listener attached. Without this the test has no way to know
+    // the child has reached setRawMode(true) before injecting, and races it
+    // (host writes land while the pty is still in canonical+echo mode).
+    "process.stdout.write('READY\\n');" +
     "process.stdin.on('data',s=>{" +
     "const now=Date.now();const gap=now-last;last=now;" +
     "if((s==='\\r'||s==='\\n')&&gap>W){process.stdout.write('SUBMIT:'+b+'\\n');b='';}" +
@@ -161,7 +247,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         args: ['-e', echoChildCode(3500)],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
@@ -178,14 +264,14 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         },
       });
 
-      await sleep(400);
+      // The REAL discovery handshake the wake-executor uses. Poll (not a flat sleep)
+      // so this doesn't flake under full-file load — see waitForHost's doc comment.
+      const host = await waitForHost(ownerId);
+      expect(host).not.toBeNull();
       // Socket + meta created on start.
       expect(existsSync(sock)).toBe(true);
       expect(existsSync(meta)).toBe(true);
 
-      // The REAL discovery handshake the wake-executor uses.
-      const host = findLiveHost(ownerId);
-      expect(host).not.toBeNull();
       expect(host!.ownerId).toBe(ownerId);
       expect(host!.sock).toBe(sock);
 
@@ -231,7 +317,7 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
         args: ['-e', echoChildCode(6000)],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
@@ -252,8 +338,8 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
         },
       });
 
-      await sleep(400);
-      const host = findLiveHost(ownerId);
+      
+      const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
 
       // Keep the input line "busy": emit keystroke activity every 60ms. Each
@@ -320,7 +406,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
@@ -337,9 +423,17 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
-      await sleep(300); // host up; child still busy emitting
-      const host = findLiveHost(ownerId);
+       // host up; child still busy emitting
+      const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
+
+      // EI-7662: wait for the child to have GENUINELY started emitting (its
+      // first '.') before injecting — otherwise this races the child's own
+      // node-startup latency (100ms+) and injects while `lastOutputAt` is
+      // still its pre-first-output default, which the busy gate treats as
+      // "at prompt" (see makeAgentBusyGate's doc comment), letting the write
+      // through immediately instead of exercising the hold-until-quiet path.
+      expect(await waitForOutput(captured, '.')).toBe(true);
 
       // Inject the wake turn WHILE the agent is mid-turn (still emitting '.').
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'midturn-wake' });
@@ -382,7 +476,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         args: ['-e', busyThenIdleChildCode(2500, 50, 2500)],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
@@ -399,9 +493,13 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
-      await sleep(300);
-      const host = findLiveHost(ownerId);
+
+      const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
+
+      // EI-7662: wait for genuine busy activity before injecting — see the
+      // comment on the sibling MID-TURN test above; same node-startup race.
+      expect(await waitForOutput(captured, '.')).toBe(true);
 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'dropped-wake' });
       expect(ok).toBe(true);
@@ -435,7 +533,7 @@ describe('psu-pty-host cross-agent socket isolation (C1 / EI-153 class)', () => 
       const b = fakeIo();
 
       const baseEnv = (id: string) => ({
-        ...process.env,
+        ...hermeticEnv(),
         PAPERCUSP_AGENT: 'claude',
         PAPERCUSP_SID: id,
         TERM: 'xterm-256color',
@@ -465,11 +563,9 @@ describe('psu-pty-host cross-agent socket isolation (C1 / EI-153 class)', () => 
         onExit: () => {},
       });
 
-      await sleep(450);
-
       // Both discoverable, with DISTINCT sockets — the isolation boundary.
-      const hostA = findLiveHost(ownerA);
-      const hostB = findLiveHost(ownerB);
+      const hostA = await waitForHost(ownerA);
+      const hostB = await waitForHost(ownerB);
       expect(hostA).not.toBeNull();
       expect(hostB).not.toBeNull();
       expect(hostA!.sock).not.toBe(hostB!.sock);
@@ -511,7 +607,7 @@ describe('psu-pty-host dead-host discovery rejection (self-validating)', () => {
         // Shortest-lived child: exit almost immediately.
         args: ['-e', 'setTimeout(()=>process.exit(0),300);'],
         cwd: '/tmp',
-        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: hermeticEnv({ PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' }),
         ownerId,
         advSessionId: 7,
         io,
@@ -521,12 +617,12 @@ describe('psu-pty-host dead-host discovery rejection (self-validating)', () => {
 
       await sleep(150);
       // Alive mid-flight → discoverable.
-      expect(findLiveHost(ownerId)).not.toBeNull();
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)).not.toBeNull();
 
       // After exit, the discovery file + socket are removed and findLiveHost is null.
       await done;
       await sleep(100);
-      expect(findLiveHost(ownerId)).toBeNull();
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)).toBeNull();
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
     },
@@ -548,7 +644,7 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
         args: ['-e', pasteAwareChildCode(4000, 40)],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           // Host sends the submit CR 120ms after the text — well past the child's
@@ -566,9 +662,17 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
         },
       });
 
-      await sleep(400);
-      const host = findLiveHost(ownerId);
+
+      const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
+
+      // EI-7662: wait for the child's explicit READY marker (written right
+      // after it arms raw mode) before injecting — otherwise the host's text
+      // write can land while the pty is still in default canonical+echo mode
+      // (node -e startup to reach setRawMode(true) is measurably 100ms+ on
+      // this box), producing raw echoed input instead of exercising the
+      // paste-aware child's own gap-based submit detection.
+      expect(await waitForOutput(captured, 'READY')).toBe(true);
 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'paste-then-enter' });
       expect(ok).toBe(true);

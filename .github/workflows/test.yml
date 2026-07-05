@@ -21,8 +21,10 @@ jobs:
       # :5432 and ECONNREFUSE here without one. pgvector image because the
       # baseline schema has vector(N) columns (same image as the
       # testcontainers integration tier).
+      # WI-2942 (2026-07-05): pg16 -> pg18 to match the shipped/embedded operator
+      # (PostgreSQL 18.3) — see libs/test-config/src/pg-container.ts.
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -173,6 +175,18 @@ jobs:
       # cast → real jsonb object) instead. ALLOW-lists deliberate fresh-pool sites.
       - name: Lint no sql.json on getOrgPg client
         run: npm run lint:no-sql-json
+
+      # SQL-comment backtick guard (EI-7661): a backtick inside a `--` SQL
+      # comment silently ENDS the enclosing postgres-js sql`...` tagged
+      # template early — the file still compiles (the trailing text can parse
+      # as valid TS) and RUNS with the SQL query truncated mid-comment. This
+      # amputated the entire WHERE clause from the mig-504 LWW guard's
+      # engineer-issues + harness-features upserts on 2026-07-05, applying
+      # stale writes unconditionally; only a regressed unit test caught it.
+      # GATING — flags a `--` comment line with a raw (unescaped) backtick in
+      # any file that uses a sql`...` tagged template.
+      - name: Lint no backtick in SQL comment
+        run: npm run lint:no-sql-comment-backtick
 
       # Raw control-byte guard (EI-7432): a NUL byte in tracked TypeScript made
       # ripgrep classify the file as binary and silently skip it, so searches

@@ -294,7 +294,7 @@ the result.
 
 > Specific tool mappings (which blackboard read answers which question,
 > the file-a-work-item-and-nudge workflow, the approval-relay workflow)
-> live in `sentinel.tools.md`. The rule above is the behavior pattern;
+> live in `papercup.tools.md`. The rule above is the behavior pattern;
 > the playbook has the routes.
 
 ## Memory — persistent across sessions

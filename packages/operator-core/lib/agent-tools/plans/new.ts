@@ -67,6 +67,13 @@ export const argsSchema = z.object({
     .describe(
       "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
     ),
+  body: z
+    .string()
+    .max(200_000)
+    .optional()
+    .describe(
+      'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. Omit to get the empty starter template.',
+    ),
   force: stringTolerantBool
     .optional()
     .describe(
@@ -88,7 +95,7 @@ export function ensureDatedSlug(slug: string, today: string): string {
   return /-\d{4}-\d{2}-\d{2}$/.test(slug) ? slug : `${slug}-${today}`;
 }
 
-function buildTemplate(args: {
+function buildFrontmatter(args: {
   slug: string;
   title: string;
   status: string;
@@ -103,7 +110,28 @@ status: ${args.status}
 created: ${args.date}
 updated: ${args.date}
 ${ownerLine}---
+`;
+}
 
+export function buildTemplate(args: {
+  slug: string;
+  title: string;
+  status: string;
+  owner: string | null;
+  date: string;
+  /** When provided, use this as the whole body BELOW the frontmatter instead of
+   *  the empty starter template (one-call create-with-content). */
+  body?: string;
+}): string {
+  const fm = buildFrontmatter(args);
+  if (args.body != null && args.body.trim().length > 0) {
+    // Caller supplied the full body — write frontmatter + body. Strip any
+    // leading --- frontmatter the caller mistakenly included (we own it), and
+    // guarantee exactly one blank line between frontmatter and body.
+    const raw = args.body.replace(/^---\n[\s\S]*?\n---\n?/, '').replace(/^\n+/, '');
+    return `${fm}\n${raw}\n`;
+  }
+  return `${fm}
 # ${args.title}
 
 ## Now
@@ -195,13 +223,13 @@ export function findSimilarPlans(
 export default defineTool({
   name: 'plans:new',
   description:
-    'Create a new SU plan from the canonical template. Slug uniqueness enforced inside a lock; rejects if a file with the same slug already exists.',
+    'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `body` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
   guidance: {
-    when: 'You are starting a new plan and want a templated file with valid frontmatter ready to fill in.',
+    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, body } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.',
     notWhen:
-      'You want to edit an existing plan — use plans:set-status / set-now / add-decision / add-item.',
+      'You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.',
     chaining:
-      'plans:new → plans:set-now (replace placeholder Now) → plans:add-item to populate Phase 1.',
+      'Author-in-one: plans:new { slug, title, body }. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -282,6 +310,7 @@ export default defineTool({
           status,
           owner: args.owner ?? null,
           date,
+          ...(args.body != null ? { body: args.body } : {}),
         });
         return { newBody: body, value: { ok: true, slug } };
       },

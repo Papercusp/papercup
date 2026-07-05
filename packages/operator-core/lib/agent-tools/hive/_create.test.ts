@@ -79,13 +79,13 @@ beforeEach(() => {
   vi.doMock('../blueprint/_resolve', () => ({
     // Kind-aware so the P-019 not-a-hive guard can be exercised: the chosen blueprint
     // id rides `childObj.extends`; `research` resolves to kind:'harness', everything
-    // else (the default hive / generic-hive) to kind:'hive'.
+    // else (the default hive / generic-hive) to kind:'pot'.
     resolveAndValidate: (childObj: { extends?: string }) => ({
       ok: true,
       parseError: null,
       blueprint: {
         id: 'hive',
-        kind: childObj?.extends === 'research' ? 'harness' : 'hive',
+        kind: childObj?.extends === 'research' ? 'harness' : 'pot',
         version: '0',
         knobs: blueprintKnobs,
         ...(blueprintOutput ? { output: blueprintOutput } : {}),

@@ -373,7 +373,17 @@ from the public registry and fails on the first private/unpublished one (e.g.
 `@papercusp/audio-dsp`), a confusing error unrelated to your change (EI-7243).
 If you need to run a single test file directly instead of via `npm run
 test:affected`, use the root-installed binary: `node_modules/.bin/vitest run
-<path/to/file.test.ts>` from the repo root.
+<path/to/file.test.ts>` from the repo root. **Caveat (EI-7666):** there is no
+root-level `vitest.config.ts` — that bare invocation runs with **zero** Vite
+config, so it fails with `Failed to resolve import "@/..."` for any test whose
+component imports the `@/` path alias (e.g. `apps/operator/app/_components/ThemeSelector.tsx`
+→ `@/lib/theme`). This isn't fixable with one root-level alias either: `@/`
+maps to a **different** directory per app (`apps/operator` vs
+`apps/the-swarm-site` each alias `@/*` to their own root), so a single global
+alias would be wrong for at least one of them. For an alias-importing test,
+either use `npm run test:affected` (resolves per-app correctly), or pass that
+app's own config explicitly: `node_modules/.bin/vitest run --config
+apps/operator/vitest.config.ts <path/to/file.test.ts>`.
 
 ## Browser checks — use `verdict`
 

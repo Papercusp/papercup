@@ -171,7 +171,7 @@ export function gymLoopId(harnessSlug: string): string {
 }
 
 export function scoutLoopId(harnessSlug: string): string {
-  return `scout:${harnessSlug}`;
+  return `blender:${harnessSlug}`;
 }
 
 /** The `blender:` loop_id prefix — the workspace-ceiling rule sums every registrant under it. */

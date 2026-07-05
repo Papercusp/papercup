@@ -140,7 +140,7 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
 
   beforeEach(() => captureRecipeMock.mockClear());
 
-  it('returns facadeHelp + the namespace index when a referenced namespace does not exist', async () => {
+  it('returns facadeHelp + a BOUNDED closest-namespace suggestion (not the full index) when a referenced namespace does not exist', async () => {
     const tool = codeRun();
     const res = await tool.fn({ script: 'return await tools.nope.doStuff();' }, mkCtx());
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -149,8 +149,21 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(payload.facadeHelp).toBeDefined();
     // the note tells the agent it never needed code:tools first
     expect(payload.facadeHelp.note).toContain('no code:tools pre-call required');
-    // an unknown namespace ⇒ the cheap index is included so the agent can find the right one
+    expect(payload.facadeHelp.note).toContain('code:tools {}');
+    // an unknown namespace ⇒ a SUGGESTION is included, capped well below the full facade
+    // (EI-7677: the full index was ~15k tokens and blew a session to 157% context on one typo)
     expect(Array.isArray(payload.facadeHelp.namespaces)).toBe(true);
+    expect(payload.facadeHelp.namespaces.length).toBeGreaterThan(0);
+    expect(payload.facadeHelp.namespaces.length).toBeLessThanOrEqual(3);
+    // sanity: the full allowed facade for this role is much larger than the 3-item suggestion —
+    // proves this is a bounded suggestion, not the whole catalog
+    const allNamespaceCount = new Set(
+      listAllProjectedTools()
+        .map((t) => t.expose?.mcp?.name)
+        .filter((n): n is string => !!n && n.includes(':'))
+        .map((n) => n.split(':')[0]),
+    ).size;
+    expect(allNamespaceCount).toBeGreaterThan(payload.facadeHelp.namespaces.length);
     // nothing captured on a failed run
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });

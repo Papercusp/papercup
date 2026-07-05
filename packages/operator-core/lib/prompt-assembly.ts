@@ -143,9 +143,9 @@ export const PROMPT_ROLES = [
   'curator',
   // G2 user-protection gate (P-006): read-only adversarial judgment role.
   'auditor',
-  // Sentinel-as-Herald: the sentinel watcher is re-homed onto the always-on,
-  // voice-first Herald — the SAME converse brain loaded with role='sentinel'.
-  // Its persona set (sentinel.persona[.{engineer,novice}-mode].md / .converse.md /
+  // Papercup-as-Herald: the papercup watcher is re-homed onto the always-on,
+  // voice-first Herald — the SAME converse brain loaded with role='papercup'.
+  // Its persona set (papercup.persona[.{engineer,novice}-mode].md / .converse.md /
   // .shell.md / .tools.md) ships under apps/operator/prompts/, so the assembler
   // must be able to build prompts for it (loadRole{Persona,Converse,ModePersona}).
   'papercup',

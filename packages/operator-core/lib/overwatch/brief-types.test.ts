@@ -59,7 +59,7 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
 
   // Anomalies section + all three lines, with the action verb + target + message.
   assert.match(out, /### Anomalies — detected this wake \(act on these\)/);
-  assert.match(out, /\[critical\] queen-stalled — queen: last woke 47m ago \(cadence 10m\) → NUDGE queen: you have stalled/);
+  assert.match(out, /\[critical\] queen-stalled — mug: last woke 47m ago \(cadence 10m\) → NUDGE mug: you have stalled/);
   assert.match(out, /\[warning\] token-paused — opus bucket: paused on RPM saturation → ESCALATE owner: opus bucket paused/);
   assert.match(out, /\[info\] observation-dark — observation lane: lane flat 40m while 4 bees run → OBSERVE: observation lane flat/);
 
@@ -71,7 +71,7 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
 
   // The pre-folded Inbox section (coord messages addressed to the overwatch).
   assert.match(out, /### Inbox — coord messages for you/);
-  assert.match(out, /- \[message\] queen: re: F-FIX-021 — re-opened, thanks/);
+  assert.match(out, /- \[message\] mug: re: F-FIX-021 — re-opened, thanks/);
   assert.match(out, /- \[escalation\] owner: keep an eye on the opus bucket/);
   assert.match(out, /### Bees \(Queen-placed only — NOT the whole fleet\)\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
   // EI-6493: the zero-caveat only fires when running is actually 0 — this fixture has 4.

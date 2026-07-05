@@ -64,6 +64,18 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     expect(v.reason).toMatch(/dead-on-arrival/);
   });
 
+  it('EI-7644: a non-zero exit WELL PAST the DOA floor with ZERO captured output is a "silent death" env failure, not charged (real observed case: EI-7520\'s dispatch, exit 1 after 701s, no output)', () => {
+    const v = isEnvFailureExit({ exitCode: 1, runtimeMs: 701_000, stdout: '', stderr: '' });
+    expect(v.env).toBe(true);
+    expect(v.reason).toMatch(/silent death/);
+    expect(v.class).toBeUndefined(); // generic env leg — tags 'worker-exit-backedge-env', same as the DOA case
+  });
+
+  it('EI-7644: a non-zero exit past the DOA floor with SOME (even short) output is NOT a silent death — still a genuine attempt', () => {
+    const v = isEnvFailureExit({ exitCode: 1, runtimeMs: 701_000, stdout: 'oops', stderr: '' });
+    expect(v.env).toBe(false);
+  });
+
   it('a genuine worker failure (long run, substantive output, no env signature) is NOT env', () => {
     const v = isEnvFailureExit({
       exitCode: 1,

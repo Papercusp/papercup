@@ -52,16 +52,15 @@ beforeAll(async () => {
   // projection applies REMOTE-origin ops (echo-guarded), so no capture trigger is needed.
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
-  // WI-183/WI-2853: the shared _work-items-schema.ts fixture deliberately omits
-  // stamp_local_federated_write_trg (constraints/triggers are added per-test, not in
-  // the shared fixture — see that file's own header). But `work_items` IS a real
-  // production carrier of this trigger: mig 214 attached it to
+  // WI-183/WI-2845/WI-2853: the shared _work-items-schema.ts fixture deliberately
+  // omits stamp_local_federated_write_trg (constraints/triggers are added per-test,
+  // not in the shared fixture — see that file's own header). But `work_items` IS a
+  // real production carrier of this trigger: mig 214 attached it to
   // `harness_features_consolidated`, and mig 374's `ALTER TABLE
   // harness_features_consolidated RENAME TO work_items` PRESERVES triggers across a
   // rename — so the trigger is live on prod `work_items` today under its original
-  // name. Attach the CURRENT function body verbatim (mig 490, the latest
-  // CREATE OR REPLACE of stamp_local_federated_write()) so this test exercises the
-  // real prod trigger stack, not a fixture that happens to omit it.
+  // name. Attach the CURRENT (mig 517-fixed) function body verbatim so this test
+  // exercises the real prod trigger stack, not a fixture that happens to omit it.
   await db.sql.unsafe(`
     -- Minimal stub (real def = mig 314, needs a harness_shared.hlc_clock singleton
     -- table this fixture doesn't have) — only needs to return a fresh, distinguishable
@@ -71,6 +70,10 @@ beforeAll(async () => {
         SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
       $hlc_stub$;
 
+    -- Verbatim body of mig 517 (fix-stamp-local-federated-write-mask): the
+    -- work_items-scoped extra exclusion of updated_ts/ts, kept table-scoped
+    -- because other federated tables sharing this function (e.g. coord_event_log)
+    -- have a genuine-content ts column that must NOT be masked globally.
     CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
         LANGUAGE plpgsql
         AS $fn$
@@ -81,6 +84,17 @@ beforeAll(async () => {
       IF TG_OP = 'INSERT' THEN
         IF NEW.fed_ts IS NULL AND COALESCE(NEW.origin, 'local') = 'local' THEN
           NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF TG_TABLE_NAME = 'work_items' THEN
+        IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
+           IS DISTINCT FROM
+           (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
+        THEN
+          NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+          NEW.fed_hlc := harness_shared.hlc_now();
+          NEW.origin := 'local';
         END IF;
         RETURN NEW;
       END IF;

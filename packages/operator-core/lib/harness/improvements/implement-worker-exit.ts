@@ -227,6 +227,24 @@ export function isEnvFailureExit(info: WorkerExitInfo): EnvFailureVerdict {
       reason: `dead-on-arrival (exit ${info.exitCode} in ${Math.round(info.runtimeMs / 1000)}s, ~empty output)`,
     };
   }
+  // EI-7644: a run that lasted well past the DOA floor (minutes of presumed real work
+  // on the item) but left ZERO captured stdout/stderr is not attributable to the item
+  // either — there is no evidence the worker ever meaningfully engaged it. Either an
+  // external kill (host OOM / instability) gave the process no chance to flush its own
+  // output, or the invoke route's capture pipe silently dropped it — both are
+  // conditions ABOUT THE WORKER/HOST, not the item, exactly the class this whole
+  // rollback exists for (see file-top EI-406 note). Deliberately narrow (truly EMPTY,
+  // not merely short) so a genuine worker crash that DID write a real (if short) error
+  // is unaffected and still charges the attempt. Real observed case: EI-7520's
+  // dispatch — exit 1 after 701s (well past the 30s DOA floor), stdout+stderr both ''.
+  if (text.trim().length === 0) {
+    return {
+      env: true,
+      reason:
+        `silent death (exit ${info.exitCode} after ${Math.round(info.runtimeMs / 1000)}s with NO captured ` +
+        `output — an external kill or capture-pipeline gap, not evidence about the item)`,
+    };
+  }
   return { env: false };
 }
 

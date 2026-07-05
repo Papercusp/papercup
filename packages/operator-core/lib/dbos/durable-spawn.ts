@@ -224,7 +224,10 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
         import('../fleet/model-tiers'),
       ]);
       const cfg = await readAgentConfig().catch(() => null);
-      spawnModel = resolveRoleOwnModelSpec('mug', effectiveTierConfig(cfg, steering));
+      // Resolve with the role the stale body actually carries: a pre-rename
+      // 'queen' body reads the owner's 'queen' tier keys, a 'mug' body the
+      // 'mug' keys (config keys migrate with S2 — see the WI-2932 runbook).
+      spawnModel = resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
     }
     return typeof spawnModel === 'string' && spawnModel.trim()
       ? { ...input.body, spawnModel: spawnModel.trim() }

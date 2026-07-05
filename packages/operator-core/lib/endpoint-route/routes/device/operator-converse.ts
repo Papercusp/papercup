@@ -129,21 +129,22 @@ const converse = defineTool({
     }
     const modality = body.modality === 'voice' ? 'voice' : 'text';
 
-    // P-012 (device/mobile parity): repoint the brain to the Sentinel persona
+    // P-012 (device/mobile parity): repoint the brain to the Papercup persona
     // when the `humanFacingRole` voice pref says so — same toggle the voice +
     // text paths read. Default 'operator' keeps the live mobile path unchanged.
+    // 'sentinel' is the pre-rename pref value (WI-2932) — accepted, resolves to
+    // the canonical 'papercup' role id.
     let role = 'operator';
     try {
       const { loadVoicePrefs } = await import('../../../voice-prefs');
       const prefs = await loadVoicePrefs();
-      if (prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup') role = 'sentinel';
+      if (prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup') role = 'papercup';
     } catch {
       /* best-effort; fall back to operator */
     }
-    // The sentinel persona brain is registered under the `papercup:converse`
-    // alias (sentinel-converse.ts), NOT `sentinel:converse`; every other role
-    // resolves `${role}:converse`. The persona `role` forwarded below stays
-    // 'sentinel' so the prompt builder loads the sentinel set.
+    // The papercup persona brain is registered under `papercup:converse`
+    // (sentinel-converse.ts); every other role resolves `${role}:converse`.
+    // A stale explicit 'sentinel' still routes there during the expand phase.
     const converseToolName = role === 'sentinel' || role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');

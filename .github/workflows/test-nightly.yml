@@ -16,8 +16,10 @@ jobs:
       # :5432 and ECONNREFUSE here without one. pgvector image because the
       # baseline schema has vector(N) columns (same image as the
       # testcontainers integration tier).
+      # WI-2942 (2026-07-05): pg16 -> pg18 to match the shipped/embedded operator
+      # (PostgreSQL 18.3) — see libs/test-config/src/pg-container.ts.
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

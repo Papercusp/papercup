@@ -221,7 +221,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await handleOverwatchLaunch(ctx);
     expect(loopbackFetch).toHaveBeenCalledTimes(1);
     const [url, opts] = loopbackFetch.mock.calls[0] as [string, { method: string; body: string }];
-    expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
+    expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=kettle&ws=ws-1&bpkind=overwatch');
     expect(opts.method).toBe('POST');
     const body = JSON.parse(opts.body);
     expect(body.kickoff).toBe('why-i-woke');
@@ -237,7 +237,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       payloadTemplate: { kickoff: 'workspace wake', hiveSlug: SLUG },
     });
     const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
-    expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
+    expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=kettle&ws=ws-1&bpkind=overwatch');
   });
 
   // EI-5842 regression at the wire: a sentinel row with a null hive-home env must
@@ -252,7 +252,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       payloadTemplate: { kickoff: 'sentinel wake' },
     });
     const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
-    expect(url).toBe('http://op/api/harness/papercusp/invoke?role=overwatch&ws=ws-1&bpkind=overwatch');
+    expect(url).toBe('http://op/api/harness/papercusp/invoke?role=kettle&ws=ws-1&bpkind=overwatch');
     expect(url).not.toContain('/api/harness/ws-1/invoke');
   });
 

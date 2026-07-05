@@ -7,6 +7,7 @@ import {
   roleScopedToolNames,
   generateToolFacadeTypes,
   listFacadeNamespaces,
+  nearestByLevenshtein,
   AGENT_ROLES,
   type UnifiedToolContext,
   type WrapDispatch,
@@ -144,7 +145,14 @@ export default defineTool({
     let similarRecipes: SimilarRecipe[] = [];
     // Don't SAVE a recipe that references an unknown tool (F8): the run may have limped through by
     // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
-    if (result.ok && !(args.dryRun ?? false) && !result.unknownRefs?.length) {
+    // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
+    // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
+    if (
+      result.ok &&
+      !(args.dryRun ?? false) &&
+      !result.unknownRefs?.length &&
+      !result.okFalseMutations?.length
+    ) {
       similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
 
@@ -303,7 +311,9 @@ export function shapeMutationEcho(
     };
   }
 
-  const { plannedMutations, ...rest } = result;
+  const { plannedMutations, okFalseMutations, ...rest } = result;
+  // Defensive: fixture results built by hand (tests predating this field) omit it entirely.
+  const okFalseMutationsList = okFalseMutations ?? [];
   const byTool: Record<string, number> = {};
   for (const m of plannedMutations) byTool[m.tool] = (byTool[m.tool] ?? 0) + 1;
   return {
@@ -327,15 +337,46 @@ export function shapeMutationEcho(
             're-run the whole script; check what actually landed before retrying, to avoid a double-write.',
         }
       : {}),
+    // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
+    // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity
+    // check). Nothing in `result.ok` / `error` reflects this — the SCRIPT still ran to a normal
+    // finish — so a batched script that doesn't inspect every individual result silently miscounts
+    // a rejected write as executed. Surface it unconditionally (independent of result.ok) so it
+    // can't be missed the way a bare `Promise.allSettled` count would miss it. Defensive `?? []`:
+    // fixture results built by hand (tests predating this field) omit it — never let an older/
+    // partial result object throw here instead of just showing no okFalse warning.
+    ...(okFalseMutationsList.length > 0
+      ? {
+          okFalseWarning:
+            `${okFalseMutationsList.length} write-effect call(s) dispatched without throwing but reported ` +
+            `ok:false in their own result (did NOT take effect): ` +
+            `${okFalseMutationsList.map((m) => m.tool).join(', ')}. Check okFalseMutations for details — ` +
+            'do not assume these succeeded just because the script did not throw.',
+          okFalseMutations: okFalseMutationsList,
+        }
+      : {}),
   };
 }
+
+/** Cap on how many "closest namespace" suggestions buildFacadeHelp surfaces (EI-7677). */
+const FACADE_HELP_NAMESPACE_SUGGESTIONS = 3;
 
 /**
  * P-007: turn a parse-check failure into a self-service fix. From the unknown `ns.verb` (or
  * `ns:verb`) refs the script used, render the typed `tools.ns.verb(args)` signatures for the
  * namespaces that DO exist in the caller's facade (fix a verb/arg typo), and — only when a referenced
- * namespace doesn't exist at all — also return the cheap namespace index so the agent can pick the
- * right one. Same scoping/generators as code:tools, so the agent never needs to call code:tools first.
+ * namespace doesn't exist at all — surface the closest-matching known namespaces so the agent can
+ * pick the right one. Same scoping/generators as code:tools, so the agent never needs to call
+ * code:tools first.
+ *
+ * EI-7677: this used to spill the ENTIRE allowed namespace index (every ns × verb — observed
+ * ~15k tokens for a superuser's full facade) whenever a script referenced even ONE unknown
+ * namespace (a typo'd `tools.workItems` vs `tools.workitems`) — a single-line typo could blow a
+ * session's context budget (one leader session hit 157%). Bounded now: rank every known
+ * namespace by edit distance to the (first) unknown ref via the same `nearestByLevenshtein`
+ * helper `fuzzyEnum` already uses for arg-value typos, and surface only the top
+ * `FACADE_HELP_NAMESPACE_SUGGESTIONS` — with an explicit pointer to `code:tools {}` for the rare
+ * case the agent genuinely needs to browse the full catalog.
  */
 function buildFacadeHelp(
   unknownRefs: readonly string[],
@@ -344,6 +385,7 @@ function buildFacadeHelp(
 ): { note: string; signatures?: string; namespaces?: ReturnType<typeof listFacadeNamespaces> } {
   const index = listFacadeNamespaces(all, allowed);
   const known = new Set(index.map((e) => e.ns));
+  const byNs = new Map(index.map((e) => [e.ns, e]));
 
   const referencedNs = new Set<string>();
   for (const ref of unknownRefs) {
@@ -359,20 +401,36 @@ function buildFacadeHelp(
     ? generateToolFacadeTypes(all, { allowed, namespaces: present })
     : undefined;
 
+  // Rank every known namespace by closeness to each missing ref; keep only the closest
+  // FACADE_HELP_NAMESPACE_SUGGESTIONS overall (maxRatio:1 ⇒ always returns the top-k rather than
+  // an empty set on a wildly-wrong name — a few "not quite it" suggestions still beat nothing).
+  let namespaces: ReturnType<typeof listFacadeNamespaces> | undefined;
+  if (missing.length && known.size) {
+    const suggested = new Set<string>();
+    for (const m of missing) {
+      for (const s of nearestByLevenshtein(m, [...known], { k: FACADE_HELP_NAMESPACE_SUGGESTIONS, maxRatio: 1 })) {
+        suggested.add(s);
+      }
+    }
+    namespaces = [...suggested]
+      .slice(0, FACADE_HELP_NAMESPACE_SUGGESTIONS)
+      .map((ns) => byNs.get(ns)!)
+      .sort((a, b) => a.ns.localeCompare(b.ns));
+  }
+
   const note =
     'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
     'your allowed facade; fix the tools.ns.verb name/args and re-run. ' +
     (signatures ? 'Typed signatures for the namespaces you referenced are in `signatures`. ' : '') +
     (missing.length
-      ? `Unknown namespace(s): ${missing.join(', ')} — pick the right one from \`namespaces\`.`
+      ? `Unknown namespace(s): ${missing.join(', ')} — the closest matches (with their verbs) are in ` +
+        '`namespaces`; if none fit, call code:tools {} for the full catalog.'
       : '');
 
   return {
     note,
     ...(signatures ? { signatures } : {}),
-    // Only spill the full namespace index when a referenced namespace doesn't exist (so the agent can
-    // find the right one); otherwise the verb list already in `signatures` is enough.
-    ...(missing.length ? { namespaces: index } : {}),
+    ...(namespaces ? { namespaces } : {}),
   };
 }
 

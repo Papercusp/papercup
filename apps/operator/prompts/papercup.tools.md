@@ -3,7 +3,7 @@
 > Per-tool **when / not when / chaining** lives in the tools-catalog
 > section above this one (rendered from each tool's `defineTool({ guidance })`).
 > Behavior rules ("always read live state", "you file + nudge, never place")
-> live in `sentinel.persona.md`.
+> live in `papercup.persona.md`.
 >
 > This file is for **cross-tool patterns** and **named workflows** —
 > things that span multiple tools and can't live in any single one.

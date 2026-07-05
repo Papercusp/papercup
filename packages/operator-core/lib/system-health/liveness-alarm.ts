@@ -214,10 +214,19 @@ export function evaluateLivenessAlarm(
 /** The summary prefix every fired escalation carries. */
 const SUMMARY_PREFIX = '[infra-liveness] ';
 
-/** Reverse map a panel LABEL back to its key, for classifying legacy records. */
-const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = Object.fromEntries(
-  (Object.entries(PANEL_LABELS) as Array<[PanelKey, string]>).map(([k, v]) => [v, k]),
-);
+/** Reverse map a panel LABEL back to its key, for classifying legacy records.
+ * Includes the PRE-pot-rename display labels (WI-2932): escalation rows written
+ * before the rename carry them in their summaries forever, and this map exists
+ * precisely to classify those old rows — the aliases stay as long as any do. */
+const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = {
+  ...Object.fromEntries(
+    (Object.entries(PANEL_LABELS) as Array<[PanelKey, string]>).map(([k, v]) => [v, k]),
+  ),
+  Queen: 'queen',
+  'Bees / fleet': 'bees',
+  Overwatch: 'overwatch',
+  'Scout / ideation': 'scout',
+};
 
 /**
  * Derive a signal's stable signature from an escalation summary — the fallback

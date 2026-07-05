@@ -25,6 +25,19 @@
  * ACTIVE and becomes effective the moment a canary harness is registered.
  * Cost: one trivial feature per day (plan D-004).
  *
+ * EI-7655: Phase 2's INSERT is raw SQL (idempotent, replay-safe), NOT
+ * work_items:create — so it never fired that tool's `emits` demand event, the
+ * signal the Queen's default wake subscription rides (start-hive-wake-
+ * orchestration-2026-06-09 P-001/D-001, see work_items/create.ts). A freshly
+ * queued canary was therefore invisible to the event-driven wake path and sat
+ * silent until some UNRELATED demand in the same Hive happened to wake the
+ * Queen anyway (usually true for a busy Hive — hence "usually passes" — but
+ * not guaranteed, and the exact "DBOS pipelines: NONE / no autoloop_state
+ * rows" forensics a missed canary reports). Fixed by calling the same
+ * `requestUrgentHiveWake` bypass `work_items:create`'s `urgent` flag uses,
+ * right after a NEW canary is actually inserted — mirrors the existing
+ * hive-home resolution used a few lines below for the pause check.
+ *
  * Seed: seed-hive-canary-routine.ts. Registered via register-system-actions.
  */
 import { getOrgPg } from '@papercusp/db-org';
@@ -32,6 +45,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
+import { requestUrgentHiveWake } from '../../hive/urgent-wake';
 
 /** Terminal-enough statuses: the loop carried the canary to a verdict. */
 const CANARY_TERMINAL = new Set(['passed', 'deprecated', 'failed']);

@@ -8,12 +8,12 @@ import {
 
 describe('scout coord identity (P-003)', () => {
   it('derives a stable scout:<hive> owner id', () => {
-    expect(scoutCoordOwnerId('papercusp')).toBe('scout:papercusp');
-    expect(scoutCoordOwnerId('shared-hive-test')).toBe('scout:shared-hive-test');
+    expect(scoutCoordOwnerId('papercusp')).toBe('blender:papercusp');
+    expect(scoutCoordOwnerId('shared-hive-test')).toBe('blender:shared-hive-test');
   });
 
   it('trims whitespace and rejects an empty hive slug', () => {
-    expect(scoutCoordOwnerId('  papercusp  ')).toBe('scout:papercusp');
+    expect(scoutCoordOwnerId('  papercusp  ')).toBe('blender:papercusp');
     expect(() => scoutCoordOwnerId('')).toThrow(/per-hive/);
     expect(() => scoutCoordOwnerId('   ')).toThrow(/per-hive/);
   });

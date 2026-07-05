@@ -56,6 +56,11 @@ function mkDeps(over: Partial<ScorecardEmissionPulseDeps> = {}): {
       capture: capture as never,
       recordFire,
       toolUtilizationGrade: async () => undefined,
+      // WI-2977 coalesce deps: stub hermetic (the defaults query live PG — on a
+      // dev box with a REAL standing pulse floor the coalesce branch swallows
+      // `capture` and every assertion below silently inverts).
+      findOpenPulseFloor: async () => null,
+      bumpPulseRepeat: vi.fn(async () => {}) as never,
       ...over,
     },
   };

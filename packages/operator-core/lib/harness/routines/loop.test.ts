@@ -3,9 +3,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock B-LOOP-1's upsertRoutine seam so we can assert the EXACT loop-routine row
 // materializeLoop produces — the row fd5c0's fire (loop-fire.ts) + su-15ea2's
 // completion-rebase consume. vi.hoisted so the spy exists when vi.mock hoists.
-const { upsertRoutineSpy } = vi.hoisted(() => ({ upsertRoutineSpy: vi.fn() }));
+//
+// EI-7613: materializeLoop now ALSO calls stampLoopArmedAt(sql, …) after every upsert
+// (the dead-man clock's re-arm fix) — a bare `sql: {}` is not callable as a tagged
+// template, so that best-effort UPDATE threw "db is not a function" and console.warn'd,
+// which vitest-fail-on-console turns into a hard test failure across every materializeLoop
+// case. `sqlStub` is a minimal callable tagged-template stand-in (resolves to `[]`) so
+// that internal call succeeds silently, exactly like a real (if inert) postgres client.
+const { upsertRoutineSpy, sqlStub } = vi.hoisted(() => ({
+  upsertRoutineSpy: vi.fn(),
+  sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
+}));
 vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: sqlStub }),
   upsertRoutine: upsertRoutineSpy,
 }));
 
@@ -40,6 +50,24 @@ describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', (
     expect(prompt).toContain('papercusp');
     expect(prompt).toContain('su-x');
     expect(prompt).not.toMatch(/\{(goal|harness|ownerId|intervalSec)\}/);
+  });
+});
+
+describe('buildLoopWakePrompt — kind guidance is not hardcoded to task (EI-7674)', () => {
+  const prompt = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'do the thing' });
+
+  it('does NOT hardcode kind:\'task\' as the create example — task is NON-CODE only and most loop-driven work is code', () => {
+    expect(prompt).not.toContain("kind:'task'");
+  });
+
+  it('tells the agent to pick kind by what the unit IS, with change as the coding-work example', () => {
+    expect(prompt).toContain("kind:'change'");
+    expect(prompt).toMatch(/picking `kind` by what the unit IS/);
+    expect(prompt).toMatch(/`task` ONLY for/);
+  });
+
+  it('the step-3 in_progress-alias note no longer pins kind:\'task\' specifically (generalized to bug/change/task)', () => {
+    expect(prompt).toContain('a bug/change/task item is issue-family');
   });
 });
 

@@ -99,14 +99,14 @@ describe('summarizeLearningSpend — the one visible number', () => {
   it('sums spend across every registrant, totals lifetime caps only, names unbudgeted loops', () => {
     const s = summarizeLearningSpend([
       reg({ loopId: 'gym:papercup', budgetUsd: 20, spentUsd: 5 }),
-      reg({ loopId: 'scout:papercup', budgetKind: 'per-cycle', budgetUsd: 1, spentUsd: 2.5 }),
+      reg({ loopId: 'blender:papercup', budgetKind: 'per-cycle', budgetUsd: 1, spentUsd: 2.5 }),
       reg({ loopId: 'frontier:replay', budgetUsd: null, spentUsd: 0 }),
     ]);
     expect(s.totalSpentUsd).toBe(7.5);
     expect(s.totalLifetimeBudgetUsd).toBe(20); // the per-cycle cap does not bound a total
     expect(s.loopCount).toBe(3);
     expect(s.unbudgetedLoopIds).toEqual(['frontier:replay']);
-    expect(s.loops.map((l) => l.loopId)).toEqual(['gym:papercup', 'scout:papercup', 'frontier:replay']);
+    expect(s.loops.map((l) => l.loopId)).toEqual(['gym:papercup', 'blender:papercup', 'frontier:replay']);
     expect(s.loops[0].remainingUsd).toBe(15);
   });
 
@@ -158,7 +158,7 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
     const input = scoutRegistrationInput({ workspaceId: 'w', harnessSlug: 'papercup', perCycleBudgetUsd: 1.5 });
     expect(input).toEqual({
       workspaceId: 'w',
-      loopId: 'scout:papercup',
+      loopId: 'blender:papercup',
       displayName: 'Scout cadence (papercup)',
       budgetKind: 'per-cycle',
       budgetUsd: 1.5,
@@ -171,7 +171,7 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
 
   it('loop-id helpers are stable', () => {
     expect(gymLoopId('x')).toBe('gym:x');
-    expect(scoutLoopId('x')).toBe('scout:x');
+    expect(scoutLoopId('x')).toBe('blender:x');
   });
 });
 
@@ -179,7 +179,7 @@ describe('checkScoutWorkspaceCeiling — the P-051 aggregate scout gate (D-005)'
   const scout = (hive: string, spentUsd: number) => reg({ loopId: scoutLoopId(hive), spentUsd });
 
   it('isScoutLoopId distinguishes scout:<hive> from other registrants', () => {
-    expect(isScoutLoopId('scout:alpha')).toBe(true);
+    expect(isScoutLoopId('blender:alpha')).toBe(true);
     expect(isScoutLoopId('gym:alpha')).toBe(false);
     expect(isScoutLoopId('frontier:transfer-harness')).toBe(false);
   });

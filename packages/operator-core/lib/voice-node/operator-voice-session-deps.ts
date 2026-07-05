@@ -79,7 +79,9 @@ async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConf
         ...(agentLanguage ? { language: agentLanguage } : {}),
       },
     };
-    const humanFacingRole = prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup' ? 'sentinel' : 'operator';
+    // 'sentinel' is the pre-rename pref value (WI-2932 pot-rename) — accept it
+    // from stored prefs but resolve to the canonical 'papercup' role id.
+    const humanFacingRole = prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
     return {
       ok: true,
       config: {
