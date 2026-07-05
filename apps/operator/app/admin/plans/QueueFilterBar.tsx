@@ -17,7 +17,9 @@
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 import { TIER_LABEL, type AttentionKind, type AttentionTier } from './plans-api';
+import { resolveLex } from '../../adv/create/use-create-data';
 
 /** The kind facet inside the Filter — the non-plan-item attention kinds.
  *  Plan-items always show in the buckets, so they're not here. */
@@ -29,7 +31,8 @@ const QUEUE_KIND_CHIPS: { id: AttentionKind; label: string }[] = [
   { id: 'improvement', label: 'Improvements' },
   { id: 'standing-approval', label: 'Approvals' },
   { id: 'conversation', label: 'Questions' },
-  { id: 'scout-grade', label: 'Scout' },
+  // {scout} → active cast word at render ("Blender" in classic/Pot) via resolveLex.
+  { id: 'scout-grade', label: '{scout}' },
 ];
 
 export interface QueueFilterBarProps {
@@ -65,6 +68,7 @@ export default function QueueFilterBar({
   tierFilter,
   onClearTier,
 }: QueueFilterBarProps) {
+  const t = useLexicon();
   const tier = tierFilter ?? 'all';
   const activeCount =
     kinds.length + (showTodos ? 1 : 0) + (showBlocked ? 1 : 0) + (tier !== 'all' ? 1 : 0);
@@ -99,10 +103,10 @@ export default function QueueFilterBar({
                 type="button"
                 className={`pc-queue__filter${active ? ' is-active' : ''}`}
                 aria-pressed={active}
-                aria-label={`${c.label}, ${count}`}
+                aria-label={`${resolveLex(c.label, t)}, ${count}`}
                 onClick={() => onToggleKind(c.id)}
               >
-                <span className="pc-queue__filter-label">{c.label}</span>
+                <span className="pc-queue__filter-label">{resolveLex(c.label, t)}</span>
                 <span className="pc-queue__filter-count">{count}</span>
               </button>
             );

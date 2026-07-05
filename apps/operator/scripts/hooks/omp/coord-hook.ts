@@ -2253,6 +2253,31 @@ export async function onToolCall(
     return { block: true, reason: ircBlockReason(n) };
   }
 
+  // todo doom-loop guard (ornith iter19, 2026-07-04 / WI-2382 — failure mode #6): `todo_write` is a
+  // LEGITIMATE tool (omp redirects the blocked `task` panel → "use todo_write instead"), so unlike
+  // eval/irc/ask it can NOT be name-blocked. But a weak local model doom-loops on it — iter19 leader
+  // rewrote its todo list 264× in 7.5 min, 0 productive calls, never read its plan. The generic
+  // consecutive-identical breaker below missed it (each rewrite carried a different list, so the runs
+  // were non-adjacent — the same reason eval/irc needed their own counters). So RATE-LIMIT with an
+  // input-agnostic consecutive-todo counter that ANY productive non-todo tool call RESETS (the else
+  // branch): legit interleaved todos never accumulate, but a pure rewrite loop trips past
+  // TODO_LOOP_LIMIT and is blocked with an escalating "take the next real action" redirect. Feeds the
+  // SHARED reflexive-block backstop (noteReflexiveBlock) so a leader that ignores the redirect
+  // self-terminates after REFLEXIVE_BLOCK_KILL_AFTER cumulative reflexive blocks (a pure todo loop
+  // halts at ~16 calls). Placed before the generic breaker so the reset runs on every real tool call.
+  // Owner sessions unrestricted (D-003).
+  if (isAgentSession()) {
+    if (isTodoCall(event.toolName)) {
+      const n = noteTodoCall();
+      if (n > TODO_LOOP_LIMIT) {
+        noteReflexiveBlock('todo');
+        return { block: true, reason: todoLoopReason(n) };
+      }
+    } else {
+      resetTodoLoopState();
+    }
+  }
+
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the
   // Nth CONSECUTIVE identical (toolName+args) call from an agent session — the
   // deterministic backstop against a weak model wedging in a degenerate tool loop.

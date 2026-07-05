@@ -108,7 +108,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
   const itemTitle = queueAuthzView
     ? 'Backlog — pickable work'
     : istatus.length
-      ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
+      ? istatus.map((s) => resolveLex(ITEM_FILTER_LABEL[s], t)).join(' · ')
       : 'All items';
 
   const showQueenLog = queueAuthzView && queueTab === 'queen-log';
@@ -190,14 +190,14 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
               {ITEM_FILTERS.map((f) => {
                 const active = istatus.includes(f.id);
                 return (
-                  <Tooltip key={f.id} label={f.hint.replace('{pot}', t('pot'))} side="bottom">
+                  <Tooltip key={f.id} label={resolveLex(f.hint, t)} side="bottom">
                     <button
                       type="button"
                       className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
                       aria-pressed={active}
                       onClick={() => toggleItemStatus(f.id)}
                     >
-                      <span className="pc-queue__filter-label">{f.label}</span>
+                      <span className="pc-queue__filter-label">{resolveLex(f.label, t)}</span>
                       <span className="pc-queue__filter-count">
                         {queue.loading ? '…' : queue.itemStatusCounts[f.id]}
                       </span>
