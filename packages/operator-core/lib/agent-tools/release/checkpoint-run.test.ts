@@ -49,13 +49,39 @@ describe('release:checkpoint-run', () => {
     expect(String(b.note)).toMatch(/already running|not launched/i);
   });
 
-  it('rejects a non-operator role (no launch)', async () => {
-    const launchSpy = vi.fn();
-    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+  // EI-7426: firing the green verdict is verification-only + self-locked, and the persona tells
+  // ANY red-fixing agent to fire it ("fix the reds → release:checkpoint-run → release:deploy").
+  // It used to copy checkpoint-config's operator-config-write gate (correct there — it mutates
+  // config; wrong here — this mutates nothing), so pipeline roles that greened the reds hit a
+  // recurring structural tool-error. There is now no in-handler role gate; the invoke allowlist
+  // (SU_ROLES + bee/release-fixer/release-manager) is the access control.
+  it.each(['worker', 'debugger', 'bee', 'release-fixer'])(
+    'fires the verdict for a non-operator red-fixing role (%s) — no operator-config-write gate (EI-7426)',
+    async (role) => {
+      const launchSpy = vi.fn(async () => ({
+        launched: true,
+        unit: 'papercup-green-checkpoint-manual',
+        argv: [],
+        logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      }));
+      vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
 
+      const { default: tool } = await import('./checkpoint-run');
+      const b = parse((await tool.handler({}, MAKE_CTX(role))) as never);
+
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+      expect(b).toMatchObject({ ok: true, launched: true });
+    },
+  );
+
+  it('advertises the invoke allowlist to the red-fix cohort (mirrors release:deploy safe ops)', async () => {
     const { default: tool } = await import('./checkpoint-run');
-    await expect(tool.handler({}, MAKE_CTX('bee'))).rejects.toThrow(/operator, architect, or queen/);
-    expect(launchSpy).not.toHaveBeenCalled();
+    const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
+    // The specific pipeline roles the watchdog observed hitting the structural error, plus the
+    // wider red-fix cohort, must be invoke-allowed (EI-7426).
+    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'bee', 'release-fixer', 'release-manager']) {
+      expect(roles).toContain(r);
+    }
   });
 
   // WI-1562: the refuse-when-active path returns a STRUCTURED already_running reply instead of

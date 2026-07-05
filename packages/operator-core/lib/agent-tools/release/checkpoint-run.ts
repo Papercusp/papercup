@@ -24,7 +24,7 @@
  * launch anyway.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { launchDetachedCheckpoint } from '../../release-checkpoint-launch';
 
 export default defineTool({
@@ -46,7 +46,15 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // A red green-checkpoint blocks EVERY agent's deploys, and the persona tells any red-fixing
+  // agent to "fix the reds → release:checkpoint-run → release:deploy". Firing the verdict is a
+  // SAFE, verification-only op: it runs the suite and only ADVANCES the green pin if green — it
+  // never ships code, mutates config, or regresses the pin, and green-checkpoint.ts self-locks so
+  // a concurrent fire no-ops (won't OOM). So the invoke allowlist mirrors release:deploy's safe
+  // ops — the full red-fix cohort — and there is NO in-handler operator-config-write gate (EI-7426:
+  // the copy from checkpoint-config, which DOES mutate config, wrongly rejected the pipeline roles
+  // the persona tells to fire it, recurring as a structural tool-error).
+  agentRoles: [...SU_ROLES, 'bee', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 5 } },
   args: z.object({
     force: z
@@ -56,10 +64,10 @@ export default defineTool({
         'Skip the already-running refusal (WI-1562) and attempt the launch anyway. systemd itself still refuses a truly concurrent same-unit run — force only bypasses OUR proactive check.',
       ),
   }),
-  async handler(args, ctx) {
-    if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('release:checkpoint-run requires operator, architect, or queen role');
-    }
+  async handler(args, _ctx) {
+    // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
+    // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
+    // may fire a fresh green verdict.
     const result = await launchDetachedCheckpoint({ force: args.force });
     if (!result.launched && result.reason === 'already_running' && result.alreadyRunning) {
       const a = result.alreadyRunning;
