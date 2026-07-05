@@ -41,7 +41,7 @@ export async function applySessionPresenceSet(
     keep.push(s.owner_id);
     await sql`
       INSERT INTO harness_shared.shared_session_presence
-        (workspace_id, hive_slug, harness_slug, owner_id, kind, intent, plan_slug,
+        (workspace_id, pot_slug, harness_slug, owner_id, kind, intent, plan_slug,
          github_user_id, machine_label, device_pubkey, last_seen_at, schema_version,
          fleet_slug, fleet_role)
       VALUES
@@ -51,7 +51,7 @@ export async function applySessionPresenceSet(
          to_timestamp(${input.frameTs} / 1000.0), 1,
          ${s.fleet_slug ?? null}, ${s.fleet_role ?? null})
       ON CONFLICT (workspace_id, owner_id, machine_label) DO UPDATE SET
-        hive_slug = EXCLUDED.hive_slug,
+        pot_slug = EXCLUDED.pot_slug,
         harness_slug = EXCLUDED.harness_slug,
         kind = EXCLUDED.kind,
         intent = EXCLUDED.intent,
@@ -90,7 +90,7 @@ export async function applySessionPresenceSet(
 
 export interface SessionPresenceRowOut {
   workspace_id: string;
-  hive_slug: string | null;
+  pot_slug: string | null;
   harness_slug: string;
   owner_id: string;
   kind: string;
@@ -119,18 +119,18 @@ export async function listLiveSessionPresence(
   const rows = await sql<
     Array<Omit<SessionPresenceRowOut, 'last_seen_ms'> & { last_seen_at: Date }>
   >`
-    SELECT workspace_id, hive_slug, harness_slug, owner_id, kind, intent, plan_slug,
+    SELECT workspace_id, pot_slug, harness_slug, owner_id, kind, intent, plan_slug,
            github_user_id, machine_label, device_pubkey, last_seen_at,
            fleet_slug, fleet_role
     FROM harness_shared.shared_session_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND last_seen_at > ${floor}
-      ${opts.hiveSlug ? sql`AND hive_slug = ${opts.hiveSlug}` : sql``}
+      ${opts.hiveSlug ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
     ORDER BY last_seen_at DESC
   `;
   return rows.map((r) => ({
     workspace_id: r.workspace_id,
-    hive_slug: r.hive_slug,
+    pot_slug: r.pot_slug,
     harness_slug: r.harness_slug,
     owner_id: r.owner_id,
     kind: r.kind,

@@ -727,8 +727,8 @@ export function planSharedHiveCapture(
 
 async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
   const { sql } = getOrgPg();
-  const scopes = await sql<{ harness_slug: string; hive_slug: string | null }[]>`
-    SELECT DISTINCT harness_slug, hive_slug FROM harness_shared.work_item_claims
+  const scopes = await sql<{ harness_slug: string; pot_slug: string | null }[]>`
+    SELECT DISTINCT harness_slug, pot_slug FROM harness_shared.work_item_claims
      WHERE workspace_id = ${ctx.workspaceId}`;
   for (const scope of scopes) {
     try {
@@ -736,7 +736,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
       // (sweepOrphanedTakenBy's contract); resolution failure ⇒ scan-only.
       let isAuthority = false;
       try {
-        isAuthority = (await lockAuthorityForHive(scope.hive_slug ?? scope.harness_slug)).isSelf;
+        isAuthority = (await lockAuthorityForHive(scope.pot_slug ?? scope.harness_slug)).isSelf;
       } catch {
         isAuthority = false;
       }
@@ -747,7 +747,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
           SELECT device_pubkey, (extract(epoch FROM last_seen_at) * 1000)::bigint::text AS last_seen_ms
             FROM harness_shared.shared_presence
            WHERE workspace_id = ${ctx.workspaceId}
-             AND ${scope.hive_slug ? sql`hive_slug = ${scope.hive_slug}` : sql`TRUE`}`;
+             AND ${scope.pot_slug ? sql`pot_slug = ${scope.pot_slug}` : sql`TRUE`}`;
         presence = rows.map((r) => ({ devicePubkey: r.device_pubkey, lastSeenMs: Number(r.last_seen_ms) }));
         const leases = await sql<{ work_item_id: string; holder_pubkey: string | null; expires_ms: string }[]>`
           SELECT work_item_id, holder_pubkey, (extract(epoch FROM expires_ts) * 1000)::bigint::text AS expires_ms
