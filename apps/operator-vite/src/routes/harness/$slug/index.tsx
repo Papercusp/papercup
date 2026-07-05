@@ -1,6 +1,7 @@
 import { createFileRoute, notFound, redirect, Navigate } from '@tanstack/react-router';
 import HarnessDockShell from '@/app/harness/[slug]/HarnessDockShell';
 import { InsightsFirstVisitGate } from '@/app/harness/insights/InsightsFirstVisitGate';
+import { fetchWithTimeout } from '../../../lib/route-fetch';
 
 /**
  * /harness/$slug — per-project harness surface. Translated from
@@ -48,10 +49,20 @@ export const Route = createFileRoute('/harness/$slug/')({
     // beat, and mapping that beat straight to notFound() renders a lying 404
     // for a real harness. Two retries (350ms, 1.1s — past the cache TTL)
     // before giving up; a genuinely unknown slug just pays ~1.5s extra.
+    //
+    // WI-2817: the fetch is bounded (fetchWithTimeout, no inner retry — the
+    // loop below owns the retry cadence). A wedged backend mid-restart used to
+    // HANG the bare fetch forever, and this retry loop only re-runs on a thrown
+    // rejection — so the hang froze the whole route in `pending` (blank + stuck
+    // bprogress-busy). The timeout turns that hang into a caught rejection the
+    // loop retries, so the route always resolves instead of stalling.
     let project: ProjectEntry | undefined;
     for (let attempt = 0; ; attempt++) {
       try {
-        const res = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
+        const res = await fetchWithTimeout('/api/harness/projects/lite', {
+          timeoutMs: 4000,
+          init: { cache: 'no-store' },
+        });
         if (res.ok) {
           const data = await res.json();
           const projects: ProjectEntry[] = data.projects ?? [];

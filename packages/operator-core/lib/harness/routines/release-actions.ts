@@ -375,6 +375,21 @@ export function classifyGateStallStatus(status: string, pinMoved: boolean): Gate
 }
 
 /**
+ * WI-2825 (harden trackGateStall's silent no-op): should the durable
+ * harness_escalations clear be treated as a suspicious miss worth a loud warning?
+ * Pure decision, exported for unit testing without a DB — `trackGateStall` (below)
+ * supplies the two live inputs: `stallAlerted` (gate_health believed an escalation
+ * was fired) and the actual row count the clear UPDATE matched.
+ *
+ * Only true when a row WAS expected (stallAlerted) and NONE matched — an everyday
+ * "nothing to clear" reset (no prior escalation, stallAlerted false) must stay
+ * silent, exactly as before this change.
+ */
+export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: number): boolean {
+  return stallAlerted && clearedCount === 0;
+}
+
+/**
  * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
  * and fire ONE urgent stall alert when the red streak / age crosses the threshold
  * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
@@ -455,7 +470,7 @@ async function trackGateStall(
           WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
         [ctx.installSlug, Date.now(), GATE_STALL_PHASE],
       );
-      if (gh.stallAlerted && cleared.count === 0) {
+      if (shouldWarnOnStallClearMiss(!!gh.stallAlerted, cleared.count)) {
         console.warn(
           `[green-checkpoint] stall escalation clear MATCHED 0 ROWS for harness_slug='${ctx.installSlug}' phase='${GATE_STALL_PHASE}' despite gate_health.stallAlerted=true (an escalation should have existed) — the durable harness_escalations row may be stuck OPEN even though this routine believes the stall is resolved. Check harness_escalations for a stale row under a different harness_slug value.`,
         );

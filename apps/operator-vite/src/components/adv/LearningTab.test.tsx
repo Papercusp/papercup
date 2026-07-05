@@ -247,7 +247,9 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Benchmark/ })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Scout/ })).toBeTruthy();
+    // tab label pack-routes via t('scout'); the identity useLexicon mock echoes
+    // the key, so the tab reads "scout" (live classic/Pot label is "Blender").
+    expect(screen.getByRole('tab', { name: /scout/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Knowledge/ })).toBeTruthy();
   });
 
@@ -423,7 +425,7 @@ describe('LearningTab — Scout view', () => {
     expect(screen.getByText('won')).toBeTruthy(); // classified outcome shown
     expect(screen.queryByText('pending')).toBeNull(); // pending outcome suppressed
     expect(screen.getAllByRole('button', { name: /Cache-warmup|Tighter scoper/ }).length).toBe(2); // rows are openable
-    const tickChip = screen.getByLabelText('Scout tick health');
+    const tickChip = screen.getByLabelText('scout tick health');
     expect(tickChip.textContent).toContain('last tick');
     expect(tickChip.textContent).toContain('5m ago');
     expect(tickChip.textContent).toContain('gated · min-interval'); // status + the self-gate that withheld the cycle
@@ -440,8 +442,8 @@ describe('LearningTab — Scout view', () => {
   it('renders the graceful empty state when nothing has been routed and no tick exists', () => {
     scoutResult = { data: [{ totalRouted: 0, railCounts: [], lastTick: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
-    expect(screen.getByText('Scout has not routed ideas yet')).toBeTruthy();
-    expect(screen.getByLabelText('Scout tick health').textContent).toContain('none yet');
+    expect(screen.getByText('scout has not routed ideas yet')).toBeTruthy();
+    expect(screen.getByLabelText('scout tick health').textContent).toContain('none yet');
   });
 });
 

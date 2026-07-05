@@ -45,6 +45,7 @@ import {
   gateStallEscalationBody,
   decideReleaseFixerDispatch,
   classifyGateStallStatus,
+  shouldWarnOnStallClearMiss,
   RELEASE_FIXER_DEDUP_MS,
   type AutoServePlan,
   type DeployEventRow,

@@ -1,6 +1,7 @@
 import { createFileRoute, isRedirect, redirect } from '@tanstack/react-router';
 import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlagSnapshot, loadFlags } from '@papercusp/flags/client';
+import { fetchWithTimeout } from '../lib/route-fetch';
 
 /**
  * Root route — gateways the desktop's first-run experience.
@@ -42,12 +43,38 @@ async function onboardingFlagEnabled(): Promise<boolean> {
   );
 }
 
+/**
+ * A wedged/mid-restart backend used to hang this gateway fetch forever (bare
+ * `fetch`, no timeout) → the router stayed `status:'pending'` → blank content
+ * under a stuck `bprogress-busy` bar → "desktop isn't launching, it's stalling;
+ * needs a manual relaunch" (WI-2817). `fetchWithTimeout` bounds each attempt and
+ * retries a transient outage so the app auto-recovers; if the gateway is slow
+ * enough to be an actual outage the `pendingComponent` shows an honest
+ * "Connecting…" instead of a blank screen (never on the sub-second happy path,
+ * gated by `pendingMs`).
+ */
 export const Route = createFileRoute('/')({
+  pendingMs: 700,
+  pendingComponent: ConnectingScreen,
   beforeLoad: async () => {
+    let res: Response;
     try {
-      const res = await fetch('/api/desktop/setup-wizard-state', {
-        credentials: 'same-origin',
+      res = await fetchWithTimeout('/api/desktop/setup-wizard-state', {
+        timeoutMs: 4000,
+        retries: 2,
+        init: { credentials: 'same-origin' },
       });
+    } catch {
+      // Backend UNREACHABLE after retries (timeout/network). This is the
+      // substrate-restart / cold-start blip, NOT a genuine first run — a first
+      // run's sidecar is serving this very page, so setup-wizard-state would
+      // have answered. A returning user must not be dumped into onboarding by a
+      // transient outage, so land on /adv (the primary surface), which
+      // reconnects via the resilient transports + OfflineIndicator and recovers
+      // WITHOUT a manual relaunch. No response arrived → nothing to swallow.
+      throw redirect({ to: '/adv', search: { tab: 'harnesses' } });
+    }
+    try {
       if (!res.ok) throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
       const state = (await res.json()) as { finished_at?: string };
       if (!state?.finished_at) {
@@ -58,14 +85,36 @@ export const Route = createFileRoute('/')({
       // the mission-control / feature-queue equivalent.
       throw redirect({ to: '/adv', search: { tab: 'harnesses' } });
     } catch (err) {
-      // A thrown TSR redirect must propagate; only network failures fall
-      // through to the safe-default landing. TSR `redirect()` returns a
+      // A thrown TSR redirect must propagate; only a malformed/parse failure
+      // falls through to the safe first-run landing. TSR `redirect()` returns a
       // `Response` with the navigation options at `err.options.to`, so the
       // old `'to' in err` check incorrectly swallowed every redirect from
-      // this beforeLoad — including the success path to `/harness` — and
-      // forced every load to `/setup`.
+      // this beforeLoad — including the success path — and forced /setup.
       if (isRedirect(err)) throw err;
-      throw redirect({ to: '/setup' });
+      throw redirect({ to: firstRunTarget(await onboardingFlagEnabled()) });
     }
   },
 });
+
+/** Shown only while the first-run gateway fetch is slow (an outage) — past
+ *  `pendingMs`. The happy path redirects in well under a second, so this never
+ *  flashes on a healthy launch. Honest "loading", not a blank stall. */
+function ConnectingScreen() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '0.6rem',
+        height: '100vh',
+        width: '100%',
+        opacity: 0.65,
+        fontSize: '0.9rem',
+      }}
+    >
+      <span>Connecting to Papercusp…</span>
+    </div>
+  );
+}

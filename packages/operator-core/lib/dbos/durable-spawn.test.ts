@@ -190,6 +190,45 @@ describe('durableSpawnFire (P-010)', () => {
     });
     await expect(durableSpawnFire(INPUT)).resolves.toBe(false);
   });
+
+  // WI-2605: two documented-as-expected degrades that used to fall through to a
+  // startWorkflow throw + a scary console.warn every time — now detected up front.
+  describe('WI-2605 — anticipated degrades skip the doomed attempt (no log noise)', () => {
+    it('returns false WITHOUT attempting startWorkflow when DBOS is flagged on but not launched here (e.g. :3070 delegating to bg-host)', async () => {
+      h.state.dbosStarted = false;
+      const r = await durableSpawnFire(INPUT);
+      expect(r).toBe(false);
+      expect(h.startWorkflow).not.toHaveBeenCalled();
+      expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it('returns false WITHOUT attempting startWorkflow when called from inside a DBOS step (e.g. git-sync:record dispatching doc-steward)', async () => {
+      h.isInStep.mockReturnValue(true);
+      const r = await durableSpawnFire(INPUT);
+      expect(r).toBe(false);
+      expect(h.startWorkflow).not.toHaveBeenCalled();
+      expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it('still attempts + logs on a genuinely unexpected enqueue failure (not one of the two anticipated cases)', async () => {
+      h.startWorkflow.mockImplementation(() => {
+        throw new Error('some other DBOS error');
+      });
+      const r = await durableSpawnFire(INPUT);
+      expect(r).toBe(false);
+      expect(h.startWorkflow).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalled();
+    });
+
+    it('falls through to the real attempt when isInStep() itself throws (best-effort probe)', async () => {
+      h.isInStep.mockImplementation(() => {
+        throw new Error('isInStep unavailable');
+      });
+      const r = await durableSpawnFire(INPUT);
+      expect(r).toBe(true);
+      expect(h.startWorkflow).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () => {
