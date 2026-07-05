@@ -82,7 +82,9 @@ export default defineTool({
     let blueprintKind: 'hive' | 'harness' = 'harness';
     try {
       const parsed = parseYaml(readFileSync(bpYaml, 'utf8')) as { kind?: unknown } | null;
-      if (parsed && parsed.kind === 'hive') blueprintKind = 'hive';
+      // pot-rename dual-accept: a kind:'pot' blueprint maps to the SAME stored
+      // cupboard tab class 'hive' (the STORED class is unchanged; only the read accepts pot).
+      if (parsed && (parsed.kind === 'hive' || parsed.kind === 'pot')) blueprintKind = 'hive';
     } catch {
       /* unreadable/partial yaml → default 'harness'; the worker re-derives on approve */
     }

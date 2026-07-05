@@ -30,13 +30,14 @@ export default defineTool({
   name: 'work_items:claim_next',
   profile: 'engineer',
   description:
-    'Self-select: atomically claim the OLDEST unclaimed work-item in a harness (tuple-space `in` via SKIP LOCKED + work-stealing). Competing agents never double-claim. Returns the claimed item, or on a miss a SELF-DESCRIBING result: `{ ok:false, drained, pendingUnclaimed, readyUnclaimed, error }`. drained:true ⇒ the queue is genuinely empty (idle is correct); drained:false ⇒ unclaimed items EXIST but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-raced) — do NOT idle.',
+    'Self-select the next work-item. When scheduler claim-specs are enabled, this compatibility wrapper honors the caller/assignee claim-spec (same selector as scheduler:get_next) so a fleet member stays in its leader-steered lane; when the scheduler flag is off it degrades to the legacy oldest-first SKIP LOCKED claim. Competing agents never double-claim. Returns the claimed item, or on a miss a SELF-DESCRIBING result: `{ ok:false, drained, pendingUnclaimed, readyUnclaimed, error }`.',
   guidance: {
-    when: 'You are an idle agent picking up work — prefer this self-selection over waiting to be assigned. Returns the oldest claimable feature-family item, now yours.',
+    when: 'You are an idle agent picking up work. Fleet members should prefer scheduler:get_next, but this older wrapper is lane-safe while scheduler claim-specs are enabled.',
     notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).',
     chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained.',
-    // EI-6981: this self-selects the OLDEST unclaimed item HARNESS-WIDE, not just your
-    // fleet/plan — a peer's "solo takeover" of an item they haven't formally
+    // EI-6981: when the scheduler-spec bridge is OFF, the legacy path self-selects the
+    // OLDEST unclaimed item HARNESS-WIDE, not just your fleet/plan — a peer's "solo takeover"
+    // of an item they haven't formally
     // work_items:claim'd (declared only in a coord message / the item's own summary
     // prose, assignee field still empty/stale) is INVISIBLE to this atomic claim and can
     // get self-selected out from under them (observed live: WI-1729). Before acting on a

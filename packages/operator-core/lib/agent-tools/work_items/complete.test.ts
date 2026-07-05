@@ -99,6 +99,20 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('surfaces aliasNote when the requested state aliases instead of silently leaving the item open', async () => {
+    const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+    getWorkItem.mockResolvedValue(issue);
+    setWorkItemState.mockImplementation(async (_id, state, opts?: { onAlias?: (info: { requested: string; resolved: string }) => void }) => {
+      opts?.onAlias?.({ requested: state as string, resolved: 'open' });
+      return { ...issue, state: 'open' };
+    });
+    const r = await one({ id: 'WI-1', state: 'needs_human', completion: { summary: 'requires owner decision' } });
+    expect(r.ok).toBe(true);
+    expect(r.workItem.state).toBe('open');
+    expect(r.aliasNote).toMatch(/requested state 'needs_human'.*recorded as 'open'/);
+    expect(r.stateWarning).toMatch(/still 'open'/);
+  });
+
   it('passes structured verification evidence to the terminal state writer', async () => {
     getWorkItem.mockResolvedValue(item);
     setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });

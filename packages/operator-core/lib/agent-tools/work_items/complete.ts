@@ -147,6 +147,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   // `completionRef`).
   let workItem = existing;
   let stateError: string | undefined;
+  let aliasNote: string | undefined;
   if (it.state) {
     try {
       workItem =
@@ -155,6 +156,9 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
           by: ident.ownerId,
           completionRef: it.completion.summary,
           completionEvidence: completionEvidenceFromRecord(it.completion),
+          onAlias: ({ requested, resolved }) => {
+            aliasNote = `requested state '${requested}' has no distinct representation for this item's family — recorded as '${resolved}' instead.`;
+          },
         })) ?? existing;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);
@@ -234,6 +238,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(aliasNote ? { aliasNote } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),

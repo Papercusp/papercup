@@ -110,7 +110,7 @@ export function resolveCoordinationSpec(bp: TopologyBlueprintView): Coordination
     aggregate: c?.aggregate ?? 'none',
     coordinator: c?.coordinator ?? 'none',
     disciplineForbid: c?.discipline?.forbid ?? [],
-    central: bp.kind === 'hive',
+    central: bp.kind === 'hive' || bp.kind === 'pot',
   };
 }
 

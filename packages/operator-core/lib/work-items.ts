@@ -967,9 +967,16 @@ export function normalizeWorkItemState(
     // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
     // so these would otherwise throw the structural refusal (EI-450).
     'in_progress': 'open',
+    'in-progress': 'open',
+    inprogress: 'open',
+    'in progress': 'open',
     wip: 'open',
     blocked: 'open',
     'needs-human': 'open',
+    needs_human: 'open',
+    needshuman: 'open',
+    'needs human': 'open',
+    'need-human': 'open',
   };
   const mapped = aliases[state] ?? state;
   if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };

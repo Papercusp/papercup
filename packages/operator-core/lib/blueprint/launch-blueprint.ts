@@ -106,12 +106,15 @@ export function installedAwareLaunchResolver(
 }
 
 /** Build the invoke-route URL for a role launch. */
-function invokeUrl(installSlug: string, role: string, workspaceId: string, bpkind?: 'hive' | 'harness'): string {
+function invokeUrl(installSlug: string, role: string, workspaceId: string, bpkind?: 'hive' | 'pot' | 'harness'): string {
   const ws = encodeURIComponent(workspaceId);
-  // `bpkind=hive` tells the invoke route this launch is a kind:'hive' blueprint
+  // `bpkind=hive` tells the invoke route this launch is a kind:'hive' blueprint.
+  // pot-rename dual-accept: a kind:'pot' blueprint ALSO sends bpkind=hive — it
+  // provisions a harness_kind:'hive' home, so the launch config is identical and the
+  // consumer (spawn.ts) keeps its single `bpkind === 'hive'` check unchanged.
   // (the hive/Queen) so it records a TRACKED, resumable session (D-010) — the
   // route can't resolve the blueprint itself (it only sees the install slug).
-  const kind = bpkind === 'hive' ? '&bpkind=hive' : '';
+  const kind = bpkind === 'hive' || bpkind === 'pot' ? '&bpkind=hive' : '';
   return `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}${kind}`;
 }
 

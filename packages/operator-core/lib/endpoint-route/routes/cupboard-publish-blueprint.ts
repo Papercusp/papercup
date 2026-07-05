@@ -117,7 +117,8 @@ export default defineTool({
       // P-018: the blueprint.yaml `kind` drives the Cupboard "Hive Templates" tab — a
       // kind:'hive' blueprint (generic-hive, …) is a hive template; everything else is a
       // harness blueprint. Default 'harness' (the schema default) when unset.
-      blueprint_kind: manifest.kind === 'hive' ? 'hive' : 'harness',
+      // pot-rename dual-accept: kind:'pot' maps to the SAME stored cupboard class 'hive'.
+      blueprint_kind: manifest.kind === 'hive' || manifest.kind === 'pot' ? 'hive' : 'harness',
     });
 
     if (!result.ok) {

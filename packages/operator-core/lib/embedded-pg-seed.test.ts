@@ -176,7 +176,7 @@ describe('postgresql.conf lc_* portability (WI-2749 conf-level guard)', () => {
     "lc_time = 'C.UTF-8'\t\t\t# locale for time formatting",
   ].join('\n');
 
-  it('localeIsPortable accepts C-family, rejects host locales', () => {
+  it('localeIsPortable (initdb scope) accepts C-family, rejects host locales', () => {
     expect(localeIsPortable('C.UTF-8')).toBe(true);
     expect(localeIsPortable('C.utf8')).toBe(true);
     expect(localeIsPortable('C')).toBe(true);
@@ -184,6 +184,18 @@ describe('postgresql.conf lc_* portability (WI-2749 conf-level guard)', () => {
     expect(localeIsPortable('en_US.utf8')).toBe(false);
     expect(localeIsPortable('en_US.UTF-8')).toBe(false);
     expect(localeIsPortable(undefined as unknown as string)).toBe(false);
+  });
+
+  it('localeIsUniversal (runtime lc_* scope) accepts ONLY C/POSIX — C.UTF-8 FATALs macOS (2026-07-05)', () => {
+    expect(localeIsUniversal('C')).toBe(true);
+    expect(localeIsUniversal('POSIX')).toBe(true);
+    // glibc-only: valid on the WSL rootfs but rejected by macOS setlocale() —
+    // the WI-2749 normalizer stamping this very value is what crash-looped the
+    // mac VM's embedded PG ("invalid value for parameter lc_messages: C.UTF-8").
+    expect(localeIsUniversal('C.UTF-8')).toBe(false);
+    expect(localeIsUniversal('C.utf8')).toBe(false);
+    expect(localeIsUniversal('en_US.UTF-8')).toBe(false);
+    expect(localeIsUniversal(undefined as unknown as string)).toBe(false);
   });
 
   it('RUNTIME_LC_PARAMS covers exactly the four startup-validated GUCs', () => {

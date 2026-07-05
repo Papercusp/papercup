@@ -716,6 +716,22 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     return { length: core.length, byteLength: core.byteLength, blockBase64 };
   }
 
+  async function handleGetOwnLogOp(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string; index: number };
+    if (!p?.storeId || !Number.isInteger(p.index) || p.index < 0) {
+      throw new RpcMethodError(-32602, 'getOwnLogOp requires { storeId, index >= 0 }');
+    }
+    const rec = requireRecord(p.storeId);
+    const ownLog = await ensureOwnLog(rec);
+    const op = await ownLog.get(p.index);
+    return {
+      index: p.index,
+      length: ownLog.length,
+      keyHex: ownLog.keyHex,
+      op,
+    };
+  }
+
   const methods: Record<string, RpcHandler> = {
     'sidecar:healthz': () => handleHealthz(),
     'substrate:openStore': handleOpenStore,
@@ -736,6 +752,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     'substrate:prepareSocketHandoff': handlePrepareSocketHandoff,
     'substrate:attachSocket': handleAttachSocket,
     'substrate:getCoreInfo': handleGetCoreInfo,
+    'substrate:getOwnLogOp': handleGetOwnLogOp,
   };
 
   function receiveHandle(handoffToken: string, handle: Duplex): void {

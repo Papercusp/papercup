@@ -625,6 +625,7 @@ describe('unified work_items surface (real PG)', () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('in_progress');
+    expect((await wi.setWorkItemState(bug.id, 'needs_human'))?.state).toBe('open');
     expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('resolved');
     expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status).toBe('in_progress');
     expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('resolved');

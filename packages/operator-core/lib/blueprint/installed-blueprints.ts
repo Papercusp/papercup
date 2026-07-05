@@ -72,7 +72,7 @@ export function availableHiveBlueprintIds(): string[] {
     for (const id of listBlueprintIdsIn(root)) {
       try {
         const raw = parseYaml(readFileSync(join(root, id, 'blueprint.yaml'), 'utf8')) as { kind?: unknown } | null;
-        if (raw && typeof raw === 'object' && raw.kind === 'hive') out.push(id);
+        if (raw && typeof raw === 'object' && (raw.kind === 'hive' || raw.kind === 'pot')) out.push(id);
       } catch {
         /* skip an unreadable/unparseable blueprint */
       }

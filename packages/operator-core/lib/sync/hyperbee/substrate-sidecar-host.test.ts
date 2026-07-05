@@ -222,6 +222,62 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(op0.hlc).toBeUndefined();
   });
 
+  it('getOwnLogOp reads bootHarness own-log entries without requiring an openStore Corestore handle', async () => {
+    const host = makeHost();
+    const { workspaceRoot } = tempWorkspace('reloc-ownlog-read-');
+    const boot = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot,
+    })) as { storeId: string; ownLogKey: string };
+
+    await host.methods['substrate:appendOp']({
+      storeId: boot.storeId,
+      op: localOp({ hbKey: 'k-1', value: { feature_id: 'F-1' } }),
+    });
+
+    const read = (await host.methods['substrate:getOwnLogOp']({
+      storeId: boot.storeId,
+      index: 0,
+    })) as { index: number; length: number; keyHex: string; op: PeerLogOp | null };
+
+    expect(read).toMatchObject({
+      index: 0,
+      length: 1,
+      keyHex: boot.ownLogKey,
+      op: { type: 'put', table: 'feature_queue', hbKey: 'k-1' },
+    });
+    expect(read.op?.hlc).toBeTruthy();
+  });
+
+  it('getOwnLogOp returns null for an out-of-range own-log index', async () => {
+    const host = makeHost();
+    const { workspaceRoot } = tempWorkspace('reloc-ownlog-oob-');
+    const boot = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot,
+    })) as { storeId: string };
+
+    const read = (await host.methods['substrate:getOwnLogOp']({
+      storeId: boot.storeId,
+      index: 3,
+    })) as { length: number; op: PeerLogOp | null };
+
+    expect(read.length).toBe(0);
+    expect(read.op).toBeNull();
+  });
+
+  it('getOwnLogOp rejects invalid probes and unknown stores', async () => {
+    const host = makeHost();
+    await expect(host.methods['substrate:getOwnLogOp']({ storeId: 'store-999', index: 0 })).rejects.toThrow(
+      /Store not found/,
+    );
+    await expect(host.methods['substrate:getOwnLogOp']({ storeId: 'store-999', index: -1 })).rejects.toThrow(
+      /index >= 0/,
+    );
+  });
+
   it('appendOp on an unknown storeId throws store-not-found', async () => {
     const host = makeHost();
     await expect(host.methods['substrate:appendOp']({ storeId: 'store-999', op: localOp() })).rejects.toThrow(
@@ -360,4 +416,3 @@ describe('pipeWithMutualTeardown — replication-stream teardown (WI-1089 leak f
     expect(repl.destroyed).toBe(true);
   });
 });
-
