@@ -4,8 +4,8 @@
 // central local-hive start/stop list against a mocked hive.controlState query +
 // a stubbed run-tool dispatch (the pinned AdvNowRunning sibling pattern). Asserts:
 // a row per hive with state shown via the Start/Stop toggle label, the running
-// tally, Start → hive:start (no drain), Stop → shared confirm dialog →
-// hive:pause{drainBees}, and a declined confirm aborts.
+// tally, Start → pot:start (no drain), Stop → shared confirm dialog →
+// pot:pause{drainBees}, and a declined confirm aborts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -100,12 +100,12 @@ describe('LocalHivesControl', () => {
     expect(screen.getByText(/no local pot registered/)).toBeTruthy();
   });
 
-  it('Start on a stopped hive fires hive:start (no drainBees)', async () => {
+  it('Start on a stopped hive fires pot:start (no drainBees)', async () => {
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-sb-devboard-hive'));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'hive:start', args: { harness: 'sb-devboard-hive' }, confirmed: true },
+        { name: 'pot:start', args: { harness: 'sb-devboard-hive' }, confirmed: true },
       ]),
     );
     await waitFor(() =>
@@ -113,7 +113,7 @@ describe('LocalHivesControl', () => {
     );
   });
 
-  it('Stop on a started hive confirms with the shared dialog, then fires hive:pause{drainBees}', async () => {
+  it('Stop on a started hive confirms with the shared dialog, then fires pot:pause{drainBees}', async () => {
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
     await waitFor(() =>
@@ -125,7 +125,7 @@ describe('LocalHivesControl', () => {
     );
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'hive:pause', args: { harness: 'papercup-hive', drainBees: true }, confirmed: true },
+        { name: 'pot:pause', args: { harness: 'papercup-hive', drainBees: true }, confirmed: true },
       ]),
     );
     await waitFor(() =>

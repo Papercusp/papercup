@@ -8,7 +8,7 @@
  *   - the CONTRADICTION is unrepresentable — a plan under an UNCHECKED hive is
  *     disabled (you cannot make it eligible)
  *   - toggling a hive / narrowing a plan writes the derived (eligibleHives,
- *     eligiblePlans) pair through hive:set-steering
+ *     eligiblePlans) pair through pot:set-steering
  *   - a legacy illegal state surfaces the warning chip (P-004)
  *   - an unassigned (no-hive) plan is surfaced, non-checkable
  */
@@ -125,7 +125,7 @@ describe('QueenTab nested steering tree', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
-    expect(name).toBe('hive:set-steering');
+    expect(name).toBe('pot:set-steering');
     expect(args.hive).toBe('papercup-hive');
     expect(args.eligibleHives).toEqual(['pot-a']);
     expect(args.eligiblePlans).toEqual([]); // "all of pot-a" — no narrowing

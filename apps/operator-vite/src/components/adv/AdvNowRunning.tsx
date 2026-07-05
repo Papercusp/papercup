@@ -24,7 +24,7 @@ interface HiveControlRow {
  * Lifted from the retired global-header HiveStartPauseButton.
  */
 async function runHiveControl(
-  tool: 'hive:start' | 'hive:pause',
+  tool: 'pot:start' | 'pot:pause',
   slug: string,
   extraArgs: Record<string, unknown> = {},
 ): Promise<void> {
@@ -74,8 +74,8 @@ export function waitingLabel(n: number): string {
  * listed, so per-Pot pills here were redundant.
  *
  * The Start/Stop button IS the hive control (replaced the retired global-header
- * HiveStartPauseButton): Start boots the brain (`hive:start`); Stop pauses it
- * (`hive:pause { drainBees:true }`). "Active" = the persisted per-hive
+ * HiveStartPauseButton): Start boots the brain (`pot:start`); Stop pauses it
+ * (`pot:pause { drainBees:true }`). "Active" = the persisted per-hive
  * `started` bit (live via the hive.controlState invalidation) or a just-clicked
  * Start. Hidden when no hive is registered.
  */
@@ -85,7 +85,7 @@ export default function AdvNowRunning({ slug }: Props) {
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [starting, setStarting] = useState(false);
   // Optimistic post-launch state: the started bit arrives a beat after
-  // hive:start (via the hive.controlState invalidation); a 20s safety net clears
+  // pot:start (via the hive.controlState invalidation); a 20s safety net clears
   // this flag if it doesn't.
   const [awaitingAgent, setAwaitingAgent] = useState(false);
 
@@ -97,7 +97,7 @@ export default function AdvNowRunning({ slug }: Props) {
 
   // The registered hive. The hive control tools key on the HIVE's home slug, not
   // the selected harness; `started` is the bar's active/paused state, live via
-  // the hive:start / hive:pause invalidation.
+  // the pot:start / pot:pause invalidation.
   const { data: hiveData } = useSyncQuery({ queryName: 'hive.controlState', args: {} });
   const hive = (hiveData as HiveControlRow[] | undefined)?.[0];
   const started = hive?.started === true;
@@ -129,13 +129,13 @@ export default function AdvNowRunning({ slug }: Props) {
     return () => window.clearTimeout(id);
   }, [awaitingAgent]);
 
-  // START = boot the brain: hive:start persists the started bit, re-affirms the
+  // START = boot the brain: pot:start persists the started bit, re-affirms the
   // Queen's event-wake subscriptions, flips wake-mode to auto, and wakes her now.
   const startHive = useCallback(async () => {
     if (!hive || starting) return;
     setStarting(true);
     try {
-      await runHiveControl('hive:start', hive.slug);
+      await runHiveControl('pot:start', hive.slug);
       toast.success(`${t('pot')} started`, { description: `${t('brain')} woken — autonomous wakes enabled` });
       setAwaitingAgent(true);
     } catch (e) {
@@ -156,7 +156,7 @@ export default function AdvNowRunning({ slug }: Props) {
     });
     if (!ok) return;
     try {
-      await runHiveControl('hive:pause', hive.slug, { drainBees: true });
+      await runHiveControl('pot:pause', hive.slug, { drainBees: true });
       toast.success(`${t('pot')} paused`, { description: `Autonomous wakes staged; ${t('contributor', { plural: true, lower: true })} draining` });
       setAwaitingAgent(false);
     } catch (e) {

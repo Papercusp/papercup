@@ -2,7 +2,7 @@
 /**
  * useModelOverride — read/write hook behind the Sentinel + Overwatch model pickers
  * (model-override-sidebar-2026-06-23). The load-bearing case is the REGRESSION
- * guard: the write MUST carry `hive: <home>` — `hive:set-steering` defaults to
+ * guard: the write MUST carry `hive: <home>` — `pot:set-steering` defaults to
  * hive '*' (not a real Hive) and silently rejects otherwise (caught live
  * 2026-06-25, after 99 green unit tests missed it because they passed the hive
  * explicitly). Also covers the home-hive-scoped read and the merge-preserves-peer
@@ -67,13 +67,13 @@ describe('useModelOverride', () => {
     expect(getByTestId('override').textContent).toBe('opus:high');
   });
 
-  it('writes hive:set-steering WITH hive: <home> (regression: must not default to *)', () => {
+  it('writes pot:set-steering WITH hive: <home> (regression: must not default to *)', () => {
     syncData['hive.steering'] = [{ slug: 'home', modelOverrides: null }];
     syncData['harnessProjects.lite'] = [{ slug: 'home', harness_kind: 'hive' }];
     const { getByText } = render(<Harness role="overwatch" write="sonnet" />);
     fireEvent.click(getByText('go'));
     const body = lastBody();
-    expect(body.name).toBe('hive:set-steering');
+    expect(body.name).toBe('pot:set-steering');
     expect(body.confirmed).toBe(true);
     expect(body.args.hive).toBe('home');
     expect(body.args.modelOverrides).toEqual({ overwatch: 'sonnet' });

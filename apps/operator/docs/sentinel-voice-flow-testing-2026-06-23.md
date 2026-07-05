@@ -9,7 +9,7 @@
 Exercise the **Sentinel brain** end-to-end by injecting **text at the post-STT
 layer** (voice is already converted to text before it reaches the brain, so we
 submit text directly — no mic/STT needed) and verify:
-1. the flow works (text → `sentinel:converse` → streamed reply / tools / cards),
+1. the flow works (text → `papercup:converse` → streamed reply / tools / cards),
 2. it answers **real questions about the papercusp hive** well (grounded, accurate),
 3. it routes substantial work to the **Queen** via `<handoff_to_queen>` and keeps
    trivia local,
@@ -179,7 +179,7 @@ because operator and sentinel are the SAME role-keyed converse brain.
 The full *judged* eval (sim-user→SUT→judge, multi-call) keeps timing out on the
 congested shared backend (sn-H03 killed at 120s + 200s + 200s). But the backend
 DOES complete single real turns fast, so I captured real answers directly by
-POSTing real questions to `sentinel:converse` (role=sentinel) and assessed them
+POSTing real questions to `papercup:converse` (role=sentinel) and assessed them
 myself — which directly answers "ask real questions about the hive, see if it
 gives good results." Results (all clean, exit 0, `event: done`):
 

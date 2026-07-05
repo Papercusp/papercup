@@ -6,7 +6,7 @@
  * Asserts the round-2 shape: NO hive dropdown (the tab steers the HOME Queen);
  * Eligible HIVES + Eligible PLANS are both checkbox multi-selects; Pause is the
  * topmost section with a minutes input. Toggling a hive / a plan / pausing all
- * write `hive:set-steering` through /api/agent-mcp/run-tool, targeting the home
+ * write `pot:set-steering` through /api/agent-mcp/run-tool, targeting the home
  * hive, with the right field.
  */
 import type { ReactNode } from 'react';
@@ -139,7 +139,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
-    expect(name).toBe('hive:set-steering');
+    expect(name).toBe('pot:set-steering');
     expect(args.hive).toBe('papercup-hive');
     expect(args.eligibleHives).toEqual(['pot-a']);
   });
@@ -159,7 +159,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Work non-plan work items' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
-    expect(name).toBe('hive:set-steering');
+    expect(name).toBe('pot:set-steering');
     expect(args.hive).toBe('papercup-hive');
     expect(args.includeUnplannedWork).toBe(false);
   });

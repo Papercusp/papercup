@@ -109,7 +109,7 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
 }
 
 /** Fire-and-forget brain nudge — the human just unblocked something, so wake
- *  the Queen now (`hive:wake`, floor-debounced) instead of waiting for her
+ *  the Queen now (`pot:wake`, floor-debounced) instead of waiting for her
  *  next armed wake. Replaces the retired `/harness/:slug/launch` legacy
  *  run-loop kick (the orchestrator bin was archived 2026-06-06). No `harness`
  *  arg: the hive home slug is resolved server-side (PAPERCUSP_HIVE_HOME_SLUG)
@@ -121,7 +121,7 @@ function resumeLoop(_harnessSlug: string | null): void {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      name: 'hive:wake',
+      name: 'pot:wake',
       args: { source: 'user', reason: 'Attention item resolved — pick up the unblocked work' },
       confirmed: true,
     }),

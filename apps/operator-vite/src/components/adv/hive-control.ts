@@ -4,7 +4,7 @@
  * Extracted from AdvNowRunning so the central Hives-tab control (LocalHivesControl)
  * and the always-visible header "N hives running" pill (HivesRunningPill) drive the
  * SAME gated/audited dispatch and read the same `hive.controlState` sync query —
- * one write path, no drift. `hive:start` / `hive:pause` flip the persisted started
+ * one write path, no drift. `pot:start` / `pot:pause` flip the persisted started
  * bit and fire `notifySyncInvalidate('hive.controlState')`, so every consumer
  * refreshes live after a toggle.
  */
@@ -40,7 +40,7 @@ export function hivesRunningLabel(n: number, singular = 'hive', plural = 'hives'
  * used). Throws on any failure so callers can toast.
  */
 export async function runHiveControl(
-  tool: 'hive:start' | 'hive:pause',
+  tool: 'pot:start' | 'pot:pause',
   slug: string,
   extraArgs: Record<string, unknown> = {},
 ): Promise<void> {

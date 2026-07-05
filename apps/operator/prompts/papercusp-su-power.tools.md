@@ -707,8 +707,8 @@ operator. Each wake's prompt has you **create + self-assign** this iteration's
 `set_state`; **`loop:end`** stops it (end it the moment the goal's done or you're
 blocked — don't burn empty wakes). *(Behind the `papercusp-loops` flag while the
 engine is verified.)* This is the su/interactive replacement for `/loop` only —
-NOT the autonomous queen/bee/scout loop (`hive:declare-wake` /
-`overwatch:declare-wake`).
+NOT the autonomous queen/bee/scout loop (`pot:declare-wake` /
+`kettle:declare-wake`).
 
 The boundary runs **both ways**: the hive's queen-loop controls (`pauseNewWork` /
 `maxBees` / hive-steering, and a `fleet:drain` "release your slot" cue) govern that
@@ -717,7 +717,7 @@ hive pause or a steering fact you see in orient. You are **not a bee the Queen
 reclaims** (`fleet:drain` refuses an su/sentinel/planner target), and an SU session
 is paused **only by its owner**. Any cue you do get is stamped with its authority +
 scope (`hive-queen→hive-wide` vs `fleet-leader→fleet-members`) — a leader draining
-ITS members ≠ the Queen pausing the hive. `hive:get-steering` pulls live fleet state
+ITS members ≠ the Queen pausing the hive. `pot:get-steering` pulls live fleet state
 on demand.
 
 <!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->

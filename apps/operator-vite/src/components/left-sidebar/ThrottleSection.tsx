@@ -3,7 +3,7 @@
  * (queen-steering-panel-2026-06-15 P-007; backend contract P-006, su-41a5e).
  *
  * The owner's "how hard should the fleet run" levers, written through
- * `hive:set-steering` and read back from the `hive.steering` useSyncQuery — the
+ * `pot:set-steering` and read back from the `hive.steering` useSyncQuery — the
  * same session-override-over-default pattern as the eligibleHives / modelTiers
  * controls. Each knob is a SESSION override of a live operator seam (P-006 wires
  * the seams; this is the surface). null/default ⇒ "not overriding" → a "default"

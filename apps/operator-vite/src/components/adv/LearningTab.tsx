@@ -18,7 +18,7 @@
  *   - **Scout**: routed-ideas-by-rail + last-tick gate outcome via `learning.scout`
  *     (graceful empty until Scout routes its first idea / P-034 ticks land), plus
  *     idea grading (scout-idea-grading-2026-06-12 B-07): a 1–5 star control and
- *     note popover (`?grade=<ideaId>`) writing through the `scout:grade-idea`
+ *     note popover (`?grade=<ideaId>`) writing through the `blender:grade-idea`
  *     tool proxy with optimistic updates, a grade chip with owner/Queen
  *     attribution, and the learned per-lens sampling weights.
  *   - **Knowledge**: agent-insight runbook count + recent-5 and a memory-health
@@ -1231,7 +1231,7 @@ function StarControl({
 }
 
 /** The note popover (open-state in nuqs `?grade=<ideaId>`): stars + a free-text
-    critique saved together through `scout:grade-idea`. Mid-edit drafts are
+    critique saved together through `blender:grade-idea`. Mid-edit drafts are
     useState by design (nuqs is for the open-state only). */
 function GradePanel({
   current,

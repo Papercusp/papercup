@@ -43,7 +43,7 @@ const expectQueenWake = () =>
     '/api/agent-mcp/run-tool',
     expect.objectContaining({
       method: 'POST',
-      body: expect.stringContaining('"hive:wake"'),
+      body: expect.stringContaining('"pot:wake"'),
     }),
   );
 

@@ -55,7 +55,7 @@ function expectDeny(out: { stdout: string; status: number | null }) {
   expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
   const decision = JSON.parse(out.stdout);
   expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
-  expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('hive:declare-wake');
+  expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('pot:declare-wake');
 }
 
 function expectAllow(out: { stdout: string; status: number | null }) {

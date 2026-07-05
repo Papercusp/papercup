@@ -107,7 +107,7 @@ describe('OverwatchTab (sidebar)', () => {
     expect(screen.getByText(/Health tab/)).toBeTruthy();
   });
 
-  it('renders a Pause button when started + fires overwatch:pause on click', async () => {
+  it('renders a Pause button when started + fires kettle:pause on click', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
@@ -119,7 +119,7 @@ describe('OverwatchTab (sidebar)', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
     expect(url).toBe('/api/agent-mcp/run-tool');
     const sent = JSON.parse(init.body) as { name: string; args: { harness?: string } };
-    expect(sent.name).toBe('overwatch:pause');
+    expect(sent.name).toBe('kettle:pause');
     expect(sent.args.harness).toBe('papercup-hive');
     vi.unstubAllGlobals();
   });

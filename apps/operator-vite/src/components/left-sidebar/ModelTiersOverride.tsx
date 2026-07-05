@@ -18,7 +18,7 @@
  *
  * Reads the workspace baseline from `agentConfig.modelTiersBaseline`; the
  * session override arrives via the `hive.steering` row (`modelTiers`); writes
- * via the parent's `onWrite` (→ `hive:set-steering { modelTiers }`).
+ * via the parent's `onWrite` (→ `pot:set-steering { modelTiers }`).
  */
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';

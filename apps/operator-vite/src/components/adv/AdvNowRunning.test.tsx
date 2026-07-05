@@ -8,9 +8,9 @@
 // dispatch. Asserts:
 //   - the null-slug blank state and the is-checking loading state,
 //   - stopped → Start hive, started → Stop hive (no per-agent label),
-//   - Start fires hive:start through the loopback palette bridge and flips to
+//   - Start fires pot:start through the loopback palette bridge and flips to
 //     the optimistic active state (errors → toast.error),
-//   - Stop confirms, then fires hive:pause { drainBees: true },
+//   - Stop confirms, then fires pot:pause { drainBees: true },
 //   - the "N plans waiting" nudge (push-driven plans.list) + its click-through
 //     to the Plans tab's Running bucket.
 
@@ -146,12 +146,12 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Active —/)).toBeNull(); // the "Active — N running" label is gone
   });
 
-  it('Start fires hive:start via the palette bridge and flips to waiting-for-agent', async () => {
+  it('Start fires pot:start via the palette bridge and flips to waiting-for-agent', async () => {
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Start pot'));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'hive:start', args: { harness: 'hive-1' }, confirmed: true },
+        { name: 'pot:start', args: { harness: 'hive-1' }, confirmed: true },
       ]),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot started', expect.anything()));
@@ -160,7 +160,7 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText('Start pot')).toBeNull();
   });
 
-  it('a refused hive:start surfaces toast.error and stays stopped', async () => {
+  it('a refused pot:start surfaces toast.error and stays stopped', async () => {
     runToolResponse = { ok: false, error: 'governor gate closed' };
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Start pot'));
@@ -169,14 +169,14 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
 
-  it('Stop confirms, then fires hive:pause with drainBees', async () => {
+  it('Stop confirms, then fires pot:pause with drainBees', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop pot'));
     fireEvent.click(await screen.findByRole('button', { name: 'Pause pot' }));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
-        { name: 'hive:pause', args: { harness: 'hive-1', drainBees: true }, confirmed: true },
+        { name: 'pot:pause', args: { harness: 'hive-1', drainBees: true }, confirmed: true },
       ]),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot paused', expect.anything()));

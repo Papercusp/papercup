@@ -139,7 +139,7 @@ grant it.
 When the owner wants to let a peer Hive in (or cut one off):
 
 1. `discovery:hives` — browse the P2P directory to find the peer Hive's pubkey.
-2. `hive:cross_grant { hive, action: 'grant', peerHivePubkey, kinds }` — allow
+2. `pot:cross_grant { hive, action: 'grant', peerHivePubkey, kinds }` — allow
    that pubkey to send the named kinds (`ask` / `work-request`). `action:
    'revoke'` cuts it off; `action: 'list'` reviews current grants. Grants live
    in `hive_settings`, so they federate to every Swarm of your Hive (uniform
@@ -158,32 +158,32 @@ its decisions, its running work. When you need an answer or an action that lives
 inside another Hive's domain, don't reconstruct it locally — ask the Hive that
 owns it. Two front doors:
 
-- `hive:ask` — a **question** the peer Hive is the authority on. It becomes a
+- `pot:ask` — a **question** the peer Hive is the authority on. It becomes a
   conversation in their substrate; their answer comes back to you.
-- `hive:request_work` — hand the peer a **piece of work** in its domain. It
+- `pot:request_work` — hand the peer a **piece of work** in its domain. It
   becomes a `change` work_item in *their* backlog that *their* Queen triages and
   prioritizes. Steer-don't-dispatch, fractally: you request; the peer Queen stays
   the authority over whether and when it runs. You cannot jump their priorities.
 
 **Dedupe first.** Before initiating, `discovery:hives` to confirm the peer + its
-pubkey, and `hive:asks` to check you don't already have an open ask to that peer
+pubkey, and `pot:asks` to check you don't already have an open ask to that peer
 for the same thing.
 
 **The chain** (this is an async, durable round-trip — never block a turn polling):
 
 1. `discovery:hives` — find the peer Hive and its pubkey on the P2P directory.
-2. `hive:ask` / `hive:request_work { hive, peerHivePubkey, subject, body }` —
+2. `pot:ask` / `pot:request_work { hive, peerHivePubkey, subject, body }` —
    signs, sends store-and-forward (durable: a queued send survives the peer being
    offline), and records the ask in your ledger. It returns a `correlationId` and
    an `answeredEvent` key (`cross-hive:answered:<correlationId>`).
 3. `events:await { event: <answeredEvent> }` then **END YOUR TURN**. The peer's
    answer/decline arrives through the boundary, transitions the ledger row, and
-   fires that event — re-invoking a sleeping Queen with the reply. (`hive:asks`
+   fires that event — re-invoking a sleeping Queen with the reply. (`pot:asks`
    is the read-back if you need to review state; the wake is the no-poll path.)
 
 **Owner-escalation before first contact.** Outbound is default-deny to a peer you
 haven't been granted to reach: escalate to the owner to add a new peer before the
-first ask, exactly as inbound admission is the owner's call. A `hive:ask` that
+first ask, exactly as inbound admission is the owner's call. A `pot:ask` that
 returns an outbound-grant error means the owner hasn't authorized that peer yet.
 
 ## Discovery

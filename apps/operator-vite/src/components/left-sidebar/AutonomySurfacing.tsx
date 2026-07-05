@@ -14,7 +14,7 @@
  *    PAPERCUSP_HIVE_PLACEMENT_BREAKER). Arrives on the `hive.steering` row as
  *    `throttleDefaults.breakerThreshold` (P-006) so it's the live value, not a guess.
  *  - Decomposition aggressiveness — the one writable lever (serial ↔ parallel), an
- *    ADVISORY steering knob written through `hive:set-steering { decomposition }`
+ *    ADVISORY steering knob written through `pot:set-steering { decomposition }`
  *    (owner-steering `decomposition`, P-006); surfaced in the Queen wake brief so
  *    she splits work into more/fewer parallel lanes. No hard seam — guidance.
  *

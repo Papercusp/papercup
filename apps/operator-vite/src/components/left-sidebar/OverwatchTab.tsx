@@ -9,7 +9,7 @@
  * cross-monitor, via its Queen + Overwatch liveness cards). What's left here is
  * the overwatch's UNIQUE value, which can't live in a read-only dashboard:
  *   - the loop CONTROL/status (running / paused / pre-armed · cadence · liveness)
- *     incl. a START / PAUSE toggle (mirrors QueenTab) → overwatch:start/pause
+ *     incl. a START / PAUSE toggle (mirrors QueenTab) → kettle:start/pause
  *   - the ANOMALY → ACTION list (each detected anomaly + the NUDGE / OBSERVE /
  *     ESCALATE it would take — the D-001 nudge-not-replace boundary, straight off
  *     `anomaly.suggestedAction`).
@@ -82,7 +82,7 @@ function countdownLabel(ms: number | null): string {
  * this panel refreshes live after the toggle. Throws on failure so the caller can
  * surface it inline.
  */
-async function runOverwatchControl(tool: 'overwatch:start' | 'overwatch:pause', harness: string | null): Promise<void> {
+async function runOverwatchControl(tool: 'kettle:start' | 'kettle:pause', harness: string | null): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -172,7 +172,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
     setBusy(true);
     setCtrlErr(null);
     try {
-      await runOverwatchControl(isStarted ? 'overwatch:pause' : 'overwatch:start', slug);
+      await runOverwatchControl(isStarted ? 'kettle:pause' : 'kettle:start', slug);
     } catch (e) {
       setCtrlErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -198,7 +198,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
               <span className="pc-owsb__hive">{slug}</span>
             </Tooltip>
           )}
-          <Tooltip label={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}>
+          <Tooltip label={isStarted ? 'Pause the overwatch supervisor (kettle:pause)' : 'Start the overwatch supervisor (kettle:start)'}>
             <button
               type="button"
               className="pc-owsb__toggle"

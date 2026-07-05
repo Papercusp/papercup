@@ -2,14 +2,14 @@
  * useModelOverride — read/write a single agent's SESSION model override
  * (model-override-sidebar-2026-06-23), shared by the 🛡 Sentinel and 👁 Overwatch
  * tabs. Reads `hive.steering.modelOverrides[role]` (the HOME hive's row) and writes
- * via `hive:set-steering` (which invalidates `hive.steering`, so the read refreshes;
+ * via `pot:set-steering` (which invalidates `hive.steering`, so the read refreshes;
  * for the Sentinel it ALSO projects the spec to ~/.papercusp/sentinel-model for the
  * dock wrapper). Writes MERGE — setting one role preserves the other's override.
  *
  * Like the 👑 Queen tab, this targets the workspace's HOME hive: `hive.steering`
  * can return MULTIPLE rows, so we resolve the home slug (first kind:'hive' project,
  * else the first steering row) via `resolveHomeHive` and BOTH read that row AND pass
- * `hive: <home>` to the write — `hive:set-steering` defaults to hive '*' otherwise,
+ * `hive: <home>` to the write — `pot:set-steering` defaults to hive '*' otherwise,
  * which is not a real Hive and the write is rejected (verified live 2026-06-25).
  */
 import { useCallback, useState } from 'react';
@@ -31,7 +31,7 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'hive:set-steering', args, confirmed: true }),
+    body: JSON.stringify({ name: 'pot:set-steering', args, confirmed: true }),
   });
   const body = (await res.json().catch(() => ({}))) as {
     ok?: boolean;
@@ -42,7 +42,7 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   if (!res.ok || !body.ok) throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   const text = body.result?.content?.[0]?.text;
   const payload = text ? (JSON.parse(text) as { ok?: boolean; error?: string; message?: string }) : { ok: true };
-  if (payload.ok === false) throw new Error(payload.message ?? payload.error ?? 'hive:set-steering refused');
+  if (payload.ok === false) throw new Error(payload.message ?? payload.error ?? 'pot:set-steering refused');
 }
 
 export interface ModelOverrideState {
@@ -71,7 +71,7 @@ export function useModelOverride(role: string, enabled = true): ModelOverrideSta
   const setOverride = useCallback(
     (spec: string | null) => {
       // The home hive comes from the (async) harnessProjects.lite query. A click
-      // before it resolves would send hive:'' — which `hive:set-steering` rejects
+      // before it resolves would send hive:'' — which `pot:set-steering` rejects
       // ("no Hive ''"). Guard like the Queen tab (which bails with an error on
       // empty home) so a too-fast click is a clear retry, not a confusing failure.
       if (!home) {

@@ -1,7 +1,7 @@
 /**
  * LocalHivesControl — the central start/stop control for this Swarm's LOCAL
  * hives (hive-control-surface). Reads `hive.controlState` (the persisted started
- * bit per registered hive) and toggles each via hive:start / hive:pause through
+ * bit per registered hive) and toggles each via pot:start / pot:pause through
  * the shared runHiveControl dispatch.
  *
  * Before this, start/stop lived ONLY inside a single hive's status bar
@@ -28,7 +28,7 @@ export default function LocalHivesControl() {
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const toggle = useCallback(async (hive: HiveControlRow) => {
-    const tool = hive.started ? 'hive:pause' : 'hive:start';
+    const tool = hive.started ? 'pot:pause' : 'pot:start';
     if (
       hive.started &&
       !await askConfirm({
@@ -48,7 +48,7 @@ export default function LocalHivesControl() {
     } catch (e) {
       toast.error(hive.started ? 'Pause failed' : 'Start failed', { description: String(e) });
     }
-    // The hive.controlState invalidation fired by hive:start/pause refreshes the row.
+    // The hive.controlState invalidation fired by pot:start/pause refreshes the row.
     setBusy(null);
   }, [askConfirm, t]);
 

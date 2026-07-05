@@ -16,7 +16,7 @@
  * function of the existing `(eligibleHives, eligiblePlans)` pair plus the
  * hive→plan structure; every click computes the next pair. So the round-trip
  * (tree → lists → tree) is stable by construction, and back-compat with every
- * current reader (the Queen survey, hive:get-steering) is total — the persisted
+ * current reader (the Queen survey, pot:get-steering) is total — the persisted
  * shape is unchanged.
  *
  * Semantics preserved exactly:

@@ -2387,8 +2387,8 @@ export async function onToolCall(
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): an
   // AGENT session must schedule wakes ONLY via the harness routines table
-  // (hive:declare-wake) — never a persistent OS scheduler, which outlives the
-  // hive as a zombie that Pause/`hive:status`/the liveness backstop can't see.
+  // (pot:declare-wake) — never a persistent OS scheduler, which outlives the
+  // hive as a zombie that Pause/`pot:status`/the liveness backstop can't see.
   // omp has no first-class scheduler tool (toolset audit 2026-06-09), so its
   // whole exposure is the shell — deny at command position (start / after
   // ;&|/newline / sudo) so prose args ("look at this") never false-positive.
@@ -2405,7 +2405,7 @@ export async function onToolCall(
         reason:
           'native-scheduler lockout: agent sessions must not create OS schedules ' +
           '(crontab / at / batch / systemd-run). Declare your wake via ' +
-          'hive:declare-wake instead — the routines table is the only scheduler ' +
+          'pot:declare-wake instead — the routines table is the only scheduler ' +
           'the hive’s pause/status/liveness machinery can see.',
       };
     }

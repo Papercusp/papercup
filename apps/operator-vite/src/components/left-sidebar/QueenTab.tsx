@@ -26,7 +26,7 @@
  *  - hive set ← `harnessProjects.lite` via useSyncQuery (the SAME set the main
  *    AdvShell selector shows — buildHarnessSelectOptions).
  *  - steering ← `hive.steering` via useSyncQuery (the home hive's row).
- *  - writes   → `hive:set-steering` via /api/agent-mcp/run-tool (invalidates
+ *  - writes   → `pot:set-steering` via /api/agent-mcp/run-tool (invalidates
  *    `hive.steering` + wakes the Queen).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -199,7 +199,7 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'hive:set-steering', args, confirmed: true }),
+    body: JSON.stringify({ name: 'pot:set-steering', args, confirmed: true }),
   });
   const body = (await res.json().catch(() => ({}))) as {
     ok?: boolean;
@@ -210,7 +210,7 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   if (!res.ok || !body.ok) throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
   const text = body.result?.content?.[0]?.text;
   const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
-  if (payload.ok === false) throw new Error(payload.message ?? 'hive:set-steering refused');
+  if (payload.ok === false) throw new Error(payload.message ?? 'pot:set-steering refused');
 }
 
 /** The pause badge state: indefinite pause, a timed pause still in the future,
@@ -393,7 +393,7 @@ export default function QueenTab({ active }: { active: boolean }) {
     overlay({ modelTiers: mt });
     enqueue({ modelTiers: mt });
   };
-  // ── Throttle knobs (P-007) — each writes through hive:set-steering like the
+  // ── Throttle knobs (P-007) — each writes through pot:set-steering like the
   // other steering fields; reads from the LIVE selection so back-to-back edits
   // accumulate (the overlay-ref pattern). ──
   const setCadenceFloor = (sec: number | null) => {

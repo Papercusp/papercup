@@ -1836,7 +1836,7 @@ describe('onToolCall native-scheduler guard (agent sessions only)', () => {
       input: { command: 'cd /tmp && crontab evil-tab' },
     });
     expect(r.block).toBe(true);
-    expect(r.reason).toContain('hive:declare-wake');
+    expect(r.reason).toContain('pot:declare-wake');
   });
 
   it('covers bash variants (bash_interactive etc.) via the prefix match', async () => {
@@ -3834,12 +3834,12 @@ describe('extractToolSearchQuery', () => {
 describe('formatToolFindRedirect', () => {
   it('renders the tools:find matches inline as the suggestion (first description line only)', () => {
     const reason = formatToolFindRedirect('spawn a worker', [
-      { tool: 'bee:spawn', description: 'Spawn one agent of a role into a harness.\nMore detail.' },
+      { tool: 'cup:spawn', description: 'Spawn one agent of a role into a harness.\nMore detail.' },
       { tool: 'work_items:claim_next', description: 'Claim the oldest unclaimed work-item.' },
     ]);
     expect(reason).toContain('search_tool_bm25 is disabled');
     expect(reason).toContain('tools:find');
-    expect(reason).toContain('• bee:spawn — Spawn one agent of a role into a harness.');
+    expect(reason).toContain('• cup:spawn — Spawn one agent of a role into a harness.');
     expect(reason).toContain('• work_items:claim_next');
     expect(reason).toContain('tools:invoke');
     // first line of the description only — never the whole multi-line schema dump

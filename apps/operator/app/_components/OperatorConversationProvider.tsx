@@ -1348,7 +1348,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // <spawn role="..."> tags are dispatched SERVER-SIDE: the
         // /api/agent-mcp/operator-converse handler (agent-tools/operator/
         // converse.ts) parses this same turn and fires spawnAgentInHarness
-        // (bee:spawn) directly. The old client-side fire-and-forget POST to
+        // (cup:spawn) directly. The old client-side fire-and-forget POST to
         // /api/plugins/orchestrator/spawn was removed 2026-06-06
         // (archive-legacy-orchestrator-deadcode P-010): that endpoint 404'd
         // (the @papercupai/orchestrator-spawn plugin is not installed) AND

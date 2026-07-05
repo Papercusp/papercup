@@ -9,7 +9,7 @@
  *
  * Source-agnostic: the parent passes the current `override` spec (from
  * `hive.steering.modelOverrides[role]`) + `onWrite(spec|null)` that writes via
- * `hive:set-steering`. A null spec CLEARS the override (⇒ workspace default).
+ * `pot:set-steering`. A null spec CLEARS the override (⇒ workspace default).
  */
 import OverridableSetting from '../override/OverridableSetting';
 

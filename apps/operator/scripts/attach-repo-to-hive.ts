@@ -3,11 +3,11 @@
  * hive, wiring up its git-sync (the "git-sync-any-hive" capability).
  *
  * papercup→papercusp generalization (2026-06-19): the gap the dogfooding exposed
- * was that a plain `hive:create` makes a repo-LESS hive (no member repo, no
+ * was that a plain `pot:create` makes a repo-LESS hive (no member repo, no
  * git-sync). The platform already supports repo-backed hives via member repos +
  * `seedGitSyncRoutineForMember`, but there was no clean entry point to attach an
  * EXISTING local repo to a hive. This script is that entry point (the basis for a
- * proper `hive:add-member` tool — the creation-path hardening).
+ * proper `pot:add-member` tool — the creation-path hardening).
  *
  * Drives the canonical `addHarnessToHive` helper (sets member.hive_slug, seeds the
  * member's system:git-sync best-effort, idempotent — never clobbers an existing

@@ -10,7 +10,7 @@
 // memory health + Insights cross-link — plus the how-this-works strip — guarding against
 // render-time crashes the typecheck can't catch. Empty states are pinned per view.
 // Scout grading (B-07, scout-idea-grading-2026-06-12): star control, attribution
-// chip, optimistic write through the `scout:grade-idea` tool proxy (+ rollback),
+// chip, optimistic write through the `blender:grade-idea` tool proxy (+ rollback),
 // the `?grade=` note popover, and the lens-weight strip.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,7 +69,7 @@ const improvementsDigest = {
   byState: { open: 117, resolved: 15, closed: 3 },
   autoEligible: [
     {
-      id: 'EI-75', kind: 'bug', title: 'bee:spawn children are coordination-MUTE', scope: 'operator',
+      id: 'EI-75', kind: 'bug', title: 'cup:spawn children are coordination-MUTE', scope: 'operator',
       severity: 'critical', state: 'open', assignee: null, assignedAt: null, attempts: 0,
       tier: 'auto', score: 46, ageDays: 2.6, tierReason: 'no protected path → AUTO', ideaType: 'process',
     },
@@ -232,7 +232,7 @@ describe('LearningTab — Improvements view (default)', () => {
 
   it('lists both lanes in the all view', () => {
     render(<LearningTab />);
-    expect(screen.getByText('bee:spawn children are coordination-MUTE')).toBeTruthy();
+    expect(screen.getByText('cup:spawn children are coordination-MUTE')).toBeTruthy();
     // The human-lane title renders twice: the list row + the "Decide next"
     // drain panel over the blocking-impact order (consume-edges P-022 / B-08).
     expect(screen.getAllByText('Peer restarts massacre in-flight spawns').length).toBeGreaterThanOrEqual(1);
@@ -466,7 +466,7 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
     expect(screen.getByRole('button', { name: 'Edit the grading note' })).toBeTruthy();
   });
 
-  it('writes a star click through the scout:grade-idea proxy optimistically and invalidates', async () => {
+  it('writes a star click through the blender:grade-idea proxy optimistically and invalidates', async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied: true }) }));
     vi.stubGlobal('fetch', fetchMock);
     render(<LearningTab />);

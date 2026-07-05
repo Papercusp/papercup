@@ -335,7 +335,7 @@ wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the
 `papercusp-loops` flag while the engine is verified — `loop:arm` returns
 `loops_disabled` until it's flipped on.)* This replaces `/loop` for su/interactive
 loops ONLY — it is **NOT** the autonomous queen/bee/scout loop, which is a separate
-system (`hive:declare-wake` / `overwatch:declare-wake`); never `loop:arm` from an
+system (`pot:declare-wake` / `kettle:declare-wake`); never `loop:arm` from an
 autonomous-fleet agent.
 
 **The authority boundary runs BOTH ways.** The hive's queen-loop controls —
@@ -348,7 +348,7 @@ target — it can't reclaim you), and an SU session is paused **only by its owne
 cue you *do* receive is **stamped with its source authority + scope**
 (`hive-queen(<hive>)→hive-wide` vs `fleet-leader(<slug>)→fleet-members`) — read the
 stamp before acting: a fleet **leader** draining ITS members is not the Hive Queen
-pausing the hive. Pull live fleet state on demand with `hive:get-steering`; a fleet
+pausing the hive. Pull live fleet state on demand with `pot:get-steering`; a fleet
 is paused only by an explicit `fleet:*` / owner action, never as a side-effect of a
 hive pause you happened to read.
 
