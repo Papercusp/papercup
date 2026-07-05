@@ -261,7 +261,7 @@ function randSuffix(): string {
 async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
   const wi = (payloadTemplate?.workItem ?? {}) as Record<string, unknown>;
-  const itemKind = bp.workItem.kind; // 'feature' | 'research-task' | …
+  const itemKind = bp.workItem.kind; // 'feature' | 'chunk' | 'task' | …
   const idPrefix = bp.workItem.idPrefix || 'W';
   const explicitId = typeof wi.id === 'string' && wi.id.trim() ? wi.id.trim() : null;
   const featureId =

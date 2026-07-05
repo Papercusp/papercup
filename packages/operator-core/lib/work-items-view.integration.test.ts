@@ -126,11 +126,11 @@ describe('migration 159 — the work_items UNION view', () => {
 
     await db.sql`
       INSERT INTO harness_shared.work_items (harness_slug, feature_id, title, status, item_kind, workspace_id)
-      VALUES ('papercup', 'WI-301', 'routed research', 'todo', 'research-task', 'default')`;
+      VALUES ('papercup', 'WI-301', 'routed chunk', 'todo', 'chunk', 'default')`;
     const feats = await db.sql<{ feature_id: string; item_kind: string }[]>`
       SELECT feature_id, item_kind FROM harness_shared.harness_features_consolidated`;
     expect(feats).toHaveLength(1);
-    expect(feats[0]).toMatchObject({ feature_id: 'WI-301', item_kind: 'research-task' });
+    expect(feats[0]).toMatchObject({ feature_id: 'WI-301', item_kind: 'chunk' });
   });
 
   it('INSTEAD OF UPDATE routes to the right base table; DELETE routes too', async () => {

@@ -73,18 +73,18 @@ it('the pre-existing feature row gets item_kind=feature (default), legacy kind u
   expect(rows[0].payload).toBeNull();
 });
 
-it('a non-feature work-item (research-task) inserts with payload + reads via work_items', async () => {
+it('a non-feature-pipeline work-item (chunk) inserts with payload + reads via work_items', async () => {
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, status, item_kind, payload)
-    VALUES ('ws', 'demo', 'R-1', 'pending', 'research-task', ${sql.json({ question: 'what is X?' })})
+    VALUES ('ws', 'demo', 'R-1', 'pending', 'chunk', ${sql.json({ question: 'what is X?' })})
   `;
   const rows = await sql`SELECT item_kind, payload FROM harness_shared.work_items WHERE feature_id='R-1'`;
-  expect(rows[0].item_kind).toBe('research-task');
+  expect(rows[0].item_kind).toBe('chunk');
   expect(rows[0].payload).toEqual({ question: 'what is X?' });
 });
 
-it('work_items view exposes both feature and research-task rows', async () => {
+it('work_items view exposes both feature and chunk rows', async () => {
   const kinds = (await sql`SELECT item_kind FROM harness_shared.work_items ORDER BY item_kind`).map((r) => r.item_kind);
-  expect(kinds).toEqual(['feature', 'research-task']);
+  expect(kinds).toEqual(['chunk', 'feature']);
 });

@@ -253,7 +253,7 @@ describe('work-item dispatch columns federate (su-ae509 finding, 2026-06-10)', (
     const id = 'F-dispatch';
     await apply(
       featurePut(id, 'queued', 1000, {
-        item_kind: 'research-task',
+        item_kind: 'chunk',
         feature_order: 7,
         swarm_affinity: 'swarm-b',
         redundancy: 2,
@@ -261,7 +261,7 @@ describe('work-item dispatch columns federate (su-ae509 finding, 2026-06-10)', (
       }),
     );
     expect(await dispatchOf(id)).toMatchObject({
-      item_kind: 'research-task',
+      item_kind: 'chunk',
       feature_order: 7,
       swarm_affinity: 'swarm-b',
       redundancy: 2,
@@ -272,7 +272,7 @@ describe('work-item dispatch columns federate (su-ae509 finding, 2026-06-10)', (
     // A Queen reorder federates: the newer op moves feature_order.
     await apply(
       featurePut(id, 'queued', 2000, {
-        item_kind: 'research-task',
+        item_kind: 'chunk',
         feature_order: 1,
         swarm_affinity: 'swarm-b',
         redundancy: 2,
@@ -284,14 +284,14 @@ describe('work-item dispatch columns federate (su-ae509 finding, 2026-06-10)', (
 
   it('an op WITHOUT dispatch fields (pre-2026-06-10 history) still applies and cannot flip item_kind back to feature', async () => {
     const id = 'F-dispatch-old';
-    await apply(featurePut(id, 'queued', 1000, { item_kind: 'research-task', payload: { q: 1 } }));
-    expect((await dispatchOf(id))!.item_kind).toBe('research-task');
+    await apply(featurePut(id, 'queued', 1000, { item_kind: 'chunk', payload: { q: 1 } }));
+    expect((await dispatchOf(id))!.item_kind).toBe('chunk');
 
     // A NEWER old-shape op (no dispatch fields) updates content; the
     // discriminator is immutable and must survive the defaulted 'feature'.
     await apply(featurePut(id, 'running', 2000));
     const after = await dispatchOf(id);
     expect(after!.status).toBe('running');
-    expect(after!.item_kind).toBe('research-task');
+    expect(after!.item_kind).toBe('chunk');
   });
 });

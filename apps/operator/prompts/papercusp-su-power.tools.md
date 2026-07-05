@@ -537,11 +537,12 @@ continuation gate picks, not a law.
   Reach for it early when the surprise is sharp, and at the latest after ~3
   failed fixes on the same error class.
 
-## Memory and live context (facts / checkpoints / mem0 / coord / insights)
+## Memory and live context (facts / checkpoints / mem0 / coord / insights / sessions)
 
-Five layers, five jobs — never confuse them. **facts = standing conclusions
+Six layers, six jobs — never confuse them. **facts = standing conclusions
 (deterministic delivery); checkpoints = in-flight continuity; mem0 = what I
-know; coord = what's happening; insights = how things work.**
+know; coord = what's happening; insights = how things work; sessions = the
+verbatim episodic record.**
 
 **facts — standing conclusions** (`facts:assert/retract/list`): a scoped,
 TTL'd conclusion folded VERBATIM into every relevant future brief/dossier/
@@ -603,6 +604,25 @@ part of the fix). MANDATORY immediately when the owner flags recurrence
 ("agents often/keep hitting this") or you resolve an EI you filed yourself
 this session (agent policies §19). Short factual rules go in mem0;
 ephemeral state in coord. Spec: `papercusp-su-memory-2026-05-25`.
+
+**sessions — episodic VERBATIM record** (`sessions:search/read/list/timeline`):
+every agent session transcript (claude/omp/codex + harness chats) is INDEXED
+into `session_turns`, and coord messages are searchable too
+(session-search-scope-2026-07-05). mem0 = what was DISTILLED, facts =
+deterministic conclusions, coord = what's happening; **sessions = what was
+actually SAID** — the safety net for everything nobody thought to file.
+`sessions:search { query }` returns each hit WITH its surrounding turns in one
+call (`mode:'verbatim'` = exact-quote finder; `fleet:<slug>` searches a fleet's
+EVER-members via the membership ledger, postmortem-safe when owners are dead) →
+`sessions:read` for a wider window; `sessions:list` / `sessions:timeline
+{ owner }` for handoff archaeology. **Post-compaction recovery:** your
+pre-compaction turns survive on disk and stay searchable — `sessions:search
+{ session:'self', mode:'verbatim' }`; pass `afterCompaction: true` on your first
+`coord:orient` after a compaction (folds your held-item checkpoints + armed-loop
+status + this pointer). NEVER re-derive lost context you can retrieve.
+**Write-through discipline:** a durable conclusion goes to facts/checkpoints THE
+MOMENT IT FORMS, not when the context fills — the ~75% gauge nudge is the
+backstop, not the trigger.
 
 ## Coordination: subscribe → ask → file
 

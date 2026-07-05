@@ -2,7 +2,7 @@
 title: "Harness-provided dispatched ops — a blueprint declares an op, the operator dispatches it to the harness runtime"
 description: "How a blueprint's `ops:` manifest becomes a runnable deterministic cadence step the HARNESS owns (not operator-core): on admission the operator registers a PROXY CoordOp per op whose run() POSTs /api/op/<name> to the harness sidecar, which executes against its own connectors/DB and returns a result validated against the manifest resultSchema. Covers the two registration timings, the transport resolution order, the work-items enqueue seam, and the oddsmith:prospect/ingest migrations."
 discovered: 2026-06-29
-tags: [blueprints, coord-ops, harness, dispatch, oddsmith, cadence, routines, dbos, proxy]
+tags: [blueprints, coord-ops, harness, dispatch, cadence, routines, dbos, proxy]
 status: current
 documents:
   - packages/operator-core/lib/harness-ops/proxy.ts
@@ -92,14 +92,14 @@ The sidecar advertises via `POST /api/harness/:slug/endpoint` → `registerHarne
 (operator-core route `endpoint.ts`). It learns the operator's URL from `ODDSMITH_OPERATOR_URL`
 (the same env the engine↔ops-hive bridge already used).
 
-## The harness side (oddsmith)
+## The harness side (the example app)
 
 - `apps/desktop/src/_hono/op-registry.ts` + `routes/op.ts` — the generic `POST /api/op/:opName`
   endpoint + a name→handler map. Always mounted but inert until a handler registers (an
   unregistered op 404s). Envelope: `{ok:true,result}` | `{ok:false,error}` (200 for a handler
   fault the operator surfaces; non-2xx for routing/transport faults it retries).
 - `apps/desktop/src/lib/harness-ops-wiring.ts` — the `oddsmith:prospect` op handler (reads the
-  bet-analysis backlog over HTTP for dedup, runs the live read-only `@oddsmith/prospector`
+  the app's analysis backlog over HTTP for dedup, runs the live read-only `@oddsmith/prospector`
   sweep, enqueues one generic `kind:'task'` work item per survivor via
   `POST /api/harness/:slug/work-items`), the `oddsmith:ingest` op (one `@oddsmith/ingestion`
   `controller.tick()` per dispatch), and the boot advert.
@@ -132,7 +132,7 @@ UPDATE harness_shared.routines SET active = true
 
 Verify: the sidecar logs `registered harness op …` + `harness endpoint advert → …: accepted`;
 the operator's routines tick dispatches; `GET {sidecar}/api/op` lists the registered ops; a
-prospect tick creates `bet-analysis` work_items; an ingest tick upserts `markets`. No real-money
+prospect tick creates `analysis` work_items; an ingest tick upserts `markets`. No real-money
 path is touched (both ops are read-only/propose-only).
 
 ## Engine trading tick + live-loop → LOCAL DBOS (P-009 / D-005)

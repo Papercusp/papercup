@@ -162,7 +162,7 @@ describe('datatype_registry store (real PG)', () => {
     // the exact predicate featureFamilyKindClause produces
     const rows = await db.adminSql<{ feature_id: string }[]>`
       SELECT feature_id FROM harness_shared.harness_features_consolidated
-       WHERE (item_kind IN ('feature', 'research-task', 'chunk')
+       WHERE (item_kind IN ('feature', 'chunk')
               OR item_kind IN (
                 SELECT work_item_kind FROM harness_shared.datatype_registry
                  WHERE workspace_id = ${ws} AND tier = 'generic-kind' AND status = 'active'

@@ -61,8 +61,17 @@ progressing.
 ## Continuity tools — EXTERNALIZE state, then point (don't carry it in prose)
 This system has purpose-built carry surfaces that are RE-INJECTED automatically
 on the next turn / wake / spawn — state parked there survives compaction
-LOSSLESSLY, while summary prose degrades and goes stale. Compaction discipline
-is therefore two-phase:
+LOSSLESSLY, while summary prose degrades and goes stale.
+
+**Write-through, not flush-at-the-end.** The flush is not a compaction-time
+chore: a conclusion you'd hate to lose goes to its carry surface THE MOMENT IT
+FORMS — `facts:assert` for a standing conclusion, `work_items:checkpoint` /
+`loop:checkpoint` for in-flight state — NOT when the context fills. Do that and
+compaction finds the state already parked; the ~75%-context nudge and the phases
+below are the BACKSTOP for whatever wasn't yet written, never the primary
+trigger.
+
+Compaction discipline is therefore two-phase:
 
 1. **Flush BEFORE you summarize** (a deliberate compaction — you can still call
    tools; this is also the ~80%-context rule, so an AUTO-compaction you did not

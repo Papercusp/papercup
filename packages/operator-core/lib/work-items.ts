@@ -447,7 +447,7 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  * Feature-family `item_kind` filter that ALSO admits workspace-registered GENERIC-KIND
  * datatypes (reflexive-platform-extensibility-datatypes-2026-06-24 P-001). A generic-kind
  * item (e.g. a `bet`) lives in the feature family (`familyOf` → 'feature') but its kind is
- * not one of the three built-ins, so a bare `IN ('feature','research-task','chunk')` would
+ * not one of the built-ins, so a bare `IN ('feature','chunk')` would
  * HIDE it from list/count/search. This admits the built-ins OR any active generic-kind
  * registered for `workspaceId`. DARK until a datatype is declared — the subquery is empty
  * otherwise, so the live fleet's reads are byte-identical.

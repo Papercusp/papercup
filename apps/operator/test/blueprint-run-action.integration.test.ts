@@ -37,7 +37,10 @@ let sql: postgres.Sql;
 
 const WS = 'ws_test';
 const coding = loadBuiltinBlueprint('coding-factory').blueprint;
-const research = (): Blueprint => ({ ...coding, workItem: { kind: 'research-task', idPrefix: 'R' } });
+// A blueprint whose work-item is a non-'feature' FEATURE-FAMILY kind (chunk) + payload —
+// exercises blueprint-run's generic kind/payload handling via the features view. (Named
+// `research` historically; the old `research-task` kind was merged into `task` — WI-2874.)
+const research = (): Blueprint => ({ ...coding, workItem: { kind: 'chunk', idPrefix: 'R' } });
 
 beforeAll(async () => {
   adminUri = await getTestPg();
@@ -485,7 +488,7 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
   });
 
   it("mode='work-item' honors a non-feature kind + payload (item_kind + payload)", async () => {
-    setBlueprintResolver(async () => research()); // kind='research-task', idPrefix='R'
+    setBlueprintResolver(async () => research()); // kind='chunk', idPrefix='R'
     await dispatch({
       installSlug: 'demo',
       workspaceId: WS,
@@ -497,7 +500,7 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
         FROM harness_shared.harness_features_consolidated WHERE harness_slug='demo'`;
     expect(rows).toHaveLength(1);
     expect(rows[0].feature_id).toBe('R-001'); // explicit id honored
-    expect(rows[0].item_kind).toBe('research-task');
+    expect(rows[0].item_kind).toBe('chunk');
     expect(rows[0].payload).toEqual({ topic: 'X' });
   });
 

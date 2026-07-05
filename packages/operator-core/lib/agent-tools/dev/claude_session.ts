@@ -26,14 +26,16 @@ export default defineTool({
   name: 'dev:claude_session',
   profile: 'engineer',
   description:
-    'Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (bounded content search — lossy, returns matchCount + snippet), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',
+    'Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (RAW substring grep — lossy; for ranked cross-client content search prefer sessions:search), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',
   capability: 'intel:read',
   guidance: {
-    when: 'Find or continue a prior Claude Code session: list by cwd to pin "the operator-vite session from ~06-29", or search content for a distinctive marker. Read a session to see where it left off.',
+    when: 'op=list by cwd to pin "the operator-vite session from ~06-29"; op=read to see where a session left off. For CONTENT search prefer sessions:search (indexed, ranked, cross-client, returns surrounding turns) — op=search here is a raw-file substring grep, for the un-indexed pre-window tail or when the session index is off.',
     notWhen:
-      'For PRODUCTION agent runs the orchestrator owns sessions (dev:sessions / dev:session_detail). For OMP CLI sessions use dev:omp_session. To reconstruct "where they left off" the transcript is a LOSSY secondary — prefer the durable artifacts (git per-file history + the work-item/plan ledger), which are canonical.',
-    chaining: 'dev:claude_session { op:"list", cwd } → { op:"read", sessionId } (or op:"search" { query } when you have a distinctive marker).',
+      'Content search → sessions:search / search:* (the indexed episodic corpus), not op=search. For PRODUCTION agent runs the orchestrator owns sessions (dev:sessions / dev:session_detail). For OMP CLI sessions use omp:sessions. To reconstruct "where they left off" the transcript is a LOSSY secondary — prefer the durable artifacts (git per-file history + the work-item/plan ledger), which are canonical.',
+    chaining: 'dev:claude_session { op:"list", cwd } → { op:"read", sessionId }. Content search → sessions:search { query } (indexed), not op:"search".',
     seeAlso: [
+      'sessions:search (indexed cross-client content search — prefer for CONTENT)',
+      'sessions:list (unified enumeration)',
       'dev:sessions (production orchestrator sessions)',
       'dev:omp_session (OMP CLI session inspector)',
     ],

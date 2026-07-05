@@ -26,10 +26,12 @@ export default defineTool({
   name: 'omp:sessions',
   profile: 'engineer',
   guidance: {
-    when: `Search or inspect local OMP session history. Use this when a successor agent needs context from an earlier compacted/handed-off session, when debugging what an overnight OMP agent did, or when answering "what happened in that session?"`,
-    notWhen: `For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first. omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.`,
-    chaining: `Use op='list' to find a session id, op='search' to locate decisions or errors, then op='state' for compact structured state or op='get' for bounded raw entries.`,
+    when: `Inspect local OMP session history: op='list' to find a session id, op='state'/'get' to read it — for continuing a compacted/handed-off session or debugging an overnight OMP agent. For CONTENT search prefer sessions:search (indexed, ranked, cross-client, with context windows); op='search' here is a raw substring grep over the local OMP JSONL archive, for the un-indexed tail or when the index is off.`,
+    notWhen: `Searching transcript CONTENT across clients → sessions:search / search:* (indexed), not op='search'. For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first. omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.`,
+    chaining: `op='list' → op='state' (compact structured state) or op='get' (bounded raw entries). For content search use sessions:search { query } (indexed) rather than op='search'.`,
     seeAlso: [
+      'sessions:search (indexed cross-client content search — prefer for CONTENT)',
+      'sessions:list (unified enumeration)',
       'dev:omp_session (inspect a live OMP session state)',
       'omp:config (OMP CLI config)',
     ],

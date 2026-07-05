@@ -10,8 +10,9 @@
  *
  *   - scope normalization: empty/absent → the 4 historic default sources
  *     (escalations/brainstorm/turns/decisions, unchanged so existing unscoped
- *     callers see no behavior change); explicit `all` → all 5 (+ work_item,
- *     EI-6984); an explicit subset passes through verbatim;
+ *     callers see no behavior change); explicit `all` → every registered
+ *     source (EI-6984 + session-search-scope-2026-07-05, 7 today); an
+ *     explicit subset passes through verbatim;
  *   - `SEARCH_SOURCES.filter(scope.includes(name))` → which sources reach
  *     the engine;
  *   - limit defaulting (5) + workspaceId fallback ('' when ctx.workspaceId
@@ -51,14 +52,19 @@ const runHybridSearch = vi.fn(async (sources: Array<{ name: string }>, ctx: Reco
 
 vi.mock('@papercusp/search', () => ({ runFullTextSearch, runHybridSearch }));
 
-// SEARCH_SOURCES: minimal stand-ins keyed by the 4 canonical scope names so
-// the handler's `.filter(scope.includes(name))` has something to select.
+// SEARCH_SOURCES: minimal stand-ins mirroring the real registry's 7 names
+// (session-search-scope-2026-07-05 added session_turn + coord_message) so the
+// handler's `.filter(scope.includes(name))` and its `'all'` expansion
+// (SEARCH_SOURCES.map(s => s.name)) see the registry-shaped set.
 vi.mock('./sources', () => ({
   SEARCH_SOURCES: [
     { name: 'escalations' },
     { name: 'brainstorm' },
     { name: 'turns' },
     { name: 'decisions' },
+    { name: 'work_item' },
+    { name: 'session_turn' },
+    { name: 'coord_message' },
   ],
 }));
 
@@ -105,14 +111,17 @@ describe('search:fulltext — scope normalization', () => {
     expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
   });
 
-  // EI-6984: 'work_item' is opt-in-only for the OMITTED-scope default (a bare
-  // search:fulltext call keeps returning exactly the historic 4 sources so
-  // existing unscoped callers see no behavior change) but an EXPLICIT
-  // scope:['all'] means "every source", so it expands to all 5.
-  it('scope:["all"] expands to all 5 sources (the 4 historic defaults + work_item)', async () => {
+  // EI-6984: 'work_item' (and the session/coord corpora,
+  // session-search-scope-2026-07-05) are opt-in-only for the OMITTED-scope
+  // default (a bare search:fulltext call keeps returning exactly the historic
+  // 4 sources so existing unscoped callers see no behavior change) but an
+  // EXPLICIT scope:['all'] means "every source", so it expands to all 7.
+  it('scope:["all"] expands to every registered source (the 4 historic defaults + work_item + session_turn + coord_message)', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: ['all'] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'work_item']);
+    expect(payloadOf(res as never).scope).toEqual([
+      'escalations', 'brainstorm', 'turns', 'decisions', 'work_item', 'session_turn', 'coord_message',
+    ]);
   });
 
   it('an explicit subset is passed through and limits the sources reaching the engine', async () => {

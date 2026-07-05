@@ -127,7 +127,7 @@ describe('outboxRowToLocalWriteOp — features', () => {
       taken_at: '2024-05-29T12:00:00.000Z',
       expires_at: '2024-05-29T13:00:00.000Z',
       // Dispatch columns (migs 136/178/191/195) — to_jsonb always carries them.
-      item_kind: 'research-task',
+      item_kind: 'chunk',
       feature_order: 7,
       swarm_affinity: 'swarm-b',
       redundancy: 2,
@@ -182,7 +182,7 @@ describe('outboxRowToLocalWriteOp — features', () => {
       expires_at: Date.parse('2024-05-29T13:00:00.000Z'),
       // Dispatch columns federate (su-ae509 2026-06-10 — Queen steering was
       // dropped here, never reaching remote swarms).
-      item_kind: 'research-task',
+      item_kind: 'chunk',
       feature_order: 7,
       swarm_affinity: 'swarm-b',
       redundancy: 2,

@@ -78,10 +78,14 @@ export default defineTool({
 
     // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
     // also live-tails the caller's own transcript — compaction recovery).
+    // Identity is resolved LAZILY: only a 'self' sugar needs the caller's
+    // ownerId (an unattributable caller asking for 'self' SHOULD error loudly);
+    // every other path must keep working for surfaces with no agent identity.
+    const needsSelf = args.owner === 'self' || args.session === 'self';
     const { filters } = await resolveSearchFilters(
       ctx.tx,
       args,
-      resolveAgentIdentity(ctx).ownerId ?? '',
+      needsSelf ? (resolveAgentIdentity(ctx).ownerId ?? '') : '',
       { workspaceId: ctx.workspaceId ?? '' },
     );
 

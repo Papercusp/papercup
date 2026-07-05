@@ -5,7 +5,7 @@
  * stores + migration 142, with getOrgPg pointed at a throwaway DB.
  *
  * Proves the unification contract:
- *  • create dispatches by kind: bug/change → engineer_issues; feature/research-task/chunk → hfc.
+ *  • create dispatches by kind: bug/change → engineer_issues; feature/chunk → hfc.
  *  • WI-NNN ids are kind-INDEPENDENT (one global sequence across both kind-tables, D-008).
  *  • get/list MERGE across the two kind-tables; default list hides chunks (D-004).
  *  • set_state / claim / release dispatch to the right kind-table.
