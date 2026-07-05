@@ -224,7 +224,7 @@ beforeAll(async () => {
   // an earlier empty read).
   await db.sql`
     INSERT INTO harness_shared.harness_registry (workspace_id, payload, updated_at)
-    VALUES (${WS}, ${JSON.stringify({ projects: [{ slug: CHILD_SLUG, harness_kind: 'hive' }] })}::jsonb,
+    VALUES (${WS}, ${JSON.stringify({ projects: [{ slug: CHILD_SLUG, harness_kind: 'hive' }] })}::text::jsonb,
             ${Date.now()})
     ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
 }, 90_000);
