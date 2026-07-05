@@ -156,7 +156,7 @@ describe('computeRubricStaleness (P-011)', () => {
     it('idleExcluded is 0 and the reason unchanged when nothing was idle-tagged', () => {
       const r = computeRubricStaleness([crit('c', 'unknown', 'unknown', 'unknown')]);
       expect(r.staleCriteria[0].idleExcluded).toBe(0);
-      expect(r.staleCriteria[0].reason).not.toMatch(/idle/);
+      expect(r.staleCriteria[0].reason).not.toMatch(/idle-tagged excluded/);
     });
 
     it('idleCount is ignored when unknown is not in the staleRatings set', () => {

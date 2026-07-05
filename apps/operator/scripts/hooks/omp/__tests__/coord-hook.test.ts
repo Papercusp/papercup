@@ -1662,11 +1662,13 @@ describe('onToolCall fleet-launch budget (agent sessions only, session-cumulativ
     _resetToolCallCacheForTests();
     resetToolCallLoopState();
     resetFleetLaunchBudget();
+    resetReflexiveBlockBudget(); // the budget block now feeds the shared reflexive backstop (gap A)
   });
   afterEach(() => {
     global.fetch = originalFetch;
     resetToolCallLoopState();
     resetFleetLaunchBudget();
+    resetReflexiveBlockBudget();
     if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
     else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
   });
@@ -1726,6 +1728,45 @@ describe('onToolCall fleet-launch budget (agent sessions only, session-cumulativ
     delete process.env.PAPERCUSP_AGENT_SESSION;
     for (let n = 1; n <= FLEET_LAUNCH_CALLS_PER_SESSION + 3; n++) {
       expect((await launchCall(n)).block).toBeUndefined();
+    }
+  });
+
+  // gap A (ornith iter35, 2026-07-05 / WI-2382): the budget guard was the ONE repeat-class
+  // guard NOT wired to the shared reflexive backstop, so a leader that reflexively re-issued
+  // the launch PAST the budget was blocked every time yet NEVER self-terminated. Vary a
+  // NON-noise field (`plan`) each call so the session-repeat breaker (which strips only the
+  // noise fields) never fires first — isolating the budget guard's OWN reflexive feed.
+  const variedLaunch = (n: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_fleet_launch_on_plan',
+      toolCallId: `vfl${n}`,
+      input: { name: 'ornith-verify-2', plan: `plan-${n}`, count: 2 },
+    });
+
+  it('gap A: a launch doom-loop PAST the budget feeds the shared reflexive backstop and HALTS', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Calls #1-2 are within budget: allowed, and must NOT feed the reflexive halt.
+      expect((await variedLaunch(1)).block).toBeUndefined();
+      expect((await variedLaunch(2)).block).toBeUndefined();
+      // Each over-budget launch is blocked AND feeds the shared backstop. The halt fires on
+      // the REFLEXIVE_BLOCK_KILL_AFTER-th blocked launch (call #(2+KILL_AFTER)), not before.
+      for (let k = 3; k <= 1 + REFLEXIVE_BLOCK_KILL_AFTER; k++) {
+        const r = await variedLaunch(k);
+        expect(r.block).toBe(true);
+        expect(r.reason).toContain('fleet-launch budget');
+      }
+      expect(halts).toHaveLength(0);
+      const halting = await variedLaunch(2 + REFLEXIVE_BLOCK_KILL_AFTER);
+      expect(halting.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('reflexive-block doom-loop');
+      expect(halts[0]).toContain('fleet-launch');
+    } finally {
+      setHaltForTest(prevHalt);
     }
   });
 });

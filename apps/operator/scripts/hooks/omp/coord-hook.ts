@@ -2695,10 +2695,18 @@ export async function onToolCall(
     // member-model guard above already returned for a wrong-model call, so reaching
     // here means either the model was fine or this session's own model is not local
     // (untouched) — either way a corrected retry does NOT burn the launch budget.
+    // Feed the SHARED reflexive backstop (ornith iter35, 2026-07-05 / WI-2382 — gap A):
+    // this was the ONE repeat-class guard NOT wired to noteReflexiveBlock, so a leader
+    // that reflexively re-issued the launch PAST the budget was blocked every time yet
+    // NEVER self-terminated (iter35's leader looped on fleet-launch instead of concluding;
+    // the budget block, unlike eval/irc/ask/todo/claim-next/fleet-model, gave the reflexive
+    // halt no counts). Now a launch doom-loop halts at REFLEXIVE_BLOCK_KILL_AFTER like its
+    // siblings. Only fires INSIDE the over-budget branch, so calls #1-2 never feed the halt.
     if (
       isFleetLaunchCall(event.toolName, event.input) &&
       noteFleetLaunchCall() > FLEET_LAUNCH_CALLS_PER_SESSION
     ) {
+      noteReflexiveBlock('fleet-launch');
       return { block: true, reason: fleetLaunchBudgetReason(_fleetLaunchCalls) };
     }
   }
