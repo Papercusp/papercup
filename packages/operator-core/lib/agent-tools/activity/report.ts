@@ -31,6 +31,7 @@ import {
   ensureInboxWakeArmedForActiveSession,
 } from '../../events/await/inbox-wake-arm';
 import { writeWatermark } from '../coordination/watermarks';
+import { isWorkspaceContended } from '../locks/contention-retry';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends '▶ session started' (SessionStart) and '■ session ended'
@@ -110,22 +111,43 @@ export default defineTool({
     // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`
     // maps to the harness the worker is in; everything else is the worker's
     // coordination identity. The migration-143 NOTIFY trigger does the fleet-view push.
-    const result = await recordActivity(createPgTelemetryStore(), {
-      owner,
-      agent: args.agent ?? null,
-      sessionId: args.session_id ?? null,
-      scope: args.harness_slug ?? null,
-      kind: args.kind,
-      toolName: args.tool_name ?? null,
-      phase: args.phase,
-      toolUseId: args.tool_use_id ?? null,
-      toolInput: args.tool_input as ToolInput,
-      todos: args.todos as TodoItem[] | undefined,
-      summary: args.summary ?? null,
-      status: args.status ?? null,
-      cwd: args.cwd ?? null,
-      workspaceId: ctx.principal?.workspaceId ?? '*',
-    });
+    //
+    // FIRE-AND-FORGET (the tool's documented contract: "never blocks"): a TRANSIENT
+    // PG contention on this telemetry INSERT — a `lock_timeout` (55P03) or
+    // `statement_timeout` (57014), which the harness_admin org pool caps at 15s — must
+    // NOT surface as a hard tool error. The per-CLI hooks call this detached on EVERY
+    // native tool call (~45k/day); a single dropped fleet-view row self-heals on the
+    // worker's next report, so a rare contention dip is a benign no-op, never a fleet-
+    // wide "tool activity:report is failing" watchdog signal (EI-7439). This mirrors the
+    // best-effort/swallowed treatment of every other write in this handler (the inbox-wake
+    // arm + watermark below). Non-contention errors (a genuine bug / DB-down) still surface.
+    let result: Awaited<ReturnType<typeof recordActivity>>;
+    try {
+      result = await recordActivity(createPgTelemetryStore(), {
+        owner,
+        agent: args.agent ?? null,
+        sessionId: args.session_id ?? null,
+        scope: args.harness_slug ?? null,
+        kind: args.kind,
+        toolName: args.tool_name ?? null,
+        phase: args.phase,
+        toolUseId: args.tool_use_id ?? null,
+        toolInput: args.tool_input as ToolInput,
+        todos: args.todos as TodoItem[] | undefined,
+        summary: args.summary ?? null,
+        status: args.status ?? null,
+        cwd: args.cwd ?? null,
+        workspaceId: ctx.principal?.workspaceId ?? '*',
+      });
+    } catch (e) {
+      if (!isWorkspaceContended(e)) throw e; // a real fault must still surface
+      // Dropped-under-contention: report a soft, honest result (id null + dropped
+      // marker) rather than a handler error. The side-effect arms below are throttled
+      // + best-effort and will re-run on the next report, so skipping them here is safe.
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: true, id: null, dropped: 'contention' }) }],
+      };
+    }
 
     // turn-lifecycle-control P-003/P-004: a session's lifecycle transition is the
     // universal, client-agnostic moment to (un)arm its inbox-wake watch — so EVERY
