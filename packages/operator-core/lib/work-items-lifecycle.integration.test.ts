@@ -215,6 +215,30 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
     expect(call.ev.notify_kind).toBe('issue_updated');
     expect(call.ev.isResolution).toBeFalsy();
   });
+
+  // EI-7422: a stale-claim caller reopening a DIFFERENT agent's completion is
+  // rejected unless it explicitly forces the reopen; the item's OWN terminal
+  // owner reopening its own completion (the test right above) is unaffected.
+  it('reopening a PEER\'s terminal completion is rejected without force:true', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'agC finished it' });
+    await expect(wi.setWorkItemState(bug.id, 'open', { by: 'agD' })).rejects.toThrow(
+      /already terminally completed/,
+    );
+    // The rejection must not have mutated the row.
+    const still = await wi.getWorkItem(bug.id, 'papercup');
+    expect(still?.state).toBe('resolved');
+  });
+
+  it('reopening a peer\'s terminal completion SUCCEEDS with force:true', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'agC finished it' });
+    fh.spy.mockClear();
+    const reopened = await wi.setWorkItemState(bug.id, 'open', { by: 'agD', force: true });
+    expect(reopened?.state).toBe('open');
+    const call = fanoutCalls()[0];
+    expect(call.ev.notify_kind).toBe('issue_updated');
+  });
 });
 
 describe('comment (Threadable) path — work_item[kind=bug] commentIssue', () => {

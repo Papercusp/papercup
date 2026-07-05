@@ -352,6 +352,52 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
   });
 });
 
+// EI-7422 — a terminally-completed item (terminalOwner + terminalCompletionRef
+// stamped) must not be silently reopened by a stale-claim caller racing past a
+// peer's completion. Repro: agent A claims off a stale snapshot, agent B
+// completes in between, A's plain set_state('in_progress') used to succeed
+// with no signal that B's finished work was just discarded.
+describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
+  it('REJECTS reopening a genuinely-completed issue into a non-terminal state without force', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(bug.id, 'agA');
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
+    await expect(wi.setWorkItemState(bug.id, 'in_progress', { by: 'agB' })).rejects.toThrow(
+      /already terminally completed.*agA.*fixed in PR #42/s,
+    );
+    // Rejected write must not half-apply — still resolved, still crediting agA.
+    const after = await wi.getWorkItem(bug.id);
+    expect(after?.state).toBe('resolved');
+    expect(after?.terminalOwner).toBe('agA');
+  });
+
+  it('REJECTS reopening a genuinely-completed feature into a non-terminal status without force', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'passed', { harness: 'papercup', by: 'agA', completionRef: 'shipped' });
+    await expect(
+      wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup', by: 'agB' }),
+    ).rejects.toThrow(/already terminally completed/);
+    expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('passed');
+  });
+
+  it('ALLOWS the reopen with { force: true } — a deliberate correction', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(bug.id, 'agA');
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
+    const after = await wi.setWorkItemState(bug.id, 'in_progress', { by: 'agB', force: true });
+    expect(after?.state).toBe('in_progress');
+  });
+
+  it('does NOT gate a transition between two non-terminal states, or the initial terminal completion itself', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    // in_progress -> in_progress-ish (still non-terminal): unaffected by the guard.
+    await expect(wi.setWorkItemState(bug.id, 'open', { by: 'agA' })).resolves.toBeTruthy();
+    // The FIRST terminal flip is not "reopening" anything — must still succeed.
+    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed' });
+    expect(after?.state).toBe('resolved');
+  });
+});
+
 // WI-1405 — genuine-completions metric (work-item-completion-integrity-2026-07-01,
 // contract C-1 consumer): getCompletionIntegrityStats must count ONLY terminal
 // work-items carrying BOTH terminal_owner + terminal_completion_ref as

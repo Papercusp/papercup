@@ -1084,15 +1084,21 @@ export async function setWorkItemState(
     );
   }
   // EI-7422: refuse to silently REOPEN an item that is already terminally
-  // completed (terminalOwner + terminalCompletionRef stamped) unless the
-  // caller explicitly forces it. A stale-claim caller (claimed off a snapshot
-  // that predates a peer's completion) hits this the same way a live claim
-  // hits claim_conflict — the peer's finished work is evidence another session
-  // beat you to it, not something a plain set_state should be able to discard.
+  // completed by SOMEONE ELSE (terminalOwner + terminalCompletionRef stamped
+  // by a different `by`) unless the caller explicitly forces it. A stale-claim
+  // caller (claimed off a snapshot that predates a peer's completion) hits
+  // this the same way a live claim hits claim_conflict — the peer's finished
+  // work is evidence another session beat you to it, not something a plain
+  // set_state should be able to discard. The item's OWN terminal owner
+  // reopening its own completion (a self-correction — e.g. "actually not
+  // done") is NOT gated: that is a legitimate, common lifecycle move (see the
+  // resolved→open fan-out test right below) and carries no double-placement
+  // risk since no second session's work is being discarded.
   if (
     !opts.force &&
     wi.terminalOwner &&
     wi.terminalCompletionRef &&
+    opts.by !== wi.terminalOwner &&
     isSettledWorkItemState(wi.state) &&
     !isSettledWorkItemState(state)
   ) {

@@ -152,4 +152,61 @@ describe('runScorecardEmissionPulse', () => {
     const obs = (capture.mock.calls[0][0] as Record<string, any>).payloadExtra.observation;
     expect(obs.ratings['tool-utilization'].rating).toBe('unknown');
   });
+
+  describe('WI-2977 coalescing — a standing open pulse floor bumps instead of re-filing', () => {
+    it('an existing OPEN pulse floor → bumps its repeat stamp, never calls capture, reports coalescedInto', async () => {
+      const bumpPulseRepeat = vi.fn(async () => {});
+      const { deps, capture, recordFire } = mkDeps({
+        findOpenPulseFloor: async (key) => {
+          expect(key).toBe('scorecard-pulse:papercusp');
+          return { id: 'EI-1234', payload: { pulseRepeat: { count: 2, firstFiredAt: '2026-07-04T00:00:00Z', lastFiredAt: '2026-07-04T02:00:00Z' } } };
+        },
+        bumpPulseRepeat,
+      });
+      const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+      expect(r.outcome).toBe('filed');
+      expect(r.coalescedInto).toBe('EI-1234');
+      expect(r.reason).toContain('coalesced onto standing open pulse floor EI-1234');
+      expect(r.reason).toContain('repeat 3');
+      expect(capture).not.toHaveBeenCalled();
+      expect(bumpPulseRepeat).toHaveBeenCalledWith('EI-1234', 2, '2026-07-04T00:00:00Z');
+      expect(recordFire).toHaveBeenCalledTimes(1);
+    });
+
+    it('no existing open pulse floor → falls through to filing a fresh floor as before', async () => {
+      const { deps, capture } = mkDeps({ findOpenPulseFloor: async () => null });
+      const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+      expect(r.outcome).toBe('filed');
+      expect(r.coalescedInto).toBeUndefined();
+      expect(capture).toHaveBeenCalledTimes(1);
+    });
+
+    it('findOpenPulseFloor throwing → caught, falls through to filing fresh (fail-soft)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { deps, capture } = mkDeps({
+          findOpenPulseFloor: async () => {
+            throw new Error('pg down');
+          },
+        });
+        const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+        expect(r.outcome).toBe('filed');
+        expect(r.coalescedInto).toBeUndefined();
+        expect(capture).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('readPulseRepeatCount is defensive against absent/malformed payload', async () => {
+      const { readPulseRepeatCount } = await import('./scorecard-emission-pulse');
+      expect(readPulseRepeatCount(null)).toBe(0);
+      expect(readPulseRepeatCount(undefined)).toBe(0);
+      expect(readPulseRepeatCount({})).toBe(0);
+      expect(readPulseRepeatCount({ pulseRepeat: null })).toBe(0);
+      expect(readPulseRepeatCount({ pulseRepeat: { count: 'nope' } })).toBe(0);
+      expect(readPulseRepeatCount({ pulseRepeat: { count: 5 } })).toBe(5);
+    });
+  });
 });

@@ -134,6 +134,7 @@ describe('runPollSuspectScanOnce', () => {
   });
 
   it('fails open (never throws) when the detector read fails, and does not stamp anything', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const emitToast = vi.fn(async () => {});
     const lastAlertedAt = new Map<string, number>();
     const result = await runPollSuspectScanOnce({
@@ -146,9 +147,12 @@ describe('runPollSuspectScanOnce', () => {
     expect(result).toEqual({ checked: 0, alerted: [] });
     expect(emitToast).not.toHaveBeenCalled();
     expect(lastAlertedAt.size).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scan skipped (non-fatal)'));
+    warn.mockRestore();
   });
 
   it('does NOT stamp a suspect when the toast emit itself fails (retries next tick)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const s = suspect({ tool_name: 'activity:recent' });
     const lastAlertedAt = new Map<string, number>();
     const result = await runPollSuspectScanOnce({
@@ -164,6 +168,8 @@ describe('runPollSuspectScanOnce', () => {
     // suspect as alerted since the toast never actually landed.
     expect(result.checked).toBe(1);
     expect(lastAlertedAt.size).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('toast emit failed'));
+    warn.mockRestore();
   });
 
   it('uses the default 3h scan window and cross-workspace scope when wired to the live detector', async () => {
