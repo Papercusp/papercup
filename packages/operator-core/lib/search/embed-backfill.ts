@@ -203,7 +203,9 @@ const TARGETS: BackfillTarget[] = [
  */
 const MAX_ROWS_PER_TARGET_PER_SWEEP = BATCH_SIZE * 4;
 
-async function backfillTable(
+/** Exported for unit tests (the WI-2905 per-sweep cap); production callers go
+ *  through runBackfillSweep and never pass maxRows explicitly. */
+export async function backfillTable(
   sql: Sql,
   target: BackfillTarget,
   embed: (t: string) => Promise<number[]>,
@@ -279,11 +281,15 @@ async function backfillTable(
 interface SweepState {
   running: boolean;
   lastResult: BackfillStats[] | null;
+  /** WI-2905: per-sweep rotation offset — which target leads THIS sweep. */
+  sweepCounter: number;
 }
 const __sweepStateKey = Symbol.for('papercusp.embedBackfillSweepState');
 const __sweepState: SweepState = (() => {
   const g = globalThis as typeof globalThis & { [__sweepStateKey]?: SweepState };
-  if (!g[__sweepStateKey]) g[__sweepStateKey] = { running: false, lastResult: null };
+  if (!g[__sweepStateKey]) g[__sweepStateKey] = { running: false, lastResult: null, sweepCounter: 0 };
+  // Upgrade an older pinned shape (pre-WI-2905) in place.
+  if (typeof g[__sweepStateKey]!.sweepCounter !== 'number') g[__sweepStateKey]!.sweepCounter = 0;
   return g[__sweepStateKey]!;
 })();
 
@@ -330,8 +336,17 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
       return __sweepState.lastResult;
     }
 
-    const results: BackfillStats[] = [];
-    for (const target of TARGETS) {
+    // WI-2905 fairness: ROTATE which target leads each sweep. Combined with the
+    // per-target row cap, no single backlogged table can monopolize the shared
+    // daily embed budget: if the budget exhausts mid-sweep, the table that paid
+    // the price differs every tick, so every target drains over the day. Results
+    // are re-ordered back to the canonical TARGETS order below for stable logs.
+    const offset = __sweepState.sweepCounter % TARGETS.length;
+    __sweepState.sweepCounter += 1;
+    const rotated = [...TARGETS.slice(offset), ...TARGETS.slice(0, offset)];
+
+    const byTable = new Map<string, BackfillStats>();
+    for (const target of rotated) {
       try {
         // Column existence probe; skip if migration 061 hasn't run.
         const c = await sql.unsafe<Array<{ column_name: string }>>(
@@ -342,12 +357,12 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
           [target.table, target.embedCol],
         );
         if (!c.length) {
-          results.push({ table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
+          byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
           continue;
         }
-        results.push(await backfillTable(sql, target, embed));
+        byTable.set(target.table, await backfillTable(sql, target, embed));
       } catch (err) {
-        results.push({
+        byTable.set(target.table, {
           table: target.table,
           scanned: 0,
           embedded: 0,
@@ -357,6 +372,8 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
         console.warn(`[embed-backfill] ${target.table} failed: ${(err as Error).message}`);
       }
     }
+    // Canonical TARGETS order regardless of this sweep's rotation.
+    const results: BackfillStats[] = TARGETS.map((t) => byTable.get(t.table)!);
     __sweepState.lastResult = results;
     return results;
   } finally {
