@@ -1743,6 +1743,62 @@ export function crossMachineRigExclusionSql(sql: OrgSql, rigAvailable: boolean |
 }
 
 /**
+ * WI-2797: the "claim hold" self-select EXCLUSION floor for issue-family claims. Some
+ * issue-family items must NOT be opportunistically self-picked (e.g. one flagged "needs a
+ * dedicated gateway-owning agent, do not pick up" — the WI-652 ping-pong that motivated this)
+ * yet the issue-family state dialect has only open|resolved|closed, so there is no non-terminal
+ * "parked" state to move it to. Rather than widen the shared generic LifecycleState enum (a
+ * wide-blast-radius change touching every consumer of that borrowable primitive — see the
+ * WI-2797 thread's investigation), a `payload._claimHold: true` tag is a scoped, additive,
+ * no-migration lever: set it (setWorkItemClaimHold) and the item disappears from self-select
+ * while staying fully visible/editable/commentable and still directly claimable BY ID (the same
+ * named-claim bypass the reserved-plan-lane and cross-machine-rig floors already allow).
+ *
+ * Mirrors {@link crossMachineRigExclusionSql}'s shape exactly (same COALESCE-for-NULL-safety
+ * pattern) and is likewise ONE source of truth shared by {@link claimNextIssueWorkItem} (the
+ * claim) and {@link diagnoseClaimNextMiss} (the READY count) so the miss diagnosis can never
+ * disagree with what the claim actually serves.
+ */
+export function claimHoldExclusionSql(sql: OrgSql) {
+  // COALESCE the payload so a NULL-payload row (no hold tag) reads as '{}'::jsonb->>'...' =
+  // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
+  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`;
+}
+
+/**
+ * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
+ * excluded from `claim_next`/`scheduler:get_next` self-selection (see
+ * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
+ * claimable directly BY ID. Feature-family items don't self-select the same way and already
+ * have a real `blocked` status, so this is issue-family only (mirrors `setWorkItemPriority`'s
+ * family gate); a feature-family id is a no-op returning `applicable:false`.
+ */
+export async function setWorkItemClaimHold(
+  id: string,
+  hold: boolean,
+  opts: { harness?: string } = {},
+): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'issue') {
+    return { id, harness: wi.harness, hold: false, applicable: false };
+  }
+  const { sql } = getOrgPg();
+  const issueWs = issuesScopeWorkspace();
+  const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
+    UPDATE harness_shared.work_items
+       SET payload = CASE
+             WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || jsonb_build_object('_claimHold', true)
+             ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold'
+           END,
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${issueWs} AND feature_id = ${id}
+     RETURNING payload`;
+  if (!rows[0]) return null;
+  return { id, harness: wi.harness, hold, applicable: true };
+}
+
+/**
  * The issue family's CLAIMABLE statuses — the not-yet-settled `open` state (the issue
  * dialect's single in-flight state; the engineer_issues CHECK has only open|resolved|closed).
  * The scheduler issue-claim branch self-picks an `open`, unblocked issue; terminal
@@ -1993,7 +2049,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
          -- WI-2796: a cross-machine-rig-gated item is likewise pending-but-gated for a
          -- single-box caller — same floor the claim applies.
-         AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}`;
+         AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
+         -- WI-2797: a claim-held item is likewise pending-but-gated — same floor the claim applies.
+         AND ${claimHoldExclusionSql(sql)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -2085,6 +2143,9 @@ export async function claimNextIssueWorkItem(
           -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller
           -- declared it has rig access.
           AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
+          -- WI-2797: never self-select an item a peer has explicitly claim-held (do-not-
+          -- opportunistically-claim) — still directly claimable by id.
+          AND ${claimHoldExclusionSql(sql)}
         ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
