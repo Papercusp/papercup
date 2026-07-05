@@ -64,7 +64,7 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(tool?.effect).toBe('write');
     expect((tool?.agentRoles?.length ?? 0)).toBeGreaterThan(0);
     // All-roles widening: roles excluded under the old [...SU_ROLES,'bee'] gate now qualify.
-    for (const role of ['worker', 'bee', 'sentinel', 'overwatch', 'reviewer']) {
+    for (const role of ['worker', 'cup', 'papercup', 'kettle', 'reviewer']) {
       expect(tool?.agentRoles).toContain(role);
     }
   });
@@ -189,7 +189,7 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
   });
 
   it('fast path: a concrete-workspace (bee) ctx with no per-call override dispatches under the SAME ctx — zero extra tx', async () => {
-    const outerCtx = { workspaceId: 'ws-bee', role: 'bee', isSuperuser: false, tx: 'OUTER_TX', principal: 'OUTER_PRINCIPAL' };
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, tx: 'OUTER_TX', principal: 'OUTER_PRINCIPAL' };
     const result = await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext);
     expect(result).toBe(outerCtx); // reused verbatim — no rebind
     expect(withWorkspaceMock).not.toHaveBeenCalled();
@@ -223,7 +223,7 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
   });
 
   it('a crossWorkspace inner tool always gets the admin tx, regardless of role', async () => {
-    const outerCtx = { workspaceId: 'ws-bee', role: 'bee', isSuperuser: false };
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false };
     const result = (await bindInnerDispatch(
       crossWorkspaceTool,
       'papercusp:list_workspaces',

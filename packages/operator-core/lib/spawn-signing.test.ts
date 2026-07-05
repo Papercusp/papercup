@@ -82,7 +82,7 @@ describe('exp handling', () => {
 
   // 2026-07-01: no time-based re-minting — the default is a PERMANENT (exp=0) URL.
   it('PERMANENT by default (exp=0): mints exp=0 and never expires', async () => {
-    const p = new URLSearchParams({ harness: 'h', workspace: 'w', role: 'sentinel', spawn: 's1' });
+    const p = new URLSearchParams({ harness: 'h', workspace: 'w', role: 'papercup', spawn: 's1' });
     const { exp } = await signSpawnParams(p); // no ttlSec ⇒ permanent
     expect(exp).toBe(0);
     expect(await verifySpawnParams(urlFrom(p))).toEqual({ ok: true });

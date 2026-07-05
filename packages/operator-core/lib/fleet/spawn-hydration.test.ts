@@ -174,7 +174,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
       workItemId: 'WI-1',
       workspaceId: 'ws',
       ownerId: 's-1111-1111', // <- distinct bee ID
-      role: 'bee',
+      role: 'cup',
       deps,
     });
 
@@ -186,7 +186,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
       workItemId: 'WI-1',
       workspaceId: 'ws',
       ownerId: 's-2222-2222', // <- different bee ID
-      role: 'bee',
+      role: 'cup',
       deps,
     });
 
@@ -218,7 +218,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
         workItemId: 'WI-1',
         workspaceId: 'ws',
         ownerId: `s-${String(i).padStart(4, '0')}-${String(i).padStart(4, '0')}`,
-        role: 'bee',
+        role: 'cup',
         deps,
       });
       hashes.push(sha256(result.text));
@@ -244,7 +244,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
       workItemId: 'WI-1',
       workspaceId: 'ws',
       ownerId: 's-0000-1234-5678-abcd', // <- deliberately distinctive ID
-      role: 'bee',
+      role: 'cup',
       deps,
     });
 
@@ -292,7 +292,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
       workItemId: 'WI-1',
       workspaceId: 'ws',
       ownerId: 's-test-1',
-      role: 'bee',
+      role: 'cup',
       deps: {
         getHandoff: async () => ({
           messages: [entry({ body: 'Fixed message', ts: 100 })],
@@ -313,7 +313,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
       workItemId: 'WI-1',
       workspaceId: 'ws',
       ownerId: 's-test-1', // same bee
-      role: 'bee',
+      role: 'cup',
       nowMs: Date.now() + 100000, // <- much later timestamp
       deps: {
         getHandoff: async () => ({

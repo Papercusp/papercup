@@ -46,7 +46,7 @@ describe('accounts:scale_policy', () => {
 
   it('is operator-authority gated', async () => {
     await expect(
-      tool.handler({ op: 'set', sustainedPenaltyThreshold: 5 } as never, { role: 'bee' } as never),
+      tool.handler({ op: 'set', sustainedPenaltyThreshold: 5 } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
     expect(writeM).not.toHaveBeenCalled();
   });

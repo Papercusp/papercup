@@ -73,12 +73,12 @@ describe('ompGatewayModelsConfig', () => {
       provider: 'anthropic',
       accountId: 'a',
       ownerId: 'spawn-9',
-      priority: 'queen',
+      priority: 'mug',
       port: 8788,
     })!;
     expect(withAll.headers['x-papercusp-owner']).toBe('spawn-9');
     expect(withAll.content).toContain('"x-papercusp-owner": "spawn-9"');
-    expect(withAll.content).toContain('"x-papercusp-priority": "queen"');
+    expect(withAll.content).toContain('"x-papercusp-priority": "mug"');
 
     const minimal = ompGatewayModelsConfig({ provider: 'anthropic', accountId: 'a', port: 8788 })!;
     expect(minimal.headers['x-papercusp-owner']).toBeUndefined();

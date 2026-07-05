@@ -41,7 +41,7 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
 
 describe('deriveGradedBy (C-3: attribution from caller, never args)', () => {
   it("maps the Queen's spawn ctx to 'Queen'", () => {
-    expect(deriveGradedBy({ role: 'queen' })).toBe('Queen');
+    expect(deriveGradedBy({ role: 'mug' })).toBe('Queen');
   });
 
   it("maps every owner surface (no role / superuser proxy / other agent roles) to 'owner'", () => {
@@ -84,7 +84,7 @@ describe('runGradeIdea', () => {
     const deps = fakeDeps({
       readIdeaSummary: vi.fn(async () => summary({ humanGrade: 5, gradedBy: 'Queen', humanFeedback: 'love it' })),
     });
-    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'love it' }, { role: 'queen' }, deps);
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'love it' }, { role: 'mug' }, deps);
 
     expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({
       ideaId: 'idea-1',
@@ -123,7 +123,7 @@ describe('runGradeIdea', () => {
 
   it('resolves routedRef → ideaId before the write (D-007)', async () => {
     const deps = fakeDeps({ resolveIdeaIdFromRef: vi.fn(async () => 'idea-9') });
-    const out = await runGradeIdea({ routedRef: 'plan:x-2026-06-12', grade: 4 }, { role: 'queen' }, deps);
+    const out = await runGradeIdea({ routedRef: 'plan:x-2026-06-12', grade: 4 }, { role: 'mug' }, deps);
     expect(deps.resolveIdeaIdFromRef).toHaveBeenCalledWith('plan:x-2026-06-12');
     expect(deps.gradeRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ ideaId: 'idea-9' }));
     expect(out.ideaId).toBe('idea-9');
@@ -141,7 +141,7 @@ describe('runGradeIdea', () => {
       gradeRoutedIdea: vi.fn(async () => ({ applied: false as const, reason: 'owner-grade-sovereign' as const })),
       readIdeaSummary: vi.fn(async () => summary({ humanGrade: 2, gradedBy: 'owner', humanFeedback: 'not this' })),
     });
-    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5 }, { role: 'queen' }, deps);
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5 }, { role: 'mug' }, deps);
     expect(out.applied).toBe(false);
     expect(out.reason).toBe('owner-grade-sovereign');
     expect(out.gradedBy).toBe('Queen'); // what THIS call graded as
@@ -203,7 +203,7 @@ describe('tool registration (C-3 surface)', () => {
       guidance?: { when?: string };
     };
     expect(tool.name).toBe('blender:grade-idea');
-    expect(tool.agentRoles).toContain('queen');
+    expect(tool.agentRoles).toContain('mug');
     expect(tool.agentRoles).toContain('operator');
     // gradedBy is derived, never an arg (C-3)
     expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, gradedBy: 'owner' }).success).toBe(true);

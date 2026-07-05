@@ -131,14 +131,14 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
   test('OMP backend + tier flag ON + role → bakes the x-papercusp-priority pin into the models.yml (P-006)', async () => {
     h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
     h.selectSpawnAccount.mockResolvedValue('claude-main');
-    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'bee' });
-    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-priority": "bee"');
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'cup' });
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-priority": "cup"');
   });
 
   test('OMP backend + tier flag OFF → NO priority pin in the models.yml (flag-OFF parity)', async () => {
     h.getFlag.mockImplementation(async (flag: string) => flag !== 'gateway-priority-tiers');
     h.selectSpawnAccount.mockResolvedValue('claude-main');
-    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'bee' });
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', role: 'cup' });
     expect(env.PAPERCUSP_OMP_MODELS_YML ?? '').not.toContain('x-papercusp-priority');
   });
 
@@ -225,7 +225,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
   test('tier flag ON + role → stamps the x-papercusp-priority header from the role', async () => {
     h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
     h.selectSpawnAccount.mockResolvedValue('acct-7');
-    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'queen' });
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'mug' });
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-priority: queen');
   });
 
@@ -233,7 +233,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     // gateway + multi-account ON, but the tier flag OFF → the role must NOT be stamped.
     h.getFlag.mockImplementation(async (flag: string) => flag !== 'gateway-priority-tiers');
     h.selectSpawnAccount.mockResolvedValue('acct-7');
-    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'queen' });
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'mug' });
     expect(env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('x-papercusp-priority');
   });
 

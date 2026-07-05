@@ -52,7 +52,7 @@ function adv(overrides: Partial<AdvSessionRow>): AdvSessionRow {
 describe('synthesizeRecordedRosterRows', () => {
   it('projects a recorded live session into a roster row with the session-log marker', () => {
     const rows = synthesizeRecordedRosterRows(
-      [adv({ coordOwnerId: 's-1-aaaa', role: 'queen', label: 'hive · papercusp/queen', planSlug: 'p-x', pid: 42 })],
+      [adv({ coordOwnerId: 's-1-aaaa', role: 'mug', label: 'hive · papercusp/queen', planSlug: 'p-x', pid: 42 })],
       new Set(),
     );
     expect(rows).toHaveLength(1);
@@ -60,7 +60,7 @@ describe('synthesizeRecordedRosterRows', () => {
     expect(r.ownerId).toBe('s-1-aaaa');
     expect(r.ownerLabel).toBe('hive · papercusp/queen');
     expect(r.source).toBe(RECORDED_SESSION_SOURCE);
-    expect(r.agentRole).toBe('queen');
+    expect(r.agentRole).toBe('mug');
     expect(r.currentPlanSlug).toBe('p-x');
     expect(r.pid).toBe(42);
     // Authoritatively live: never heartbeat-stale, never a federated row.
@@ -99,7 +99,7 @@ describe('synthesizeRecordedRosterRows', () => {
     const rows = synthesizeRecordedRosterRows(
       [
         adv({ agent: 'claude', mode: 'console', coordOwnerId: 's-1782-claudehex', label: 'hive · papercusp/queen' }),
-        adv({ agent: 'codex', mode: 'console', coordOwnerId: 'su-codex-uuid', role: 'overwatch' }),
+        adv({ agent: 'codex', mode: 'console', coordOwnerId: 'su-codex-uuid', role: 'kettle' }),
         adv({ agent: 'omp', mode: 'omp', coordOwnerId: 'su-omp-uuid', label: 'su · engineer' }),
       ],
       new Set(),
@@ -113,8 +113,8 @@ describe('synthesizeRecordedRosterRows', () => {
   });
 
   it('label fallback chain: label → role → agent → "session"', () => {
-    expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'a', label: 'L', role: 'queen', agent: 'claude' })], new Set())[0].ownerLabel).toBe('L');
-    expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'b', label: null, role: 'queen', agent: 'claude' })], new Set())[0].ownerLabel).toBe('queen');
+    expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'a', label: 'L', role: 'mug', agent: 'claude' })], new Set())[0].ownerLabel).toBe('L');
+    expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'b', label: null, role: 'mug', agent: 'claude' })], new Set())[0].ownerLabel).toBe('mug');
     expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'c', label: '  ', role: null, agent: 'codex' })], new Set())[0].ownerLabel).toBe('codex');
     expect(synthesizeRecordedRosterRows([adv({ coordOwnerId: 'd', label: null, role: null, agent: null })], new Set())[0].ownerLabel).toBe('session');
   });

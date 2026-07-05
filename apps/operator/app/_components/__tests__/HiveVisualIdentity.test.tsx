@@ -34,12 +34,12 @@ describe('Hive visual identity components', () => {
     const { container } = render(
       <div>
         <HivePrimaryMark data-testid="primary" />
-        <HiveQueenMark data-testid="queen" monochrome />
+        <HiveQueenMark data-testid="mug" monochrome />
       </div>,
     );
 
     const primary = container.querySelector('[data-testid="primary"]');
-    const queen = container.querySelector('[data-testid="queen"]');
+    const queen = container.querySelector('[data-testid="mug"]');
     expect(primary?.getAttribute('viewBox')).toBe('0 0 128 128');
     expect(queen?.getAttribute('viewBox')).toBe('0 0 128 128');
     expect(container.innerHTML).toContain(HIVE_BRAND_COLORS.honeyStrong);
@@ -47,7 +47,7 @@ describe('Hive visual identity components', () => {
   });
 
   it('covers each Hive lexicon noun with an icon', () => {
-    const kinds = ['hive', 'swarm', 'queen', 'sentinel', 'bee', 'keeper', 'cell', 'comb', 'frame'] as const;
+    const kinds = ['hive', 'swarm', 'mug', 'papercup', 'cup', 'keeper', 'cell', 'comb', 'frame'] as const;
     const { container } = render(
       <div>
         {kinds.map((kind) => (

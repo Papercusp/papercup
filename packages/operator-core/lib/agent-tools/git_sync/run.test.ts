@@ -40,6 +40,6 @@ describe('git-sync:run', () => {
   it('rejects a non-operator role', async () => {
     vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn() }));
     const { default: tool } = await import('./run');
-    await expect(tool.handler({}, MAKE_CTX('bee'))).rejects.toThrow(/operator, architect, or queen/);
+    await expect(tool.handler({}, MAKE_CTX('cup'))).rejects.toThrow(/operator, architect, or queen/);
   });
 });

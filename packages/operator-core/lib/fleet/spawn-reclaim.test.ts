@@ -144,25 +144,25 @@ describe('isFirstOutputStalled — never-emitted spawns past the first-output th
  */
 describe('shouldRelaunchReclaimedSpawn — boot-reconcile relaunch branch (EI-85)', () => {
   it('re-launches a queen unconditionally (the hive driver has no single work-item)', () => {
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'queen', workItemId: null, workItemStatus: null })).toBe(true);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'mug', workItemId: null, workItemStatus: null })).toBe(true);
     // even with an (unused) work-item that happens to be terminal, a queen re-launches
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'queen', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(true);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'mug', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(true);
   });
 
   it('re-launches a bee whose work-item is NON-terminal (in_progress / validating / failing / wip)', () => {
     for (const status of ['in_progress', 'validating', 'failing', 'wip', 'todo', 'needs-human', 'blocked']) {
-      expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: status })).toBe(true);
+      expect(shouldRelaunchReclaimedSpawn({ childRole: 'cup', workItemId: 'F-1', workItemStatus: status })).toBe(true);
     }
   });
 
   it('RECLAIMS (does NOT re-launch) a bee whose work-item is TERMINAL (passed / deprecated)', () => {
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(false);
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-1', workItemStatus: 'deprecated' })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'cup', workItemId: 'F-1', workItemStatus: 'passed' })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'cup', workItemId: 'F-1', workItemStatus: 'deprecated' })).toBe(false);
   });
 
   it('RECLAIMS a bee with NO work-item, or whose work-item row is gone (status null)', () => {
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: null, workItemStatus: null })).toBe(false);
-    expect(shouldRelaunchReclaimedSpawn({ childRole: 'bee', workItemId: 'F-gone', workItemStatus: null })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'cup', workItemId: null, workItemStatus: null })).toBe(false);
+    expect(shouldRelaunchReclaimedSpawn({ childRole: 'cup', workItemId: 'F-gone', workItemStatus: null })).toBe(false);
   });
 
   it('RECLAIMS every non-queen/bee role (the reclaim-to-failed floor is unchanged for them)', () => {

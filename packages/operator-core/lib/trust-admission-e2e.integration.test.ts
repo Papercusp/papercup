@@ -211,7 +211,7 @@ describe('Brief A5 — three-tier admission flow end-to-end (real PG)', () => {
     expect(await auditVerdictCol('F-BADACTOR')).toBe('reject');
 
     // Still quarantined — a rejected remote feature never auto-runs.
-    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
   });
 
   it('(b) TRUSTED remote → auto-runs WITHOUT the auditor (claimable while still auditor-pending, audit_verdict NULL)', async () => {
@@ -231,7 +231,7 @@ describe('Brief A5 — three-tier admission flow end-to-end (real PG)', () => {
     expect(await auditVerdictCol('F-ALLY')).toBeNull();
 
     // …yet the trust leg makes it auto-runnable RIGHT NOW, no auditor verdict needed.
-    const wi = await claimWorkItem('F-ALLY', 'bee', { harness: HARNESS });
+    const wi = await claimWorkItem('F-ALLY', 'cup', { harness: HARNESS });
     expect(wi).not.toBeNull();
   });
 
@@ -251,6 +251,6 @@ describe('Brief A5 — three-tier admission flow end-to-end (real PG)', () => {
     // so the gate refuses it again — it must go through the auditor now.
     expect(await auditVerdictCol('F-ALLY')).toBeNull();
     expect(await isWorkItemAutoPickable('F-ALLY', { harness: HARNESS, workspaceId: WS })).toBe(false);
-    expect(await claimWorkItem('F-ALLY', 'bee', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-ALLY', 'cup', { harness: HARNESS })).toBeNull();
   });
 });

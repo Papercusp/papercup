@@ -93,7 +93,7 @@ beforeEach(() => {
 describe('release:deploy — status', () => {
   it('returns the full status read-only (no launch)', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
-    const b = body(await tool.handler({ op: 'status' } as never, { role: 'bee' } as never));
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'gate-red' });
     expect(launchM).not.toHaveBeenCalled();
   });
@@ -132,7 +132,7 @@ describe('release:deploy — force (owner-gated)', () => {
 
   it('is role-gated: a bee cannot force, and no deploy fires', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red' }));
-    const b = body(await tool.handler(forceArgs as never, { role: 'bee' } as never));
+    const b = body(await tool.handler(forceArgs as never, { role: 'cup' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/role_forbidden/);
     expect(launchM).not.toHaveBeenCalled();

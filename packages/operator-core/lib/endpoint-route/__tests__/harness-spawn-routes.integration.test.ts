@@ -359,7 +359,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200);
     expect(recordAdvSession).toHaveBeenCalledWith(expect.objectContaining({
       agent: 'codex',
-      role: 'queen',
+      role: 'mug',
       cwd: '/proj',
       label: 'hive · papercup/queen',
       mode: 'console',
@@ -383,7 +383,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200);
     expect(recordAdvSession).toHaveBeenCalledWith(expect.objectContaining({
       agent: 'claude',
-      role: 'queen',
+      role: 'mug',
       cwd: '/proj',
       label: 'hive · papercup/queen',
       sessionId: expect.stringMatching(/[0-9a-f-]{36}/),

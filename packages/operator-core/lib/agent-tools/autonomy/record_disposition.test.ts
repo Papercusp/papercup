@@ -82,7 +82,7 @@ describe('autonomy:record_disposition tool', () => {
         disposition: 'reject',
         why: 'duplicate of P-001',
         actorRole: 'operator',
-        actorPrincipal: 'queen',
+        actorPrincipal: 'mug',
         transport: 'mcp',
       }),
     );

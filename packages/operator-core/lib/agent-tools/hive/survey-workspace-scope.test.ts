@@ -33,7 +33,7 @@ import tool from './survey';
 // serialization to content[] happens in defineTool dispatch, not here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const body = (r: unknown): any => (r as { data: unknown }).data;
-const ctx = { workspaceId: 'papercusp-workspace', role: 'queen' } as never;
+const ctx = { workspaceId: 'papercusp-workspace', role: 'mug' } as never;
 
 const ranked = (id: string, harness: string, score: number, extra: Record<string, unknown> = {}) => ({
   id,

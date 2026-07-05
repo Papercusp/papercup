@@ -152,7 +152,7 @@ describe('operator:preferences', () => {
     const { default: tool } = await import('../preferences');
     const result = await tool.handler(
       { op: 'append', entry: 'a queen pref' },
-      MAKE_CTX({ role: 'queen' }),
+      MAKE_CTX({ role: 'mug' }),
     );
     expect(appendPreferenceEntry).toHaveBeenCalledWith('a queen pref');
     const payload = parsePayload(result as never);

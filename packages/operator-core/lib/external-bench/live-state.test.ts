@@ -3,9 +3,9 @@ import { aggregateBenchRunLiveState, type LiveSpawnRow, type LiveSampleRow } fro
 
 const NOW = 2_000_000_000_000;
 const queen = (startedMsAgo: number, status = 'running', restartCount = 0): LiveSpawnRow => ({
-  childRole: 'queen', status, startedAtMs: NOW - startedMsAgo, finishedAtMs: null, restartCount,
+  childRole: 'mug', status, startedAtMs: NOW - startedMsAgo, finishedAtMs: null, restartCount,
 });
-const bee = (status: string): LiveSpawnRow => ({ childRole: 'bee', status, startedAtMs: NOW - 60_000, finishedAtMs: null, restartCount: 0 });
+const bee = (status: string): LiveSpawnRow => ({ childRole: 'cup', status, startedAtMs: NOW - 60_000, finishedAtMs: null, restartCount: 0 });
 const sample = (model: string, costUsd = 1): LiveSampleRow => ({ model, modelClass: null, costUsd });
 
 describe('aggregateBenchRunLiveState', () => {

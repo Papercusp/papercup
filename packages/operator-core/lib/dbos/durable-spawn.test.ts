@@ -348,7 +348,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     try {
       const pending = durableSpawnFireImpl({
         ...IMPL,
-        spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'queen' },
+        spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'mug' },
       });
       await Promise.resolve();
 
@@ -387,7 +387,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       body: { kickoff: 'old persisted body' },
       idempotencyKey: 'q-stale',
       label: 'papercusp/queen',
-      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'mug' },
     });
     const req = h.loopbackFetch.mock.calls[0]![1] as unknown as { body: string };
     expect(JSON.parse(req.body).spawnModel).toBe('gpt-5.5');
@@ -407,7 +407,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       body: { kickoff: 'owner-directed wake' },
       idempotencyKey: 'q-model-row',
       label: 'papercusp/queen',
-      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'mug' },
     });
     expect(h.recordSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       spawnId: 'durable-spawn:q-model-row',
@@ -422,7 +422,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       body: { kickoff: 'overlapping wake' },
       idempotencyKey: 'q-overlap',
       label: 'papercusp/queen',
-      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'mug' },
     });
 
     expect(h.recordSpawn).not.toHaveBeenCalled();
@@ -491,7 +491,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
   it('records `failed` + infra_loss when the fire returns 200 but the invoke body reports ok:false', async () => {
     h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: '', timedOut: false }));
     await expect(
-      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } }),
     ).resolves.toBeUndefined(); // infra_loss does NOT throw (no DBOS recovery storm)
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1); // and does NOT retry the fire
     const fin = h.finishSpawn.mock.calls[0][1];
@@ -505,7 +505,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
     // capacity_shed THROWS so the step-retry re-fires through the paced gateway — NOT a terminal phantom host death.
     await expect(
-      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } }),
     ).rejects.toThrow(/capacity_shed/);
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.status).toBe('failed');
@@ -520,7 +520,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       durableSpawnFireImpl({
         ...IMPL,
         body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
-        spawnRecord: { workspaceId: 'ws', childRole: 'queen' },
+        spawnRecord: { workspaceId: 'ws', childRole: 'mug' },
       }),
     ).resolves.toBeUndefined();
     const fin = h.finishSpawn.mock.calls[0][1];
@@ -543,7 +543,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       durableSpawnFireImpl({
         ...IMPL,
         body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
-        spawnRecord: { workspaceId: 'ws', childRole: 'queen' },
+        spawnRecord: { workspaceId: 'ws', childRole: 'mug' },
       }),
     ).resolves.toBeUndefined();
     const fin = h.finishSpawn.mock.calls[0][1];
@@ -571,7 +571,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
         ...IMPL,
         url: 'http://x/api/harness/papercusp/invoke?role=queen',
         body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
-        spawnRecord: { workspaceId: 'papercusp-workspace', childRole: 'queen' },
+        spawnRecord: { workspaceId: 'papercusp-workspace', childRole: 'mug' },
         label: 'papercusp/queen',
       }),
     ).resolves.toBeUndefined();
@@ -604,7 +604,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
         ...IMPL,
         url: 'http://x/api/harness/papercusp/invoke?role=queen',
         body: { kickoff: 'owner-directed wake', spawnModel: 'chatgpt:5.5' },
-        spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'queen' },
+        spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'mug' },
         label: 'papercusp/queen',
       }),
     ).resolves.toBeUndefined();
@@ -632,14 +632,14 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     h.gatewayThrottled.value = false; // gateway not throttled ⇒ a real host loss, terminal
     h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
     await expect(
-      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } }),
     ).resolves.toBeUndefined(); // infra_loss does NOT throw
     expect(String(h.finishSpawn.mock.calls[0][1].errorMessage)).toContain('infra_loss');
   });
 
   it('records `failed` + infra_loss when 200 + ok:true but agentOutput is empty (0-token wake)', async () => {
     h.loopbackFetch.mockResolvedValue(okBody({ ok: true, exitCode: 0, agentOutput: '   ', timedOut: false }));
-    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } });
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.status).toBe('failed');
     expect(String(fin.errorMessage)).toContain('infra_loss');
@@ -647,13 +647,13 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
 
   it('keeps `done` when the agent actually ran (ok:true + non-empty output) — no false positive', async () => {
     h.loopbackFetch.mockResolvedValue(okBody({ ok: true, exitCode: 0, agentOutput: 'DONE\nplaced 5 items', timedOut: false }));
-    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } });
     expect(h.finishSpawn.mock.calls[0][1].status).toBe('done');
   });
 
   it('keeps `done` when the body is unparseable/unreadable (never flip on uncertainty)', async () => {
     h.loopbackFetch.mockResolvedValue({ ok: true, status: 200, text: async () => 'not json' });
-    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } });
+    await durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } });
     expect(h.finishSpawn.mock.calls[0][1].status).toBe('done');
   });
 });
@@ -685,7 +685,7 @@ describe('durableSpawnFireImpl — permanent (target-gone) vs transient fire fai
   it('a permanent failure marks the fleet:tree row `failed` (not `done`) without throwing', async () => {
     h.loopbackFetch.mockResolvedValue({ ok: false, status: 404 });
     await expect(
-      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'queen' } }),
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'mug' } }),
     ).resolves.toBeUndefined();
     expect(h.finishSpawn).toHaveBeenCalledTimes(1);
     const fin = h.finishSpawn.mock.calls[0][1] as { status: string; errorMessage: string };

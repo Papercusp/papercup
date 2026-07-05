@@ -15,15 +15,15 @@ import { COORD_ROLES } from './roles';
 
 describe('COORD_ROLES', () => {
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
-    expect(COORD_ROLES).toContain('bee');
+    expect(COORD_ROLES).toContain('cup');
   });
 
   test('sentinel is a coord role (unify-launch-mechanics D-004 — fleet:assignments/tree + coord:* resolve for a sentinel URL)', () => {
-    expect(COORD_ROLES).toContain('sentinel');
+    expect(COORD_ROLES).toContain('papercup');
   });
 
   test('overwatch is a coord role (overwatch-role-2026-06-15 B-01 — coord:send/escalate + improvements:capture + topics:feed resolve for an overwatch URL)', () => {
-    expect(COORD_ROLES).toContain('overwatch');
+    expect(COORD_ROLES).toContain('kettle');
   });
 
   test('the pipeline + chat coord roles are all present (catches an accidental removal)', () => {
@@ -37,7 +37,7 @@ describe('COORD_ROLES', () => {
       'operator',
       'documenter',
       'curator',
-      'bee',
+      'cup',
     ]) {
       expect(COORD_ROLES, `missing ${role}`).toContain(role);
     }
@@ -65,7 +65,7 @@ describe('COORD_ROLES', () => {
       expect(admitted, `${excluded} must be excluded from Queen-only tools`).not.toContain(excluded);
     }
     // placement/judgement is the Queen's — she and her twin keep access.
-    expect(admitted).toContain('queen');
+    expect(admitted).toContain('mug');
     expect(admitted).toContain('mug');
   });
 
@@ -77,8 +77,8 @@ describe('COORD_ROLES', () => {
     const { default: capture } = await import('../improvements/capture.js');
     const { default: createWorkItem } = await import('../work_items/create.js');
     const { default: listWorkItems } = await import('../work_items/list.js');
-    expect(capture.agentRoles).toContain('bee');
-    expect(createWorkItem.agentRoles).toContain('bee');
-    expect(listWorkItems.agentRoles).toContain('bee');
+    expect(capture.agentRoles).toContain('cup');
+    expect(createWorkItem.agentRoles).toContain('cup');
+    expect(listWorkItems.agentRoles).toContain('cup');
   });
 });

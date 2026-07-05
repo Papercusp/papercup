@@ -70,7 +70,7 @@ describe('renderBeeDossier (pure)', () => {
   });
 
   it('renders plan, blocks, topics, and the roster', () => {
-    const roster: BeeRosterPeer[] = [{ id: 'su-a', label: 'su · a', role: 'bee', doing: 'WI-2', alive: true }];
+    const roster: BeeRosterPeer[] = [{ id: 'su-a', label: 'su · a', role: 'cup', doing: 'WI-2', alive: true }];
     const s = renderBeeDossier({
       item: wi(),
       planItem: 'my-plan / P-003',
@@ -133,7 +133,7 @@ describe('computeBeeWakeDossier (fail-soft, injected deps)', () => {
       deps: {
         getDetail: async () => d,
         getItem: async () => wi(),
-        listRoster: async () => [{ id: 'su-a', label: 'a', role: 'bee', doing: null, alive: true }],
+        listRoster: async () => [{ id: 'su-a', label: 'a', role: 'cup', doing: null, alive: true }],
       },
     });
     expect(s).toContain('WI-1');
@@ -188,8 +188,8 @@ describe('computeBeeWakeDossier (fail-soft, injected deps)', () => {
 describe('presenceToRosterPeer (defensive presence projection)', () => {
   it('projects the stable fields + maps stale→!alive', () => {
     expect(
-      presenceToRosterPeer({ ownerId: 'su-x', ownerLabel: 'su · x', agentRole: 'bee', intent: 'doing WI-2', stale: false }),
-    ).toEqual({ id: 'su-x', label: 'su · x', role: 'bee', doing: 'doing WI-2', alive: true });
+      presenceToRosterPeer({ ownerId: 'su-x', ownerLabel: 'su · x', agentRole: 'cup', intent: 'doing WI-2', stale: false }),
+    ).toEqual({ id: 'su-x', label: 'su · x', role: 'cup', doing: 'doing WI-2', alive: true });
     expect(presenceToRosterPeer({ ownerId: 'su-y', stale: true }).alive).toBe(false);
     // missing fields degrade to null, never throw
     expect(presenceToRosterPeer({ ownerId: 'su-z' })).toEqual({ id: 'su-z', label: null, role: null, doing: null, alive: true });

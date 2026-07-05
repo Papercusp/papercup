@@ -63,20 +63,20 @@ describe('POST /agent-mcp/pot-override-set', () => {
   });
 
   it('sets a prose role override + invalidates hive.overrides', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'queen', value: 'be bold' });
+    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'mug', value: 'be bold' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; cleared: boolean };
     expect(body).toMatchObject({ ok: true, cleared: false });
-    expect(setPromptMock).toHaveBeenCalledWith('w', 'h', 'queen', 'be bold');
+    expect(setPromptMock).toHaveBeenCalledWith('w', 'h', 'mug', 'be bold');
     expect(deletePromptMock).not.toHaveBeenCalled();
     expect(invalidateMock).toHaveBeenCalledWith('hive.overrides', { hiveSlug: 'h' });
   });
 
   it('clears a prose override when the value is empty', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'queen', value: '   ' });
+    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'mug', value: '   ' });
     const body = (await res.json()) as { ok: boolean; cleared: boolean };
     expect(body).toMatchObject({ ok: true, cleared: true });
-    expect(deletePromptMock).toHaveBeenCalledWith('w', 'h', 'queen');
+    expect(deletePromptMock).toHaveBeenCalledWith('w', 'h', 'mug');
     expect(setPromptMock).not.toHaveBeenCalled();
   });
 

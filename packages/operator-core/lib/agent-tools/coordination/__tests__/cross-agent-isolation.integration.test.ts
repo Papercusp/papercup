@@ -129,7 +129,7 @@ describeMaybe(pgOk)('coord:send / inbox isolation (real PgCoordLog)', () => {
 
     // The Queen/operator is never an implicit hop: whatever id the pot operator
     // runs under, a directed peer→peer message does not land in its inbox.
-    for (const queenId of ['operator', 'queen', 'pot']) {
+    for (const queenId of ['operator', 'mug', 'pot']) {
       expect(await readInbox(queenId)).toEqual([]);
     }
 

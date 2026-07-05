@@ -91,7 +91,7 @@ describe('coord:wake-queue release_all (EI-312 one-wake drain)', () => {
     listPendingWakes.mockResolvedValue([
       pw({ id: 27, summary: 'Watchdog wake (boot)', source: 'hive-watchdog:boot', count: 11 }),
       pw({ id: 41, summary: 'cadence tick', source: 'wake-brain', count: 4 }),
-      pw({ id: 53, summary: 'placement: WI-99 is your lane', source: 'queen', payload: { wi: 99 } }),
+      pw({ id: 53, summary: 'placement: WI-99 is your lane', source: 'mug', payload: { wi: 99 } }),
     ]);
     clearPendingWakes.mockResolvedValue(3);
 

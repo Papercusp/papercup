@@ -96,7 +96,7 @@ const spawn = (id: string, over: Partial<RecordSpawnInput> = {}): RecordSpawnInp
 
 /** R → {A, B}; A → GA. */
 async function seedTree() {
-  await recordSpawnPg(sql, spawn('R', { childRole: 'queen' }));
+  await recordSpawnPg(sql, spawn('R', { childRole: 'mug' }));
   await recordSpawnPg(sql, spawn('A', { parentSpawnId: 'R' }));
   await recordSpawnPg(sql, spawn('B', { parentSpawnId: 'R' }));
   await recordSpawnPg(sql, spawn('GA', { parentSpawnId: 'A' }));

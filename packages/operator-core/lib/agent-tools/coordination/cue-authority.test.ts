@@ -19,24 +19,24 @@ import {
 
 describe('resolveCueAuthority (P-003 — authority derived from the sender role)', () => {
   it('a queen/overwatch session speaks with hive-queen authority, hive-wide scope', () => {
-    expect(resolveCueAuthority({ kind: 'queen', hiveSlug: 'papercusp' })).toEqual({
+    expect(resolveCueAuthority({ kind: 'mug', hiveSlug: 'papercusp' })).toEqual({
       authority: 'hive-queen',
       authorityRef: 'papercusp',
       scope: 'hive-wide',
     });
-    expect(resolveCueAuthority({ kind: 'overwatch', hiveSlug: 'papercusp' })).toMatchObject({
+    expect(resolveCueAuthority({ kind: 'kettle', hiveSlug: 'papercusp' })).toMatchObject({
       authority: 'hive-queen',
       scope: 'hive-wide',
     });
     // A hive-level session even outranks a fleet label it happens to carry.
     expect(
-      resolveCueAuthority({ kind: 'queen', hiveSlug: 'papercusp', fleetRole: 'leader', fleetSlug: 'x' }),
+      resolveCueAuthority({ kind: 'mug', hiveSlug: 'papercusp', fleetRole: 'leader', fleetSlug: 'x' }),
     ).toMatchObject({ authority: 'hive-queen', scope: 'hive-wide' });
   });
 
   it('a hive-level session with no known hive falls back to a (hive) ref, never empty', () => {
-    expect(resolveCueAuthority({ kind: 'queen', hiveSlug: null })?.authorityRef).toBe('(hive)');
-    expect(resolveCueAuthority({ kind: 'overwatch', hiveSlug: '  ' })?.authorityRef).toBe('(hive)');
+    expect(resolveCueAuthority({ kind: 'mug', hiveSlug: null })?.authorityRef).toBe('(hive)');
+    expect(resolveCueAuthority({ kind: 'kettle', hiveSlug: '  ' })?.authorityRef).toBe('(hive)');
   });
 
   it('a fleet leader speaks with fleet-leader authority over its members only', () => {
@@ -51,12 +51,12 @@ describe('resolveCueAuthority (P-003 — authority derived from the sender role)
   });
 
   it('no recognized control authority → NO stamp (a bee, a non-leader, a leader without a slug)', () => {
-    expect(resolveCueAuthority({ kind: 'bee' })).toBeNull();
+    expect(resolveCueAuthority({ kind: 'cup' })).toBeNull();
     // an owner-directed su session that is NOT a fleet leader
     expect(resolveCueAuthority({ kind: 'su', fleetRole: 'member', fleetSlug: 'ops' })).toBeNull();
     // a leader label without a slug is not addressable → no stamp
     expect(resolveCueAuthority({ kind: 'su', fleetRole: 'leader', fleetSlug: null })).toBeNull();
-    expect(resolveCueAuthority({ kind: 'sentinel' })).toBeNull();
+    expect(resolveCueAuthority({ kind: 'papercup' })).toBeNull();
   });
 });
 

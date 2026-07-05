@@ -32,7 +32,7 @@ describe('agent-drive-mode (P-001 / D-001)', () => {
 
   it('sentinel (operator) + planner presence roles are responsive', async () => {
     getPresence.mockResolvedValue({ ownerId: 's-op', agentRole: 'operator' });
-    expect(await classifyOwnerDriveMode('s-op')).toEqual({ kind: 'sentinel', driveMode: 'responsive' });
+    expect(await classifyOwnerDriveMode('s-op')).toEqual({ kind: 'papercup', driveMode: 'responsive' });
     getPresence.mockResolvedValue({ ownerId: 's-pl', agentRole: 'planner' });
     expect(await classifyOwnerDriveMode('s-pl')).toEqual({ kind: 'planner', driveMode: 'responsive' });
   });
@@ -42,16 +42,16 @@ describe('agent-drive-mode (P-001 / D-001)', () => {
     expect((await classifyOwnerDriveMode('s-bee')).driveMode).toBe('auto');
     expect(await isResponsiveOwner('s-bee')).toBe(false);
 
-    getPresence.mockResolvedValue({ ownerId: 's-q', agentRole: 'queen' });
-    expect(await classifyOwnerDriveMode('s-q')).toEqual({ kind: 'queen', driveMode: 'auto' });
+    getPresence.mockResolvedValue({ ownerId: 's-q', agentRole: 'mug' });
+    expect(await classifyOwnerDriveMode('s-q')).toEqual({ kind: 'mug', driveMode: 'auto' });
 
-    getPresence.mockResolvedValue({ ownerId: 's-ow', agentRole: 'overwatch' });
-    expect(await classifyOwnerDriveMode('s-ow')).toEqual({ kind: 'overwatch', driveMode: 'auto' });
+    getPresence.mockResolvedValue({ ownerId: 's-ow', agentRole: 'kettle' });
+    expect(await classifyOwnerDriveMode('s-ow')).toEqual({ kind: 'kettle', driveMode: 'auto' });
   });
 
   it('an unknown non-su owner with no presence falls to bee/auto (never over-PROTECT the unknown)', async () => {
     getPresence.mockResolvedValue(null);
-    expect(await classifyOwnerDriveMode('s-mystery')).toEqual({ kind: 'bee', driveMode: 'auto' });
+    expect(await classifyOwnerDriveMode('s-mystery')).toEqual({ kind: 'cup', driveMode: 'auto' });
     expect(await isResponsiveOwner('s-mystery')).toBe(false);
   });
 

@@ -331,7 +331,7 @@ test('resolvePriorityTiers — flag ON → restoration lanes stay wide; benchmar
 test('resolvePriorityTiers — GATEWAY_PRIORITY_MAP + GATEWAY_T1_RESERVE_FRAC env overrides apply', async () => {
   const r = await resolvePriorityTiers(20, {
     flagOverride: true,
-    env: { GATEWAY_PRIORITY_MAP: '{"bee":4,"newrole":2}', GATEWAY_T1_RESERVE_FRAC: '0.25' },
+    env: { GATEWAY_PRIORITY_MAP: '{"cup":4,"newrole":2}', GATEWAY_T1_RESERVE_FRAC: '0.25' },
   });
   assert.equal(r!.config.tier1Reserve, 5, 'ceil(20*0.25)=5');
   // bee remapped to tier 4; newrole added at 2. The default/gym tiers remain present.

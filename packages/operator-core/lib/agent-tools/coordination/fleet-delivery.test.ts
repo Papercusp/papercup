@@ -17,7 +17,7 @@ function env(over: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return {
     ts: '2026-06-30T12:00:00.000Z',
     msg_id: 'm-1',
-    from: 'queen',
+    from: 'mug',
     to: [],
     kind: 'message',
     summary: 'cohort steering note',

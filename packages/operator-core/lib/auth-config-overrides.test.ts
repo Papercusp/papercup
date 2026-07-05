@@ -70,7 +70,7 @@ describe('testing-full-access kill-switch (papercusp-testing-full-access)', () =
   it('flag OFF ⇒ the resolver returns false for every role (globally disabled)', async () => {
     await boot({ testingFullAccess: false });
     expect(h.capturedResolver?.('operator')).toBe(false);
-    expect(h.capturedResolver?.('bee')).toBe(false);
+    expect(h.capturedResolver?.('cup')).toBe(false);
   });
   it('flag ON ⇒ falls through to baked when no override is set', async () => {
     await boot({ testingFullAccess: true });
@@ -82,7 +82,7 @@ describe('dark flag ON ⇒ overrides apply', () => {
   it('fullAccessRoles REPLACES the baked set (resolver returns membership in the override)', async () => {
     await boot({ overrides: true, row: { fullAccessRoles: ['operator'] } });
     expect(h.capturedResolver?.('operator')).toBe(true);
-    expect(h.capturedResolver?.('bee')).toBe(false); // bee is in the BAKED set but NOT the override
+    expect(h.capturedResolver?.('cup')).toBe(false); // bee is in the BAKED set but NOT the override
   });
 
   it('safeToolsRemove is exposed as the narrow-only remove-set', async () => {
@@ -106,11 +106,11 @@ describe('dark flag ON ⇒ overrides apply', () => {
 describe('set* round-trips (persist → refresh)', () => {
   it('setFullAccessRoles is reflected by the resolver once the dark flag is on', async () => {
     await boot({ overrides: true });
-    await setFullAccessRoles(['queen']);
-    expect(h.capturedResolver?.('queen')).toBe(true);
-    expect((await readAuthConfigOverrides()).fullAccessRoles).toEqual(['queen']);
+    await setFullAccessRoles(['mug']);
+    expect(h.capturedResolver?.('mug')).toBe(true);
+    expect((await readAuthConfigOverrides()).fullAccessRoles).toEqual(['mug']);
     await setFullAccessRoles(null); // clear
-    expect(h.capturedResolver?.('queen')).toBeNull();
+    expect(h.capturedResolver?.('mug')).toBeNull();
   });
 
   it('setSafeToolsRemove + setSandboxPolicy round-trip and sanitize', async () => {

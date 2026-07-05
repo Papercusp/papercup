@@ -133,7 +133,7 @@ describe('coord:glance', () => {
 
   it('audience scopes tips: a bee sees no wake-mode tip', async () => {
     getDefaultWakeMode.mockResolvedValue('manual');
-    const g = out(await glance.handler(parse({ audience: 'bee' }), ctx));
+    const g = out(await glance.handler(parse({ audience: 'cup' }), ctx));
     expect(g.wake.default).toBe('manual');
     expect(g.tips).toEqual([]);
   });

@@ -207,10 +207,7 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   // is not silently rejected here.
   if (
     !target ||
-    (target.role !== 'mug' &&
-      target.role !== 'mug' &&
-      target.role !== 'kettle' &&
-      target.role !== 'kettle')
+    (target.role !== 'mug' && target.role !== 'kettle')
   )
     return input.body;
 
@@ -218,7 +215,7 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
     const { getOwnerSteering } = await import('../owner-steering');
     const steering = await getOwnerSteering(target.workspaceId, target.harnessSlug);
     let spawnModel: string | null | undefined = null;
-    if (target.role === 'overwatch' || target.role === 'kettle') {
+    if (target.role === 'kettle') {
       spawnModel = steering.modelOverrides?.overwatch;
     } else {
       const [{ readAgentConfig }, { effectiveTierConfig, resolveRoleOwnModelSpec }] = await Promise.all([

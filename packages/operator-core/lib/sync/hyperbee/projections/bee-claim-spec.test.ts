@@ -13,7 +13,7 @@ const good = {
   bee_id: 'su-bee-1',
   spec: { specVersion: 1, revision: 3, view: { filter: {} }, rank: { mode: 'fifo', terms: [] } },
   revision: 3,
-  updated_by: 'queen',
+  updated_by: 'mug',
 };
 
 describe('bee-claim-spec projection decode/guard', () => {

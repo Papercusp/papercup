@@ -824,12 +824,12 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
     const task = await wi.createWorkItem({ kind: 'task', title: 'delegated', harness: 'papercup', createdBy: 'queen', assignee: 'bee-3', assignedBy: 'queen' });
     expect(task.family).toBe('issue');
     expect(task.assignee).toBe('bee-3');
-    expect(task.assignedBy).toBe('queen'); // the durable delegator
+    expect(task.assignedBy).toBe('mug'); // the durable delegator
     expect(task.takenAt).not.toBeNull();
     const [row] = await db.sql<{ assignee: string | null; assigned_by: string | null; assigned_at: Date | null }[]>`
       SELECT assignee, assigned_by, assigned_at FROM harness_shared.engineer_issues WHERE issue_id = ${task.id}`;
     expect(row.assignee).toBe('bee-3');
-    expect(row.assigned_by).toBe('queen');
+    expect(row.assigned_by).toBe('mug');
     expect(row.assigned_at).not.toBeNull(); // assigned_at is stamped when assignedBy is present
   });
 

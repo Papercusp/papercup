@@ -92,11 +92,7 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   // carries no capability:fs-write / capability:bash, and no work_items:set_state /
   // harness:write / plans:write / routines:write; cup:spawn carves it out). Even
   // a tool that asks for fs-write/bash is refused for the sentinel.
-  sentinel: {
-    denyCapabilities: ['capability:fs-write', 'capability:bash'],
-  },
-  // pot-rename dual-accept (P1 MIGRATE): `papercup` is the additive twin of the `sentinel`
-  // role — SAME envelope value, so the twin is confined identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `papercup` is the canonical id (was `sentinel`).
   papercup: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },
@@ -110,11 +106,7 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   // so this is the explicit belt: even a tool that asks for fs-write/bash is refused.)
   // The structural-action DECISION gate (restart a routine, flip a flag, kill a proc) is
   // B-06's autonomy-policy wiring, distinct from this static capability wall.
-  overwatch: {
-    denyCapabilities: ['capability:fs-write', 'capability:bash'],
-  },
-  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
-  // role — SAME envelope value, so the twin is confined identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `kettle` is the canonical id (was `overwatch`).
   kettle: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },

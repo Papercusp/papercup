@@ -200,7 +200,7 @@ export async function buildOperatorPrompt(
     queryContext: lastUserContext(messages, 3),
     // The Sentinel's recall heading mirrors the operator one but names its own role
     // so an injected fact reads as the Sentinel's memory, not "Operator memory".
-    ...(role === 'sentinel' || role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
+    ...(role === 'papercup' ? { heading: 'Sentinel memory (relevant entries)' } : {}),
   });
   if (memBlock) systemSections.push(memBlock);
 
@@ -212,7 +212,7 @@ export async function buildOperatorPrompt(
   // GUARDED on role==='sentinel' so the operator path is byte-identical (it never
   // gathers, never imports the sentinel module). Fail-soft: a gather error degrades
   // to no section — the turn never blocks on it (mirrors the memory block above).
-  if (role === 'sentinel' || role === 'papercup') {
+  if (role === 'papercup') {
     try {
       const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps, sentinelScopeLabel } =
         await import('../../sentinel/sentinel-context');

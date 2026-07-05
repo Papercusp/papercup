@@ -23,7 +23,7 @@ vi.mock('../../operator-budget', () => ({
 }));
 // P-012: the text route falls back to the `humanFacingRole` voice pref when the
 // caller didn't set an explicit body.role. Mutated per-test.
-let humanFacingRole: 'operator' | 'sentinel' = 'operator';
+let humanFacingRole: 'operator' | 'papercup' = 'operator';
 vi.mock('../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => ({ humanFacingRole })),
 }));
@@ -161,7 +161,7 @@ describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () 
 
 describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-012)', () => {
   it('falls back to the sentinel brain when humanFacingRole=sentinel and no body role', async () => {
-    humanFacingRole = 'sentinel';
+    humanFacingRole = 'papercup';
     const res = await post({ messages: [], trigger: 'user_message' });
     await collectEvents(res, 200);
     expect(lookupByMcpName).toHaveBeenCalledWith('papercup:converse');
@@ -177,7 +177,7 @@ describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-0
   });
 
   it('an explicit body role WINS over the pref (P-006 precedence)', async () => {
-    humanFacingRole = 'sentinel';
+    humanFacingRole = 'papercup';
     const res = await post({ messages: [], trigger: 'user_message', role: 'operator' });
     await collectEvents(res, 200);
     expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');

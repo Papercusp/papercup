@@ -31,8 +31,8 @@ describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
   });
 
   it('does NOT warn for self-pulling hive roles (bee / queen)', () => {
-    expect(claimSpecInertWarning('bee-1', 'bee')).toBeNull();
-    expect(claimSpecInertWarning('queen-1', 'queen')).toBeNull();
+    expect(claimSpecInertWarning('bee-1', 'cup')).toBeNull();
+    expect(claimSpecInertWarning('queen-1', 'mug')).toBeNull();
   });
 
   it('does NOT warn for an su fleet member — the P-003 false-positive class', () => {

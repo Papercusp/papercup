@@ -37,13 +37,13 @@ describe('readHiveLearnings', () => {
     const snap = await readHiveLearnings('my-hive', deps([
       { id: 'm1', text: 'A — body a', kind: 'feedback', metadata: packMeta('a') }, // pristine
       { id: 'm2', text: 'B — body b (we do it differently)', kind: 'feedback', metadata: packMeta('b') }, // modified
-      { id: 'm3', text: 'This project: make test', kind: 'reference', metadata: { created_by: 'queen' } }, // organic
+      { id: 'm3', text: 'This project: make test', kind: 'reference', metadata: { created_by: 'mug' } }, // organic
     ]));
     expect(snap.hive).toBe('my-hive');
     expect(snap.organicCount).toBe(1);
     expect(snap.rows.find((r) => r.id === 'm1')).toMatchObject({ packId: 'papercusp-default', packState: 'pristine' });
     expect(snap.rows.find((r) => r.id === 'm2')).toMatchObject({ packState: 'modified' });
-    expect(snap.rows.find((r) => r.id === 'm3')).toMatchObject({ createdBy: 'queen' });
+    expect(snap.rows.find((r) => r.id === 'm3')).toMatchObject({ createdBy: 'mug' });
     expect(snap.rows.find((r) => r.id === 'm3')?.packId).toBeUndefined();
     expect(snap.packs).toEqual([
       {

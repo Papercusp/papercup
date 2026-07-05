@@ -187,15 +187,15 @@ describe('groupByAgent — the per-bee ordered work-list (local-hive P-021)', ()
   it('derives doing (head-of-line) + queued (rank order) + load from work-item claims', () => {
     const groups = groupByAgent([
       presence({ agentId: 'su-bee', detail: 'working' }),
-      workClaim({ workItemId: 'WI-3', detail: 'third', assigneeRank: 2, rankWriter: 'bee' }),
-      workClaim({ workItemId: 'WI-1', detail: 'first', assigneeRank: 0, rankWriter: 'queen' }),
-      workClaim({ workItemId: 'WI-2', detail: 'second', assigneeRank: 1, rankWriter: 'bee' }),
+      workClaim({ workItemId: 'WI-3', detail: 'third', assigneeRank: 2, rankWriter: 'cup' }),
+      workClaim({ workItemId: 'WI-1', detail: 'first', assigneeRank: 0, rankWriter: 'mug' }),
+      workClaim({ workItemId: 'WI-2', detail: 'second', assigneeRank: 1, rankWriter: 'cup' }),
     ]);
     const g = groups.find((x) => x.agentId === 'su-bee')!;
     expect(g.load).toBe(3);
     expect(g.queued.map((q) => q.id)).toEqual(['WI-1', 'WI-2', 'WI-3']); // rank ASC
     expect(g.doing?.id).toBe('WI-1'); // head-of-line = lowest rank
-    expect(g.doing?.rankWriter).toBe('queen'); // the Queen-overlaid head
+    expect(g.doing?.rankWriter).toBe('mug'); // the Queen-overlaid head
   });
 
   it('sorts unranked work-items to the tail (NULLs last), stable by id', () => {

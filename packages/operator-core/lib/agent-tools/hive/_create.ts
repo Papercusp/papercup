@@ -167,7 +167,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   // P-019: a hive MUST run a kind:'hive' blueprint — reject a harness blueprint
   // (e.g. `research`) passed by mistake, and surface the installable hive templates so
   // the choice is discoverable (the "selectable at create" picker's validation backbone).
-  if (validation.blueprint.kind !== 'hive' && validation.blueprint.kind !== 'pot') {
+  if (validation.blueprint.kind !== 'pot') {
     const choices = availableHiveBlueprintIds();
     return {
       ok: false,

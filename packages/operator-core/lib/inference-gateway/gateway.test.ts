@@ -3032,13 +3032,13 @@ test('[codex-cli] no bearer pool + no CLI accounts → the 503 is unchanged (pre
 test('effectivePriorityLabel prefers the explicit priority header', () => {
   assert.equal(
     effectivePriorityLabel({ 'x-papercusp-priority': ' Queen ', 'x-papercusp-owner': 'su-abc' }),
-    'queen',
+    'mug',
   );
 });
 
 test('effectivePriorityLabel infers su/bee from the owner id prefix when priority is absent', () => {
   assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 'su-42371aaa-bbb' }), 'su');
-  assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 's-1782946527495-3e5fd845' }), 'bee');
+  assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 's-1782946527495-3e5fd845' }), 'cup');
 });
 
 test('effectivePriorityLabel leaves unknown owners and headerless requests in the default band', () => {

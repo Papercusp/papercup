@@ -42,7 +42,7 @@ export interface HealthLink {
  *  who-watches-the-watcher card). `toolEfficiency` (#17, WI-839) folds the 3
  *  measuring-code-run-adoption.mdx tool-usage metrics into one recurring card. */
 export type PanelKey =
-  | 'mug'
+  | 'queen'
   | 'bees'
   | 'workItems'
   | 'workFeed'
@@ -56,13 +56,13 @@ export type PanelKey =
   | 'improvements'
   | 'infra'
   | 'suFleet'
-  | 'kettle'
+  | 'overwatch'
   | 'scout'
   | 'toolEfficiency';
 
 /** Canonical render order for the tab's status-card grid. */
 export const PANEL_ORDER: readonly PanelKey[] = [
-  'mug',
+  'queen',
   'bees',
   'workItems',
   'workFeed',
@@ -76,14 +76,14 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'improvements',
   'infra',
   'suFleet',
-  'kettle',
+  'overwatch',
   'scout',
   'toolEfficiency',
 ] as const;
 
 export const PANEL_LABELS: Record<PanelKey, string> = {
-  queen: 'Queen',
-  bees: 'Bees / fleet',
+  queen: 'Mug',
+  bees: 'Cups / fleet',
   workItems: 'Work items',
   workFeed: 'Work-feed',
   tokens: 'Tokens / gateway',
@@ -96,8 +96,8 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   improvements: 'Improvements',
   infra: 'Infra',
   suFleet: 'SU fleet',
-  overwatch: 'Overwatch',
-  scout: 'Scout / ideation',
+  overwatch: 'Kettle',
+  scout: 'Blender / ideation',
   toolEfficiency: 'Tool efficiency',
 };
 

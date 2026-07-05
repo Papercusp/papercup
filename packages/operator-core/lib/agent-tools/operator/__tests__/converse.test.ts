@@ -344,8 +344,8 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     });
 
     await handler(
-      { messages: [], trigger: 'user_message', role: 'sentinel', sessionUser: null },
-      { ...makeCtx(), role: 'sentinel' },
+      { messages: [], trigger: 'user_message', role: 'papercup', sessionUser: null },
+      { ...makeCtx(), role: 'papercup' },
     );
 
     expect(dispatchSentinelHandoff).toHaveBeenCalledTimes(1);

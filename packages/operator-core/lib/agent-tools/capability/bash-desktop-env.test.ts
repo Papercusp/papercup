@@ -31,7 +31,7 @@ function makeCtx(harnessSlug?: string) {
     harnessSlug,
     signal: new AbortController().signal,
     emit: () => {},
-    role: 'bee',
+    role: 'cup',
   } as never;
 }
 

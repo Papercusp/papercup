@@ -18,9 +18,9 @@ import styles from './logo-lab.module.css';
 const NOUNS = [
   ['hive', 'Hive', 'Deployable project group'],
   ['swarm', 'Swarm', 'A deployment of a Hive to an instance'],
-  ['queen', 'Queen', 'The brain — places + supervises bees'],
-  ['sentinel', 'Sentinel', 'The operator chat — always watching'],
-  ['bee', 'Bee', 'AI agent'],
+  ['mug', 'Queen', 'The brain — places + supervises bees'],
+  ['papercup', 'Sentinel', 'The operator chat — always watching'],
+  ['cup', 'Bee', 'AI agent'],
   ['keeper', 'Keeper', 'Human member'],
   ['cell', 'Cell', 'One unit of work'],
   ['comb', 'Comb', 'Shared library'],

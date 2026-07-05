@@ -77,7 +77,7 @@ beforeEach(() => {
   setHiveEventSubscriptions.mockResolvedValue(0);
   setHiveCarryNote.mockResolvedValue(null);
   claimHiveWakeFire.mockResolvedValue({ fired: true });
-  fireLaunchBlueprint.mockResolvedValue({ role: 'queen' });
+  fireLaunchBlueprint.mockResolvedValue({ role: 'mug' });
 });
 
 describe('pot:declare-wake paused gate (WI-2012)', () => {

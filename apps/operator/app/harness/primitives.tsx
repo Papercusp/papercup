@@ -247,10 +247,10 @@ export const AGENT_KIND_GLYPH: Record<string, string> = {
 // theme label. (Colors stay from the AGENT_KIND theme table; only the word
 // flips with the pack.)
 const AGENT_KIND_TERM: Partial<Record<string, TermKey>> = {
-  queen: 'brain',
-  sentinel: 'operator',
-  overwatch: 'overwatch',
-  bee: 'contributor',
+  mug: 'brain',
+  papercup: 'operator',
+  kettle: 'overwatch',
+  cup: 'contributor',
 };
 
 /** Agent kind badge — cup-cast glyph + label chip, colored from the canonical

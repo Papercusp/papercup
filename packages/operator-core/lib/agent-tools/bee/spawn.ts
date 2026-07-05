@@ -45,7 +45,7 @@ export default defineTool({
   // does not PLACE agents — placement is the Queen's, the sentinel raises alarms
   // (unify-launch-mechanics D-004). Same carve-out as bee. Overwatch excluded too
   // (overwatch-role-2026-06-15 D-001): it NUDGES the Queen to re-place, never places.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z.object({
     harness: z.string().min(1).max(80).optional()
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),

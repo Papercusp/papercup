@@ -507,7 +507,7 @@ export default defineTool({
       // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
       // the operator path below ignores both entirely (and the sentinel ignores
       // spawns — the two can't cross). The Sentinel must NOT cup:spawn.
-      const isSentinel = input.role === 'sentinel' || input.role === 'papercup';
+      const isSentinel = input.role === 'papercup';
       if (isSentinel && parsed.handoffs.length > 0) {
         const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
           import('../../operator-sentinel-handoff'),

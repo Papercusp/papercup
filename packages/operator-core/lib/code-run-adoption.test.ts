@@ -49,14 +49,14 @@ describe('isBatchableSpawn — reuses the live nudge thresholds', () => {
 describe('spawnRowsFromCalls — excludes batch tools from the work counts', () => {
   it('does NOT count code:run / recipes:* toward work, but DOES set usedCodeRun', () => {
     const rows = spawnRowsFromCalls([
-      ...calls('s1', 'bee', '2026-06-26', ['code:run', 'recipes:search', 'plans:get']),
+      ...calls('s1', 'cup', '2026-06-26', ['code:run', 'recipes:search', 'plans:get']),
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ workCalls: 1, distinctTools: 1, maxSameTool: 1, usedCodeRun: true });
   });
 
   it('matches both name forms (code_run / code:run) for the adoption signal', () => {
-    const rows = spawnRowsFromCalls(calls('s1', 'bee', '2026-06-26', ['code_run', 'plans:get']));
+    const rows = spawnRowsFromCalls(calls('s1', 'cup', '2026-06-26', ['code_run', 'plans:get']));
     expect(rows[0].usedCodeRun).toBe(true);
   });
 });
@@ -65,13 +65,13 @@ describe('computeCodeRunAdoption — end-to-end raw rows → per-(role,day) summ
   it('computes opportunity + adoption correctly for a mixed population', () => {
     const day = '2026-06-26';
     const raw: CallRow[] = [
-      ...calls('A', 'bee', day, fanTools), // fan-out opportunity, NOT adopted
-      ...calls('B', 'bee', day, [...fanTools, 'code:run']), // fan-out opportunity, ADOPTED
-      ...calls('C', 'bee', day, ['plans:get', 'docs:get']), // 2 calls — NOT an opportunity
+      ...calls('A', 'cup', day, fanTools), // fan-out opportunity, NOT adopted
+      ...calls('B', 'cup', day, [...fanTools, 'code:run']), // fan-out opportunity, ADOPTED
+      ...calls('C', 'cup', day, ['plans:get', 'docs:get']), // 2 calls — NOT an opportunity
     ];
     const [sum] = computeCodeRunAdoption(raw);
     expect(sum).toMatchObject({
-      role: 'bee',
+      role: 'cup',
       day,
       spawns: 3,
       opportunitySpawns: 2,
@@ -84,22 +84,22 @@ describe('computeCodeRunAdoption — end-to-end raw rows → per-(role,day) summ
   it('classifies a same-tool burst as an opportunity', () => {
     const day = '2026-06-26';
     const sameToolBurst = Array(BATCH_NUDGE_THRESHOLD).fill('work_items:get');
-    const [sum] = computeCodeRunAdoption(calls('D', 'queen', day, sameToolBurst));
+    const [sum] = computeCodeRunAdoption(calls('D', 'mug', day, sameToolBurst));
     expect(sum.opportunitySpawns).toBe(1);
     expect(sum.adoptionRate).toBe(0); // had the chance, did not use code:run
   });
 
   it('a spawn that only ran code:run has no work-opportunity but counts as a code:run spawn', () => {
-    const [sum] = computeCodeRunAdoption(calls('E', 'bee', '2026-06-26', Array(5).fill('code:run')));
+    const [sum] = computeCodeRunAdoption(calls('E', 'cup', '2026-06-26', Array(5).fill('code:run')));
     expect(sum).toMatchObject({ spawns: 1, opportunitySpawns: 0, codeRunSpawns: 1 });
     expect(sum.adoptionRate).toBeNull(); // no opportunity ⇒ undefined ratio, not 0
   });
 
   it('buckets independently per role and per day, sorted by role then day', () => {
     const out = computeCodeRunAdoption([
-      ...calls('A', 'bee', '2026-06-25', fanTools),
-      ...calls('B', 'queen', '2026-06-26', fanTools),
-      ...calls('C', 'bee', '2026-06-26', fanTools),
+      ...calls('A', 'cup', '2026-06-25', fanTools),
+      ...calls('B', 'mug', '2026-06-26', fanTools),
+      ...calls('C', 'cup', '2026-06-26', fanTools),
     ]);
     expect(out.map((s) => `${s.role}/${s.day}`)).toEqual([
       'bee/2026-06-25',
@@ -124,25 +124,25 @@ describe('rollupAdoption + gradeToolUtilization — the learning-loop signal', (
   }
 
   it('rolls per-(role,day) summaries into one fleet figure', () => {
-    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 10, 4)));
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 10, 4)));
     expect(roll.opportunitySpawns).toBe(10);
     expect(roll.opportunitySpawnsUsingCodeRun).toBe(4);
     expect(roll.adoptionRate).toBeCloseTo(0.4, 5);
   });
 
   it('grades a ~2% baseline as broken (the number the loop must move)', () => {
-    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 50, 1)));
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 50, 1)));
     expect(gradeToolUtilization(roll).rating).toBe('broken');
     expect(gradeToolUtilization(roll).evidence).toMatch(/adoption 2%/);
   });
 
   it('grades a healthy fleet (≥60% folded) as healthy, a mid fleet as degraded', () => {
-    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 20, 14)))).rating).toBe('healthy');
-    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', 20, 8)))).rating).toBe('degraded');
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 14)))).rating).toBe('healthy');
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 8)))).rating).toBe('degraded');
   });
 
   it('too small a sample (< ADOPTION_MIN_SAMPLE opportunities) is honest unknown, not broken', () => {
-    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('bee', ADOPTION_MIN_SAMPLE - 1, 0)));
+    const roll = rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', ADOPTION_MIN_SAMPLE - 1, 0)));
     expect(roll.opportunitySpawns).toBeLessThan(ADOPTION_MIN_SAMPLE);
     expect(gradeToolUtilization(roll).rating).toBe('unknown');
   });
@@ -168,8 +168,8 @@ describe('readCodeRunAdoption — runs the canonical SQL through an injected run
     const fakeRun = async <T,>(query: string, params: unknown[]): Promise<T[]> => {
       captured.push({ query, params });
       return [
-        { role: 'bee', day: '2026-06-26', work_calls: 4, distinct_tools: 4, max_same_tool: 1, used_code_run: false },
-        { role: 'bee', day: '2026-06-26', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
+        { role: 'cup', day: '2026-06-26', work_calls: 4, distinct_tools: 4, max_same_tool: 1, used_code_run: false },
+        { role: 'cup', day: '2026-06-26', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
       ] as unknown as T[];
     };
     const out = await readCodeRunAdoption(fakeRun, { sinceDays: 14 });
@@ -197,7 +197,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
   // scan per window, so a fresh full scan can never be triggered per call again.
 
   const rows = [
-    { role: 'bee', day: '2026-07-02', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
+    { role: 'cup', day: '2026-07-02', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
   ] as const;
 
   it('SINGLE-FLIGHT: concurrent callers for the same window share ONE scan', async () => {
@@ -290,8 +290,8 @@ describe('spawnRowsFromCalls — excludes poller tools from the work counts (P-0
 
   it('a real same-tool burst on a non-poller tool still counts', () => {
     const rows = spawnRowsFromCalls([
-      { spawnId: 'r1', role: 'bee', day: '2026-07-03', toolName: 'work_items:get' },
-      { spawnId: 'r1', role: 'bee', day: '2026-07-03', toolName: 'work_items:get' },
+      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get' },
+      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get' },
     ]);
     expect(isBatchableSpawn(rows[0])).toBe(true);
   });

@@ -10,8 +10,8 @@ import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 
 const PANEL_KEYS: PanelKey[] = [
-  'queen', 'bees', 'workItems', 'workFeed', 'tokens', 'watchdog', 'deploy',
-  'plans', 'escalations', 'autonomy', 'observations', 'improvements', 'infra', 'suFleet', 'overwatch',
+  'mug', 'bees', 'workItems', 'workFeed', 'tokens', 'watchdog', 'deploy',
+  'plans', 'escalations', 'autonomy', 'observations', 'improvements', 'infra', 'suFleet', 'kettle',
 ];
 
 function panel(key: PanelKey, over: Partial<HealthPanel<unknown>> = {}): HealthPanel<unknown> {

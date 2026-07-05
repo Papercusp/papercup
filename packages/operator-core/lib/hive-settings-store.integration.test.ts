@@ -59,16 +59,16 @@ describe('hive_settings (real PG, migration 186)', () => {
   });
 
   it('hive-instance prompt overrides round-trip + list by role (P-003)', async () => {
-    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBeNull();
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'cup', sql)).toBeNull();
 
-    await setHiveInstancePromptOverride('ws', 'myhive', 'bee', 'You are a Papercusp bee.', sql);
+    await setHiveInstancePromptOverride('ws', 'myhive', 'cup', 'You are a Papercusp bee.', sql);
     await setHiveInstancePromptOverride('ws', 'myhive', 'su', 'You are a Papercusp engineer.', sql);
 
-    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBe('You are a Papercusp bee.');
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'cup', sql)).toBe('You are a Papercusp bee.');
     expect(await getHiveInstancePromptOverride('ws', 'myhive', 'su', sql)).toBe('You are a Papercusp engineer.');
 
     // stored under the promptOverride.<role> key (federates like any other hive setting)
-    expect((await getHiveSetting('ws', 'myhive', promptOverrideSettingKey('bee'), sql))?.value).toBe(
+    expect((await getHiveSetting('ws', 'myhive', promptOverrideSettingKey('cup'), sql))?.value).toBe(
       'You are a Papercusp bee.',
     );
 
@@ -80,8 +80,8 @@ describe('hive_settings (real PG, migration 186)', () => {
     });
 
     // upsert overwrites
-    await setHiveInstancePromptOverride('ws', 'myhive', 'bee', 'Updated bee persona.', sql);
-    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBe('Updated bee persona.');
+    await setHiveInstancePromptOverride('ws', 'myhive', 'cup', 'Updated bee persona.', sql);
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'cup', sql)).toBe('Updated bee persona.');
   });
 
   it('local-blueprint structured config deltas round-trip + list by section (P-015)', async () => {
@@ -96,7 +96,7 @@ describe('hive_settings (real PG, migration 186)', () => {
     });
 
     // list filters to the localBlueprint.* prefix only — ignores promptOverride.* + plain settings
-    await setHiveInstancePromptOverride('ws', 'myhive', 'queen', 'persona', sql);
+    await setHiveInstancePromptOverride('ws', 'myhive', 'mug', 'persona', sql);
     await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
     expect(await listHiveLocalBlueprintConfig('ws', 'myhive', sql)).toEqual({
       scout: { buckets: { maxMoonshots: 2 } },
@@ -110,9 +110,9 @@ describe('hive_settings (real PG, migration 186)', () => {
     expect(await deleteHiveLocalBlueprintConfig('ws', 'myhive', 'scout', sql)).toBe(false);
 
     // deleteHiveInstancePromptOverride round-trips too (symmetric clear path)
-    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBe('persona');
-    expect(await deleteHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBe(true);
-    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'queen', sql)).toBeNull();
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'mug', sql)).toBe('persona');
+    expect(await deleteHiveInstancePromptOverride('ws', 'myhive', 'mug', sql)).toBe(true);
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'mug', sql)).toBeNull();
   });
 
   it('refuses a setting for a non-existent Hive (logical scope, no hard FK)', async () => {

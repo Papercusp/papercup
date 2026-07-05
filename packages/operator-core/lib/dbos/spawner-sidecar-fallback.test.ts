@@ -95,7 +95,7 @@ afterEach(() => { delete process.env.PAPERCUSP_SPAWNER_SIDECAR; vi.restoreAllMoc
 
 describe('spawnInvokeOnceWithFallback — env gate OFF (PAPERCUSP_SPAWNER_SIDECAR unset)', () => {
   it('calls the in-process spawnInvokeOnce verbatim (pass-through args + result), never the sidecar', async () => {
-    const r = await spawnInvokeOnceWithFallback('/proj', 'bee', ['F=1'], { FOO: 'bar' });
+    const r = await spawnInvokeOnceWithFallback('/proj', 'cup', ['F=1'], { FOO: 'bar' });
 
     // The in-process path ran (fake child) and returned its result.
     expect(r.exitCode).toBe(0);
@@ -104,7 +104,7 @@ describe('spawnInvokeOnceWithFallback — env gate OFF (PAPERCUSP_SPAWNER_SIDECA
     // Pass-through: buildInvokeOnce saw exactly the wrapper's inputs.
     expect(H.inputs).toHaveLength(1);
     expect(H.inputs[0].projectDir).toBe('/proj');
-    expect(H.inputs[0].role).toBe('bee');
+    expect(H.inputs[0].role).toBe('cup');
     expect(H.inputs[0].extras).toEqual(['F=1']);
     expect(H.inputs[0].extraEnv).toEqual(expect.objectContaining({ FOO: 'bar' }));
 
@@ -120,7 +120,7 @@ describe('spawnInvokeOnceWithFallback — flag ON but the IPC call throws', () =
     ipcCall.mockRejectedValueOnce(new Error('ipc boom'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const r = await spawnInvokeOnceWithFallback('/proj', 'queen', [], {});
+    const r = await spawnInvokeOnceWithFallback('/proj', 'mug', [], {});
 
     // It DID try the sidecar...
     expect(spawnSidecar).toHaveBeenCalledOnce();

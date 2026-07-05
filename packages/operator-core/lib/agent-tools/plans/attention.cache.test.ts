@@ -150,7 +150,7 @@ describe("plans:attention — cache wiring", () => {
 
   it("NO cross-principal leak: differing role/principal SHARE one entry + identical data", async () => {
     const a = await run({}, ctx("ws-attn", "operator", "agent-a"));
-    const b = await run({}, ctx("ws-attn", "sentinel", "agent-b"));
+    const b = await run({}, ctx("ws-attn", "papercup", "agent-b"));
     // The feed is principal-agnostic → the second caller HITS the same entry…
     expect(M.readAllPlans).toHaveBeenCalledTimes(1);
     // …and gets byte-identical data (nothing caller-specific was cached / leaked).

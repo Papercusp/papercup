@@ -233,7 +233,7 @@ function blueprintsWithPrompts(): string[] {
     const p = join(BP_DIR, d);
     return statSync(p).isDirectory() && existsSync(join(p, 'blueprint.yaml')) && existsSync(join(p, 'prompts'));
   });
-  if (!ids.includes('bee')) ids.push('bee'); // bee's prompt is in base, but it's the P-003 site
+  if (!ids.includes('cup')) ids.push('cup'); // bee's prompt is in base, but it's the P-003 site
   return ids.sort();
 }
 
@@ -301,16 +301,16 @@ describe('blueprint prompt dark-tools (no prompt may reference a tool absent fro
     parseToolMentions(text).has(qualified) || new RegExp('`' + bareVerb + '`').test(text);
 
   it('bee blueprint: the bee prompt CALLS get_next AND the blueprint DECLARES scheduler:get_next (P-003 lock)', () => {
-    const deps = effectiveDeps('bee');
+    const deps = effectiveDeps('cup');
     expect(deps.has('scheduler:get_next')).toBe(true); // the wiring that was missing
-    const promptText = resolvePromptFiles('bee', 'bee').map((f) => readFileSync(f, 'utf8')).join('\n');
+    const promptText = resolvePromptFiles('cup', 'cup').map((f) => readFileSync(f, 'utf8')).join('\n');
     expect(referencesTool(promptText, 'scheduler:get_next', 'get_next')).toBe(true);
   });
 
   it('coding blueprint: the queen prompt STEERS via the claim spec AND the blueprint DECLARES scheduler:set_claim_spec (P-003 lock)', () => {
     const deps = effectiveDeps('coding');
     expect(deps.has('scheduler:set_claim_spec')).toBe(true); // the wiring that was missing
-    const promptText = resolvePromptFiles('coding', 'queen').map((f) => readFileSync(f, 'utf8')).join('\n');
+    const promptText = resolvePromptFiles('coding', 'mug').map((f) => readFileSync(f, 'utf8')).join('\n');
     // The Queen prompt authors per-bee claim SPECS — accept the qualified verb OR the "claim spec"
     // steering language the P-002 prompt uses for that tool.
     expect(

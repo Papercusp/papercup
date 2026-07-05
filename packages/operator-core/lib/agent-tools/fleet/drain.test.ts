@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const sendMessage = vi.fn();
 vi.mock('../coordination/messages', () => ({ sendMessage: (...a: unknown[]) => sendMessage(...a) }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 's-queen', ownerLabel: 'queen' }),
+  resolveAgentIdentity: () => ({ ownerId: 's-queen', ownerLabel: 'mug' }),
 }));
 // P-001 / D-001: the drain refuses OWNER-DIRECTED (responsive) targets. Drive-mode
 // resolves from presence.agentRole via the real classifyOwnerDriveMode + the pure
@@ -137,7 +137,7 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
     const b = await env({ bee_ids: ['s-op', 's-pl'] });
     expect(b.counts).toEqual({ ok: 0, failed: 2 });
     expect(b.results.map((r) => [r.kind, r.driveMode])).toEqual([
-      ['sentinel', 'responsive'],
+      ['papercup', 'responsive'],
       ['planner', 'responsive'],
     ]);
     expect(sendMessage).not.toHaveBeenCalled();
@@ -148,7 +148,7 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
     // Sender 's-queen' resolves to a queen-kind session with a known hive; the bee
     // target has no presence row (bee/auto → drainable).
     getPresenceM.mockImplementation((async (id: string) =>
-      id === 's-queen' ? { ownerId: id, agentRole: 'queen', hiveSlug: 'papercusp' } : null) as typeof getPresence);
+      id === 's-queen' ? { ownerId: id, agentRole: 'mug', hiveSlug: 'papercusp' } : null) as typeof getPresence);
     const b = await env({ bee_id: 's-bee-1' });
     expect(b.counts).toEqual({ ok: 1, failed: 0 });
     const [, msg] = sendMessage.mock.calls[0] as [unknown, { extra?: Record<string, unknown> }];

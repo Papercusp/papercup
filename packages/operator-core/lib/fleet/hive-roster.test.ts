@@ -41,7 +41,7 @@ const WI = (id: string, rank: number | null = null): WorkListItem => ({
   title: `work ${id}`,
   status: 'wip',
   rank,
-  rankWriter: 'bee',
+  rankWriter: 'cup',
   activity: 'progressing',
 });
 
@@ -112,7 +112,7 @@ describe('foldHiveRoster', () => {
       queued: [WI('WI-1', 0), WI('WI-2', 1)],
       load: 2,
       orphaned: false,
-      claims: [{ type: 'work-item', harnessSlug: 'h', planSlug: null, id: 'WI-1', itemKind: 'feature', detail: 'd', status: 'wip', acquiredTs: null, expiresTs: null, active: true, orphaned: false, stalled: false, lastProgressAt: null, activity: 'progressing', rank: 0, rankWriter: 'bee' }],
+      claims: [{ type: 'work-item', harnessSlug: 'h', planSlug: null, id: 'WI-1', itemKind: 'feature', detail: 'd', status: 'wip', acquiredTs: null, expiresTs: null, active: true, orphaned: false, stalled: false, lastProgressAt: null, activity: 'progressing', rank: 0, rankWriter: 'cup' }],
     });
     const p = pres({
       ownerId: 'su-x',

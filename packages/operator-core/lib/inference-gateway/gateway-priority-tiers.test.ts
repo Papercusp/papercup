@@ -110,7 +110,7 @@ test('tier 1 (queen) is served AHEAD of a saturated tier-3 (bee) backlog', async
         res.end(JSON.stringify({ ok: true }));
       };
       // hold the FIRST tier-3 (the cap saturator) until we release it; serve everything else immediately
-      if (tag === 'bee' && !firstSeen) {
+      if (tag === 'cup' && !firstSeen) {
         firstSeen = true;
         releaseFirst = finish;
         return;
@@ -120,15 +120,15 @@ test('tier 1 (queen) is served AHEAD of a saturated tier-3 (bee) backlog', async
     { concurrency: 1, priorityTiers: tiersDep({ caps: { 3: 1 }, tier1Reserve: 0 }) },
   );
 
-  const first = ask('bee', 'hold'); // saturates tier-3 cap + the single slot
+  const first = ask('cup', 'hold'); // saturates tier-3 cap + the single slot
   // wait until the upstream is actually holding the first request
   for (let i = 0; i < 50 && !releaseFirst; i++) await new Promise((r) => setTimeout(r, 10));
   assert.ok(releaseFirst, 'first tier-3 is holding the slot');
 
-  const beeA = ask('bee', 'bee-a'); // queued (tier-3 cap full)
-  const beeB = ask('bee', 'bee-b'); // queued
+  const beeA = ask('cup', 'bee-a'); // queued (tier-3 cap full)
+  const beeB = ask('cup', 'bee-b'); // queued
   await new Promise((r) => setTimeout(r, 30));
-  const queen = ask('queen', 'queen'); // queued LAST but tier 1
+  const queen = ask('mug', 'mug'); // queued LAST but tier 1
   await new Promise((r) => setTimeout(r, 30));
 
   releaseFirst!(); // free the slot → queen must win over the capped tier-3 backlog
@@ -136,7 +136,7 @@ test('tier 1 (queen) is served AHEAD of a saturated tier-3 (bee) backlog', async
 
   // the first served-after-release request is the queen (tier 1), NOT an earlier-arriving bee.
   const afterHold = served.slice(1); // drop the held-first bee
-  assert.equal(afterHold[0], 'queen', `tier 1 served first after the hold; got order ${served.join(',')}`);
+  assert.equal(afterHold[0], 'mug', `tier 1 served first after the hold; got order ${served.join(',')}`);
 });
 
 test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () => {
@@ -150,13 +150,13 @@ test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () =>
     (req, res) => {
       const tag = (req.headers[PRIORITY_HEADER] as string) ?? '?';
       const finish = () => {
-        if (tag === 'queen') queenServed = true;
+        if (tag === 'mug') queenServed = true;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       };
       // queen always serves immediately. A bee is HELD while holdBees is set (so it squats its slot),
       // else served immediately (so a queued bee that admits after we stop holding can complete).
-      if (tag === 'bee' && holdBees) {
+      if (tag === 'cup' && holdBees) {
         released.push(finish);
         return;
       }
@@ -165,8 +165,8 @@ test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () =>
     { concurrency: 2, priorityTiers: tiersDep({ caps: {}, tier1Reserve: 1 }) },
   );
 
-  const beeA = ask('bee', 'bee-a');
-  const beeB = ask('bee', 'bee-b');
+  const beeA = ask('cup', 'bee-a');
+  const beeB = ask('cup', 'bee-b');
   // let admission settle: only one bee can run (reserve holds the 2nd slot for tier 1)
   for (let i = 0; i < 50 && released.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
   await new Promise((r) => setTimeout(r, 50));
@@ -175,7 +175,7 @@ test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () =>
   const t3 = s.priorityTiers.tiers.find((t: any) => t.tier === 3);
   assert.equal(t3.inFlight, 1, 'only one bee runs — the reserved slot is held for tier 1');
 
-  const queen = ask('queen', 'queen'); // must run into the reserved slot, NOT block behind the held bee
+  const queen = ask('mug', 'mug'); // must run into the reserved slot, NOT block behind the held bee
   for (let i = 0; i < 50 && !queenServed; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(queenServed, true, 'tier 1 admitted into the reserved floor while a tier-3 is held');
 
@@ -198,7 +198,7 @@ test('Codex /v1/responses has its own tier-1 reserve so Scout is not starved by 
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ output_text: '{"ok":true}', usage: { input_tokens: 1, output_tokens: 1 } }));
       };
-      if (tag === 'bee' && holdBees) {
+      if (tag === 'cup' && holdBees) {
         released.push(finish);
         return;
       }
@@ -211,8 +211,8 @@ test('Codex /v1/responses has its own tier-1 reserve so Scout is not starved by 
     },
   );
 
-  const beeA = askCodex('bee', 'bee-a');
-  const beeB = askCodex('bee', 'bee-b');
+  const beeA = askCodex('cup', 'bee-a');
+  const beeB = askCodex('cup', 'bee-b');
   for (let i = 0; i < 50 && released.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
   await new Promise((r) => setTimeout(r, 50));
 
@@ -264,7 +264,7 @@ test('flag-OFF (no priorityTiers dep): priority header is IGNORED + /stats has n
     { concurrency: 4 }, // NO priorityTiers
   );
   // a request carrying a priority header still succeeds (header is inert without the tier layer)
-  const r = await ask('queen', 'x');
+  const r = await ask('mug', 'x');
   assert.equal(r.status, 200);
   const s = await getStats();
   assert.equal(s.priorityTiers, undefined, 'no priorityTiers stats field under flag-OFF');
@@ -293,7 +293,7 @@ test('tier-aware shedding: an AIMD storm shrinks the bottom band first, holds ti
   );
 
   // fire a storm of bee (tier-3) requests; each upstream 429 feeds aimd.recordThrottle()
-  await Promise.allSettled(Array.from({ length: 12 }, (_, i) => ask('bee', `storm-${i}`)));
+  await Promise.allSettled(Array.from({ length: 12 }, (_, i) => ask('cup', `storm-${i}`)));
   await new Promise((r) => setTimeout(r, 50));
 
   const s = await getStats();

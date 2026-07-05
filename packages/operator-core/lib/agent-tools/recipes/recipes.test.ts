@@ -72,7 +72,7 @@ describe('recipes:* registration (P-005, P-013)', () => {
       expect(tool).toBeDefined();
       expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
       // bee is in the envelope (mirrors code:run's [...SU_ROLES,'bee'])
-      expect(tool.agentRoles).toContain('bee');
+      expect(tool.agentRoles).toContain('cup');
     });
   }
 
@@ -93,7 +93,7 @@ describe('recipes:* registration (P-005, P-013)', () => {
       expect(tool).toBeDefined();
       expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
       // A review/curation action — NOT bee-authored (unlike recipes:run/get/list).
-      expect(tool.agentRoles).not.toContain('bee');
+      expect(tool.agentRoles).not.toContain('cup');
       // Mutates the recipe corpus.
       expect(tool.effect).toBe('write');
       expect(tool.capabilities).toContain('intel:write');

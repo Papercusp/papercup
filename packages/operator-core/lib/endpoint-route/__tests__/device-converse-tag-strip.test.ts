@@ -42,7 +42,7 @@ vi.mock('../../workspace-registry', () => ({
 
 // P-012: the device route reads the `humanFacingRole` voice pref to repoint the
 // brain to the Sentinel persona. Mutated per-test.
-let humanFacingRole: 'operator' | 'sentinel' = 'operator';
+let humanFacingRole: 'operator' | 'papercup' = 'operator';
 vi.mock('../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => ({ humanFacingRole })),
 }));
@@ -208,12 +208,12 @@ describe('POST /device/operator/converse — persona role resolution (P-012)', (
   });
 
   it('loads the sentinel brain when humanFacingRole=sentinel', async () => {
-    humanFacingRole = 'sentinel';
+    humanFacingRole = 'papercup';
     await runConverse('hey');
     expect(lookupByMcpName).toHaveBeenCalledWith('papercup:converse');
     const [, toolName, args] = dispatchProjectedToolStream.mock.calls[0];
     expect(toolName).toBe('papercup:converse');
-    expect((args as { role?: string }).role).toBe('sentinel');
+    expect((args as { role?: string }).role).toBe('papercup');
   });
 
   it('loads the operator brain by default (humanFacingRole=operator)', async () => {

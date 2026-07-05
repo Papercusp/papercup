@@ -107,7 +107,7 @@ describe('executeBatch — placement execution', () => {
     const reservedSpawnId = fns.spawnAgentInHarness.mock.calls[0]?.[0]?.spawnId;
     expect(fns.spawnAgentInHarness).toHaveBeenCalledTimes(1);
     expect(fns.spawnAgentInHarness).toHaveBeenCalledWith(
-      expect.objectContaining({ featureId: 'WI-1', itemId: 'WI-1', role: 'bee', harness: 'h', workspaceId: 'ws-1', spawnId: expect.stringMatching(/^s-/) }),
+      expect.objectContaining({ featureId: 'WI-1', itemId: 'WI-1', role: 'cup', harness: 'h', workspaceId: 'ws-1', spawnId: expect.stringMatching(/^s-/) }),
     );
     expect(fns.claimWorkItem).toHaveBeenCalledWith('WI-1', reservedSpawnId, { harness: 'h' });
     expect(r.placements[0]).toMatchObject({ task: 'WI-1', action: 'spawned', spawn_id: reservedSpawnId });

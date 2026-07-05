@@ -85,7 +85,7 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
   });
 
   it('extracts sourceRole for Queen, bee, and system roles (P-010)', () => {
-    for (const role of ['Queen', 'bee', 'system', 'human'] as const) {
+    for (const role of ['Queen', 'cup', 'system', 'human'] as const) {
       const c = issueToCandidate(
         issue({
           id: `EI-${role}`,

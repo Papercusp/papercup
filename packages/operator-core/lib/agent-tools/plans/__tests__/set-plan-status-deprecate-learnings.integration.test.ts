@@ -120,7 +120,7 @@ describe('plans:set-plan-status — deprecate emits a learnings observation (B10
 
     const { data, isError } = await runDeprecate(
       { status: 'superseded', learnings: LEARNINGS, evidence: ['wi:WI-42'] },
-      'queen', // → deprecatedBy 'Queen'
+      'mug', // → deprecatedBy 'Queen'
     );
 
     // (a) the supersede happened.

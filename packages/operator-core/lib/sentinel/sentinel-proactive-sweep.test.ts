@@ -83,8 +83,8 @@ function makeDeps(over: Partial<SentinelSweepDeps> = {}): {
   return { deps, spies };
 }
 
-const LIVE: SentinelSweepState = { sessionLive: true, ownsVoiceLease: true, humanFacingRole: 'sentinel' };
-const VOICE_OFF: SentinelSweepState = { sessionLive: false, ownsVoiceLease: true, humanFacingRole: 'sentinel' };
+const LIVE: SentinelSweepState = { sessionLive: true, ownsVoiceLease: true, humanFacingRole: 'papercup' };
+const VOICE_OFF: SentinelSweepState = { sessionLive: false, ownsVoiceLease: true, humanFacingRole: 'papercup' };
 
 beforeEach(() => {
   resetSentinelSweepThrottle();

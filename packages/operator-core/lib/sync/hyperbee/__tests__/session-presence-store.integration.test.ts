@@ -85,7 +85,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         githubUserId: 42,
         machineLabel: 'laptop',
         hiveSlug: 'hive-home',
-        sessions: [entry('su-a1'), entry('s-bee-1', { kind: 'bee', plan_slug: 'p1' })],
+        sessions: [entry('su-a1'), entry('s-bee-1', { kind: 'cup', plan_slug: 'p1' })],
         frameTs: T0,
       },
       db.sql,

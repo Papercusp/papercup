@@ -261,8 +261,8 @@ describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
     peakConcurrency: 4,
   };
   const coordEvents: CoordEvent[] = [
-    { kind: 'spawn', agent: 'queen' },
-    { kind: 'placement', agent: 'queen', taskId: 't1' },
+    { kind: 'spawn', agent: 'mug' },
+    { kind: 'placement', agent: 'mug', taskId: 't1' },
     { kind: 'claim', agent: 'bee-1', taskId: 't1' },
     { kind: 'complete', agent: 'bee-1', taskId: 't1' },
     { kind: 'duplicate_completion', agent: 'bee-2', taskId: 't1', detail: 'two bees finished t1' },
@@ -293,7 +293,7 @@ describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
     const trace = await getCoordTrace(fleetRunId, { sql, workspaceId: WS });
     expect(trace?.arm).toBe('hive');
     expect(trace?.events).toHaveLength(6);
-    expect(trace?.agents).toEqual(expect.arrayContaining(['queen', 'bee-1', 'bee-2', 'bee-3']));
+    expect(trace?.agents).toEqual(expect.arrayContaining(['mug', 'bee-1', 'bee-2', 'bee-3']));
 
     // P-026's objective counter reads the trace P-010 captured.
     const rates = substrateSignalRates(trace!.events, summary.tasks);

@@ -34,7 +34,7 @@ const PHASE_ONLY_ROLES = new Set(['tester', 'test-writer', 'monitor']);
 // `bee` is the Hive's generic worker; its persona lives at
 // blueprints/coding/prompts/bee.md, resolved via the hive blueprint (or the global
 // backstop until the harness blueprintId is threaded in Phase 5).
-const BLUEPRINT_BUNDLED_ROLES = new Set(['bee']);
+const BLUEPRINT_BUNDLED_ROLES = new Set(['cup']);
 
 // pot-rename SLICE-2 (EXPAND): additive alias role that resolves via ROLE_ALIASES to a
 // canonical WITHOUT its own base persona. `blender`→`scout`, and `scout` ships NO
@@ -90,7 +90,7 @@ describe('base is the shared role library (Phase 2)', () => {
 
 describe('the hive is the self-contained Queen + colony blueprint (Phase 3)', () => {
   it('the hive blueprint bundles bee/queen/operator/overwatch', () => {
-    for (const role of ['bee', 'queen', 'operator', 'overwatch']) {
+    for (const role of ['cup', 'mug', 'operator', 'kettle']) {
       const p = join(HARNESS_DIR, 'blueprints', 'coding', 'prompts', `${role}.md`);
       expect(existsSync(p), `hive should bundle ${role}.md`).toBe(true);
     }
@@ -99,13 +99,13 @@ describe('the hive is the self-contained Queen + colony blueprint (Phase 3)', ()
   it('a hive-context spawn resolves bee from blueprints/coding/prompts/bee.md', () => {
     const found = resolvePromptFile(
       { harnessDir: HARNESS_DIR, phase: '', dept: '', blueprintId: 'coding' },
-      'bee',
+      'cup',
     );
     expect(found).toBe(join(HARNESS_DIR, 'blueprints', 'coding', 'prompts', 'bee.md'));
   });
 
   it('a hive-context spawn resolves the queen/overwatch OVERRIDE over the base copy', () => {
-    for (const role of ['queen', 'overwatch']) {
+    for (const role of ['mug', 'kettle']) {
       const found = resolvePromptFile(
         { harnessDir: HARNESS_DIR, phase: '', dept: '', blueprintId: 'coding' },
         role,

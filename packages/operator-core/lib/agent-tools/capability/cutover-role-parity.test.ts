@@ -32,7 +32,7 @@ import './git';
 import './fetch';
 
 /** The canonical role set the capability tools declare: SU_ROLES ∪ {bee}. */
-const EXPECTED_ROLES = new Set<string>([...SU_ROLES, 'bee']);
+const EXPECTED_ROLES = new Set<string>([...SU_ROLES, 'cup']);
 
 describe('B-18 cutover role parity — FLEET_CAPABILITY_ROLES ≡ capability tools agentRoles', () => {
   it('FLEET_CAPABILITY_ROLES (orchestrator) equals SU_ROLES ∪ {bee}', () => {
@@ -86,7 +86,7 @@ const CAPABILITY_REPLACEMENT_MCP_NAMES = [
 ].map(mcpName);
 
 describe('D-002 cut-over allow/deny asymmetry — confined bee/queen kit carries capability:* and lists no stripped native', () => {
-  const CUTOVER_ROLES = ['bee', 'queen'] as const;
+  const CUTOVER_ROLES = ['cup', 'mug'] as const;
 
   it.each(CUTOVER_ROLES)(
     'under the cutover, %s allow-list excludes every replaced native (no tool both allowed and denied)',
@@ -115,7 +115,7 @@ describe('D-002 cut-over allow/deny asymmetry — confined bee/queen kit carries
   );
 
   it('cutover OFF leaves the bee native write surface intact (no regression to the unconfined path)', () => {
-    const allow = new Set(fleetAllowedToolsForRole('bee', /* capabilityOnly */ false));
+    const allow = new Set(fleetAllowedToolsForRole('cup', /* capabilityOnly */ false));
     for (const native of FLEET_CAPABILITY_REPLACED_TOOLS) {
       expect(allow.has(native), `cutover-off bee must keep native "${native}"`).toBe(true);
     }

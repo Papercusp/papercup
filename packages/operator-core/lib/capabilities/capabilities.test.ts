@@ -148,7 +148,7 @@ describe('projectedToolToCapability', () => {
         description: 'START the hive.',
         inputSchema: { type: 'object', properties: { harness: { type: 'string' } } }, // all optional
         capabilities: ['harness:write'],
-        agentRoles: ['operator', 'worker', 'bee'],
+        agentRoles: ['operator', 'worker', 'cup'],
         guidance: { when: 'The user clicks Start Hive.' },
       },
       lowTier,

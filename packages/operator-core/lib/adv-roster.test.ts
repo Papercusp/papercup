@@ -285,7 +285,7 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
       new Map([['b', adv({ role: 'brain' })]]),
       NOW,
     );
-    expect(brain.agentPaneKind).toBe('queen');
+    expect(brain.agentPaneKind).toBe('mug');
     expect(brain.driveMode).toBe('auto');
 
     const [op] = mergeRosterEntries(
@@ -293,15 +293,15 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
       new Map([['o', adv({ role: 'operator' })]]),
       NOW,
     );
-    expect(op.agentPaneKind).toBe('sentinel');
+    expect(op.agentPaneKind).toBe('papercup');
     expect(op.driveMode).toBe('responsive');
 
     const [w] = mergeRosterEntries([presence({ ownerId: 'w' })], new Map([['w', adv({ role: 'worker' })]]), NOW);
-    expect(w.agentPaneKind).toBe('bee');
+    expect(w.agentPaneKind).toBe('cup');
 
     // Plain SU shell (no adv row, role null) → bee default.
     const [bare] = mergeRosterEntries([presence({ ownerId: 'x' })], new Map(), NOW);
-    expect(bare.agentPaneKind).toBe('bee');
+    expect(bare.agentPaneKind).toBe('cup');
   });
 
   it('classifies invoke-launched queen/overwatch from presence agentRole when there is no adv row (dock panes)', () => {
@@ -309,26 +309,26 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     // row (adv.role null) — but their presence row carries agentRole. Without the
     // fallback they dropped to the bee arm and vanished from the dock --queen /
     // --overwatch panes.
-    const [queen] = mergeRosterEntries([presence({ ownerId: 'q', agentRole: 'queen' })], new Map(), NOW);
-    expect(queen.agentPaneKind).toBe('queen');
-    expect(queen.role).toBe('queen');
+    const [queen] = mergeRosterEntries([presence({ ownerId: 'q', agentRole: 'mug' })], new Map(), NOW);
+    expect(queen.agentPaneKind).toBe('mug');
+    expect(queen.role).toBe('mug');
 
-    const [ow] = mergeRosterEntries([presence({ ownerId: 'ow', agentRole: 'overwatch' })], new Map(), NOW);
-    expect(ow.agentPaneKind).toBe('overwatch');
+    const [ow] = mergeRosterEntries([presence({ ownerId: 'ow', agentRole: 'kettle' })], new Map(), NOW);
+    expect(ow.agentPaneKind).toBe('kettle');
 
     // An explicit adv-record role still wins over the presence agentRole.
     const [adved] = mergeRosterEntries(
-      [presence({ ownerId: 'a', agentRole: 'queen' })],
+      [presence({ ownerId: 'a', agentRole: 'mug' })],
       new Map([['a', adv({ role: 'worker' })]]),
       NOW,
     );
-    expect(adved.agentPaneKind).toBe('bee');
+    expect(adved.agentPaneKind).toBe('cup');
   });
 
   it('surfaces the bee session_id from the spawned-agents map → claude --resume handle (P-004)', () => {
     const [e] = mergeRosterEntries(
       [presence({ ownerId: 's-bee-1' })],
-      new Map([['s-bee-1', adv({ role: 'bee' })]]),
+      new Map([['s-bee-1', adv({ role: 'cup' })]]),
       NOW,
       new Map(),
       new Map([['s-bee-1', 'claude-uuid-xyz']]),
@@ -458,14 +458,14 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
   it('pending entry: a retired --brain launch argv no longer implies queen', () => {
     const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
-    expect(e.agentPaneKind).toBe('bee');
+    expect(e.agentPaneKind).toBe('cup');
     expect(e.driveMode).toBe('auto');
   });
 
   it('pending entry: worker role → bee', () => {
     const row = adv({ id: 10, display: 'workbench', role: 'worker', launchArgv: ['psu', '--agent=claude'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
-    expect(e.agentPaneKind).toBe('bee');
+    expect(e.agentPaneKind).toBe('cup');
   });
 
   it('pending entry: a New-plan launch types as planner from EITHER signal (P-006)', () => {

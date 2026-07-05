@@ -127,7 +127,7 @@ describe('routeCrossHiveEnvelope — admit then translate via B\'s ordinary subs
 // (e.g. a 'feature'/'bug' work_item, or a coding-only conversation kind) would break a
 // coding↔generic exchange and is caught here. (The live two-hive end-to-end remains an owner smoke.)
 describe('makeLiveBoundaryPorts — translates to GENERIC kinds (blueprint-agnostic, P-015)', () => {
-  const identity = { id: 'agent-x', role: 'queen' } as never;
+  const identity = { id: 'agent-x', role: 'mug' } as never;
 
   it('openAsk → a conversation with kind:"question" (generic — not coding-specific)', async () => {
     vi.mocked(openConversation).mockClear();

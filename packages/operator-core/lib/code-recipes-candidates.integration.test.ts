@@ -41,7 +41,7 @@ async function seedRuns(
       workspaceId,
       hiveSlug,
       agentOwner: opts.agents[i % opts.agents.length],
-      agentRole: 'bee',
+      agentRole: 'cup',
       success: i < successes,
     });
   }

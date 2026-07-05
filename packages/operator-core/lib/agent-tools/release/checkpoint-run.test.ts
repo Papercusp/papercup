@@ -55,7 +55,7 @@ describe('release:checkpoint-run', () => {
   // config; wrong here — this mutates nothing), so pipeline roles that greened the reds hit a
   // recurring structural tool-error. There is now no in-handler role gate; the invoke allowlist
   // (SU_ROLES + bee/release-fixer/release-manager) is the access control.
-  it.each(['worker', 'debugger', 'bee', 'release-fixer'])(
+  it.each(['worker', 'debugger', 'cup', 'release-fixer'])(
     'fires the verdict for a non-operator red-fixing role (%s) — no operator-config-write gate (EI-7426)',
     async (role) => {
       const launchSpy = vi.fn(async () => ({
@@ -79,7 +79,7 @@ describe('release:checkpoint-run', () => {
     const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
     // The specific pipeline roles the watchdog observed hitting the structural error, plus the
     // wider red-fix cohort, must be invoke-allowed (EI-7426).
-    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'bee', 'release-fixer', 'release-manager']) {
+    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'cup', 'release-fixer', 'release-manager']) {
       expect(roles).toContain(r);
     }
   });

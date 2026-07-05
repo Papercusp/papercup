@@ -59,7 +59,7 @@ describe('loadRoleCapabilities', () => {
       // The EI-524 read-only confinement was lifted at the ENVELOPE layer; this pins
       // the matching capability GRANT (the two-gate fix) so a future re-confinement is
       // a DELIBERATE test change, never a silent regression that re-strands the fleet.
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'cup');
       expect(caps.has('capability:fs-write')).toBe(true); // capability:write + capability:edit
       expect(caps.has('capability:bash')).toBe(true); // capability:bash + :bash_output + :bash_kill
       // ...alongside the engineering surface it already had (parity with psu).
@@ -72,7 +72,7 @@ describe('loadRoleCapabilities', () => {
   // ── sentinel — the fleet watcher (unify-launch-mechanics-2026-06-09 D-004) ──
   describe('sentinel — the read-mostly fleet watcher surface', () => {
     test("sentinel's WATCH+ALARM contract is reachable: read caps + coord:write, AND fleet:assignments allowlists it", async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       // Reads it sweeps with.
       expect(caps.has('coord:read')).toBe(true);
       expect(caps.has('harness:read')).toBe(true);
@@ -84,9 +84,9 @@ describe('loadRoleCapabilities', () => {
       // The two-gate other half — the watcher tools must allowlist sentinel, else
       // the read caps are INERT (the bee/scanner lesson).
       const { default: assignments } = await import('../../../agent-tools/fleet/assignments.js');
-      expect(assignments.agentRoles).toContain('sentinel');
+      expect(assignments.agentRoles).toContain('papercup');
       const { default: health } = await import('../../../agent-tools/harness/health.js');
-      expect(health.agentRoles).toContain('sentinel');
+      expect(health.agentRoles).toContain('papercup');
     });
 
     // ── Sentinel-as-Herald: the watcher is re-homed onto the always-on, voice-first
@@ -94,53 +94,53 @@ describe('loadRoleCapabilities', () => {
     // nudge), but the hard boundary holds: it suggests + files + hands off; the
     // QUEEN places/executes. ──
     test("Herald CONVERSE contract is reachable: operator:converse cap AND the converse tool allowlists sentinel", async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       // The brain runs with role='sentinel' (the operator-converse route resolves
       // `${role}:converse`); the cap + the allowlist are the two gates.
       expect(caps.has('operator:converse')).toBe(true);
       const { default: converse } = await import('../../../agent-tools/operator/converse.js');
-      expect(converse.agentRoles).toContain('sentinel');
+      expect(converse.agentRoles).toContain('papercup');
       expect(converse.agentRoles).toContain('operator'); // unchanged for the operator
     });
 
     test('Herald VOICE contract is reachable: operator:read/write caps AND the voice:* tools allowlist sentinel', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       expect(caps.has('operator:read')).toBe(true); // voice:status / voice:transcript
       expect(caps.has('operator:write')).toBe(true); // voice:join / leave / channels / agent
       const { default: join } = await import('../../../agent-tools/voice/join.js');
-      expect(join.agentRoles).toContain('sentinel');
+      expect(join.agentRoles).toContain('papercup');
       const { default: status } = await import('../../../agent-tools/voice/status.js');
-      expect(status.agentRoles).toContain('sentinel');
+      expect(status.agentRoles).toContain('papercup');
     });
 
     test('Herald can FILE the user’s ask: work_items:write cap AND work_items:create/set_priority admit sentinel (via COORD_ROLES)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       expect(caps.has('work_items:write')).toBe(true);
       const { default: create } = await import('../../../agent-tools/work_items/create.js');
-      expect(create.agentRoles).toContain('sentinel');
+      expect(create.agentRoles).toContain('papercup');
       const { default: setPriority } = await import('../../../agent-tools/work_items/set_priority.js');
-      expect(setPriority.agentRoles).toContain('sentinel');
+      expect(setPriority.agentRoles).toContain('papercup');
     });
 
     test('Herald can NUDGE the Queen: coord:write cap AND coord:send/escalate admit sentinel (via COORD_ROLES)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       expect(caps.has('coord:write')).toBe(true);
       const { default: send } = await import('../../../agent-tools/coordination/tools/send.js');
-      expect(send.agentRoles).toContain('sentinel');
+      expect(send.agentRoles).toContain('papercup');
       const { default: escalate } = await import('../../../agent-tools/coordination/tools/escalate.js');
-      expect(escalate.agentRoles).toContain('sentinel');
+      expect(escalate.agentRoles).toContain('papercup');
     });
 
     test('Herald reads the live blackboard it narrates: curation:read + plans:read caps (+ plans:attention allowlists it)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       expect(caps.has('curation:read')).toBe(true); // curation:feed / state-of-hive / change-feed (capability-only, no allowlist)
       expect(caps.has('plans:read')).toBe(true);
       const { default: attention } = await import('../../../agent-tools/plans/attention.js');
-      expect(attention.agentRoles).toContain('sentinel');
+      expect(attention.agentRoles).toContain('papercup');
     });
 
     test('sentinel still NEVER places/executes: no set_state / harness / plan / routine WRITE caps (suggest + hand off, do not act)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
       // It CAN file work_items (work_items:write → create/set_priority) but the
       // PLACEMENT verbs stay the Queen's: it gets no harness/plan/routine write.
       expect(caps.has('harness:write')).toBe(false);
@@ -150,7 +150,7 @@ describe('loadRoleCapabilities', () => {
 
     test('sentinel CANNOT place/execute: carved OUT of cup:spawn + DENIED fs-write/bash at the envelope', async () => {
       const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
-      expect(spawn.agentRoles).not.toContain('sentinel');
+      expect(spawn.agentRoles).not.toContain('papercup');
       // ...but the Queen (operator) still spawns it.
       expect(spawn.agentRoles).toContain('operator');
       // The envelope belt: even a tool asking for fs-write/bash is refused.
@@ -162,14 +162,14 @@ describe('loadRoleCapabilities', () => {
           evaluateCapabilityEnvelope({
             toolName: 'capability:write',
             capabilities: ['capability:fs-write'],
-            ctx: { role: 'sentinel' },
+            ctx: { role: 'papercup' },
           }).withinEnvelope,
         ).toBe(false);
         expect(
           evaluateCapabilityEnvelope({
             toolName: 'capability:bash',
             capabilities: ['capability:bash'],
-            ctx: { role: 'sentinel' },
+            ctx: { role: 'papercup' },
           }).withinEnvelope,
         ).toBe(false);
       } finally {
@@ -182,7 +182,7 @@ describe('loadRoleCapabilities', () => {
   // ── overwatch — the autonomous system-health supervisor (overwatch-role-2026-06-15 C-2 / B-01) ──
   describe('overwatch — the read-everything + nudge/observe/escalate surface', () => {
     test("overwatch's WATCH+NUDGE contract is reachable: broad read caps + coord:write, AND the watcher tools allowlist it", async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'overwatch');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'kettle');
       // The broad read surface it senses the whole system with.
       for (const c of [
         'coord:read',
@@ -202,17 +202,17 @@ describe('loadRoleCapabilities', () => {
       // The two-gate other half — the read+nudge tools must allowlist overwatch, else the
       // caps are INERT (the bee/scanner/sentinel lesson). One representative per gate kind:
       const { default: hiveStatus } = await import('../../../agent-tools/hive/status.js');
-      expect(hiveStatus.agentRoles).toContain('overwatch'); // via COORD_ROLES
+      expect(hiveStatus.agentRoles).toContain('kettle'); // via COORD_ROLES
       const { default: governor } = await import('../../../agent-tools/dev/rate_governor_status.js');
-      expect(governor.agentRoles).toContain('overwatch'); // explicit allowlist
+      expect(governor.agentRoles).toContain('kettle'); // explicit allowlist
       const { default: notifications } = await import('../../../agent-tools/operator/notifications_recent.js');
-      expect(notifications.agentRoles).toContain('overwatch'); // [...SU_ROLES, 'overwatch']
+      expect(notifications.agentRoles).toContain('kettle'); // [...SU_ROLES, 'kettle']
       const { default: capture } = await import('../../../agent-tools/improvements/capture.js');
-      expect(capture.agentRoles).toContain('overwatch'); // via COORD_ROLES — observations land
+      expect(capture.agentRoles).toContain('kettle'); // via COORD_ROLES — observations land
     });
 
     test('overwatch is READ + NUDGE only: no work/harness/plan/routine WRITE caps (nudge the Queen, never re-place — D-001)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'overwatch');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'kettle');
       expect(caps.has('work_items:write')).toBe(false);
       expect(caps.has('harness:write')).toBe(false);
       expect(caps.has('plans:write')).toBe(false);
@@ -221,9 +221,9 @@ describe('loadRoleCapabilities', () => {
 
     test('overwatch is carved OUT of placement/optimization (cup:spawn + gym:judge — D-001/D-002)', async () => {
       const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
-      expect(spawn.agentRoles).not.toContain('overwatch'); // placement is the Queen's; it NUDGES her
+      expect(spawn.agentRoles).not.toContain('kettle'); // placement is the Queen's; it NUDGES her
       const { default: judge } = await import('../../../agent-tools/gym/judge.js');
-      expect(judge.agentRoles).not.toContain('overwatch'); // not a gym evaluator (gates on harness:read it holds)
+      expect(judge.agentRoles).not.toContain('kettle'); // not a gym evaluator (gates on harness:read it holds)
       // ...but the Queen (operator) still places.
       expect(spawn.agentRoles).toContain('operator');
     });
@@ -293,7 +293,7 @@ describe('loadRoleCapabilities', () => {
   // independent co-gate, asserted empirically in the dispatch-stack boundary test).
   describe("bee — the worker engineering cap set", () => {
     test('grants the engineering caps added by the expansion (incl. plans:write, D-005)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'cup');
       for (const c of [
         // pre-existing worker surface
         'harness:read',
@@ -322,7 +322,7 @@ describe('loadRoleCapabilities', () => {
     });
 
     test('does NOT grant the Queen-only capabilities (D-002)', async () => {
-      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'cup');
       // Placement / steering / admin / judgment surfaces stay with the Queen
       // (a kind:'hive' bee). These are withheld at the CAPABILITY layer — the
       // bee never holds the cap, so the capability-check gate denies regardless

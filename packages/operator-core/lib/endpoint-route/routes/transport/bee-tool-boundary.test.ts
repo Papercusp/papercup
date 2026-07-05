@@ -30,7 +30,7 @@ function beeReach(
   tool: { agentRoles?: readonly string[]; capability?: string },
   beeCaps: Set<string>,
 ): { roleOk: boolean; capOk: boolean; callable: boolean } {
-  const roleOk = !tool.agentRoles || tool.agentRoles.includes('bee');
+  const roleOk = !tool.agentRoles || tool.agentRoles.includes('cup');
   const capOk = !tool.capability || beeCaps.has(tool.capability);
   return { roleOk, capOk, callable: roleOk && capOk };
 }
@@ -81,7 +81,7 @@ const CANNOT_ROLE: Array<{ path: string }> = [
 
 describe('bee tool boundary (P-004 — two-gate reality)', () => {
   test('the worker-bee CAN reach the unlocked engineering surface (both gates pass)', async () => {
-    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'bee');
+    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'cup');
     for (const { path, via } of CAN) {
       const tool = await importTool(path);
       const r = beeReach(tool, caps);
@@ -92,7 +92,7 @@ describe('bee tool boundary (P-004 — two-gate reality)', () => {
   });
 
   test('the worker-bee CANNOT reach the Queen-only admin surface — blocked at the CAPABILITY gate', async () => {
-    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'bee');
+    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'cup');
     for (const { path } of CANNOT_CAP) {
       const tool = await importTool(path);
       const r = beeReach(tool, caps);
@@ -102,7 +102,7 @@ describe('bee tool boundary (P-004 — two-gate reality)', () => {
   });
 
   test('the worker-bee CANNOT reach the placement/optimization surface — blocked at the ROLE gate (D-002 carve-out)', async () => {
-    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'bee');
+    const caps = await loadRoleCapabilities(fakeTx(), 'ws', 'cup');
     for (const { path } of CANNOT_ROLE) {
       const tool = await importTool(path);
       const r = beeReach(tool, caps);

@@ -101,9 +101,32 @@ Forbidden:
 - Playwright MCP / `proxy_mcp_playwright_*` tools — superseded by
   `tauri-agent-tools` for operator work and by the official
   `tauri-driver` CLI for the automated suite.
-- Driving the user's live `:0` Tauri window with `xdotool` while they
-  are working — focus-stealing is unacceptable. Use the bridge (no
+- Driving the user's live `:0`/`:1` (whichever display number the
+  owner's real desktop session actually uses on this box — check with
+  `who` / `w` before assuming `:0`) Tauri window with `xdotool` while
+  they are working — focus-stealing is unacceptable. Use the bridge (no
   focus changes) or a second Tauri instance under Xvfb.
+
+  > ⚠ **Incident (WI-2648, fact `wi2648-xdotool-email-leak`):** `xdotool
+  > type "flag"` intended for the desktop docs-search palette leaked into
+  > the owner's REAL focused Missive email draft — `xdotool windowactivate
+  > --sync` did NOT reliably land focus on the target window first, so the
+  > synthetic characters went to whatever window actually had focus on the
+  > shared live session. **Durable guidance for anyone verifying Papercusp
+  > desktop UI on the owner's live GNOME session:**
+  > 1. **NEVER use `xdotool type` / any synthetic character input** on the
+  >    live session — there is no reliable way to guarantee focus landed
+  >    on the target window first. Use a **headless render** instead:
+  >    `google-chrome --headless=new --screenshot` against the served
+  >    operator port URL for a visual check, or the bridge / a second
+  >    Xvfb instance (§15.4) for interaction.
+  > 2. `wmctrl -l | grep '<window title>'` **window-count** is a SAFE,
+  >    non-intrusive functional signal (open/close/reopen) — it doesn't
+  >    touch focus or send input, just lists windows.
+  > 3. **Global hotkeys** (e.g. a bound `ctrl+/`) ARE safe to send even on
+  >    the live session, because a global-hotkey grab is focus-independent
+  >    by design — unlike `xdotool type`, it doesn't depend on which
+  >    window currently has focus.
 
 ## 1. Pre-flight
 

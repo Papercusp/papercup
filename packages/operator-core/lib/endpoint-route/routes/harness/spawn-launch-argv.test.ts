@@ -73,7 +73,7 @@ describe('reconstructHiveLaunchArgv (WI-1347)', () => {
   it('marks an overwatch launch with --kind=overwatch', () => {
     const argv = reconstructHiveLaunchArgv({
       backend: 'codex',
-      role: 'overwatch',
+      role: 'kettle',
       harnessSlug: 'papercusp',
       isOverwatchLaunch: true,
     });

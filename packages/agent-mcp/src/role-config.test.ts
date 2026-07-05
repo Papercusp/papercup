@@ -66,7 +66,7 @@ test('OPERATOR_CONFIG_WRITE_ROLES is the operator-equivalent write set incl. que
   // queen is the operator SPECIALIZED (local-hive D-001) — she MUST be here, or she can
   // invoke those tools but their `set` rejects her (the EI-2204 regression). operator +
   // architect are the historical writers and must remain.
-  for (const role of ['operator', 'architect', 'queen']) {
+  for (const role of ['operator', 'architect', 'mug']) {
     assert.ok(
       OPERATOR_CONFIG_WRITE_ROLES.includes(role as (typeof OPERATOR_CONFIG_WRITE_ROLES)[number]),
       `operator-config write role "${role}" missing — its tools' set op would reject it`,
@@ -80,11 +80,11 @@ test('OPERATOR_CONFIG_WRITE_ROLES is the operator-equivalent write set incl. que
 });
 
 test('isOperatorConfigWriteRole — queen/operator/architect pass, other roles + unknown fail', () => {
-  for (const role of ['operator', 'architect', 'queen']) {
+  for (const role of ['operator', 'architect', 'mug']) {
     assert.equal(isOperatorConfigWriteRole(role), true, `${role} should have operator-config write authority`);
   }
   // Read-only / non-operator-equivalent SU roles, plugin-namespaced, and absent roles fail-closed.
-  for (const role of ['worker', 'scoper', 'validator', 'reviewer', 'documenter', 'curator', 'bee', 'plugin:role']) {
+  for (const role of ['worker', 'scoper', 'validator', 'reviewer', 'documenter', 'curator', 'cup', 'plugin:role']) {
     assert.equal(isOperatorConfigWriteRole(role), false, `${role} must NOT have operator-config write authority`);
   }
   assert.equal(isOperatorConfigWriteRole(undefined), false);

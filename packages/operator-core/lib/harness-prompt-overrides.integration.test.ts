@@ -52,12 +52,12 @@ describe('harness_prompt_overrides store (real PG)', () => {
 
   it('ON CONFLICT (workspace, harness, role) overwrites the markdown (latest wins)', async () => {
     const ws = freshWs();
-    await setPromptOverride(ws, 'harness-b', 'queen', 'first body');
-    await setPromptOverride(ws, 'harness-b', 'queen', 'second body');
-    expect(await getPromptOverride(ws, 'harness-b', 'queen')).toBe('second body');
+    await setPromptOverride(ws, 'harness-b', 'mug', 'first body');
+    await setPromptOverride(ws, 'harness-b', 'mug', 'second body');
+    expect(await getPromptOverride(ws, 'harness-b', 'mug')).toBe('second body');
     // Still exactly one row for that key — no duplicate inserted.
     const all = await listPromptOverrides(ws, 'harness-b');
-    expect(all.filter((r) => r.role === 'queen')).toHaveLength(1);
+    expect(all.filter((r) => r.role === 'mug')).toHaveLength(1);
   });
 
   it('is scoped by workspace AND harness AND role — neighbors are invisible', async () => {
@@ -86,7 +86,7 @@ describe('harness_prompt_overrides store (real PG)', () => {
   it('clearAllPromptOverrides removes every role for the harness and returns the count', async () => {
     const ws = freshWs();
     await setPromptOverride(ws, 'harness-d', 'engineer', 'e');
-    await setPromptOverride(ws, 'harness-d', 'queen', 'q');
+    await setPromptOverride(ws, 'harness-d', 'mug', 'q');
     await setPromptOverride(ws, 'harness-d', 'reviewer', 'r');
     // A sibling harness in the same workspace must NOT be cleared.
     await setPromptOverride(ws, 'harness-d-sibling', 'engineer', 'keep');
@@ -103,10 +103,10 @@ describe('harness_prompt_overrides store (real PG)', () => {
     // Insert out of alphabetical order; the store ORDER BY role should sort them.
     await setPromptOverride(ws, 'harness-e', 'reviewer', 'r-body');
     await setPromptOverride(ws, 'harness-e', 'engineer', 'e-body');
-    await setPromptOverride(ws, 'harness-e', 'queen', 'q-body');
+    await setPromptOverride(ws, 'harness-e', 'mug', 'q-body');
 
     const rows = await listPromptOverrides(ws, 'harness-e');
-    expect(rows.map((r) => r.role)).toEqual(['engineer', 'queen', 'reviewer']);
+    expect(rows.map((r) => r.role)).toEqual(['engineer', 'mug', 'reviewer']);
     const eng = rows.find((r) => r.role === 'engineer')!;
     expect(eng.promptMd).toBe('e-body');
     expect(typeof eng.updatedAt).toBe('number');

@@ -45,7 +45,7 @@ describe('deriveMember', () => {
   });
 
   it('maps every local session kind to the single local member', () => {
-    for (const id of ['su-2ab53e0e-1234', 's-1781389311364-2642f469', 'green-checkpoint', 'queen']) {
+    for (const id of ['su-2ab53e0e-1234', 's-1781389311364-2642f469', 'green-checkpoint', 'mug']) {
       expect(deriveMember({ agentId: id, label: null })).toEqual({
         key: 'local',
         displayName: 'This machine',

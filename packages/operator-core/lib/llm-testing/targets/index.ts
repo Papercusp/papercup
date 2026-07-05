@@ -23,7 +23,7 @@ const TARGETS: Record<string, TargetFactory> = {
   // operator role can't reach — notably the `<handoff_to_queen>` routing
   // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
   // role==='sentinel'). Same HTTP transport as `operator`.
-  sentinel: () => new OperatorTarget({ role: 'papercup' }),
+  papercup: () => new OperatorTarget({ role: 'papercup' }),
   oracle: () => new OracleTarget(),
   // Architect is harness-scoped; the chat route returns a 400 without
   // a harnessSlug in the body. Default to 'sheets' (the long-standing
@@ -37,14 +37,14 @@ const TARGETS: Record<string, TargetFactory> = {
   su: () => new SuTarget(),
   // queen — the hive Queen's blueprint prompt on the same in-process loop
   // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
-  queen: () => makeQueenTarget(),
+  mug: () => makeQueenTarget(),
   // bee — the hive bee's base prompt on the same in-process loop
   // (hybrid-bee-scheduler P-003: does the bee PULL its next item via scheduler:get_next
   // rather than self-scanning work_items:list and picking itself?).
-  bee: () => makeBeeTarget(),
+  cup: () => makeBeeTarget(),
   // overwatch — the system-health supervisor's blueprint persona on the same loop
   // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
-  overwatch: () => makeOverwatchTarget(),
+  kettle: () => makeOverwatchTarget(),
   // onboarding-tutor — the first-run/tutorial launch context on the same
   // in-process loop (agent-first-onboarding-2026-07-03 P-008: section
   // protocol, progress checkpointing, question-detour return).

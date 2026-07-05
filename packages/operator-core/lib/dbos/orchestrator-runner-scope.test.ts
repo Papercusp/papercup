@@ -58,7 +58,7 @@ const savedScopeEnv = process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
 const savedMemEnv = process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G;
 
 beforeEach(() => {
-  H.cmd = { command: '/x/invoke-once', args: ['--role', 'bee'], env: process.env };
+  H.cmd = { command: '/x/invoke-once', args: ['--role', 'cup'], env: process.env };
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -75,7 +75,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
   it('wraps the agent turn in a memory-capped transient user SCOPE by default (linux)', async () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
     spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(0);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args, spawnOpts] = spawnMock.mock.calls[0] as [string, string[], { detached?: boolean }];
@@ -86,7 +86,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(args).toContain('--property=MemoryMax=6G'); // agentSpawnScopeMemoryMaxG() default
     expect(args).toContain('--property=MemorySwapMax=0');
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
-    expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'bee']);
+    expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
     expect(args.join(' ')).toContain('/x/invoke-once --role bee');
     expect(spawnOpts.detached).toBe(true); // pgid tree-kill still covers the scope wrapper
   });
@@ -95,7 +95,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
     process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G = '12';
     spawnMock.mockImplementationOnce(() => fakeSpawn({ code: 0 }));
-    await spawnInvokeOnce(process.cwd(), 'queen', [], {});
+    await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     const [, args] = spawnMock.mock.calls[0] as [string, string[]];
     expect(args).toContain('--property=MemoryMax=12G');
   });
@@ -105,20 +105,20 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     spawnMock
       .mockImplementationOnce(() => fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }))
       .mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(0);
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const [cmd1] = spawnMock.mock.calls[0] as [string, string[]];
     const [cmd2, args2] = spawnMock.mock.calls[1] as [string, string[]];
     expect(cmd1).toBe('systemd-run');
     expect(cmd2).toBe('/x/invoke-once'); // direct payload, no wrapper
-    expect(args2).toEqual(['--role', 'bee']);
+    expect(args2).toEqual(['--role', 'cup']);
   });
 
   it('a PAYLOAD failure inside a healthy scope does NOT retry (a real agent-turn error, not a launch failure)', async () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
     spawnMock.mockImplementationOnce(() => fakeSpawn({ stderr: 'agent crashed: out of memory in tool call', code: 1 }));
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain('out of memory in tool call');
     expect(spawnMock).toHaveBeenCalledTimes(1); // no scope-launch-failure retry
@@ -127,12 +127,12 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
   it('PAPERCUSP_AGENT_SPAWN_SCOPE=0 kill-switch runs the pre-hardening direct spawn (ops escape hatch)', async () => {
     process.env.PAPERCUSP_AGENT_SPAWN_SCOPE = '0';
     spawnMock.mockImplementationOnce(() => fakeSpawn({ code: 0 }));
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(0);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).toBe('/x/invoke-once');
-    expect(args).toEqual(['--role', 'bee']);
+    expect(args).toEqual(['--role', 'cup']);
   });
 
   it('a scope-launch failure on the direct retry itself still surfaces (no infinite retry loop)', async () => {
@@ -143,7 +143,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     spawnMock
       .mockImplementationOnce(() => fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }))
       .mockImplementationOnce(() => fakeSpawn({ stderr: 'command not found', code: 127 }));
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(127);
     expect(spawnMock).toHaveBeenCalledTimes(2); // exactly one retry, never a third call
   });

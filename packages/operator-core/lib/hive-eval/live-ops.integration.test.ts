@@ -123,10 +123,10 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
     const home = 'heval-qeff1';
     await sql`INSERT INTO harness_shared.agent_usage_samples
       (workspace_id, ts, role, harness_slug, run_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count) VALUES
-      (${ws}, 200, 'queen', ${home}, 'w1', 1000, 500, 8000, 1000, 0.12, 3),
-      (${ws}, 100, 'queen', ${home}, 'w2', 2000, 300, 0, 5000, 0.20, NULL),
+      (${ws}, 200, 'mug', ${home}, 'w1', 1000, 500, 8000, 1000, 0.12, 3),
+      (${ws}, 100, 'mug', ${home}, 'w2', 2000, 300, 0, 5000, 0.20, NULL),
       (${ws}, 150, 'worker', ${home}, 'b1', 9999, 9999, 9999, 9999, 9.99, 9),
-      (${ws}, 150, 'queen', 'other-home', 'x1', 7777, 7777, 7777, 7777, 7.77, 7)`;
+      (${ws}, 150, 'mug', 'other-home', 'x1', 7777, 7777, 7777, 7777, 7.77, 7)`;
     const ekg = await readQueenEkg(sql, { workspaceId: ws, hiveHome: home });
     // only the two role=queen rows under THIS home — worker + other-home excluded.
     expect(ekg.queenWakes).toBe(2);
@@ -156,12 +156,12 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
     // row (un-attributable — the SELECT filters session_id IS NOT NULL).
     await sql`INSERT INTO harness_shared.agent_usage_samples
       (workspace_id, ts, role, harness_slug, run_id, session_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count) VALUES
-      (${ws}, 100, 'bee', ${member}, 'r1', 'sessA', 1000, 500, 100000, 5000, 0.50, 4),
-      (${ws}, 200, 'bee', ${member}, 'r2', 'sessA',  200, 300, 130000, 1000, 0.30, 6),
-      (${ws}, 150, 'bee', ${member}, 'r3', 'sessB', 2000, 400,  80000, 8000, 0.40, 5),
+      (${ws}, 100, 'cup', ${member}, 'r1', 'sessA', 1000, 500, 100000, 5000, 0.50, 4),
+      (${ws}, 200, 'cup', ${member}, 'r2', 'sessA',  200, 300, 130000, 1000, 0.30, 6),
+      (${ws}, 150, 'cup', ${member}, 'r3', 'sessB', 2000, 400,  80000, 8000, 0.40, 5),
       (${ws}, 150, 'worker', ${member}, 'r4', 'sessW', 9999, 9999, 9999, 9999, 9.99, 9),
-      (${ws}, 150, 'bee', 'other-member', 'r5', 'sessY', 7777, 7777, 7777, 7777, 7.77, 7),
-      (${ws}, 160, 'bee', ${member}, 'r6', NULL, 3333, 3333, 3333, 3333, 3.33, 3)`;
+      (${ws}, 150, 'cup', 'other-member', 'r5', 'sessY', 7777, 7777, 7777, 7777, 7.77, 7),
+      (${ws}, 160, 'cup', ${member}, 'r6', NULL, 3333, 3333, 3333, 3333, 3.33, 3)`;
     const ekg = await readBeeEkg(sql, { workspaceId: ws, member });
     // carry = cache_read on the NON-FIRST wake of each session: only sessA's second wake (130000).
     expect(ekg.beeCarriedReadTokens).toBe(130000);

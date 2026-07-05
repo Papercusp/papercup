@@ -26,9 +26,9 @@ describe('specModelId', () => {
 describe('roleDefaultSpec — the floor input', () => {
   it('AGENT_MODELS entry wins; committed default is the fallback; neither → empty', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'sonnet' }));
-    expect(roleDefaultSpec('bee')).toBe('sonnet');
+    expect(roleDefaultSpec('cup')).toBe('sonnet');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(roleDefaultSpec('bee')).toBe('haiku');
+    expect(roleDefaultSpec('cup')).toBe('haiku');
     expect(roleDefaultSpec('release-manager')).toBe('opus:xhigh');
     // The launch-fixer family's committed floors (git-sync-content-guard D-008
     // follow-up): the two fleet-blast-radius fixers pin opus:xhigh — merge-resolver
@@ -52,11 +52,11 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('tier names are case-insensitive', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'MAX', role: 'bee' })).toMatchObject({ ok: true, spec: 'opus[1m]:xhigh', tier: 'max' });
+    expect(resolveTierSpec({ tier: 'MAX', role: 'cup' })).toMatchObject({ ok: true, spec: 'opus[1m]:xhigh', tier: 'max' });
   });
 
   it('unknown tier fails LOUD, listing the valid menu', () => {
-    const r = resolveTierSpec({ tier: 'turbo', role: 'bee' });
+    const r = resolveTierSpec({ tier: 'turbo', role: 'cup' });
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toContain('quick, standard, deep, max');
   });
@@ -69,7 +69,7 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('FLOOR follows an AGENT_MODELS escalation (bee pinned to opus → quick clamps to deep)', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'opus' }));
-    const r = resolveTierSpec({ tier: 'quick', role: 'bee' });
+    const r = resolveTierSpec({ tier: 'quick', role: 'cup' });
     expect(r).toMatchObject({ ok: true, spec: 'opus[1m]:high', tier: 'deep', clamped: 'floor' });
   });
 
@@ -83,7 +83,7 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('CEILING: a pick above the role ceiling clamps DOWN', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'standard' } });
+    const r = resolveTierSpec({ tier: 'max', role: 'cup', tierCeilings: { bee: 'standard' } });
     expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'ceiling' });
   });
 
@@ -96,7 +96,7 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('an unknown ceiling name is ignored (config bug ≠ runtime failure)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'nope' } });
+    const r = resolveTierSpec({ tier: 'max', role: 'cup', tierCeilings: { bee: 'nope' } });
     expect(r).toMatchObject({ ok: true, spec: 'opus[1m]:xhigh', tier: 'max' });
   });
 });
@@ -110,10 +110,10 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('resolves against the custom menu (the default names are gone)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'turbo', role: 'bee', tiers })).toMatchObject({
+    expect(resolveTierSpec({ tier: 'turbo', role: 'cup', tiers })).toMatchObject({
       ok: true, spec: 'claude-opus-4-8:max', tier: 'turbo',
     });
-    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers }).ok).toBe(false);
+    expect(resolveTierSpec({ tier: 'standard', role: 'cup', tiers }).ok).toBe(false);
   });
 
   it('floor matches by MODEL ID within the custom menu (worker default sonnet → normal)', () => {
@@ -132,7 +132,7 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('an empty tiers array falls back to the default menu', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
+    expect(resolveTierSpec({ tier: 'standard', role: 'cup', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
   });
 
   it('per-tier backend rides the resolution — including through a clamp', () => {
@@ -143,11 +143,11 @@ describe('resolveTierSpec — user-defined menu', () => {
       { name: 'turbo', spec: 'opus:max', backend: 'claude-code' as const },
     ];
     // direct pick carries its backend
-    expect(resolveTierSpec({ tier: 'turbo', role: 'bee', tiers: withBackends })).toMatchObject({
+    expect(resolveTierSpec({ tier: 'turbo', role: 'cup', tiers: withBackends })).toMatchObject({
       ok: true, spec: 'opus:max', backend: 'claude-code',
     });
     // backend-less tier has no backend field
-    const normal = resolveTierSpec({ tier: 'normal', role: 'bee', tiers: withBackends });
+    const normal = resolveTierSpec({ tier: 'normal', role: 'cup', tiers: withBackends });
     expect((normal as { backend?: string }).backend).toBeUndefined();
     // a floor clamp adopts the clamped-TO tier's backend (worker floor=sonnet → 'normal', no backend)
     const clamped = resolveTierSpec({ tier: 'eco', role: 'worker', tiers: withBackends });
@@ -207,9 +207,9 @@ describe('effectiveTierConfig — session override precedence (queen-steering D-
 
 describe('roleHomeTier — the default-menu tier a role runs at', () => {
   it('maps a committed default spec to its default-menu tier name', () => {
-    expect(roleHomeTier('queen')).toBe('standard'); // sonnet → standard
+    expect(roleHomeTier('mug')).toBe('standard'); // sonnet → standard
     expect(roleHomeTier('worker')).toBe('standard'); // sonnet → standard
-    expect(roleHomeTier('bee')).toBe('quick'); // haiku → quick
+    expect(roleHomeTier('cup')).toBe('quick'); // haiku → quick
   });
   it('undefined for a role with no committed default (no own-model resolution)', () => {
     expect(roleHomeTier('reviewer')).toBeUndefined();
@@ -219,36 +219,36 @@ describe('roleHomeTier — the default-menu tier a role runs at', () => {
 describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-steering-panel)', () => {
   it('returns null on the default menu (queen home=standard=sonnet family) — a marker-only difference is NOT an override; [1m] rides the exec boundary (applyRoleModel)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('queen', {})).toBeNull();
+    expect(resolveRoleOwnModelSpec('mug', {})).toBeNull();
   });
 
   it('an owner menu override that raises the standard tier MOVES the queen', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] };
-    expect(resolveRoleOwnModelSpec('queen', eff)).toBe('opus:xhigh');
+    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('opus:xhigh');
   });
 
   it('allows cross-provider own-model menu specs; invoke infers the backend from the model spec', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high' }] };
-    expect(resolveRoleOwnModelSpec('queen', eff)).toBe('gpt-5.5:high');
+    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
   });
 
   it('allows role-own tier rows that name a non-Claude backend', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const eff = { tiers: [{ name: 'standard', spec: 'gpt-5.5:high', backend: 'codex' as const }] };
-    expect(resolveRoleOwnModelSpec('queen', eff)).toBe('gpt-5.5:high');
+    expect(resolveRoleOwnModelSpec('mug', eff)).toBe('gpt-5.5:high');
   });
 
   it('a queen CEILING is her TARGET (a decider has no self-picker) — ceiling=max → opus:xhigh', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus[1m]:xhigh');
+    expect(resolveRoleOwnModelSpec('mug', { tierCeilings: { queen: 'max' } })).toBe('opus[1m]:xhigh');
   });
 
   it('a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) → null (stays default; marker-only diff ≠ override)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // queen floor = standard (sonnet family); ceiling 'quick' (haiku) clamps UP to standard → sonnet[1m] ≈ committed 'sonnet' → null.
-    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBeNull();
+    expect(resolveRoleOwnModelSpec('mug', { tierCeilings: { queen: 'quick' } })).toBeNull();
   });
 
   it('null for a role with no home tier (no committed default)', () => {
@@ -280,7 +280,7 @@ describe('downgradeOpusTierForBudget — floor-safe opus→sonnet shed (B-GW-4)'
 
   it('downgrades to sonnet for a HAIKU-floored role (bee) — sonnet is still ≥ the haiku floor', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
+    const d = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'cup' });
     expect(d.downgraded).toBe(true);
     expect(specModelClass(d.spec)).toBe('sonnet');
   });
@@ -330,7 +330,7 @@ describe('downgradeOpusTierForBudget — floor-safe opus→sonnet shed (B-GW-4)'
 
 describe('resolveTierSpec compactionLimit', () => {
   it('derives the model default from the resolved spec when the tier sets none', () => {
-    const r = resolveTierSpec({ tier: 'standard', role: 'bee' });
+    const r = resolveTierSpec({ tier: 'standard', role: 'cup' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.compactionLimit).toBe(400_000); // standard = sonnet[1m] → the [1m] 400k cap
   });
@@ -344,17 +344,17 @@ describe('resolveTierSpec compactionLimit', () => {
       { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
       { name: 'wide', spec: 'opus[1m]:high' },
     ];
-    const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
+    const lean = resolveTierSpec({ tier: 'lean', role: 'cup', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
-    const vast = resolveTierSpec({ tier: 'vast', role: 'bee', tiers });
+    const vast = resolveTierSpec({ tier: 'vast', role: 'cup', tiers });
     expect(vast.ok && vast.compactionLimit).toBe(400_000); // [1m] ⇒ the uniform 400k spend cap (marker-keyed, 2026-07-03)
-    const wide = resolveTierSpec({ tier: 'wide', role: 'bee', tiers });
+    const wide = resolveTierSpec({ tier: 'wide', role: 'cup', tiers });
     expect(wide.ok && wide.compactionLimit).toBe(400_000); // [1m] ⇒ 400k cap (owner directive 2026-07-03)
   });
 
   it('a budget downgrade adopts the downgraded-to tier limit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'haiku' }));
-    const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
+    const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'cup' });
     expect(dg.downgraded).toBe(true);
     expect(dg.compactionLimit).toBe(400_000); // standard target = sonnet[1m] → the [1m] 400k cap
   });

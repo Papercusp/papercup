@@ -443,10 +443,10 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     estimateMock.mockResolvedValue(370_000); // 300k limit: ≥ 1.2 × 300k = 360k, < 1.3 × 300k = 390k
     findLiveHostMock.mockReturnValue({ sock: '/tmp/bee.sock', caps: ['compact'] });
     hostSupportsMock.mockReturnValue(true);
-    const seeded300 = [{ owner_id: 'bee', owner_label: 'bee · b', compaction_limit: 300_000 }];
+    const seeded300 = [{ owner_id: 'cup', owner_label: 'bee · b', compaction_limit: 300_000 }];
     // No spawn record ⇒ window unknown ⇒ conservative 360k bound ⇒ forced at 370k.
     const blind = await checkCompactionCompliance(fakeSql({ seeded: seeded300 }));
-    expect(blind.forceCompacted).toEqual(['bee']);
+    expect(blind.forceCompacted).toEqual(['cup']);
     resetForceCompactedForTests();
     // Same session WITH a [1m] spawn record ⇒ real 1M window ⇒ full 390k band ⇒ not forced yet.
     const known = await checkCompactionCompliance(
@@ -455,7 +455,7 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
         spawnRecords: { bee: { model_spec: 'claude-fable-5[1m]', model_tier: null } },
       }),
     );
-    expect(known.overLimit).toEqual(['bee']);
+    expect(known.overLimit).toEqual(['cup']);
     expect(known.forceCompacted).toEqual([]);
   });
 });

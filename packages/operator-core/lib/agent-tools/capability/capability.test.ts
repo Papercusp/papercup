@@ -65,7 +65,7 @@ describe('capability:grant_role', () => {
 
   it('is operator-authority gated', async () => {
     await expect(
-      grantTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'bee' } as never),
+      grantTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
   });
 
@@ -120,7 +120,7 @@ describe('capability:revoke_role', () => {
 
   it('is operator-authority gated', async () => {
     await expect(
-      revokeTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'bee' } as never),
+      revokeTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
   });
 

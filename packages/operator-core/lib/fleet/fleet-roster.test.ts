@@ -46,7 +46,7 @@ const WI = (id: string, rank: number | null = null): WorkListItem => ({
   title: `work ${id}`,
   status: 'wip',
   rank,
-  rankWriter: 'bee',
+  rankWriter: 'cup',
   activity: 'progressing',
 });
 
@@ -255,7 +255,7 @@ describe('annotateFleetsWithCounts (available = >=1 live member)', () => {
 
 describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', () => {
   it('isBeeRole is true only for the background-nursery bee role', () => {
-    expect(isBeeRole('bee')).toBe(true);
+    expect(isBeeRole('cup')).toBe(true);
     expect(isBeeRole('su')).toBe(false);
     expect(isBeeRole('human')).toBe(false);
     expect(isBeeRole(null)).toBe(false);
@@ -266,14 +266,14 @@ describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', 
     const counts = splitFleetRosterCounts([
       { agentRole: 'su' },
       { agentRole: 'su' },
-      { agentRole: 'bee' },
+      { agentRole: 'cup' },
       { agentRole: null }, // unlabeled → counts as a member, not a bee
     ]);
     expect(counts).toEqual({ members: 3, bees: 1 });
   });
 
   it('an all-bee roster reports 0 members (the substrate mismatch)', () => {
-    expect(splitFleetRosterCounts([{ agentRole: 'bee' }, { agentRole: 'bee' }])).toEqual({
+    expect(splitFleetRosterCounts([{ agentRole: 'cup' }, { agentRole: 'cup' }])).toEqual({
       members: 0,
       bees: 2,
     });

@@ -44,7 +44,7 @@ export default defineTool({
   // Queen-only optimization surface — the worker-bee is excluded.
   capability: 'work_items:write',
   requirePrincipal: false,
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'cup'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup'),
   args: z.object({
     id: z.string().min(1).max(120).describe('The high-stakes work-item id.'),
     harness: z.string().min(1).max(80).describe('Harness the work-item lives in.'),

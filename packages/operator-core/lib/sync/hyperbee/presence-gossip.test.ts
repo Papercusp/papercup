@@ -250,7 +250,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
 
   it('a signed sessions frame round-trips verify', async () => {
     const dev = makeDevice();
-    const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa'), entry('s-123', { kind: 'bee' })], T0, dev.sign);
+    const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa'), entry('s-123', { kind: 'cup' })], T0, dev.sign);
     expect(verifyPresenceFrame(frame, { nowMs: T0 })).toBe(true);
   });
 
@@ -292,7 +292,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
 
   it('the pipeline dispatches an admitted sessions frame to applySessions with the topic', async () => {
     const dev = makeDevice();
-    const sessions = [entry('su-aaa'), entry('s-bee-1', { kind: 'bee', plan_slug: 'p1' })];
+    const sessions = [entry('su-aaa'), entry('s-bee-1', { kind: 'cup', plan_slug: 'p1' })];
     const frame = await buildSessionsFrame(ident(dev), sessions, T0, dev.sign);
     const applySessions = vi.fn(async () => {});
     const deps = {
@@ -335,7 +335,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
     // user), trying to announce sessions — incl. a spoofed owner_id — under it.
     const frame = await buildSessionsFrame(
       { devicePubkey: dev.pubB64, githubUserId: 999, machineLabel: 'laptop', hiveSlug: 'hive-home' },
-      [entry('queen'), entry('su-victim-uuid')],
+      [entry('mug'), entry('su-victim-uuid')],
       T0,
       dev.sign,
     );

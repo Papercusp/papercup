@@ -62,7 +62,7 @@ async function seedRun(opts: { capCents?: number; scheduleActive?: boolean; samp
   await sql`
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id, status, feature_id)
-    VALUES (${'sp-' + runId}, ${WS}, ${HARNESS}, 'queen', 'worker', ${spawnRunId}, 'done', ${featureId})
+    VALUES (${'sp-' + runId}, ${WS}, ${HARNESS}, 'mug', 'worker', ${spawnRunId}, 'done', ${featureId})
   `;
   for (let i = 0; i < opts.sampleCostsUsd.length; i++) {
     await sql`

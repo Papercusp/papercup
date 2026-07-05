@@ -27,7 +27,7 @@ describe('applyToProcessEnv — boot-env restore (EI-337)', () => {
     applyToProcessEnv({ backend: 'omp', cmd: 'omp -p', models: { bee: 'sonnet' } });
     expect(process.env.AGENT_CMD).toBe('omp -p');
     expect(process.env.AGENT_BACKEND).toBe('omp');
-    expect(process.env.AGENT_MODELS).toBe('{"bee":"sonnet"}');
+    expect(process.env.AGENT_MODELS).toBe('{"cup":"sonnet"}');
 
     // …and a save with EMPTY values reverts to what the host booted with —
     // the pre-fix behavior deleted these, silently dropping the .env.local

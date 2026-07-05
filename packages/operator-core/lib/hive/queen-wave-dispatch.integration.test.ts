@@ -93,7 +93,7 @@ async function seedBee(owner: string, featureId: string, status: string): Promis
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
        session_owner, feature_id, run_id, status, heartbeat_at, last_output_at, started_at)
-    VALUES (${owner}, ${WS}, ${HIVE}, ${QUEEN}, 'queen', 'bee',
+    VALUES (${owner}, ${WS}, ${HIVE}, ${QUEEN}, 'mug', 'cup',
             ${owner}, ${featureId}, ${'run-' + owner}, ${status}, ${new Date(NOW)}, ${null}, now())`;
 }
 

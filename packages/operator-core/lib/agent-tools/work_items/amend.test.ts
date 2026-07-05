@@ -27,7 +27,7 @@ const comment = vi.mocked(commentWorkItem);
 const tool = (await import('./amend')).default;
 
 type Out = { content: { text: string }[] };
-const call = (args: Record<string, unknown>, role = 'bee') =>
+const call = (args: Record<string, unknown>, role = 'cup') =>
   tool.handler({ id: 'WI-1', kind: 'note', rationale: 'because', ...args } as never, { role } as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
@@ -55,7 +55,7 @@ describe('work_items:amend handler', () => {
 
   it('a bee PROPOSES (disposition=proposed) and the amendment is written durably', async () => {
     getWI.mockResolvedValue({ state: 'todo', assignee: undefined, harness: 'web' } as never);
-    const b = body(await call({ kind: 'note', rationale: 'noticed a gap' }, 'bee'));
+    const b = body(await call({ kind: 'note', rationale: 'noticed a gap' }, 'cup'));
     expect(b).toMatchObject({ ok: true, recorded: true });
     expect(b.amendment).toMatchObject({ disposition: 'proposed', inFlight: false, requiresCompensation: false });
     // durable write got the rendered line, attributed to the caller
@@ -69,7 +69,7 @@ describe('work_items:amend handler', () => {
 
   it('a Queen DISPOSES, and a disruptive drop on a PEER-CLAIMED in-flight node needs compensation', async () => {
     getWI.mockResolvedValue({ state: 'wip', assignee: 'other-bee', harness: 'web' } as never);
-    const b = body(await call({ kind: 'drop', rationale: 'approach is wrong' }, 'queen'));
+    const b = body(await call({ kind: 'drop', rationale: 'approach is wrong' }, 'mug'));
     expect(b.amendment).toMatchObject({
       disposition: 'disposed',
       inFlight: true,
@@ -80,7 +80,7 @@ describe('work_items:amend handler', () => {
 
   it('a NON-disruptive note on an in-flight node is in-flight but needs NO compensation', async () => {
     getWI.mockResolvedValue({ state: 'wip', assignee: 'bee-1', harness: 'web' } as never);
-    const b = body(await call({ kind: 'note', rationale: 'fyi' }, 'bee'));
+    const b = body(await call({ kind: 'note', rationale: 'fyi' }, 'cup'));
     expect(b.amendment).toMatchObject({ inFlight: true, requiresCompensation: false });
   });
 });

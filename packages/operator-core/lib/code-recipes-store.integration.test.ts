@@ -46,7 +46,7 @@ describe('code_recipes store (real PG)', () => {
       title: 'Triage stale items',
       description: 'list then act per stale work-item',
       script: '// triage\nreturn await tools.work_items.list({});',
-      authorRole: 'bee',
+      authorRole: 'cup',
       toolsUsed: ['work_items:list'],
       embedding: fakeEmbedding(),
       tags: ['triage'],
@@ -125,7 +125,7 @@ describe('code_recipes store (real PG)', () => {
       workspaceId: ws,
       hiveSlug: 'alpha',
       agentOwner: 'agent-a',
-      agentRole: 'bee',
+      agentRole: 'cup',
       success: true,
       reused: false,
     });

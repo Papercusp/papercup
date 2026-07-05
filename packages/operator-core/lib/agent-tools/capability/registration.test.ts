@@ -37,7 +37,7 @@ describe('capability tool registration', () => {
       expect(tool!.capabilities).toContain(e.capability);
       // The fleet execution roles (SU_ROLES + bee) must be allowed.
       expect(tool!.agentRoles).toContain('worker');
-      expect(tool!.agentRoles).toContain('bee');
+      expect(tool!.agentRoles).toContain('cup');
     });
   }
 

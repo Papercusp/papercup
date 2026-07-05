@@ -12,7 +12,7 @@ import { PANEL_LABELS } from './types';
 
 describe('observationRole — per-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
   it('prefers the stamped payload.filedByRole', () => {
-    expect(observationRole({ payload: { filedByRole: 'overwatch' }, signalOrigin: 'organic' })).toBe('overwatch');
+    expect(observationRole({ payload: { filedByRole: 'kettle' }, signalOrigin: 'organic' })).toBe('kettle');
   });
   it('falls back to sourceRole, then signalOrigin, then unknown', () => {
     expect(observationRole({ payload: {}, sourceRole: 'Scout' })).toBe('Scout');
@@ -23,7 +23,7 @@ describe('observationRole — per-role attribution (close-observation-attributio
     // EngineerIssue carries `payload` + `signalOrigin`, NEVER a top-level `origin`
     // nor (for tool captures) `sourceRole` — the old `it.sourceRole ?? it.origin`
     // read undefined on both → bucketed 100% as 'unknown'.
-    expect(observationRole({ payload: { filedByRole: 'bee' } })).toBe('bee');
+    expect(observationRole({ payload: { filedByRole: 'cup' } })).toBe('cup');
   });
 });
 
@@ -135,13 +135,13 @@ describe('tallyPlans — queen-plan-selection signal (hive-loop-supervision 2026
 
 describe('panelSafe — per-panel fail-soft', () => {
   it('passes a healthy collector through, injecting key + label', async () => {
-    const panel = await panelSafe('queen', async () => ({
+    const panel = await panelSafe('mug', async () => ({
       status: 'ok' as const,
       summary: 'looping',
       metrics: [{ label: 'last wake', value: '2m ago' }],
       data: { hi: true },
     }));
-    expect(panel.key).toBe('queen');
+    expect(panel.key).toBe('mug');
     expect(panel.label).toBe(PANEL_LABELS.queen);
     expect(panel.status).toBe('ok');
     expect(panel.error).toBeUndefined();

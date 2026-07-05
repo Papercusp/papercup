@@ -118,11 +118,11 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       // local-hive P-071 (2026-06-10): the hive's decider is the QUEEN — the
       // operator specialized for placement (D-001); `operator` remains the
       // deciderAlternative for decision-tree-only wakes (blueprint.yaml).
-      coding: 'queen',
+      coding: 'mug',
       // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
-      bee: 'bee',
+      bee: 'cup',
       // unify-launch-mechanics D-004: the sentinel watcher's decider IS the sentinel role.
-      sentinel: 'sentinel',
+      sentinel: 'papercup',
     };
     for (const id of BUILTIN_LAUNCH_BLUEPRINTS) {
       const target = await resolveLaunchTarget(id, opts);
@@ -238,7 +238,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
-    expect(target.role).toBe('queen');
+    expect(target.role).toBe('mug');
     expect(fired).toHaveLength(1);
     // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet default.
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
@@ -348,7 +348,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     // hive is kind:'hive' — firing it WITH a parent context must throw + never fire.
     await expect(
-      fireLaunchBlueprint('coding', { ...opts, parent: { spawnId: 's-parent-1', role: 'bee' } }),
+      fireLaunchBlueprint('coding', { ...opts, parent: { spawnId: 's-parent-1', role: 'cup' } }),
     ).rejects.toThrow(/cannot be nested|hives are peers/i);
     expect(fired).toHaveLength(0);
   });
@@ -360,9 +360,9 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     // No `parent` → root launch → the guard does not trip; the hive fires normally.
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'wake' });
-    expect(target.role).toBe('queen'); // hive decider since P-071 (2026-06-10)
+    expect(target.role).toBe('mug'); // hive decider since P-071 (2026-06-10)
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'queen' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'mug' });
     expect(fired[0].timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
     // WI-682: the Queen wake brief is computed at the /invoke ROUTE (spawn.ts),
     // NOT by this launcher — EI-995's durable seam bypassed a launcher-side
@@ -387,10 +387,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       fired.push(input);
     });
     // bee is kind:'harness' — a parent (the Queen) placing it is fine; only hives nest-guard.
-    const target = await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
-    expect(target.role).toBe('bee');
+    const target = await fireLaunchBlueprint('cup', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
+    expect(target.role).toBe('cup');
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'bee', role: 'bee' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'cup', role: 'cup' });
   });
 
   it('honors an overridden blueprint resolver (forked / PG-cache launch blueprint)', async () => {
@@ -449,7 +449,7 @@ describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () =>
     setLaunchBlueprintFire((input) => { fired.push(input); });
     await fireLaunchBlueprint('coding', { installSlug: 'xbqabc123', workspaceId: 'ws_test', kickoff: 'survey' });
     expect(fired).toHaveLength(1);
-    expect(fired[0]!.role).toBe('queen');
+    expect(fired[0]!.role).toBe('mug');
     expect((fired[0]!.bodyExtra as Record<string, unknown>)?.spawnModel).toBe('opus:xhigh');
   });
 

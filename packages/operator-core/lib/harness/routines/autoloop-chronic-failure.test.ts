@@ -362,7 +362,7 @@ describe('selectChronicFailures', () => {
     const rows = [
       row({
         harness_slug: 'papercup',
-        role: 'overwatch',
+        role: 'kettle',
         consecutive_errors: 6,
         routine_active: null, // overwatch is a fixed system role — no matching routines row
         last_status: 'error: no complete scorecard within 180000ms launch deadline; backstop synthesized',
@@ -464,7 +464,7 @@ describe('isLoopArmOwnerLoop (EI-6727)', () => {
   });
   it('EI-7220: null owner-id AND a non-`loop-` (fixed system) role → fail-open (false)', () => {
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'gym-cycle' })).toBe(false);
-    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'overwatch' })).toBe(false);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'kettle' })).toBe(false);
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: null })).toBe(false); // role absent
   });
 });
@@ -478,7 +478,7 @@ describe('isLoopArmOwnerRole (EI-7220)', () => {
   it('a fixed system role (director/gym-cycle/overwatch/scout-cycle) → false (no `loop-` prefix)', () => {
     expect(isLoopArmOwnerRole('director')).toBe(false);
     expect(isLoopArmOwnerRole('gym-cycle')).toBe(false);
-    expect(isLoopArmOwnerRole('overwatch')).toBe(false);
+    expect(isLoopArmOwnerRole('kettle')).toBe(false);
     expect(isLoopArmOwnerRole('scout-cycle')).toBe(false);
   });
   it('null / undefined / non-string → false', () => {

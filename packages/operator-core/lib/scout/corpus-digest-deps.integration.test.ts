@@ -158,7 +158,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     await createIssue({
       title: 'hive-coordination-health scorecard',
       topics: [OBSERVATION_TOPIC],
-      createdBy: 'overwatch',
+      createdBy: 'kettle',
       payload: {
         observation: {
           rubricRef: 'hive-coordination-health',

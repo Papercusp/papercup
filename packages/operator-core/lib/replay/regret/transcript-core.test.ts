@@ -72,12 +72,12 @@ describe('parseTranscript', () => {
     const body = [
       assistantEvent({ id: 'm1', text: 'hi' }),
       line({ type: 'result', total_cost_usd: 1.25, usage: {} }),
-      line({ type: 'papercusp.run_meta', backend: 'claude-code', model: 'haiku', role: 'bee', runId: 'r1' }),
+      line({ type: 'papercusp.run_meta', backend: 'claude-code', model: 'haiku', role: 'cup', runId: 'r1' }),
     ].join('\n');
     const parsed = parseTranscript(body);
     expect(parsed.backend).toBe('claude-code');
     expect(parsed.model).toBe('haiku');
-    expect(parsed.role).toBe('bee');
+    expect(parsed.role).toBe('cup');
     expect(parsed.totalCostUsd).toBe(1.25);
   });
 

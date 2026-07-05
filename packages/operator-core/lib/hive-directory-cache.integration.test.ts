@@ -46,9 +46,9 @@ describe('hive_directory_cache (real PG, migration 182)', () => {
   });
 
   it('round-trips the discovered set through the cache table', async () => {
-    await writeOperatorState('hive_directory_cache', { hives: [hive('ash'), hive('bee')] });
+    await writeOperatorState('hive_directory_cache', { hives: [hive('ash'), hive('cup')] });
     const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache');
-    expect(row?.hives.map((x) => x.hiveId)).toEqual(['ash', 'bee']);
+    expect(row?.hives.map((x) => x.hiveId)).toEqual(['ash', 'cup']);
     expect(row?.hives[0]).toMatchObject({ title: 'ash', visibility: 'public', attested: true });
   });
 

@@ -50,11 +50,11 @@ describe('resolveConfig — humanFacingRole persona repoint (P-011)', () => {
   });
 
   it('resolves humanFacingRole=sentinel from the pref', async () => {
-    prefs.humanFacingRole = 'sentinel';
+    prefs.humanFacingRole = 'papercup';
     const out = await resolve();
     expect(out.ok).toBe(true);
     if (out.ok) {
-      expect(out.config.humanFacingRole).toBe('sentinel');
+      expect(out.config.humanFacingRole).toBe('papercup');
       // Same EL agent / signed URL — only the brain persona switches.
       expect(out.config.signedUrl).toBe('wss://el/signed');
     }

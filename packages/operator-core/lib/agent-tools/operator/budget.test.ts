@@ -58,7 +58,7 @@ describe('operator:budget — set (role gate)', () => {
     const setBudget = vi.fn(async () => ({ dailyCapUsd: 20, spend: [] }));
     vi.doMock('../../operator-budget', () => ({ setBudget, checkBudget: vi.fn() }));
     const { default: tool } = await import('./budget');
-    for (const role of ['worker', 'validator', 'reviewer', 'queen', 'documenter']) {
+    for (const role of ['worker', 'validator', 'reviewer', 'mug', 'documenter']) {
       await expect(
         tool.handler({ op: 'set', dailyCapUsd: 10 }, MAKE_CTX({ role })),
       ).rejects.toThrow();

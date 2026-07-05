@@ -21,7 +21,7 @@ function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
       configSnapshot: { tier: 'max' }, createdAt: '2026-06-17T00:00:00Z',
     }),
     getBenchRunDetail: async () => ({
-      coordEvents: [{ ts: 1718600000000, kind: 'spawn', agent: 'queen', taskId: 't1', detail: 'placed t1' }],
+      coordEvents: [{ ts: 1718600000000, kind: 'spawn', agent: 'mug', taskId: 't1', detail: 'placed t1' }],
       perTask: [{ instanceId: 't1', beeId: 's-bee-1', stopReason: 'done', costUsd: 2 }],
     }),
     ...over,

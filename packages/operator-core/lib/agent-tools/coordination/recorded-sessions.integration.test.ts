@@ -56,10 +56,10 @@ beforeEach(async () => {
 
 describe('listRecordedLiveSessions (real PG)', () => {
   it('surfaces a live recorded session with a coord_owner_id', async () => {
-    await seedAdv({ coordOwnerId: 's-live-1', role: 'queen', label: 'hive · papercusp/queen' });
+    await seedAdv({ coordOwnerId: 's-live-1', role: 'mug', label: 'hive · papercusp/queen' });
     const rows = await listRecordedLiveSessions({ workspaceId: WS });
     expect(rows.map((r) => r.coordOwnerId)).toEqual(['s-live-1']);
-    expect(rows[0].role).toBe('queen');
+    expect(rows[0].role).toBe('mug');
   });
 
   it('excludes ended sessions (ended_at IS NOT NULL)', async () => {

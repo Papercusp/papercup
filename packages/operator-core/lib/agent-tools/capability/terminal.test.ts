@@ -52,7 +52,7 @@ vi.mock('../coordination/presence-fleet', () => ({
 
 // Stub identity — stable ownerId.
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'owner-bee-1', ownerLabel: 'bee', source: 'fleet-spawn', workspaceId: 'ws-test', userId: null }),
+  resolveAgentIdentity: () => ({ ownerId: 'owner-bee-1', ownerLabel: 'cup', source: 'fleet-spawn', workspaceId: 'ws-test', userId: null }),
 }));
 
 // ── Import the tool AFTER all mocks are set up ────────────────────────────────

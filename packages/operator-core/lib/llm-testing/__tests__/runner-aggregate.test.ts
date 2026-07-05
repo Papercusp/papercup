@@ -161,7 +161,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'sentinel', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch', 'onboarding-tutor']).toContain(s.target);
+      expect(['operator', 'papercup', 'oracle', 'architect', 'su', 'mug', 'cup', 'kettle', 'onboarding-tutor']).toContain(s.target);
     }
   });
 

@@ -69,7 +69,7 @@ describe('evaluateCapabilityEnvelope — fleet roles', () => {
     const d = evaluateCapabilityEnvelope({
       toolName: 'processes.kill',
       capabilities: ['processes:kill'],
-      ctx: { role: 'queen' },
+      ctx: { role: 'mug' },
     });
     expect(d.withinEnvelope).toBe(false);
   });
@@ -86,7 +86,7 @@ describe('evaluateCapabilityEnvelope — fleet roles', () => {
 
 describe('evaluateCapabilityEnvelope — bee write-capable (confinement LIFTED 2026-06-14)', () => {
   const bee = (capabilities: readonly string[], toolName = 't') =>
-    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'bee' } });
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'cup' } });
 
   it('ALLOWS capability:fs-write for the bee (write/edit opened — owner-directed full autonomy)', () => {
     const d = bee(['capability:fs-write'], 'capability:write');
@@ -127,13 +127,13 @@ describe('evaluateCapabilityEnvelope — bee write-capable (confinement LIFTED 2
 
 describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overwatch-role-2026-06-15 B-01 / D-002)', () => {
   const ow = (capabilities: readonly string[], toolName = 't') =>
-    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'overwatch' } });
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'kettle' } });
 
   it('DENIES capability:fs-write for the overwatch (it nudges + observes, it never edits code)', () => {
     const d = ow(['capability:fs-write'], 'capability:write');
     expect(d.applied).toBe(true);
     expect(d.withinEnvelope).toBe(false);
-    expect(d.reason).toContain('overwatch');
+    expect(d.reason).toContain('kettle');
   });
 
   it('DENIES capability:bash for the overwatch (no shell — it acts on AGENTS, never on the box)', () => {
@@ -155,13 +155,13 @@ describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overw
 
 describe('evaluateCapabilityEnvelope — sentinel/Herald read+suggest confinement (Sentinel-as-Herald)', () => {
   const sn = (capabilities: readonly string[], toolName = 't') =>
-    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'sentinel' } });
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'papercup' } });
 
   it('DENIES capability:fs-write for the sentinel (the Herald suggests + hands off, it never edits code)', () => {
     const d = sn(['capability:fs-write'], 'capability:write');
     expect(d.applied).toBe(true);
     expect(d.withinEnvelope).toBe(false);
-    expect(d.reason).toContain('sentinel');
+    expect(d.reason).toContain('papercup');
   });
 
   it('DENIES capability:bash for the sentinel (no shell — it files work + nudges the Queen, never runs anything)', () => {
@@ -198,18 +198,18 @@ describe('evaluateCapabilityEnvelope — testing-phase full access (EI-2048)', (
   afterEach(() => { if (prev === undefined) delete process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES; else process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = prev; });
 
   it('a testing role (overwatch) is now ALLOWED its per-role-denied caps (fs-write/bash)', () => {
-    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(true);
-    expect(evaluateCapabilityEnvelope({ toolName: 'capability:bash', capabilities: ['capability:bash'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(true);
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'kettle' } }).withinEnvelope).toBe(true);
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:bash', capabilities: ['capability:bash'], ctx: { role: 'kettle' } }).withinEnvelope).toBe(true);
   });
 
   it('but the universal PROTECTED floor STILL holds for a testing role (secrets / processes:kill)', () => {
-    expect(evaluateCapabilityEnvelope({ toolName: 'secrets.read', capabilities: ['secrets:read:x'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(false);
-    expect(evaluateCapabilityEnvelope({ toolName: 'processes.kill', capabilities: ['processes:kill'], ctx: { role: 'queen' } }).withinEnvelope).toBe(false);
+    expect(evaluateCapabilityEnvelope({ toolName: 'secrets.read', capabilities: ['secrets:read:x'], ctx: { role: 'kettle' } }).withinEnvelope).toBe(false);
+    expect(evaluateCapabilityEnvelope({ toolName: 'processes.kill', capabilities: ['processes:kill'], ctx: { role: 'mug' } }).withinEnvelope).toBe(false);
   });
 
   it('kill-switch: PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off restores the per-role deny', () => {
     process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES = 'off';
-    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'overwatch' } }).withinEnvelope).toBe(false);
+    expect(evaluateCapabilityEnvelope({ toolName: 'capability:write', capabilities: ['capability:fs-write'], ctx: { role: 'kettle' } }).withinEnvelope).toBe(false);
   });
 });
 
@@ -218,8 +218,8 @@ describe('envelope constants', () => {
     expect(FLEET_ENVELOPE_ROLES.has('operator')).toBe(false);
     expect(FLEET_ENVELOPE_ROLES.has('oracle')).toBe(false);
     expect(FLEET_ENVELOPE_ROLES.has('worker')).toBe(true);
-    expect(FLEET_ENVELOPE_ROLES.has('queen')).toBe(true);
-    expect(FLEET_ENVELOPE_ROLES.has('bee')).toBe(true);
+    expect(FLEET_ENVELOPE_ROLES.has('mug')).toBe(true);
+    expect(FLEET_ENVELOPE_ROLES.has('cup')).toBe(true);
   });
 
   it('the protected set is non-empty (the only active B-06 constraint)', () => {

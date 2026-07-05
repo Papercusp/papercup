@@ -35,13 +35,13 @@ describe('recordSpawnPg — hive.controlState push on queen spawn (D-008 P-007)'
   beforeEach(() => notify.mockClear());
 
   it('pushes notifySyncInvalidate(hive.controlState) when a queen is spawned', async () => {
-    await recordSpawnPg(fakeSql, spawn({ childRole: 'queen' }));
+    await recordSpawnPg(fakeSql, spawn({ childRole: 'mug' }));
     await vi.waitFor(() => expect(notify).toHaveBeenCalledWith('hive.controlState', {}));
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('stays quiet for a non-queen spawn (worker / bee / overwatch)', async () => {
-    for (const role of ['worker', 'bee', 'overwatch', 'scout']) {
+    for (const role of ['worker', 'cup', 'kettle', 'scout']) {
       notify.mockClear();
       await recordSpawnPg(fakeSql, spawn({ childRole: role }));
       // give the (absent) fire-and-forget a tick — it must never resolve a push

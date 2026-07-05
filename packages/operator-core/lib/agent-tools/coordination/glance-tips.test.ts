@@ -50,7 +50,7 @@ describe('evaluateTips — default rules', () => {
 
   it('governor pause → tip for every audience including bees', () => {
     const paused = { governorPausedKeys: ['anthropic:opus'] };
-    expect(evaluateTips(ctx({ ...paused, audience: 'bee' })).map((t) => t.id)).toEqual([
+    expect(evaluateTips(ctx({ ...paused, audience: 'cup' })).map((t) => t.id)).toEqual([
       'governor-paused',
     ]);
     expect(evaluateTips(ctx(paused))[0].text).toContain('anthropic:opus');
@@ -59,7 +59,7 @@ describe('evaluateTips — default rules', () => {
   });
 
   it('bees never see the wake-mode/staged-wake tips (audience scoping)', () => {
-    const tips = evaluateTips(ctx({ audience: 'bee', wakeDefault: 'manual', stagedTotal: 5 }));
+    const tips = evaluateTips(ctx({ audience: 'cup', wakeDefault: 'manual', stagedTotal: 5 }));
     expect(tips).toEqual([]);
   });
 

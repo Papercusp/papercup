@@ -212,10 +212,10 @@ function WorkingView({
   // bee→Cup, sentinel→Papercup, overwatch→Kettle in the classic/Pot pack —
   // restore-pot-lexicon P-007). planner/su have no TermKey and stay literal.
   const kindLegend: Array<{ kind: string; label: string; hint: string }> = [
-    { kind: 'queen', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
-    { kind: 'overwatch', label: t('overwatch', { lower: true }), hint: `${t('overwatch')} — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
-    { kind: 'bee', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
-    { kind: 'sentinel', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
+    { kind: 'mug', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
+    { kind: 'kettle', label: t('overwatch', { lower: true }), hint: `${t('overwatch')} — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
+    { kind: 'cup', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
+    { kind: 'papercup', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
     { kind: 'planner', label: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
     { kind: 'su', label: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
   ];

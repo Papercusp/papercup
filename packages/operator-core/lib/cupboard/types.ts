@@ -123,7 +123,9 @@ export function listingKindOf(l: HarnessListing): ListingKind {
  *  template (generic-hive, …), the Cupboard "Hives" tab's members (P-018). A blueprint
  *  listing with `blueprint_kind` absent/`'harness'` is an ordinary harness blueprint. */
 export function isHiveBlueprintListing(l: HarnessListing): boolean {
-  return listingKindOf(l) === 'blueprint' && l.blueprint_kind === 'hive';
+  // dual-accept: pre-rename PUBLISHED listings still carry blueprint_kind 'hive'
+  // (external cupboard data we don't control); new publishes stamp 'pot'.
+  return listingKindOf(l) === 'blueprint' && (l.blueprint_kind === 'pot' || l.blueprint_kind === 'hive');
 }
 
 /** Pre-publication review (worker migration 008 / learning-packs D-007):
@@ -322,7 +324,7 @@ export interface HarnessListing {
   /** For a `listing_kind: 'blueprint'` row: the blueprint.yaml `kind` — 'hive' (a hive
    *  template) | 'harness'. Absent/null for non-blueprint listings + pre-009 rows
    *  (Cupboard migration 009 / hive-blueprint-generalization P-018). Drives the Hives tab. */
-  blueprint_kind?: 'hive' | 'harness' | null;
+  blueprint_kind?: 'pot' | 'hive' | 'harness' | null;
 
   // ── Repo→Hive binding fields (Cupboard worker migration 007 /
   // hive-from-github-url-2026-06-11 P-004, D-004 HYBRID ratified per D-008).

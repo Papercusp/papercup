@@ -40,17 +40,17 @@ beforeEach(() => {
 
 describe('operator:rate_limit_config', () => {
   it('get returns the persisted config (no role gate)', async () => {
-    const b = body(await call({ op: 'get' }, 'bee'));
+    const b = body(await call({ op: 'get' }, 'cup'));
     expect(b).toMatchObject({ config: { maxSimultaneousAgents: 16, concurrencyFloor: 2 } });
   });
 
   it('set rejects a role without operator-config write authority (e.g. bee)', async () => {
-    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'bee')).rejects.toThrow(/operator, architect, or queen/);
+    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'cup')).rejects.toThrow(/operator, architect, or queen/);
     expect(writeM).not.toHaveBeenCalled();
   });
 
   it('set ACCEPTS the queen (operator-equivalent, EI-2204) — she is no longer rejected', async () => {
-    const b = body(await call({ op: 'set', maxSimultaneousAgents: 4 }, 'queen'));
+    const b = body(await call({ op: 'set', maxSimultaneousAgents: 4 }, 'mug'));
     expect(writeM).toHaveBeenCalledWith({ maxSimultaneousAgents: 4, concurrencyFloor: 2 });
     expect(b).toMatchObject({ ok: true, config: { maxSimultaneousAgents: 4, concurrencyFloor: 2 } });
   });

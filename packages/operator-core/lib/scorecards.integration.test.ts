@@ -51,7 +51,7 @@ async function fileScorecard(
     title: `scorecard ${opts.id}`,
     kind: 'change',
     topics: [OBSERVATION_TOPIC],
-    createdBy: opts.createdBy ?? 'overwatch',
+    createdBy: opts.createdBy ?? 'kettle',
     payload: {
       observation: {
         ...(opts.rubricRef ? { rubricRef: opts.rubricRef } : {}),
@@ -107,7 +107,7 @@ describe('listScorecards (P-013) — real PG', () => {
     });
     // A FREE-TEXT observation (no rubricRef) — must NOT appear as a scorecard.
     await createIssue({
-      title: 'free-text obs', kind: 'change', topics: [OBSERVATION_TOPIC], createdBy: 'bee',
+      title: 'free-text obs', kind: 'change', topics: [OBSERVATION_TOPIC], createdBy: 'cup',
       payload: { observation: { kind: 'friction', scope: 'papercusp', refs: [] } },
     });
   }, 120_000);
@@ -135,7 +135,7 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T10:00:00.000Z']); // complete, partial
 
     const complete = rows[0];
-    expect(complete.createdBy).toBe('overwatch');
+    expect(complete.createdBy).toBe('kettle');
     expect(complete.sourceHive).toBe('papercusp');
     expect(complete.nKeys).toBe(3);
     expect(complete.missingKeys).toEqual([]); // all 3 criteria rated

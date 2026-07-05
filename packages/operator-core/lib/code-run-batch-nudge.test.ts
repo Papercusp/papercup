@@ -295,11 +295,11 @@ describe('maybeOrientDedupNudge (P-009) — soft, windowed, one-shot', () => {
 describe('CODE_RUN_CAPABLE_ROLES', () => {
   it('includes EVERY built-in role (code:run is open to all roles, owner directive 2026-06-25)', () => {
     expect(CODE_RUN_CAPABLE_ROLES.has('worker')).toBe(true);
-    expect(CODE_RUN_CAPABLE_ROLES.has('queen')).toBe(true);
-    expect(CODE_RUN_CAPABLE_ROLES.has('bee')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('mug')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('cup')).toBe(true);
     // Previously-excluded non-SU/bee roles now qualify — the nudge fires for them too.
-    expect(CODE_RUN_CAPABLE_ROLES.has('sentinel')).toBe(true);
-    expect(CODE_RUN_CAPABLE_ROLES.has('overwatch')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('papercup')).toBe(true);
+    expect(CODE_RUN_CAPABLE_ROLES.has('kettle')).toBe(true);
     expect(CODE_RUN_CAPABLE_ROLES.has('reviewer')).toBe(true);
   });
 });
@@ -310,14 +310,14 @@ import { canRoleActOnCodeRun } from './code-run-batch-nudge';
 
 describe('canRoleActOnCodeRun — envelope-aware capability check (P-004)', () => {
   it('allows default-allow fleet roles (bee, queen, worker)', () => {
-    for (const role of ['bee', 'queen', 'worker']) {
+    for (const role of ['cup', 'mug', 'worker']) {
       expect(canRoleActOnCodeRun(role), role).toBe(true);
     }
   });
 
   it('refuses envelope-denied roles (overwatch/sentinel deny capability:bash) and unknown roles', () => {
-    expect(canRoleActOnCodeRun('overwatch')).toBe(false);
-    expect(canRoleActOnCodeRun('sentinel')).toBe(false);
+    expect(canRoleActOnCodeRun('kettle')).toBe(false);
+    expect(canRoleActOnCodeRun('papercup')).toBe(false);
     expect(canRoleActOnCodeRun('totally-unknown-role')).toBe(false);
   });
 });

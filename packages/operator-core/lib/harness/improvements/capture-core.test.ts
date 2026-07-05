@@ -52,16 +52,16 @@ describe('captureImprovement — filer-role attribution (close-observation-attri
   it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
     const d = deps();
     await captureImprovement(
-      { title: 'hive-coordination-health scorecard', kind: 'change', lane: 'observation', filedByRole: 'overwatch' },
+      { title: 'hive-coordination-health scorecard', kind: 'change', lane: 'observation', filedByRole: 'kettle' },
       d,
     );
-    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('overwatch');
+    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('kettle');
   });
 
   it('stamps payload.filedByRole on an improvement too', async () => {
     const d = deps();
-    await captureImprovement({ title: 'docs:search friction', kind: 'bug', filedByRole: 'bee' }, d);
-    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('bee');
+    await captureImprovement({ title: 'docs:search friction', kind: 'bug', filedByRole: 'cup' }, d);
+    expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('cup');
   });
 
   it('omits filedByRole when not provided (no empty stamp)', async () => {
@@ -265,7 +265,7 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
     expect(d1.created[0].topics).toContain('improvement-source:Queen');
 
     const d2 = deps();
-    await captureImprovement({ title: 'bee-filed idea', kind: 'bug', sourceRole: 'bee' }, d2);
+    await captureImprovement({ title: 'bee-filed idea', kind: 'bug', sourceRole: 'cup' }, d2);
     expect(d2.created[0].topics).toContain('improvement-source:bee');
   });
 
@@ -275,11 +275,11 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
       title: 'harness-specific bug',
       kind: 'bug',
       scope: 'harness:sheets',
-      sourceRole: 'bee',
+      sourceRole: 'cup',
     }, d);
     expect(res.created).toBe(true);
     expect(d.created[0].scope).toBe('harness:sheets');
-    expect(d.created[0].payload?.sourceRole).toBe('bee');
+    expect(d.created[0].payload?.sourceRole).toBe('cup');
   });
 });
 

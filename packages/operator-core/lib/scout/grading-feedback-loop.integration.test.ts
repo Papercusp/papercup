@@ -125,7 +125,7 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
   });
 
   it("Queen grade-1 keyed by routedRef (D-007) resolves the ideaId and drags that lens's weight down (1/6)", async () => {
-    const out = await runGradeIdea({ routedRef: 'wi:EI-G2', grade: 1, feedback: 'derivative' }, { role: 'queen' });
+    const out = await runGradeIdea({ routedRef: 'wi:EI-G2', grade: 1, feedback: 'derivative' }, { role: 'mug' });
     expect(out.applied).toBe(true);
     expect(out.gradedBy).toBe('Queen');
     expect(out.ideaId).toBe('g2');
@@ -147,7 +147,7 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
   });
 
   it('owner-grade-sovereign through the tool: a Queen regrade of g1 is a no-op carrying the standing owner grade', async () => {
-    const out = await runGradeIdea({ ideaId: 'g1', grade: 2, feedback: 'overruled?' }, { role: 'queen' });
+    const out = await runGradeIdea({ ideaId: 'g1', grade: 2, feedback: 'overruled?' }, { role: 'mug' });
     expect(out.applied).toBe(false);
     expect(out.reason).toBe('owner-grade-sovereign');
     expect(out.idea?.humanGrade).toBe(5);

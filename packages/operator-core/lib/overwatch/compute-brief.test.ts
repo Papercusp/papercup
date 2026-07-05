@@ -82,7 +82,7 @@ test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-
   const a = only(detectAnomalies(b), 'queen-stalled');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'nudge');
-  assert.equal(a.suggestedAction.target, 'queen');
+  assert.equal(a.suggestedAction.target, 'mug');
   assert.match(a.detail, /2 placement\(s\) in flight/);
 });
 
@@ -185,7 +185,7 @@ test('detectAnomalies — placeable frontier unplaced with routines alive → wo
   const a = only(detectAnomalies(b), 'work-feed-stuck');
   assert.equal(a.severity, 'warning');
   assert.equal(a.suggestedAction.type, 'nudge');
-  assert.equal(a.suggestedAction.target, 'queen');
+  assert.equal(a.suggestedAction.target, 'mug');
   assert.match(a.detail, /placeable frontier/);
 });
 
@@ -530,7 +530,7 @@ function fakeHealth(
       overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive,
     },
     panels: {
-      queen: hp('queen', pick(p.queen, queenData())),
+      queen: hp('mug', pick(p.queen, queenData())),
       bees: hp('bees', pick(p.bees, beesData())),
       workItems: naPanel('workItems'),
       workFeed: hp('workFeed', pick(p.workFeed, workFeedData())),
@@ -544,7 +544,7 @@ function fakeHealth(
       improvements: naPanel('improvements'),
       infra: naPanel('infra'),
       suFleet: naPanel('suFleet'),
-      overwatch: naPanel('overwatch'),
+      overwatch: naPanel('kettle'),
       scout: naPanel('scout'),
       toolEfficiency: naPanel('toolEfficiency'),
     },
@@ -685,7 +685,7 @@ test('mapSystemHealthToBrief — queenAlive derivation keeps queen-dark and quee
     ),
   );
   assert.equal(paused.crossMonitor.queenAlive, true);
-  assert.equal(paused.anomalies.filter((a) => a.kind.startsWith('queen')).length, 0);
+  assert.equal(paused.anomalies.filter((a) => a.kind.startsWith('mug')).length, 0);
 });
 
 test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + attaches anomalies + wokeBy', async () => {
@@ -757,7 +757,7 @@ test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping am
   owner.resolveQueenOwner.mockResolvedValue('s-queen-x');
   owner.ownerRows = [{ coord_owner_id: 's-overwatch-1' }]; // the inbox-owner SELECT resolves
   owner.readInbox.mockResolvedValue([
-    { kind: 'message', from: 'queen', summary: 're: nudge — re-opened' },
+    { kind: 'message', from: 'mug', summary: 're: nudge — re-opened' },
     {
       kind: 'notify',
       from: 'sys',
@@ -769,7 +769,7 @@ test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping am
     const b = await computeOverwatchBrief('ws', 'papercup-hive');
     assert.equal(b.inbox?.length, 1); // ambient (category) row filtered, like coord:inbox default
     assert.equal(b.inbox?.[0].kind, 'message');
-    assert.equal(b.inbox?.[0].from, 'queen');
+    assert.equal(b.inbox?.[0].from, 'mug');
     assert.match(b.inbox?.[0].summary ?? '', /re-opened/);
   } finally {
     owner.ownerRows = []; // reset shared mock state for later tests

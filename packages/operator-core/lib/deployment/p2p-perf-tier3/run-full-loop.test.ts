@@ -60,7 +60,7 @@ function claim(workItemId: string, claimId: string, holderPubkey: string, acquir
 const baseInput = {
   swarmCount: 3,
   backlog: ['F-001', 'F-002'],
-  queenOwner: 'queen',
+  queenOwner: 'mug',
   killedAuthority: null,
   epoch1SeenByAll: true,
   authorityClaims: [] as WorkItemClaim[],
@@ -76,16 +76,16 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 1,
-          owner: 'queen',
-          completions: [completion({ workItemId: 'F-001', owner: 'queen', steerOrderIndex: 0, completedAtMs: 1 })],
+          owner: 'mug',
+          completions: [completion({ workItemId: 'F-001', owner: 'mug', steerOrderIndex: 0, completedAtMs: 1 })],
         }),
         result({
           swarmIndex: 2,
-          owner: 'bee',
-          completions: [completion({ workItemId: 'F-002', owner: 'bee', steerOrderIndex: 1, completedAtMs: 2 })],
+          owner: 'cup',
+          completions: [completion({ workItemId: 'F-002', owner: 'cup', steerOrderIndex: 1, completedAtMs: 2 })],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['queen'], 'F-002': ['bee'] },
+      queenTurn2SawDone: { 'F-001': ['mug'], 'F-002': ['cup'] },
     });
     expect(v.exactlyOnceObserved).toBe(true);
     expect(v.starvedItems).toEqual([]);
@@ -104,13 +104,13 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 1,
-          owner: 'queen',
-          completions: [completion({ workItemId: 'F-001', owner: 'queen' })],
+          owner: 'mug',
+          completions: [completion({ workItemId: 'F-001', owner: 'mug' })],
         }),
       ],
       // F-002 was completed + federated by the DEAD authority — visible in the
       // queen's converged projection, reported by no one.
-      queenTurn2SawDone: { 'F-001': ['queen'], 'F-002': ['dead-authority'] },
+      queenTurn2SawDone: { 'F-001': ['mug'], 'F-002': ['dead-authority'] },
     });
     expect(v.starvedItems).toEqual([]);
     expect(v.completedItems).toEqual(['F-001']); // reported completions only
@@ -122,11 +122,11 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 1,
-          owner: 'queen',
-          completions: [completion({ workItemId: 'F-001', owner: 'queen' })],
+          owner: 'mug',
+          completions: [completion({ workItemId: 'F-001', owner: 'mug' })],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['queen'] }, // F-002: no evidence anywhere
+      queenTurn2SawDone: { 'F-001': ['mug'] }, // F-002: no evidence anywhere
     });
     expect(noEvidence.starvedItems).toEqual(['F-002']);
   });
@@ -138,14 +138,14 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 2,
-          owner: 'bee',
+          owner: 'cup',
           completions: [
-            completion({ workItemId: 'F-001', owner: 'bee' }),
-            completion({ workItemId: 'F-002', owner: 'bee' }),
+            completion({ workItemId: 'F-001', owner: 'cup' }),
+            completion({ workItemId: 'F-002', owner: 'cup' }),
           ],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['bee'] }, // F-002@bee never reached the queen
+      queenTurn2SawDone: { 'F-001': ['cup'] }, // F-002@bee never reached the queen
     });
     expect(v.steering.queenSawAllRemoteCompletions).toBe(false);
     expect(v.steering.queenMissedItems).toEqual(['F-002@bee']);
@@ -158,14 +158,14 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 2,
-          owner: 'bee',
+          owner: 'cup',
           completions: [
-            completion({ workItemId: 'F-002', owner: 'bee', steerOrderIndex: 1, completedAtMs: 1 }),
-            completion({ workItemId: 'F-001', owner: 'bee', steerOrderIndex: 0, completedAtMs: 2 }),
+            completion({ workItemId: 'F-002', owner: 'cup', steerOrderIndex: 1, completedAtMs: 1 }),
+            completion({ workItemId: 'F-001', owner: 'cup', steerOrderIndex: 0, completedAtMs: 2 }),
           ],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['bee'], 'F-002': ['bee'] },
+      queenTurn2SawDone: { 'F-001': ['cup'], 'F-002': ['cup'] },
     });
     expect(v.steering.claimsFollowedSteering).toEqual([false]);
   });
@@ -227,18 +227,18 @@ describe('computeFullLoopVerdict', () => {
       results: [
         result({
           swarmIndex: 2,
-          owner: 'bee',
-          completions: [completion({ workItemId: 'F-001', owner: 'bee', acquiredTs: new Date(5_000).toISOString() })],
+          owner: 'cup',
+          completions: [completion({ workItemId: 'F-001', owner: 'cup', acquiredTs: new Date(5_000).toISOString() })],
           refusals: [{ workItemId: 'F-002', atMs: 11_000, reason: 'caller_revoked' }],
           stats: { sweeps: 2, localAuthority: 0, remoteAuthority: 2, failOpen: 0, conflicts: 0, refusedRevoked: 1 },
         }),
         result({
           swarmIndex: 1,
-          owner: 'queen',
-          completions: [completion({ workItemId: 'F-002', owner: 'queen' })],
+          owner: 'mug',
+          completions: [completion({ workItemId: 'F-002', owner: 'mug' })],
         }),
       ],
-      queenTurn2SawDone: { 'F-001': ['bee'], 'F-002': ['queen'] },
+      queenTurn2SawDone: { 'F-001': ['cup'], 'F-002': ['mug'] },
       // One legit pre-revocation grant, one ILLEGAL post-revocation grant.
       authorityClaims: [
         claim('F-001', 'c1', 'pk-bee', 5_000),

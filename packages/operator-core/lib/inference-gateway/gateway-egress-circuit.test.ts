@@ -272,13 +272,13 @@ test('INTERACTIVE fail-fast — a human-labeled caller caps its absorb + sheds f
   };
 
   const human = await run('interactive', true); // capped → sheds/forwards after ~1 attempt
-  const auto = await run('queen', false); // full budget → absorbs through several attempts (afterEach closes it)
+  const auto = await run('mug', false); // full budget → absorbs through several attempts (afterEach closes it)
   // The human gets a FAST response (a forwarded 529 overload or a shed 503/429 — all retryable), NOT a hold:
   // the proof is that it made far fewer upstream attempts than the autonomous 'queen' that held the full budget.
   assert.ok(human.status >= 400, `human interactive got a client-visible retryable error fast (got ${human.status})`);
   assert.ok(
     auto.calls > human.calls,
-    `the capped human shed fast (${human.calls} attempt(s)) while the autonomous 'queen' absorbed through more (${auto.calls})`,
+    `the capped human shed fast (${human.calls} attempt(s)) while the autonomous 'mug' absorbed through more (${auto.calls})`,
   );
 });
 

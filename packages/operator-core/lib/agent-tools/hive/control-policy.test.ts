@@ -39,7 +39,7 @@ describe('pot:control_policy', () => {
     expect(b).toMatchObject({ effective: { breakerThreshold: 3, infraBreakerThreshold: 12 }, overrides: {} });
   });
   it('is operator-authority gated', async () => {
-    await expect(tool.handler({ op: 'set', breakerThreshold: 5 } as never, { role: 'bee' } as never)).rejects.toThrow(/operator, architect, or queen/i);
+    await expect(tool.handler({ op: 'set', breakerThreshold: 5 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or queen/i);
     expect(writeM).not.toHaveBeenCalled();
   });
   it('requires at least one field', async () => {

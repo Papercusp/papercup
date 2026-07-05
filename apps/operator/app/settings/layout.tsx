@@ -50,7 +50,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     links: [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
-      { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'queen', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
+      { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'mug', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
       { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },
       { href: '/settings/p2p', label: 'P2P work sharing', keywords: ['p2p', 'peers', 'work sharing', 'foreign work', 'grants', 'capability', 'opt-in', 'kill switch', 'kill-switch', 'attestation', 'device', 'fleet', 'budgets', 'allotment', 'delegate', 'observer', 'collaborator', 'operator grant'] },

@@ -53,7 +53,7 @@ describe('assertFact WI-1564 stranding guard (F1-4)', () => {
   it('refuses a shareable fact whose workspace resolves to the wildcard partition', async () => {
     await expect(
       assertFact(
-        { scope: 'role', scopeRef: 'queen', key: 'k', body: 'b', createdBy: 'su-test', shareable: true, workspaceId: '*' },
+        { scope: 'role', scopeRef: 'mug', key: 'k', body: 'b', createdBy: 'su-test', shareable: true, workspaceId: '*' },
         failSql,
       ),
     ).rejects.toThrow(/never federates/);
@@ -162,7 +162,7 @@ describe('resolveFactScopeRef (EI-7517 — self-scoped default)', () => {
   it('an EXPLICIT ref always wins over the ctx default', () => {
     expect(resolveFactScopeRef('owner', 'su-other', defaults)).toBe('su-other');
     expect(resolveFactScopeRef('harness', 'other-harness', defaults)).toBe('other-harness');
-    expect(resolveFactScopeRef('role', 'queen', defaults)).toBe('queen');
+    expect(resolveFactScopeRef('role', 'mug', defaults)).toBe('mug');
   });
 
   it('leaves workspace ref-less and does NOT invent a work_item ref', () => {
@@ -183,7 +183,7 @@ describe('resolveFactScopeRef (EI-7517 — self-scoped default)', () => {
 describe('renderFactsFold', () => {
   const fact = (over: Partial<AgentFact>): AgentFact => ({
     scope: 'role',
-    scopeRef: 'queen',
+    scopeRef: 'mug',
     key: 'k',
     body: 'WI-1439 is owner-residue — exclude from the placeable frontier',
     sourceRef: 'WI-1574',

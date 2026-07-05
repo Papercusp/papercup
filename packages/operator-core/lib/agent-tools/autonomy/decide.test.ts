@@ -91,10 +91,10 @@ describe('autonomy:decide tool', () => {
   // decider entirely. nudge/observe/escalate → auto; structural → gated.
   describe('overwatch envelope (B-06)', () => {
     it('AUTO-decides a nudge and never touches the Queen decider (role arg)', async () => {
-      const res = await callTool({ action: 'coord:send', role: 'overwatch' });
+      const res = await callTool({ action: 'coord:send', role: 'kettle' });
       const body = JSON.parse(res.content[0].text);
       expect(body.ok).toBe(true);
-      expect(body.role).toBe('overwatch');
+      expect(body.role).toBe('kettle');
       expect(body.workspaceId).toBe('ws-active');
       expect(body.decision.posture).toBe('auto');
       expect(body.decision.actionClass).toBe('nudge');
@@ -103,16 +103,16 @@ describe('autonomy:decide tool', () => {
     });
 
     it('dispatches on ctx.role when no role arg is given', async () => {
-      const res = await callTool({ action: 'improvements:capture' }, { role: 'overwatch' });
+      const res = await callTool({ action: 'improvements:capture' }, { role: 'kettle' });
       const body = JSON.parse(res.content[0].text);
-      expect(body.role).toBe('overwatch');
+      expect(body.role).toBe('kettle');
       expect(body.decision.posture).toBe('auto');
       expect(body.decision.actionClass).toBe('observe');
       expect(mockResolve).not.toHaveBeenCalled();
     });
 
     it('GATES a structural action (escalate-only)', async () => {
-      const res = await callTool({ action: 'processes:kill', role: 'overwatch' });
+      const res = await callTool({ action: 'processes:kill', role: 'kettle' });
       const body = JSON.parse(res.content[0].text);
       expect(body.decision.posture).toBe('gated');
       expect(body.decision.escalateOnly).toBe(true);
@@ -120,7 +120,7 @@ describe('autonomy:decide tool', () => {
     });
 
     it('a non-overwatch role still uses the Queen decider', async () => {
-      await callTool({ action: 'coord:send', role: 'queen' });
+      await callTool({ action: 'coord:send', role: 'mug' });
       expect(mockResolve).toHaveBeenCalledTimes(1);
     });
   });

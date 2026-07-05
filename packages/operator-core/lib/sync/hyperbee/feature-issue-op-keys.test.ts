@@ -418,7 +418,7 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
       payload: { agentSessionId: 'sess-1', backend: 'claude-code' },
       found_during: null,
       linked_feature_id: null,
-      created_by: 'queen',
+      created_by: 'mug',
       created_at: '2026-06-08T11:59:00.000Z',
       origin: 'local',
     },

@@ -291,7 +291,7 @@ export default function HiveCustomizationPage() {
   // bee→cup). Lower-cased to match the other raw role ids shown (su/overwatch/operator,
   // whose classic label is unchanged). The Select `value` stays the raw role id.
   const roleLabel = (r: string): string =>
-    r === 'queen' ? t('brain', { lower: true }) : r === 'bee' ? t('contributor', { lower: true }) : r;
+    r === 'mug' ? t('brain', { lower: true }) : r === 'cup' ? t('contributor', { lower: true }) : r;
   const { data: hiveData, loading: hivesLoading } = useSyncQuery<HiveRow>({ queryName: 'learning.hiveList' });
   const hives = useMemo<HiveRow[]>(() => hiveData ?? [], [hiveData]);
 

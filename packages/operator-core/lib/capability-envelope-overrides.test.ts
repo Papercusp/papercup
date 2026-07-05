@@ -35,7 +35,7 @@ import {
 } from './capability-envelope-overrides';
 import { evaluateCapabilityEnvelope } from './capability-envelope/policy';
 
-const beeCtx = { role: 'bee', isSuperuser: false, isPowerUser: false } as const;
+const beeCtx = { role: 'cup', isSuperuser: false, isPowerUser: false } as const;
 
 beforeEach(async () => {
   h.store.clear();
@@ -46,7 +46,7 @@ beforeEach(async () => {
 describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => {
   it('flag OFF ⇒ getters stay empty even after a write (byte-identical), but the store still persists', async () => {
     h.flagOn = false;
-    await setRoleEnvelope('bee', { denyCapabilities: ['capability:bash'] });
+    await setRoleEnvelope('cup', { denyCapabilities: ['capability:bash'] });
     expect(envelopeRoleOverrides()).toEqual({});
     expect(envelopeProtectedAdditions()).toEqual([]);
     // the durable store DID record it — only the hot-path cache is gated off.
@@ -58,15 +58,15 @@ describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => 
   it('flag ON ⇒ a role override surfaces synchronously after the write (same-process immediacy)', async () => {
     h.flagOn = true;
     await refreshCapabilityEnvelopeOverrides();
-    await setRoleEnvelope('bee', { denyCapabilities: ['capability:bash'] });
+    await setRoleEnvelope('cup', { denyCapabilities: ['capability:bash'] });
     expect(envelopeRoleOverrides()).toEqual({ bee: { denyCapabilities: ['capability:bash'] } });
   });
 
   it('clear (env=null) removes only that role', async () => {
     h.flagOn = true;
-    await setRoleEnvelope('bee', { denyCapabilities: ['x'] });
-    await setRoleEnvelope('overwatch', { denyCapabilities: ['y'] });
-    await setRoleEnvelope('bee', null);
+    await setRoleEnvelope('cup', { denyCapabilities: ['x'] });
+    await setRoleEnvelope('kettle', { denyCapabilities: ['y'] });
+    await setRoleEnvelope('cup', null);
     expect(envelopeRoleOverrides()).toEqual({ overwatch: { denyCapabilities: ['y'] } });
   });
 
@@ -79,7 +79,7 @@ describe('capability-envelope-overrides — D-010 flag-gated sync cache', () => 
 
   it('resetEnvelopeOverrides clears everything', async () => {
     h.flagOn = true;
-    await setRoleEnvelope('bee', { denyCapabilities: ['x'] });
+    await setRoleEnvelope('cup', { denyCapabilities: ['x'] });
     await addProtectedGlobs(['danger:*']);
     await resetEnvelopeOverrides();
     expect(envelopeRoleOverrides()).toEqual({});

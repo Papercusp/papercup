@@ -13,7 +13,7 @@ function pr(number: number, overrides: Partial<PrRowData> = {}): PrRowData {
     remote: 'github.com/acme/repo',
     number,
     title: `PR #${number}`,
-    author_login: 'bee',
+    author_login: 'cup',
     author_github_id: 1,
     html_url: `https://github.com/acme/repo/pull/${number}`,
     state: 'open',

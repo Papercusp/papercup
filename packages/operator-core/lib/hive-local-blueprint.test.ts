@@ -42,11 +42,11 @@ describe('materializeHiveLocalBlueprint', () => {
       { hiveBlueprintId: 'coding', hiveDir },
       {
         readOverrides: async () => ({ queen: 'PAPERCUSP QUEEN SPECIFICS' }),
-        readBuiltinPersona: (role) => (role === 'queen' ? '# Built-in Queen' : null),
+        readBuiltinPersona: (role) => (role === 'mug' ? '# Built-in Queen' : null),
       },
     );
     expect(res).not.toBeNull();
-    expect(res!.materializedRoles).toEqual(['queen']);
+    expect(res!.materializedRoles).toEqual(['mug']);
     const file = join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'queen.md');
     expect(readFileSync(file, 'utf8')).toBe('# Built-in Queen\n\n---\n\nPAPERCUSP QUEEN SPECIFICS\n');
   });
@@ -70,7 +70,7 @@ describe('materializeHiveLocalBlueprint', () => {
         readBuiltinPersona: () => null,
       },
     );
-    expect(res!.materializedRoles).toEqual(['bee']);
+    expect(res!.materializedRoles).toEqual(['cup']);
   });
 
   it('is idempotent + cleans stale roles: a removed override leaves no file', async () => {
@@ -132,7 +132,7 @@ describe('end-to-end with the tier-aware resolver (P-012 + P-014)', () => {
       blueprintRoots: [res!.localRoot],
     };
     // queen → the materialized local file (override applied)
-    expect(resolvePromptFile(ctx, 'queen')).toBe(
+    expect(resolvePromptFile(ctx, 'mug')).toBe(
       join(res!.localRoot, 'blueprints', 'coding', 'prompts', 'queen.md'),
     );
     // scoper (not overridden) → falls through to built-in

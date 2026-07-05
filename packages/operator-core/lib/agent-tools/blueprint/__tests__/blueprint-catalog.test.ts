@@ -70,7 +70,7 @@ describe('blueprint:catalog — built-in tier', () => {
     // (The hive blueprint is now id `coding` — renamed from `hive`.)
     const hive = byId(r, 'coding')!;
     expect(hive.launchable).toBe(true);
-    expect(hive.decider).toBe('queen'); // hive decider since P-071 (2026-06-10)
+    expect(hive.decider).toBe('mug'); // hive decider since P-071 (2026-06-10)
     // A launch/hive blueprint declares NO dispatch policy — the catalog reflects
     // that absence rather than inventing a default.
     expect(hive.dispatch).toBeUndefined();

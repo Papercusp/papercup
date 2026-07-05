@@ -58,7 +58,7 @@ interface Harness {
 }
 
 function makeHarness(
-  opts: { leaseGranted?: boolean; configError?: string; humanFacingRole?: 'operator' | 'sentinel' } = {},
+  opts: { leaseGranted?: boolean; configError?: string; humanFacingRole?: 'operator' | 'papercup' } = {},
 ): Harness {
   const out: OpVoiceMessage[] = [];
   let el: FakeEl | null = null;

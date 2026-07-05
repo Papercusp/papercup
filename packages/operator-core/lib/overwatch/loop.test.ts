@@ -26,7 +26,7 @@ vi.mock('./brief-types', () => ({ renderOverwatchBrief: (...a: unknown[]) => ren
 const declareOverwatchTimeWake = vi.fn();
 const clearOverwatchTimeWake = vi.fn();
 vi.mock('./liveness', () => ({
-  OVERWATCH_ROLE: 'overwatch',
+  OVERWATCH_ROLE: 'kettle',
   OVERWATCH_BLUEPRINT_ID: 'coding',
   OVERWATCH_WAKE_TARGET_ACTION: 'system:overwatch-launch',
   declareOverwatchTimeWake: (...a: unknown[]) => declareOverwatchTimeWake(...a),
@@ -111,7 +111,7 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
     expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, SLUG, { wokeBy: 'why-i-woke' });
     expect(renderOverwatchBrief).toHaveBeenCalledWith({ hiveSlug: SLUG, anomalies: [] });
     expect(captured).not.toBeNull();
-    expect(captured!.role).toBe('overwatch');
+    expect(captured!.role).toBe('kettle');
     expect(captured!.brief).toBe('RENDERED-BRIEF');
     expect(captured!.kickoff).toBe('why-i-woke');
     expect(captured!.installSlug).toBe(SLUG);
@@ -274,12 +274,12 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await vi.waitFor(() => {
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
-        'overwatch',
+        'kettle',
         expect.stringContaining('invoke produced no Overwatch turn'),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
-    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'kettle', 'ok', 'ok');
     expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
   });
 
@@ -294,12 +294,12 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await vi.waitFor(() => {
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
-        'overwatch',
+        'kettle',
         expect.stringContaining('empty invoke response body'),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
-    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'kettle', 'ok', 'ok');
     expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
   });
 
@@ -314,12 +314,12 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await vi.waitFor(() => {
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
-        'overwatch',
+        'kettle',
         expect.stringContaining('produced no Overwatch turn'),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
-    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
+    expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'kettle', 'ok', 'ok');
     expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
   });
 
@@ -329,7 +329,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await handleOverwatchLaunch(ctx);
 
     await vi.waitFor(() => {
-      expect(recordFire).toHaveBeenCalledWith(SLUG, 'overwatch', expect.stringContaining('connection refused'), 'infra-error'); // WI-669
+      expect(recordFire).toHaveBeenCalledWith(SLUG, 'kettle', expect.stringContaining('connection refused'), 'infra-error'); // WI-669
     });
     await vi.waitFor(() => {
       expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
@@ -349,7 +349,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       });
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
-        'overwatch',
+        'kettle',
         expect.stringContaining(`no complete scorecard within ${OVERWATCH_INVOKE_TIMEOUT_MS}ms launch deadline`),
         'infra-error', // WI-669: infra-shaped failure — counter preserved
       );

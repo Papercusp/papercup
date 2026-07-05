@@ -111,7 +111,7 @@ describe('park → drain', () => {
     const h1 = await drainSlotMessages(sql, {
       slot: { kind: 'wave', ref: 'W-03' },
       harnessSlug: 'h1',
-      toOwner: 'bee',
+      toOwner: 'cup',
       nowMs: 2000,
     });
     expect(h1.map((e) => e.msg_id)).toEqual(['a']);
@@ -123,13 +123,13 @@ describe('park → drain', () => {
   // nudges 06-25→07-02); anyHarnessSlug drains the slot across the whole workspace.
   it('anyHarnessSlug drains across every harness scope, including NULL-slug rows', async () => {
     await parkSlotMessage(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       harnessSlug: 'h1',
       envelope: env({ msg_id: 'slugged', to: ['@role:queen'] }),
       nowMs: 1000,
     });
     await parkSlotMessage(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       envelope: env({ msg_id: 'slugless', ts: '2026-06-14T00:00:01.000Z', to: ['@role:queen'] }),
       nowMs: 1001,
     });
@@ -142,7 +142,7 @@ describe('park → drain', () => {
     });
 
     const drained = await drainSlotMessages(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       anyHarnessSlug: true,
       toOwner: 'queen-owner',
       nowMs: 2000,
@@ -151,7 +151,7 @@ describe('park → drain', () => {
 
     // Claimed exactly once — a second any-slug drain finds nothing.
     const again = await drainSlotMessages(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       anyHarnessSlug: true,
       toOwner: 'queen-owner',
       nowMs: 2001,
@@ -162,7 +162,7 @@ describe('park → drain', () => {
     const other = await drainSlotMessages(sql, {
       slot: { kind: 'wave', ref: 'W-03' },
       harnessSlug: 'h1',
-      toOwner: 'bee',
+      toOwner: 'cup',
       nowMs: 2002,
     });
     expect(other.map((e) => e.msg_id)).toEqual(['other-slot']);
@@ -170,14 +170,14 @@ describe('park → drain', () => {
 
   it('anyHarnessSlug stays workspace-scoped (never drains another workspace)', async () => {
     await parkSlotMessage(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       harnessSlug: 'h1',
       envelope: env({ msg_id: 'ws-other', to: ['@role:queen'] }),
       nowMs: 1000,
       workspaceId: 'ws-other',
     });
     const drained = await drainSlotMessages(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       anyHarnessSlug: true,
       toOwner: 'queen-owner',
       nowMs: 2000,
@@ -200,7 +200,7 @@ describe('TTL expiry', () => {
     const drained = await drainSlotMessages(sql, {
       slot: { kind: 'role', ref: 'scoper' },
       harnessSlug: 'h',
-      toOwner: 'bee',
+      toOwner: 'cup',
       nowMs: 5000,
     });
     expect(drained).toEqual([]);
@@ -231,7 +231,7 @@ describe('TTL expiry', () => {
     const drained = await drainSlotMessages(sql, {
       slot: { kind: 'feature', ref: 'F-012' },
       harnessSlug: 'h',
-      toOwner: 'bee',
+      toOwner: 'cup',
       nowMs: 5000,
     });
     expect(drained.map((e) => e.msg_id)).toEqual(['fresh']);

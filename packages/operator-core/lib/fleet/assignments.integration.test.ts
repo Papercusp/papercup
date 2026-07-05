@@ -58,7 +58,7 @@ async function seedSpawn(
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id,
        status, session_owner, heartbeat_at)
-    VALUES (${spawnId}, ${WS}, 'demo', 'operator', 'bee', ${opts.runId ?? `${spawnId}-run`},
+    VALUES (${spawnId}, ${WS}, 'demo', 'operator', 'cup', ${opts.runId ?? `${spawnId}-run`},
             ${opts.status ?? 'running'}, ${spawnId},
             now() - ${`${opts.heartbeatAgeSeconds ?? 0} seconds`}::interval)
   `;

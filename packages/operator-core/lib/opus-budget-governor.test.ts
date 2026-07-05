@@ -137,17 +137,17 @@ describe('classifyOpusZone', () => {
 
 describe('classifyRoleCriticality', () => {
   it('maps ship-gating / decision / human-facing roles to critical', () => {
-    for (const r of ['operator', 'su', 'queen', 'validator', 'reviewer', 'security-reviewer', 'architect', 'overwatch', 'release-manager']) {
+    for (const r of ['operator', 'su', 'mug', 'validator', 'reviewer', 'security-reviewer', 'architect', 'kettle', 'release-manager']) {
       expect(classifyRoleCriticality(r)).toBe('critical');
     }
   });
   it('maps exploratory / optional / post-ship roles to background', () => {
-    for (const r of ['scout', 'gym', 'sentinel', 'ui-qa', 'curator', 'documenter']) {
+    for (const r of ['scout', 'gym', 'papercup', 'ui-qa', 'curator', 'documenter']) {
       expect(classifyRoleCriticality(r)).toBe('background');
     }
   });
   it('defaults everything else (incl. worker/bee/scoper) to normal', () => {
-    for (const r of ['worker', 'bee', 'scoper', 'planner', 'debugger', 'mystery-role']) {
+    for (const r of ['worker', 'cup', 'scoper', 'planner', 'debugger', 'mystery-role']) {
       expect(classifyRoleCriticality(r)).toBe('normal');
     }
   });

@@ -48,13 +48,13 @@ describe('db:migrate-policy', () => {
 
   it('set rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
-      tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'bee' } as never),
+      tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
     expect(writeM).not.toHaveBeenCalled();
   });
 
   it('set accepts the queen (operator-equivalent, EI-2204)', async () => {
-    const b = body(await tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'queen' } as never));
+    const b = body(await tool.handler({ op: 'set', lockTimeoutMs: 30000 } as never, { role: 'mug' } as never));
     expect(writeM).toHaveBeenCalledWith({ lockTimeoutMs: 30000 });
     expect(b).toMatchObject({ ok: true, applied: true });
   });

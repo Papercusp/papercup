@@ -47,7 +47,7 @@ describe('fleet:opus_budget', () => {
 
   it('is operator-authority gated', async () => {
     await expect(
-      tool.handler({ op: 'set', reserveStart: 0.6 } as never, { role: 'bee' } as never),
+      tool.handler({ op: 'set', reserveStart: 0.6 } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
     expect(writeM).not.toHaveBeenCalled();
   });

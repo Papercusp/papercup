@@ -253,7 +253,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         { devicePubkey: member.pubB64, githubUserId: 42, machineLabel: 'laptop', hiveSlug: 'evil-foreign-hive' },
         [
           { owner_id: 'su-remote-1', kind: 'su', intent: 'x', plan_slug: null, harness_slug: HIVE, last_active_ms: T0 },
-          { owner_id: 's-bee-9', kind: 'bee', intent: null, plan_slug: 'p', harness_slug: HIVE, last_active_ms: T0 },
+          { owner_id: 's-bee-9', kind: 'cup', intent: null, plan_slug: 'p', harness_slug: HIVE, last_active_ms: T0 },
         ],
         T0 + 1000,
         member.sign,

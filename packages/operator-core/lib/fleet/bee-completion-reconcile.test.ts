@@ -20,7 +20,7 @@ function fakeWorkItem(state: string): WorkItem {
 }
 
 describe('shouldReconcileBeeCompletion (the completion signal)', () => {
-  const base = { role: 'bee', exitCode: 0, aborted: false, featureId: 'F-1' };
+  const base = { role: 'cup', exitCode: 0, aborted: false, featureId: 'F-1' };
 
   it('is true for a clean bee exit on a concrete feature', () => {
     expect(shouldReconcileBeeCompletion(base)).toBe(true);
@@ -128,7 +128,7 @@ describe('maybeReconcileBeeCompletion (gate + best-effort)', () => {
   it('swallows a thrown error and reports false (never fails the spawn finalizer)', async () => {
     const getWorkItem = vi.fn().mockRejectedValue(new Error('PG down'));
     const flipped = await maybeReconcileBeeCompletion(
-      { role: 'bee', exitCode: 0, aborted: false, featureId: 'F-1', harnessSlug: 'h', workspaceId: 'ws' },
+      { role: 'cup', exitCode: 0, aborted: false, featureId: 'F-1', harnessSlug: 'h', workspaceId: 'ws' },
       { getWorkItem, setWorkItemState: vi.fn(), audit: () => {}, log: () => {} },
     );
     expect(flipped).toBe(false);
@@ -138,7 +138,7 @@ describe('maybeReconcileBeeCompletion (gate + best-effort)', () => {
     const getWorkItem = vi.fn().mockResolvedValue(fakeWorkItem('in_progress'));
     const setWorkItemState = vi.fn().mockResolvedValue(fakeWorkItem('passed'));
     const flipped = await maybeReconcileBeeCompletion(
-      { role: 'bee', exitCode: 0, aborted: false, featureId: 'F-1', harnessSlug: 'h', workspaceId: 'ws' },
+      { role: 'cup', exitCode: 0, aborted: false, featureId: 'F-1', harnessSlug: 'h', workspaceId: 'ws' },
       { getWorkItem, setWorkItemState, audit: () => {}, log: () => {} },
     );
     expect(flipped).toBe(true);

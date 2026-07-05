@@ -88,9 +88,9 @@ describe('classifyAgentQuestion (the injectable gate)', () => {
   });
 
   it('honors an injected classifier (autonomy-policy composes, it does not fork)', async () => {
-    configureAgentQuestionGate(() => ({ rung: 'queen', timeoutMs: 1234 }));
+    configureAgentQuestionGate(() => ({ rung: 'mug', timeoutMs: 1234 }));
     expect(await classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
-      .toEqual({ rung: 'queen', timeoutMs: 1234 });
+      .toEqual({ rung: 'mug', timeoutMs: 1234 });
   });
 
   it('falls safe to the owner Queue when the injected gate throws', async () => {
@@ -144,10 +144,10 @@ describe('routeAgentQuestion (classify + open) and the P-045 back-edge', () => {
   });
 
   it('an injected rung is stamped onto the routed escalation', async () => {
-    configureAgentQuestionGate(() => ({ rung: 'queen' }));
+    configureAgentQuestionGate(() => ({ rung: 'mug' }));
     const routed = await routeAgentQuestion(idOf('fleet-spawn'), baseInput('corr-q'));
-    expect(routed.rung).toBe('queen');
+    expect(routed.rung).toBe('mug');
     const folded = (await getEscalation(routed.escalation!.msg_id)) as Record<string, unknown>;
-    expect(folded.rung).toBe('queen');
+    expect(folded.rung).toBe('mug');
   });
 });

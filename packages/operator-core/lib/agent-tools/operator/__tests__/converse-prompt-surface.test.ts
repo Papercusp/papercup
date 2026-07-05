@@ -112,9 +112,9 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
     expect(explicit.systemPromptText).toBe(systemPromptText);
   });
 
-  it("role:'sentinel' loads the Sentinel persona set (persona + converse + tools.md)", async () => {
+  it("role:'papercup' loads the Sentinel persona set (persona + converse + tools.md)", async () => {
     const { systemPromptText } = await buildOperatorPrompt(
-      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'sentinel' },
+      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'papercup' },
       null,
     );
     // The sentinel persona (sentinel.persona.md), NOT the operator one.
@@ -127,12 +127,12 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
     expect(systemPromptText).toContain('# Sentinel tool playbook');
   });
 
-  it("role:'sentinel' picks the sentinel audience-mode overlay (novice)", async () => {
+  it("role:'papercup' picks the sentinel audience-mode overlay (novice)", async () => {
     const { systemPromptText } = await buildOperatorPrompt(
       {
         messages: [{ role: 'user', content: 'hi' }],
         trigger: 'user_message',
-        role: 'sentinel',
+        role: 'papercup',
         audienceMode: 'novice',
       },
       null,

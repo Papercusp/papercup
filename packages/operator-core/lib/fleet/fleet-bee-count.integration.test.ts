@@ -58,7 +58,7 @@ async function seed(
   await db.sql`
     INSERT INTO harness_shared.spawned_agents (spawn_id, workspace_id, child_role, status, fleet_slug)
     VALUES (
-      ${spawnId}, ${over.workspaceId ?? WS}, ${over.childRole ?? 'bee'},
+      ${spawnId}, ${over.workspaceId ?? WS}, ${over.childRole ?? 'cup'},
       ${over.status ?? 'running'}, ${over.fleetSlug ?? null}
     )`;
 }

@@ -109,7 +109,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
     }));
 
     const out = parse(await (spawnTool as any).handler({
-      role: 'bee',
+      role: 'cup',
       harness: 'papercup',
       brief: 'Pick up WI-123 and verify it.',
     }, CTX));
@@ -121,7 +121,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
     expect(owner).toMatch(/^s-\d+-[0-9a-f]{8}$/);
     expect(claimOpts).toEqual({ harness: 'papercup' });
     expect(spawnInput).toMatchObject({
-      role: 'bee',
+      role: 'cup',
       spawnId: owner,
       featureId: 'WI-123',
       itemId: 'WI-123',
@@ -140,7 +140,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
     });
 
     const out = parse(await (spawnTool as any).handler({
-      role: 'bee',
+      role: 'cup',
       harness: 'papercup',
       feature: 'WI-456',
       brief: 'Pick up WI-456.',
@@ -155,7 +155,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
     h.claimWorkItem.mockResolvedValue(null);
 
     const out = parse(await (spawnTool as any).handler({
-      role: 'bee',
+      role: 'cup',
       harness: 'papercup',
       feature: 'WI-789',
       brief: 'Pick up WI-789.',
@@ -182,7 +182,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
     }));
 
     const out = parse(await (spawnTool as any).handler({
-      role: 'bee',
+      role: 'cup',
       harness: 'papercup',
       brief: 'The current top item WI-789 is already held — skip it and self-pull the next one.',
     }, CTX));

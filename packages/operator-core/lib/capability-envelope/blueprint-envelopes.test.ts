@@ -15,7 +15,7 @@ let stateDir: string;
 const writeBlueprint = (yaml: string) => writeFileSync(join(stateDir, 'blueprint.yaml'), yaml, 'utf8');
 
 // A fleet role to confine — pick a real fleet-envelope role so the evaluator applies.
-const ROLE = FLEET_ENVELOPE_ROLES.has('bee') ? 'bee' : [...FLEET_ENVELOPE_ROLES][0];
+const ROLE = FLEET_ENVELOPE_ROLES.has('cup') ? 'cup' : [...FLEET_ENVELOPE_ROLES][0];
 
 // EI-2048: disable the testing-phase full-access exemption for the
 // envelope-CONFINEMENT suites below — otherwise the chosen fleet role (a testing

@@ -207,7 +207,7 @@ describe('applyRoleModel — per-role model override', () => {
       'AGENT_MODELS',
       JSON.stringify({ overwatch: 'gpt-5.5:high', scout: 'chatgpt:5.5:high', worker: 'gpt-5.5:max' }),
     );
-    expect(applyRoleModel('codex exec --model gpt-5.4 -c model_reasoning_effort="low"', 'overwatch')).toBe(
+    expect(applyRoleModel('codex exec --model gpt-5.4 -c model_reasoning_effort="low"', 'kettle')).toBe(
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
     );
     expect(applyRoleModel('codex exec --model gpt-5.4', 'scout')).toBe(
@@ -297,7 +297,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet[1m]');
-    expect(applyRoleModel('claude -p --model opus', 'bee')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p --model opus', 'cup')).toBe('claude -p --model haiku');
     expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model haiku');
     expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model haiku');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
@@ -340,7 +340,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
   it('a Codex-shaped per-spawn model swaps the backend before appending the model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const env = buildInvokeOnce(spec({ role: 'overwatch', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'chatgpt:5.5:high' } }));
+    const env = buildInvokeOnce(spec({ role: 'kettle', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'chatgpt:5.5:high' } }));
     expect(env.env.AGENT_CMD).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
     expect(env.env.CLAUDE).toBe('codex exec --model gpt-5.5 -c model_reasoning_effort="high"');
     expect(env.env.AGENT_BACKEND).toBe('codex');
@@ -351,7 +351,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
   it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('cup', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   it('resolveSpawnBackendModel infers Codex for Codex-shaped per-spawn models', () => {
@@ -359,8 +359,8 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(inferBackendFromModelSpec('gpt-5.5:xhigh')).toBe('codex');
     expect(inferBackendFromModelSpec('chatgpt:5.5')).toBe('codex');
-    expect(resolveSpawnBackendModel('overwatch', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
-    expect(resolveSpawnBackendModel('overwatch', 'chatgpt:5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('kettle', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('kettle', 'chatgpt:5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
   });
 });
 
@@ -405,8 +405,8 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ queen: 'codex', 'release-manager': 'omp' }));
 
-    expect(roleBackendOverride('queen')).toBe('codex');
-    const env = buildInvokeOnce(spec({ role: 'queen' })).env;
+    expect(roleBackendOverride('mug')).toBe('codex');
+    const env = buildInvokeOnce(spec({ role: 'mug' })).env;
     expect(env.AGENT_CMD).toBe('codex exec --model sonnet');
     expect(env.CLAUDE).toBe('codex exec --model sonnet');
     expect(env.AGENT_BACKEND).toBe('codex');
@@ -420,9 +420,9 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
   it('resolveSpawnBackendModel follows the backend override for the governor bucket + session-id decision', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('bee', 'haiku', 'omp')).toEqual({ backend: 'omp', model: 'haiku' });
+    expect(resolveSpawnBackendModel('cup', 'haiku', 'omp')).toEqual({ backend: 'omp', model: 'haiku' });
     vi.stubEnv('AGENT_CMD', 'omp -p');
-    expect(resolveSpawnBackendModel('bee', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
+    expect(resolveSpawnBackendModel('cup', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 });
 
@@ -466,6 +466,6 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
-    expect(resolveSpawnBackendModel('bee')).toEqual({ backend: 'claude-code', model: 'haiku' });
+    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'haiku' });
   });
 });

@@ -164,7 +164,7 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(spawn.spawnRecord).toMatchObject({
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',
-      childRole: 'queen',
+      childRole: 'mug',
     });
     expect(spawn.url).toContain('/api/harness/papercusp/invoke');
     expect(spawn.url).not.toContain('/api/harness/papercusp-workspace/invoke');

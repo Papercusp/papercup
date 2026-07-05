@@ -123,12 +123,12 @@ interface TestResult {
 const ROLE_ROUTING_ROWS = [
   {
     label: 'Queen',
-    role: 'queen',
+    role: 'mug',
     description: 'Places work, prioritizes the fleet, and decides which agents to launch next.',
   },
   {
     label: 'Overwatch',
-    role: 'overwatch',
+    role: 'kettle',
     description: 'Supervises live system health, nudges running agents, and records observations.',
   },
   {
@@ -191,7 +191,7 @@ export default function AgentSettingsPage() {
   // Blender role (its role id is 'scanner'); doc-steward/merge/etc have no cast
   // key so their label is unchanged.
   const displayLabel = (row: { role: string; label: string }): string =>
-    row.role === 'queen'
+    row.role === 'mug'
       ? t('brain')
       : row.role === 'overwatch' || row.role === 'kettle'
         ? t('overwatch')

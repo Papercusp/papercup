@@ -66,7 +66,7 @@ describe('getServerCapabilities', () => {
   it('lists role-gated tools (the pot:start regression — absent from the legacy catalog)', () => {
     // pot:start-shaped: role-gated (agentRoles incl. operator), all-optional args.
     const cat: NamedProjectedTool[] = [
-      entry('pot:start', 'harness:write', { agentRoles: ['operator', 'worker', 'bee'] }),
+      entry('pot:start', 'harness:write', { agentRoles: ['operator', 'worker', 'cup'] }),
     ];
     const caps = getServerCapabilities({ principal: superuser, role: 'operator', catalog: cat });
     expect(caps.map((c) => c.id)).toEqual(['pot:start']);

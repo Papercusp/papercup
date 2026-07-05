@@ -59,29 +59,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // set_priority + coord:send/escalate already admit it via COORD_ROLES;
   // plans:attention adds it to its SU_ROLES list; the curation:* reads are
   // un-allowlisted (capability-only) so curation:read alone resolves them.
-  sentinel: [
-    'coord:read',
-    'coord:write', // alarms + Queen-nudge: coord:escalate / coord:send
-    'work_items:read',
-    'work_items:write', // file the user's ask: work_items:create / set_priority (NOT set_state — never places)
-    'issues:read',
-    'harness:read',
-    'activity:read',
-    'search:read',
-    'curation:read', // the live blackboard it heralds: curation:feed / state-of-hive / change-feed
-    'plans:read', // plans:attention — what needs the user's eye
-    'operator:converse', // the Herald brain (role='papercup' persona)
-    'operator:read', // voice:status / voice:transcript
-    'operator:write', // voice:join / voice:leave / voice:channels / voice:agent
-    // code-run-self-state-adoption-2026-07-03 P-003: her coord:orient bootstrap dispatches
-    // memory:search (mem0 recall) + recipes:search (reuse-at-orient) internally — both were
-    // denied (8× / 7× over 14d), silently nulling those orient sections every wake. READ
-    // caps only; the read-mostly design (no fs-write/bash, no memory:write) is unchanged.
-    'memory:read',
-    'intel:read',
-  ],
-  // pot-rename dual-accept (P1 MIGRATE): `papercup` is the additive twin of the `sentinel`
-  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `papercup` is the canonical id (was `sentinel`).
   papercup: [
     'coord:read',
     'coord:write',
@@ -117,24 +95,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // capability:fs-write + capability:bash — it cannot edit code. TWO-GATE REALITY: these
   // caps are paired with adding `overwatch` to each tool's `agentRoles` (COORD_ROLES + the
   // explicit notifications/dev:rate_governor/plans/search/harness/activity allowlists).
-  overwatch: [
-    'coord:read',
-    'coord:write', // nudge/observe/escalate only: coord:send / coord:escalate / improvements:capture
-    'work_items:read',
-    'harness:read',
-    'intel:read',
-    'plans:read',
-    'notifications:read',
-    'activity:read',
-    'search:read',
-    'messages:write', // messages:send — forward a directive to a specific agent
-    // code-run-self-state-adoption-2026-07-03 P-003: coord:orient's internal mem0 recall was
-    // denied 32×/14d (role-not-allowed) — the system-health supervisor woke blind to its own
-    // memory every cycle. Read cap only; the no-write/no-exec design is unchanged.
-    'memory:read',
-  ],
-  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
-  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `kettle` is the canonical id (was `overwatch`).
   kettle: [
     'coord:read',
     'coord:write',
@@ -200,37 +161,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // EI-286 follow-up — third and final missing grant: the blueprint declared
   // the role, but neither AGENT_ROLES/COORD_ROLES (fixed earlier) nor this cap
   // map knew it, so a role=queen launch saw an EMPTY capability-gated catalog.
-  queen: [
-    'harness:read',
-    'harness:write',
-    'work_items:read',
-    'work_items:write',
-    'curation:read',
-    'activity:read',
-    'coord:read',
-    'coord:write',
-    'plans:read',
-    'routines:write',
-    // code-run-self-state-adoption-2026-07-03 P-003 — the caps had drifted BEHIND the queen's
-    // own seeded kit (QUEEN_MCP_TOOL_NAMES advertises tools these caps denied), measured over
-    // 14d of role-not-allowed telemetry: memory:search 106× (her coord:orient mem0 recall
-    // failed EVERY wake), recipes:search 59× (orient's reuse-at-orient dead), plans:set-status
-    // 6× / add-decision 2× (kit-advertised plan writes), capability:bash 7× / git 8× /
-    // read 4× / fetch 2× / write 1× (her ENTIRE kit-advertised capability:* write/exec
-    // surface). "Her caps mirror the operator's" (above) had stopped being true — the
-    // operator got the memory/plans parity fixes (EI-2048) and the queen didn't.
-    'memory:read',
-    'memory:write',
-    'intel:read', // recipes:search/candidates (graduation duty), dev:rate_governor_status
-    'plans:write',
-    'capability:bash', // code:run / recipes:run / capability:bash — the batching + exec surface her kit advertises
-    'capability:fs-write',
-    'capability:fs-read',
-    'capability:git',
-    'capability:net',
-  ],
-  // pot-rename dual-accept (P1 MIGRATE): `mug` is the additive twin of the `queen`
-  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `mug` is the canonical id (was `queen`).
   mug: [
     'harness:read',
     'harness:write',
@@ -297,57 +228,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // COORD_ROLES tools that are PLACEMENT/optimization surfaces — cup:spawn, gym:judge,
   // gym:signals — filter bee BACK OUT of their allowlist (D-002, Queen-only; see those files).
   // The boundary is pinned empirically in bee-tool-boundary.test.ts.
-  bee: [
-    'harness:read',
-    'harness:write',
-    'work_items:read',
-    'work_items:write',
-    'coord:read',
-    'coord:write',
-    'plans:read',
-    'plans:write', // bee-capability-expansion D-005 (owner-ratified): plan-authoring parity with psu
-    'docs:read',
-    'docs:write', // bee-capability-expansion D-001: harness_docs:record + insight writing
-    'search:read',
-    'memory:read',
-    'memory:write',
-    'tasks:read',
-    'tasks:write',
-    'intel:read', // bee-capability-expansion D-001: the dev-diagnostics surface
-    'locks:read', // bee-capability-expansion D-001: locks:queue/list, db:check_drift
-    'locks:write', // bee-capability-expansion D-001: explicit multi-file holds
-    'issues:read', // bee-capability-expansion D-001: the papercusp://harness/issues resource
-    // OWNER-PRIORITY FIX (2026-06-15): a bee must be able to IMPLEMENT, not just
-    // diagnose. The `bee` read-only confinement (EI-524) was lifted at the ENVELOPE
-    // layer (capability-envelope/policy.ts — the ROLE_ENVELOPES.bee deny was
-    // removed) "so a bee can LAND a code fix", but the matching capability GRANT was
-    // never extended — the two-gate desync. So the principal cap gate still denied
-    // the sanctioned confined write/exec tools: "Principal 'system:bee' lacks
-    // capability 'capability:fs-write'". Grant them here (the workspace-agnostic
-    // baseline that unions with any provisioned row, so EVERY bee — incl. a
-    // blueprint-spawned one with no system_principals row — gets them):
-    //   - capability:fs-write → capability:write + capability:edit (those tools
-    //     already list `bee` in agentRoles; the file-lock guard still serializes).
-    //   - capability:bash     → capability:bash + :bash_output + :bash_kill
-    //     (OS-sandboxed per agent-capability-confinement P-022/D-008).
-    // The anti-hallucination guard is now the verify-before-diagnose discipline +
-    // the validator/reviewer pipeline + tests, NOT a capability wall (policy.ts).
-    // (fs-read / code-inspect already resolve — the bee reads + diagnoses today.)
-    'capability:fs-write',
-    'capability:bash',
-    // code-run-self-state-adoption-2026-07-03 P-003: the comment above ("fs-read /
-    // code-inspect already resolve") had stopped being true — 14d of role-not-allowed
-    // telemetry showed bees denied on their OWN kit's tools: capability:git 82×,
-    // capability:read (fs-read) 55×, capability:fetch (net) 11×, capability:inspect
-    // (code-inspect) 11×. A kit-advertised tool whose cap is missing is a dead tool;
-    // grant the four so the kit and the gate agree.
-    'capability:fs-read',
-    'capability:git',
-    'capability:net',
-    'capability:code-inspect',
-  ],
-  // pot-rename dual-accept (P1 MIGRATE): `cup` is the additive twin of the `bee`
-  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  // pot-rename SLICE-2 CONTRACT: `cup` is the canonical id (was `bee`).
   cup: [
     'harness:read',
     'harness:write',

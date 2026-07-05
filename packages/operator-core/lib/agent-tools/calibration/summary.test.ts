@@ -51,11 +51,11 @@ describe('calibration:summary tool', () => {
   });
 
   it('forwards the domain + predictor filters and honors workspace precedence', async () => {
-    await callTool({ domain: 'plan-ship', predictor: 'queen' }, { principal: { workspaceId: 'ws-prin' } });
+    await callTool({ domain: 'plan-ship', predictor: 'mug' }, { principal: { workspaceId: 'ws-prin' } });
     expect(mockScores).toHaveBeenCalledWith(expect.anything(), {
       workspaceId: 'ws-prin',
       domain: 'plan-ship',
-      predictor: 'queen',
+      predictor: 'mug',
     });
   });
 

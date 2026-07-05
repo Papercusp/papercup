@@ -31,7 +31,7 @@ describe('queueForRoutine — the protected git-sync lane', () => {
   });
 
   it('routes an agent-role routine (non-system target) to the shared queue', () => {
-    expect(queueForRoutine('queen')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('mug')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('worker')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('')).toBe(ROUTINES_QUEUE);
   });

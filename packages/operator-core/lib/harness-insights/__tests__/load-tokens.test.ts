@@ -54,7 +54,7 @@ describe('loadHarnessTokens', () => {
         { key: 'claude-opus-4', tokens: 2_900_000_000, cost_usd: 38, runs: 60 },
         { key: 'claude-sonnet-4', tokens: 360_000_000, cost_usd: 4.5, runs: 60 },
       ],
-      byRole: [{ key: 'bee', tokens: 3_000_000_000, cost_usd: 40, runs: 100 }],
+      byRole: [{ key: 'cup', tokens: 3_000_000_000, cost_usd: 40, runs: 100 }],
       byAccount: [{ key: 'acct-claude-a', tokens: 2_500_000_000, cost_usd: 35, runs: 80 }],
       byDay: [{ day_start: dayStart, tokens: 1_000_000, cost_usd: 12 }],
     });
@@ -73,7 +73,7 @@ describe('loadHarnessTokens', () => {
     expect(snap.byModel.map((r) => r.key)).toEqual(['claude-opus-4', 'claude-sonnet-4']);
     expect(snap.byModel[0]).toMatchObject({ tokens: 2_900_000_000, costUsd: 38, runs: 60 });
     expect(snap.byRole).toHaveLength(1);
-    expect(snap.byRole[0].key).toBe('bee');
+    expect(snap.byRole[0].key).toBe('cup');
     expect(snap.byAccount).toEqual([
       { key: 'acct-claude-a', tokens: 2_500_000_000, costUsd: 35, runs: 80 },
     ]);

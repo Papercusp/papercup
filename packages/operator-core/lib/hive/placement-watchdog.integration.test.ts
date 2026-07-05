@@ -62,7 +62,7 @@ async function seedBee(opts: {
       (spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
        session_owner, feature_id, run_id, status, error_message, heartbeat_at, last_output_at, started_at)
     VALUES (
-      ${opts.owner}, ${WS}, ${HIVE}, ${QUEEN}, 'queen', 'bee',
+      ${opts.owner}, ${WS}, ${HIVE}, ${QUEEN}, 'mug', 'cup',
       ${opts.owner}, ${opts.featureId}, ${'run-' + opts.owner}, ${opts.status}, ${opts.errorMessage ?? null},
       ${new Date(opts.heartbeatAtMs ?? NOW)},
       ${opts.lastOutputAtMs == null ? null : new Date(opts.lastOutputAtMs)},

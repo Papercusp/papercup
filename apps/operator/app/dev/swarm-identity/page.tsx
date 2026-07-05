@@ -6,7 +6,7 @@ import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { HiveNounIcon, HiveQueenMark } from '../../_components/HiveVisualIdentity';
 import styles from './swarm-identity.module.css';
 
-type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'sentinel' | 'eclipse';
+type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'papercup' | 'eclipse';
 type SwarmMarkId = 'vortex' | 'omen' | 'sigil' | 'front' | 'crownField' | 'blackSun';
 
 type Direction = {
@@ -69,7 +69,7 @@ const DIRECTIONS: Direction[] = [
     note: 'Best fit for a dark-first desktop coding tool.',
   },
   {
-    id: 'sentinel',
+    id: 'papercup',
     name: 'Sentinel Swarm',
     stance: 'Watchful, tactical, always-on',
     mood: 'The operator is the perimeter: alert, cheaper, tireless, ready to wake the Queen.',
@@ -189,7 +189,7 @@ export default function SwarmIdentityPage() {
             </div>
             <div className={styles.roleGrid}>
               <span><HiveQueenMark monochrome /> <strong>Queen</strong><small>brain</small></span>
-              <span><HiveNounIcon kind="sentinel" /> <strong>Sentinel Bee</strong><small>operator</small></span>
+              <span><HiveNounIcon kind="papercup" /> <strong>Sentinel Bee</strong><small>operator</small></span>
               <span><HiveNounIcon kind="keeper" /> <strong>Keeper</strong><small>human</small></span>
               <span><HiveNounIcon kind="swarm" /> <strong>Swarm</strong><small>live bees</small></span>
             </div>
@@ -485,7 +485,7 @@ function BlackSunSwarmGlyph() {
 
 function LogoGlyph({ direction }: { direction: DirectionId }) {
   if (direction === 'signal') return <SwarmSigilGlyph />;
-  if (direction === 'sentinel') return <SwarmFrontGlyph />;
+  if (direction === 'papercup') return <SwarmFrontGlyph />;
   if (direction === 'eclipse') return <BlackSunSwarmGlyph />;
   if (direction === 'crown') return <CrownFieldGlyph />;
   return <SwarmVortexGlyph />;

@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
-vi.mock('../../work-items', () => ({ reorderWorkItem: vi.fn(), RANK_WRITERS: ['bee', 'queen'] }));
+vi.mock('../../work-items', () => ({ reorderWorkItem: vi.fn(), RANK_WRITERS: ['cup', 'mug'] }));
 
 import { reorderWorkItem } from '../../work-items';
 const reorderM = vi.mocked(reorderWorkItem);
@@ -27,14 +27,14 @@ beforeEach(() => {
 });
 
 describe('work_items:reorder handler (bulk keyed-array)', () => {
-  it("defaults the writer to 'bee' (inline single)", async () => {
+  it("defaults the writer to 'cup' (inline single)", async () => {
     await call({ rank: 1 });
-    expect(reorderM).toHaveBeenCalledWith('WI-1', 1, { writer: 'bee', harness: undefined });
+    expect(reorderM).toHaveBeenCalledWith('WI-1', 1, { writer: 'cup', harness: undefined });
   });
 
-  it("passes an explicit writer ('queen' overlay) through", async () => {
-    await call({ rank: 2, writer: 'queen', harness: 'web' });
-    expect(reorderM).toHaveBeenCalledWith('WI-1', 2, { writer: 'queen', harness: 'web' });
+  it("passes an explicit writer ('mug' overlay) through", async () => {
+    await call({ rank: 2, writer: 'mug', harness: 'web' });
+    expect(reorderM).toHaveBeenCalledWith('WI-1', 2, { writer: 'mug', harness: 'web' });
   });
 
   it('reports ok with the result as the item result on success', async () => {
@@ -52,9 +52,9 @@ describe('work_items:reorder handler (bulk keyed-array)', () => {
 
   it('reorders MANY items in one call (items:[…]), keyed by id', async () => {
     reorderM.mockImplementation(async (id: string, rank: number) => ({ rank, assignee: `a-${id}` } as never));
-    const b = body(await tool.handler({ items: [{ id: 'WI-1', rank: 0 }, { id: 'WI-2', rank: 1, writer: 'queen' }] } as never, {} as never) as Out);
+    const b = body(await tool.handler({ items: [{ id: 'WI-1', rank: 0 }, { id: 'WI-2', rank: 1, writer: 'mug' }] } as never, {} as never) as Out);
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { id: string }) => r.id)).toEqual(['WI-1', 'WI-2']);
-    expect(reorderM).toHaveBeenNthCalledWith(2, 'WI-2', 1, { writer: 'queen', harness: undefined });
+    expect(reorderM).toHaveBeenNthCalledWith(2, 'WI-2', 1, { writer: 'mug', harness: undefined });
   });
 });

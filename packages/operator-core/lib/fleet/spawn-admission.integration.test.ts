@@ -128,7 +128,7 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
       spawnId: 's-doc',
       idempotencyKey: null,
       cap: 3,
-      roleCap: { role: 'bee', cap: 1 },
+      roleCap: { role: 'cup', cap: 1 },
       record: recordRow('s-doc', 'doc-steward'),
     });
 
@@ -137,8 +137,8 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
       spawnId: 's-bee',
       idempotencyKey: null,
       cap: 3,
-      roleCap: { role: 'bee', cap: 1 },
-      record: recordRow('s-bee', 'bee'),
+      roleCap: { role: 'cup', cap: 1 },
+      record: recordRow('s-bee', 'cup'),
     });
     expect(bee.admission).toEqual({ kind: 'admitted' });
 
@@ -147,17 +147,17 @@ describe('admitSpawn (P-017 + P-039, real PG)', () => {
       spawnId: 's-bee-2',
       idempotencyKey: null,
       cap: 3,
-      roleCap: { role: 'bee', cap: 1 },
-      record: recordRow('s-bee-2', 'bee'),
+      roleCap: { role: 'cup', cap: 1 },
+      record: recordRow('s-bee-2', 'cup'),
     });
-    expect(secondBee.admission).toEqual({ kind: 'over_cap', running: 1, cap: 1, role: 'bee' });
+    expect(secondBee.admission).toEqual({ kind: 'over_cap', running: 1, cap: 1, role: 'cup' });
 
     const docAgainstGlobal = await admitSpawn(db.sql, {
       workspaceId: WS,
       spawnId: 's-doc-2',
       idempotencyKey: null,
       cap: 2,
-      roleCap: { role: 'bee', cap: 10 },
+      roleCap: { role: 'cup', cap: 10 },
       record: recordRow('s-doc-2', 'doc-steward'),
     });
     expect(docAgainstGlobal.admission).toEqual({ kind: 'over_cap', running: 2, cap: 2 });

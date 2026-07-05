@@ -111,7 +111,7 @@ describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap
     const v = await PROJECTED_DEPS.checkCapabilityEnvelope!({
       toolName: 'processes.kill',
       capabilities: ['processes:kill'],
-      ctx: ctx({ role: 'bee' }),
+      ctx: ctx({ role: 'cup' }),
       args: {},
     });
     expect(getFlag).toHaveBeenCalledOnce();

@@ -82,13 +82,13 @@ describe('routines:list', () => {
 describe('routines:set', () => {
   it('rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
-      setTool.handler({ name: 'git-sync', active: false } as never, { role: 'bee' } as never),
+      setTool.handler({ name: 'git-sync', active: false } as never, { role: 'cup' } as never),
     ).rejects.toThrow(/operator, architect, or queen/i);
   });
 
   it('accepts the queen (operator-equivalent, EI-2204)', async () => {
     sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: false, next_fire_at: null }]);
-    const b = body(await setTool.handler({ name: 'git-sync', active: false } as never, { role: 'queen' } as never));
+    const b = body(await setTool.handler({ name: 'git-sync', active: false } as never, { role: 'mug' } as never));
     expect(b).toMatchObject({ ok: true, applied: true });
   });
 

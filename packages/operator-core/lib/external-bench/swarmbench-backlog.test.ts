@@ -22,7 +22,7 @@ const scen = (task: string, seed: number, n = 4): SwarmScenario => ({ task, numA
 describe('swarmModeForFleetArm', () => {
   it('maps su-independent→openai, hive-realqueen→queen, random→random', () => {
     expect(swarmModeForFleetArm('su-independent')).toBe('openai');
-    expect(swarmModeForFleetArm('hive-realqueen')).toBe('queen');
+    expect(swarmModeForFleetArm('hive-realqueen')).toBe('mug');
     expect(swarmModeForFleetArm('random')).toBe('random');
   });
 });

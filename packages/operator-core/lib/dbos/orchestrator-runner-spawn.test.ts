@@ -68,7 +68,7 @@ describe('spawnInvokeOnce', () => {
     const pids: number[] = [];
     let outputEvents = 0;
 
-    const r = await spawnInvokeOnce(process.cwd(), 'bee', [], {}, {
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {}, {
       onChildPid: (pid) => pids.push(pid),
       onOutputActivity: () => {
         outputEvents += 1;
@@ -91,7 +91,7 @@ describe('spawnInvokeOnce', () => {
 
   it('preserves a bounded raw stdout tail for diagnostics even when output is filtered', async () => {
     H.cmd = node('process.stdout.write("[2026-06-02T10:00:00.000Z] booting\\nAPI Error: invalid_api_key\\n");process.exit(1)');
-    const r = await spawnInvokeOnce(process.cwd(), 'queen', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     expect(r.exitCode).toBe(1);
     expect(r.output).toBe('API Error: invalid_api_key');
     expect(r.rawStdoutTail).toContain('[2026-06-02T10:00:00.000Z] booting');
@@ -108,7 +108,7 @@ describe('spawnInvokeOnce', () => {
     // The poison case: the HOST's own env points elsewhere (.env.local).
     vi.stubEnv('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070/api/mcp');
     H.cmd = node('process.stdout.write("ok")');
-    await spawnInvokeOnce(process.cwd(), 'queen', [], {});
+    await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3170/api/mcp');
     vi.unstubAllEnvs();
   });
@@ -117,7 +117,7 @@ describe('spawnInvokeOnce', () => {
     vi.stubEnv('PAPERCUSP_HONO_PORT', '3170');
     vi.stubEnv('PAPERCUSP_OPERATOR_URL', '');
     H.cmd = node('process.stdout.write("ok")');
-    await spawnInvokeOnce(process.cwd(), 'queen', [], {
+    await spawnInvokeOnce(process.cwd(), 'mug', [], {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9999/api/mcp',
     });
     expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9999/api/mcp');

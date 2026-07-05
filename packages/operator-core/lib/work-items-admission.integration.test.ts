@@ -239,19 +239,19 @@ describe('G2 admission gate — every claim path (real PG)', () => {
     await ins('F-ADMITTED', 'remote', 'admit', 2);
     await ins('F-PENDING', 'remote', null, 3);
 
-    expect(await claimWorkItem('F-PENDING', 'bee', { harness: HARNESS })).toBeNull();
-    expect(await claimWorkItem('F-LOCAL', 'bee', { harness: HARNESS })).not.toBeNull();
-    expect(await claimWorkItem('F-ADMITTED', 'bee', { harness: HARNESS })).not.toBeNull();
+    expect(await claimWorkItem('F-PENDING', 'cup', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-LOCAL', 'cup', { harness: HARNESS })).not.toBeNull();
+    expect(await claimWorkItem('F-ADMITTED', 'cup', { harness: HARNESS })).not.toBeNull();
   });
 
   it('replica fan-out refuses a remote, un-admitted item (not-admitted); admits an admitted one', async () => {
     await ins('F-PENDING', 'remote', null, 1, 3);
     await ins('F-ADMITTED', 'remote', 'admit', 2, 3);
 
-    const refused = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-PENDING', owner: 'bee' });
+    const refused = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-PENDING', owner: 'cup' });
     expect(refused).toEqual({ ok: false, reason: 'not-admitted' });
 
-    const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-ADMITTED', owner: 'bee' });
+    const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-ADMITTED', owner: 'cup' });
     expect(ok.ok).toBe(true);
   });
 
@@ -270,7 +270,7 @@ describe('G2 admission gate — every claim path (real PG)', () => {
     const items = await listWorkItems({ harness: HARNESS, kind: 'feature' });
     expect(items.map((i) => i.id).sort()).toEqual(['F-PENDING', 'F-REJECTED']);
     // ...yet neither is claimable.
-    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
   });
 });
 
@@ -278,43 +278,43 @@ describe('G2 trust leg — owner-keyed LOCAL trust list (Phase 3 / P-010, real P
   it('claim_next: a remote+un-admitted item whose VERIFIED author is trusted IS claimable', async () => {
     await insVerified('F-TRUSTED', 'remote', null, 1, 42);
     await trust(42);
-    const wi = await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' });
+    const wi = await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' });
     expect(wi?.id).toBe('F-TRUSTED');
   });
 
   it('claim_next: a remote+un-admitted item whose verified author is NOT trusted stays unclaimable', async () => {
     await insVerified('F-UNTRUSTED', 'remote', null, 1, 99);
     await trust(42); // a different id is trusted, not 99
-    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
   });
 
   it('explicit claim: trusted verified author succeeds; untrusted fails', async () => {
     await insVerified('F-TRUSTED', 'remote', null, 1, 42);
     await insVerified('F-UNTRUSTED', 'remote', null, 2, 99);
     await trust(42);
-    expect(await claimWorkItem('F-UNTRUSTED', 'bee', { harness: HARNESS })).toBeNull();
-    expect(await claimWorkItem('F-TRUSTED', 'bee', { harness: HARNESS })).not.toBeNull();
+    expect(await claimWorkItem('F-UNTRUSTED', 'cup', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-TRUSTED', 'cup', { harness: HARNESS })).not.toBeNull();
   });
 
   it('SECURITY: an UNVERIFIED remote item (NULL verified author — unverified/revoked binding) is never trust-admitted', async () => {
     await insVerified('F-UNVERIFIED', 'remote', null, 1, null);
     await trust(42); // ids are trusted, but the item has no verified author
-    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
-    expect(await claimWorkItem('F-UNVERIFIED', 'bee', { harness: HARNESS })).toBeNull();
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
+    expect(await claimWorkItem('F-UNVERIFIED', 'cup', { harness: HARNESS })).toBeNull();
   });
 
   it('SECURITY (D-004): trust does NOT leak across workspaces — an author trusted in ANOTHER workspace is refused here', async () => {
     await insVerified('F-OTHERWS', 'remote', null, 1, 42); // feature lives in WS 'default'
     await trust(42, 'other-workspace'); // 42 trusted ONLY in a different workspace
-    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
-    expect(await claimWorkItem('F-OTHERWS', 'bee', { harness: HARNESS })).toBeNull();
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'cup' })).toBeNull();
+    expect(await claimWorkItem('F-OTHERWS', 'cup', { harness: HARNESS })).toBeNull();
   });
 
   it('replica fan-out: a trusted verified author is admitted', async () => {
     await insVerified('F-TRUSTED', 'remote', null, 1, 42);
     await h.sql`UPDATE harness_shared.harness_features_consolidated SET redundancy = 3 WHERE harness_slug = ${HARNESS} AND feature_id = 'F-TRUSTED'`;
     await trust(42);
-    const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-TRUSTED', owner: 'bee' });
+    const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-TRUSTED', owner: 'cup' });
     expect(ok.ok).toBe(true);
   });
 });
@@ -380,7 +380,7 @@ describe('P-008 — projection stamp (producer wiring → the gate), real PG', (
     await proj().writeToPg(featureRow('F-E2E'), { authorPubkey: 'pk-99', origin: 'remote', ts: 1 });
     expect(await verifiedCol('F-E2E')).toBe(99);
     // Untrusted: the stamped-but-untrusted remote item stays quarantined.
-    expect(await claimWorkItem('F-E2E', 'bee', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-E2E', 'cup', { harness: HARNESS })).toBeNull();
     // Trust the author → the SAME item is now claimable (producer + gate together).
     await trust(99);
     expect(await claimWorkItem('F-E2E', 'bee2', { harness: HARNESS })).not.toBeNull();

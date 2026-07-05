@@ -93,7 +93,7 @@ describe('fleet:status', () => {
     h.listFleetRoster.mockResolvedValueOnce([
       { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true },
       { agentId: 'su-m2', agentRole: 'su', fleetRole: 'member', alive: true },
-      { agentId: 's-bee1', agentRole: 'bee', fleetRole: 'member', alive: true },
+      { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true },
     ]);
     h.countRunningWorkspaceBees.mockResolvedValueOnce(4);
     // WI-1813: beeCount is the nursery-authoritative per-fleet count, NOT the roster's
@@ -118,7 +118,7 @@ describe('fleet:status', () => {
       // reconciliation (EI-5858) has already determined the session truly ended.
       { agentId: 'su-dead1', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
       { agentId: 'su-dead2', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
-      { agentId: 's-bee1', agentRole: 'bee', fleetRole: 'member', alive: true, sessionState: 'live' },
+      { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true, sessionState: 'live' },
     ]);
     const out = parse(await invoke({ fleet: 'rocket' }));
     expect(out.memberCount).toBe(2); // su-live1 + su-live2 only — the 2 ended rows excluded
