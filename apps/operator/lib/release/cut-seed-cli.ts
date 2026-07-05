@@ -29,10 +29,10 @@
  *   --store-dir <dir>      hive corestore dir (default: <root>/.papercusp/<hive>/hyperbee)
  *   --hive <slug>          hive home slug (default: papercusp)
  *   --origin <url>         origin the restored clone re-points at (default: the GitHub repo)
- *   --rev <rev>            git bundle rev selector (default: --all, or HEAD when --depth is set)
- *   --depth <n>            SHALLOW bundle depth (implies rev=HEAD): only the last <n> commit(s) — the full
- *                          tree at the tip, no history. --depth 1 turns the ~1.8GB full-history bundle into
- *                          ~tens of MB (a later git fetch back-fills). THE shippable size default for a release.
+ *   --rev <rev>            git bundle rev selector (default: HEAD — current branch only, self-contained &
+ *                          offline-cloneable; pass --all to seed every ref). Shallow bundles are NOT possible
+ *                          (a bundle omitting history records prerequisites → a fresh clone can't use it), so
+ *                          seed size tracks the working TREE, not history — shrink it by not tracking scratch.
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
  *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
@@ -164,13 +164,9 @@ async function main(): Promise<void> {
   const repo = str(args, 'repo') ?? root;
   const outDir = resolve(str(args, 'out') ?? join(root, 'papercusp-desktop', 'src-tauri', 'seed'));
   const origin = str(args, 'origin') ?? DEFAULT_ORIGIN;
-  const depthStr = str(args, 'depth');
-  const depth = depthStr !== undefined ? Number(depthStr) : undefined;
-  if (depth !== undefined && (!Number.isInteger(depth) || depth < 1)) {
-    throw new Error(`--depth must be a positive integer; got ${JSON.stringify(depthStr)}`);
-  }
-  // A shallow bundle needs a rev naming a commit (not --all): default rev to HEAD when --depth is set.
-  const rev = str(args, 'rev') ?? (depth !== undefined ? 'HEAD' : '--all');
+  // Default to HEAD (current branch, self-contained & offline-cloneable). --all
+  // seeds every ref (bigger). Shallow is impossible — see the git provider.
+  const rev = str(args, 'rev') ?? 'HEAD';
   const storeDir = str(args, 'store-dir') ?? join(root, '.papercusp', hive, 'hyperbee');
   const wantGit = args['no-git'] !== true;
   const wantCorestore = args['no-corestore'] !== true;
@@ -209,7 +205,7 @@ async function main(): Promise<void> {
       deriveEpochKey: async (h, e) => (await resolveHiveEpochCrypto(true)).deriveEpochKey(h, e),
       warn: (m) => console.warn(m),
     });
-    git = { sourceRepoDir: repo, originUrl: origin, rev, ...(depth !== undefined ? { depth } : {}), ...(encryption ? { encryption } : {}) };
+    git = { sourceRepoDir: repo, originUrl: origin, rev, ...(encryption ? { encryption } : {}) };
   }
 
   // --- corestore (federated hive state) half ---
