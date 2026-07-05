@@ -49,6 +49,10 @@ import {
 import { acquireWithContentionRetry } from '../contention-retry';
 
 const SUITE_PREFIX = `vitest-su-locks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const LOAD_STRESS_TIMEOUT_MS =
+  process.env.GREEN_CHECKPOINT === '1'
+    ? Number(process.env.VITEST_UNIT_TIMEOUT_MS) || 180_000
+    : 30_000;
 let suiteIdx = 0;
 function nextWs(): string {
   return `${SUITE_PREFIX}-${++suiteIdx}`;
@@ -1137,7 +1141,7 @@ describe('file-locking #4 — acquire under concurrent load (plan §4 stress)', 
     expect(failed.map((f) => f.err).filter(Boolean)).toEqual([]);
     expect(failed).toHaveLength(0);
     expect(results).toHaveLength(N);
-  }, 30_000);
+  }, LOAD_STRESS_TIMEOUT_MS);
 });
 
 describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => {

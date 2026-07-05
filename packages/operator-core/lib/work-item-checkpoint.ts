@@ -64,6 +64,17 @@ export async function setWorkItemCheckpoint(
         UPDATE harness_shared.work_items
            SET last_progress_at = now()
          WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+      // Issue-family rows live in engineer_issues and do not yet have a separate
+      // last_progress_at column. Refresh assigned_at for claimed, open issues so
+      // checkpoint progress keeps the same stale-claim anchor alive.
+      await sql`
+        UPDATE harness_shared.engineer_issues
+           SET assigned_at = now(), updated_at = now()
+         WHERE workspace_id = ${ws}
+           AND issue_id = ${ref.workItemId}
+           AND assignee IS NOT NULL
+           AND assignee <> ''
+           AND state = 'open'`;
     } catch {
       /* best-effort */
     }

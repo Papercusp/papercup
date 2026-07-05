@@ -132,12 +132,14 @@ export interface WorkItem {
   state: string;
   /** Claimable (D-003): feature → taken_by; issue → assignee. */
   assignee: string | null;
-  /** When the item was claimed (feature → taken_at; ISO). null when unclaimed.
+  /** When the item was claimed (feature → taken_at; issue → assigned_at; ISO). null when unclaimed.
    *  The grace anchor for {@link ./item-activity}.classifyItemActivity. */
   takenAt: string | null;
   /**
    * Last REAL item-scoped progress — a state transition (setWorkItemState) or a
-   * checkpoint write — as an ISO string; null = no progress recorded yet
+   * checkpoint write — as an ISO string; null = no progress recorded yet.
+   * Issue-family rows currently have no dedicated progress column; their checkpoint
+   * progress refreshes assigned_at, surfaced as takenAt, until that schema grows one.
    * (agent-activity-liveness-truth-2026-06-21 P-001). DISTINCT from the holder's
    * presence heartbeat and the lease keepalive: a claim/heartbeat proves a
    * RESERVATION / a live PROCESS, not that the WORK is advancing. Feed it to
