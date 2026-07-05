@@ -14,6 +14,7 @@ vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
 import { createOneWorkItem } from './_create-core';
 const createM = vi.mocked(createOneWorkItem);
 const tool = (await import('./create')).default;
+const codeSmellsLikeCode = (await import('./create')).codeSmellsLikeCode;
 
 const ctx = { workspaceId: 'default', harnessSlug: 'papercup' } as never;
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -23,6 +24,33 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 beforeEach(() => {
   vi.clearAllMocks();
   createM.mockImplementation(async (spec: { title: string }) => ({ ok: true, workItem: { id: `WI-${spec.title}`, kind: 'bug', title: spec.title } }) as never);
+});
+
+describe('codeSmellsLikeCode + the task nudge (WI-2874)', () => {
+  it('flags code work via structural signals (source path / file ext / backticked ident / edit verbs)', () => {
+    expect(codeSmellsLikeCode('Fix packages/operator-core/lib/foo.ts race')).toBe(true);
+    expect(codeSmellsLikeCode('Update the docs-qa.ts endpoint')).toBe(true);
+    expect(codeSmellsLikeCode('Rename `myHelperFn` in the resolver')).toBe(true);
+    expect(codeSmellsLikeCode('Refactor the claim path', 'implement the new guard')).toBe(true);
+  });
+  it('does NOT flag genuine non-code tasks (false positives would be harmless anyway — it never blocks)', () => {
+    expect(codeSmellsLikeCode('Research the best charting library for the dashboard')).toBe(false);
+    expect(codeSmellsLikeCode('Decide whether to sunset the classic lexicon')).toBe(false);
+    expect(codeSmellsLikeCode('Manually verify the 2-box federation drill on the rig')).toBe(false);
+  });
+  it('a code-smelling TASK is still created, with a non-blocking warning', async () => {
+    const b = await body({ kind: 'task', title: 'refactor packages/foo/bar.ts' });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].warning).toMatch(/NON-CODE only/);
+  });
+  it('a genuine non-code TASK gets NO warning', async () => {
+    const b = await body({ kind: 'task', title: 'research the best date library' });
+    expect(b.results[0].warning).toBeUndefined();
+  });
+  it('the nudge is task-only — a code-smelling change/bug is never warned', async () => {
+    const b = await body({ kind: 'change', title: 'fix packages/foo/bar.ts' });
+    expect(b.results[0].warning).toBeUndefined();
+  });
 });
 
 describe('work_items:create handler (keyed-array)', () => {
