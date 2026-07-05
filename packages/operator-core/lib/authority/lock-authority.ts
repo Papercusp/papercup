@@ -202,7 +202,7 @@ export async function queryPresenceRowsForHive(
            machine_label,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
-    WHERE hive_slug = ${hiveSlug}
+    WHERE pot_slug = ${hiveSlug}
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{

@@ -28,8 +28,8 @@ describe('evaluateGitSyncStall', () => {
     expect(v.reason).toBeNull();
   });
 
-  it('commit-staleness (PRIMARY): HEAD frozen >2h while firing ⇒ stalled — the real signal', () => {
-    const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 3 * H }, NOW);
+  it('EI-7531 commit-staleness (PRIMARY): HEAD frozen >30m while firing ⇒ stalled — stranded dirty work detector', () => {
+    const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 31 * M }, NOW);
     expect(v.stalled).toBe(true);
     expect(v.commitStale).toBe(true);
     expect(v.fireStale).toBe(false);
@@ -116,8 +116,8 @@ describe('evaluateGitSyncStall', () => {
   });
 
   it('thresholds are overridable (headStaleMs / fireStaleMs)', () => {
-    const s = { ...base, headUnchangedMs: 30 * M, lastFiredMs: NOW - 30 * M };
-    expect(evaluateGitSyncStall(s, NOW).commitStale).toBe(false); // 30m < default 2h
+    const s = { ...base, headUnchangedMs: 20 * M, lastFiredMs: NOW - 30 * M };
+    expect(evaluateGitSyncStall(s, NOW).commitStale).toBe(false); // 20m < default 30m
     expect(evaluateGitSyncStall(s, NOW, { headStaleMs: 10 * M }).commitStale).toBe(true);
     expect(evaluateGitSyncStall(s, NOW, { fireStaleMs: 10 * M }).fireStale).toBe(true);
   });

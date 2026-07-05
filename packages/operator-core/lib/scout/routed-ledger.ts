@@ -448,7 +448,7 @@ export async function upsertScoutLensWeights(
   if (rows.length === 0) return;
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  // scout_lens_weights PK is (workspace_id, hive_slug, lens) — without a hive we
+  // scout_lens_weights PK is (workspace_id, pot_slug, lens) — without a hive we
   // cannot persist. Best-effort contract (refreshScoutOutcomes wraps this in
   // try/catch): warn + skip rather than throw a NOT NULL violation.
   if (!opts.hiveSlug) {
@@ -474,11 +474,11 @@ export async function upsertScoutLensWeights(
     })),
   );
   await sql`
-    INSERT INTO harness_shared.scout_lens_weights (workspace_id, hive_slug, lens, wins, decided, weight, updated_at)
+    INSERT INTO harness_shared.scout_lens_weights (workspace_id, pot_slug, lens, wins, decided, weight, updated_at)
     SELECT ${ws}, ${hiveSlug}, x.lens, x.wins, x.decided, x.weight, now()
       FROM jsonb_to_recordset(${payload}::text::jsonb)
            AS x(lens text, wins int, decided int, weight numeric)
-    ON CONFLICT (workspace_id, hive_slug, lens) DO UPDATE SET
+    ON CONFLICT (workspace_id, pot_slug, lens) DO UPDATE SET
       wins = EXCLUDED.wins,
       decided = EXCLUDED.decided,
       weight = EXCLUDED.weight,
@@ -503,7 +503,7 @@ export async function readScoutLensWeights(
     SELECT lens, weight
       FROM harness_shared.scout_lens_weights
      WHERE workspace_id = ${ws}
-       ${opts.hiveSlug ? sql`AND hive_slug = ${opts.hiveSlug}` : sql``}`;
+       ${opts.hiveSlug ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}`;
   const out: Partial<Record<CreativeLens, number>> = {};
   for (const r of rows) {
     const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
@@ -542,7 +542,7 @@ export async function getScoutLensWeights(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   // K1 workspace-brain scope (workspace-scoped-coordination D-006): when
   // WORKSPACE_COORDINATION is ON, the workspace-Scout reads its lens weights from
-  // the workspace-sentinel row (hive_slug = workspaceId), falling back to the
+  // the workspace-sentinel row (pot_slug = workspaceId), falling back to the
   // legacy per-hive row until the sentinel is first written (zero regression).
   // OFF ⇒ the per-hive read, byte-identical to today.
   const on = await isWorkspaceCoordinationOn();
@@ -626,7 +626,7 @@ export async function refreshScoutOutcomes(
   }
   // K1 workspace-brain scope (workspace-scoped-coordination D-006): when
   // WORKSPACE_COORDINATION is ON, the workspace-Scout persists ONE consolidated
-  // lens-weight row per workspace under the sentinel (hive_slug = workspaceId);
+  // lens-weight row per workspace under the sentinel (pot_slug = workspaceId);
   // OFF ⇒ the per-hive row, byte-identical to today.
   const scopeSlug = workspaceBrainScopeKey(ws, hiveSlug ?? '', await isWorkspaceCoordinationOn());
   try {

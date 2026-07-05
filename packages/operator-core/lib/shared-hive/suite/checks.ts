@@ -455,7 +455,7 @@ async function checkPresenceElectionPg(runId: string, sql: Sql): Promise<CheckRe
   const seed = async (pubkey: string, ml: string, lastSeenMs: number, hiveSlug: string | null) =>
     sql.unsafe(
       `INSERT INTO harness_shared.shared_presence
-         (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey, hive_slug, last_seen_at)
+         (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey, pot_slug, last_seen_at)
        VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))`,
       [ws, harness, 1, ml, pubkey, hiveSlug, lastSeenMs],
     );

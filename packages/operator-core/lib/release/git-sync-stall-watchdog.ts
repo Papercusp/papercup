@@ -42,11 +42,11 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 
-/** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing. git-sync
- *  runs every 3 min, so on an active box 2h of no new commit is a strong stall signal. Tunable;
- *  the tradeoff is a genuinely idle tree (no edits) could alarm — low harm (a claimable
- *  broadcast, not a page) and rare on an active dev box. */
-const DEFAULT_HEAD_STALE_MS = 2 * 60 * 60 * 1000; // 2h
+/** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing.
+ *  EI-7531: the papercusp tree stranded 2622 dirty paths for 10.5h while git-sync looked
+ *  active. git-sync runs every 3 min; 30m is 10 missed commit opportunities and is late
+ *  enough to avoid one-off push noise while still surfacing stranded work promptly. */
+const DEFAULT_HEAD_STALE_MS = 30 * 60 * 1000; // 30m
 /** An ACTIVE git-sync that hasn't FIRED in this long ⇒ the scheduler isn't running it. */
 const DEFAULT_FIRE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
 /** WI-1416: this many CONSECUTIVE executor-reaper cancels (`metadata.reaped_count` —
