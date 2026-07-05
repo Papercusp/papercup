@@ -136,7 +136,7 @@ const converse = defineTool({
     try {
       const { loadVoicePrefs } = await import('../../../voice-prefs');
       const prefs = await loadVoicePrefs();
-      if (prefs.humanFacingRole === 'sentinel') role = 'sentinel';
+      if (prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup') role = 'sentinel';
     } catch {
       /* best-effort; fall back to operator */
     }
@@ -144,7 +144,7 @@ const converse = defineTool({
     // alias (sentinel-converse.ts), NOT `sentinel:converse`; every other role
     // resolves `${role}:converse`. The persona `role` forwarded below stays
     // 'sentinel' so the prompt builder loads the sentinel set.
-    const converseToolName = role === 'sentinel' ? 'papercup:converse' : `${role}:converse`;
+    const converseToolName = role === 'sentinel' || role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {

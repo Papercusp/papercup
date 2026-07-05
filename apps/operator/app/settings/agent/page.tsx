@@ -193,7 +193,7 @@ export default function AgentSettingsPage() {
   const displayLabel = (row: { role: string; label: string }): string =>
     row.role === 'queen'
       ? t('brain')
-      : row.role === 'overwatch'
+      : row.role === 'overwatch' || row.role === 'kettle'
         ? t('overwatch')
         : row.role === 'scanner'
           ? t('scout')

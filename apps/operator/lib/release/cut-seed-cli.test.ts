@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { pickGitEncryption } from './cut-seed-cli';
+import { parseGitDepth, pickGitEncryption } from './cut-seed-cli';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
 const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
@@ -69,5 +69,22 @@ describe('pickGitEncryption', () => {
     await expect(
       pickGitEncryption({ workspaceId: 'ws', epochProvided: false, hive: 'papercusp', cutAtEpoch: 0, deriveEpochKey }),
     ).rejects.toThrow(/expected 32/);
+  });
+});
+
+describe('parseGitDepth', () => {
+  it('--shallow aliases to --depth 1', () => {
+    expect(parseGitDepth({ shallow: true })).toBe(1);
+  });
+
+  it('--depth 1 is accepted and omitted depth stays undefined', () => {
+    expect(parseGitDepth({ depth: '1' })).toBe(1);
+    expect(parseGitDepth({})).toBeUndefined();
+  });
+
+  it('rejects invalid or unsupported depths', () => {
+    expect(() => parseGitDepth({ depth: '0' })).toThrow(/positive integer/);
+    expect(() => parseGitDepth({ depth: '2' })).toThrow(/only 1/);
+    expect(() => parseGitDepth({ shallow: true, depth: '2' })).toThrow(/alias/);
   });
 });

@@ -85,7 +85,7 @@ export default defineTool({
     // Overwatch is a distinct autonomy envelope (B-06 / D-002): a fixed allowlist,
     // not risk × ceiling. Dispatch to its pure gate (no PG, no policy store).
     const role = args.role ?? (ctx?.role as string | undefined);
-    if (role === 'overwatch') {
+    if (role === 'overwatch' || role === 'kettle') {
       const { decideOverwatchAutonomy } = await import('../../overwatch/autonomy');
       const decision = decideOverwatchAutonomy({ action: args.action });
       return {

@@ -115,7 +115,7 @@ export function queenWakeSampleRows(
     SELECT run_id, ts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count
       FROM harness_shared.agent_usage_samples
      WHERE workspace_id = ${input.workspaceId}
-       AND role = 'queen'
+       AND role IN ('queen', 'mug')
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
      ORDER BY ts DESC
      LIMIT ${input.limit}`;

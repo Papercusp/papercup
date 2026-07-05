@@ -86,12 +86,16 @@ export function classifyAgentPane(input: {
   // registered `queen` role itself (hive invoke-route launches; EI-286
   // follow-up — before the role was registered the live Queen fell to the bee
   // arm and glyphed ☕).
-  if (input.launch === 'brain' || role === 'brain' || role === 'queen') {
+  // pot-rename dual-accept (P1 MIGRATE): `mug` is the additive twin of the `queen`
+  // role INPUT — it classifies to the SAME `queen` pane-kind. (RETURN value/glyph unchanged.)
+  if (input.launch === 'brain' || role === 'brain' || role === 'queen' || role === 'mug') {
     return { kind: 'queen', driveMode: 'auto' };
   }
   // The overwatch is the Queen's sibling supervisor — cadence-woken (auto), but its OWN
   // pane kind so the roster/dock separates it from the Queen (overwatch-role-2026-06-15 B-01).
-  if (role === 'overwatch') {
+  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
+  // role INPUT — it classifies to the SAME `overwatch` pane-kind. (RETURN value/glyph unchanged.)
+  if (role === 'overwatch' || role === 'kettle') {
     return { kind: 'overwatch', driveMode: 'auto' };
   }
   if (input.launch === 'planner' || role === 'planner') {

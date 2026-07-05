@@ -95,6 +95,11 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   sentinel: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },
+  // pot-rename dual-accept (P1 MIGRATE): `papercup` is the additive twin of the `sentinel`
+  // role — SAME envelope value, so the twin is confined identically during the dual-accept window.
+  papercup: {
+    denyCapabilities: ['capability:fs-write', 'capability:bash'],
+  },
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01 + D-002). It READS the whole system and NUDGES/OBSERVES/ESCALATES
   // (coord:send / coord:escalate / improvements:capture / messages:send), but it must
@@ -106,6 +111,11 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   // The structural-action DECISION gate (restart a routine, flip a flag, kill a proc) is
   // B-06's autonomy-policy wiring, distinct from this static capability wall.
   overwatch: {
+    denyCapabilities: ['capability:fs-write', 'capability:bash'],
+  },
+  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
+  // role — SAME envelope value, so the twin is confined identically during the dual-accept window.
+  kettle: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],
   },
 };

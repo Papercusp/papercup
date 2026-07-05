@@ -871,7 +871,7 @@ export async function spawnAgentInHarness(
   // carries the wake key the caller sleeps on.
   let admission: SpawnAdmission;
   let reclaimed: { count: number; workspaces: string[] };
-  const ownerBeeCeiling = role === 'bee' ? await ownerMaxBeesCeiling(input.workspaceId) : null;
+  const ownerBeeCeiling = (role === 'bee' || role === 'cup') ? await ownerMaxBeesCeiling(input.workspaceId) : null;
   try {
     ({ admission, reclaimed } = await admitSpawn(sql, {
       workspaceId: input.workspaceId,
@@ -935,8 +935,8 @@ export async function spawnAgentInHarness(
   }
   if (admission.kind === 'over_cap') {
     const awaitEvent = spawnSlotEventKey(input.workspaceId);
-    const capLabel = admission.role === 'bee' ? 'owner maxBees' : 'maxSimultaneousAgents';
-    const runningLabel = admission.role === 'bee' ? `${admission.running} bee spawns` : `${admission.running} spawns`;
+    const capLabel = (admission.role === 'bee' || admission.role === 'cup') ? 'owner maxBees' : 'maxSimultaneousAgents';
+    const runningLabel = (admission.role === 'bee' || admission.role === 'cup') ? `${admission.running} bee spawns` : `${admission.running} spawns`;
     const res = await fail(
       `spawn rejected: ${runningLabel} already running (fleet ceiling ${admission.cap} — ${capLabel}). ` +
       `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
@@ -1037,7 +1037,7 @@ export async function spawnAgentInHarness(
   // A bee is intrinsically a hive worker, so default its prompt blueprint to `coding`
   // unless the caller already pinned one. Arm-neutral (both hive + queen-ablated
   // benchmark arms place identical bees), so it cannot bias the comparison.
-  if (role === 'bee' && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
+  if ((role === 'bee' || role === 'cup') && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
     extras.push('BLUEPRINT_ID=coding');
   }
 
@@ -1098,7 +1098,7 @@ export async function spawnAgentInHarness(
   // regardless of which process built the spawn command. Only ever active under the bench env flag — normal
   // hive/operator spawns are untouched. The Queen's placement/eviction/re-placement/adaptive-wake treatment
   // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
-  const benchBeeDirective = role === 'bee' ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
+  const benchBeeDirective = (role === 'bee' || role === 'cup') ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
   if (benchBeeDirective) {
     // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
     // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so

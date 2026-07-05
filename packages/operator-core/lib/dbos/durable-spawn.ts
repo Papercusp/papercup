@@ -202,7 +202,8 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   if (typeof existing === 'string' && existing.trim()) return input.body;
 
   const target = parseInvokeTarget(input);
-  if (!target || (target.role !== 'queen' && target.role !== 'overwatch')) return input.body;
+  if (!target || (target.role !== 'queen' && target.role !== 'mug' && target.role !== 'overwatch'))
+    return input.body;
 
   try {
     const { getOwnerSteering } = await import('../owner-steering');
@@ -327,7 +328,7 @@ async function recordDurableSpawnAdmission(
     await recordSpawnPid(db, spawnId, process.pid);
   };
 
-  if (rec.childRole !== 'queen') {
+  if (rec.childRole !== 'queen' && rec.childRole !== 'mug') {
     await writeRecord(sql);
     return { admitted: true };
   }
@@ -338,7 +339,7 @@ async function recordDurableSpawnAdmission(
       SELECT spawn_id, harness_slug
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${rec.workspaceId}
-         AND child_role = 'queen'
+         AND child_role IN ('queen', 'mug')
          AND status IN ('running', 'restarting')
          AND spawn_id <> ${spawnId}
        ORDER BY started_at DESC
@@ -387,7 +388,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
         try {
           return await recordDurableSpawnAdmission(input, rec, spawnId, initialSpawnModel);
         } catch (e) {
-          if (rec.childRole === 'queen') throw e;
+          if (rec.childRole === 'queen' || rec.childRole === 'mug') throw e;
           console.warn(
             `[durable-spawn] record-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
           );

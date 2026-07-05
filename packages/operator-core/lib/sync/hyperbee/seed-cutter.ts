@@ -44,11 +44,15 @@ export interface GitCutSpec {
   /** The canonical origin a restored clone re-points at (the GitHub repo). */
   readonly originUrl: string;
   /** `git bundle create` rev selector; default `--all` (every ref). Pass `HEAD`
-   *  to bundle only the current branch's history — the shippable default (smaller,
-   *  and the delta fetch back-fills other refs). The bundle is always
-   *  self-contained (full history of the ref) so a fresh install clones it
-   *  offline; a shallow bundle is impossible (see seed-provider-git.ts). */
+   *  to bundle only the current branch's history. Pair `rev: 'HEAD'` with
+   *  `depth: 1` for the shippable tiny seed: an offline-cloneable synthetic
+   *  one-commit snapshot of the current tree, then normal fetch back-fills
+   *  history from origin after first boot. */
   readonly rev?: string;
+  /** `1` cuts a synthetic one-commit snapshot. Other depths are refused by the
+   *  git provider because native shallow/prerequisite bundles cannot be cloned
+   *  offline. */
+  readonly depth?: number;
   /** Encrypt the bundles at rest (REQUIRED for the private dogfood repo). The
    *  key is delivered to the joiner post-admission via `keyRef` — never shipped. */
   readonly encryption?: { readonly key: Uint8Array; readonly keyRef: SeedKeyRef };
@@ -159,6 +163,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       stagingDir,
       originUrl: git.originUrl,
       ...(git.rev ? { rev: git.rev } : {}),
+      ...(git.depth !== undefined ? { depth: git.depth } : {}),
       ...(git.encryption ? { encryption: git.encryption } : {}),
     });
     // Portable manifest: record the RELATIVE subdir, not the build-machine path.

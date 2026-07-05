@@ -73,7 +73,7 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
       // but still dispatched — treat a resolved fire as accepted.
       return info != null;
     }
-    if (spawn.childRole === 'bee') {
+    if (spawn.childRole === 'bee' || spawn.childRole === 'cup') {
       // A bee with no work-item never reaches here (shouldRelaunchReclaimedSpawn
       // filters it), but guard so a null can never spawn a featureless bee.
       if (!spawn.workItemId) return false;

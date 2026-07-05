@@ -54,7 +54,7 @@ export interface ElSessionConfig {
    * Resolved from the `humanFacingRole` voice pref.
    * Optional + defaults to 'operator' so the existing live path is unchanged.
    */
-  humanFacingRole?: 'operator' | 'sentinel';
+  humanFacingRole?: 'operator' | 'sentinel' | 'papercup';
 }
 
 export interface ElSocket {
@@ -254,11 +254,11 @@ export class OperatorVoiceSession {
    *   - humanFacingRole: the live persona behind the brain ('operator' | 'sentinel').
    * Read-only; never mutates the session.
    */
-  sweepState(): { sessionLive: boolean; ownsVoiceLease: boolean; humanFacingRole: 'operator' | 'sentinel' } {
+  sweepState(): { sessionLive: boolean; ownsVoiceLease: boolean; humanFacingRole: 'operator' | 'sentinel' | 'papercup' } {
     return {
       sessionLive: this.status !== 'off',
       ownsVoiceLease: this.playerId !== null,
-      humanFacingRole: this.brainRole === 'sentinel' ? 'sentinel' : 'operator',
+      humanFacingRole: this.brainRole === 'sentinel' || this.brainRole === 'papercup' ? 'sentinel' : 'operator',
     };
   }
 
@@ -315,7 +315,7 @@ export class OperatorVoiceSession {
       }
       // Repoint the live brain to the configured persona (P-011). Default
       // 'operator' keeps the existing voice path byte-for-byte unchanged.
-      this.brainRole = resolved.config.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
+      this.brainRole = resolved.config.humanFacingRole === 'sentinel' || resolved.config.humanFacingRole === 'papercup' ? 'sentinel' : 'operator';
       const socket = await this.deps.connect(resolved.config.signedUrl, {
         onText: (t) => this.onElText(t),
         onClose: (reason) => void this.teardown(reason),

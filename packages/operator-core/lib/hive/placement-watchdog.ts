@@ -809,7 +809,7 @@ export async function reconcileOneHive(
            extract(epoch from last_output_at) * 1000 AS last_output_ms
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
-       AND child_role = 'bee'
+       AND child_role IN ('bee', 'cup')
        AND parent_spawn_id = ANY(${queenOwners})`;
 
   // EI-865 / WI-233 — which bees made a governed model call within ACTIVE_RECLAIM_WINDOW_MS

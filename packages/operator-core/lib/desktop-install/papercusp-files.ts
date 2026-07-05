@@ -557,6 +557,18 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
  * the background).
  */
 async function writeMacTutorialApp(appPath: string): Promise<boolean> {
+  // WI-2945: the mac DMGs now BAKE a "Papercusp Tutorial.app" at build time
+  // (papercusp-desktop/bin/mac-vm-build.sh — same bundle id com.papercusp.tutorial,
+  // same launcher script; keep the two generators in sync). When the user dragged
+  // that copy into /Applications, don't write a second one into ~/Applications —
+  // LaunchServices would surface two identical apps. This first-boot write remains
+  // the fallback for installs that skipped dragging the tutorial app.
+  for (const installed of [
+    '/Applications/Papercusp Tutorial.app',
+    '/Applications/Papercusp Tutorial & Setup.app',
+  ]) {
+    if (await pathExists(installed)) return false;
+  }
   const contentsDir = path.join(appPath, 'Contents');
   const macosDir = path.join(contentsDir, 'MacOS');
   await fs.mkdir(macosDir, { recursive: true });

@@ -67,7 +67,8 @@ export async function queenWarmWakeAttempt(args: {
   kickoff?: string;
 }): Promise<{ delivered: boolean; decision?: QueenWakeDecision }> {
   try {
-    if (args.role !== 'queen' && args.role !== 'brain') return { delivered: false };
+    if (args.role !== 'queen' && args.role !== 'mug' && args.role !== 'brain')
+      return { delivered: false };
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.QUEEN_WARM_SESSION, 'system'))) return { delivered: false };

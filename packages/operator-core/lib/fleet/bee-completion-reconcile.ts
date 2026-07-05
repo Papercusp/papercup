@@ -65,7 +65,7 @@ export function shouldReconcileBeeCompletion(
   ctx: BeeExitContext,
 ): ctx is BeeExitContext & { featureId: string } {
   return (
-    ctx.role === 'bee' &&
+    (ctx.role === 'bee' || ctx.role === 'cup') &&
     ctx.exitCode === 0 &&
     !ctx.aborted &&
     typeof ctx.featureId === 'string' &&

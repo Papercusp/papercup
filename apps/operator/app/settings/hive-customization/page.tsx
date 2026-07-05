@@ -57,7 +57,7 @@ interface SetResp {
 
 /** Roles whose persona a hive can override. Any already-overridden role outside this
  *  set is surfaced too (below), so nothing a hive set is ever hidden. */
-const ROLE_OPTIONS = ['su', 'queen', 'bee', 'overwatch', 'operator'] as const;
+const ROLE_OPTIONS = ['su', 'queen', 'bee', 'overwatch', 'operator', 'kettle'] as const;
 /** Structured config sections. Only `scout` has a real schema today (D-005). */
 const CONFIG_SECTIONS = ['scout'] as const;
 

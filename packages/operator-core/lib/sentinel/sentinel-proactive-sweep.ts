@@ -47,7 +47,7 @@ export interface SentinelSweepState {
    *  guard — only the lease holder runs the sweep so it never double-fires. */
   ownsVoiceLease: boolean;
   /** The live brain persona ('operator' default | 'sentinel'). */
-  humanFacingRole: 'operator' | 'sentinel';
+  humanFacingRole: 'operator' | 'sentinel' | 'papercup';
 }
 
 /** The FLEET-STATUS the sweep surfaces (P-020) — the markdown the converse turn
@@ -142,7 +142,7 @@ export async function runSentinelProactiveSweep(
   // (1) master switch — DEFAULT OFF ⇒ this is the only work most ticks do.
   if (!(await deps.flagEnabled())) return { fired: false, gate: 'flag-off' };
   // (2) persona — only the Sentinel proactively speaks.
-  if (state.humanFacingRole !== 'sentinel') return { fired: false, gate: 'not-sentinel' };
+  if (state.humanFacingRole !== 'sentinel' && state.humanFacingRole !== 'papercup') return { fired: false, gate: 'not-sentinel' };
   // (7) single-owner — only the elected lease holder runs the sweep so it never
   //     double-fires alongside a browser provider / a second host. Checked early
   //     (before any PG read) so a non-owner host is a pure no-op.

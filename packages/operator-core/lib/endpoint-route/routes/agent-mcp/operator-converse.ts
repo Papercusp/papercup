@@ -87,7 +87,7 @@ export default defineTool({
       try {
         const { loadVoicePrefs } = await import('../../../voice-prefs');
         const prefs = await loadVoicePrefs();
-        role = prefs.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
+        role = prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup' ? 'sentinel' : 'operator';
       } catch {
         role = 'operator';
       }
@@ -96,7 +96,7 @@ export default defineTool({
     // alias (sentinel-converse.ts), NOT `sentinel:converse`; every other role
     // resolves `${role}:converse`. The `role` forwarded to the handler stays
     // 'sentinel' so the sentinel persona set loads.
-    const converseToolName = role === 'sentinel' ? 'papercup:converse' : `${role}:converse`;
+    const converseToolName = role === 'sentinel' || role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {

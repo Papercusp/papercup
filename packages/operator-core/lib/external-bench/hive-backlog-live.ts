@@ -613,7 +613,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
             SELECT count(*) FILTER (WHERE status IN ('running','restarting'))::text AS running,
                    count(*) FILTER (WHERE status IN ('done','failed','cancelled'))::text AS terminal
               FROM harness_shared.spawned_agents
-             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role = 'bee'`,
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role IN ('bee', 'cup')`,
         ]);
         const featTerminal = DONE_FEATURE_STATUSES.has(featRows[0]?.status ?? '') ||
           ESCALATE_FEATURE_STATUSES.has(featRows[0]?.status ?? '');
@@ -749,7 +749,7 @@ export async function readMemberBeeSpawns(sql: postgres.Sql, member: string, wor
   const rows = await sql<{ spawn_id: string; started_at: string | Date; finished_at: string | Date | null }[]>`
     SELECT spawn_id, started_at, finished_at
       FROM harness_shared.spawned_agents
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member} AND child_role = 'bee'
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member} AND child_role IN ('bee', 'cup')
      ORDER BY started_at ASC`;
   return rows.map((r) => ({
     spawnId: r.spawn_id,

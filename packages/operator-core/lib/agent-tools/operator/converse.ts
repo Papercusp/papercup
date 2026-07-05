@@ -172,7 +172,7 @@ export default defineTool({
   // here too — paired with its operator:converse capability grant
   // (BLUEPRINT_ROLE_CAPS.sentinel). The papercup:converse tool alias registers
   // the same handler under the sentinel name; both resolve this allowlist.
-  agentRoles: ['operator', 'sentinel'],
+  agentRoles: ['operator', 'sentinel', 'papercup'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
@@ -507,7 +507,7 @@ export default defineTool({
       // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
       // the operator path below ignores both entirely (and the sentinel ignores
       // spawns — the two can't cross). The Sentinel must NOT cup:spawn.
-      const isSentinel = input.role === 'sentinel';
+      const isSentinel = input.role === 'sentinel' || input.role === 'papercup';
       if (isSentinel && parsed.handoffs.length > 0) {
         const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
           import('../../operator-sentinel-handoff'),

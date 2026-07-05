@@ -1376,30 +1376,103 @@ export function buildObjectiveTitleOsc(
   return `\x1b]0;${title}\x07`;
 }
 
+// ── Single-source display pipe (tui-status-parity-single-source-2026-07-05) ──
+//
+// Since 2026-07-05 coord:glance (audience:'user') returns a server-rendered
+// `display` block ({ title, statusline[], notice }) built ONCE server-side in
+// status-display.ts — the same render the Claude statusline and the Codex hook
+// print. OMP has no statusline, so its legs are:
+//   • TITLE  → display.title VERBATIM, OSC-0 to /dev/tty (the legacy
+//     buildObjectiveTitleOsc objective render survives ONLY as the fallback
+//     for a pre-display operator);
+//   • NOTICE → display.notice (the 💡 tip), delivered ON CHANGE to the human
+//     (ctx.ui.notify) AND the model (pi.sendMessage system-reminder), deduped
+//     by notice key so a standing tip doesn't spam every turn.
+
+/** Pure: wrap a server-rendered display title in the OSC-0 escape, stripping
+ *  control chars that could break out of the OSC string. '' when empty. */
+export function buildDisplayTitleOsc(title: string | null | undefined): string {
+  const t = typeof title === 'string' ? title.trim() : '';
+  const clean = [...t].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
+  if (clean.length === 0) return '';
+  // OSC 0 sets BOTH icon name and window title: ESC ] 0 ; <text> BEL.
+  return `\x1b]0;${clean}\x07`;
+}
+
+/** The glance `display` block this hook consumes (statusline is Claude-only). */
+interface GlanceDisplayBlock {
+  title?: string | null;
+  notice?: { id?: string | null; text?: string | null } | null;
+}
+
+/** Pure: the dedup key for a status notice — '' when there is nothing to show. */
+export function statusNoticeKey(notice: GlanceDisplayBlock['notice']): string {
+  const text = typeof notice?.text === 'string' ? notice.text.trim() : '';
+  if (text.length === 0) return '';
+  return `${notice?.id ?? 'tip'}|${text}`;
+}
+
+let _lastStatusNoticeKey = '';
+/** Test seam: reset the per-session notice dedup. */
+export function _resetStatusNoticeDedup(): void {
+  _lastStatusNoticeKey = '';
+}
+
 /**
- * Fire-and-forget: read coord:glance self.objective and set the terminal title.
- * Attached-only in spirit (callMcpTool returns null detached → no-op). Writes the
- * OSC escape to /dev/tty when it's writable (a piped/headless session has none →
- * skip). Never throws; never writes to stdout/stderr (an OSC there could corrupt
- * OMP's TUI render). Best-effort, like reportActivity.
+ * Fire-and-forget per-turn display emit: ONE coord:glance (audience:'user')
+ * read feeds both the terminal TITLE (display.title verbatim; the legacy
+ * objective render as fallback) and the 💡 status NOTICE (on change only).
+ * Attached-only in spirit (callMcpTool returns null detached → no-op). Never
+ * throws; never writes to stdout/stderr (an OSC there could corrupt OMP's TUI
+ * render). Best-effort, like reportActivity.
  */
-export async function emitObjectiveTitle(): Promise<void> {
+export async function emitStatusDisplay(
+  pi?: { sendMessage: HookApi['sendMessage'] },
+  ctx?: unknown,
+): Promise<void> {
   const glance = (await callMcpTool('coord:glance', {
     audience: 'user',
     activity_limit: 0,
-  })) as { self?: { objective?: string | null } } | null;
-  const osc = buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
-  if (osc.length === 0) return;
-  try {
-    const fh = await fsp.open('/dev/tty', 'w');
+  })) as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null;
+  const osc =
+    buildDisplayTitleOsc(glance?.display?.title) ||
+    buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
+  if (osc.length > 0) {
     try {
-      await fh.write(osc);
-    } finally {
-      await fh.close();
+      const fh = await fsp.open('/dev/tty', 'w');
+      try {
+        await fh.write(osc);
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      /* no controlling tty / not writable → fail open, the title just isn't set */
     }
-  } catch {
-    /* no controlling tty / not writable → fail open, the title just isn't set */
   }
+  // 💡 status notice — deliver ON CHANGE only (a standing tip must not spam every turn).
+  const key = statusNoticeKey(glance?.display?.notice);
+  if (key.length > 0 && key !== _lastStatusNoticeKey) {
+    const text = (glance?.display?.notice?.text ?? '').trim();
+    try {
+      const c = ctx as { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } } | undefined;
+      if (c?.hasUI && typeof c.ui?.notify === 'function') c.ui.notify(text, 'info');
+      pi?.sendMessage({
+        customType: 'papercusp-status-tip',
+        content: `<system-reminder type="papercusp-status-tip">${text} (fleet status tip — act on it or surface it to the user; coord:glance for detail)</system-reminder>`,
+        display: false,
+        attribution: 'agent',
+      });
+      // Mark delivered only on success — a failed delivery retries next turn.
+      _lastStatusNoticeKey = key;
+    } catch {
+      /* delivery failed → key stays unset so the next turn retries */
+    }
+  }
+}
+
+/** Back-compat alias (pre-display name) — title-only callers keep working. */
+export async function emitObjectiveTitle(): Promise<void> {
+  await emitStatusDisplay();
 }
 
 /** True iff `toolName` is OMP's native keyword tool-search (`search_tool_bm25`) — the discovery
@@ -2991,10 +3064,12 @@ export default function register(pi: HookApi): void {
     // Scope the doom-loop breaker's consecutive-repeat run to this turn (a loop is
     // emitted inside one turn; a legit re-call across two turns must not accrue).
     resetToolCallLoopState();
-    // Per-turn objective title (session-objective-display-2026-06-22, P-004):
-    // set the terminal title to coord:glance self.objective. Fire-and-forget —
-    // it never gates the reminder and swallows its own errors.
-    void safe(() => emitObjectiveTitle(), undefined);
+    // Per-turn display emit (tui-status-parity-single-source-2026-07-05): pipe
+    // the server-rendered display.title into the terminal title and deliver the
+    // 💡 status notice on change (human via ctx.ui.notify, model via
+    // pi.sendMessage). Fire-and-forget — it never gates the reminder and
+    // swallows its own errors.
+    void safe(() => emitStatusDisplay(pi, ctx), undefined);
     const { reminder, degraded } = await safe(() => onTurnStart(ctx), {
       reminder: '',
       degraded: true,

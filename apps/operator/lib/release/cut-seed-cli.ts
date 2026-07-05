@@ -30,9 +30,10 @@
  *   --hive <slug>          hive home slug (default: papercusp)
  *   --origin <url>         origin the restored clone re-points at (default: the GitHub repo)
  *   --rev <rev>            git bundle rev selector (default: HEAD — current branch only, self-contained &
- *                          offline-cloneable; pass --all to seed every ref). Shallow bundles are NOT possible
- *                          (a bundle omitting history records prerequisites → a fresh clone can't use it), so
- *                          seed size tracks the working TREE, not history — shrink it by not tracking scratch.
+ *                          offline-cloneable; pass --all to seed every ref).
+ *   --depth <n>            currently only `1`: cut an offline-cloneable one-commit snapshot of --rev instead
+ *                          of full reachable history. Normal first-boot fetch back-fills history from origin.
+ *   --shallow              alias for --depth 1 (the release default used by build scripts).
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
  *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
@@ -157,6 +158,23 @@ function str(args: Args, key: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+export function parseGitDepth(args: Args): number | undefined {
+  const raw = str(args, 'depth');
+  if (args.shallow === true && raw !== undefined && raw !== '1') {
+    throw new Error('--shallow is an alias for --depth 1; do not pass both with different values');
+  }
+  const value = raw ?? (args.shallow === true ? '1' : undefined);
+  if (value === undefined) return undefined;
+  const depth = Number(value);
+  if (!Number.isInteger(depth) || depth < 1) {
+    throw new Error(`--depth must be a positive integer; got ${value}`);
+  }
+  if (depth !== 1) {
+    throw new Error(`--depth currently supports only 1; got ${depth}`);
+  }
+  return depth;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const root = resolveWorkspaceRoot();
@@ -164,9 +182,10 @@ async function main(): Promise<void> {
   const repo = str(args, 'repo') ?? root;
   const outDir = resolve(str(args, 'out') ?? join(root, 'papercusp-desktop', 'src-tauri', 'seed'));
   const origin = str(args, 'origin') ?? DEFAULT_ORIGIN;
-  // Default to HEAD (current branch, self-contained & offline-cloneable). --all
-  // seeds every ref (bigger). Shallow is impossible — see the git provider.
+  // Default to HEAD (current branch). Build scripts add --depth 1 so the release
+  // seed is a small offline-cloneable tree snapshot; omit depth for full history.
   const rev = str(args, 'rev') ?? 'HEAD';
+  const depth = parseGitDepth(args);
   const storeDir = str(args, 'store-dir') ?? join(root, '.papercusp', hive, 'hyperbee');
   const wantGit = args['no-git'] !== true;
   const wantCorestore = args['no-corestore'] !== true;
@@ -205,7 +224,7 @@ async function main(): Promise<void> {
       deriveEpochKey: async (h, e) => (await resolveHiveEpochCrypto(true)).deriveEpochKey(h, e),
       warn: (m) => console.warn(m),
     });
-    git = { sourceRepoDir: repo, originUrl: origin, rev, ...(encryption ? { encryption } : {}) };
+    git = { sourceRepoDir: repo, originUrl: origin, rev, ...(depth !== undefined ? { depth } : {}), ...(encryption ? { encryption } : {}) };
   }
 
   // --- corestore (federated hive state) half ---

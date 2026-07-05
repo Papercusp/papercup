@@ -41,7 +41,7 @@ export default defineTool({
     'Sentinel brain conversation turn. The operator:converse brain loaded with the always-on, voice-first Sentinel persona (role=sentinel). Same lifecycle (prompt build, budget gate, LLM stream, spend, mem0); only the persona differs.',
   capability: 'operator:converse',
   requirePrincipal: false,
-  agentRoles: ['operator', 'sentinel'],
+  agentRoles: ['operator', 'sentinel', 'papercup'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   replayBufferSize: 5000,

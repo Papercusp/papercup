@@ -294,7 +294,7 @@ export interface VoicePrefs {
    * DECOUPLED from the Sentinel sidebar flag (that flag shows the settings
    * tab; this pref switches the live brain). A deliberate, reversible toggle.
    */
-  humanFacingRole: 'operator' | 'sentinel';
+  humanFacingRole: 'operator' | 'sentinel' | 'papercup';
 
   /**
    * Do-not-disturb for the Sentinel herald (sentinel-as-herald-2026-06-21).

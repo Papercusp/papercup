@@ -79,7 +79,7 @@ async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConf
         ...(agentLanguage ? { language: agentLanguage } : {}),
       },
     };
-    const humanFacingRole = prefs.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
+    const humanFacingRole = prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup' ? 'sentinel' : 'operator';
     return {
       ok: true,
       config: {
