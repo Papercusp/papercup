@@ -267,6 +267,7 @@ export default defineTool({
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
+      'EI-7746: items run sequentially — if the CALL itself times out mid-batch, already-processed items are already committed but you never see their results. Re-check via work_items:get before assuming failure; a blind retry of the SAME items+state is safe (re-applying an already-terminal state is a no-op, never trips the reopen/force guard).',
     ],
   },
   capability: 'work_items:write',

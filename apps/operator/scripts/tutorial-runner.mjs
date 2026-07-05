@@ -291,6 +291,20 @@ function renderChecklist(steps) {
 }
 
 /**
+ * Step the menu cursor for an ↑/↓ keypress (wrap-around). Pure — exported for tests.
+ * Extracted after the 2026-07-05 freeze: the step used to be passed to
+ * @inquirer/core's setState as a React-style functional updater, which that
+ * library does NOT support (it stores the function AS the value), so the menu
+ * never moved. Keeping the arithmetic pure keeps the call site a plain number.
+ */
+export function stepCursor(cursor, keyName, length) {
+  if (length <= 0) return cursor;
+  if (keyName === 'up') return (cursor - 1 + length) % length;
+  if (keyName === 'down') return (cursor + 1) % length;
+  return cursor;
+}
+
+/**
  * The unified-shell SCREEN: a pinned header (tab bar + hints) above an arrow-selectable
  * menu, with the GLOBAL hotkeys (resolveShellKey) live on EVERY screen (#4 + B2-#1).
  * Resolves to an action the shell loop dispatches on:
@@ -315,12 +329,9 @@ const shellScreen = createPrompt((config, done) => {
     // updater — setState(fn) stores the FUNCTION as the value (only the INITIAL
     // value may be a factory). Passing `(c) => …` here froze the menu: cursor
     // became a function, no row ever matched `i === cursor`, and ⏎ selected
-    // undefined (owner repro 2026-07-05: "can't go up and down"). Compute from
-    // the closure's `cursor` instead — the render re-runs per keypress, so it
-    // is always current.
-    if (choices.length === 0) return;
-    if (key.name === 'up') setCursor((cursor - 1 + choices.length) % choices.length);
-    else if (key.name === 'down') setCursor((cursor + 1) % choices.length);
+    // undefined (owner repro 2026-07-05: "can't go up and down"). Compute the
+    // next index as a NUMBER from the closure's `cursor` (fresh each render).
+    setCursor(stepCursor(cursor, key.name, choices.length));
   });
   const menu = choices
     .map((c, i) => `${i === cursor ? accent('❯ ') : '  '}${c.name}`)

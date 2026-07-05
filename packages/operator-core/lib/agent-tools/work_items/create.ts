@@ -66,7 +66,7 @@ const itemSpec = z.object({
   payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard for this item.'),
-  assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4). Overrides assign_all_to_self for this item.'),
+  assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()

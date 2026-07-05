@@ -293,3 +293,42 @@ describe('setupChecklist — the Setup-tab status model (#4)', () => {
     expect(setupChecklist(undefined).map((s) => s.key)).toEqual(['framework', 'signin', 'embeddings']);
   });
 });
+
+// ── stepCursor (the 2026-07-05 frozen-menu fix) ────────────────────────────────
+import { stepCursor } from '../tutorial-runner.mjs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+describe('stepCursor — ↑/↓ menu navigation (wrap-around, pure)', () => {
+  it('down advances and wraps; up retreats and wraps', () => {
+    expect(stepCursor(0, 'down', 6)).toBe(1);
+    expect(stepCursor(5, 'down', 6)).toBe(0);
+    expect(stepCursor(0, 'up', 6)).toBe(5);
+    expect(stepCursor(3, 'up', 6)).toBe(2);
+  });
+  it('other keys and empty menus are no-ops', () => {
+    expect(stepCursor(2, 'a', 6)).toBe(2);
+    expect(stepCursor(2, 'left', 6)).toBe(2);
+    expect(stepCursor(2, 'down', 0)).toBe(2);
+  });
+});
+
+describe('@inquirer/core setState misuse guard (2026-07-05 frozen tutorial menu)', () => {
+  it("no script passes a functional updater to an @inquirer/core useState setter — setState(fn) stores the FUNCTION as the value", () => {
+    const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const offenders: string[] = [];
+    for (const f of readdirSync(scriptsDir)) {
+      if (!f.endsWith('.mjs')) continue;
+      const src = readFileSync(join(scriptsDir, f), 'utf8');
+      if (!src.includes("'@inquirer/core'") && !src.includes('"@inquirer/core"')) continue;
+      // A setter call whose first arg opens an arrow function: set<X>((c) => …
+      // (setTimeout/setInterval/setImmediate legitimately take callbacks — skip them.)
+      const m = (src.match(/set[A-Z]\w*\(\s*\(?\s*\w*\s*\)?\s*=>/g) ?? []).filter(
+        (s) => !/^set(Timeout|Interval|Immediate)\b/.test(s),
+      );
+      if (m.length > 0) offenders.push(`${f}: ${m.join(' | ')}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
