@@ -2000,6 +2000,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
   if (await schedulerIssuesClaimableEnabled()) {
     const issueWs = issuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
+    const issueCooldown = releaseCooldownSec();
     const issuePoolRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
@@ -2051,7 +2052,15 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- single-box caller — same floor the claim applies.
          AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
          -- WI-2797: a claim-held item is likewise pending-but-gated — same floor the claim applies.
-         AND ${claimHoldExclusionSql(sql)}`;
+         AND ${claimHoldExclusionSql(sql)}
+         -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
+         -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
+         AND ${issueCooldown > 0
+           ? sql`(wi.last_released_by IS NULL
+               OR wi.last_released_by <> ${filter.assignee}
+               OR wi.last_released_at IS NULL
+               OR wi.last_released_at < now() - make_interval(secs => ${issueCooldown}))`
+           : sql`TRUE`}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -2098,6 +2107,12 @@ export async function claimNextIssueWorkItem(
   // ones by readiness (below).
   const states = ISSUE_FAMILY_CLAIMABLE_STATES;
   const issueKinds = opts.issueKinds?.length ? [...opts.issueKinds] : [...ISSUE_FAMILY_KINDS];
+  // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
+  // feature family (mig 485/EI-6956) — without it, an agent that releases an
+  // issue-family item immediately re-claims that EXACT row on its very next
+  // scheduler:get_next/claim_next call whenever it's still the oldest/highest-
+  // ranked eligible row (the confirmed-live WI-652/WI-2381-class ping-pong).
+  const cooldown = releaseCooldownSec();
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
@@ -2146,6 +2161,16 @@ export async function claimNextIssueWorkItem(
           -- WI-2797: never self-select an item a peer has explicitly claim-held (do-not-
           -- opportunistically-claim) — still directly claimable by id.
           AND ${claimHoldExclusionSql(sql)}
+          -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
+          -- clause) — NULL-safe: never released, released by someone else, or released
+          -- long enough ago, all pass; only "released by ME within the cooldown window"
+          -- excludes the row from MY OWN next self-select.
+          AND ${cooldown > 0
+            ? sql`(wi.last_released_by IS NULL
+                OR wi.last_released_by <> ${filter.assignee}
+                OR wi.last_released_at IS NULL
+                OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
+            : sql`TRUE`}
         ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
