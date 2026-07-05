@@ -384,8 +384,11 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.claimWorkItem(bug.id, 'agA');
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
+    // issue-family has no distinct 'in_progress' state — 'in_progress' aliases to 'open'
+    // (the family's 3-state CHECK, EI-450); the point under test is that force:true lets
+    // the reopen through at all, not the exact resulting state name.
     const after = await wi.setWorkItemState(bug.id, 'in_progress', { by: 'agB', force: true });
-    expect(after?.state).toBe('in_progress');
+    expect(after?.state).toBe('open');
   });
 
   it('does NOT gate a transition between two non-terminal states, or the initial terminal completion itself', async () => {
