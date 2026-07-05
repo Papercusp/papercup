@@ -100,6 +100,15 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // intended default-OFF, so the watchdog goes back to escalate-only until the owner
   // reviews the auto-close criteria. Count 13 → 14.
   'papercusp-watchdog-auto-close',
+  // 2026-07-05 (WI-1994) — NOT a new post-inversion darkening: the same bug-fix class as
+  // papercusp-watchdog-auto-close above. papercusp-substrate-sidecar's OWN code comment
+  // (libs/flags/src/types.ts) has ALWAYS said "DEFAULT OFF ... Listed in KNOWN_DARK_FLAGS"
+  // but it was never actually added to DARK_FLAGS, so it silently derived default-ON both
+  // before and after the P-011 inversion — evidenced live harm: a fresh containerized-rig
+  // frame boots the dark path and the sidecar process crash-loops (exit 1 right after
+  // joining its topic), the mechanism behind WI-1910's 0 peer_connected. Adding it here +
+  // to DARK_FLAGS restores its always-intended default-OFF. Count 13 → 14.
+  'papercusp-substrate-sidecar',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -218,7 +227,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // darkening (see the PRE_INVERSION_DEFAULT_OFF comment above). Count 13 → 14.
     // 2026-07-04 (EI-7280) — papercusp-test-completion-gate GRADUATED to default-ON
     // (dark-flag-age review): verified live+enabled, zero blast radius. Count 14 → 13.
-    expect(offCount).toBe(13);
+    // 2026-07-05 (WI-1994) — papercusp-substrate-sidecar: BUG-FIX correction (own comment
+    // always said dark, never actually added — see PRE_INVERSION_DEFAULT_OFF above), not a
+    // new darkening. Count 13 → 14.
+    expect(offCount).toBe(14);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

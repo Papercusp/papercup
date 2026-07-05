@@ -373,8 +373,14 @@ function planSlugOf(args: TriggerEventArgs | undefined): string | undefined {
  *  resolves the natural-key fallback into the same "key" slot `resolveBridgeTarget`
  *  passes as this function's first argument). Returns a SUBSET of the
  *  consumer's real args (`{ slug, mode, harness? }`) — see the file-top note
- *  on why a matching subset is sufficient for `invalidateQueries`. */
-const planSlugScope: ScopeKeyBuilder = (slug) => (slug ? { slug } : null);
+ *  on why a matching subset is sufficient for `invalidateQueries`.
+ *
+ *  A hoisted `function` declaration (not a `const` arrow) — `TABLE_TO_QUERY_NAMES`
+ *  above references it and is itself a module-top `const`, so a `const` here
+ *  would TDZ-fail at import time. */
+function planSlugScope(slug: string): Record<string, unknown> | null {
+  return slug ? { slug } : null;
+}
 
 /**
  * Resolve ONE mapped target against an event's row id + workspace.

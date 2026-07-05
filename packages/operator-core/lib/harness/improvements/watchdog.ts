@@ -54,6 +54,7 @@ import {
 } from './tool-error-classifier';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
+import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
@@ -1452,16 +1453,21 @@ interface CircuitOpenRow {
 }
 /** Pure: is this row a stuck-fire-path we must NOT re-escalate — because the routine engine has
  *  already RESOLVED it (auto-paused, `routine_active === false`) or because it is an EPHEMERAL
- *  `loop:arm` OWNER loop (`routine_target_owner_id` populated) managed end-to-end by the reconcile
- *  dead-owner guard? Mirrors `selectChronicFailures` (autoloop-chronic-failure) so BOTH watchdogs
- *  stop flooding the same dead `loop-su-<uuid>` row with duplicate tickets (EI-6721: a dead,
- *  auto-paused loop:arm loop kept re-firing "stuck in error-backoff" EIs the chronic sweep already
- *  suppressed but this collector did not). `routine_active: null` (no matching routine) and absent
- *  `routine_target_owner_id` are NOT suppressed — fail-open, never silently drop an unknown state. */
+ *  `loop:arm` OWNER loop managed end-to-end by the reconcile dead-owner guard? A loop:arm loop is
+ *  identified by EITHER a populated `routine_target_owner_id` (the JOIN marker) OR a `loop-`-prefixed
+ *  role (`isLoopArmOwnerRole` — the join-independent structural marker that ALSO catches an ORPHANED
+ *  row whose routine was GC'd, EI-7220: the target_owner_id JOIN goes NULL and the owner-id marker
+ *  alone fails OPEN, so a dead `loop-su-<uuid>` row leaks a "stuck in error-backoff" EI). Mirrors
+ *  `selectChronicFailures` (autoloop-chronic-failure) so BOTH watchdogs stop flooding the same dead
+ *  `loop-su-<uuid>` row with duplicate tickets (EI-6721: a dead, auto-paused loop:arm loop kept
+ *  re-firing EIs the chronic sweep already suppressed but this collector did not). A fixed system
+ *  role (`routine_active: null`, no owner-id, non-`loop-` name) is NOT suppressed — fail-open, never
+ *  silently drop an unknown state. */
 export function isResolvedFirePath(
-  r: Pick<CircuitOpenRow, 'routine_active' | 'routine_target_owner_id'>,
+  r: Pick<CircuitOpenRow, 'routine_active' | 'routine_target_owner_id'> & { role?: string | null },
 ): boolean {
-  const isLoopArmOwner = r.routine_target_owner_id != null && r.routine_target_owner_id !== '';
+  const isLoopArmOwner =
+    (r.routine_target_owner_id != null && r.routine_target_owner_id !== '') || isLoopArmOwnerRole(r.role);
   return r.routine_active === false || isLoopArmOwner;
 }
 /** Pure: error-backoff fire-state rows → signals. Rows the routine engine has already resolved
@@ -1498,6 +1504,9 @@ export function circuitOpenSignalsFromRows(rows: CircuitOpenRow[]): WatchdogSign
  * — so re-filing "stuck in error-backoff" here is a duplicate that floods the queue for a dead
  * `loop-su-<uuid>` session (EI-6864/6912/6994/7127/7257/7386 all re-created for ONE dead loop).
  * This mirrors the exclusions `autoloop-chronic-failure`'s `selectChronicFailures` already applies.
+ * EI-7220: the `target_owner_id` JOIN goes NULL once the routine row is GC'd, so an ORPHANED
+ * `loop-<uuid>` autoloop_state row fails OPEN and leaks a signal — the `s.role NOT LIKE 'loop-%'`
+ * clause (and `isLoopArmOwnerRole` in `circuitOpenSignalsFromRows`) is the join-independent belt.
  */
 export async function collectCircuitOpenSignals(
   sql: Sql,
@@ -1517,6 +1526,7 @@ export async function collectCircuitOpenSignals(
        AND s.last_fired_at > now() - make_interval(hours => ${recentHours})
        AND (r.active IS DISTINCT FROM false)
        AND (r.target_owner_id IS NULL OR r.target_owner_id = '')
+       AND s.role NOT LIKE 'loop-%'
      ORDER BY s.consecutive_errors DESC
      LIMIT 10`;
   return circuitOpenSignalsFromRows(rows);

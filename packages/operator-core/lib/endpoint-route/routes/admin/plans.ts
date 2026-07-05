@@ -285,15 +285,18 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   // notify must not break the write itself. Coarse mapping for now —
   // future fine-grained tuning (only invalidate plans.history on
   // structural changes etc.) is a small follow-up.
+  //
+  // EI-7433 cleanup: plans.list / plans.items / plans.attention are ALREADY
+  // bridged as bare (full-bust) entries in table-to-query-names.ts — every
+  // WRITE_VERBS path here writes harness_plans (plans are PG-canonical), so
+  // the `emit_change_notify` trigger already fires a name-only invalidate for
+  // all three on this same write, and the bus's 90s (name,args) dedupe
+  // absorbed the duplicate call this route used to also fire. Removed as
+  // redundant. plans.lint has NO bridge entry in table-to-query-names.ts
+  // (nothing maps harness_plans → plans.lint) — this route is its ONLY
+  // invalidation path, so it stays explicit.
   if (result.status >= 200 && result.status < 300) {
     const slug = typeof body.slug === 'string' ? body.slug : undefined;
-    void notifySyncInvalidate('plans.list', undefined).catch(() => {});
-    // Coarse (no args): the Create tab fans plans.items across many filter
-    // args (needsHuman / actionable / blocked), plans.attention across
-    // per-harness scope, and plans.lint per open plan — a slug-scoped
-    // invalidate would miss them, so invalidate every subscriber by name.
-    void notifySyncInvalidate('plans.items', undefined).catch(() => {});
-    void notifySyncInvalidate('plans.attention', undefined).catch(() => {});
     void notifySyncInvalidate('plans.lint', undefined).catch(() => {});
     if (slug) {
       void notifySyncInvalidate('plans.get', { slug }).catch(() => {});

@@ -45,6 +45,14 @@
  * loop; `target_role = system:loop-wake`) — restoring the sweep to its intended scope: the
  * witness-less FIXED system roles (director/gym-cycle/overwatch/scout-cycle) that carry no
  * `target_owner_id` and have no other escalation path.
+ *
+ * EI-7220: the `target_owner_id` JOIN marker above is FRAGILE — it goes NULL the moment the
+ * loop's `harness_shared.routines` row is reaped, leaving an ORPHANED `autoloop_state` row that
+ * fails OPEN and escalates as if a fixed system role (`loop-su-c2b2ece8-…@*` red 7 fires — the
+ * exact flood EI-6727 tried to kill, resurrected by a routine GC'd out from under a stale-red
+ * autoloop row). So the loop:arm guard ALSO keys off the ROLE NAME itself: `loopRoutineName` is
+ * `` `loop-${ownerId}` ``, so every loop:arm role begins with `loop-` (a join-independent
+ * structural marker no fixed system role uses). See `isLoopArmOwnerRole` / `isLoopArmOwnerLoop`.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, claimWatchdogFire } from '../../hive/watchdog';
@@ -124,9 +132,10 @@ export function isStaleWatermark(
 }
 
 /** PURE: which rows breach the threshold (highest streak first), EXCLUDING any row that is
- *  (a) an EPHEMERAL `loop:arm` OWNER loop (`routine_target_owner_id` non-null — EI-6727: managed
- *  end-to-end by the reconcile terminal-guard autonomy with its own dedicated dead-owner
- *  escalation, so a chronic-failure ticket is a premature duplicate); (b) already auto-paused
+ *  (a) an EPHEMERAL `loop:arm` OWNER loop (`routine_target_owner_id` non-null OR a `loop-`-prefixed
+ *  role — EI-6727/EI-7220: managed end-to-end by the reconcile terminal-guard autonomy with its own
+ *  dedicated dead-owner escalation, so a chronic-failure ticket is a premature duplicate; the role
+ *  marker also catches an ORPHANED row whose routine was GC'd); (b) already auto-paused
  *  (`routine_active: false` — a resolved condition, not a live chronic failure; see this module's
  *  header comment); or (c) a FROZEN watermark (EI-6765 — `last_fired_at` older than the staleness
  *  window; the row stopped firing so its error count can never reset). `routine_target_owner_id`
@@ -152,13 +161,36 @@ export function selectChronicFailures(
     .sort((a, b) => b.consecutive_errors - a.consecutive_errors);
 }
 
-/** PURE: is this an ephemeral `loop:arm` OWNER loop (EI-6727)? A non-null
- *  `routine_target_owner_id` marks a `loop-su-<uuid>` warm-coord loop — owner-witnessed and
- *  auto-terminated by the reconcile dead-owner guard (which fires its OWN escalation), so the
- *  chronic-failure sweep must not also escalate it. `null`/absent = a fixed system role → not a
- *  loop:arm loop → fail-OPEN (still eligible to escalate), never silently suppressed. */
-export function isLoopArmOwnerLoop(row: Pick<AutoloopStateRow, 'routine_target_owner_id'>): boolean {
-  return row.routine_target_owner_id != null && row.routine_target_owner_id !== '';
+/** PURE: is this an ephemeral `loop:arm` OWNER loop identified by its ROLE NAME alone
+ *  (EI-7220)? `loopRoutineName(ownerId)` (routines/loop.ts) is `` `loop-${ownerId}` ``, so a
+ *  loop:arm loop's `autoloop_state.role` — and its materialized routine name — ALWAYS begins
+ *  with `loop-` (`loop-su-<uuid>`, `loop-role-<uuid>`, or a bare `loop-<uuid>`). No FIXED
+ *  system role (director/gym-cycle/overwatch/scout-cycle) uses that prefix.
+ *
+ *  This is the JOIN-INDEPENDENT structural marker that survives the routine row being GC'd:
+ *  an ORPHANED `autoloop_state` row whose `harness_shared.routines` row is gone yields
+ *  `routine_target_owner_id` = NULL from the LEFT JOIN, so the owner-id marker in
+ *  `isLoopArmOwnerLoop` fails OPEN and the row would (wrongly) escalate as if a witness-less
+ *  fixed system role — the exact `loop-su-<uuid>@*` chronic-failure flood EI-7220 reports (a
+ *  dead su session's loop whose routine was reaped while its stale-red autoloop_state row
+ *  lingered). `null`/absent/non-`loop-` role → not a loop:arm loop (false). */
+export function isLoopArmOwnerRole(role: string | null | undefined): boolean {
+  return typeof role === 'string' && role.startsWith('loop-');
+}
+
+/** PURE: is this an ephemeral `loop:arm` OWNER loop (EI-6727 / EI-7220)? True when EITHER
+ *  (a) the matching routine carries a `target_owner_id` (the JOIN marker — a `loop-su-<uuid>`
+ *  warm-coord loop), OR (b) the role name itself begins with `loop-` (`isLoopArmOwnerRole` —
+ *  the join-independent marker that ALSO catches an ORPHANED row whose routine was GC'd,
+ *  EI-7220). Both are owner-witnessed and auto-terminated by the reconcile dead-owner guard
+ *  (which fires its OWN escalation), so the chronic-failure sweep must not also escalate them.
+ *  A fixed system role (null owner-id AND a non-`loop-` name) is NOT a loop:arm loop →
+ *  fail-OPEN (still eligible to escalate), never silently suppressed. */
+export function isLoopArmOwnerLoop(
+  row: Pick<AutoloopStateRow, 'routine_target_owner_id'> & { role?: string | null },
+): boolean {
+  const hasOwnerId = row.routine_target_owner_id != null && row.routine_target_owner_id !== '';
+  return hasOwnerId || isLoopArmOwnerRole(row.role);
 }
 
 export interface ChronicFailureResult {

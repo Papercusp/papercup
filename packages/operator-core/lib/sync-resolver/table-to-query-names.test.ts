@@ -165,6 +165,69 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
   });
 });
 
+describe('plan_slug natural-key scoping (mig 507, EI-7433)', () => {
+  // harness_plans has NO `id` column, so args.id is always JSON null for it —
+  // mig 507 additively emits args.plan_slug instead, and
+  // queryNamesForTriggerEvent falls back to it when args.id is absent.
+
+  it('a harness_plans event WITH plan_slug scopes plans.get to { slug }, leaves siblings full-bust', () => {
+    const names = queryNamesForTriggerEvent('harness_shared.harness_plans.changed', {
+      workspace_id: 'w1',
+      op: 'UPDATE',
+      id: null,
+      plan_slug: 'my-plan',
+    });
+    expect(names).toContainEqual({ name: 'plans.get', args: { slug: 'my-plan' } });
+    // Cross-plan queries are correctly NOT scopeable by a single row's slug —
+    // they stay bare (full-bust), unaffected by the natural-key fallback.
+    expect(names).toContain('plans.list');
+    expect(names).toContain('plans.items');
+    expect(names).toContain('plans.byHive');
+  });
+
+  it('a harness_plans event with NO plan_slug (and no id) falls back to full-bust', () => {
+    const names = queryNamesForTriggerEvent('harness_shared.harness_plans.changed', {
+      workspace_id: 'w1',
+      op: 'DELETE',
+      id: null,
+      plan_slug: null,
+    });
+    expect(names).toContain('plans.get');
+    expect(names).not.toContainEqual(expect.objectContaining({ name: 'plans.get', args: expect.anything() }));
+  });
+
+  it('args.id (a real PK) is preferred over plan_slug when somehow both are present', () => {
+    // Not a real shape any live table produces today (harness_plans has no id;
+    // an id-bearing table wouldn't carry plan_slug) — pins the documented
+    // precedence so a future table combining both doesn't silently flip it.
+    const names = queryNamesForTriggerEvent('harness_shared.harness_plans.changed', {
+      workspace_id: 'w1',
+      op: 'UPDATE',
+      id: 'some-pk',
+      plan_slug: 'my-plan',
+    });
+    // plans.get's own scope (planSlugScope) just echoes whatever key it's
+    // handed as `slug` — with `id` preferred, that key is 'some-pk', not the
+    // plan_slug, proving the precedence (rowIdOf ?? planSlugOf).
+    expect(names).toContainEqual({ name: 'plans.get', args: { slug: 'some-pk' } });
+  });
+
+  it('plan_slug has zero effect on other id-less tables (natural key is table-specific, not global)', () => {
+    // known_schema_versions / trusted_authors etc. have neither id nor
+    // plan_slug — nothing in their mapped targets is scoped, so a stray
+    // plan_slug in triggerArgs (which would never really co-occur) still
+    // wouldn't matter, but this pins that the fallback doesn't leak into
+    // unrelated tables' full-bust entries.
+    const names = queryNamesForTriggerEvent('harness_shared.harness_text_artifacts.changed', {
+      workspace_id: 'w1',
+      op: 'UPDATE',
+      id: null,
+      plan_slug: 'unrelated-plan',
+    });
+    expect(names).toEqual(['harnessTextArtifact.byHarness']);
+  });
+});
+
 describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   /**
    * Forward-defined names — mapped in the bridge BEFORE the

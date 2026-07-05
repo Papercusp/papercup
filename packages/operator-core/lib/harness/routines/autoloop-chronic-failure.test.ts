@@ -215,8 +215,13 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
-  it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
-    const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
+  it('a FIXED SYSTEM role still active (armed, still trying+failing) IS escalated', () => {
+    // Was `loop-su-still-live` (EI-7220): a `loop-`-prefixed role is now recognized as a
+    // loop:arm OWNER loop by its ROLE NAME alone (join-independent), so it is ALWAYS suppressed
+    // — an active loop:arm loop is owner-witnessed, never the sweep's concern. This test's real
+    // intent is the routine_active axis for the sweep's ACTUAL scope: a witness-less fixed
+    // system role (gym-cycle) that is still armed and failing must escalate.
+    const rows = [row({ role: 'gym-cycle', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
   });
 
