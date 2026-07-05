@@ -7,7 +7,7 @@
  * token estimate, and the header helpers. The governor is stubbed so the tests are pure.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import {
   createEmbedAdmission,
@@ -18,6 +18,14 @@ import {
   EmbedBudgetExhaustedError,
   type EmbedLane,
 } from './embed-admission';
+import {
+  __resetEmbedExhaustionAlertForTest,
+  __setEmbedExhaustionNotifierForTest,
+} from './embed-exhaustion-alert';
+
+afterEach(() => {
+  __resetEmbedExhaustionAlertForTest();
+});
 
 /** A governor stub whose `acquire` is scripted: grant (returns a release fn) or deny (null). */
 function stubGovernor(opts: {
@@ -171,6 +179,20 @@ describe('createEmbedAdmission — daily spend cap', () => {
     const adm2 = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 15 });
     await adm2.acquire('a'.repeat(40), 'bench');
     await expect(adm2.acquire('a'.repeat(40), 'bench')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
+  });
+
+  it('raises a deduped owner alert when the daily cap binds', async () => {
+    const notify = vi.fn();
+    __setEmbedExhaustionNotifierForTest(notify);
+    const { governor } = stubGovernor({ grant: true });
+    const adm = createEmbedAdmission({ governor, isEnabled: enabled, dailyTokenCap: 15 });
+
+    await adm.acquire('a'.repeat(40), 'memory');
+    await expect(adm.acquire('a'.repeat(40), 'memory')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
+    await expect(adm.acquire('a'.repeat(40), 'memory')).rejects.toBeInstanceOf(EmbedBudgetExhaustedError);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'daily_cap', conditionKey: 'embed-exhaustion' });
   });
 
   it('enforces the cap EVEN WITH the admission flag OFF (a spend ceiling is not flag-defeatable)', async () => {

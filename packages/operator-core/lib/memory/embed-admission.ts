@@ -38,6 +38,7 @@
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 
 export type EmbedLane = 'memory' | 'bench';
 
@@ -209,6 +210,7 @@ export function createEmbedAdmission(deps: EmbedAdmissionDeps): EmbedAdmission {
               `legitimate load, raise PAPERCUSP_EMBED_DAILY_TOKEN_CAP (current ${cap}).`,
           );
         }
+        maybeEscalateEmbedExhaustion('daily_cap');
         throw new EmbedBudgetExhaustedError(lane);
       }
       // Flag off → no rate-governing (byte-identical passthrough), but the embed STILL counts

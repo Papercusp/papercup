@@ -39,6 +39,7 @@ import {
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
 import { embedAdmission, headersToRecord } from './embed-admission';
+import { clearEmbedExhaustionAlertIfActive, maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { buildLearningInstructions } from './learning';
 import {
@@ -293,6 +294,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         });
         adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
         if (r.ok) {
+          clearEmbedExhaustionAlertIfActive();
           const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
           return j.data[0].embedding;
         }
@@ -313,6 +315,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
           // local-preference cooldown now so the NEXT resolveEmbedder() call (a fresh
           // memory:remember/search) doesn't retry a key we just learned is dead.
           markOpenAiEmbedFailure();
+          maybeEscalateEmbedExhaustion('openai_billing');
           throw new Error(`openai_embed_quota_exhausted: ${body}`);
         }
         const err = new Error(`openai_embed_failed_${r.status}: ${body}`);

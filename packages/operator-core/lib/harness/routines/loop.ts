@@ -91,7 +91,7 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '2. Create + SELF-ASSIGN each unit as a work_item in ONE atomic call:',
   "     work_items:create { kind:'task', title:'…', harness:'{harness}', assign_to:'{ownerId}' }",
   '   (creates AND claims it for you in one write — your work then shows in fleet:assignments, owned, with no create→claim race). Omit `topics` — a self-owned loop item needs no topic fanout.',
-  "3. Do the work; mark it `work_items:set_state { state:'in_progress' }` while working, then FINISH each unit with `work_items:complete { id, completion, state:'done' }` (records completion evidence + transitions the item — 'done', not the invalid 'completed'). Update your plan as you go.",
+  "3. Do the work, then FINISH each unit with `work_items:complete { id, completion, state:'done' }` (records completion evidence + transitions the item — 'done', not the invalid 'completed'). Update your plan as you go. (Do NOT also call `work_items:set_state { state:'in_progress' }` mid-work — the item you created in step 2 is issue-family (kind:'task'), whose only pre-terminal state is 'open'; 'in_progress' has no distinct representation there and just aliases back to 'open' — EI-7478. It is a wasted round-trip with no progress signal to bump, not a real state advance.)",
   "4. When this iteration's work is done (or you are blocked), END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
   '',
   'To stop: `loop:end`. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',

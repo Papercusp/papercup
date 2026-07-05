@@ -95,6 +95,11 @@ export interface EngineerIssue {
   /** Durable delegator (collapse-delegate D-002): who created+assigned this item. */
   assignedBy: string | null;
   assignedAt: string | null;
+  /** WI-2990/WI-3006: the real item-scoped progress signal (agent-activity-liveness-truth
+   *  P-001), mirroring the feature-family's last_progress_at. Populated by markIssueProgress()
+   *  on a checkpoint; null until the first one. Exposed on the engineer_issues compat view by
+   *  migration 509 (it always existed on the unified work_items base table). */
+  lastProgressAt: string | null;
   /** Kind-specific data (collapse-delegate D-001): a task's {agentSessionId,origin,backend}. */
   payload: unknown | null;
   foundDuring: string | null;
@@ -213,6 +218,7 @@ interface IssueRowDb {
   assignee: string | null;
   assigned_by: string | null;
   assigned_at: unknown;
+  last_progress_at: unknown;
   payload: unknown;
   found_during: string | null;
   linked_feature_id: string | null;
@@ -246,6 +252,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     assignee: r.assignee,
     assignedBy: r.assigned_by,
     assignedAt: tsIsoOrNull(r.assigned_at),
+    lastProgressAt: tsIsoOrNull(r.last_progress_at),
     payload: r.payload ?? null,
     foundDuring: r.found_during,
     linkedFeatureId: r.linked_feature_id,
@@ -267,7 +274,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 }
 
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
-  assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by,
+  assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, created_at, updated_at`;
 

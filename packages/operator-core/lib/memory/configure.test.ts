@@ -15,6 +15,7 @@ vi.mock('@papercusp/memory', async (importOriginal) => {
 });
 
 import {
+  buildOpenAiEmbedder,
   resolveEmbedderWith,
   readEmbedderPreference,
   markOpenAiEmbedFailure,
@@ -22,6 +23,10 @@ import {
   __resetOpenAiEmbedCooldownForTest,
   type ResolveEmbedderDeps,
 } from './configure';
+import {
+  __resetEmbedExhaustionAlertForTest,
+  __setEmbedExhaustionNotifierForTest,
+} from './embed-exhaustion-alert';
 
 /**
  * GAP 4 — the `resolveEmbedder` cascade (configure.ts) was UNTESTED.
@@ -71,8 +76,10 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   invalidateMemoryClient.mockClear();
   __resetOpenAiEmbedCooldownForTest();
+  __resetEmbedExhaustionAlertForTest();
 });
 
 describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 cooldown tracker', () => {
@@ -107,6 +114,32 @@ describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 coold
     markOpenAiEmbedFailure(1_000_000);
     markOpenAiEmbedFailure(1_000_010);
     expect(invalidateMemoryClient).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('buildOpenAiEmbedder — owner alert on quota exhaustion', () => {
+  it('alerts once on OpenAI insufficient_quota and clears the condition after a successful embed', async () => {
+    const notify = vi.fn();
+    const resolve = vi.fn();
+    __setEmbedExhaustionNotifierForTest(notify, resolve);
+
+    const fetchM = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{"error":{"type":"insufficient_quota"}}', { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: [1, 2, 3] }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchM);
+
+    const embed = buildOpenAiEmbedder('sk-test', { maxAttempts: 1, maxTotalWaitMs: 1000, sleep: async () => {} });
+    await expect(embed('quota exhausted')).rejects.toThrow(/openai_embed_quota_exhausted/);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toMatchObject({
+      kind: 'openai_billing',
+      conditionKey: 'embed-exhaustion',
+    });
+
+    await expect(embed('recovered')).resolves.toEqual([1, 2, 3]);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ conditionKey: 'embed-exhaustion' });
   });
 });
 

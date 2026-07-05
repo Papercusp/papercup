@@ -192,6 +192,24 @@ function inheritUserCodexHome(codexHome: string): void {
   }
 }
 
+/**
+ * tui-status-parity-single-source-2026-07-05 follow-up (live-window verify):
+ * codex's TUI writes its OWN OSC-0 terminal title every turn (default items
+ * `["activity","project"]`), which CLOBBERS the display.title our
+ * posttooluse-objective-title.sh hook writes — verified live 2026-07-05: a
+ * hook/manual title was reset to the project name within one turn. An EMPTY
+ * `tui.terminal_title` item list stops codex writing titles entirely
+ * (verified: a pre-set sentinel title survived boot + a full turn), so the
+ * hook owns the title — same single-source display.title as claude/omp.
+ */
+const CODEX_HOOK_OWNS_TITLE_TOML = [
+  '# The papercusp objective-title hook owns the terminal title (coord:glance',
+  '# display.title); an empty item list stops codex clobbering it each turn.',
+  '[tui]',
+  'terminal_title = []',
+  '',
+] as const;
+
 function inheritedCodexTrustedWorkspaceToml(): string[] {
   const realHome = join(homedir(), '.codex');
   const source = join(realHome, 'config.toml');
@@ -418,6 +436,7 @@ export function writeRoleCodexHome(opts: {
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustedWorkspaceToml(),
     ...gatewayConfig.tables,
+    ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
@@ -651,6 +670,7 @@ export function writeSuCodexHome(opts: {
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustedWorkspaceToml(),
     ...gatewayConfig.tables,
+    ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
