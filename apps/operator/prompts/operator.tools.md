@@ -127,42 +127,42 @@ For structured queries (tasks/goals/issues/audit), use the dedicated
 SQL-keyed tools — they're faster and more precise when the schema
 matches.
 
-## Cross-Hive admission (sovereignty boundary)
+## Cross-Pot admission (sovereignty boundary)
 
-A separate Hive is a sovereign domain — its agents cannot reach yours, read
-your coordination, or jump your priorities. The only way a peer Hive reaches
+A separate Pot is a sovereign domain — its agents cannot reach yours, read
+your coordination, or jump your priorities. The only way a peer Pot reaches
 in is a *mediated* envelope (an `ask` → a conversation, a `work-request` → a
 `change` work_item) that YOUR boundary admits per owner-set capability grants.
-Admission is **default-deny allow-list**: a peer Hive sends nothing until you
+Admission is **default-deny allow-list**: a peer Pot sends nothing until you
 grant it.
 
-When the owner wants to let a peer Hive in (or cut one off):
+When the owner wants to let a peer Pot in (or cut one off):
 
-1. `discovery:hives` — browse the P2P directory to find the peer Hive's pubkey.
-2. `pot:cross_grant { hive, action: 'grant', peerHivePubkey, kinds }` — allow
+1. `discovery:hives` — browse the P2P directory to find the peer Pot's pubkey.
+2. `pot:cross_grant { pot, action: 'grant', peerHivePubkey, kinds }` — allow
    that pubkey to send the named kinds (`ask` / `work-request`). `action:
    'revoke'` cuts it off; `action: 'list'` reviews current grants. Grants live
-   in `hive_settings`, so they federate to every Swarm of your Hive (uniform
+   in `hive_settings`, so they federate to every Swarm of your Pot (uniform
    policy).
 
-This is ONLY the Hive↔Hive boundary. Within-Hive coordination stays `coord:*` /
+This is ONLY the Pot↔Pot boundary. Within-Pot coordination stays `coord:*` /
 topics; placing work on a Swarm stays the `fleet:*` / Swarm-placement tools.
 
-## Asking another Hive (initiating)
+## Asking another Pot (initiating)
 
 The admission section above is the INBOUND direction — letting a peer reach you.
-This is the OUTBOUND direction: when YOUR Hive needs something a peer Hive owns.
+This is the OUTBOUND direction: when YOUR Pot needs something a peer Pot owns.
 
-**When to ask.** A separate Hive is the authority over its own domain — its repo,
+**When to ask.** A separate Pot is the authority over its own domain — its repo,
 its decisions, its running work. When you need an answer or an action that lives
-inside another Hive's domain, don't reconstruct it locally — ask the Hive that
+inside another Pot's domain, don't reconstruct it locally — ask the Pot that
 owns it. Two front doors:
 
-- `pot:ask` — a **question** the peer Hive is the authority on. It becomes a
+- `pot:ask` — a **question** the peer Pot is the authority on. It becomes a
   conversation in their substrate; their answer comes back to you.
 - `pot:request_work` — hand the peer a **piece of work** in its domain. It
-  becomes a `change` work_item in *their* backlog that *their* Queen triages and
-  prioritizes. Steer-don't-dispatch, fractally: you request; the peer Queen stays
+  becomes a `change` work_item in *their* backlog that *their* Mug triages and
+  prioritizes. Steer-don't-dispatch, fractally: you request; the peer Mug stays
   the authority over whether and when it runs. You cannot jump their priorities.
 
 **Dedupe first.** Before initiating, `discovery:hives` to confirm the peer + its
@@ -171,14 +171,14 @@ for the same thing.
 
 **The chain** (this is an async, durable round-trip — never block a turn polling):
 
-1. `discovery:hives` — find the peer Hive and its pubkey on the P2P directory.
-2. `pot:ask` / `pot:request_work { hive, peerHivePubkey, subject, body }` —
+1. `discovery:hives` — find the peer Pot and its pubkey on the P2P directory.
+2. `pot:ask` / `pot:request_work { pot, peerHivePubkey, subject, body }` —
    signs, sends store-and-forward (durable: a queued send survives the peer being
    offline), and records the ask in your ledger. It returns a `correlationId` and
    an `answeredEvent` key (`cross-hive:answered:<correlationId>`).
 3. `events:await { event: <answeredEvent> }` then **END YOUR TURN**. The peer's
    answer/decline arrives through the boundary, transitions the ledger row, and
-   fires that event — re-invoking a sleeping Queen with the reply. (`pot:asks`
+   fires that event — re-invoking a sleeping Mug with the reply. (`pot:asks`
    is the read-back if you need to review state; the wake is the no-poll path.)
 
 **Owner-escalation before first contact.** Outbound is default-deny to a peer you

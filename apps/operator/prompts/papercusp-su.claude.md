@@ -28,7 +28,7 @@ the stable, correct choice.
   operator. `loop:end` to stop. (Full semantics: the playbook's *Looping*
   section + `/internal/docs/agent-insights/engine-managed-loops`.) This is
   the su/interactive replacement for `/loop` only — NOT the autonomous
-  queen/bee/scout loop.
+  mug/cup/blender loop.
 
 Papercusp coordination is the same on every client: use `coord:*` and
 `locks:*` (not a client-local tool) as the durable cross-session

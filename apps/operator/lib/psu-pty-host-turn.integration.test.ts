@@ -519,6 +519,154 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
   );
 });
 
+describe(
+  'psu-pty-host clean-boundary-only kill (WI-1818, D-006): reset/recycle refuse mid-turn',
+  () => {
+    it(
+      'a RECYCLE injected while the agent is MID-TURN does NOT kill the child until it settles — no boot++ while busy',
+      async () => {
+        // The data-loss guard this WI adds: previously the mid-turn busy-gate only
+        // ran `if (bridgeTty && msg.gated)`, so a host with no bridged terminal
+        // (bridgeTty:false — exactly this test's io, and every existing recycle
+        // integration test) let a `recycle` kill the CURRENT child unconditionally,
+        // even mid-turn, losing whatever in-flight work that turn held. The fix
+        // makes the agent-busy check unconditional for every gated verb. Prove it
+        // here: inject `recycle` WHILE the pre-recycle child is still emitting
+        // (mid-turn) — the process must NOT be replaced until output goes quiet.
+        const ownerId = uniqueOwner('RECYCLE-MIDTURN');
+        const sock = socketPathFor(ownerId);
+        const meta = metaPathFor(ownerId);
+        const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
+
+        const childCode =
+          "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+          "process.stdin.setEncoding('utf8');let b='';" +
+          "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+          "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+          "const iv=setInterval(()=>process.stdout.write('.'),50);" +
+          'setTimeout(()=>clearInterval(iv),900);' + // "mid-turn" (busy) for ~900ms
+          'setTimeout(()=>process.exit(0),8000);';
+
+        let exitCode: number | null = null;
+        const done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: '/tmp',
+          env: {
+            ...hermeticEnv(),
+            PAPERCUSP_SID: ownerId,
+            TERM: 'xterm-256color',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+            PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the child DOES go quiet
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          onExit: (c: number) => {
+            exitCode = c;
+          },
+        });
+
+        await waitForHost(ownerId);
+        expect(await waitForOutput(captured, '.')).toBe(true); // genuinely busy now
+
+        const bootsAtInject = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(bootsAtInject).toHaveLength(1);
+
+        // Fire the recycle WHILE mid-turn (still emitting '.').
+        const ok = await injectIntoHost(sock, { mode: 'recycle', data: 'CARRIED' });
+        expect(ok).toBe(true);
+
+        // Still within the busy window: the kill must be HELD — no second BOOT yet.
+        await sleep(400);
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+
+        // After the ORIGINAL child goes quiet (≥900ms) + the output-quiet window, the
+        // gate releases and the (now-settled) recycle proceeds: kill + respawn. The
+        // FRESH child runs the SAME script, so it busy-emits '.' for another ~900ms
+        // before the carry-inject retry loop's own waitAtPrompt lets the carry land —
+        // budget generously for both busy windows + the respawn/boot overhead.
+        await sleep(3200);
+        const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        expect(bootsAfter).toHaveLength(2); // the recycle DID eventually fire, once settled
+        expect(bootsAfter[1]).not.toBe(bootsAfter[0]);
+        expect(captured()).toContain('ECHO:CARRIED'); // carry landed on the fresh context
+
+        await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      },
+      25_000,
+    );
+
+    it(
+      'a RESET injected while the agent is MID-TURN does NOT clear the context until it settles',
+      async () => {
+        // Same guard, the `reset` (RESET-CONTEXT) verb: the write plan (/clear +
+        // carry) must not land into a still-generating TUI — it would corrupt the
+        // busy turn AND drop whatever that turn hadn't yet committed.
+        const ownerId = uniqueOwner('RESET-MIDTURN');
+        const sock = socketPathFor(ownerId);
+        const meta = metaPathFor(ownerId);
+        const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
+
+        let exitCode: number | null = null;
+        const done = hostThroughPty({
+          command: execPath,
+          // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
+          args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+          cwd: '/tmp',
+          env: {
+            ...hermeticEnv(),
+            PAPERCUSP_AGENT: 'claude',
+            PAPERCUSP_SID: ownerId,
+            TERM: 'xterm-256color',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+            PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the agent DOES go quiet
+            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+            PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '200',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          onExit: (c: number) => {
+            exitCode = c;
+          },
+        });
+
+        await waitForHost(ownerId);
+        expect(await waitForOutput(captured, '.')).toBe(true); // genuinely busy now
+
+        const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
+        expect(ok).toBe(true);
+
+        // Still within the busy window: the /clear + carry must be HELD — nothing
+        // written into the busy child yet.
+        await sleep(400);
+        expect(captured()).not.toContain('ECHO:midturn-reset-carry');
+        expect(captured()).not.toContain('midturn-reset-carry');
+
+        // After the agent goes quiet (≥900ms) + the output-quiet window, the gate
+        // releases: /clear submits, settles, then the carry lands.
+        await sleep(1400);
+        expect(captured()).toContain('ECHO:midturn-reset-carry');
+
+        await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      },
+      20_000,
+    );
+  },
+);
+
 describe('psu-pty-host cross-agent socket isolation (C1 / EI-153 class)', () => {
   it(
     'a turn addressed to A can never reach B: distinct sockets, inject touches only A',

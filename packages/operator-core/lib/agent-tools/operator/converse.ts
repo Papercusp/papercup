@@ -39,7 +39,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '../../agent-chat-stream';
 import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-config';
 import { selfUrl } from '../../self-url';
-import { checkBudget, recordSpend } from '../../operator-budget';
+import { checkBudget, recordSpend, shouldBypassOperatorBudget } from '../../operator-budget';
 import { parseOperatorTurn } from '../../operator-converse-tags';
 import { readSystemPrincipal } from '../../system-principal';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -224,8 +224,10 @@ export default defineTool({
     // Budget gate. operator-converse fires on every user turn AND
     // self-fired silence-ladder triggers AND through ask_operator
     // from voice — without a cap this burns through the daily budget.
-    const budget = await checkBudget();
-    if (budget.state && budget.exceeded) {
+    const budget = shouldBypassOperatorBudget(input.uiClientId)
+      ? null
+      : await checkBudget();
+    if (budget?.state && budget.exceeded) {
       throw new Error(
         `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
       );

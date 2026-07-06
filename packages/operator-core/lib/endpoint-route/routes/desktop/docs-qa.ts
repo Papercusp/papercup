@@ -10,16 +10,20 @@
  * bare `claude -p` has none of the papercusp docs MCP tools, so it could not
  * actually search our real docs.
  *
- * THE FIX — retrieval-augmented, server-side:
- *   1. RETRIEVE the most relevant real-doc snippets IN-PROCESS via the same
- *      docs-engine `searchDocs` the palette/`docs:search` use (engineeringAdapter
- *      → apps/operator-docs content, baseUrl /internal/docs).
- *   2. GROUND a single prompt on those snippets (the agent needs no doc tools —
- *      the docs are already IN the prompt, so real-doc grounding is guaranteed).
- *   3. ANSWER via `runAgentChat` on the OPERATOR's CONFIGURED backend (the one
- *      set during onboarding's LLM-auth step) — no superuser token, no npx, no
- *      CLI-on-PATH. Works in a clean build whenever ANY backend is configured;
- *      emits `needs_backend` (→ route to Setup) when none is.
+ * THE DESIGN — agentic-primary, RAG-fallback (owner-directed 2026-07-06):
+ *   PRIMARY (agentic): spawn the operator's configured backend agent with our
+ *      REAL docs:search / docs:get / docs:outline MCP tools (buildDocsMcpConfig —
+ *      an ISOLATED, builtin-free spawn scoped to docs reads) + the RAW user
+ *      question. The agent finds and reads the right /internal/docs pages ITSELF,
+ *      then answers. No server-side doc-picking — which used to force a
+ *      foundational doc (branding.mdx) into every answer and mislabel concepts by
+ *      their skin name ("a Pot is a visual identity" instead of "a project").
+ *      Citations come from the pages the agent actually reads (docs:get).
+ *   FALLBACK (RAG): when no agentmcp / superuser-token is available (an
+ *      unprovisioned build), retrieve in-process (retrieveDocsContext) and ground
+ *      a tool-less prompt (composeDocsQaPrompt) so it never hard-fails.
+ *   Either path streams the answer over SSE; `needs_backend` (→ Setup) when no
+ *   backend is configured at all.
  *
  *   POST /desktop/docs-qa
  *     body { question: string, sectionTitle?: string, docSlugs?: string[], currentPath?: string }
@@ -37,7 +41,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { engineeringAdapter } from '../../../agent-tools/docs/_engineering-adapter';
-import { runAgentChat } from '../../../agent-chat-stream';
+import { runAgentChat, type RunAgentChatOptions } from '../../../agent-chat-stream';
 import { surfaceBackend, surfaceModel } from '../../../agent-config';
 import { claudeSignedIn, codexSignedIn, ompSignedIn } from '../../../agent-auth-detect';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -300,6 +304,71 @@ export function composeDocsQaPrompt(
   );
 }
 
+/**
+ * System prompt for the AGENTIC path: the agent has our real docs:search /
+ * docs:get tools and finds + reads the right pages ITSELF, instead of being
+ * force-fed a server-picked doc set (owner-directed 2026-07-06). Same answer
+ * shaping as composeDocsQaPrompt (newcomer calibration, concept-first,
+ * anti-confabulation, no retrieval leakage) — but retrieval is the agent's job.
+ */
+export function composeAgenticDocsSystemPrompt(ctx: { sectionTitle?: string; currentPath?: string }): string {
+  const section = ctx.sectionTitle
+    ? `The user is currently reading the "${ctx.sectionTitle}" section of the onboarding tutorial.\n`
+    : ctx.currentPath
+      ? `The user is currently on: ${ctx.currentPath}\n`
+      : '';
+  return (
+    'You are a knowledgeable Papercusp teammate helping a user during onboarding. ' +
+    'Answer their ONE question directly, helpfully, and in a natural voice — the way ' +
+    'a colleague who knows the product well would explain it out loud.\n\n' +
+    section +
+    '\n## Finding the answer\n\n' +
+    'You have Papercusp documentation-search tools. Before you answer:\n' +
+    '1. Call `docs:search` with the user’s question; if the first results look thin, ' +
+    'refine the query and search again.\n' +
+    '2. Read the most relevant page(s) with `docs:get` before answering.\n' +
+    '3. Base your answer on what those real pages actually say.\n\n' +
+    '## How to answer\n\n' +
+    'You are talking to a NEWCOMER still learning Papercusp. Give the plain, current, ' +
+    'user-facing answer — not an internals tour.\n' +
+    '- For a "what is X" question, LEAD with ONE plain sentence defining X in everyday ' +
+    'terms (what it IS and does for the user), then at most 2–3 short sentences of the ' +
+    'most useful context. Keep it brief; stop when the question is answered.\n' +
+    '- CRITICAL: many core terms name a PRODUCT CONCEPT and are ALSO the label of a ' +
+    'visual theme / branding / lexicon skin. "Pot" is primarily a PROJECT (the top-level ' +
+    'thing you create and run agents in) and only incidentally the name of the default ' +
+    'lexicon; "Swarm" is a concept and also a skin name. Define the PRODUCT CONCEPT — and ' +
+    'do NOT lead by calling X a "visual identity", "branding", "theme", "skin", "look and ' +
+    'feel", "vocabulary", or "lexicon" unless the user EXPLICITLY asked about appearance ' +
+    'or branding. A page that is about branding/skins gives you the term’s display name, ' +
+    'never the definition of what the concept IS.\n' +
+    '- Ground every factual claim in the docs you read. Do NOT invent tool, command, or ' +
+    'verb names (anything shaped like `x:y`), file paths, flags, or feature/deprecation ' +
+    'histories that the docs do not state — if unsure, LEAVE IT OUT.\n' +
+    '- Do NOT volunteer internal implementation detail, source-file paths, code ' +
+    'identifiers, or deprecated/retired features unless the user explicitly asks.\n' +
+    '- Answer immediately, in a natural voice. NEVER mention "the docs", "the search", ' +
+    'or that you looked anything up — the user cannot see any of that; just answer as if ' +
+    'you simply know it. No "let me check", no preamble.\n' +
+    '- When a specific page backs your answer, cite it inline by its `/internal/docs/<slug>` path.\n' +
+    '- If the docs are thin, still give the best genuinely useful answer you can from them ' +
+    'plus your general knowledge of Papercusp — do NOT refuse, stall, or dead-end.'
+  );
+}
+
+/** Doc slugs the agent chose to READ (docs:get) — surfaced to the UI as citations. */
+export function slugsFromDocsToolCall(name: string, input: unknown): string[] {
+  if (!input || typeof input !== 'object') return [];
+  const i = input as Record<string, unknown>;
+  const out: string[] = [];
+  const push = (v: unknown) => { if (typeof v === 'string' && v.trim()) out.push(v.trim()); };
+  if (name === 'docs:get' || name.endsWith('docs:get')) {
+    push(i.slug);
+    if (Array.isArray(i.slugs)) for (const s of i.slugs) push(s);
+  }
+  return out;
+}
+
 const docsQa = defineTool({
   method: 'POST',
   path: '/desktop/docs-qa',
@@ -331,60 +400,104 @@ const docsQa = defineTool({
           return;
         }
 
-        // 1. Retrieve real-doc context in-process.
-        let blocks: DocsContextBlock[] = [];
-        try {
-          blocks = await retrieveDocsContext(question, { docSlugs, signal: req.signal });
-        } catch { blocks = []; }
-        // Surface the sources up-front so the palette/tutorial can show citations
-        // even before the answer streams.
-        for (const b of blocks) sink.event('citation', { slug: b.slug, title: b.title, url: b.url });
-
-        // 2. Ground the prompt. 3. Answer on the operator's configured backend.
-        const promptText = composeDocsQaPrompt(question, { sectionTitle, currentPath, blocks });
         const backend = await surfaceBackend('oracle');
         const model = await surfaceModel('oracle');
 
-        // NEVER hang the caller. The tutorial/palette showed "Searching the
-        // docs…" FOREVER when the backend stalled between the citations and the
-        // first token (rate-limited / wedged / gateway saturated) — the SSE
-        // heartbeats keep the socket open, so with no client-side deadline the
-        // spinner spins indefinitely (owner-reported 2026-07-05). Abort the turn
-        // on a HARD deadline AND a shorter FIRST-TOKEN deadline so a stalled
-        // backend degrades to an `error` the caller falls back on, instead of an
-        // infinite spinner. Chains off req.signal so a client disconnect still
-        // tears the spawn down.
+        // PRIMARY: agentic retrieval. Give the agent our real docs:search /
+        // docs:get tools + the RAW question and let it find + read the right
+        // pages itself (owner-directed 2026-07-06). This removes the
+        // deterministic-RAG failure where a force-injected foundational doc
+        // (branding.mdx) framed a concept by its skin name ("a Pot is a visual
+        // identity"). FALLBACK: the in-process RAG path when no agentmcp /
+        // superuser-token is available (unprovisioned build), so it never
+        // hard-fails.
+        const mcpConfig = await buildDocsMcpConfig({ uiClientId: null });
+        const agentic = mcpConfig !== null;
+        // Observability: which retrieval path served this question (agentic vs RAG fallback).
+        console.log(`[docs-qa] path=${agentic ? 'agentic' : 'rag'} q=${JSON.stringify(question).slice(0, 100)}`);
+
+        // NEVER hang the caller: a HARD cap + a FIRST-TOKEN cap degrade a stalled
+        // backend to an `error` instead of an infinite spinner (owner-reported
+        // 2026-07-05). Agentic runs make docs:search tool calls BEFORE the first
+        // answer token, so the first-token deadline is RE-ARMED on each tool_call
+        // (the agent is making progress) and the caps are larger. Chains off
+        // req.signal so a client disconnect still tears the spawn down.
         const ac = new AbortController();
         const onReqAbort = () => ac.abort();
         req.signal?.addEventListener('abort', onReqAbort);
-        const HARD_MS = 90_000;
-        const FIRST_TOKEN_MS = 35_000;
+        const HARD_MS = agentic ? 150_000 : 90_000;
+        const FIRST_TOKEN_MS = agentic ? 60_000 : 35_000;
         let sawDelta = false;
         const hardTimer = setTimeout(() => ac.abort(), HARD_MS);
-        let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-          if (!sawDelta) ac.abort();
-        }, FIRST_TOKEN_MS);
+        let firstTokenTimer: ReturnType<typeof setTimeout> | null = null;
+        const armFirstToken = () => {
+          if (firstTokenTimer) clearTimeout(firstTokenTimer);
+          firstTokenTimer = setTimeout(() => {
+            if (!sawDelta) ac.abort();
+          }, FIRST_TOKEN_MS);
+        };
         const clearFirstToken = () => {
           if (firstTokenTimer) {
             clearTimeout(firstTokenTimer);
             firstTokenTimer = null;
           }
         };
-        try {
-          for await (const ev of runAgentChat({
-            promptText,
+        armFirstToken();
+
+        // Assemble the run options for whichever path is available.
+        let runOpts: RunAgentChatOptions;
+        if (mcpConfig) {
+          runOpts = {
+            systemPromptText: composeAgenticDocsSystemPrompt({ sectionTitle, currentPath }),
+            promptText: question,
+            ...(model ? { model } : {}),
+            ...(backend ? { backend } : {}),
+            mcpConfig,
+            allowedTools: DOCS_QA_MCP_TOOLS.map((t) => `mcp__agentmcp__${t}`),
+            toolEventFilter: (raw: string) =>
+              raw.startsWith('mcp__agentmcp__') ? raw.slice('mcp__agentmcp__'.length) : null,
+            isolateConfig: true,
+            disallowBuiltins: true,
+            permissionMode: 'bypassPermissions',
+            signal: ac.signal,
+          };
+        } else {
+          // Fallback: retrieve in-process + ground a tool-less prompt.
+          let blocks: DocsContextBlock[] = [];
+          try {
+            blocks = await retrieveDocsContext(question, { docSlugs, signal: req.signal });
+          } catch { blocks = []; }
+          for (const b of blocks) sink.event('citation', { slug: b.slug, title: b.title, url: b.url });
+          runOpts = {
+            promptText: composeDocsQaPrompt(question, { sectionTitle, currentPath, blocks }),
             ...(model ? { model } : {}),
             ...(backend ? { backend } : {}),
             allowedTools: [],
             permissionMode: 'bypassPermissions',
             signal: ac.signal,
-          })) {
+          };
+        }
+
+        const citedSlugs = new Set<string>();
+        try {
+          for await (const ev of runAgentChat(runOpts)) {
             if (ev.type === 'delta') {
               if (!sawDelta) {
                 sawDelta = true;
                 clearFirstToken();
               }
               sink.event('delta', { text: ev.text });
+            } else if (ev.type === 'tool_call') {
+              // The agent is searching/reading — progress. Re-arm the first-token
+              // deadline so a multi-search turn is never killed early, and surface
+              // the pages it actually reads (docs:get) as citations.
+              if (!sawDelta) armFirstToken();
+              for (const slug of slugsFromDocsToolCall(ev.name, ev.input)) {
+                if (!citedSlugs.has(slug)) {
+                  citedSlugs.add(slug);
+                  sink.event('citation', { slug, title: slug, url: `/internal/docs/${slug}` });
+                }
+              }
             } else if (ev.type === 'error') {
               sink.event('error', { message: ev.message });
             }

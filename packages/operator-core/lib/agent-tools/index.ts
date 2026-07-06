@@ -956,6 +956,7 @@ import './harness/create';
 // template's GUIDE, and materialize one into a fresh harness + start a builder.
 import './templates/list';
 import './templates/get-guide';
+import './templates/new-app';
 // P-009 (B3) — kind #1 harness creation: deterministically generate an
 // `extends: coding` blueprint from an existing repo, then compose harness:create.
 import './harness/generate_from_repo';

@@ -102,6 +102,16 @@ export interface BudgetCheck {
 }
 
 /**
+ * Internal LLM scenario runs must not be made inconclusive by the owner-facing
+ * operator daily budget. The test harness stamps uiClientId as
+ * `llm-testing/<run-uuid>`; keep the bypass that narrow so UI, voice, and
+ * normal operator turns remain capped.
+ */
+export function shouldBypassOperatorBudget(uiClientId?: string | null): boolean {
+  return typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/');
+}
+
+/**
  * Read the current spend posture without mutating. Callers gate scan
  * spawn on `!check.exceeded`. Auto-pause is applied by the panel.
  */

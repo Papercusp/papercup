@@ -126,14 +126,14 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
   what I can do) · ④ the daily driver (launching sessions with `psu`, picking
   a harness/plan, reading coordination messages, ending sessions; ONE line:
   never `git commit` — a background sync owns the tree). End with a one-liner
-  teaser: "there's also a whole colony — a queen placing work on worker bees —
+  teaser: "there's also a whole colony — a mug placing work on worker cups —
   we'll meet it in chapter 3."
 - **Ch 2 — Directing work**: ⑤ plans · ⑥ work items + the queue (claiming,
   assignment; DETAILS tier: the dag filter + get_next scheduler) · ⑦ loops ·
   ⑧ routines (and how they relate to plans) · ⑨ modes: AUTO, COLD AUTO,
   IDEATE, DRAIN, GRADE (official + visible to other agents; AUTO/COLD-AUTO
   exclude each other, the rest stack).
-- **Ch 3 — The colony**: ⑩ the queen system vs SU agents · ⑪ fleets
+- **Ch 3 — The colony**: ⑩ the mug system vs SU agents · ⑪ fleets
   (members/leaders, coordination) + presence · ⑫ coordination primitives +
   file locks (what a blocked edit looks like).
 - **Ch 4 — Agent cognition & learning**: ⑬ auto-compaction · ⑭ carry tools:

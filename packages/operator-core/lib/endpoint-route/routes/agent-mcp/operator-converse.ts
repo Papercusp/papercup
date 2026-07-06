@@ -14,7 +14,7 @@ import {
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { checkBudget } from '../../../operator-budget';
+import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budget';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConverseRequestBody {
@@ -57,8 +57,10 @@ export default defineTool({
       return new Response('invalid JSON body', { status: 400 });
     }
 
-    const budget = await checkBudget();
-    if (budget.state && budget.exceeded) {
+    const budget = shouldBypassOperatorBudget(body.uiClientId)
+      ? null
+      : await checkBudget();
+    if (budget?.state && budget.exceeded) {
       return new Response(
         `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
         { status: 402 },

@@ -35,6 +35,8 @@ vi.mock('node:fs', async (orig) => {
 vi.mock('../../../operator-budget', () => ({
   recordSpend: vi.fn(),
   checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
+  shouldBypassOperatorBudget: (uiClientId?: string | null) =>
+    typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/'),
 }));
 // The tool imports buildOperatorPrompt from './converse-prompt' (the agent-tools
 // copy) and destructures { systemPromptText, userPromptText } — mock that path
@@ -261,6 +263,21 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       handler({ messages: [], sessionUser: null }, makeCtx()),
     ).rejects.toThrow(/budget reached/i);
     expect(runAgentChat).not.toHaveBeenCalled();
+  });
+
+  it('llm-testing client id bypasses the owner-facing daily budget cap', async () => {
+    vi.mocked(checkBudget).mockResolvedValue({
+      state: { capUsd: 5 },
+      exceeded: true,
+      todaySpendUsd: 5.5,
+      capUsd: 5,
+    } as never);
+    await handler(
+      { messages: [], sessionUser: null, uiClientId: 'llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+      makeCtx(),
+    );
+    expect(checkBudget).not.toHaveBeenCalled();
+    expect(runAgentChat).toHaveBeenCalledTimes(1);
   });
 
   it('empty output on every attempt → retries once, then throws', async () => {

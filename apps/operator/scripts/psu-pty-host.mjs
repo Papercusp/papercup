@@ -1011,20 +1011,31 @@ export function hostThroughPty(o) {
       if (!payload.length) return;
       const msg = decodeControl(payload);
       try {
-        if (bridgeTty && msg.gated) {
+        if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
-          // mid-typing. (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30):
-          // don't write a wake `turn` into a TUI that is still generating — that
-          // wedges the turn (needs ESC), the multi-recipient broadcast hang.
-          await idleGate.waitIdle();
+          // mid-typing. Only meaningful when there IS a bridged terminal a human
+          // could be typing into.
+          if (bridgeTty) await idleGate.waitIdle();
+          // (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30 /
+          // clean-boundary-only-kill WI-1818, D-006): don't write a wake `turn`
+          // into a TUI that is still generating (wedges it, needs ESC), and —
+          // load-bearing for `reset`/`recycle` — never KILL the current child
+          // while it is mid-turn (an uncommitted in-flight turn would be lost;
+          // the carry-note is only as fresh as the LAST settled turn). This check
+          // is a pure read of the activity tracker, unrelated to TTY bridging, so
+          // it applies UNCONDITIONALLY for every gated verb (bridgeTty or not) —
+          // gating it on bridgeTty left reset/recycle unguarded whenever the host
+          // ran without a bridged terminal.
           const atPrompt = await agentBusyGate.waitAtPrompt();
           if (atPrompt.deferred) {
-            // Agent stayed mid-turn past the cap. DROP the live inject rather than
-            // wedge the turn — the wake is already durably in the recipient's
-            // inbox and is seen on its next natural turn (queue-to-next-turn).
+            // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
+            // than wedge the turn or lose in-flight work — the wake is already
+            // durably in the recipient's inbox and is seen on its next natural
+            // turn (queue-to-next-turn); a reset/recycle refused here simply never
+            // fires this cycle (no partial kill, no data loss).
             try {
               process.stderr.write(
-                `psu-pty-host: wake turn DEFERRED for ${ownerId} ` +
+                `psu-pty-host: ${msg.mode} DEFERRED/REFUSED for ${ownerId} ` +
                   `(agent mid-turn > ${turnInjectBusyCapMs}ms cap); ` +
                   `left in inbox for the next natural turn\n`,
               );

@@ -54,8 +54,8 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
 
 A `coding` harness's feature *state* moves through its pipeline (scoper →
 architect → worker → validator → reviewer → …); you read it, you don't
-hand-mutate it (see *Where not to go*). Other blueprints have different shapes — notably the `hive` blueprint has **no
-spine**: its Queen *places* ranked work onto generic `bee`s (a bee is NOT a
+hand-mutate it (see *Where not to go*). Other blueprints have different shapes — notably the `pot` blueprint has **no
+spine**: its Mug *places* ranked work onto generic `cup`s (a cup is NOT a
 scoper/architect/worker role — see
 [hive-vs-coding-blueprint](/internal/docs/agent-insights/hive-vs-coding-blueprint)).
 
@@ -301,7 +301,7 @@ can collide with peers on the shared tree. Native subagents remain fine for
 small bounded READS (a parallel grep, a one-shot review pass) that never mutate
 shared state; for anything that edits or runs long, it's a fleet question.
 
-**New-project intake.** Whenever the user is EMBARKING on a new project/pot/hive —
+**New-project intake.** Whenever the user is EMBARKING on a new project/pot/pot —
 not only when they literally say "create a pot" — walk a short intake (≤5
 questions, "skip" always honored; **never ask about budget/accounts**):
 1. *What kind of pot?* — list installed launchable blueprints LIVE from
@@ -312,7 +312,7 @@ questions, "skip" always honored; **never ask about budget/accounts**):
 3. *Repo?* — existing repo / fresh / repo-less (research-style pots need none).
 4. *Autonomy level?* — manual / supervised / auto (seeds the wake schedule +
    queen-autonomy defaults).
-5. *Name + one-line goal* — seeds the hive steering.
+5. *Name + one-line goal* — seeds the pot steering.
 
 ## Stretch discipline — flush to proceed (gate on state, not turn-count)
 
@@ -662,7 +662,7 @@ so you see what's happening in your areas and others see what you discover:
   PLAUSIBLE fix: small + in scope → just FIX it inline + record it (work-item rule);
   out of scope → `improvements:capture { kind, title, body:<fix> }` (kind:`bug` when
   genuinely broken = auto-implement-eligible, else `change`/`feature`); NO fix yet →
-  `improvements:capture { lane:"observation", title }` (a Scout pre-idea — don't hunt
+  `improvements:capture { lane:"observation", title }` (a Blender pre-idea — don't hunt
   for the fix now). One signal → one record; then move on. Don't
   reflect every turn; just trip on real friction. **Bar: capture only a GENUINE,
   REPEATABLE improvement** (one the next agent would hit too), not a one-off or a
@@ -677,11 +677,11 @@ so you see what's happening in your areas and others see what you discover:
   rubric's id) + `observation.ratings` — a Record keyed by the rubric's criterion
   keys, one `{ rating, evidence }` per criterion, rating ∈
   healthy/degraded/broken/unknown, **evidence MANDATORY** on every rating (capture
-  rejects an empty-evidence rating). A structured observation gives Scout + the
-  Queen a measurement to compare over time, not an anecdote. No active rubric fits?
+  rejects an empty-evidence rating). A structured observation gives Blender + the
+  Mug a measurement to compare over time, not an anecdote. No active rubric fits?
   A FREE-TEXT observation stays first-class — rubrics augment, never replace a novel
   finding. (You grade an EXISTING rubric; proposing a new one is a separate
-  Queen-ratified step, not authored inline.)
+  Mug-ratified step, not authored inline.)
 - **Inline-first; escalate only when warranted:** strategy is emergent — do
   discovered work inline by default; file an issue when out of scope; `work_items:promote`
   an issue to a feature only when it warrants tracked pipeline work (a tool you
@@ -738,17 +738,17 @@ operator. Each wake's prompt has you **create + self-assign** this iteration's
 `set_state`; **`loop:end`** stops it (end it the moment the goal's done or you're
 blocked — don't burn empty wakes). *(Behind the `papercusp-loops` flag while the
 engine is verified.)* This is the su/interactive replacement for `/loop` only —
-NOT the autonomous queen/bee/scout loop (`pot:declare-wake` /
+NOT the autonomous mug/cup/blender loop (`pot:declare-wake` /
 `kettle:declare-wake`).
 
-The boundary runs **both ways**: the hive's queen-loop controls (`pauseNewWork` /
+The boundary runs **both ways**: the pot's queen-loop controls (`pauseNewWork` /
 `maxBees` / hive-steering, and a `fleet:drain` "release your slot" cue) govern that
 autonomous loop, **not** your owner-directed session — don't stop your task on a
-hive pause or a steering fact you see in orient. You are **not a bee the Queen
-reclaims** (`fleet:drain` refuses an su/sentinel/planner target), and an SU session
+pot pause or a steering fact you see in orient. You are **not a cup the Mug
+reclaims** (`fleet:drain` refuses an su/papercup/planner target), and an SU session
 is paused **only by its owner**. Any cue you do get is stamped with its authority +
 scope (`hive-queen→hive-wide` vs `fleet-leader→fleet-members`) — a leader draining
-ITS members ≠ the Queen pausing the hive. `pot:get-steering` pulls live fleet state
+ITS members ≠ the Mug pausing the pot. `pot:get-steering` pulls live fleet state
 on demand.
 
 <!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->

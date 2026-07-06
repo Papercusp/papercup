@@ -75,6 +75,17 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
   const minRuns = opts.minRuns ?? 4;
   const limit = Math.min(opts.limit ?? 20, 100);
 
+  // EI-8xxx: a "plain operator self-test run" (the common case for THIS
+  // workspace's own dogfood suite — see admin-test-runs-reporter.ts's "NULL
+  // for a plain operator self-test run" comment) writes workspace_id NULL,
+  // not this workspace's id. 99%+ of harness_shared.test_runs rows are
+  // (harness_slug, workspace_id) = (NULL, NULL). A strict workspace_id =
+  // opts.workspaceId filter therefore silently excludes almost every row for
+  // any workspace-scoped caller (an MCP call always carries ctx.workspaceId),
+  // making computeFlakiness see near-zero data despite the docstring's "Omit
+  // for workspace-wide" promise. A NULL workspace_id row can't leak another
+  // tenant's data (it belongs to no tenant), so it's always safe to include
+  // alongside this workspace's own explicitly-tagged rows.
   const rows = (await sql`
     SELECT file_path, status, finished_at
       FROM harness_shared.test_runs
@@ -83,7 +94,7 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
        AND status IN ('pass', 'fail', 'error')
        AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
        AND ${opts.harnessSlug ? sql`harness_slug = ${opts.harnessSlug}` : sql`TRUE`}
-       AND ${!opts.harnessSlug && opts.workspaceId ? sql`workspace_id = ${opts.workspaceId}` : sql`TRUE`}
+       AND ${!opts.harnessSlug && opts.workspaceId ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id IS NULL)` : sql`TRUE`}
      ORDER BY file_path ASC, finished_at ASC
   `) as unknown as Array<{ file_path: string; status: string; finished_at: string }>;
 
