@@ -406,6 +406,15 @@ export interface SpawnConsoleOpts {
   /** A bound fleet color scheme — overrides the per-plan hash for this window. */
   scheme?: ColorScheme | null;
   /**
+   * WI-3114: injectable desktop-env probes for the Linux path, threaded to
+   * resolveLinuxDesktopEnv. Tests MUST pass fakes — the default (real) probes
+   * read the live /tmp/.X11-unix, so a test that stubs DISPLAY without
+   * controlling the socket check flakes with the box's X state (the WI-2840
+   * stale-DISPLAY warn tripped vitest-fail-on-console when the /tmp wipe
+   * removed X99). Production callers omit it.
+   */
+  desktopEnvProbes?: DesktopEnvProbes;
+  /**
    * Displace (back up + write) the envelope's superuser `.mcp.json` into the
    * cwd before spawning. The superuser console wants this so the user's agent
    * auto-discovers the MCP door; capability:terminal (run-a-command) does NOT —
@@ -498,7 +507,7 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   // 6. WI-1886(a): the operator often runs headless (systemd user service) —
   //    resolve the interactive session's desktop env and inject it; with no
   //    display resolvable, fail LOUD before spawning a client that would ghost.
-  const desktop = resolveLinuxDesktopEnv();
+  const desktop = resolveLinuxDesktopEnv(process.env, opts.desktopEnvProbes);
   if (!desktop.resolved) {
     return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
   }

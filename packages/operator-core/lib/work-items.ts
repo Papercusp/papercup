@@ -2309,8 +2309,8 @@ export async function claimNextIssueWorkItem(
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE (workspace_id, feature_id) = (
-       SELECT workspace_id, feature_id
+     WHERE (workspace_id, harness_slug, feature_id) = (
+       SELECT workspace_id, harness_slug, feature_id
          FROM harness_shared.work_items wi
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
@@ -2409,7 +2409,7 @@ export async function claimNextIssueWorkItem(
   await sql`
     UPDATE harness_shared.work_items
        SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE workspace_id = ${issueWs} AND feature_id = ${rows[0].feature_id}`;
+     WHERE workspace_id = ${issueWs} AND harness_slug = ${rows[0].harness_slug} AND feature_id = ${rows[0].feature_id}`;
   throw new Error(
     `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' but could ` +
       `not re-read it (getIssueInWorkspace returned null); released the claim. This is an anomaly, ` +

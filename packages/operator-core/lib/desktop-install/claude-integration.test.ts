@@ -99,12 +99,41 @@ describe('installClaudeIntegration', () => {
     }
   });
 
-  it('NEVER creates ~/.claude.json when claude was never launched', async () => {
+  it('NEVER creates ~/.claude.json when claude was never launched (dev box, seedIfAbsent off)', async () => {
     await seedPhase1();
     const res = await installClaudeIntegration({ home });
     expect(res.changed).toBe(false);
     expect(res.reason).toBe('claude_not_initialized');
     await expect(stat(resolveClaudeConfigPath(home))).rejects.toBeTruthy(); // still absent
+  });
+
+  it('WI-3091 desktop: seedIfAbsent CREATES a minimal ~/.claude.json with papercusp-su when absent', async () => {
+    await seedPhase1();
+    const res = await installClaudeIntegration({ home, seedIfAbsent: true });
+    expect(res.changed).toBe(true);
+    expect(res.mcpServerInstalled).toBe(true);
+    expect(res.reason).toBeUndefined();
+    const cfg = await readClaudeJson();
+    // onboarding pre-completed so claude's own theme/trust flow can't BLOCK the psu launch
+    expect(cfg.hasCompletedOnboarding).toBe(true);
+    const srv = (cfg.mcpServers as Record<string, { type: string; url: string; headers: Record<string, string> }>)['papercusp-su'];
+    expect(srv?.type).toBe('http');
+    // env-interpolated url self-heals across the dynamic desktop operator port
+    expect(srv?.url).toContain('${PAPERCUSP_OPERATOR_URL:-');
+    expect(srv?.url).toContain('/api/mcp?superuser=1');
+    expect(srv?.headers?.Authorization).toBe('Bearer TOK-abc');
+  });
+
+  it('WI-3091 desktop: seedIfAbsent is idempotent when the file already exists (merges, does not overwrite user keys)', async () => {
+    await seedPhase1();
+    await writeClaudeJson({ hasCompletedOnboarding: true, theme: 'dark', mcpServers: { other: { type: 'http', url: 'http://x' } } });
+    const res = await installClaudeIntegration({ home, seedIfAbsent: true });
+    expect(res.changed).toBe(true); // added papercusp-su
+    const cfg = await readClaudeJson();
+    expect(cfg.theme).toBe('dark'); // preserved
+    const servers = cfg.mcpServers as Record<string, unknown>;
+    expect(servers.other).toBeTruthy(); // preserved
+    expect(servers['papercusp-su']).toBeTruthy(); // added
   });
 
   it('returns phase1_not_run when token/agent-id are missing', async () => {

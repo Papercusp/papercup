@@ -584,7 +584,12 @@ export function runBootstrap(): void {
           const { installClaudeIntegration } = await import(
             '@papercusp/operator-core/lib/desktop-install/claude-integration'
           );
-          const c = await installClaudeIntegration();
+          // seedIfAbsent (WI-3091): on a DESKTOP clean install, CREATE a minimal
+          // ~/.claude.json carrying papercusp-su when claude has never run, so the
+          // first psu→claude session already has its MCP tools (the boot reconcile
+          // otherwise no-ops because the file is still absent, then claude creates
+          // it empty inside the session → zero tools, never self-heals).
+          const c = await installClaudeIntegration({ seedIfAbsent: true });
           if (c.changed) console.log('[desktop-install] claude MCP ok (registered papercusp-su in ~/.claude.json)');
           else if (c.reason) console.log(`[desktop-install] claude MCP skipped (${c.reason})`);
         } catch (e) {

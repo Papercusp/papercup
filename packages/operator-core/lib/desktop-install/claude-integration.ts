@@ -68,6 +68,19 @@ export interface ClaudeIntegrationOptions {
   /** Which su profile a bare claude defaults to: 'power' → `profile=power`,
    *  anything else (engineer) → empty. Default engineer. */
   profile?: string;
+  /**
+   * DESKTOP clean-install seed (windows-parity, WI-3091). When true and
+   * `~/.claude.json` is ABSENT, CREATE a minimal valid file carrying just the
+   * `papercusp-su` server + `hasCompletedOnboarding` instead of the historic
+   * no-op bail. This closes the clean-install chicken-and-egg: the operator
+   * boot reconcile runs while `~/.claude.json` is still absent (no-op), then
+   * `claude` creates it (empty mcpServers) on its FIRST run inside the psu
+   * session — so the first psu→claude has ZERO tools and never self-heals.
+   * Only the DESKTOP host boot (PAPERCUSP_DESKTOP=1) passes this; a dev box
+   * keeps the never-create behavior (a bare `claude` there must not be
+   * pre-seeded). Off by default — byte-identical to before for every caller
+   * that omits it. */
+  seedIfAbsent?: boolean;
 }
 
 export interface ClaudeIntegrationResult {
@@ -202,16 +215,50 @@ export async function installClaudeIntegration(
     return { ...st, supported: true, reason: 'phase1_not_run', changed: false, actions: [] };
   }
 
-  // NEVER create ~/.claude.json — a missing file means claude was never run.
+  // WI-1457: route the baked fallback through the resilient MCP proxy when the
+  // operator environment opts in (PAPERCUSP_MCP_PROXY_BASE, WI-573) — this writer
+  // is the operator-side RECONCILER (ensureOmpSuInstalled fires it per console
+  // launch), so a direct-:3070 default here silently re-minted away the P-006
+  // cutover minutes after every manual re-point. Still byte-stable: the proxy
+  // base is a static loopback URL, so the merge stays idempotent across boots.
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(DEFAULT_OPERATOR_URL_FALLBACK);
+  const entry = buildClaudeMcpEntry(operatorUrl, token, agentId, profileDefault(opts.profile));
+
+  // ~/.claude.json ABSENT = claude never launched on this box. Historically we
+  // bailed (never create it — that would skip onboarding/trust + seed unrelated
+  // defaults, wrong for a dev box's bare `claude`). But the DESKTOP psu path
+  // HARD-DEPENDS on the user-level papercusp-su server living here, and there is
+  // a clean-install chicken-and-egg (WI-3091): the operator boot reconcile runs
+  // while the file is still absent (no-op), then `claude` CREATES it with an
+  // EMPTY mcpServers on its first run INSIDE the psu session — so the very first
+  // psu→claude session has ZERO papercusp tools and never self-heals. On desktop
+  // (seedIfAbsent) we therefore SEED a minimal valid file: `papercusp-su` +
+  // `hasCompletedOnboarding` (the user already did the Papercusp onboarding, not
+  // claude's own theme/trust flow — which would otherwise BLOCK the interactive
+  // launch). The env-interpolated url self-heals across the dynamic operator
+  // port thereafter. Dev boxes omit seedIfAbsent → unchanged never-create bail.
   if (!(await pathExists(claudeConfigPath))) {
+    if (!opts.seedIfAbsent) {
+      return {
+        claudeConfigPath,
+        claudeConfigExists: false,
+        mcpServerInstalled: false,
+        supported: true,
+        reason: 'claude_not_initialized',
+        changed: false,
+        actions: [],
+      };
+    }
+    const seed: ClaudeConfig = { hasCompletedOnboarding: true, mcpServers: { 'papercusp-su': entry } };
+    await fs.writeFile(claudeConfigPath, JSON.stringify(seed, null, 2), { mode: 0o600 });
+    await fs.chmod(claudeConfigPath, 0o600);
     return {
       claudeConfigPath,
-      claudeConfigExists: false,
-      mcpServerInstalled: false,
+      claudeConfigExists: true,
+      mcpServerInstalled: true,
       supported: true,
-      reason: 'claude_not_initialized',
-      changed: false,
-      actions: [],
+      changed: true,
+      actions: ['seeded ~/.claude.json with mcpServers.papercusp-su (desktop clean-install)'],
     };
   }
 
@@ -231,15 +278,6 @@ export async function installClaudeIntegration(
       actions: [],
     };
   }
-
-  // WI-1457: route the baked fallback through the resilient MCP proxy when the
-  // operator environment opts in (PAPERCUSP_MCP_PROXY_BASE, WI-573) — this writer
-  // is the operator-side RECONCILER (ensureOmpSuInstalled fires it per console
-  // launch), so a direct-:3070 default here silently re-minted away the P-006
-  // cutover minutes after every manual re-point. Still byte-stable: the proxy
-  // base is a static loopback URL, so the merge stays idempotent across boots.
-  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(DEFAULT_OPERATOR_URL_FALLBACK);
-  const entry = buildClaudeMcpEntry(operatorUrl, token, agentId, profileDefault(opts.profile));
 
   cfg.mcpServers = cfg.mcpServers ?? {};
   if (entryEquals(cfg.mcpServers['papercusp-su'], entry)) {

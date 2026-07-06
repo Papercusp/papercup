@@ -13,6 +13,7 @@ import {
   macConsoleInvocation,
   spawnConsole,
   type AppearanceOpts,
+  type DesktopEnvProbes,
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
@@ -40,6 +41,20 @@ function fakeChild(pid = 4242) {
 }
 
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
+
+// WI-3114: HERMETIC desktop-env probes. The stubbed DISPLAY=:99 alone is NOT
+// deterministic — resolveLinuxDesktopEnv validates the display's X socket
+// against the REAL /tmp/.X11-unix (WI-2840 stale-DISPLAY healing), so these
+// tests passed or failed with the box's live X state (the 2026-07-05 /tmp wipe
+// removed X99 → the healing console.warn → vitest-fail-on-console red-pinned
+// the green gate). Every spawnConsole call that reaches the Linux desktop path
+// must inject these so no real socket/cookie is ever consulted.
+const FAKE_DESKTOP_PROBES: DesktopEnvProbes = {
+  existsSync: () => true, // every socket/cookie the resolver checks "exists"
+  readdirSync: () => ['X99'],
+  uid: 1000,
+  home: '/home/test',
+};
 
 describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
   const envelope: ConsoleEnvelope = {
@@ -74,7 +89,7 @@ describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
       queueMicrotask(() => child.emit('exit', 1, null));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
     if (r.status === 'error') expect(r.code).not.toBe(501);
   });
 });
@@ -101,7 +116,7 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
       queueMicrotask(() => child.emit('exit', 1, null));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
     expect(r.status).toBe('error');
     const err = r as { code: number; error: string };
     expect(err.code).toBe(502);
@@ -115,14 +130,14 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
       queueMicrotask(() => child.emit('exit', null, 'SIGSEGV'));
       return child;
     });
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
     expect(r.status).toBe('error');
     expect((r as { error: string }).error).toContain('SIGSEGV');
   });
 
   it('a client that outlives the probe ⇒ ok with its pid', async () => {
     spawnMock.mockImplementation(() => fakeChild(3333)); // never exits
-    const r = await spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(3333);
   }, 10_000);
