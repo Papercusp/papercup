@@ -336,6 +336,7 @@ const WORKSPACE_OWNED_EXPLICIT = [
 const SECURITY = [
   'operator_credentials', 'operator_secrets', 'operator_publish_credentials',
   'operator_search_provider_credentials', 'operator_voice_credentials',
+  'operator_integration_credentials',
   'operator_marketplace_token', 'operator_trust_store',
   'oauth_nonces', 'mobile_pair_tokens', 'mobile_push_tokens', 'token_index',
   'spawn_sig_verification_failures', 'system_principals',

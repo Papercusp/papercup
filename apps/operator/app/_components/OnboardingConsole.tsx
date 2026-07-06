@@ -205,13 +205,11 @@ export function OnboardingConsole() {
     }
   }, []);
 
-  // Auto-launch the external window ONCE when routing external and the
-  // spawn spec has arrived. Re-launch only via the explicit Try-again.
-  useEffect(() => {
-    if (!routeExternal || external !== 'idle') return;
-    if (spec === 'loading' || spec === null) return;
-    void launchExternal(spec);
-  }, [routeExternal, external, spec, launchExternal]);
+  // The external onboarding terminal is opened by an EXPLICIT "Launch setup"
+  // button (owner 2026-07-06: a first-launch "launch setup button screen that
+  // launches the cli setup", consistent cross-platform), NOT auto-opened — so a
+  // terminal window never pops up unbidden. The idle render below shows that
+  // button; the error state's "Try again" re-launches.
 
   // External path (Windows/Linux, WI-3092): unlike the embedded pane, the
   // webview CANNOT observe the external terminal window's process exit — so
@@ -328,8 +326,25 @@ export function OnboardingConsole() {
                     </button>
                   </div>
                 </>
-              ) : (
+              ) : external === 'launching' ? (
                 <p style={{ opacity: 0.8 }}>Opening the onboarding terminal window…</p>
+              ) : (
+                // idle — the explicit first-launch "Launch setup" button screen
+                // (owner 2026-07-06): the CLI setup is launched on click, not
+                // auto-opened, and this screen is identical on Windows + Linux.
+                <>
+                  <p style={{ opacity: 0.8, marginBottom: 16 }}>
+                    Papercusp sets up through a short guided conversation in a terminal
+                    window. Click below to launch it.
+                  </p>
+                  <button
+                    type="button"
+                    className="pc-btn pc-btn--primary"
+                    onClick={() => void launchExternal(spec)}
+                  >
+                    Launch setup
+                  </button>
+                </>
               )}
             </div>
           </div>

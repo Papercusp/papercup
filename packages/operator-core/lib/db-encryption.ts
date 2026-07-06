@@ -60,6 +60,8 @@ export const ENCRYPTED_TABLES = new Set<string>([
   'operator_trust_store',
   // Migration 047 — search-provider API keys for OMP web_search.
   'operator_search_provider_credentials',
+  // Migration 526 — generic third-party integration API keys (owner-ask-batch-2026-07-06 P-002).
+  'operator_integration_credentials',
 ]);
 
 /**

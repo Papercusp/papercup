@@ -391,6 +391,7 @@ import './setup/set_git_identity';
 import './setup/set_telemetry';
 import './setup/set_update_channel';
 import './setup/save_key';
+import './setup/save_integration_key';
 import './setup/complete';
 import './setup/set_tutorial_progress';
 import './docs/outline';

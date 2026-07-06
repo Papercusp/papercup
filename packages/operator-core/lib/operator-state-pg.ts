@@ -110,7 +110,9 @@ type StateTable =
   // Migration 400 — runtime §G auth/sandbox overrides, DARK (live-configurability-audit P-019):
   | 'operator_auth_config'
   // Migration 401 — runtime capability→tier overrides, DARK (live-configurability-audit P-010):
-  | 'operator_capability_tiers';
+  | 'operator_capability_tiers'
+  // Migration 526 — generic third-party integration API keys (owner-ask-batch-2026-07-06 P-002):
+  | 'operator_integration_credentials';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //
