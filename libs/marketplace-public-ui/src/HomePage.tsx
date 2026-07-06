@@ -1,3 +1,4 @@
+import React from 'react';
 import { Download, Eye, Layers, MonitorCog, Search } from 'lucide-react';
 
 // Last-resort fallback used only when no desktopReleaseUrl prop is passed

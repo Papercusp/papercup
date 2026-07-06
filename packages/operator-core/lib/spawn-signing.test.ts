@@ -19,6 +19,7 @@ const H = vi.hoisted(() => {
     insert: () => db,
     values: () => db,
     onConflictDoNothing: async () => undefined,
+    onConflictDoUpdate: async () => undefined,
   });
   return { db };
 });
@@ -27,7 +28,16 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, getOrgPg: () => ({ db: H.db }) };
 });
 
-import { signSpawnParams, verifySpawnParams, _resetSpawnSigningKeyCache } from './spawn-signing';
+import {
+  signSpawnParams,
+  verifySpawnParams,
+  _resetSpawnSigningKeyCache,
+  _resetVerifiedSpawns,
+  recordVerifiedSpawn,
+  classifyAndConsumeFailure,
+  spawnSigFailureGuidance,
+  rotateSpawnSigningKey,
+} from './spawn-signing';
 
 const FUTURE_MS = 4_000_000_000_000; // year ~2096, well past any real `now`
 const urlFrom = (p: URLSearchParams) => `https://x/api/spawn?${p.toString()}`;
