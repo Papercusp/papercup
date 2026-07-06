@@ -1,5 +1,69 @@
 import { describe, it, expect } from 'vitest';
-import { hiveMemberHarnessScopes, resolveHarnessContentPath } from './harness-registry';
+import {
+  canonicalizeLegacyPapercup,
+  hiveMemberHarnessScopes,
+  resolveHarnessContentPath,
+  type ProjectEntry,
+} from './harness-registry';
+
+/**
+ * canonicalizeLegacyPapercup (WI-3168) — the store-boundary guard that keeps the
+ * pre-rename `papercup` dogfood identity from surfacing as a phantom pot in the
+ * harness selector. `papercup` is the repo NAME (github.com/Papercusp/papercup);
+ * the product/hive slug is `papercusp`. A bare clone registers under the repo name
+ * and appears alongside the real `papercusp` hive (seen on the owner dev box AND
+ * the packaged Mac install). Applied on registry read + write so every existing
+ * install cleans immediately and no registration path can re-persist it.
+ */
+describe('canonicalizeLegacyPapercup', () => {
+  it('DROPS a stale papercup entry when the canonical papercusp entry exists', () => {
+    const projects: ProjectEntry[] = [
+      { slug: 'papercusp', path: '/repos/papercusp', harness_kind: 'hive', self_repo: true },
+      { slug: 'papercup', path: '/clones/papercup' },
+      { slug: 'oddsmith', path: '/clones/oddsmith' },
+    ];
+    const out = canonicalizeLegacyPapercup(projects);
+    expect(out.map((p) => p.slug)).toEqual(['papercusp', 'oddsmith']);
+    expect(out.some((p) => p.slug === 'papercup')).toBe(false);
+  });
+
+  it('DROPS a stale papercup even when papercusp is a repo-less remote hive (the Mac VM shape)', () => {
+    // On a joined-member install papercusp is remote_hive (repo-less, filtered
+    // from the selector); the bare papercup clone is the ONLY selectable pot,
+    // which is exactly the "papercup pot" the owner reported. It must be dropped.
+    const projects: ProjectEntry[] = [
+      { slug: 'papercusp', path: '/remote-hives/papercusp', harness_kind: 'hive', remote_hive: true },
+      { slug: 'papercup', path: '/clones/papercup' },
+    ];
+    const out = canonicalizeLegacyPapercup(projects);
+    expect(out.map((p) => p.slug)).toEqual(['papercusp']);
+  });
+
+  it('RENAMES papercup→papercusp when no canonical entry exists (identity preserved, never lost)', () => {
+    const projects: ProjectEntry[] = [{ slug: 'papercup', path: '/clones/papercup' }];
+    const out = canonicalizeLegacyPapercup(projects);
+    expect(out).toEqual([{ slug: 'papercusp', path: '/clones/papercup' }]);
+  });
+
+  it('is a no-op (same reference) when there is no papercup entry', () => {
+    const projects: ProjectEntry[] = [
+      { slug: 'papercusp', path: '/repos/papercusp', harness_kind: 'hive', self_repo: true },
+      { slug: 'oddsmith', path: '/clones/oddsmith' },
+    ];
+    expect(canonicalizeLegacyPapercup(projects)).toBe(projects);
+  });
+
+  it('is idempotent — a second pass over the result changes nothing', () => {
+    const projects: ProjectEntry[] = [
+      { slug: 'papercusp', path: '/repos/papercusp', harness_kind: 'hive', self_repo: true },
+      { slug: 'papercup', path: '/clones/papercup' },
+    ];
+    const once = canonicalizeLegacyPapercup(projects);
+    const twice = canonicalizeLegacyPapercup(once);
+    expect(twice).toBe(once);
+    expect(once.map((p) => p.slug)).toEqual(['papercusp']);
+  });
+});
 
 /**
  * hiveMemberHarnessScopes (per-hive-learning-loops-2026-06-14 P-040, D-008 — the

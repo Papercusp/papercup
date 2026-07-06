@@ -190,7 +190,10 @@ export async function loadHarnessRegistry(
 ): Promise<HarnessRegistry> {
   const raw = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId, opts);
   return {
-    projects: raw?.projects ?? [],
+    // Read-side canonicalization (WI-3168): fold the legacy `papercup` dogfood
+    // entry into `papercusp` so EVERY existing install's selector is clean
+    // immediately, without waiting for a write or a data migration.
+    projects: canonicalizeLegacyPapercup(raw?.projects ?? []),
     ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),
     ...(raw?.hiveDirectoryMeta ? { hiveDirectoryMeta: raw.hiveDirectoryMeta } : {}),
   };
@@ -243,6 +246,42 @@ export function dedupeProjectsBySlug(
     collapsed.push(p);
   });
   return collapsed;
+}
+
+/** The pre-rename repo NAME of the papercusp dogfood repo (see `canonicalizeLegacyPapercup`). */
+const LEGACY_DOGFOOD_SLUG = 'papercup';
+/** The canonical product/hive slug the legacy dogfood name maps to. */
+const CANONICAL_DOGFOOD_SLUG = 'papercusp';
+
+/**
+ * Legacy-identity guard (WI-3168): `papercup` is the PRE-RENAME name of the
+ * papercusp dogfood repo (`github.com/Papercusp/papercup` → product/hive slug
+ * `papercusp`; the REPO kept its name, the PRODUCT was renamed 2026-06-20 — see
+ * `ProjectEntry.self_repo` above and migrations 295/359/360). A bare clone of
+ * that repo (e.g. into `.papercusp-workspaces/clones/papercup`) gets registered
+ * with the raw repo NAME as its slug, so a phantom "papercup" pot surfaces in the
+ * selector ALONGSIDE the real `papercusp` hive — observed on BOTH the owner dev
+ * box and the packaged Mac install. There is no legitimate standalone `papercup`
+ * harness; it is always this stale duplicate. Collapse it into the canonical
+ * identity so the phantom pot can never appear — applied at the store boundary on
+ * every registration path (write) and every existing install (read):
+ *   - a canonical `papercusp` entry already exists → DROP the `papercup` dup;
+ *   - else (no `papercusp`) → RENAME `papercup`→`papercusp` so the dogfood
+ *     identity is preserved, never lost.
+ *
+ * Idempotent + pure: a registry without a `papercup` entry is returned UNCHANGED
+ * (same reference), so the common case pays nothing. Exported for unit tests.
+ */
+export function canonicalizeLegacyPapercup(projects: ProjectEntry[]): ProjectEntry[] {
+  const idx = projects.findIndex((p) => p.slug === LEGACY_DOGFOOD_SLUG);
+  if (idx === -1) return projects;
+  const hasCanonical = projects.some((p) => p.slug === CANONICAL_DOGFOOD_SLUG);
+  if (hasCanonical) {
+    // Stale duplicate of the papercusp dogfood identity — drop it.
+    return projects.filter((_, i) => i !== idx);
+  }
+  // No canonical entry present — preserve the dogfood identity under its correct slug.
+  return projects.map((p, i) => (i === idx ? { ...p, slug: CANONICAL_DOGFOOD_SLUG } : p));
 }
 
 /**
@@ -334,12 +373,16 @@ export async function saveHarnessRegistry(
   opts: SaveRegistryOptions = {},
 ): Promise<void> {
   const ws = workspaceId ?? activeWorkspaceId();
+  // Legacy-identity guard (WI-3168): neutralize the stale `papercup` dogfood
+  // entry at the WRITE boundary too, so no registration path can ever persist a
+  // phantom "papercup" pot (self-healing regardless of which caller adds it).
+  const canonical = canonicalizeLegacyPapercup(reg.projects ?? []);
   // Uniqueness invariant (store-layer guard): collapse any accidental
   // duplicate slug last-write-wins before persisting, so a buggy caller can
   // never leave the row with two entries sharing a slug (which would make
   // downstream find(p=>p.slug===…) non-deterministic). A clean input is
   // unchanged; a collapse is logged so the offending caller is traceable.
-  const next = dedupeProjectsBySlug(reg.projects ?? [], (slug) =>
+  const next = dedupeProjectsBySlug(canonical, (slug) =>
      
     console.warn(`[harness-registry] saveHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
   );
@@ -423,7 +466,9 @@ export async function mutateHarnessRegistry(
     { projects: [] },
     (raw) => {
       const current: HarnessRegistry = {
-        projects: raw?.projects ?? [],
+        // Canonicalize on read INSIDE the tx (WI-3168) so the mutator sees the
+        // clean set and any lingering `papercup` entry is dropped on this write.
+        projects: canonicalizeLegacyPapercup(raw?.projects ?? []),
         ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),
         ...(raw?.hiveDirectoryMeta ? { hiveDirectoryMeta: raw.hiveDirectoryMeta } : {}),
       };
@@ -432,7 +477,8 @@ export async function mutateHarnessRegistry(
       // Uniqueness invariant (store-layer guard): collapse any accidental
       // duplicate slug last-write-wins inside the tx, so the committed row is
       // always one entry per slug regardless of the mutator's discipline.
-      const dedupedProjects = dedupeProjectsBySlug(mutated.projects ?? [], (slug) =>
+      // Canonicalize again (WI-3168) in case the mutator re-added the legacy entry.
+      const dedupedProjects = dedupeProjectsBySlug(canonicalizeLegacyPapercup(mutated.projects ?? []), (slug) =>
          
         console.warn(`[harness-registry] mutateHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
       );
