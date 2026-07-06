@@ -80,7 +80,7 @@ describe('harness:configure', () => {
     expect(payload).toEqual({
       ok: false,
       error: 'is_a_hive',
-      message: "'my-hive' is a hive harness — use pot:update to change its configOverrides instead.",
+      message: "'my-hive' is a pot — use pot:update to change its configOverrides instead.",
     });
   });
 
@@ -144,7 +144,7 @@ describe('harness:configure', () => {
       ok: false,
       error: 'harness_configure_root_only',
       message:
-        'harness:configure cannot be called from a bee (a spawned/parented agent). Only the operator/user edits a harness config.',
+        'harness:configure cannot be called from a cup (a spawned/parented agent). Only the operator/user edits a harness config.',
     });
   });
 });

@@ -67,7 +67,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('pot:control_policy set requires operator, architect, or mug role');
+      throw new Error('pot:control_policy set requires operator, architect, or queen role');
     }
     const patch: HiveControlPolicy = {};
     if (args.breakerThreshold !== undefined) patch.breakerThreshold = args.breakerThreshold;
