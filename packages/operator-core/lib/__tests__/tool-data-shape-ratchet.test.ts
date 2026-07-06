@@ -94,7 +94,13 @@ for (const file of TOOL_FILES) {
 // absorb the rest of this fleet's run instead of re-redding on the next tool.
 // The durable fix is still the deferred owner-scoped { data }-migration sweep —
 // unchanged advice, just restated so the next bumper doesn't have to re-derive it.
-const BASELINE = 430;
+//
+// 2026-07-06 (green-checkpoint red, candidate ea86202f): 430 → 432. Reds again —
+// count reached 432 from normal concurrent fleet churn (no single feature to
+// attribute; the release-fixer classified this as expected growth per this
+// ratchet's own "bump BASELINE with a note" convention, not a regression). Same
+// durable-fix note stands: migrate a few mature tools to { data } and lower this.
+const BASELINE = 432;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

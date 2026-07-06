@@ -1,5 +1,5 @@
 /**
- * fleet:bee_mail — read one bee's coord INBOX + OUTBOX by ownerId
+ * fleet:cup_mail — read one bee's coord INBOX + OUTBOX by ownerId
  * (pui-bee-dossier-pane-2026-06-06).
  *
  * The bee-dossier dock pane's bottom half: UPPER = messages addressed TO the
@@ -18,7 +18,7 @@ import { readInbox, readOutbox } from '../coordination/messages';
 const DEFAULT_LIMIT = 50;
 
 export default defineTool({
-  name: 'fleet:bee_mail',
+  name: 'fleet:cup_mail',
   profile: 'engineer',
   description:
     "Read one bee's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat.",
@@ -27,7 +27,7 @@ export default defineTool({
     notWhen:
       'Reading YOUR own inbox (use coord:inbox — it also heartbeats your presence). Deriving fleet state / who is on what (use fleet:assignments).',
     chaining:
-      'fleet:selected_bee {} (poll the selection) → fleet:bee_mail { owner_id } + fleet:assignments { agent: owner_id } for the full dossier.',
+      'fleet:selected_cup {} (poll the selection) → fleet:cup_mail { owner_id } + fleet:assignments { agent: owner_id } for the full dossier.',
   },
   capability: 'coord:read',
   requirePrincipal: false,

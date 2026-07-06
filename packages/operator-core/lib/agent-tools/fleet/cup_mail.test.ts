@@ -1,12 +1,12 @@
 /**
- * bee_mail.test.ts — the fleet:bee_mail HANDLER (readInbox/readOutbox mocked). The
+ * cup_mail.test.ts — the fleet:cup_mail HANDLER (readInbox/readOutbox mocked). The
  * readers return ASCENDING by (ts, msg_id); the handler's own logic is the TAIL — keep
  * the most-recent `limit` entries (slice from the END), and report total vs returned per
  * side. A regression that keeps the OLDEST limit (slice(0,limit)) instead of the newest
  * is the exact bug this pins. Also: since_ts is forwarded to both readers.
  *
  * In-tree (operator-core, tab-visible).
- * Run: cd packages/operator-core && npx vitest run lib/agent-tools/fleet/bee_mail.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/fleet/cup_mail.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +15,7 @@ vi.mock('../coordination/messages', () => ({ readInbox: vi.fn(), readOutbox: vi.
 import { readInbox, readOutbox } from '../coordination/messages';
 const inboxM = vi.mocked(readInbox);
 const outboxM = vi.mocked(readOutbox);
-const tool = (await import('./bee_mail')).default;
+const tool = (await import('./cup_mail')).default;
 
 type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown> = {}) =>
@@ -28,7 +28,7 @@ beforeEach(() => {
   outboxM.mockResolvedValue([] as never);
 });
 
-describe('fleet:bee_mail handler', () => {
+describe('fleet:cup_mail handler', () => {
   it('returns everything when under the limit', async () => {
     inboxM.mockResolvedValue([{ id: 'a' }, { id: 'b' }] as never);
     outboxM.mockResolvedValue([{ id: 'c' }] as never);

@@ -3872,7 +3872,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   // sidebar.beeMail — one agent's coord inbox + outbox (the observer view the
-  // bee-dossier comms section renders; `fleet:bee_mail`'s core, most-recent 50
+  // bee-dossier comms section renders; `fleet:cup_mail`'s core, most-recent 50
   // per side). One row: { owner, inbox, outbox }.
   'sidebar.beeMail': {
     argsSchema: z.object({ owner: z.string().min(1).max(200) }),

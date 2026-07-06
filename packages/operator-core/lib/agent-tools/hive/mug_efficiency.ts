@@ -1,5 +1,5 @@
 /**
- * pot:queen_efficiency — the per-wake Queen efficiency read surface
+ * pot:mug_efficiency — the per-wake Mug efficiency read surface
  * (queen-brief-cache-assembly-2026-06-13 B-06 / P-010: "expose it queryable").
  *
  * Read-only projection of `queenWakeEfficiency()` over `agent_usage_samples`
@@ -17,7 +17,7 @@ import { resolveHiveHomeSlug } from '../../hive/wake';
 import { queenWakeEfficiency } from '../../hive/queen-wake-efficiency';
 
 export default defineTool({
-  name: 'pot:queen_efficiency',
+  name: 'pot:mug_efficiency',
   profile: 'engineer',
   description:
     "The Mug's per-wake prompt efficiency: cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination), token + cost totals, and cachedWakes (the 'cache is real' signal, P-003). Scoped to a pot home, or workspace-wide when no harness is given. Read-only.",

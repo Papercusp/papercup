@@ -1,5 +1,5 @@
 /**
- * selected_bee.test.ts — the fleet:selected_bee HANDLER (the in-memory store get/set
+ * selected_cup.test.ts — the fleet:selected_cup HANDLER (the in-memory store get/set
  * is mocked). This ephemeral UI relay has a load-bearing subtlety: it must NOT hard-
  * require a coord identity — a bare loopback (pui IPC) caller makes resolveAgentIdentity
  * THROW, and the handler must SOFTLY fall back to a null workspace rather than crash.
@@ -9,7 +9,7 @@
  * read/publish branch, is what this catches.
  *
  * In-tree (operator-core, tab-visible).
- * Run: cd packages/operator-core && npx vitest run lib/agent-tools/fleet/selected_bee.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/fleet/selected_cup.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,7 +21,7 @@ import { getSelectedBee, setSelectedBee } from '../../fleet/selected-bee';
 const ident = vi.mocked(resolveAgentIdentity);
 const getBee = vi.mocked(getSelectedBee);
 const setBee = vi.mocked(setSelectedBee);
-const tool = (await import('./selected_bee')).default;
+const tool = (await import('./selected_cup')).default;
 
 type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown> = {}) => tool.handler(args as never, {} as never) as Promise<Out>;
@@ -34,7 +34,7 @@ beforeEach(() => {
   setBee.mockReturnValue({ ownerId: 'bee-2', name: 'Bee Two' } as never);
 });
 
-describe('fleet:selected_bee', () => {
+describe('fleet:selected_cup', () => {
   it('READS the current selection when called with no select', async () => {
     const b = body(await call());
     expect(b).toMatchObject({ ok: true, selected: { ownerId: 'bee-1' } });

@@ -83,7 +83,7 @@ vi.mock('../../hive/watchdog', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...(a as [])),
 }));
-// B-06 / P-010: pot:queen_efficiency projects queenWakeEfficiency — mock the aggregator at its seam
+// B-06 / P-010: pot:mug_efficiency projects queenWakeEfficiency — mock the aggregator at its seam
 // (its PG read + aggregation are covered in ../../hive/queen-wake-efficiency.test.ts).
 vi.mock('../../hive/queen-wake-efficiency', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -94,7 +94,7 @@ vi.mock('../../hive/queen-wake-efficiency', async (importOriginal) => ({
 import declareWakeTool from './declare_wake';
 import wakeTool from './wake';
 import statusTool from './status';
-import queenEfficiencyTool from './queen_efficiency';
+import mugEfficiencyTool from './mug_efficiency';
 
 type Tool = {
   args: { safeParse: (x: unknown) => { success: boolean } };
@@ -373,8 +373,8 @@ describe('pot:status', () => {
   });
 });
 
-describe('pot:queen_efficiency (B-06 / P-010 queryable surface)', () => {
-  const tool = queenEfficiencyTool as unknown as Tool;
+describe('pot:mug_efficiency (B-06 / P-010 queryable surface)', () => {
+  const tool = mugEfficiencyTool as unknown as Tool;
   const sample = (over: Record<string, unknown> = {}) => ({
     runId: 'w',
     tsMs: 0,

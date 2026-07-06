@@ -1,5 +1,5 @@
 /**
- * fleet:selected_bee — the ephemeral swarm→bee-pane selection relay
+ * fleet:selected_cup — the ephemeral swarm→bee-pane selection relay
  * (pui-bee-dossier-pane-2026-06-06).
  *
  * The desktop chat dock runs the swarm (Fleet) pane and the bee-dossier pane as
@@ -18,7 +18,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { getSelectedBee, setSelectedBee } from '../../fleet/selected-bee';
 
 export default defineTool({
-  name: 'fleet:selected_bee',
+  name: 'fleet:selected_cup',
   profile: 'engineer',
   description:
     'Get or set the ephemeral "selected bee" for the bee-dossier dock pane. With no args, RETURNS the currently selected bee (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.',
@@ -27,7 +27,7 @@ export default defineTool({
     notWhen:
       'You want durable assignment state or "who is on what" — use fleet:assignments. This holds only the transient UI selection.',
     chaining:
-      'Fleet pane: fleet:selected_bee { select: { owner_id } } on cursor move. Bee pane: fleet:selected_bee {} (poll) → fleet:assignments { agent } + fleet:bee_mail { owner_id } for the dossier.',
+      'Fleet pane: fleet:selected_cup { select: { owner_id } } on cursor move. Cup pane: fleet:selected_cup {} (poll) → fleet:assignments { agent } + fleet:cup_mail { owner_id } for the dossier.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

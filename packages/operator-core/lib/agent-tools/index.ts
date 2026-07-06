@@ -130,7 +130,7 @@ import './hive/declare_wake';
 import './hive/wake';
 import './hive/status';
 // queen-brief-cache B-06 / P-010 — the Queen's per-wake efficiency read surface:
-import './hive/queen_efficiency';
+import './hive/mug_efficiency';
 // queen-autonomous-execution B-08 — the Queen's plan-aware placement survey:
 import './hive/survey';
 import './hive/start';
@@ -832,11 +832,11 @@ import './fleet/capacity';
 // fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
 // Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.
 import './fleet/drain';
-// Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06): fleet:bee_mail reads
-// one bee's coord inbox+outbox by ownerId; fleet:selected_bee is the ephemeral
+// Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06): fleet:cup_mail reads
+// one bee's coord inbox+outbox by ownerId; fleet:selected_cup is the ephemeral
 // in-memory swarm-pane→bee-pane selection relay (NOT PG — DB is not a transport).
-import './fleet/bee_mail';
-import './fleet/selected_bee';
+import './fleet/cup_mail';
+import './fleet/selected_cup';
 // Host-dependency diagnostic for the fleet OS sandbox (fleet-spawn-sandbox P-011):
 // bubblewrap/socat/srt presence, the Ubuntu 24.04+ AppArmor userns profile,
 // container nesting — with per-check remedies.
