@@ -22,7 +22,7 @@ export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'agents',
     title: 'Agent Runtime',
-    summary: 'oh-my-pi + Claude Code + Meridian — all installed together.',
+    summary: 'Claude Code, Codex, or oh-my-pi — install one agent backend.',
     required: true,
   },
   {
