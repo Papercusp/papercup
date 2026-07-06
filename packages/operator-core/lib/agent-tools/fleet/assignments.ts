@@ -21,6 +21,7 @@ import {
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
+import { recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
   listFleetAssignments,
@@ -63,19 +64,23 @@ const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
  * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
  * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
  */
-export async function reconcileWakeability<
-  T extends AgentAssignment & { sessionState?: SessionState | null },
->(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
+  fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
-  const wakeability = await fetchWakeabilityFn(agents.map((a) => a.agentId));
+  const ownerIds = agents.map((a) => a.agentId);
+  const [wakeability, recordedLive] = await Promise.all([fetchWakeabilityFn(ownerIds), fetchRecordedLiveFn(ownerIds)]);
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
-    const sessionState = deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
+    const sessionState =
+      !w.wakeable && recordedLive.has(a.agentId)
+        ? 'recorded'
+        : deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
     a.sessionState = sessionState;
+    if (sessionState === 'recorded') a.alive = true;
     if (sessionState === 'ended') a.alive = false;
   }
   return agents;
@@ -105,14 +110,13 @@ export default defineTool({
       // scalars as `orphaned_claims: N` lines, so a cheap regex keeps the
       // conditional reclaim pointer alive on compact responses (fail-open to 0).
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
-      const num = (key: string): number =>
-        Number(new RegExp(`\\b${key}\\b["']?\\s*:\\s*(\\d+)`).exec(text)?.[1] ?? 0);
+      const num = (key: string): number => Number(new RegExp(`\\b${key}\\b["']?\\s*:\\s*(\\d+)`).exec(text)?.[1] ?? 0);
       const reclaimable = j?.summary
         ? (j.summary.orphaned_claims ?? 0) + (j.summary.stalled_claims ?? 0)
         : num('orphaned_claims') + num('stalled_claims');
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
-        'fleet:status (the fleet\'s leader + live members)',
+        "fleet:status (the fleet's leader + live members)",
       ];
       if (reclaimable > 0) {
         out.unshift({
@@ -138,7 +142,9 @@ export default defineTool({
     include_stale: z
       .boolean()
       .optional()
-      .describe('Also list stale idle agents (no claims, old heartbeat). Default false. Orphaned claims always show regardless.'),
+      .describe(
+        'Also list stale idle agents (no claims, old heartbeat). Default false. Orphaned claims always show regardless.',
+      ),
     include_lapsed: z
       .boolean()
       .optional()
@@ -147,7 +153,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Also return the plan\'s DAG-filter frontier (EI-6949): every item the fleet\'s dependency DAG selects, with per-item status (ready|blocked|claimed|wip|done|dropped) + blockedBy/unresolvedBlockers/claimedBy/files + counts. Reuses the SAME plan-item DAG state the spawner admits from, so `ready` = what would be placed next. Requires `plan`; off by default (the frontier is fleet-level, kept off the per-agent presence path). Opt-in so the default read stays lean.',
+        "Also return the plan's DAG-filter frontier (EI-6949): every item the fleet's dependency DAG selects, with per-item status (ready|blocked|claimed|wip|done|dropped) + blockedBy/unresolvedBlockers/claimedBy/files + counts. Reuses the SAME plan-item DAG state the spawner admits from, so `ready` = what would be placed next. Requires `plan`; off by default (the frontier is fleet-level, kept off the per-agent presence path). Opt-in so the default read stays lean.",
       ),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get the placement
@@ -182,8 +188,9 @@ export default defineTool({
       harness: args.harness,
       activeOnly: !args.include_lapsed,
     });
-    const agents: (AgentAssignment & { sessionState?: SessionState | null })[] =
-      groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
+    const agents: (AgentAssignment & { sessionState?: SessionState | null })[] = groupByAgent(rows).filter(
+      (g) => args.include_stale || g.claims.length > 0 || g.alive,
+    );
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
     // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
@@ -320,7 +327,10 @@ export default defineTool({
           ? {
               coverage: coverageOut,
               ...(coverageTruncated
-                ? { coverage_truncated: true, coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.` }
+                ? {
+                    coverage_truncated: true,
+                    coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.`,
+                  }
                 : {}),
             }
           : {}),

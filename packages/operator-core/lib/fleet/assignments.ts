@@ -18,7 +18,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
-import { endedRecordedOwnerIds } from '../adv-sessions';
+import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */
 const GLOBAL_WORKSPACE = '*';
@@ -144,6 +144,32 @@ export function downgradeEndedHolders(
   });
 }
 
+/**
+ * Reconcile the view's heartbeat/presence liveness with the session log in the
+ * opposite direction of {@link downgradeEndedHolders}: an agent can be
+ * authoritatively LIVE in `adv_sessions` before it has registered coord presence
+ * or an inbox-wake await (launch/bootstrap window). In that case the holder is
+ * not orphaned; it is recorded-live and still bootstrapping.
+ */
+export function upgradeRecordedLiveHolders(
+  rows: FleetAssignmentRow[],
+  recordedLiveOwnerIds: ReadonlySet<string>,
+): FleetAssignmentRow[] {
+  if (recordedLiveOwnerIds.size === 0) return rows;
+  return rows.map((r) => {
+    if (!r.agentId || !recordedLiveOwnerIds.has(r.agentId)) return r;
+    const isClaim = r.source !== 'presence';
+    return {
+      ...r,
+      holderPresent: true,
+      holderAlive: true,
+      // A live recorded session may not have coord presence/wakeability yet; its
+      // active claims are not abandoned during that bootstrap window.
+      orphaned: isClaim && r.claimActive !== false ? false : r.orphaned,
+    };
+  });
+}
+
 export interface ListFleetAssignmentsOpts {
   /** Scope to a workspace (+ the '*' global rows). null/undefined = all. */
   workspaceId?: string | null;
@@ -228,14 +254,19 @@ export async function listFleetAssignments(
   // `alive` — falsely "covered", blocking replacement. Reconcile against POSITIVE
   // death evidence — the holder's own recorded session has ended (adv_sessions
   // .ended_at set), the SAME teardown that cancels the wake await — so an ended
-  // holder resolves to `dead`. Only owners the view currently believes alive are
-  // checked; best-effort → no change on any query error.
-  const aliveOwners = [
-    ...new Set(mapped.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string)),
-  ];
-  if (aliveOwners.length === 0) return mapped;
-  const ended = await endedRecordedOwnerIds(aliveOwners);
-  return downgradeEndedHolders(mapped, ended);
+  // holder resolves to `dead`. Best-effort → no change on any query error.
+  // EI-8106 is the inverse launch-window drift: the session is recorded live and
+  // actively bootstrapping before it has registered coord presence/wakeability,
+  // so a heartbeat-only read can mark its fresh claim orphaned. Fold the
+  // recorded-live session log into the same reader before returning rows.
+  const owners = [...new Set(mapped.filter((r) => r.agentId).map((r) => r.agentId as string))];
+  if (owners.length === 0) return mapped;
+  const [ended, recordedLiveRaw] = await Promise.all([
+    endedRecordedOwnerIds(owners),
+    recordedLiveOwnerIds(owners),
+  ]);
+  const recordedLive = new Set([...recordedLiveRaw].filter((id) => !ended.has(id)));
+  return downgradeEndedHolders(upgradeRecordedLiveHolders(mapped, recordedLive), ended);
 }
 
 // ───────────────────────── pure projections (no PG) ─────────────────────────

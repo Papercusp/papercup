@@ -285,16 +285,9 @@ export async function setAdvSessionWindowId(id: number, windowId: string | null)
   }
 }
 
-export type AdvSessionLinkResult =
-  | 'linked'
-  | 'already_linked'
-  | 'not_found'
-  | 'conflict';
+export type AdvSessionLinkResult = 'linked' | 'already_linked' | 'not_found' | 'conflict';
 
-export async function setAdvSessionOmpThreadId(
-  id: number,
-  ompThreadId: string,
-): Promise<AdvSessionLinkResult> {
+export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string): Promise<AdvSessionLinkResult> {
   const trimmed = ompThreadId.trim();
   if (!trimmed) return 'not_found';
   try {
@@ -410,26 +403,28 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
     // trail) but excluded from the UI list. A surviving session with
     // no omp_thread_id is still shown (it might be brand-new and
     // OMP just hasn't written its JSONL header yet).
-    const rows = await sql<Array<{
-      id: number;
-      workspace_id: string;
-      plan_slug: string | null;
-      agent: string | null;
-      role: string | null;
-      feature: string | null;
-      mode: 'omp' | 'console';
-      terminal_bin: string | null;
-      pid: number | null;
-      window_id: string | null;
-      omp_thread_id: string | null;
-      label: string | null;
-      cwd: string | null;
-      coord_owner_id: string | null;
-      session_id: string | null;
-      started_at: string | Date;
-      ended_at: string | Date | null;
-      exit_code: number | null;
-    }>>`
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
@@ -459,26 +454,28 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
 export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{
-      id: number;
-      workspace_id: string;
-      plan_slug: string | null;
-      agent: string | null;
-      role: string | null;
-      feature: string | null;
-      mode: 'omp' | 'console';
-      terminal_bin: string | null;
-      pid: number | null;
-      window_id: string | null;
-      omp_thread_id: string | null;
-      label: string | null;
-      cwd: string | null;
-      coord_owner_id: string | null;
-      session_id: string | null;
-      started_at: string | Date;
-      ended_at: string | Date | null;
-      exit_code: number | null;
-    }>>`
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
@@ -497,26 +494,28 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
 export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{
-      id: number;
-      workspace_id: string;
-      plan_slug: string | null;
-      agent: string | null;
-      role: string | null;
-      feature: string | null;
-      mode: 'omp' | 'console';
-      terminal_bin: string | null;
-      pid: number | null;
-      window_id: string | null;
-      omp_thread_id: string | null;
-      label: string | null;
-      cwd: string | null;
-      coord_owner_id: string | null;
-      session_id: string | null;
-      started_at: string | Date;
-      ended_at: string | Date | null;
-      exit_code: number | null;
-    }>>`
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
@@ -549,26 +548,28 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
   const out = new Map<string, AdvSessionRow>();
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{
-      id: number;
-      workspace_id: string;
-      plan_slug: string | null;
-      agent: string | null;
-      role: string | null;
-      feature: string | null;
-      mode: 'omp' | 'console';
-      terminal_bin: string | null;
-      pid: number | null;
-      window_id: string | null;
-      omp_thread_id: string | null;
-      label: string | null;
-      cwd: string | null;
-      coord_owner_id: string | null;
-      session_id: string | null;
-      started_at: string | Date;
-      ended_at: string | Date | null;
-      exit_code: number | null;
-    }>>`
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
@@ -676,6 +677,60 @@ export async function endedRecordedOwnerIds(coordOwnerIds: string[]): Promise<Se
 }
 
 /**
+ * Batch: which of `coordOwnerIds` have POSITIVE live-session evidence even if
+ * they have not registered an inbox-wake await yet. This is the read-side twin
+ * of coord:presence's `recorded` state: a freshly-launched session in its
+ * bootstrap/orient window is alive, but not yet coord-dispatchable.
+ *
+ * Sources:
+ *   - adv_sessions: an authoritative live interactive/terminal session row
+ *     (`ended_at IS NULL`) keyed by coord_owner_id.
+ *   - spawned_agents: the nursery's running row, keyed by any alias the
+ *     fleet_assignment view can expose (spawn_id/session_owner/run_id), with a
+ *     fresh process heartbeat.
+ *
+ * Positive-evidence by design. On query failure it returns empty so callers
+ * degrade to the stricter wakeability-only behavior instead of fabricating
+ * liveness.
+ */
+export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ owner_id: string }[]>`
+      WITH requested(id) AS (
+        SELECT unnest(${ids}::text[])
+      ),
+      live_adv AS (
+        SELECT coord_owner_id AS owner_id
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ANY(${ids}::text[])
+           AND ended_at IS NULL
+      ),
+      live_spawn AS (
+        SELECT alias.owner_id
+          FROM harness_shared.spawned_agents sa
+          CROSS JOIN LATERAL (
+            VALUES (sa.spawn_id), (sa.session_owner), (sa.run_id)
+          ) AS alias(owner_id)
+          JOIN requested r ON r.id = alias.owner_id
+         WHERE sa.status = 'running'
+           AND sa.finished_at IS NULL
+           AND sa.heartbeat_at > now() - interval '10 minutes'
+      )
+      SELECT DISTINCT owner_id FROM live_adv
+      UNION
+      SELECT DISTINCT owner_id FROM live_spawn
+    `;
+    return new Set(rows.map((r) => r.owner_id));
+  } catch (e) {
+    console.warn('[adv-sessions] recordedLiveOwnerIds failed:', (e as Error).message);
+    return new Set();
+  }
+}
+
+/**
  * The most recent adv_sessions row for ONE coord owner — the await-event
  * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await
  * stamps this row's {id, agent, session_id, omp_thread_id, cwd, pid} onto the
@@ -714,26 +769,28 @@ export async function listEndedAdvSessions(
   const ws = opts.workspaceId ?? null;
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{
-      id: number;
-      workspace_id: string;
-      plan_slug: string | null;
-      agent: string | null;
-      role: string | null;
-      feature: string | null;
-      mode: 'omp' | 'console';
-      terminal_bin: string | null;
-      pid: number | null;
-      window_id: string | null;
-      omp_thread_id: string | null;
-      label: string | null;
-      cwd: string | null;
-      coord_owner_id: string | null;
-      session_id: string | null;
-      started_at: string | Date;
-      ended_at: string | Date | null;
-      exit_code: number | null;
-    }>>`
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions

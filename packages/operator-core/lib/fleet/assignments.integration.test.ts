@@ -16,12 +16,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { listFleetAssignments, groupByAgent, orphanedClaims } from './assignments';
+import { recordedLiveOwnerIds } from '../adv-sessions';
 import { reorderWorkItem } from '../work-items';
-import {
-  onFleetAssignmentChange,
-  _stopForTests,
-  type FleetAssignmentChange,
-} from '../fleet-assignment-bus';
+import { onFleetAssignmentChange, _stopForTests, type FleetAssignmentChange } from '../fleet-assignment-bus';
 
 // getWorkItem (used by reorderWorkItem) scopes its feature lookup by activeWorkspaceId()
 // (F-B3 workspace-data-isolation-leaks). Every row here is seeded under WS='default', but
@@ -106,6 +103,23 @@ beforeEach(async () => {
 });
 
 describe('fleet_assignment view + reader (P-001/P-002)', () => {
+  it('EI-8106: running nursery aliases are positive recorded-live evidence during bootstrap', async () => {
+    await seedSpawn('fa-test-bootstrap', { runId: 'fa-test-bootstrap-run' });
+    await seedSpawn('fa-test-stale', { heartbeatAgeSeconds: 1200 });
+
+    const live = await recordedLiveOwnerIds([
+      'fa-test-bootstrap',
+      'fa-test-bootstrap-run',
+      'fa-test-stale',
+      'missing-owner',
+    ]);
+
+    expect(live.has('fa-test-bootstrap')).toBe(true);
+    expect(live.has('fa-test-bootstrap-run')).toBe(true);
+    expect(live.has('fa-test-stale')).toBe(false);
+    expect(live.has('missing-owner')).toBe(false);
+  });
+
   it('unifies presence, plan-item claims, and work-item claims in one read', async () => {
     await seedPresence('su-live', { intent: 'building', planSlug: 'plan-x' });
     await seedPlanClaim('su-live', { plan: 'plan-x', item: 'P-007' });
@@ -281,9 +295,7 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
     if ('error' in moved) throw new Error(moved.error);
     expect(moved.rank).toBe(0);
     expect(moved.writer).toBe('mug');
-    expect(moved.queue.map((q) => q.id)).toEqual([
-      'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
-    ]);
+    expect(moved.queue.map((q) => q.id)).toEqual(['FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3']);
   });
 
   it('rejects ranking an unassigned item', async () => {
@@ -317,9 +329,7 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
     expect(bee.load).toBe(4);
     expect(bee.doing?.id).toBe('FA-TEST-B1'); // head-of-line
     expect(bee.doing?.rankWriter).toBe('mug');
-    expect(bee.queued.map((q) => q.id)).toEqual([
-      'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
-    ]);
+    expect(bee.queued.map((q) => q.id)).toEqual(['FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3']);
   });
 });
 

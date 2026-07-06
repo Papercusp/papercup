@@ -14,6 +14,7 @@ import {
   orphanedClaims,
   reclaimableClaims,
   stalledClaims,
+  upgradeRecordedLiveHolders,
   type FleetAssignmentRow,
 } from './assignments';
 import { classifyItemActivity, isReclaimable, type ItemActivity } from '../item-activity';
@@ -162,7 +163,13 @@ describe('groupByAgent — claim-primary (D-002)', () => {
   it('sorts live agents first, then orphan-holders', () => {
     const groups = groupByAgent([
       presence({ agentId: 'su-stale', holderAlive: false, holderHeartbeatAt: '2026-06-05T01:00:00.000Z' }),
-      planClaim({ agentId: 'su-orphan', holderPresent: false, holderAlive: false, holderHeartbeatAt: null, orphaned: true }),
+      planClaim({
+        agentId: 'su-orphan',
+        holderPresent: false,
+        holderAlive: false,
+        holderHeartbeatAt: null,
+        orphaned: true,
+      }),
       presence({ agentId: 'su-live' }),
     ]);
     expect(groups.map((g) => g.agentId)).toEqual(['su-live', 'su-orphan', 'su-stale']);
@@ -238,22 +245,46 @@ describe('orphanedClaims', () => {
 
 describe('deriveActivity — the view-row projection of the truth (P-005, D-002)', () => {
   it('free when unclaimed', () => {
-    expect(deriveActivity({ agentId: null, orphaned: false, stalled: null, lastProgressAt: null, holderAlive: false })).toBe('free');
+    expect(
+      deriveActivity({ agentId: null, orphaned: false, stalled: null, lastProgressAt: null, holderAlive: false }),
+    ).toBe('free');
   });
   it('dead when the holder is gone (orphaned), regardless of progress', () => {
-    expect(deriveActivity({ agentId: 'bee-1', orphaned: true, stalled: false, lastProgressAt: '2026-06-22T00:00:00Z', holderAlive: false })).toBe('dead');
+    expect(
+      deriveActivity({
+        agentId: 'bee-1',
+        orphaned: true,
+        stalled: false,
+        lastProgressAt: '2026-06-22T00:00:00Z',
+        holderAlive: false,
+      }),
+    ).toBe('dead');
   });
   it('stalled when alive but not progressing (the second half of the incident)', () => {
-    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: true, lastProgressAt: null, holderAlive: true })).toBe('stalled');
+    expect(
+      deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: true, lastProgressAt: null, holderAlive: true }),
+    ).toBe('stalled');
   });
   it('progressing ONLY when alive AND has real progress — the one "actively worked" state', () => {
-    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: '2026-06-22T00:00:00Z', holderAlive: true })).toBe('progressing');
+    expect(
+      deriveActivity({
+        agentId: 'bee-1',
+        orphaned: false,
+        stalled: false,
+        lastProgressAt: '2026-06-22T00:00:00Z',
+        holderAlive: true,
+      }),
+    ).toBe('progressing');
   });
   it('alive (grace) when freshly claimed by a live holder with no progress yet', () => {
-    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: true })).toBe('alive');
+    expect(
+      deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: true }),
+    ).toBe('alive');
   });
   it('reserved when claimed but holder liveness is not affirmatively alive', () => {
-    expect(deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: false })).toBe('reserved');
+    expect(
+      deriveActivity({ agentId: 'bee-1', orphaned: false, stalled: false, lastProgressAt: null, holderAlive: false }),
+    ).toBe('reserved');
   });
 
   // The load-bearing cross-check: the SQL view's stalled/orphaned booleans, once
@@ -290,7 +321,9 @@ describe('deriveActivity — the view-row projection of the truth (P-005, D-002)
       // (dead/stalled) vs actively worked? The view collapses unknown-holder to
       // dead while the classifier may say reserved within grace, so we assert the
       // safety-critical equivalence (reclaimable ⇔ reclaimable), not label identity.
-      expect(isReclaimable(projected)).toBe(isReclaimable(classifier as ItemActivity) || (orphaned && classifier === 'reserved'));
+      expect(isReclaimable(projected)).toBe(
+        isReclaimable(classifier as ItemActivity) || (orphaned && classifier === 'reserved'),
+      );
     }
   });
 });
@@ -310,7 +343,11 @@ describe('stalledClaims / reclaimableClaims (P-002/P-005)', () => {
       workClaim({ agentId: 'stuck', orphaned: false, stalled: true }),
       workClaim({ agentId: 'healthy', orphaned: false, stalled: false }),
     ];
-    expect(reclaimableClaims(rows).map((r) => r.agentId).sort()).toEqual(['dead', 'stuck']);
+    expect(
+      reclaimableClaims(rows)
+        .map((r) => r.agentId)
+        .sort(),
+    ).toEqual(['dead', 'stuck']);
   });
 });
 
@@ -337,9 +374,7 @@ describe('groupByAgent — surfaces stalled like orphaned (P-005)', () => {
 // dropped or left null the way the reported bug produced.
 describe('groupByAgent — named-fleet membership label (WI-1408 / P-005)', () => {
   it("a --fleet-launched member's presence row groups it under the fleet (non-null fleetSlug/fleetRole)", () => {
-    const groups = groupByAgent([
-      presence({ agentId: 'su-member-1', fleetSlug: 'atlas-fleet', fleetRole: 'member' }),
-    ]);
+    const groups = groupByAgent([presence({ agentId: 'su-member-1', fleetSlug: 'atlas-fleet', fleetRole: 'member' })]);
     expect(groups).toHaveLength(1);
     expect(groups[0].fleetSlug).toBe('atlas-fleet');
     expect(groups[0].fleetRole).toBe('member');
@@ -403,7 +438,12 @@ describe('downgradeEndedHolders — heartbeat-vs-authoritative liveness drift (E
 
   it('leaves a LIVE holder (not in the ended set) untouched', () => {
     const rows = [
-      workClaim({ agentId: 'su-live', workItemId: 'WI-2', holderAlive: true, lastProgressAt: '2026-07-02T12:00:00.000Z' }),
+      workClaim({
+        agentId: 'su-live',
+        workItemId: 'WI-2',
+        holderAlive: true,
+        lastProgressAt: '2026-07-02T12:00:00.000Z',
+      }),
     ];
     const out = downgradeEndedHolders(rows, new Set(['su-ended']));
     expect(out[0]).toBe(rows[0]); // identity preserved — pure no-op for non-ended holders
@@ -418,9 +458,47 @@ describe('downgradeEndedHolders — heartbeat-vs-authoritative liveness drift (E
   it('does not revive an already-dead/stale holder or touch an inactive claim', () => {
     // holderAlive=false already ⇒ the gate skips it (we only DOWNGRADE a live-reading
     // holder); a lapsed claim (claimActive=false) is never freshly orphaned.
-    const dead = workClaim({ agentId: 'su-ended', workItemId: 'WI-4', holderAlive: false, orphaned: false, claimActive: false });
+    const dead = workClaim({
+      agentId: 'su-ended',
+      workItemId: 'WI-4',
+      holderAlive: false,
+      orphaned: false,
+      claimActive: false,
+    });
     const out = downgradeEndedHolders([dead], new Set(['su-ended']));
     expect(out[0]).toBe(dead); // untouched — holderAlive was already false
     expect(out[0].orphaned).toBe(false);
+  });
+});
+
+describe('upgradeRecordedLiveHolders — recorded-live bootstrap liveness drift (EI-8106)', () => {
+  it('a recorded-live holder whose presence/wakeability has not registered is not orphaned', () => {
+    const rows = [
+      workClaim({
+        agentId: 's-bootstrap',
+        workItemId: 'WI-8106',
+        holderPresent: false,
+        holderAlive: false,
+        holderHeartbeatAt: null,
+        orphaned: true,
+      }),
+    ];
+
+    expect(deriveActivity(rows[0])).toBe('dead');
+    expect(orphanedClaims(rows)).toHaveLength(1);
+
+    const fixed = upgradeRecordedLiveHolders(rows, new Set(['s-bootstrap']));
+    expect(fixed[0]).not.toBe(rows[0]);
+    expect(fixed[0].holderPresent).toBe(true);
+    expect(fixed[0].holderAlive).toBe(true);
+    expect(fixed[0].orphaned).toBe(false);
+    expect(deriveActivity(fixed[0])).toBe('alive');
+    expect(orphanedClaims(fixed)).toHaveLength(0);
+    expect(groupByAgent(fixed)[0].alive).toBe(true);
+  });
+
+  it('is a no-op when the recorded-live set is empty', () => {
+    const rows = [workClaim({ agentId: 's-bootstrap', workItemId: 'WI-8107', orphaned: true })];
+    expect(upgradeRecordedLiveHolders(rows, new Set())).toBe(rows);
   });
 });
