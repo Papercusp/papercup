@@ -4,7 +4,11 @@
  * enforcement, covered in pg-read-query.integration.test.ts).
  */
 import { describe, expect, it } from 'vitest';
-import { assertSingleReadStatement, PgReadQueryError } from './pg-read-query';
+import {
+  assertSingleReadStatement,
+  extractPgErrorInfo,
+  PgReadQueryError,
+} from './pg-read-query';
 
 describe('assertSingleReadStatement', () => {
   it('accepts a plain SELECT and strips a single trailing semicolon', () => {
@@ -97,5 +101,64 @@ describe('assertSingleReadStatement', () => {
     it('still rejects two real SELECTs even with a literal before the separator', () => {
       expect(() => assertSingleReadStatement(`SELECT 'x'; SELECT 1`)).toThrow(PgReadQueryError);
     });
+  });
+});
+
+// EI-8301: dev:pg_query dropped Postgres' HINT/DETAIL on a failed query, so a
+// "column does not exist" error only showed the bare message — agents then
+// guessed non-obvious column names repeatedly. extractPgErrorInfo pulls the
+// diagnostic fields the postgres-js driver attaches through to the payload.
+describe('extractPgErrorInfo (EI-8301 — surface PG HINT/DETAIL/code/position)', () => {
+  it('extracts hint/detail/code/position from a postgres-js "undefined column" error', () => {
+    // Shape postgres-js throws for `SELECT updated_at FROM harness_shared.work_items`
+    const pgErr = Object.assign(new Error('column "updated_at" does not exist'), {
+      code: '42703',
+      hint: 'Perhaps you meant to reference the column "work_items.updated_ts".',
+      position: '8',
+      severity: 'ERROR',
+    });
+    expect(extractPgErrorInfo(pgErr)).toEqual({
+      message: 'column "updated_at" does not exist',
+      hint: 'Perhaps you meant to reference the column "work_items.updated_ts".',
+      code: '42703',
+      position: '8',
+    });
+  });
+
+  it('carries DETAIL through when present', () => {
+    const pgErr = Object.assign(new Error('some constraint error'), {
+      code: '23505',
+      detail: 'Key (id)=(1) already exists.',
+    });
+    const info = extractPgErrorInfo(pgErr);
+    expect(info.detail).toBe('Key (id)=(1) already exists.');
+    expect(info.code).toBe('23505');
+    expect(info.hint).toBeUndefined();
+  });
+
+  it('coerces a numeric position to a string', () => {
+    const pgErr = Object.assign(new Error('boom'), { position: 42 });
+    expect(extractPgErrorInfo(pgErr).position).toBe('42');
+  });
+
+  it('returns only message for a PgReadQueryError (validation error — no PG fields)', () => {
+    expect(extractPgErrorInfo(new PgReadQueryError('empty query'))).toEqual({
+      message: 'empty query',
+    });
+  });
+
+  it('returns only message for a plain Error with no PG fields', () => {
+    expect(extractPgErrorInfo(new Error('generic failure'))).toEqual({
+      message: 'generic failure',
+    });
+  });
+
+  it('handles a non-Error thrown value', () => {
+    expect(extractPgErrorInfo('string blew up')).toEqual({ message: 'string blew up' });
+  });
+
+  it('omits empty-string PG fields rather than surfacing blanks', () => {
+    const pgErr = Object.assign(new Error('x'), { hint: '', detail: '', code: '' });
+    expect(extractPgErrorInfo(pgErr)).toEqual({ message: 'x' });
   });
 });

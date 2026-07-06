@@ -44,6 +44,62 @@ export class PgReadQueryError extends Error {
   }
 }
 
+/** The diagnostic fields worth surfacing from a failed query. */
+export interface PgErrorInfo {
+  /** `err.message` (always present). */
+  message: string;
+  /**
+   * Postgres' `HINT:` — e.g. `Perhaps you meant to reference the column
+   * "w.feature_id".` on a "column does not exist" error. The single most
+   * useful field for an agent guessing a wrong column/table name.
+   */
+  hint?: string;
+  /** Postgres' `DETAIL:` — extra context on the error. */
+  detail?: string;
+  /** The SQLSTATE code (e.g. `42703` = undefined_column, `42P01` = undefined_table). */
+  code?: string;
+  /** 1-based character position in the query text the error points at. */
+  position?: string;
+}
+
+/**
+ * Extract the useful diagnostic fields Postgres attaches to a query error —
+ * hint / detail / code / position — which are otherwise dropped when only
+ * `err.message` is surfaced. The postgres-js driver exposes these as lowercase
+ * properties on the thrown error (`err.hint`, `err.detail`, `err.code`,
+ * `err.position`); Postgres already emits, e.g.,
+ * `HINT: Perhaps you meant to reference the column "w.feature_id"` on a
+ * "column does not exist" error, so passing it through saves agents from
+ * repeatedly guessing non-obvious column names (EI-8301). Safe on any thrown
+ * value (Error, PgReadQueryError, or a non-Error).
+ */
+export function extractPgErrorInfo(err: unknown): PgErrorInfo {
+  const message =
+    err instanceof PgReadQueryError
+      ? err.message
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  const info: PgErrorInfo = { message };
+  if (err && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    const str = (v: unknown): string | undefined => {
+      if (typeof v === 'string') return v.length ? v : undefined;
+      if (typeof v === 'number') return String(v);
+      return undefined;
+    };
+    const hint = str(e.hint);
+    const detail = str(e.detail);
+    const code = str(e.code);
+    const position = str(e.position);
+    if (hint) info.hint = hint;
+    if (detail) info.detail = detail;
+    if (code) info.code = code;
+    if (position) info.position = position;
+  }
+  return info;
+}
+
 export const PG_READ_QUERY_DEFAULT_MAX_ROWS = 200;
 export const PG_READ_QUERY_HARD_MAX_ROWS = 2000;
 export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;

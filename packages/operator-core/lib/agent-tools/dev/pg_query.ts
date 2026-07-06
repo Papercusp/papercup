@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   pgReadQuery,
-  PgReadQueryError,
+  extractPgErrorInfo,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
   PG_READ_QUERY_HARD_MAX_ROWS,
 } from '../../pg-read-query';
@@ -78,15 +78,19 @@ export default defineTool({
         ],
       };
     } catch (err) {
-      const message =
-        err instanceof PgReadQueryError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
+      // Surface Postgres' own HINT/DETAIL/code/position (dropped if we only
+      // pass err.message) — PG emits e.g. `HINT: Perhaps you meant to reference
+      // the column "w.feature_id"` on a column error, which saves agents from
+      // guessing non-obvious column names (EI-8301).
+      const info = extractPgErrorInfo(err);
+      const payload: Record<string, unknown> = { error: info.message };
+      if (info.hint) payload.hint = info.hint;
+      if (info.detail) payload.detail = info.detail;
+      if (info.code) payload.code = info.code;
+      if (info.position) payload.position = info.position;
       return {
         isError: true,
-        content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
       };
     }
   },
