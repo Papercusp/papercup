@@ -34,7 +34,6 @@ const LAUNCHER = path.resolve(HERE, '..', 'onboard-launcher.mjs');
 const LABELS = {
   claude: 'Claude Code',
   codex: 'Codex (OpenAI)',
-  'omp-meridian': 'oh-my-pi + Meridian',
 } as const;
 
 let tmp: string;

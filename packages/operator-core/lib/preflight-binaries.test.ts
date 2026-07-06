@@ -1,5 +1,5 @@
 /**
- * preflight-binaries.test.ts — the claude/omp/meridian detection probes shared
+ * preflight-binaries.test.ts — the claude/omp detection probes shared
  * by /api/desktop/preflight + /api/desktop/setup-status (they must agree).
  *
  * Contract: a probe is "on PATH first, then bundled-candidate paths (only if the
@@ -17,7 +17,7 @@ vi.mock('node:child_process', () => ({
 }));
 vi.mock('node:fs', () => ({ existsSync: (p: string) => existsSyncMock(p) }));
 
-import { detectClaude, detectOmp, detectMeridianInstalled } from './preflight-binaries';
+import { detectClaude, detectOmp } from './preflight-binaries';
 
 /** Only the given paths answer `--version` successfully; all others "fail". */
 function probeSucceedsFor(...paths: string[]) {
@@ -33,8 +33,7 @@ function pathsExist(...paths: string[]) {
   existsSyncMock.mockImplementation((p: string) => set.has(p));
 }
 
-const CWD = process.cwd();
-const CLAUDE_BUNDLE = `${CWD}/meridian-host/node_modules/.bin/claude`;
+const CLAUDE_CANDIDATE = `${process.env.HOME ?? ''}/.local/bin/claude`;
 
 beforeEach(() => {
   execFileImpl.mockReset();
@@ -48,15 +47,15 @@ describe('detectClaude', () => {
     expect(await detectClaude()).toBe(true);
   });
 
-  it('falls back to a bundled candidate that exists AND probes ok', async () => {
-    probeSucceedsFor(CLAUDE_BUNDLE); // not on PATH, but the bundle works
-    pathsExist(CLAUDE_BUNDLE);
+  it('falls back to a candidate path that exists AND probes ok', async () => {
+    probeSucceedsFor(CLAUDE_CANDIDATE); // not on PATH, but the candidate works
+    pathsExist(CLAUDE_CANDIDATE);
     expect(await detectClaude()).toBe(true);
   });
 
   it('returns false when a candidate exists but its probe fails (fail-soft, no throw)', async () => {
     probeSucceedsFor(/* nothing succeeds */);
-    pathsExist(CLAUDE_BUNDLE); // exists on disk but `--version` throws
+    pathsExist(CLAUDE_CANDIDATE); // exists on disk but `--version` throws
     await expect(detectClaude()).resolves.toBe(false);
   });
 
@@ -75,18 +74,5 @@ describe('detectOmp', () => {
   it('returns false when omp is absent everywhere', async () => {
     probeSucceedsFor();
     expect(await detectOmp()).toBe(false);
-  });
-});
-
-describe('detectMeridianInstalled', () => {
-  it('is true when any candidate package.json exists', () => {
-    const pkg = `${CWD}/meridian-host/node_modules/@rynfar/meridian/package.json`;
-    pathsExist(pkg);
-    expect(detectMeridianInstalled()).toBe(true);
-  });
-
-  it('is false when no candidate package.json exists', () => {
-    pathsExist();
-    expect(detectMeridianInstalled()).toBe(false);
   });
 });

@@ -2,8 +2,8 @@
 /**
  * StepAgents.test.tsx — render-tier coverage for the SetupWizard "Agent backend"
  * step. Seeds agentRuntime from /api/desktop/setup-status and asserts the
- * ready/missing summary, the per-runtime breakdown rows (incl. the omp-half
- * detail), the Tauri-only install button vs the browser fallback, the
+ * ready/missing summary, the per-runtime breakdown rows (claude / codex /
+ * oh-my-pi), the Tauri-only install button vs the browser fallback, the
  * manual-commands toggle, and the install-command fetch failure path. The pty
  * tauri detector + InlinePtyTerminal are stubbed.
  */
@@ -41,7 +41,7 @@ function installFetch() {
 
 beforeEach(() => {
   tauriNative = false;
-  agentRuntime = { claude: false, codex: false, omp: false, meridian: false };
+  agentRuntime = { claude: false, codex: false, omp: false };
   ptyFails = false;
 });
 afterEach(() => {
@@ -58,30 +58,20 @@ describe('StepAgents (SetupWizard agent-backend step)', () => {
   });
 
   it('shows "Ready." with Claude Code named when claude is installed', async () => {
-    agentRuntime = { claude: true, codex: false, omp: false, meridian: false };
+    agentRuntime = { claude: true, codex: false, omp: false };
     installFetch();
     render(<StepAgents />);
     expect(await screen.findByText('Ready.')).toBeTruthy();
     expect(screen.getByText(/Claude Code installed\./i)).toBeTruthy();
   });
 
-  it('renders the per-runtime breakdown rows with the omp half-missing detail', async () => {
-    agentRuntime = { claude: false, codex: false, omp: true, meridian: false };
-    installFetch();
-    render(<StepAgents />);
-    expect(await screen.findByText('oh-my-pi + Meridian')).toBeTruthy();
-    // omp installed but meridian missing → the row names the missing half.
-    expect(screen.getByText(/oh-my-pi installed — Meridian missing\./i)).toBeTruthy();
-    // Still "no backend" overall (omp path needs both halves).
-    expect(screen.getByText('No agent backend yet.')).toBeTruthy();
-  });
-
-  it('treats omp + meridian together as a complete backend (Ready)', async () => {
-    agentRuntime = { claude: false, codex: false, omp: true, meridian: true };
+  it('treats oh-my-pi installed alone as a complete backend (Ready) — meridian decommissioned', async () => {
+    agentRuntime = { claude: false, codex: false, omp: true };
     installFetch();
     render(<StepAgents />);
     expect(await screen.findByText('Ready.')).toBeTruthy();
-    expect(screen.getByText(/oh-my-pi \+ Meridian installed\./i)).toBeTruthy();
+    // omp alone is now a complete backend (no meridian half needed).
+    expect(screen.getByText(/oh-my-pi installed\./i)).toBeTruthy();
   });
 
   it('outside Tauri: hides the install button and shows the desktop-app hint', async () => {

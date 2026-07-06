@@ -27,16 +27,8 @@ describe('buildFrameworkInstallSpec', () => {
     expect(script).not.toContain('claude.ai/install');
   });
 
-  it('omp-meridian on linux installs pinned meridian and notes bundled omp', () => {
-    const spec = buildFrameworkInstallSpec('omp-meridian', 'darwin', HOME);
-    const script = spec.args.join(' ');
-    expect(script).toMatch(/@rynfar\/meridian@\d+\.\d+\.\d+/);
-    expect(script).toContain('bundled with the desktop app');
-    expect(script).not.toContain('@openai/codex');
-  });
-
   it('runtime installs bootstrap a package.json so npm --prefix behaves', () => {
-    for (const framework of ['codex', 'omp-meridian'] as const) {
+    for (const framework of ['codex'] as const) {
       const script = buildFrameworkInstallSpec(framework, 'linux', HOME).args.join(' ');
       expect(script).toContain('npm init -y');
     }
@@ -55,9 +47,6 @@ describe('buildFrameworkInstallSpec', () => {
     );
   });
 
-  it('omp-meridian on win32 throws loudly (D-006: Windows v1 ships no omp)', () => {
-    expect(() => buildFrameworkInstallSpec('omp-meridian', 'win32', HOME)).toThrow(/Windows/);
-  });
 });
 
 describe('onboarding concierge spec (P-003)', () => {
@@ -97,11 +86,11 @@ describe('onboarding concierge spec (P-003)', () => {
   });
 });
 
-describe('buildInstallSpec (wizard all-in-one, unchanged contract)', () => {
-  it('still installs the full runtime on linux', () => {
+describe('buildInstallSpec (wizard all-in-one)', () => {
+  it('installs claude + codex on linux, never meridian (decommissioned)', () => {
     const script = buildInstallSpec('linux', HOME).args.join(' ');
     expect(script).toContain('claude.ai/install.sh');
-    expect(script).toContain('@rynfar/meridian');
     expect(script).toContain('@openai/codex');
+    expect(script).not.toContain('@rynfar/meridian');
   });
 });

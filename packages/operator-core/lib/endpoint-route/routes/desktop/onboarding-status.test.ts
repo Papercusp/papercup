@@ -16,11 +16,11 @@ describe('parseOnboardingQuery', () => {
 
   it('parses a valid chosen framework + flags', () => {
     const parsed = parseOnboardingQuery(
-      `${URL_BASE}?chosen=omp-meridian&forcePick=1&embeddingsSkipped=1&tutorial=1`,
+      `${URL_BASE}?chosen=codex&forcePick=1&embeddingsSkipped=1&tutorial=1`,
       'linux',
     );
     expect(parsed).toEqual({
-      chosen: 'omp-meridian',
+      chosen: 'codex',
       forcePick: true,
       embeddingsSkipped: true,
       tutorial: true,
@@ -30,10 +30,12 @@ describe('parseOnboardingQuery', () => {
 
   it('rejects an unknown framework as null', () => {
     expect(parseOnboardingQuery(`${URL_BASE}?chosen=gpt-cli`, 'linux').chosen).toBeNull();
+    // omp-meridian is decommissioned — no longer an allowed framework.
+    expect(parseOnboardingQuery(`${URL_BASE}?chosen=omp-meridian`, 'linux').chosen).toBeNull();
   });
 
-  it('rejects omp-meridian on win32 (not an allowed framework there)', () => {
-    expect(parseOnboardingQuery(`${URL_BASE}?chosen=omp-meridian`, 'win32').chosen).toBeNull();
+  it('accepts claude + codex on win32', () => {
+    expect(parseOnboardingQuery(`${URL_BASE}?chosen=claude`, 'win32').chosen).toBe('claude');
     expect(parseOnboardingQuery(`${URL_BASE}?chosen=codex`, 'win32').chosen).toBe('codex');
   });
 });

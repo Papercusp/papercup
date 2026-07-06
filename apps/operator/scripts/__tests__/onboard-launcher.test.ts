@@ -9,8 +9,7 @@ import {
 } from '../onboard-launcher.mjs';
 
 describe('mapFrameworkToAgent', () => {
-  it('maps the omp-meridian path to the omp agent', () => {
-    expect(mapFrameworkToAgent('omp-meridian')).toBe('omp');
+  it('maps a framework id to its psu agent id (identity: claude/codex)', () => {
     expect(mapFrameworkToAgent('claude')).toBe('claude');
     expect(mapFrameworkToAgent('codex')).toBe('codex');
   });
@@ -26,11 +25,11 @@ describe('buildHandoffArgs', () => {
   });
 
   it('threads harness + tutor launch-context from env (the P-005 seam)', () => {
-    const args = buildHandoffArgs('omp-meridian', {
+    const args = buildHandoffArgs('codex', {
       PAPERCUSP_ONBOARD_HARNESS: 'my-pot',
       PAPERCUSP_ONBOARD_LAUNCH_CONTEXT: '/tmp/tutor.md',
     });
-    expect(args).toContain('--agent=omp');
+    expect(args).toContain('--agent=codex');
     expect(args).toContain('--harness=my-pot');
     expect(args).toContain('--launch-context=/tmp/tutor.md');
   });
@@ -53,7 +52,7 @@ describe('parseArgs', () => {
   });
 
   it('exports the frameworks and the owner-verbatim banner', () => {
-    expect(FRAMEWORKS).toEqual(['claude', 'codex', 'omp-meridian']);
+    expect(FRAMEWORKS).toEqual(['claude', 'codex']);
     expect(INTRO_BANNER).toContain('Welcome to papercusp');
     expect(INTRO_BANNER).toContain('brief 10 minute setup procedure and tutorial');
   });

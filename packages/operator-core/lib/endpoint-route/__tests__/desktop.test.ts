@@ -90,11 +90,12 @@ describe('buildInstallSpec', () => {
     expect(spec.args).toContain('-NoProfile');
   });
 
-  it('install script installs claude + meridian + codex, and never the dead omp npm ref', () => {
+  it('install script installs claude + codex, never meridian (decommissioned) or the dead omp npm ref', () => {
     const unix = buildInstallSpec('linux', '/home/u').args[1];
     expect(unix).toContain('claude.ai/install.sh');
-    expect(unix).toContain('@rynfar/meridian');
     expect(unix).toContain('@openai/codex');
+    // meridian is decommissioned (owner directive 2026-07-06) — never installed.
+    expect(unix).not.toContain('@rynfar/meridian');
     // oh-my-pi has no live npm package (unpublished 2026-05-21); a dead
     // ref 404s and aborts the entire npm step, killing the codex install.
     expect(unix).not.toContain('oh-my-pi');

@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     creds: { current: {} as Record<string, string | undefined> },
     collect: vi.fn(async () => ({
       statuses: { git: 'ok', telemetry: 'needs-attention' },
-      agentRuntime: { claude: true, codex: false, omp: false, meridian: false },
+      agentRuntime: { claude: true, codex: false, omp: false },
     })),
   };
 });
@@ -153,7 +153,7 @@ describe('setup:status', () => {
     expect(h.collect).toHaveBeenCalled();
     expect(b).toEqual({
       statuses: { git: 'ok', telemetry: 'needs-attention' },
-      agentRuntime: { claude: true, codex: false, omp: false, meridian: false },
+      agentRuntime: { claude: true, codex: false, omp: false },
     });
   });
 });
