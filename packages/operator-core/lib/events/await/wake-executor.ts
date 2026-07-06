@@ -351,7 +351,18 @@ async function defaultFireHiveWake(input: { installSlug: string; kickoff: string
     // Honour the owner's raised wake-cadence floor (queen-steering-panel P-006).
     const floorSec = await effectiveHiveWakeFloorSec(workspaceId, input.installSlug);
     if (withinWakeFloor(state, Date.now(), floorSec)) return true;
-    await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug: input.installSlug, workspaceId, kickoff: input.kickoff });
+    // EI-7871 (WI-3082 follow-up): this fire is a genuine coord/events:await wake
+    // continuation (the Queen's ended session getting a fresh-launch in place of a
+    // resume, D-010) — override the /invoke route's 'cron' default so her
+    // agent_usage_samples row is attributed 'coord-wake', matching the semantics
+    // every OTHER coord-wake-triggered spawn already carries (bee/spawn.ts,
+    // place_batch.ts, and this same file's resume-channel env above).
+    await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, {
+      installSlug: input.installSlug,
+      workspaceId,
+      kickoff: input.kickoff,
+      bodyExtra: { turnTrigger: 'coord-wake' },
+    });
     await recordHiveWake(workspaceId);
     return true;
   } catch {
