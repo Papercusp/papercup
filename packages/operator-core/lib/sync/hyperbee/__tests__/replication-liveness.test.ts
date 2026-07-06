@@ -11,6 +11,7 @@ import {
   getReplicationLiveness,
   dropReplicationLogState,
   dropReplicationLiveness,
+  setReplicationStallRecoveryReporterForTests,
   _resetReplicationLivenessForTests,
   SAMPLING_STALE_AFTER_MS,
   SWARM_CHURN_TOLERANCE_MS,
@@ -326,6 +327,98 @@ describe('read-time verdicts + registry lifecycle', () => {
     expect(getReplicationLiveness({ harnessSlug: HS, nowMs: now })[0]!.logs).toHaveLength(0);
     dropReplicationLiveness(WS, 'harness-b'); // handle close
     expect(getReplicationLiveness({ harnessSlug: 'harness-b', nowMs: now })).toHaveLength(0);
+  });
+});
+
+describe('EI-7788: dropping an ALARMED log auto-resolves its durable EI (orphan fix)', () => {
+  function collectDropRecoveries(): ReplicationStallEpisode[] {
+    const recoveries: ReplicationStallEpisode[] = [];
+    // The drop path routes through the module-level recovery reporter (no opts arg),
+    // so capture it via the module seam rather than a per-call onRecovery.
+    setReplicationStallRecoveryReporterForTests((e) => recoveries.push(e));
+    return recoveries;
+  }
+
+  it('dropReplicationLogState fires a recovery for an alarmed no_replicator log so the EI can auto-close', () => {
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+      );
+    sample(1); // was replicating
+    now += GRACE + 1_000;
+    sample(0); // stalled past grace → alarmed + EI filed
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
+      'no_replicator',
+    );
+
+    const recoveries = collectDropRecoveries();
+    dropReplicationLogState(WS, HS, KEY); // peer revoked / re-verify-dropped while stalled
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]!.kind).toBe('no_replicator');
+    expect(recoveries[0]!.logKeyHex).toBe(KEY);
+    expect(recoveries[0]!.detail).toContain('dropped from tracking');
+    // State is gone regardless.
+    expect(getReplicationLiveness({ harnessSlug: HS, nowMs: now })[0]?.logs ?? []).toHaveLength(0);
+  });
+
+  it('dropping a HEALTHY (never-alarmed) log fires NO recovery (no spurious EI resolve)', () => {
+    const now = 1_000_000;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+    );
+    const recoveries = collectDropRecoveries();
+    dropReplicationLogState(WS, HS, KEY);
+    expect(recoveries).toHaveLength(0);
+  });
+
+  it('dropReplicationLiveness (handle close) fires recoveries for every alarmed log in the harness', () => {
+    let now = 1_000_000;
+    const KEY_B = 'b'.repeat(64);
+    const sample = (key: string, peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: key, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+      );
+    sample(KEY, 1); // KEY was replicating…
+    sample(KEY_B, 1); // KEY_B stays live (no alarm)
+    now += GRACE + 1_000;
+    sample(KEY, 0); // KEY stalls past grace → alarmed
+    sample(KEY_B, 1);
+
+    const recoveries = collectDropRecoveries();
+    dropReplicationLiveness(WS, HS); // harness handle close
+    // Only the alarmed log (KEY) reports a recovery; the live one (KEY_B) does not.
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]!.logKeyHex).toBe(KEY);
+    expect(recoveries[0]!.kind).toBe('no_replicator');
+    expect(getReplicationLiveness({ harnessSlug: HS, nowMs: now })).toHaveLength(0);
+  });
+
+  it('drop is idempotent — a second drop of the same log fires no further recovery', () => {
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: () => {}, onRecovery: () => {} },
+      );
+    sample(1);
+    now += GRACE + 1_000;
+    sample(0);
+    const recoveries = collectDropRecoveries();
+    dropReplicationLogState(WS, HS, KEY);
+    dropReplicationLogState(WS, HS, KEY); // boot.ts double-calls on revoke — must not re-fire
+    expect(recoveries).toHaveLength(1);
   });
 });
 

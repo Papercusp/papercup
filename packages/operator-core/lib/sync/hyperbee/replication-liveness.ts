@@ -652,17 +652,88 @@ export function getReplicationLiveness(
   return out;
 }
 
+/**
+ * EI-7788: emit a recovery episode for EVERY active stall alarm a log holds,
+ * BEFORE its state is discarded. A dropped log (revoked / re-verify-dropped /
+ * handle-closed) is no longer admitted or sampled, so the per-log recovery path
+ * in `sampleReplicationLiveness` will NEVER fire for it again — and its durable
+ * EI (P-004 / WI-1840) would sit open forever, orphaned. That is the observed
+ * pile-up class: a peer stalls (no_replicator → EI filed), then the peer is
+ * revoked / disconnects and its log is dropped, stranding the EI open (it then
+ * federates to peers as an `origin:remote` EI that never auto-closes).
+ *
+ * Dropping the log is itself the resolution: the "writes silently diverging"
+ * concern no longer applies once we stop admitting/monitoring the peer, so the
+ * honest state is resolved. If the log is re-admitted and re-stalls later, the
+ * detector re-fires a fresh EI (edge-triggered, per-process latch). Only fires
+ * for latched alarms — a healthy log with no open EI is a no-op, so live logs
+ * dropped on revoke/close never spuriously resolve anything.
+ */
+function reportDropRecoveries(
+  workspaceId: string,
+  harnessSlug: string,
+  st: LogState,
+  now: number,
+): void {
+  const shortKey = `${st.keyHex.slice(0, 12)}…`;
+  const droppedDetail = (concern: string): string =>
+    `log=${shortKey} dropped from tracking (revoked / re-verify-dropped / handle-closed) — ` +
+    `no longer admitted, so the ${concern} concern no longer applies`;
+  if (st.alarmedNoReplicator) {
+    reportRecovery({
+      workspaceId,
+      harnessSlug,
+      logKeyHex: st.keyHex,
+      kind: 'no_replicator',
+      stalledForMs: st.lastNonZeroPeersMs !== null ? now - st.lastNonZeroPeersMs : 0,
+      detail: droppedDetail('no_replicator'),
+    });
+  }
+  if (st.alarmedConnectedNever) {
+    reportRecovery({
+      workspaceId,
+      harnessSlug,
+      logKeyHex: st.keyHex,
+      kind: 'connected_never_replicated',
+      stalledForMs:
+        st.connectedNeverReplSinceMs !== null ? now - st.connectedNeverReplSinceMs : 0,
+      detail: droppedDetail('connected-but-dead'),
+    });
+  }
+  if (st.alarmedFrozen) {
+    reportRecovery({
+      workspaceId,
+      harnessSlug,
+      logKeyHex: st.keyHex,
+      kind: 'frozen',
+      stalledForMs: st.lastIngestProgressMs !== null ? now - st.lastIngestProgressMs : 0,
+      detail: droppedDetail('frozen-ingest'),
+    });
+  }
+}
+
 /** Drop one log's tracking state (revoked / re-verify-dropped / removed from the admitted set). */
 export function dropReplicationLogState(
   workspaceId: string,
   harnessSlug: string,
   keyHex: string,
 ): void {
-  registry.get(hKey(workspaceId, harnessSlug))?.delete(keyHex);
+  const logs = registry.get(hKey(workspaceId, harnessSlug));
+  const st = logs?.get(keyHex);
+  if (!st) return; // already gone (idempotent — boot.ts double-calls on revoke)
+  // EI-7788: auto-resolve any durable EI this log's stall filed before we forget it.
+  reportDropRecoveries(workspaceId, harnessSlug, st, Date.now());
+  logs!.delete(keyHex);
 }
 
 /** Drop a whole harness's tracking state (handle close). */
 export function dropReplicationLiveness(workspaceId: string, harnessSlug: string): void {
+  const logs = registry.get(hKey(workspaceId, harnessSlug));
+  if (logs) {
+    // EI-7788: auto-resolve any durable EIs the closing harness's stalled logs filed.
+    const now = Date.now();
+    for (const st of logs.values()) reportDropRecoveries(workspaceId, harnessSlug, st, now);
+  }
   registry.delete(hKey(workspaceId, harnessSlug));
 }
 
@@ -670,4 +741,5 @@ export function dropReplicationLiveness(workspaceId: string, harnessSlug: string
 export function _resetReplicationLivenessForTests(): void {
   registry.clear();
   episodeReporter = null;
+  episodeRecoveredReporter = null;
 }

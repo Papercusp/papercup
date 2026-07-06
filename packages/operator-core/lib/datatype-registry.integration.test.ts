@@ -16,9 +16,6 @@
  * and WORKSPACE ISOLATION (a datatype in ws-A is invisible from ws-B).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertDatatype,
@@ -31,7 +28,6 @@ import {
 } from './datatype-registry-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 /** A throwaway 384-dim embedding (only presence/cosine is exercised, not a real vector). */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 384 }, () => seed);
@@ -41,10 +37,12 @@ describe('datatype_registry store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    // Migration 421 is post-squash → not in the baseline; apply it. A failure here
-    // IS the "does the migration apply?" verification.
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
+    // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
+    // pot-rename 506/523), so datatype_registry already exists in its post-rename
+    // (pot_slug) shape — a broken 421 would fail the fixture setup itself, so the
+    // "does the migration apply?" check is preserved. (Replaying 421 verbatim here is
+    // now redundant AND re-runs its old hive_slug index against the post-523 schema,
+    // 42703-ing "column hive_slug does not exist".)
   }, 120_000);
 
   afterAll(async () => {

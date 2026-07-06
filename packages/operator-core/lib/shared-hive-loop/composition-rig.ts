@@ -417,6 +417,12 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     await applyMigrationForTest(sql, join(SQL_DIR, file));
   }
 
+  // D-007 pot-rename: mig 188 creates work_item_claims.hive_slug; mig 523 renamed it →
+  // pot_slug. The condensed set above predates 523, so apply the rename in-place — the
+  // real claim code paths this rig drives (claimNextWorkItem, work-item-claims store)
+  // write pot_slug and 42703 otherwise.
+  await sql.unsafe(`ALTER TABLE harness_shared.work_item_claims RENAME COLUMN hive_slug TO pot_slug`);
+
   // The unified work-item lookup probes the issue family too (getIssue's
   // ISSUE_COLS) — columns later migrations (136/142/152/178) added to the
   // mig-131 table, condensed here since those migrations touch tables this

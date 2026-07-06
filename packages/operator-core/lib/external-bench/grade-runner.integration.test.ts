@@ -36,6 +36,9 @@ beforeAll(async () => {
   sql = db.sql as unknown as OrgSql;
   await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
   await db.sql.unsafe(migrationSql('298-bench-run-infra-excluded.sql'));
+  // D-007 pot-rename: mig 296 creates bench_runs.hive_slug; mig 523 renamed it → pot_slug.
+  // Replaying only 296/298 predates the rename, so apply it in-place to match the write path.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.bench_runs RENAME COLUMN hive_slug TO pot_slug`);
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.bench_runs       DISABLE ROW LEVEL SECURITY;
     ALTER TABLE harness_shared.bench_run_tasks  DISABLE ROW LEVEL SECURITY;

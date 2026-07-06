@@ -7,9 +7,6 @@
  * Mirrors the datatype-registry fixture: createOrgTestDb + apply 421 + 425.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertDatatype,
@@ -24,7 +21,6 @@ import {
 } from './datatype-registry-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 async function declare(db: OrgTestDb, ws: string, id: string) {
   return upsertDatatype(db.adminSql, {
@@ -42,9 +38,11 @@ describe('datatype publish + moderation lifecycle (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '426-datatype-approved-global-read.sql'), 'utf8'));
+    // createOrgTestDb applies the FULL migration set (incl. 421/425/426 and the D-007
+    // pot-rename 506/523), so datatype_registry already exists in its post-rename
+    // (pot_slug) shape. (Replaying 421 verbatim here is now redundant AND re-runs its
+    // old hive_slug index against the post-523 schema, 42703-ing "column hive_slug
+    // does not exist".)
   }, 120_000);
 
   afterAll(async () => {
