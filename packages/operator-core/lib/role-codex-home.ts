@@ -230,6 +230,20 @@ const CODEX_TUI_TOML = [
   '',
 ] as const;
 
+// WI-3278: bake the approvals/sandbox bypass into config.toml so it survives any
+// codex relaunch that drops the CLI flags (the claude twin lost its ENTIRE argv
+// to a 2.1.20x self-re-exec on the Windows VM — same argv-proofing here). The
+// launcher's --dangerously-bypass-approvals-and-sandbox stays as the fast path.
+// ROOT-LEVEL keys — must be emitted before the first [table] header.
+const CODEX_DANGER_TOML = [
+  '# psu/role sessions run with full approvals/sandbox bypass (owner mandate:',
+  '# psu-launched agents get the most dangerous permissions — WI-3278). Config-',
+  '# level so the grant survives a relaunch that drops the CLI flags.',
+  'approval_policy = "never"',
+  'sandbox_mode = "danger-full-access"',
+  '',
+] as const;
+
 /** Trust state for the generated home's config.toml.
  *
  *  Two sources, one emission point (TOML forbids duplicate table headers):
@@ -493,6 +507,7 @@ export function writeRoleCodexHome(opts: {
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
   const toml = [
     ...gatewayConfig.root,
+    ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
@@ -731,6 +746,7 @@ export function writeSuCodexHome(opts: {
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
   const toml = [
     ...gatewayConfig.root,
+    ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,

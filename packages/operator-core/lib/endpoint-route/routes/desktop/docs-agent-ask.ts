@@ -55,15 +55,19 @@ async function docsQaEnabled(): Promise<boolean> {
 
 /** Any agent backend the operator can actually drive a turn on? The PAPERCUSP_FAKE_LLM
  *  test seam counts (same gate the docs-qa path uses). A launch with NO backend would
- *  open a dead terminal, so we route the tutorial to Setup instead (needs_backend). */
-async function anyBackendAvailable(): Promise<boolean> {
+ *  open a dead terminal, so we route the tutorial to Setup instead (needs_backend).
+ *  The sign-in probes are synchronous (filesystem checks); guard each so a probe throw
+ *  never turns into a false "no backend". */
+function anyBackendAvailable(): boolean {
   if (process.env.PAPERCUSP_FAKE_LLM) return true;
-  const [claude, codex, omp] = await Promise.all([
-    claudeSignedIn().catch(() => false),
-    codexSignedIn().catch(() => false),
-    ompSignedIn().catch(() => false),
-  ]);
-  return claude || codex || omp;
+  const probe = (fn: () => boolean): boolean => {
+    try {
+      return fn();
+    } catch {
+      return false;
+    }
+  };
+  return probe(claudeSignedIn) || probe(codexSignedIn) || probe(ompSignedIn);
 }
 
 /**
@@ -155,7 +159,7 @@ const docsAgentAsk = defineTool({
 
     // No signed-in backend ⇒ a launched terminal would be a dead psu shell. Tell
     // the tutorial to route to Setup (same UX as the old needs_backend path).
-    if (!(await anyBackendAvailable())) {
+    if (!anyBackendAvailable()) {
       return Response.json({ status: 'needs_backend' });
     }
 
