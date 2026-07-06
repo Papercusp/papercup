@@ -12,8 +12,8 @@
  *   - claude     → Anthropic (Claude Pro/Max). Writes
  *                  `~/.claude/.credentials.json` — read at runtime by
  *                  the stateless anthropic-direct LLM client (judges,
- *                  sim-users, summarisers) and by Meridian for omp
- *                  users, so neither needs a separate Anthropic login.
+ *                  sim-users, summarisers), so it needs no separate
+ *                  Anthropic login.
  *   - codex      → Codex CLI. Spawns `codex login`. Writes
  *                  `~/.codex/auth.json`, which Papercusp isolated
  *                  CODEX_HOME launches symlink for ChatGPT/Codex auth.

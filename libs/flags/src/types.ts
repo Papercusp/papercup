@@ -35,7 +35,7 @@ export const FLAGS = {
   // implementer in a dedicated runner harness and lands via the release gate).
   IMPROVEMENT_AUTO_IMPLEMENT: "papercusp-improvement-auto-implement",
   // self-improvement-consume-edges-2026-06-12 P-003 (D-002): the composite
-  // "learning system offline/degraded" status — meridian reachability + runner
+  // "learning system offline/degraded" status — llm-spine reachability + runner
   // spawn path + gym circuit → ONE Learning-tab chip + an owner notification on
   // the transition to offline. Infra failures escalate; they don't queue.
   LEARNING_INFRA_HEALTH: "papercusp-learning-infra-health",

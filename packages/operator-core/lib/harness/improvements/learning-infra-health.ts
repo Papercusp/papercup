@@ -15,8 +15,7 @@
  *     ride it. TWO dimensions, because the real egress changed under this leg:
  *     (1) CREDENTIAL — a transport resolves (live Claude session →
  *     anthropic-direct) on the SAME resolution the real calls use, never a
- *     :3456 TCP probe (the retired Meridian router not running is the healthy
- *     state — B-01, agent-insights/gym-boot-readiness-and-meridian-topology);
+ *     network port probe;
  *     (2) GATEWAY — when INFERENCE_GATEWAY is ON those in-process calls egress
  *     through the localhost pacing gateway (operator-spawn + autoloop-cycle
  *     point ANTHROPIC_BASE_URL/PAPERCUSP_ANTHROPIC_URL at it), which can be DOWN

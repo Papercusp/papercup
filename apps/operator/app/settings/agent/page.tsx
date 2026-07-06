@@ -497,7 +497,7 @@ export default function AgentSettingsPage() {
       <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FormField
           label="Backend (sets AGENT_BACKEND)"
-          description={"The CLI the orchestrator + " + t('pot', { lower: true }) + " drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."}
+          description={"The CLI the orchestrator + " + t('pot', { lower: true }) + " drive. 'omp' is the default. 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."}
         >
           <div role="radiogroup" aria-label="Agent backend" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (

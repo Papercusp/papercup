@@ -127,7 +127,7 @@ describe('classifyIdeaType — D-005 taxonomy', () => {
     expect(
       classifyIdeaType({
         scope: 'operator',
-        watchdogKey: 'service-down:meridian',
+        watchdogKey: 'service-down:postgres',
         paths: ['apps/operator/prompts/judge.md'],
       }).type,
     ).toBe('infra-environment');
@@ -224,7 +224,7 @@ describe('summarizeTriages', () => {
   it('highlights high-priority ideas with their taxonomy class', () => {
     const summary = summarizeTriages([
       idea({ id: 'h1', score: 50, ideaType: 'code-bug', tier: 'auto', title: 'hot bug' }),
-      idea({ id: 'h2', score: 45, ideaType: 'infra-environment', title: 'meridian down' }),
+      idea({ id: 'h2', score: 45, ideaType: 'infra-environment', title: 'postgres down' }),
     ]);
     expect(summary.highlights).toHaveLength(2);
     expect(summary.highlights[0]).toContain('code-bug');

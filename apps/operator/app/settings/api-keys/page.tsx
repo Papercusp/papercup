@@ -125,8 +125,7 @@ export default function ApiKeysPage() {
       <section className="pc-settings-section">
         <h2>API keys — Core</h2>
         <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
-          Default backend is <code>omp</code> via Meridian — uses your Claude Max
-          subscription (no API key needed). Set an Anthropic key only if you switch
+          Default backend is <code>omp</code>. Set an Anthropic key only if you switch
           to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
           Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
           PAT is needed only when publishing {t('pot', { plural: true, lower: true })} to the marketplace.
@@ -135,7 +134,7 @@ export default function ApiKeysPage() {
         <form onSubmit={submit(onSubmit)} className="pc-card">
         <SecretField
           label="Anthropic API key"
-          help="Optional. Only needed when AGENT_BACKEND=claude-code and you don&apos;t have a Claude Code OAuth session. omp + Meridian (default) uses your Claude Max subscription instead."
+          help="Optional. Only needed when AGENT_BACKEND=claude-code and you don&apos;t have a Claude Code OAuth session."
           placeholder={masked?.anthropic_api_key ?? 'sk-ant-…'}
           masked={masked?.anthropic_api_key}
           uses={['Claude Code backend']}

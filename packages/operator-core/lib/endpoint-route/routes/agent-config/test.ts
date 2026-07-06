@@ -6,12 +6,12 @@
  * verify that agent CLI is installed, reachable, and authenticated.
  * Returns { ok, finalText, durationMs, costUsd, error?, backend }.
  *
- * Why the selected backend and not Meridian: this is the "Test current
- * backend" button. Probing omp implicitly exercises Meridian too (omp
- * routes through it); probing claude-code exercises the local claude
- * session / Anthropic key. The earlier version hard-pinned `meridian`,
- * so the button validated the background-summary path regardless of the
- * user's choice — green even when their selected agent CLI was broken.
+ * Why probe the selected backend: this is the "Test current backend"
+ * button, so it fires at the backend the user actually chose — omp
+ * exercises the omp CLI; probing claude-code exercises the local claude
+ * session / Anthropic key. An earlier version hard-pinned a single
+ * backend, so the button validated that path regardless of the user's
+ * choice — green even when their selected agent CLI was broken.
  */
 import { runAgentChat } from '../../../agent-chat-stream';
 import { readAgentConfig, effectiveBackend } from '../../../agent-config';

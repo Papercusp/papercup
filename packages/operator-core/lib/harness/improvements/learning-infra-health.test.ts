@@ -5,7 +5,7 @@
 // →offline edge incl. first-seen, recover on the offline→ edge only), the
 // tick's notify-exactly-once-per-transition semantics via the injected seams,
 // and the llm-spine leg's transport-probe mapping (credential presence, NOT a
-// :3456 TCP probe — the retired meridian router not running is the healthy state on this box).
+// network port probe).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StatelessTransportProbe } from '@papercusp/papercusp-shared/agent';
 import {
