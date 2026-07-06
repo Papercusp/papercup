@@ -80,11 +80,14 @@ const CODEX_LOCK_MATCHER = 'apply_patch|Edit|Write';
  *    it into instructions. Now redundant: the guide reaches the session via the
  *    home's AGENTS.md. Capping at 0 drops the cwd read — a single delivery path,
  *    consistent with the claude/omp isolation.
- *  - `[features] memory_tool = false` — disable codex's native memory tool (a
- *    codex-0.137 `[features]` flag; `[features] <flag> = false` is the documented
- *    disable) so the agent doesn't read/write the native `memories_*.sqlite` store
- *    and instead uses `memory:*`. (Cross-session that store is ALSO neutralized by
- *    `freshCodexHome` wiping the home each launch; this stops within-session use.)
+ *  - `[features] memories = false` — disable codex's native memory tool so the
+ *    agent doesn't read/write the native `memories_*.sqlite` store and instead uses
+ *    `memory:*`. (Cross-session that store is ALSO neutralized by `freshCodexHome`
+ *    wiping the home each launch; this stops within-session use.) The flag was
+ *    `memory_tool` through codex 0.137; codex 0.142 renamed it to `memories` and
+ *    `memory_tool` is now a deprecated legacy alias that prints a boot warning
+ *    (`codex doctor`: "legacy alias memory_tool -> memories"). We write the modern
+ *    `memories` key — verified valid under `codex --strict-config` on 0.142.5.
  *
  * Must precede any `[table]` (TOML top-level keys before tables); the `[mcp_servers]`
  * table each writer appends comes after.
@@ -94,7 +97,7 @@ const CODEX_ISOLATION_PREAMBLE = [
   'project_doc_max_bytes = 0',
   '',
   '[features]',
-  'memory_tool = false',
+  'memories = false',
   '',
 ].join('\n');
 

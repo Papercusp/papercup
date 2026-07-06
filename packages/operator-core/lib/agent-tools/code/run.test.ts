@@ -50,7 +50,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import { shapeMutationEcho, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+import { shapeCodeRunLogs, shapeMutationEcho, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -121,6 +121,28 @@ describe('code:run → recipe capture (P-003)', () => {
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(payload.ok).toBe(false);
     expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it('shapes console logs before serializing the code:run payload, without touching the returned summary', async () => {
+    const tool = codeRun();
+    const res = await tool.fn(
+      {
+        script:
+          'console.log("raw \\u001b[31mred\\u001b[0m bell \\u0007 newline\\nnext");\n' +
+          'return { kept: true };',
+      },
+      mkCtx(),
+    );
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({ kept: true });
+    expect(payload.logs).toEqual(['raw red bell  newline next']);
+    expect(payload.logsNotice).toMatchObject({
+      rawCount: 1,
+      shownCount: 1,
+      sanitizedLines: 1,
+      droppedAfterLimit: 0,
+    });
   });
 });
 
@@ -388,5 +410,48 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     }) as Record<string, unknown>;
     expect(shaped.okFalseWarning).toBeUndefined();
     expect(shaped.okFalseMutations).toBeUndefined();
+  });
+});
+
+describe('code:run → log shaping (WI-3127)', () => {
+  const base = { ok: true as const, summary: { done: true }, dryRun: false, plannedMutations: [] as unknown[] };
+
+  it('strips terminal escapes/control characters while preserving the script summary', () => {
+    const shaped = shapeCodeRunLogs({
+      ...base,
+      logs: ['start \u001b[31mred\u001b[0m \u0007 \nnext'],
+    }) as Record<string, unknown>;
+    expect(shaped.summary).toEqual({ done: true });
+    expect(shaped.logs).toEqual(['start red   next']);
+    expect(shaped.logsNotice).toMatchObject({
+      rawCount: 1,
+      shownCount: 1,
+      sanitizedLines: 1,
+      truncatedLines: 0,
+      droppedAfterLimit: 0,
+    });
+  });
+
+  it('collapses adjacent duplicate lines, truncates oversized lines, and caps the shown log list', () => {
+    const logs = ['same', 'same', 'x'.repeat(1_010), ...Array.from({ length: 90 }, (_, i) => `unique-${i}`)];
+    const shaped = shapeCodeRunLogs({
+      ...base,
+      logs,
+    }) as { logs: string[]; logsNotice: Record<string, unknown> };
+    expect(shaped.logs).toContain('[previous code:run log line repeated 1 more time]');
+    expect(shaped.logs.some((line) => line.includes('[truncated 10 chars]'))).toBe(true);
+    expect(shaped.logs.length).toBe(80);
+    expect(shaped.logsNotice).toMatchObject({
+      rawCount: 93,
+      shownCount: 80,
+      adjacentDuplicatesCollapsed: 1,
+      truncatedLines: 1,
+      droppedAfterLimit: 13,
+    });
+  });
+
+  it('leaves already-small clean logs unchanged', () => {
+    const r = { ...base, logs: ['one', 'two'] };
+    expect(shapeCodeRunLogs(r)).toBe(r);
   });
 });

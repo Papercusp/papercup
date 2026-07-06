@@ -175,7 +175,7 @@ export default defineTool({
     // batch (e.g. 600+ set_priority calls) — even when the script's own `summary` is tiny — and
     // forces the agent to split one logical write across many code:run calls. shapeMutationEcho
     // swaps it for a compact { count, byTool } summary on a committing run.
-    const shownResult = shapeMutationEcho(result);
+    const shownResult = shapeCodeRunLogs(shapeMutationEcho(result));
 
     const payload =
       similarRecipes.length > 0 || facadeHelp
@@ -265,6 +265,109 @@ type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
 const DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET = 20_000;
 const DRY_RUN_MUTATION_SAMPLE_LIMIT = 12;
 const DRY_RUN_MUTATION_SAMPLE_PER_TOOL_LIMIT = 3;
+const CODE_RUN_LOG_LINE_LIMIT = 80;
+const CODE_RUN_LOG_LINE_CHAR_BUDGET = 1_000;
+
+const ANSI_OSC_PATTERN = /\x1B\][\s\S]*?(?:\x07|\x1B\\)/g;
+const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_SINGLE_PATTERN = /\x1B[@-Z\\-_]|\x9B[0-?]*[ -/]*[@-~]/g;
+const CONTROL_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+
+interface CodeRunLogsNotice {
+  rawCount: number;
+  shownCount: number;
+  adjacentDuplicatesCollapsed: number;
+  sanitizedLines: number;
+  truncatedLines: number;
+  droppedAfterLimit: number;
+  note: string;
+}
+
+/**
+ * WI-3127: the code:run sandbox does not expose require/process, so a script cannot shell out
+ * with execSync. It can still write arbitrary console text, and that text is serialized back in
+ * the agent-facing `logs` field. Shape that side channel here: keep the script's returned summary
+ * untouched, but strip terminal/control noise and bound repetitive or oversized logs.
+ */
+export function shapeCodeRunLogs<T extends Record<string, unknown>>(
+  result: T,
+): T | (T & { logs: string[]; logsNotice: CodeRunLogsNotice }) {
+  const logs = result.logs;
+  if (!Array.isArray(logs)) return result;
+
+  let sanitizedLines = 0;
+  let truncatedLines = 0;
+  let adjacentDuplicatesCollapsed = 0;
+  const normalized = logs.map((entry) => {
+    const raw = typeof entry === 'string' ? entry : String(entry);
+    const sanitized = sanitizeCodeRunLogLine(raw);
+    if (sanitized !== raw) sanitizedLines++;
+    if (sanitized.length <= CODE_RUN_LOG_LINE_CHAR_BUDGET) return sanitized;
+    truncatedLines++;
+    return (
+      sanitized.slice(0, CODE_RUN_LOG_LINE_CHAR_BUDGET) +
+      `... [truncated ${sanitized.length - CODE_RUN_LOG_LINE_CHAR_BUDGET} chars]`
+    );
+  });
+
+  const deduped: string[] = [];
+  let previous: string | undefined;
+  let repeatCount = 0;
+  const flush = () => {
+    if (previous === undefined) return;
+    deduped.push(previous);
+    if (repeatCount > 1) {
+      const collapsed = repeatCount - 1;
+      adjacentDuplicatesCollapsed += collapsed;
+      deduped.push(`[previous code:run log line repeated ${collapsed} more time${collapsed === 1 ? '' : 's'}]`);
+    }
+  };
+  for (const line of normalized) {
+    if (line === previous) {
+      repeatCount++;
+      continue;
+    }
+    flush();
+    previous = line;
+    repeatCount = 1;
+  }
+  flush();
+
+  const limited = deduped.slice(0, CODE_RUN_LOG_LINE_LIMIT);
+  const droppedAfterLimit = Math.max(0, deduped.length - limited.length);
+  if (
+    sanitizedLines === 0 &&
+    truncatedLines === 0 &&
+    adjacentDuplicatesCollapsed === 0 &&
+    droppedAfterLimit === 0
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    logs: limited,
+    logsNotice: {
+      rawCount: logs.length,
+      shownCount: limited.length,
+      adjacentDuplicatesCollapsed,
+      sanitizedLines,
+      truncatedLines,
+      droppedAfterLimit,
+      note:
+        'code:run logs were shaped to keep terminal noise bounded; the script return value in `summary` is unchanged',
+    },
+  };
+}
+
+function sanitizeCodeRunLogLine(raw: string): string {
+  return raw
+    .replace(ANSI_OSC_PATTERN, '')
+    .replace(ANSI_CSI_PATTERN, '')
+    .replace(ANSI_SINGLE_PATTERN, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(CONTROL_PATTERN, '');
+}
 
 /**
  * WI-1377 / WI-1410: shape the mutation echo for the agent-facing result envelope. The full
