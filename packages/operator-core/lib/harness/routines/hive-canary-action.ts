@@ -263,7 +263,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   // failing the deadline even though the loop was healthy). Configurable via the
   // routine payload (featureOrder); default 0 = top of the backlog.
   const canaryOrder = Number.isFinite(Number(payloadTemplate?.featureOrder))
-    ? Math.trunc(Number(payloadTemplate.featureOrder))
+    ? Math.trunc(Number(payloadTemplate?.featureOrder))
     : 0;
   try {
     const inserted = await sql<{ feature_id: string }[]>`

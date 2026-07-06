@@ -193,12 +193,12 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
     // The assembled text MUST be byte-identical (hash match).
     const hash1 = sha256(result1.text);
     const hash2 = sha256(result2.text);
-    expect(hash1).toBe(
-      hash2,
+    expect(
+      hash1,
       'Assembled handoff must be byte-identical across distinct bee spawns (no per-bee leak). ' +
         'The handoff is the stable preamble cached across all bees. ' +
         'If this fails, bee identity or other volatile data leaked into the output.',
-    );
+    ).toBe(hash2);
 
     // Verify the outputs are not empty (actually assembled something).
     expect(result1.text).toBeTruthy();
@@ -227,11 +227,11 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
     // All 5 hashes must be identical.
     const first = hashes[0];
     for (let i = 1; i < hashes.length; i++) {
-      expect(hashes[i]).toBe(
-        first,
+      expect(
+        hashes[i],
         `Bee spawn ${i} produced a different hash. ` +
           'Volatile content (ownerId / spawn-specific data) contaminated the stable handoff.',
-      );
+      ).toBe(first);
     }
   });
 
@@ -254,7 +254,7 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
     // Should also NOT contain any UUID-like patterns.
     const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     const foundUUIDs = result.text.match(uuidPattern);
-    expect(foundUUIDs).toBeNull('Assembled handoff must not contain bee identity UUIDs.');
+    expect(foundUUIDs, 'Assembled handoff must not contain bee identity UUIDs.').toBeNull();
   });
 
   it('inlinePrompt is not injected into the handoff assembly (bee uses promptFile, not inline injection)', async () => {
@@ -328,10 +328,10 @@ describe('assembleSpawnHydration — byte-stability regression lock (WI-188 / P-
     });
 
     // The outputs must be identical despite different nowMs.
-    expect(sha256(baselineResult.text)).toBe(
-      sha256(withDifferentClock.text),
+    expect(
+      sha256(baselineResult.text),
       'Handoff assembly must not leak volatile context (nowMs, timestamps, etc.). ' +
         'The output is the stable prefix cached across all spawns.',
-    );
+    ).toBe(sha256(withDifferentClock.text));
   });
 });
