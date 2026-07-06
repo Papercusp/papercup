@@ -7,7 +7,7 @@
  * (the SQL wiring is exercised by the provisioning integration path).
  */
 import { describe, it, expect } from 'vitest';
-import { reconcileCapabilities } from './provisioning';
+import { normalizeCapabilities, reconcileCapabilities } from './provisioning';
 
 describe('reconcileCapabilities (EI-2048 additive cap reconcile)', () => {
   it('reports the code caps the stored set lacks, and the union to persist', () => {
@@ -41,5 +41,14 @@ describe('reconcileCapabilities (EI-2048 additive cap reconcile)', () => {
   it('preserves stored order then appends the missing caps (stable, deterministic)', () => {
     const { merged } = reconcileCapabilities(['b', 'a'], ['a', 'c']);
     expect(merged).toEqual(['b', 'a', 'c']); // existing order kept; only 'c' appended
+  });
+});
+
+describe('normalizeCapabilities', () => {
+  it('accepts JSON-stringified arrays returned by some postgres jsonb paths', () => {
+    expect(normalizeCapabilities('["memory:read","locks:write",7,null]')).toEqual([
+      'memory:read',
+      'locks:write',
+    ]);
   });
 });
