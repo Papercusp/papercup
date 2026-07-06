@@ -23,6 +23,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine } from './clone-github';
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
@@ -70,6 +71,16 @@ export async function seedBundleEnabled(
   }
 }
 
+async function seedSelfAdmitEnabled(
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_SELF_ADMIT, 'system'),
+): Promise<boolean> {
+  try {
+    return await readFlag();
+  } catch {
+    return true;
+  }
+}
+
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
 
@@ -101,6 +112,13 @@ export interface BootstrapPapercuspHiveResult {
   state: 'already-present' | 'newly-created' | 'cloned-and-created' | 'skipped';
   slug: string | null;
   /** The repo path used (detected local checkout or fresh clone). */
+  path?: string;
+  reason?: string;
+}
+
+export interface SelfAdmitCanonicalResult {
+  state: 'admitted' | 'skipped';
+  slug: string | null;
   path?: string;
   reason?: string;
 }
@@ -185,6 +203,14 @@ export interface BootstrapPapercuspHiveDeps {
     record: BootstrapPapercuspHiveDeps['recordProgress'],
     retry: () => Promise<TriggerDeferredGitRestoreResult>,
   ) => void;
+  /** WI-3232 v1 offline path: when the baked canonical join skips but an installer
+   * seed was restored, materialize a local view of the canonical papercusp hive
+   * instead of requiring GitHub/admission. Default writes the registry + hives
+   * identity row using existing remote-view conventions. */
+  selfAdmitCanonical?: (
+    invite: CanonicalHiveInvite,
+    record: BootstrapPapercuspHiveDeps['recordProgress'],
+  ) => Promise<SelfAdmitCanonicalResult>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -209,6 +235,48 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
   } catch {
     return null;
   }
+}
+
+async function defaultSelfAdmitCanonical(
+  invite: CanonicalHiveInvite,
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+): Promise<SelfAdmitCanonicalResult> {
+  const { mutateHarnessRegistry } = await import('../harness-registry');
+  const { upsertRemoteHiveIdentity } = await import('../hive-store');
+  const { targetRepoDir } = seedTargetDirs();
+
+  try {
+    await mkdir(targetRepoDir, { recursive: true });
+  } catch {
+    /* registry materialization can still proceed; the seed restore owns real contents */
+  }
+
+  await mutateHarnessRegistry(
+    (cur) => {
+      const nextEntry = {
+        slug: PAPERCUSP_HIVE_SLUG,
+        path: targetRepoDir,
+        harness_kind: 'hive',
+        remote_hive: true,
+        hive_pubkey: invite.pubkeyBase64,
+      };
+      const projects = cur.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)
+        ? cur.projects.map((p) => (p.slug === PAPERCUSP_HIVE_SLUG ? { ...p, ...nextEntry } : p))
+        : [...cur.projects, nextEntry];
+      return { ...cur, projects };
+    },
+    PAPERCUSP_WORKSPACE_ID,
+  );
+
+  await upsertRemoteHiveIdentity({
+    workspaceId: PAPERCUSP_WORKSPACE_ID,
+    homeSlug: PAPERCUSP_HIVE_SLUG,
+    pubkeyBase64: invite.pubkeyBase64,
+    keychainId: `remote:${invite.pubkeyBase64}`,
+    title: 'Papercusp',
+  });
+  record?.('clone', 'running', { detail: 'seed: self-admitted canonical Papercusp hive' });
+  return { state: 'admitted', slug: PAPERCUSP_HIVE_SLUG, path: targetRepoDir };
 }
 
 /**
@@ -633,10 +701,12 @@ export async function bootstrapPapercuspHive(
     // join's clone + federation delta-replication transfer only the delta on top.
     // The join below is UNCHANGED. Best-effort: any failure degrades to the cold
     // path and never breaks the join (a seed is untrusted cache).
+    let seedRan = false;
     let gitDeferred = false; // P-010 live-wire 2: the encrypted git seed awaits its post-admission key.
     try {
       const restore = deps.restoreSeed ?? defaultRestoreHiveSeed;
       const seedRes = await restore(record);
+      seedRan = seedRes.ran;
       if (seedRes.deferred.includes('git')) gitDeferred = true;
       if (seedRes.ran) {
         const restored = seedRes.outcomes.filter((o) => o.ok).map((o) => o.kind);
@@ -650,6 +720,34 @@ export async function bootstrapPapercuspHive(
 
     const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
     const joinRes = await joinCanonical(canonicalInvite, { record });
+    if (joinRes.state !== 'joined' && seedRan && (await seedSelfAdmitEnabled())) {
+      try {
+        if (gitDeferred) {
+          const restoreDeferred = deps.restoreDeferredGitSeed ?? defaultRestoreDeferredGitSeed;
+          const gitRes = await restoreDeferred(record);
+          if (gitRes.restored.length || gitRes.stillDeferred.length) {
+            console.warn(
+              `[papercusp-hive] offline seed git restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
+            );
+          }
+          if (gitRes.stillDeferred.includes('git')) {
+            return { state: 'skipped', slug: joinRes.slug, reason: joinRes.reason };
+          }
+        }
+        const selfAdmit = deps.selfAdmitCanonical ?? defaultSelfAdmitCanonical;
+        const selfRes = await selfAdmit(canonicalInvite, record);
+        if (selfRes.state === 'admitted') {
+          setHome(PAPERCUSP_WORKSPACE_ID);
+          record('clone', 'done', { detail: 'offline seed self-admit' });
+          record('submodules', 'skipped', { detail: 'seed restore' });
+          return { state: 'cloned-and-created', slug: selfRes.slug, path: selfRes.path };
+        }
+      } catch (e) {
+        console.warn(
+          `[papercusp-hive] offline seed self-admit failed (non-fatal; retry join): ${(e as Error)?.message ?? e}`,
+        );
+      }
+    }
 
     // P-010 live-wire 2: POST-ADMISSION git-restore. The join above admitted this
     // device + delivered the hive epoch keys, so the deferred (encrypted) git seed is

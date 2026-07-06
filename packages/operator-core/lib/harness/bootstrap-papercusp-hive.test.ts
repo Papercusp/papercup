@@ -237,9 +237,9 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     warn.mockRestore();
   });
 
-  it('P-010: post-admission restore is SKIPPED when the join did NOT succeed (no admission ⇒ no key)', async () => {
+  it('P-010: post-admission restore is SKIPPED when the join did NOT succeed and no seed ran', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreSeed = vi.fn(async () => ({ ran: false, outcomes: [], deferred: [] }));
     const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
     const deps = spyDeps({
       canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
@@ -400,6 +400,48 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(res.reason).toMatch(/not announcing yet/);
     expect(joinCanonical).toHaveBeenCalledOnce();
     expect(deps.ensureHive).not.toHaveBeenCalled();
+  });
+
+  it('WI-3232: when canonical join skips offline but a bundled seed restored, self-admits locally', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const joinCanonical = vi.fn(async () => ({
+      state: 'skipped' as const,
+      slug: null,
+      reason: 'canonical hive not announcing yet (owner offline)',
+    }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ restored: ['git'], stillDeferred: [] }));
+    const selfAdmitCanonical = vi.fn(async () => ({
+      state: 'admitted' as const,
+      slug: PAPERCUSP_HIVE_SLUG,
+      path: '/clones/papercusp',
+    }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      joinCanonical,
+      restoreSeed,
+      restoreDeferredGitSeed,
+      selfAdmitCanonical,
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    expect(res).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG, path: '/clones/papercusp' });
+    expect(restoreSeed).toHaveBeenCalledOnce();
+    expect(restoreDeferredGitSeed).toHaveBeenCalledOnce();
+    expect(selfAdmitCanonical).toHaveBeenCalledWith(
+      { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      expect.any(Function),
+    );
+    expect(deps.ensureHive).not.toHaveBeenCalled();
+    expect(deps.clone).not.toHaveBeenCalled();
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    warn.mockRestore();
   });
 
   it('no-ops on auth_required (gh not signed in) — leaves home untouched so the next boot retries', async () => {

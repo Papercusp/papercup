@@ -1052,6 +1052,13 @@ export const FLAGS = {
   // → null ⇒ cold join regardless). Read at the two bootstrap restore call sites
   // (bootstrap-papercusp-hive.ts). NOT in KNOWN_DARK_FLAGS.
   HIVE_SEED_BUNDLE: "papercusp-hive-seed-bundle",
+  // WI-3232 (owner v1 directive): a packaged install with the bundled papercusp seed
+  // must materialize a LOCAL papercusp hive offline (no GitHub login, no federation
+  // admission) by adopting the canonical hive identity from the baked invite and the
+  // installer seed. DEFAULT ON (not in DARK_FLAGS): v1 explicitly excludes the
+  // federation dependency; OFF restores the pre-WI-3232 behavior where a skipped
+  // canonical join retries next boot.
+  HIVE_SEED_SELF_ADMIT: "papercusp-hive-seed-self-admit",
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
   // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a
   // warm su session N sec after each turn settles). DEFAULT ON (WI-612): the B-LOOP-1..5
