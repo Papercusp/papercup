@@ -6,6 +6,7 @@ import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } f
 import { devDistPrunePlugin, shouldRetainDistChunks } from './dev-dist-prune';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
+import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -192,6 +193,12 @@ export default defineConfig({
       // perf sweep (2026-06-23). Measured: drops the eager src-* mega-chunks.
       autoCodeSplitting: true,
     }),
+    // WI-2902: give the autoCodeSplitting route-component chunk loads the same
+    // retry the React shell already has. Runs `post` (after the splitter's
+    // `pre` transform) to rewrite the emitted `lazyRouteComponent` import to our
+    // retry wrapper. Without this, a transient chunk-fetch failure on first boot
+    // (operator event-loop starvation) dead-ends at the fatal route error card.
+    tanstackLazyRetryPlugin(),
     react(),
     // Retain-regime builds retain+prune old chunks (emptyOutDir:false); a
     // clean-empty build (release/CI) instead gets the dist-wipe guard so it

@@ -1129,8 +1129,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     if (stashRepoPath) {
       await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, stashRepoPath));
     }
-  } catch (e) {
-    console.warn(`[git-sync] ${slug}: stash-check repo-path resolution failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+  } catch {
+    // Best-effort, silent degrade — mirrors loadAttributionRoster's fallback above:
+    // an unresolvable repo path (or a load-graph hiccup) skips this courtesy check,
+    // never the tick itself.
   }
 
   // P-003: count any tick whose errors[] is non-empty — a sibling push failure that

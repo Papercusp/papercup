@@ -327,18 +327,57 @@ export async function step2_cloneRepo(opts: {
   // reset fails, remove the clone and report a redacted failure rather than
   // leaving credentials on disk.
   if (token) {
-    try {
-      await exF('git', [
-        '-C', cloneDir, 'remote', 'set-url', 'origin', cleanCloneUrl(githubFullName),
-      ]);
-    } catch (e: unknown) {
-      await rm(cloneDir, { recursive: true, force: true }).catch(() => {});
-      const msg = e instanceof Error ? e.message : String(e);
-      throw new JoinStepError('clone_repo', 'origin_detokenize_failed', redactToken(msg).slice(0, 300));
-    }
+    await ensureDetokenizedOrigin(exF, cloneDir, githubFullName);
   }
 
   return { cloneDir };
+}
+
+/**
+ * WI-3057: verify `origin` carries no embedded GitHub token, repairing it via
+ * `set-url` if it does — regardless of whether the CURRENT call passed a
+ * token, since this also guards the "adopt an existing clone" idempotency
+ * path (an earlier clone's de-tokenize could predate this fix, have failed
+ * silently, or raced a kill, leaving a stale plaintext token on disk).
+ *
+ * Hard postcondition, not best-effort: read back the origin URL after
+ * `set-url` and confirm it is actually clean (an ignored/racing git config
+ * write could otherwise leave the token in place while looking successful).
+ * On any failure to reach a clean origin, remove the clone dir and throw a
+ * redacted error — never leave a directory with a known-tokenized origin.
+ */
+async function ensureDetokenizedOrigin(
+  exF: (
+    file: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number; env?: NodeJS.ProcessEnv },
+  ) => Promise<{ stdout: string; stderr: string }>,
+  cloneDir: string,
+  githubFullName: string,
+): Promise<void> {
+  let currentUrl: string;
+  try {
+    const { stdout } = await exF('git', ['-C', cloneDir, 'remote', 'get-url', 'origin']);
+    currentUrl = stdout.trim();
+  } catch {
+    // No readable `origin` remote — nothing to de-tokenize here; a missing
+    // remote is a different failure class handled elsewhere (e.g. a later
+    // fetch/push step), not this security invariant.
+    return;
+  }
+  if (!/x-access-token:/.test(currentUrl)) return; // already clean
+
+  try {
+    await exF('git', ['-C', cloneDir, 'remote', 'set-url', 'origin', cleanCloneUrl(githubFullName)]);
+    const { stdout: after } = await exF('git', ['-C', cloneDir, 'remote', 'get-url', 'origin']);
+    if (/x-access-token:/.test(after.trim())) {
+      throw new Error('origin still carries a token after set-url');
+    }
+  } catch (e: unknown) {
+    await rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new JoinStepError('clone_repo', 'origin_detokenize_failed', redactToken(msg).slice(0, 300));
+  }
 }
 
 // ─── step 3: publish_binding ─────────────────────────────────────────────────
