@@ -297,6 +297,29 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
   });
 
+  // EI-7871 (WI-3082 follow-up): this route is the one chokepoint every
+  // launch-blueprint spawn (queen/overwatch/doc-steward/sentinel/scan/deploy/…)
+  // traverses, and previously stamped no PAPERCUSP_TURN_TRIGGER at all — every
+  // such run's agent_usage_samples.turn_trigger stayed NULL. Every caller of this
+  // route fires from a scheduled/system trigger, never a live human, so 'cron' is
+  // the correct default.
+  it('EI-7871: defaults PAPERCUSP_TURN_TRIGGER to cron when the body carries none', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_TURN_TRIGGER: 'cron' });
+  });
+
+  it('EI-7871: a caller-supplied body.turnTrigger overrides the cron default (e.g. a genuine coord-wake fresh-launch)', async () => {
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=queen',
+      post({ turnTrigger: 'coord-wake' }),
+    );
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_TURN_TRIGGER: 'coord-wake' });
+  });
+
   // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay. For the QUEEN's own
   // wake the kickoff is a terse wake-reason that would render as a misleading
   // self-addressed overlay — and her wake reason is already in the wake brief's
