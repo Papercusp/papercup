@@ -23,6 +23,10 @@ const h = vi.hoisted(() => ({
   // The fake operator_settings KV: key → 'true' | 'false'.
   kv: new Map<string, string>(),
   upserts: [] as Array<{ key: string; value: string }>,
+  // WI-3193: the set of CURRENTLY-REGISTERED kind:'hive' slugs the fake harness
+  // registry reports. anyHivePlacementStarted now intersects the started rows with
+  // this, so a stale started-row for an UNREGISTERED slug can't pin the loop alive.
+  registeredHives: [] as string[],
 }));
 
 // A fake tagged-template SQL that reads/writes h.kv by statement text + bound key.
@@ -56,6 +60,14 @@ vi.mock('../workspace-brain-scope', async (importActual) => {
   const actual = await importActual<typeof import('../workspace-brain-scope')>();
   return { ...actual, isWorkspaceCoordinationOn: h.isWorkspaceCoordinationOn };
 });
+// WI-3193: fake harness registry so anyHivePlacementStarted's registered-hive
+// intersection is deterministic — reports each slug in h.registeredHives as a
+// kind:'hive' project (the only field the intersection reads).
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({
+    projects: h.registeredHives.map((slug) => ({ slug, harness_kind: 'hive' })),
+  })),
+}));
 
 import {
   getHiveStarted,
@@ -227,10 +239,31 @@ describe('anyHivePlacementStarted — the sentinel-idle gate for pot:pause (WI-1
   // pot:pause idles the workspace Queen LOOP (sentinel off) ONLY when NO OTHER
   // hive remains started (excludeSlug = the just-stopped hive), so the single loop
   // keeps running for the other started hives.
-  it('true when another hive remains started → keep the workspace loop running', async () => {
+  it('true when another REGISTERED hive remains started → keep the workspace loop running', async () => {
+    h.registeredHives = ['forms', 'sheets'];
     h.kv.set(`hive_started:${WS}:forms`, 'true');
     h.kv.set(`hive_started:${WS}:sheets`, 'true');
-    // Stopping `forms` — `sheets` is still started.
+    // Stopping `forms` — `sheets` is still started AND registered.
+    expect(await anyHivePlacementStarted(WS, 'forms')).toBe(true);
+  });
+
+  // WI-3193 recurrence guard (owner-reported "I clicked Stop and it kept running"):
+  // a stale started-row for a hive NO LONGER in the registry must NOT keep the loop
+  // alive, else pot:pause can never idle the workspace Queen (sentinel stays true →
+  // watchdog re-arms the wake ~30s later; the declare_wake paused-gate never trips).
+  it('false when the only other started row is a STALE UNREGISTERED slug → idle the loop', async () => {
+    h.registeredHives = ['forms']; // `sheets` was dissolved/never-registered
+    h.kv.set(`hive_started:${WS}:forms`, 'true');
+    h.kv.set(`hive_started:${WS}:sheets`, 'true'); // stale leftover row
+    // Stopping `forms` — `sheets` is started in the KV but is NOT a registered hive.
+    expect(await anyHivePlacementStarted(WS, 'forms')).toBe(false);
+  });
+
+  it('fail-open: an unreadable registry falls back to the unfiltered result (keeps a started sibling alive)', async () => {
+    const reg = await import('../harness-registry');
+    (reg.loadHarnessRegistry as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('registry down'));
+    h.kv.set(`hive_started:${WS}:forms`, 'true');
+    h.kv.set(`hive_started:${WS}:sheets`, 'true');
     expect(await anyHivePlacementStarted(WS, 'forms')).toBe(true);
   });
 

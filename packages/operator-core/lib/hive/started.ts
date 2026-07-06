@@ -116,9 +116,30 @@ export async function setHivePlacementStarted(
  */
 export async function anyHivePlacementStarted(workspaceId: string, excludeSlug?: string): Promise<boolean> {
   const rows = await readStartedRows();
-  return rows.some(
+  const candidates = rows.filter(
     (r) => r.workspaceId === workspaceId && r.installSlug !== workspaceId && r.installSlug !== excludeSlug,
   );
+  if (candidates.length === 0) return false;
+  // WI-3193 (owner-reported: "I clicked Stop / paused the mug and it kept running"):
+  // ONLY a CURRENTLY-REGISTERED hive keeps the workspace Queen loop alive. A stale
+  // `hive_started:<ws>:<slug>='true'` row left behind by a dead/unregistered test-hive
+  // must NOT pin loopIdle=false forever — that made pot:pause skip idling the Queen
+  // (the sentinel stayed `true`, so the liveness watchdog re-armed the wake within its
+  // ~30s tick AND the declare_wake paused-gate never tripped), so the UI "Stop" flipped
+  // the per-hive placement bit but the hive kept waking. Intersect the started rows with
+  // the registry's kind:'hive' slugs. Fail-open to the prior (unfiltered) result if the
+  // registry is unreadable — a rare, transient case where we must not wrongly idle a
+  // legitimately-running sibling hive.
+  try {
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    const registeredHiveSlugs = new Set(
+      reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug),
+    );
+    return candidates.some((r) => registeredHiveSlugs.has(r.installSlug));
+  } catch {
+    return candidates.length > 0;
+  }
 }
 
 /** Parse the raw `hive_started:<ws>:<install>` rows currently marked started. */
