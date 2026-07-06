@@ -254,7 +254,6 @@ async function main() {
         const specKey = {
           claude: 'loginClaude',
           codex: 'loginCodex',
-          'omp-meridian': 'loginOmp',
         }[stage.framework];
         await runSpec(cmds[specKey]);
         // Not signed in yet (user aborted / flow needs a browser round-trip)?

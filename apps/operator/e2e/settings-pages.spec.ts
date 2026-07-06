@@ -26,7 +26,6 @@ const SETTINGS_PAGES = [
   '/settings/user',
   '/settings/user/search',
   '/settings/user/memory',
-  '/settings/meridian',
   '/settings/publishing',
   '/settings/plugin-runtime',
 ];

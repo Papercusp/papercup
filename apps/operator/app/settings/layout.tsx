@@ -76,10 +76,9 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     links: [
       { href: '/settings/setup-wizard', label: 'Setup Wizard (classic)', keywords: ['setup', 'wizard', 'onboarding', 'first run', 'install', 'permissions', 'workspace', 'keys', 'login', 'pair', 'fallback', 'classic', 'gui'], advanced: true },
       { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference', 'harness'], advanced: true },
-      { href: '/settings/agent', label: 'AI backend', keywords: ['agent backend', 'claude', 'omp', 'meridian', 'models', 'roles', 'command'], advanced: true },
+      { href: '/settings/agent', label: 'AI backend', keywords: ['agent backend', 'claude', 'omp', 'models', 'roles', 'command'], advanced: true },
       { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction'], advanced: true },
       { href: '/settings/omp-integration', label: 'OMP integration', keywords: ['omp', 'engineer collaborator', 'omp-su', 'wrapper', 'mcp', 'integration'], advanced: true },
-      { href: '/settings/meridian', label: 'Meridian', keywords: ['meridian', 'telemetry', 'profiles', 'iframe'], advanced: true },
       { href: '/settings/plugin-runtime', label: 'Plugin runtime', keywords: ['plugin', 'runtime', 'hooks', 'load errors', 'cache'], advanced: true },
       { href: '/settings/backups', label: 'Backups', keywords: ['backup', 'backups', 'kopia', 'snapshot', 'restore', 'retention', 'dedup'], advanced: true },
       { href: '/settings/storage', label: 'Storage', keywords: ['storage', 'disk', 'trim', 'prune', 'reclaim', 'cleanup', 'cache', 'usage', 'space', 'vacuum', 'transcripts', 'telemetry'], advanced: true },

@@ -129,7 +129,7 @@ export function setupChecklist(snapshot, labels = {}) {
     : s.codexInstalled
       ? labels.codex ?? 'Codex'
       : s.ompInstalled
-        ? labels['omp-meridian'] ?? 'OMP'
+        ? 'oh-my-pi'
         : null;
   return [
     {
@@ -813,9 +813,7 @@ async function runSetupStep(base, status, prompts, session) {
     case 'login': {
       say(`${bold(labels[stage.framework] ?? stage.framework)} is installed — let's sign you in.`);
       const cmds = await api(base, '/desktop/setup-pty-commands');
-      const specKey = { claude: 'loginClaude', codex: 'loginCodex', 'omp-meridian': 'loginOmp' }[
-        stage.framework
-      ];
+      const specKey = { claude: 'loginClaude', codex: 'loginCodex' }[stage.framework];
       if (cmds[specKey]) await runSpec(cmds[specKey]);
       return;
     }
@@ -1178,9 +1176,10 @@ async function main() {
     setup: {
       entered: false,
       // The Setup tab's own concierge session; seed the picked framework from --agent
-      // so a first-run handoff doesn't re-ask which framework.
+      // so a first-run handoff doesn't re-ask which framework. omp is no longer an
+      // onboarding framework (only claude/codex) — an omp agent falls back to the picker.
       session: {
-        chosen: args.agent === 'omp' ? 'omp-meridian' : args.agent || null,
+        chosen: args.agent === 'omp' ? null : args.agent || null,
         forcePick: false,
         embeddingsSkipped: false,
       },

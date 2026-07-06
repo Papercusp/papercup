@@ -12,7 +12,6 @@ function snap(overrides: Partial<OnboardingSnapshot> = {}): OnboardingSnapshot {
     claudeInstalled: false,
     codexInstalled: false,
     ompInstalled: false,
-    meridianInstalled: false,
     claudeSignedIn: false,
     codexSignedIn: false,
     ompSignedIn: false,
@@ -23,27 +22,23 @@ function snap(overrides: Partial<OnboardingSnapshot> = {}): OnboardingSnapshot {
 }
 
 describe('allowedFrameworks', () => {
-  it('excludes omp-meridian on win32 (D-006: no omp on Windows v1)', () => {
+  it('offers claude + codex on every OS (meridian decommissioned)', () => {
     expect(allowedFrameworks('win32')).toEqual(['claude', 'codex']);
-  });
-  it('offers all three elsewhere', () => {
-    expect(allowedFrameworks('linux')).toEqual(['claude', 'codex', 'omp-meridian']);
-    expect(allowedFrameworks('darwin')).toEqual(['claude', 'codex', 'omp-meridian']);
+    expect(allowedFrameworks('linux')).toEqual(['claude', 'codex']);
+    expect(allowedFrameworks('darwin')).toEqual(['claude', 'codex']);
   });
 });
 
 describe('frameworkInstalled / frameworkSignedIn', () => {
-  it('omp-meridian needs BOTH halves installed', () => {
-    expect(frameworkInstalled('omp-meridian', snap({ ompInstalled: true }))).toBe(false);
-    expect(frameworkInstalled('omp-meridian', snap({ meridianInstalled: true }))).toBe(false);
-    expect(
-      frameworkInstalled('omp-meridian', snap({ ompInstalled: true, meridianInstalled: true })),
-    ).toBe(true);
+  it('maps per-framework installed flags', () => {
+    expect(frameworkInstalled('claude', snap({ claudeInstalled: true }))).toBe(true);
+    expect(frameworkInstalled('codex', snap({ claudeInstalled: true }))).toBe(false);
+    expect(frameworkInstalled('codex', snap({ codexInstalled: true }))).toBe(true);
   });
   it('maps per-framework sign-in flags', () => {
     expect(frameworkSignedIn('claude', snap({ claudeSignedIn: true }))).toBe(true);
     expect(frameworkSignedIn('codex', snap({ claudeSignedIn: true }))).toBe(false);
-    expect(frameworkSignedIn('omp-meridian', snap({ ompSignedIn: true }))).toBe(true);
+    expect(frameworkSignedIn('codex', snap({ codexSignedIn: true }))).toBe(true);
   });
 });
 
@@ -82,7 +77,7 @@ describe('resolveStage', () => {
   it('pick when nothing installed and nothing chosen', () => {
     expect(resolveStage(snap())).toEqual({
       stage: 'pick',
-      frameworks: ['claude', 'codex', 'omp-meridian'],
+      frameworks: ['claude', 'codex'],
       detected: [],
     });
   });
@@ -128,14 +123,6 @@ describe('resolveStage', () => {
     });
   });
 
-  it('omp-meridian with only one half installed → install', () => {
-    const s = snap({ ompInstalled: true });
-    expect(resolveStage(s, { chosen: 'omp-meridian' })).toEqual({
-      stage: 'install',
-      framework: 'omp-meridian',
-    });
-  });
-
   it('installed but not signed in → login', () => {
     const s = snap({ claudeInstalled: true });
     expect(resolveStage(s, { chosen: 'claude' })).toEqual({
@@ -166,13 +153,6 @@ describe('resolveStage', () => {
       stage: 'handoff',
       framework: 'codex',
     });
-  });
-
-  it('a chosen framework the OS does not allow falls back to pick (win32 + omp-meridian)', () => {
-    const s = snap({ ompInstalled: true, meridianInstalled: true, ompSignedIn: true });
-    expect(resolveStage(s, { chosen: 'omp-meridian', os: 'win32', forcePick: true })).toMatchObject(
-      { stage: 'pick', frameworks: ['claude', 'codex'] },
-    );
   });
 
   it('resume-for-free: identical snapshot + opts always resolves the same stage', () => {
