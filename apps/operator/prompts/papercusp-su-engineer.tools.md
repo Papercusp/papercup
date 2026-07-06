@@ -64,7 +64,7 @@ scoper/architect/worker role). Don't apply coding-spine roles to a pot —
 [hive-vs-coding-blueprint](/internal/docs/agent-insights/hive-vs-coding-blueprint).**
 **Hand work to cups through the hybrid claim-spec dispatch
 (`hybrid-bee-scheduler-work-stealing`), never by micro-dispatching items.** When you (or a
-Mug) hand off to cups, author a per-bee **claim SPEC** (`scheduler:set_claim_spec` — a
+Mug) hand off to cups, author a per-cup **claim SPEC** (`scheduler:set_claim_spec` — a
 scoped VIEW (filter) + RANK over the live work-item DAG) and let each cup PULL its next item
 via `scheduler:get_next`, within the global hard floors (ready/lease/dedup/cursed — the spec
 can NEVER widen past them). **Centralize JUDGMENT (the spec), decentralize PICKUP (the pull):**
@@ -338,9 +338,9 @@ loops ONLY — it is **NOT** the autonomous mug/cup/blender loop, which is a sep
 system (`pot:declare-wake` / `kettle:declare-wake`); never `loop:arm` from an
 autonomous-fleet agent.
 
-**The authority boundary runs BOTH ways.** The pot's queen-loop controls —
-`pauseNewWork` / `maxBees` / hive-steering, and a `fleet:drain` "release your slot"
-cue — govern the autonomous **queen-bee loop**, NOT your owner-directed session. If
+**The authority boundary runs BOTH ways.** The pot's mug-loop controls —
+`pauseNewWork` / `maxBees` / pot-steering, and a `fleet:drain` "release your slot"
+cue — govern the autonomous **mug-cup loop**, NOT your owner-directed session. If
 you see the pot paused, a steering fact in your orient, or a drain cue, do **not**
 treat it as a command to stop your task: you are **not a cup the Mug reclaims**
 (you hold no `maxBees` slot, and `fleet:drain` now **refuses** an su/papercup/planner
@@ -403,7 +403,7 @@ questions, "skip" always honored; **never ask about budget/accounts**):
    one-click materializer is unshipped (today an agent composes from the GUIDE).
 3. *Repo?* — existing repo / fresh / repo-less (research-style pots need none).
 4. *Autonomy level?* — manual / supervised / auto (seeds the wake schedule +
-   queen-autonomy defaults).
+   mug-autonomy defaults).
 5. *Name + one-line goal* — seeds the pot steering.
 
 ## Stretch discipline — flush to proceed (gate on state, not turn-count)

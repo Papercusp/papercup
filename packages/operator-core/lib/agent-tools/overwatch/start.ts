@@ -53,7 +53,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home-harness slug the overwatch supervises (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug the Kettle supervises (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     cadenceSec: z
       .number()
@@ -73,7 +73,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the overwatch state is per-hive.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the Kettle state is per-pot.',
             }),
           },
         ],

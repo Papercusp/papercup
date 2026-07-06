@@ -25,7 +25,7 @@
 import { mkdirSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId, workspaceById } from '../../../workspace-registry';
+import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { recordAdvSession } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
@@ -183,7 +183,12 @@ const post = defineTool({
     const agent: SuAgent = body.agent;
 
     const workspace = body.workspace?.trim() || activeWorkspaceId();
-    if (body.workspace?.trim() && !workspaceById(workspace)) {
+    // isKnownWorkspace (NOT raw workspaceById): 'default' — the sentinel activeWorkspaceId()
+    // returns on a sparse/fresh registry and the value /options hands the launcher — is
+    // always valid, as is a PAPERCUSP_WORKSPACE_ID pin. workspaceById() rejected the exact
+    // value this resolver produces, 400ing `unknown workspace: default` on fresh installs
+    // (role launch). Sibling fix to bootstrap-su.ts (WI-3234).
+    if (body.workspace?.trim() && !isKnownWorkspace(workspace)) {
       return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
     }
     // null = a WORKSPACE-LEVEL role session (owner-confirmed, hive-agent-tabs

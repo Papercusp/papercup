@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
+import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../../../adv-sessions';
@@ -832,7 +832,13 @@ const post = defineTool({
     }
     const agent: SuAgent = body.agent;
     const workspace = body.workspace?.trim() || activeWorkspaceId();
-    if (body.workspace?.trim() && !workspaceById(workspace)) {
+    // isKnownWorkspace (NOT raw workspaceById): the literal 'default' sentinel — what
+    // activeWorkspaceId() itself returns on a sparse/fresh registry, and what the
+    // /options endpoint hands the launcher as `activeWorkspace` — is ALWAYS valid, as is
+    // a PAPERCUSP_WORKSPACE_ID process pin. A plain workspaceById() rejected the exact
+    // value this route's own resolver produces, 400ing `unknown workspace: default` on
+    // every fresh packaged install (psu launch) even though nothing was wrong (WI-3234).
+    if (body.workspace?.trim() && !isKnownWorkspace(workspace)) {
       return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
     }
     const harnessSlug = body.harness_slug?.trim() || null;

@@ -36,7 +36,7 @@ export default defineTool({
   description:
     "Set per-instance config overrides (maxCostUsd, parallelWorkers, …) on an EXISTING non-hive harness — merges into the registry's configOverrides, the same knob residue pot:update writes for hives. Root-only. Rejects a hive slug (use pot:update there).",
   guidance: {
-    when: 'Changing a non-hive harness\'s per-instance blueprint-knob overrides (budget/parallelism/etc) after it already exists.',
+    when: 'Changing a non-pot harness\'s per-instance blueprint-knob overrides (budget/parallelism/etc) after it already exists.',
     notWhen:
       "Scaffolding a NEW harness — harness:create (which takes its own initial configOverrides). A hive's config — pot:update. Its typed instance fields (phase/dept) aren't touched here — those ride the same registry entry but via their own setters.",
     chaining: 'harness:overview or harness:health to see current state; harness:create for a brand-new harness.',

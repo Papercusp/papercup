@@ -48,7 +48,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home-harness slug the overwatch supervises (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug the Kettle supervises (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     drain: z
       .boolean()

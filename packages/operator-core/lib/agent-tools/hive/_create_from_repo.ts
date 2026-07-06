@@ -403,7 +403,7 @@ export async function createHiveFromRepo(
       return {
         ok: false,
         error: 'hive_not_found',
-        message: `'${intoHive}' is not a kind:'hive' home in this workspace`,
+        message: `'${intoHive}' is not a pot (kind:'hive') in this workspace`,
       };
     }
     const member = deriveSlugs(base, taken); // reuse the suffixing; we only need the member half

@@ -311,7 +311,7 @@ questions, "skip" always honored; **never ask about budget/accounts**):
    one-click materializer is unshipped (today an agent composes from the GUIDE).
 3. *Repo?* — existing repo / fresh / repo-less (research-style pots need none).
 4. *Autonomy level?* — manual / supervised / auto (seeds the wake schedule +
-   queen-autonomy defaults).
+   mug-autonomy defaults).
 5. *Name + one-line goal* — seeds the pot steering.
 
 ## Stretch discipline — flush to proceed (gate on state, not turn-count)
@@ -741,8 +741,8 @@ engine is verified.)* This is the su/interactive replacement for `/loop` only �
 NOT the autonomous mug/cup/blender loop (`pot:declare-wake` /
 `kettle:declare-wake`).
 
-The boundary runs **both ways**: the pot's queen-loop controls (`pauseNewWork` /
-`maxBees` / hive-steering, and a `fleet:drain` "release your slot" cue) govern that
+The boundary runs **both ways**: the pot's mug-loop controls (`pauseNewWork` /
+`maxBees` / pot-steering, and a `fleet:drain` "release your slot" cue) govern that
 autonomous loop, **not** your owner-directed session — don't stop your task on a
 pot pause or a steering fact you see in orient. You are **not a cup the Mug
 reclaims** (`fleet:drain` refuses an su/papercup/planner target), and an SU session

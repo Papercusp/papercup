@@ -60,7 +60,14 @@ vi.mock('../../workspace-registry', () => ({
     current: 'default',
     workspaces: [{ id: 'default', name: 'Default' }, { id: 'ws2', name: 'Second' }],
   }),
-  workspaceById: (id: string) => (['default', 'ws2'].includes(id) ? { id, name: id } : undefined),
+  // Sparse-registry reality (fresh packaged install): the literal 'default' fallback is
+  // NOT listed as a concrete entry, so workspaceById('default') is undefined — but
+  // isKnownWorkspace treats 'default' as always-valid (its sentinel branch). The
+  // bootstrap routes MUST validate with isKnownWorkspace, not workspaceById, or they
+  // 400 `unknown workspace: default` on the exact value activeWorkspaceId() produces
+  // (WI-3234).
+  workspaceById: (id: string) => (id === 'ws2' ? { id, name: id } : undefined),
+  isKnownWorkspace: (id: string) => !!id?.trim() && (id === 'default' || id === 'ws2'),
 }));
 vi.mock('../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async (o: { slug: string | null }) => ({
@@ -528,6 +535,21 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'claude', workspace: 'nope', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("WI-3234: accepts the literal 'default' fallback workspace even when the registry hasn't listed it", async () => {
+    // Fresh packaged install: activeWorkspaceId() → 'default' (the sentinel), and the
+    // /options endpoint hands the launcher `activeWorkspace: 'default'`, which it forwards
+    // explicitly. workspaceById('default') is undefined on a sparse registry, so the old
+    // raw-workspaceById validation 400'd `unknown workspace: default` — the "psu: unknown
+    // workspace: default" the owner hit — even though nothing was wrong. isKnownWorkspace
+    // treats 'default' as always-valid, so the launch proceeds.
+    const res = await callPost({ agent: 'claude', workspace: 'default', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.workspaceId).toBe('default');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'default' }));
   });
 
   it('no-harness launch uses the caller cwd (resume-friendly), not the internal dir', async () => {

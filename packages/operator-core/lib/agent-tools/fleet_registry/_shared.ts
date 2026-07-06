@@ -81,7 +81,7 @@ export function json(payload: Record<string, unknown>, isError = false) {
  */
 export const ROUTING_LADDER =
   'Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. ' +
-  '(1) QUEEN/colony — work_items:create → the hive intake. (2) FLEET — hand the plan to ' +
+  '(1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to ' +
   'an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then ' +
   'drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } ' +
   'to launch the member windows.';

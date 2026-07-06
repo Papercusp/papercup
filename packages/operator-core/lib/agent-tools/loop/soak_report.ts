@@ -23,7 +23,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().max(120).optional().describe('Hive home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Pot home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     windowHours: z.number().int().min(MIN_SOAK_WINDOW_HOURS).max(MAX_SOAK_WINDOW_HOURS).optional(),
   }),
   async handler(args, ctx) {

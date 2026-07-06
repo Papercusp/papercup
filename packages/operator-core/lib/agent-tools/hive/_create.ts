@@ -161,7 +161,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     return {
       ok: false,
       error: 'blueprint_invalid',
-      message: validation.parseError ?? 'the hive blueprint failed to resolve/validate',
+      message: validation.parseError ?? 'the pot blueprint failed to resolve/validate',
     };
   }
   // P-019: a pot MUST run a kind:'pot' blueprint — reject a harness blueprint
