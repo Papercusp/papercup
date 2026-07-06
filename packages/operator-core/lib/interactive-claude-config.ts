@@ -221,7 +221,18 @@ export function writeInteractiveClaudeConfig(opts: {
       writePrunedPluginsDir(join(srcClaude, name), join(configDir, name));
       continue;
     }
+    // WI-3278: settings.json is a REAL merged copy with the bypassPermissions
+    // grant baked in — see writeSessionSettings.
+    if (name === 'settings.json') {
+      writeSessionSettings(join(srcClaude, name), join(configDir, name));
+      continue;
+    }
     linkInto(join(srcClaude, name), join(configDir, name));
+  }
+  // WI-3278: a box with no global settings.json (the fresh Windows VM) still
+  // needs the session-level bypass grant.
+  if (!entries.includes('settings.json')) {
+    writeSessionSettings(null, join(configDir, 'settings.json'));
   }
 
   // The isolated conversation-transcript store — a REAL dir, never a symlink, so
@@ -246,6 +257,45 @@ export function writeInteractiveClaudeConfig(opts: {
   }
 
   return { configDir };
+}
+
+/**
+ * WI-3278: the session's `settings.json` is a REAL MERGED COPY of the user's
+ * global settings with `permissions.defaultMode = 'bypassPermissions'` baked in
+ * — NOT a symlink. psu grants a session its dangerous permissions via CLI argv
+ * (`--permission-mode bypassPermissions` + `--dangerously-skip-permissions`),
+ * but claude 2.1.20x can SELF-RE-EXEC (TUI fullscreen switch / update relaunch,
+ * seen live on the Windows VM 2026-07-06: /proc showed a bare argv-less claude
+ * under CLAUDE_CODE_TUI_JUST_SWITCHED=fullscreen while the psu-pty meta held
+ * the full intended argv) and the re-exec DROPS the argv — the session reboots
+ * in default mode and prompts for every papercusp-su call, with no playbook.
+ * Settings are re-read from CLAUDE_CONFIG_DIR on every (re)boot, so the grant
+ * survives here; the argv flags stay as the launch-time fast path. Costs this
+ * file its write-passthrough: global hook edits reach the NEXT launch's merge,
+ * not a live session — acceptable, the dir is re-materialized per launch.
+ * Rewritten (not `present()`-skipped) on every materialize so resumes pick up
+ * fresh global hooks; a pre-fix dir's SYMLINK is removed first so the write
+ * lands in the session dir, never through the link into the user's real file.
+ */
+function writeSessionSettings(srcSettings: string | null, dest: string): void {
+  let cfg: Record<string, unknown> = {};
+  if (srcSettings) {
+    try {
+      cfg = JSON.parse(readFileSync(srcSettings, 'utf8')) as Record<string, unknown>;
+    } catch {
+      /* no/unparseable global settings — write the grant alone */
+    }
+  }
+  const permissions = {
+    ...(cfg.permissions as Record<string, unknown> | undefined),
+    defaultMode: 'bypassPermissions',
+  };
+  try {
+    if (present(dest) && lstatSync(dest).isSymbolicLink()) rmSync(dest);
+    writeFileSync(dest, JSON.stringify({ ...cfg, permissions }, null, 2));
+  } catch {
+    /* best-effort — argv still carries the grant on a non-re-exec launch */
+  }
 }
 
 /** P-020: mirror `~/.claude/plugins` as a real dir — every child symlinked

@@ -61,6 +61,23 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     expect(map.get('su-2')?.role).toBe('other');
   });
 
+  it('latestLiveAdvSessionByLabel threads label+workspace params and maps the row (docs-agent reuse)', async () => {
+    const sql = mockSql(async () => [dbRow({ id: 5, label: 'docs-tutor', coord_owner_id: 'su-tutor' })]);
+    const mod = await import('./adv-sessions');
+    const row = await mod.latestLiveAdvSessionByLabel('docs-tutor', 'ws-x');
+    expect(row?.id).toBe(5);
+    expect(row?.coordOwnerId).toBe('su-tutor');
+    const values = sql.mock.calls[0]?.slice(1) ?? [];
+    expect(values).toContain('docs-tutor'); // label filter
+    expect(values).toContain('ws-x'); // workspace scope
+  });
+
+  it('latestLiveAdvSessionByLabel returns null when no live labelled session exists', async () => {
+    mockSql(async () => []);
+    const mod = await import('./adv-sessions');
+    await expect(mod.latestLiveAdvSessionByLabel('docs-tutor', 'ws-x')).resolves.toBeNull();
+  });
+
   it('listEndedAdvSessions maps rows and threads the workspace scope + limit params', async () => {
     const sql = mockSql(async () => [dbRow({ id: 9, ended_at: '2026-06-02T01:00:00.000Z' })]);
     const mod = await import('./adv-sessions');

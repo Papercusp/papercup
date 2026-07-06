@@ -20,6 +20,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,18 +91,36 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(configDir).toBe(join(root, 'su-abc'));
   });
 
-  it('symlinks the user config (creds / settings / plugins / commands) — NOT a creds-only dir', () => {
+  it('symlinks the user config (creds / plugins / commands) — NOT a creds-only dir', () => {
     seedHome(home);
     const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-1', home });
-    for (const entry of ['.credentials.json', 'settings.json', 'plugins', 'commands']) {
+    for (const entry of ['.credentials.json', 'plugins', 'commands']) {
       const dest = join(configDir, entry);
       expect(lstatSync(dest).isSymbolicLink()).toBe(true);
       expect(readlinkSync(dest)).toBe(join(home, '.claude', entry));
     }
-    // The lock-hook settings + a plugin resolve THROUGH the symlink (the user's
-    // file-lock hooks + skills are intact — the whole point vs. the bee path).
-    expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('PreToolUse');
+    // WI-3278: settings.json is a REAL MERGED file (not a symlink) — the user's
+    // lock hooks carry over AND the bypassPermissions grant is baked in, so a
+    // claude self-re-exec that drops the argv flags still boots in bypass mode.
+    expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(false);
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.hooks).toEqual({ PreToolUse: [] });
+    expect(settings.permissions.defaultMode).toBe('bypassPermissions');
     expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
+  });
+
+  it('WI-3278: the settings merge never writes THROUGH a pre-fix symlink into the global file', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-relink', home });
+    // Simulate a pre-fix session dir: settings.json as a symlink to the global.
+    rmSync(join(configDir, 'settings.json'));
+    symlinkSync(join(home, '.claude', 'settings.json'), join(configDir, 'settings.json'));
+    writeInteractiveClaudeConfig({ sid: 'su-relink', home });
+    // Session file is now real and carries the grant…
+    expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('bypassPermissions');
+    // …and the USER'S global settings.json was not mutated.
+    expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('bypassPermissions');
   });
 
   it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', () => {
@@ -114,10 +133,10 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(existsSync(join(configDir, 'AGENTS.md'))).toBe(false);
     // present() guards against a dangling symlink too — assert it's truly absent.
     expect(() => lstatSync(join(configDir, 'CLAUDE.md'))).toThrow();
-    // But auth + hooks + tools still link through (isolation is surgical, not a
+    // But auth + hooks + tools still carry through (isolation is surgical, not a
     // creds-only strip): the personal-memory skip must not collateral-damage these.
     expect(lstatSync(join(configDir, '.credentials.json')).isSymbolicLink()).toBe(true);
-    expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('PreToolUse');
   });
 
   it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', () => {
@@ -160,8 +179,9 @@ describe('writeInteractiveClaudeConfig', () => {
     const again = writeInteractiveClaudeConfig({ sid: 'su-4', home });
     expect(again.configDir).toBe(configDir);
     expect(readFileSync(join(configDir, 'projects', 'live.jsonl'), 'utf8')).toBe('{"turn":1}');
-    // Symlinks still resolve (not duplicated / broken).
-    expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(true);
+    // The merged settings file still resolves with the grant (WI-3278 rewrites
+    // it each materialize — never through a symlink, never broken).
+    expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('bypassPermissions');
   });
 
   it('degrades gracefully when the source ~/.claude does not exist (fresh box)', () => {
@@ -171,6 +191,10 @@ describe('writeInteractiveClaudeConfig', () => {
     // Still gets an isolated transcript store; just no symlinks to mirror.
     expect(lstatSync(join(configDir, 'projects')).isDirectory()).toBe(true);
     expect(existsSync(join(configDir, '.claude.json'))).toBe(false);
+    // WI-3278: the fresh Windows VM had no global settings.json — the session
+    // must STILL get the bypassPermissions grant.
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.permissions.defaultMode).toBe('bypassPermissions');
   });
 
   it('prunePlugins (context-trimming-tiers P-020): fleet members lose github/cloudflare/firecrawl + playwright, keep context7 + papercusp-su', () => {

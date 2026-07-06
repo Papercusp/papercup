@@ -859,6 +859,11 @@ export function hostThroughPty(o) {
   }
 
   const ptyName = env.TERM || process.env.TERM || 'xterm-256color';
+  // WI-3278: the WSL console bridge can report a BOGUS terminal size (131072x1
+  // seen live on the Windows VM) — a 1-row pty makes the claude TUI misbehave
+  // (fullscreen-switch re-exec). Out-of-range dims fall back to the default.
+  const sanePtyDim = (v, fallback, max) =>
+    Number.isFinite(v) && v >= 2 && v <= max ? v : fallback;
   /** Spawn the child agent under a fresh pty in THIS host. Reused on RECYCLE
    *  (su-cold-auto-mode P-004b): same command/args/cwd/env means PAPERCUSP_SID,
    *  locks, hooks, and the control socket all survive — only the process is new.
@@ -866,8 +871,8 @@ export function hostThroughPty(o) {
   const spawnChild = (spawnArgs = args) =>
     pty.spawn(command, spawnArgs, {
       name: ptyName,
-      cols: stdout.columns || 80,
-      rows: stdout.rows || 24,
+      cols: sanePtyDim(stdout.columns, 80, 1000),
+      rows: sanePtyDim(stdout.rows, 24, 500),
       cwd,
       env,
     });
@@ -1203,8 +1208,8 @@ export function hostThroughPty(o) {
 
   // terminal resize (SIGWINCH) -> pty resize
   const onResize = () => {
-    const c = stdout.columns;
-    const r = stdout.rows;
+    const c = sanePtyDim(stdout.columns, 0, 1000);
+    const r = sanePtyDim(stdout.rows, 0, 500);
     if (c && r) {
       try {
         child.resize(c, r);

@@ -4,7 +4,6 @@ import {
   OPTION_LINE,
   SHELL_TABS,
   chapterEmoji,
-  consumeSse,
   defaultTab,
   firstIndexOfChapter,
   interpretReply,
@@ -64,57 +63,6 @@ describe('interpretReply — the deterministic navigation (NO LLM decides this)'
     expect(OPTION_LINE).toContain('[m] Menu');
     expect(OPTION_LINE).toContain('[f] Finish');
     expect(OPTION_LINE).toContain('type your question');
-  });
-});
-
-describe('consumeSse — parses the docs-qa SSE stream (WI-2844)', () => {
-  // Build a fetch-style body whose getReader() yields the given string parts.
-  function bodyOf(...parts) {
-    const enc = new TextEncoder();
-    let i = 0;
-    return {
-      getReader() {
-        return {
-          read() {
-            return i < parts.length
-              ? Promise.resolve({ done: false, value: enc.encode(parts[i++]) })
-              : Promise.resolve({ done: true, value: undefined });
-          },
-        };
-      },
-    };
-  }
-
-  it('emits (event, JSON-parsed data) per frame', async () => {
-    const events = [];
-    await consumeSse(
-      bodyOf(
-        'event: citation\ndata: {"slug":"system/plans","title":"Plans"}\n\n' +
-          'event: delta\ndata: {"text":"hi "}\n\nevent: delta\ndata: {"text":"there"}\n\n',
-      ),
-      (e, d) => events.push([e, d]),
-    );
-    expect(events).toEqual([
-      ['citation', { slug: 'system/plans', title: 'Plans' }],
-      ['delta', { text: 'hi ' }],
-      ['delta', { text: 'there' }],
-    ]);
-  });
-
-  it('reassembles a frame split across chunks (needs_backend)', async () => {
-    const events = [];
-    await consumeSse(bodyOf('event: needs_bac', 'kend\ndata: {"message":"none"}\n\n'), (e, d) =>
-      events.push([e, d]),
-    );
-    expect(events).toEqual([['needs_backend', { message: 'none' }]]);
-  });
-
-  it('ignores frames with no data line (heartbeats)', async () => {
-    const events = [];
-    await consumeSse(bodyOf(': keep-alive\n\nevent: error\ndata: {"message":"boom"}\n\n'), (e, d) =>
-      events.push([e, d]),
-    );
-    expect(events).toEqual([['error', { message: 'boom' }]]);
   });
 });
 

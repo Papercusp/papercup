@@ -187,6 +187,24 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
   it('default parse has no kickoff key (so the gate treats it as enabled)', () => {
     expect(parseArgs([]).kickoff).toBeUndefined();
   });
+
+  // Free-form --kickoff (the general, plan-independent first-turn seam used by the
+  // desktop tutorial's docs-agent launcher).
+  it('a free-form --kickoff seeds the first turn with NO plan bound', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=answer this: what is a pot?']);
+    expect(args.kickoffPromptText).toBe('answer this: what is a pot?');
+    expect(kickoffPositionalArgs({}, args)).toEqual(['answer this: what is a pot?']);
+  });
+  it('--kickoff wins over the server plan-derived kickoff', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=my question']);
+    expect(kickoffPositionalArgs({ kickoffPrompt: KICK, planSlug: 'p' }, args)).toEqual(['my question']);
+  });
+  it('--kickoff still respects --no-picker (interactive picker → empty) and --no-kickoff', () => {
+    expect(kickoffPositionalArgs({}, parseArgs(['--agent=claude', '--kickoff=q']))).toEqual([]); // picker launch
+    expect(
+      kickoffPositionalArgs({}, parseArgs(['--no-picker', '--agent=claude', '--kickoff=q', '--no-kickoff'])),
+    ).toEqual([]);
+  });
 });
 
 describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
@@ -676,6 +694,8 @@ describe('psu-launcher arg parsing', () => {
       // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
       // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
       allowSubagents: null,
+      kickoffPromptText: null,
+      label: null,
     });
   });
 
@@ -735,6 +755,8 @@ describe('psu-launcher arg parsing', () => {
       setClaudeTokenValue: null,
       clearClaudeToken: false,
       allowSubagents: null,
+      kickoffPromptText: null,
+      label: null,
     });
   });
 
@@ -985,6 +1007,17 @@ describe('psu-launcher arg parsing', () => {
       account: 'codex-main',
       launch_context: '/tmp/kickoff.md',
     });
+  });
+
+  it('freshSuBootstrapBody forwards --label so bootstrap-su stamps adv_sessions.label (docs-agent reuse)', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
+      { label: 'docs-tutor' },
+    );
+    expect(body.label).toBe('docs-tutor');
+    // omitted when not passed (no null noise on the wire)
+    const noLabel = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, {});
+    expect('label' in noLabel).toBe(false);
   });
 
   it('freshSuBootstrapBody records the reconstructed psu launch_argv (WI-1343)', () => {
