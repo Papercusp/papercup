@@ -17,8 +17,8 @@
  * either direction (false trigger, or false "already clean").
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { step2_cloneRepo } from '../join-shared-harness';
@@ -27,6 +27,28 @@ import { workspacesRoot } from '../../workspace-registry';
 // A slug that will not collide with any real clone dir on disk, so the
 // existsSync(cloneDir) idempotency short-circuit does not fire.
 const UNIQUE_SLUG = 'b4-authed-clone-test-zzq-' + 'fixed';
+
+// The stateful mock's `clone` branch mkdir's the REAL clone dir on disk, and the
+// authenticated-clone describe below has no per-test cleanup of its own. Because
+// the slug is FIXED and workspacesRoot() is a shared, global path, a prior run —
+// or one killed mid-suite (e.g. an interrupted green-checkpoint) — leaves
+// `clones/<UNIQUE_SLUG>-tok` behind. On the next run existsSync(cloneDir) is then
+// true, so step2_cloneRepo takes the adopt-existing branch instead of cloning →
+// no `clone` call is recorded → the "clones via token-embedded URL" assertion
+// fails. This was the root cause of the 2026-07-05 gate red (a fleet-wide stuck
+// gate). Purge THIS test's clone dirs before AND after every test so a leaked
+// dir can never poison a run again.
+const TEST_CLONES_BASE = resolve(workspacesRoot(), 'clones');
+function purgeTestCloneDirs(): void {
+  if (!existsSync(TEST_CLONES_BASE)) return;
+  for (const name of readdirSync(TEST_CLONES_BASE)) {
+    if (name.startsWith(UNIQUE_SLUG)) {
+      rmSync(join(TEST_CLONES_BASE, name), { recursive: true, force: true });
+    }
+  }
+}
+beforeEach(purgeTestCloneDirs);
+afterEach(purgeTestCloneDirs);
 
 function fakeExec() {
   return vi.fn(async (_file: string, _args: string[]) => ({ stdout: '', stderr: '' }));

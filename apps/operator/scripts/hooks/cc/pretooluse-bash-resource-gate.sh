@@ -113,8 +113,32 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1':
         'never a pathspec-less reset/checkout/clean/stash. If you wanted a clean '
         "tree, you don't need one: stop editing and let git-sync commit."
     )
+    # Peel leading command WRAPPERS so a wrapped destructive op can't bypass the
+    # guard — PROVEN 2026-07-06: the guard denied `git reset --hard` but ALLOWED
+    # `rtk git reset --hard` (rtk = the token-killer output filter, which rewrites
+    # `git …`→`rtk git …`). `time`/`env`/`nice`/`command`/`nohup`/`sudo` were the
+    # same latent class. Bounded loop peels nested wrappers (`time rtk git …`).
+    _WRAP_STRIP = re.compile(
+        r'^\s*(?:'
+        r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*'
+        r'|env(?:\s+[A-Za-z_]\w*=\S*)*'
+        r'|nice(?:\s+-n\s*-?\d+)?'
+        r'|ionice(?:\s+-\w+(?:\s+\d+)?)*'
+        r'|xargs(?:\s+-\w+)*'
+        r'|rtk|time|command|nohup|exec|setsid|nocorrect|stdbuf|doas|nocache'
+        r')\s+'
+    )
+
+    def _unwrap(_x):
+        for _ in range(8):
+            _y = _WRAP_STRIP.sub('', _x, count=1)
+            if _y == _x:
+                return _x
+            _x = _y
+        return _x
+
     for _seg in re.split(r'[;&|\n]', command):
-        _s = re.sub(r'^\s*sudo\s+', '', _seg.strip())
+        _s = _unwrap(_seg.strip())
         if re.match(_GIT + r'reset\b.*--hard\b', _s):
             deny(_git_deny.format(op='git reset --hard'))
         if re.match(_GIT + r'clean\b.*-\w*f', _s):

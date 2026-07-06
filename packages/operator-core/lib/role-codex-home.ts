@@ -446,6 +446,10 @@ export function writeRoleCodexHome(opts: {
   sid?: string;
   /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
   codexGatewayAccountId?: string | null;
+  /** The directory the operator is launching this agent into (spec.cwd). Seeded
+   *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
+   *  not block at codex's "Do you trust this directory?" boot prompt. */
+  trustDir?: string | null;
 }): RoleCodexHome {
   // ONE shared codex-home key (unify-launch-mechanics P-004): both role and su
   // codex sessions live under the SAME root the wake-executor resume leg reads
@@ -470,7 +474,7 @@ export function writeRoleCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
-    ...inheritedCodexTrustToml(),
+    ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
@@ -687,6 +691,10 @@ export function writeSuCodexHome(opts: {
   token?: string | null;
   /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
   codexGatewayAccountId?: string | null;
+  /** The directory the operator is launching this SU session into (resolveSuLaunchCwd).
+   *  Seeded as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME
+   *  does not block at codex's "Do you trust this directory?" boot prompt. */
+  trustDir?: string | null;
 }): SuCodexHome {
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
@@ -704,7 +712,7 @@ export function writeSuCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
-    ...inheritedCodexTrustToml(),
+    ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',

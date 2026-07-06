@@ -395,6 +395,9 @@ const post = defineTool({
           // this worker's tool calls under it (codex bakes it; can't env-expand).
           sid,
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
+          // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
+          // "Do you trust this directory?" boot prompt (role sessions are trusted).
+          trustDir: spec.cwd,
         });
         codexHome = ch.codexHome;
         mcpJsonPath = ch.configPath; // config.toml — diagnostics

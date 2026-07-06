@@ -85,6 +85,20 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('[tui]\nterminal_title = []');
   });
 
+  it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh role CODEX_HOME never blocks at the boot trust prompt', async () => {
+    const writeRoleCodexHome = await load();
+    const dir = '/home/marsh-office/papercupai-workspace/papercusp';
+    const out = writeRoleCodexHome({
+      sessionKey: 'role-trust',
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+      trustDir: dir,
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain(`[projects."${dir}"]`);
+    expect(toml).toContain('trust_level = "trusted"');
+  });
+
   it('symlinks auth.json to the real ~/.codex/auth.json (shared OAuth, not a copy)', async () => {
     const realAuthDir = join(fakeHome, '.codex');
     const { mkdirSync } = await import('node:fs');
@@ -262,6 +276,11 @@ describe('writeSuCodexHome', () => {
       '[trusted_workspaces]',
       '"/repo" = true',
       '',
+      // Modern codex records directory trust here (ProjectConfig) — the shape our
+      // inherit helper used to silently ignore, booting fresh homes untrusted.
+      '[projects."/home/me/repo"]',
+      'trust_level = "trusted"',
+      '',
       '[model_providers.default]',
       'name = "Default"',
       '',
@@ -283,9 +302,48 @@ describe('writeSuCodexHome', () => {
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[trusted_workspaces]');
     expect(toml).toContain('"/repo" = true');
+    // modern [projects.*] trust tables inherit too (the previously-dropped shape).
+    expect(toml).toContain('[projects."/home/me/repo"]');
+    expect(toml).toContain('trust_level = "trusted"');
     expect(toml).not.toContain('[model_providers.default]');
     const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
     expect(diag.inheritedPromptsCopied).toBe(true);
+  });
+
+  it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh CODEX_HOME never blocks at the boot trust prompt', async () => {
+    const { writeSuCodexHome } = await loadMod();
+    const dir = '/home/marsh-office/papercupai-workspace/papercusp';
+    const out = writeSuCodexHome({
+      sessionKey: 'trust',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 's',
+      trustDir: dir,
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain(`[projects."${dir}"]`);
+    expect(toml).toContain('trust_level = "trusted"');
+  });
+
+  it('does NOT double-emit the launch-dir trust table when the same dir is already inherited', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const realCodex = join(fakeHome, '.codex');
+    mkdirSync(realCodex, { recursive: true });
+    const dir = '/home/me/already-trusted';
+    writeFileSync(join(realCodex, 'config.toml'), [`[projects."${dir}"]`, 'trust_level = "trusted"', ''].join('\n'));
+
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 'no-dupe',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 's',
+      trustDir: dir,
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    // exactly one table header for the dir — TOML rejects a duplicate table header.
+    const occurrences = toml.split(`[projects."${dir}"]`).length - 1;
+    expect(occurrences).toBe(1);
   });
 
   it('installs the SU-locks hooks.json when hooks are present', async () => {

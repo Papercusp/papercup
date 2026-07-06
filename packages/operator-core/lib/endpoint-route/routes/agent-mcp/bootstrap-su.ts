@@ -1245,6 +1245,9 @@ const post = defineTool({
           sid,
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
+          // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
+          // "Do you trust this directory?" boot prompt (an su launch is trusted).
+          trustDir: cwd,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
