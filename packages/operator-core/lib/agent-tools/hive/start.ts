@@ -31,11 +31,11 @@ export default defineTool({
   name: 'pot:start',
   profile: 'engineer',
   description:
-    'START the hive (the global control, distinct from a per-plan Start): persist hive_started=true, re-affirm the Queen\'s default event-wake subscriptions (plan-started / work-item-created / escalation), set the global wake-mode to auto, and wake the Queen now (floor-debounced). The liveness watchdog holds "a wake is always armed" from here until pot:pause.',
+    'START the pot (the global control, distinct from a per-plan Start): persist hive_started=true, re-affirm the Mug\'s default event-wake subscriptions (plan-started / work-item-created / escalation), set the global wake-mode to auto, and wake the Mug now (floor-debounced). The liveness watchdog holds "a wake is always armed" from here until pot:pause.',
   guidance: {
-    when: "The user clicks Start Hive / asks to boot the colony, or you are bringing a paused hive back to autonomous operation.",
+    when: "The user clicks Start Pot / asks to boot the fleet, or you are bringing a paused pot back to autonomous operation.",
     notWhen:
-      'To wake the Queen once without changing the started state — pot:wake. To start one plan — plans:start. To create a hive — pot:create.',
+      'To wake the Mug once without changing the started state — pot:wake. To start one plan — plans:start. To create a pot — pot:create.',
     chaining: 'pot:status to verify (started, subscriptions, next wake); pot:pause to suspend.',
     seeAlso: [
       'pot:status (verify started + next wake)',
@@ -50,7 +50,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the immediate wake. Auto-truncated to 2000 chars if longer.'),
   }),
@@ -65,7 +65,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the started state is per-hive.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the started state is per-pot.',
             }),
           },
         ],
@@ -81,7 +81,7 @@ export default defineTool({
     const subs = await armDefaultHiveWakeSubscriptions(workspaceId, { mode: 'ensure' });
     await setDefaultWakeMode('auto');
     const wake = await requestUrgentHiveWake({
-      reason: clampText(args.kickoff, LIMITS.ANNOTATION) ?? 'Start Hive — the user started the colony; survey and get the fleet moving',
+      reason: clampText(args.kickoff, LIMITS.ANNOTATION) ?? 'Start Pot — the user started the pot; survey and get the fleet moving',
       harness: installSlug,
       workspaceId,
     });

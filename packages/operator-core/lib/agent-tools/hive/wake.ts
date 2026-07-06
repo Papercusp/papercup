@@ -43,7 +43,7 @@ export default defineTool({
   name: 'pot:wake',
   profile: 'engineer',
   description:
-    'Fire the Hive operator immediately (launches the hive blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
+    'Fire the Pot operator immediately (launches the pot blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
   guidance: {
     when: 'The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).',
     notWhen: 'To schedule a future wake — that is pot:declare-wake.',
@@ -73,7 +73,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the hive launch is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the pot launch is harness-scoped.',
             }),
           },
         ],

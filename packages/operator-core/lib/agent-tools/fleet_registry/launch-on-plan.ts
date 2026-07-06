@@ -236,6 +236,33 @@ export function clampFleetTopUpToCapacity(
 }
 
 /**
+ * cross-platform-member-credential-inheritance (Mac fleet-member login fix, 2026-07-06):
+ * the account routing an un-pinned fleet member should DEFAULT to, per host platform.
+ *
+ * A member launched with NO `--account` falls to bootstrap-su's `resolveAccountPin(undefined)`
+ * DIRECT system-credential default (`env:{}` — no `ANTHROPIC_BASE_URL`). On Linux/Windows that
+ * works: the member's isolated per-session `CLAUDE_CONFIG_DIR` inherits the global
+ * `~/.claude/.credentials.json` login via the file reconcile/symlink machinery. On **macOS** the
+ * OAuth login lives in the login Keychain keyed PER config-dir suffix (`Claude Code-credentials-…`)
+ * and claude DELETES any seeded `.credentials.json`, so a headless member's fresh config dir never
+ * matches the default `~/.claude` login → it boots LOGGED OUT (`/login`, "could not proceed") with
+ * no human to re-auth it. So on darwin, default an un-pinned member to `'auto'`: it routes through
+ * the always-on desktop inference gateway, which owns the Keychain bundle (+ refresh) and whose
+ * local-fallback resolves the single default account (`localLoginCredentialRef → keychain:Claude
+ * Code-credentials`) — the member authenticates with ZERO per-session login. Fail-soft: gateway off
+ * ⇒ `resolveAccountPin('auto')` falls back to the direct default (byte-identical to today). An
+ * explicit `--account` (incl. the `'default'`/`'system'` escape hatches) or a seat-pinned account
+ * ALWAYS wins. Pure — `platform` injectable for tests.
+ */
+export function defaultMemberAccountRouting(
+  account: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (account) return account;
+  return platform === 'darwin' ? 'auto' : account;
+}
+
+/**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +
  * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
  * member starts working on boot. The base tokens (fleet/agent/harness/plan) are constrained
@@ -462,7 +489,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet's load; no failover); \"auto\" → route through the gateway, which auto-selects an available account + fails over; \"default\" (or omit) → skip the gateway, use the system / CLI-login credential. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.",
+        "psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet's load; no failover); \"auto\" → route through the gateway, which auto-selects an available account + fails over; \"default\" → skip the gateway, use the system / CLI-login credential. OMIT to auto-pick: \"auto\" on macOS (a headless Mac member can't inherit the Keychain login directly, so it routes via the always-on desktop gateway) and \"default\" elsewhere. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.",
       ),
     workspace: z
       .string()
@@ -799,6 +826,11 @@ export default defineTool({
         availableBefore: seatResolution.slot.available,
       };
     }
+    // cross-platform-member-credential-inheritance: a member the leader didn't pin (no
+    // --account, no seat account) defaults to gateway-auto routing on macOS so it inherits the
+    // default Keychain login instead of booting logged out (see defaultMemberAccountRouting).
+    // No-op on Linux/Windows and whenever an account/seat pin is already set.
+    effAccount = defaultMemberAccountRouting(effAccount);
 
     let slot;
     try {

@@ -214,7 +214,7 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
   const { createFleetIfAbsent } = await import('../agent-fleets-store');
   const { buildConsoleEnvelope } = await import('../console-launcher');
   const { spawnConsole } = await import('../console-spawn');
-  const { memberLaunchCommand, composeMemberLaunchContext, isOmpLocalModel } = await import(
+  const { memberLaunchCommand, defaultMemberAccountRouting, composeMemberLaunchContext, isOmpLocalModel } = await import(
     '../agent-tools/fleet_registry/launch-on-plan'
   );
 
@@ -264,7 +264,10 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     harness: req.hiveHomeSlug,
     plan: req.planSlug,
     model: req.launch.model,
-    account: req.launch.account,
+    // Same cross-platform-member-credential-inheritance default as fleet:launch-on-plan: an
+    // un-pinned member honored on a macOS host routes via the gateway (inherits the Keychain
+    // login) instead of booting logged out. Gated on THIS (honoring) host's platform.
+    account: defaultMemberAccountRouting(req.launch.account ?? undefined),
     seat: req.seatRef,
     launchContext: launchContextPath,
   });

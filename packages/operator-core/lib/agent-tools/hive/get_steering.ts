@@ -20,9 +20,9 @@ export default defineTool({
   name: 'pot:get-steering',
   profile: 'engineer',
   description:
-    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Queen may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Queen reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). The READ twin of pot:set-steering.',
+    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). The READ twin of pot:set-steering.',
   guidance: {
-    when: 'Checking what the Queen is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.',
+    when: 'Checking what the Mug is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.',
     notWhen: 'Changing steering — pot:set-steering. Reading the whole pot status — pot:status.',
     seeAlso: [
       'pot:set-steering (change the steering directive)',

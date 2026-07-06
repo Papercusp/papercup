@@ -54,7 +54,14 @@ vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
 
-import { checkBudget, recordSpend, loadBudget, setBudget } from './operator-budget';
+import {
+  checkBudget,
+  recordSpend,
+  loadBudget,
+  setBudget,
+  shouldBypassOperatorBudget,
+  llmTestBudgetBypassEnabled,
+} from './operator-budget';
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -67,6 +74,59 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+/**
+ * WI-3224 — the budget bypass must NOT be defeatable by a client-supplied
+ * uiClientId string alone. `uiClientId` arrives on operator:converse from the
+ * browser tab / HTTP body, so trusting `llm-testing/<uuid>` on its own lets any
+ * loopback client turn off the owner's spend cap. The bypass now requires a
+ * SERVER-SIDE opt-in (llmTestBudgetBypassEnabled) that is absent in the shipped
+ * desktop product. These are the recurrence guards for that fix.
+ *
+ * NB: env is injected explicitly so the "production" cases assert the
+ * flag-OFF branch even though the suite itself runs under VITEST.
+ */
+describe('shouldBypassOperatorBudget — server-side gate (WI-3224)', () => {
+  const PROD_ENV = {} as NodeJS.ProcessEnv; // shipped desktop: no VITEST / NODE_ENV=test / flag
+  const CI_ENV = { VITEST: 'true' } as NodeJS.ProcessEnv;
+  const NODE_TEST_ENV = { NODE_ENV: 'test' } as NodeJS.ProcessEnv;
+  const OPTIN_ENV = { PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS: '1' } as NodeJS.ProcessEnv;
+
+  it('does NOT bypass for a SPOOFED llm-testing/ prefix in the shipped product (no server signal)', () => {
+    // The core exploit: a client asserts the test prefix; production must ignore it.
+    expect(shouldBypassOperatorBudget('llm-testing/00000000-fake', PROD_ENV)).toBe(false);
+    expect(shouldBypassOperatorBudget('llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', PROD_ENV)).toBe(false);
+  });
+
+  it('DOES bypass for the test prefix when a genuine server-side signal is present', () => {
+    expect(shouldBypassOperatorBudget('llm-testing/00000000-fake', CI_ENV)).toBe(true);
+    expect(shouldBypassOperatorBudget('llm-testing/00000000-fake', NODE_TEST_ENV)).toBe(true);
+    expect(shouldBypassOperatorBudget('llm-testing/00000000-fake', OPTIN_ENV)).toBe(true);
+  });
+
+  it('never bypasses a NON-test uiClientId, regardless of server signal (prefix stays necessary)', () => {
+    for (const env of [PROD_ENV, CI_ENV, NODE_TEST_ENV, OPTIN_ENV]) {
+      expect(shouldBypassOperatorBudget('desktop-client', env)).toBe(false);
+      expect(shouldBypassOperatorBudget('7f3a1b2c-0000-4000-8000-000000000000', env)).toBe(false);
+      expect(shouldBypassOperatorBudget(null, env)).toBe(false);
+      expect(shouldBypassOperatorBudget(undefined, env)).toBe(false);
+      // a near-miss that merely CONTAINS the token but doesn't start with it
+      expect(shouldBypassOperatorBudget('evil/llm-testing/x', env)).toBe(false);
+    }
+  });
+
+  it('llmTestBudgetBypassEnabled: OFF in production, ON under each recognized signal', () => {
+    expect(llmTestBudgetBypassEnabled(PROD_ENV)).toBe(false);
+    expect(llmTestBudgetBypassEnabled({ PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS: '1' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(llmTestBudgetBypassEnabled({ PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(llmTestBudgetBypassEnabled({ VITEST: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(llmTestBudgetBypassEnabled({ NODE_ENV: 'test' } as NodeJS.ProcessEnv)).toBe(true);
+    // a falsy/typo flag value does NOT enable it
+    expect(llmTestBudgetBypassEnabled({ PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS: '0' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(llmTestBudgetBypassEnabled({ PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS: 'yes' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(llmTestBudgetBypassEnabled({ NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toBe(false);
+  });
 });
 
 describe('checkBudget', () => {

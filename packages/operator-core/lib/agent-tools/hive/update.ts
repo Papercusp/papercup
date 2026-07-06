@@ -24,11 +24,11 @@ export default defineTool({
   name: 'pot:update',
   profile: 'engineer',
   description:
-    "Edit a hive's config: its deployment target (execution plane) and per-instance config overrides (maxCostUsd, parallelWorkers, …). A thin registry writer — no agent-lifecycle effects (never wakes/cancels). Cannot change harness_kind (a hive cannot reclassify). Root-only.",
+    "Edit a pot's config: its deployment target (execution plane) and per-instance config overrides (maxCostUsd, parallelWorkers, …). A thin registry writer — no agent-lifecycle effects (never wakes/cancels). Cannot change harness_kind (a pot cannot reclassify). Root-only.",
   guidance: {
-    when: "Changing a hive's deployment target or its per-instance config overrides (budget/parallelism knobs).",
+    when: "Changing a pot's deployment target or its per-instance config overrides (budget/parallelism knobs).",
     notWhen:
-      'Waking/pausing the Queen — pot:wake / pot:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
+      'Waking/pausing the Mug — pot:wake / pot:declare-wake. Placing/removing cups — fleet:*. Deploying to a cloud frame — deploy:hive.',
     chaining: 'pot:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
     seeAlso: [
       'pot:get (see the current config before updating)',
@@ -39,8 +39,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    slug: z.string().min(1).max(120).describe("The hive's home-harness slug."),
-    deployment: DeploymentConfigSchema.optional().describe('New execution-plane target for the hive.'),
+    slug: z.string().min(1).max(120).describe("The pot's home-harness slug."),
+    deployment: DeploymentConfigSchema.optional().describe('New execution-plane target for the pot.'),
     configOverrides: z
       .record(z.string(), z.unknown())
       .optional()
@@ -53,7 +53,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_update_root_only',
-        message: 'pot:update cannot be called from a bee (a spawned/parented agent). Only the operator/user edits a hive config.',
+        message: 'pot:update cannot be called from a cup (a spawned/parented agent). Only the operator/user edits a pot config.',
       });
     }
     if (args.deployment === undefined && args.configOverrides === undefined) {
@@ -68,7 +68,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_not_found',
-        message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the hives.`,
+        message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the pots.`,
       });
     }
 

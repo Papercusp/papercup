@@ -26,9 +26,9 @@ export default defineTool({
   name: 'pot:request_work',
   profile: 'engineer',
   description:
-    "Initiate a cross-Hive WORK-REQUEST to a peer Hive (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; it becomes a work_item in the peer's backlog that THEIR Queen prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+    "Initiate a cross-Hive WORK-REQUEST to a peer Hive (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; it becomes a work_item in the peer's backlog that THEIR Mug prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
   guidance: {
-    when: 'The Queen/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:hives, then pot:request_work, then events:await the returned answeredEvent.',
+    when: 'The Mug/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:hives, then pot:request_work, then events:await the returned answeredEvent.',
     notWhen:
       'Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound pot:cross_grant).',
     chaining:

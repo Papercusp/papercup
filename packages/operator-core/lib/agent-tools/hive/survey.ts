@@ -47,9 +47,9 @@ export default defineTool({
   name: 'pot:survey',
   profile: 'engineer',
   description:
-    "The Queen's plan-aware placement survey: started plans ranked (which plan to pour bees into) AND the unplaced work-item frontier ranked (which ready item to place), across EVERY member harness — one ranker, two views. Read-only; call it at the top of a placement wake.",
+    "The Mug's plan-aware placement survey: started plans ranked (which plan to pour cups into) AND the unplaced work-item frontier ranked (which ready item to place), across EVERY member harness — one ranker, two views. Read-only; call it at the top of a placement wake.",
   guidance: {
-    when: 'You are the Queen starting a placement wake — survey what to work on next (which plan matters, which ready items to place) across all member harnesses.',
+    when: 'You are the Mug starting a placement wake — survey what to work on next (which plan matters, which ready items to place) across all member harnesses.',
     notWhen: 'You already hold a specific work-item id and just need to place it — go straight to cup:spawn / the batch placement.',
     chaining:
       'pot:survey → place the top frontier items (cup:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); pot:status to inspect the wake declaration.',
@@ -67,7 +67,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     frontierLimit: z
       .number()
       .int()
@@ -98,7 +98,7 @@ export default defineTool({
         data: {
           ok: false,
           error: 'no_home_harness',
-          message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the survey is Hive-scoped.',
+          message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the survey is Pot-scoped.',
         },
       };
     }

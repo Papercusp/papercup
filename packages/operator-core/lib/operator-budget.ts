@@ -104,11 +104,45 @@ export interface BudgetCheck {
 /**
  * Internal LLM scenario runs must not be made inconclusive by the owner-facing
  * operator daily budget. The test harness stamps uiClientId as
- * `llm-testing/<run-uuid>`; keep the bypass that narrow so UI, voice, and
- * normal operator turns remain capped.
+ * `llm-testing/<run-uuid>`; keeping the bypass keyed on that prefix keeps it
+ * narrow so UI, voice, and normal operator turns remain capped.
+ *
+ * SECURITY (WI-3224): `uiClientId` is CLIENT-SUPPLIED on operator:converse
+ * (browser tab / HTTP body), so the `llm-testing/` prefix ALONE is a spoofable
+ * trust signal — any loopback client could send it to defeat the owner's daily
+ * spend cap. The prefix is therefore kept as a NECESSARY condition (bypass stays
+ * narrow to test-tagged turns) but is no longer SUFFICIENT: the bypass ALSO
+ * requires a SERVER-SIDE opt-in — `llmTestBudgetBypassEnabled(env)` — that is
+ * ABSENT in the shipped desktop product. In the packaged Tauri app none of those
+ * signals are set, so a spoofed `llm-testing/…` uiClientId can never bypass the
+ * cap there.
+ *
+ * `env` is injectable purely for tests; production callers pass only uiClientId.
  */
-export function shouldBypassOperatorBudget(uiClientId?: string | null): boolean {
-  return typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/');
+export function shouldBypassOperatorBudget(
+  uiClientId?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (typeof uiClientId !== 'string' || !uiClientId.startsWith('llm-testing/')) return false;
+  return llmTestBudgetBypassEnabled(env);
+}
+
+/**
+ * Server-side trust root the spoofable `llm-testing/` uiClientId prefix is gated
+ * behind (WI-3224). True ONLY in a genuine test/CI runtime (VITEST /
+ * NODE_ENV=test — covers the in-process vitest suites) OR when a server is
+ * EXPLICITLY launched as an llm-test target
+ * (PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS=1, for running the scenario harness
+ * against a budget-configured server). The shipped desktop product sets NONE of
+ * these, so the daily budget cap always applies there regardless of what a
+ * client claims its uiClientId is.
+ */
+export function llmTestBudgetBypassEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = env.PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS;
+  if (explicit === '1' || explicit === 'true') return true;
+  if (env.VITEST) return true;
+  if (env.NODE_ENV === 'test') return true;
+  return false;
 }
 
 /**

@@ -77,7 +77,7 @@ export default defineTool({
         .string()
         .optional()
         .describe(
-          "Your CARRY-NOTE for next wake — what future-you needs to continue (in-flight intention, a tentative conclusion, a revisit-trigger). REPLACE-semantics: omit to carry nothing (next wake re-derives from the floor). Do NOT restate the deterministic floor (frontier/bees/inbox — that's recomputed) or dump the transcript; longer notes cost uncached tail tokens every wake, so carry only what matters.",
+          "Your CARRY-NOTE for next wake — what future-you needs to continue (in-flight intention, a tentative conclusion, a revisit-trigger). REPLACE-semantics: omit to carry nothing (next wake re-derives from the floor). Do NOT restate the deterministic floor (frontier/cups/inbox — that's recomputed) or dump the transcript; longer notes cost uncached tail tokens every wake, so carry only what matters.",
         ),
       force: z
         .boolean()
@@ -124,7 +124,7 @@ export default defineTool({
               ok: false,
               error: 'hive_paused',
               message:
-                'The queen loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; pot:start resumes autonomous wakes.',
+                'The mug loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; pot:start resumes autonomous wakes.',
             }),
           },
         ],

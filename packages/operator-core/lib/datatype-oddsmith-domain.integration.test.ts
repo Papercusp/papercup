@@ -12,16 +12,12 @@
  * rig; this proves the framework SIDE of "prove on oddsmith" deterministically.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertDatatype, getDatatype, getGenericKindDatatype, listDatatypes, datatypesSummary } from './datatype-registry-store';
 import { validateDatatypePayload } from './datatype-payload-validation';
 import { frontierPlacementKindClause, HIVE_PLACEMENT_TAG } from './datatype-frontier-placement';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'oddsmith-ops';
 
 const REASONING = {
@@ -42,9 +38,11 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
   let db: OrgTestDb;
 
   beforeAll(async () => {
+    // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
+    // pot-rename 506/523) — replaying 421/425 verbatim here is redundant AND re-runs
+    // their old hive_slug index against the post-523 schema, 42703-ing "column
+    // hive_slug does not exist". See datatype-registry.integration.test.ts.
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
     // Reasoning datatypes — generic-kind, the lead one opted into placement.
     for (const [id, schema] of Object.entries(REASONING)) {
       await upsertDatatype(db.adminSql, {

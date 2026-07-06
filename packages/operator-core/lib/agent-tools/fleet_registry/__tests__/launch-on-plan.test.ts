@@ -84,6 +84,7 @@ vi.mock('../../../scheduler/claim-spec-store', () => ({
 
 import tool, {
   memberLaunchCommand,
+  defaultMemberAccountRouting,
   composeMemberLaunchContext,
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
@@ -191,6 +192,37 @@ describe('memberLaunchCommand', () => {
 
   it('loads + self-registers the tool module without error', () => {
     expect(tool).toBeTruthy();
+  });
+
+  // cross-platform-member-credential-inheritance (Mac fleet-member login fix, 2026-07-06):
+  // a member the leader didn't pin defaults to gateway-auto on macOS (so it inherits the
+  // Keychain login via the gateway) instead of the direct system-credential that boots a
+  // headless Mac member logged out. Byte-identical on Linux/Windows; explicit pins always win.
+  describe('defaultMemberAccountRouting — Mac members default to gateway-auto', () => {
+    it('defaults an un-pinned member to "auto" on macOS (routes via the always-on gateway)', () => {
+      expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('auto');
+      expect(defaultMemberAccountRouting('', 'darwin')).toBe('auto');
+    });
+
+    it('keeps the direct system-credential default (undefined) on Linux/Windows', () => {
+      expect(defaultMemberAccountRouting(undefined, 'linux')).toBeUndefined();
+      expect(defaultMemberAccountRouting(undefined, 'win32')).toBeUndefined();
+    });
+
+    it('never overrides an explicit account pin — incl. the "default" escape hatch — on any platform', () => {
+      for (const platform of ['darwin', 'linux', 'win32'] as const) {
+        expect(defaultMemberAccountRouting('aviynw6', platform)).toBe('aviynw6');
+        expect(defaultMemberAccountRouting('auto', platform)).toBe('auto');
+        // A Mac operator that explicitly wants direct egress passes 'default' — it must survive.
+        expect(defaultMemberAccountRouting('default', platform)).toBe('default');
+      }
+    });
+
+    it('the resolved routing flows into --account: a Mac member launch carries --account=auto', () => {
+      const account = defaultMemberAccountRouting(undefined, 'darwin');
+      const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'p', account });
+      expect(cmd).toContain('--account=auto');
+    });
   });
 
   it('surfaces a sizing advisory only when requested members exceed healthy account headroom', async () => {

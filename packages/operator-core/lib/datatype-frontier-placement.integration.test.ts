@@ -10,15 +10,11 @@
  * datatype-registry integration fixture: apply 421, use the RLS-bypass admin client.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertDatatype } from './datatype-registry-store';
 import { frontierPlacementKindClause, HIVE_PLACEMENT_TAG } from './datatype-frontier-placement';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 /** Run the frontier clause over a synthetic set of candidate kinds; return those it admits. */
 async function placeableKinds(db: OrgTestDb, ws: string, kinds: string[]): Promise<string[]> {
@@ -33,9 +29,11 @@ describe('frontier placement opt-in (real PG)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
+    // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
+    // pot-rename 506/523) — replaying 421/425 verbatim here is redundant AND re-runs
+    // their old hive_slug index against the post-523 schema, 42703-ing "column
+    // hive_slug does not exist". See datatype-registry.integration.test.ts.
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '421-datatype-registry.sql'), 'utf8'));
-    await db.adminSql.unsafe(readFileSync(join(SQL_DIR, '425-datatype-review-status.sql'), 'utf8'));
   }, 120_000);
 
   afterAll(async () => {

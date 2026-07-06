@@ -30,7 +30,7 @@ export default defineTool({
   name: 'pot:control_policy',
   profile: 'engineer',
   description:
-    'Read or set the hive placement-watchdog thresholds: breakerThreshold (failed placements → cursed-item breaker), recoveryDebounceMs (min gap between recovery wakes for one stalled unit), dormancyGraceMs (post-dormancy recovery-sweep grace), infraBreakerThreshold (bounded infra-loss breaker). Replaces the PAPERCUSP_HIVE_PLACEMENT_* env gates; set is audited + one-call-revertible.',
+    'Read or set the pot placement-watchdog thresholds: breakerThreshold (failed placements → cursed-item breaker), recoveryDebounceMs (min gap between recovery wakes for one stalled unit), dormancyGraceMs (post-dormancy recovery-sweep grace), infraBreakerThreshold (bounded infra-loss breaker). Replaces the PAPERCUSP_HIVE_PLACEMENT_* env gates; set is audited + one-call-revertible.',
   capability: 'operator:write',
   guidance: {
     when: 'Tune the placement watchdog live — e.g. raise breakerThreshold to give a flapping unit more recovery attempts before cursing it, or shorten recoveryDebounceMs to re-place stalled work faster during an incident.',
@@ -67,7 +67,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('pot:control_policy set requires operator, architect, or queen role');
+      throw new Error('pot:control_policy set requires operator, architect, or mug role');
     }
     const patch: HiveControlPolicy = {};
     if (args.breakerThreshold !== undefined) patch.breakerThreshold = args.breakerThreshold;
