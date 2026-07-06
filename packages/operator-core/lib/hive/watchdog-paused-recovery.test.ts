@@ -20,7 +20,12 @@ vi.mock('./started', () => ({
   setHiveStarted: vi.fn(),
 }));
 
-import { shouldActOnPausedHive, pausedRecoveryStaleSec, pausedRecoveryAutoResume } from './watchdog';
+import {
+  shouldActOnPausedHive,
+  pausedRecoveryStaleSec,
+  pausedRecoveryAutoResume,
+  effectiveAutoResumeForPause,
+} from './watchdog';
 
 const HOUR = 3_600_000;
 

@@ -214,6 +214,11 @@ export interface BootstrapPapercuspHiveDeps {
     invite: CanonicalHiveInvite,
     record: BootstrapPapercuspHiveDeps['recordProgress'],
   ) => Promise<SelfAdmitCanonicalResult>;
+  /** WI-3232 (offline pot): after a self-admit materializes the remote-hive view, BOOT its
+   *  substrate so the pot is LIVE (corestore opened + epoch-decrypted, served to
+   *  /api/discovery/pots) offline — the offline analog of joinHiveAsView's 2c′ boot. Default:
+   *  boot-all's `rekeyHarness` (which falls back to a fresh `bootSingleHarness`). Best-effort. */
+  rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -758,14 +763,41 @@ export async function bootstrapPapercuspHive(
               `[papercusp-hive] offline seed git restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
             );
           }
+          // WI-3232 (bf97d offline verify 2026-07-06): the git (CODE) half may still be
+          // undecryptable offline, but the pot's DATA lives in the ALREADY-restored corestore.
+          // Do NOT gate self-admit on the git half — self-admit ANYWAY so the pot APPEARS offline
+          // with its plans/work-items; the code checkout back-fills via a bounded background retry
+          // (and the ordinary fetch once online). This block previously `return`ed 'skipped' here,
+          // so a fresh OFFLINE install showed NO pot at all (boot fell through to the gh-gated join).
           if (gitRes.stillDeferred.includes('git')) {
-            return { state: 'skipped', slug: joinRes.slug, reason: joinRes.reason };
+            console.warn(
+              '[papercusp-hive] offline git seed still deferred — self-admitting DATA-only; git code back-fills via retry/online',
+            );
+            const scheduleRetry = deps.scheduleGitSeedRetry ?? defaultScheduleGitSeedRetry;
+            scheduleRetry(record, () => restoreDeferred(record));
           }
         }
         const selfAdmit = deps.selfAdmitCanonical ?? defaultSelfAdmitCanonical;
         const selfRes = await selfAdmit(canonicalInvite, record);
         if (selfRes.state === 'admitted') {
           setHome(PAPERCUSP_WORKSPACE_ID);
+          // WI-3232: BOOT the just-self-admitted remote-hive view so the pot is LIVE offline —
+          // opens + epoch-decrypts its restored corestore content via the epoch-boot deps' bundled
+          // key (Change A), so /api/discovery/pots shows the pot WITH plans/work-items. Mirrors
+          // joinHiveAsView's 2c′ home-view boot (rekeyHarness → bootSingleHarness), minus network
+          // admission — without it the registry entry exists but nothing opens the corestore, so
+          // the pot stays empty/absent until a later restart. Best-effort: never fails the bootstrap.
+          try {
+            const rekey =
+              deps.rekeyHarness ??
+              (async (ws: string, slug: string) =>
+                (await import('../sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
+            await rekey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
+          } catch (e) {
+            console.warn(
+              `[papercusp-hive] self-admit view boot failed (non-fatal; retry next boot): ${(e as Error)?.message ?? e}`,
+            );
+          }
           record('clone', 'done', { detail: 'offline seed self-admit' });
           record('submodules', 'skipped', { detail: 'seed restore' });
           return { state: 'cloned-and-created', slug: selfRes.slug, path: selfRes.path };

@@ -204,10 +204,10 @@ describe('chapterEmoji', () => {
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 describe('nextTab / defaultTab / SHELL_TABS — the tab model (#4)', () => {
-  it('SHELL_TABS lists both tabs, tutorial first', () => {
-    expect(SHELL_TABS).toEqual(['tutorial', 'setup']);
+  it('SHELL_TABS lists both tabs, Setup first (owner 2026-07-06)', () => {
+    expect(SHELL_TABS).toEqual(['setup', 'tutorial']);
   });
-  it('nextTab toggles', () => {
+  it('nextTab toggles (order-driven off SHELL_TABS)', () => {
     expect(nextTab('tutorial')).toBe('setup');
     expect(nextTab('setup')).toBe('tutorial');
   });
@@ -224,10 +224,18 @@ describe('renderTabBar — the always-visible tab bar + shortcut hints (#4 + B2-
   it('brackets the ACTIVE tab (owner-chosen mockup) so it reads without color', () => {
     const t = strip(renderTabBar('tutorial'));
     expect(t).toContain('[ Tutorial ]');
-    expect(t).not.toContain('[ Setup');
+    expect(t).not.toContain('[ Setup ]');
     const s = strip(renderTabBar('setup'));
     expect(s).toContain('[ Setup ]');
     expect(s).not.toContain('[ Tutorial ]');
+  });
+  it('renders Setup before Tutorial in the tab bar (Setup is now the first tab, owner 2026-07-06)', () => {
+    const firstLine = strip(renderTabBar('setup')).split('\n')[0];
+    expect(firstLine.indexOf('Setup')).toBeLessThan(firstLine.indexOf('Tutorial'));
+  });
+  it('names the DESTINATION tab in a loud switch CTA so it is impossible to miss (owner 2026-07-06)', () => {
+    expect(strip(renderTabBar('tutorial'))).toContain('Press Tab ⇄ switch to Setup');
+    expect(strip(renderTabBar('setup'))).toContain('Press Tab ⇄ switch to Tutorial');
   });
   it('shows a ✓ on Setup once setup is complete', () => {
     expect(strip(renderTabBar('tutorial', { setupComplete: true }))).toContain('Setup ✓');

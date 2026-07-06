@@ -21,8 +21,19 @@ import type { ReactElement } from 'react';
 // Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
 // routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock('@/lib/router-compat/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('nuqs', async () => {
+  const React = await import('react');
+  const withDefault = (defaultValue: unknown) => ({ defaultValue });
+  return {
+    parseAsString: { withDefault },
+    parseAsStringEnum: () => ({ withDefault }),
+    useQueryState: (_key: string, parser?: { defaultValue?: unknown }) =>
+      React.useState(parser && 'defaultValue' in parser ? parser.defaultValue : null),
+  };
+});
 
-import { ListingCard, HiveBrowseCard, HiveRollupHeaderCard } from '../CupboardClient';
+import CupboardClient, { ListingCard, HiveBrowseCard, HiveRollupHeaderCard } from '../CupboardClient';
 import { groupHarnessRowsByHive } from '@papercusp/operator-core/lib/cupboard/types';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 
@@ -58,6 +69,54 @@ function listing(overrides: Partial<HarnessListing> = {}): HarnessListing {
     ...overrides,
   };
 }
+
+const HIVE_PK = 'A'.repeat(43) + '=';
+
+describe('CupboardClient — WI-3259 tab switching and loading state', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(new Response(
+      JSON.stringify({
+        listings: [
+          listing({ id: 1, title: 'Harness listing', listing_kind: 'harness', hive_pubkey: HIVE_PK }),
+          listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' }),
+        ],
+      }),
+      { status: 200 },
+    ));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('does not refetch listings when switching kind tabs', async () => {
+    withTooltips(<CupboardClient />);
+
+    await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/cupboard/listings?');
+
+    fireEvent.click(screen.getByTestId('cupboard-kind-tab-plugin'));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Plugin listing')).toBeTruthy();
+    expect(screen.queryByText('Harness listing')).toBeNull();
+  });
+
+  it('shows an explicit listings loading indicator while the fetch is in flight', () => {
+    fetchMock.mockReturnValue(new Promise(() => {}));
+
+    withTooltips(<CupboardClient />);
+
+    expect(screen.getByTestId('cupboard-loading-indicator').textContent).toContain('Loading');
+    expect(screen.getByTestId('cupboard-results').getAttribute('aria-busy')).toBe('true');
+  });
+});
 
 describe('Cupboard ListingCard — claim-status badge', () => {
   it('surfaces the provisional (unclaimed) badge for an unclaimed listing', () => {
@@ -249,8 +308,6 @@ describe('Cupboard ListingCard — Hive chip (per-Hive rollup, D-005)', () => {
 });
 
 // ─── comb-hive-native-sharing-2026-06-11 Phase 1 ────────────────────────────
-
-const HIVE_PK = 'A'.repeat(43) + '=';
 
 describe('ListingCard — suppressViewHive (rollup mode, P-001)', () => {
   it('hides the redundant View Hive button inside the rollup', () => {

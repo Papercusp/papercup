@@ -56,6 +56,7 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
       slug: PAPERCUSP_HIVE_SLUG,
     })),
     setHomeWorkspace: vi.fn(),
+    rekeyHarness: vi.fn(async () => undefined),
     initSubmodules: vi.fn(),
     recordProgress: vi.fn(),
     adoptShare: vi.fn(async () => null),
@@ -507,6 +508,48 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(selfAdmitCanonical).not.toHaveBeenCalled(); // never clobbers the self_repo owner entry
     expect(restoreDeferredGitSeed).not.toHaveBeenCalled(); // guard returns before the git restore
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    warn.mockRestore();
+  });
+
+  it('WI-3232: git seed still deferred offline STILL self-admits (data-only) + schedules a code back-fill retry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const joinCanonical = vi.fn(async () => ({
+      state: 'skipped' as const,
+      slug: null,
+      reason: 'canonical hive not announcing yet (owner offline)',
+    }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
+    // The offline reality bf97d hit: the encrypted git (code) half cannot decrypt yet — but the
+    // pot's DATA is in the already-restored corestore, so the pot must still appear.
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: [], stillDeferred: ['git'] }));
+    const scheduleGitSeedRetry = vi.fn();
+    const selfAdmitCanonical = vi.fn(async () => ({
+      state: 'admitted' as const,
+      slug: PAPERCUSP_HIVE_SLUG,
+      path: '/clones/papercusp',
+    }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      joinCanonical,
+      restoreSeed,
+      restoreDeferredGitSeed,
+      scheduleGitSeedRetry,
+      selfAdmitCanonical,
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    // Pot APPEARS offline (self-admit ran) even though the git/code half stayed deferred.
+    expect(res).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG });
+    expect(selfAdmitCanonical).toHaveBeenCalledOnce();
+    expect(scheduleGitSeedRetry).toHaveBeenCalledOnce(); // code checkout back-fills in the background
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    expect(deps.rekeyHarness).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG); // pot booted LIVE
     warn.mockRestore();
   });
 
