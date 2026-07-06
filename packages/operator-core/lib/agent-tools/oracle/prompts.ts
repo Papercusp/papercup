@@ -49,6 +49,10 @@ export const ORACLE_ALLOWED_TOOLS = [
   'mcp__agentmcp__harness:list',
   'mcp__agentmcp__harness:get',
   'mcp__agentmcp__harness:status',
+  // App-template discovery (WI-3198) — browse/read the Cupboard templates a new
+  // app is built from (read-only; materialize stays with the builder surfaces).
+  'mcp__agentmcp__templates:list',
+  'mcp__agentmcp__templates:get-guide',
   // Agent dispatch.
   'mcp__agentmcp__agents:list',
   'mcp__agentmcp__agent_chats:list',
