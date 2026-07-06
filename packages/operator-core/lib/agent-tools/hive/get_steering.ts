@@ -47,7 +47,7 @@ export default defineTool({
       return json({
         ok: false,
         error: 'no_home_harness',
-        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-hive.',
+        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
       });
     }
     return json({ ok: true, hive: installSlug, steering: await getOwnerSteering(workspaceId, installSlug) });
