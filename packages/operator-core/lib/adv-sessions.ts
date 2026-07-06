@@ -17,6 +17,22 @@ import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
 
+/**
+ * Log a best-effort read/write failure UNLESS it's PG's undefined_table
+ * (42P01) — a minimal/isolated schema (many unit/integration test fixtures
+ * build only the tables their scenario needs) legitimately lacks
+ * harness_shared.adv_sessions, and every function in this file already
+ * degrades cleanly (returns [] / null / no-op) on any error. Warning on that
+ * EXPECTED case was pure noise that, under vitest-fail-on-console, turned
+ * into red tests unrelated to adv-sessions itself (EI-8194) — the same
+ * 42P01-swallow precedent used elsewhere (work-items.ts, decision-ledger,
+ * sync-resolver). Real, unexpected errors still warn loudly.
+ */
+function warnUnlessMissingTable(e: unknown, label: string): void {
+  if ((e as { code?: string } | undefined)?.code === '42P01') return;
+  console.warn(`[adv-sessions] ${label} failed:`, (e as Error).message);
+}
+
 export interface AdvSessionRow {
   id: number;
   workspaceId: string;
@@ -172,7 +188,7 @@ export async function workspaceForCoordOwner(coordOwnerId: string): Promise<stri
     `;
     ws = rows[0]?.workspace_id ?? null;
   } catch (e) {
-    console.warn('[adv-sessions] workspaceForCoordOwner failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'workspaceForCoordOwner');
     return null; // don't cache a transient DB failure as "no workspace"
   }
   if (coordOwnerWsCache.size > 512) coordOwnerWsCache.clear(); // bounded; it's only a cache
@@ -196,7 +212,7 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     `;
     return rows[0]?.id ?? null;
   } catch (e) {
-    console.warn('[adv-sessions] recordAdvSession failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'recordAdvSession');
     return null;
   }
 }
@@ -228,7 +244,7 @@ export async function listPendingWorkbenchLaunches(
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
-    console.warn('[adv-sessions] listPendingWorkbenchLaunches failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'listPendingWorkbenchLaunches');
     return [];
   }
 }
@@ -250,7 +266,7 @@ export async function markAdvSessionLaunched(id: number): Promise<boolean> {
     `;
     return rows.length > 0;
   } catch (e) {
-    console.warn('[adv-sessions] markAdvSessionLaunched failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'markAdvSessionLaunched');
     return false;
   }
 }
@@ -265,7 +281,7 @@ export async function setAdvSessionPid(id: number, pid: number | null): Promise<
          AND workspace_id = ${activeWorkspaceId()}
     `;
   } catch (e) {
-    console.warn('[adv-sessions] setAdvSessionPid failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'setAdvSessionPid');
   }
 }
 
@@ -281,7 +297,7 @@ export async function setAdvSessionWindowId(id: number, windowId: string | null)
          AND workspace_id = ${activeWorkspaceId()}
     `;
   } catch (e) {
-    console.warn('[adv-sessions] setAdvSessionWindowId failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'setAdvSessionWindowId');
   }
 }
 
@@ -311,7 +327,7 @@ export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string):
     `;
     return 'linked';
   } catch (e) {
-    console.warn('[adv-sessions] setAdvSessionOmpThreadId failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'setAdvSessionOmpThreadId');
     return 'not_found';
   }
 }
@@ -325,7 +341,7 @@ export async function markAdvSessionEnded(id: number, exitCode: number | null): 
        WHERE id = ${id} AND ended_at IS NULL
     `;
   } catch (e) {
-    console.warn('[adv-sessions] markAdvSessionEnded failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'markAdvSessionEnded');
   }
 }
 
@@ -356,7 +372,7 @@ export async function reactivateAdvSession(id: number): Promise<boolean> {
     `;
     return rows.length > 0;
   } catch (e) {
-    console.warn('[adv-sessions] reactivateAdvSession failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'reactivateAdvSession');
     return false;
   }
 }
@@ -387,7 +403,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
     `;
     return rows.length > 0;
   } catch (e) {
-    console.warn('[adv-sessions] reactivateAdvSessionByOwner failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'reactivateAdvSessionByOwner');
     return false;
   }
 }
@@ -439,7 +455,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
-    console.warn('[adv-sessions] listAdvSessions failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'listAdvSessions');
     return [];
   }
 }
@@ -486,7 +502,7 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
-    console.warn('[adv-sessions] listResumableSessions failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'listResumableSessions');
     return [];
   }
 }
@@ -527,7 +543,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
     if (!r) return null;
     return mapAdvSessionRow(r);
   } catch (e) {
-    console.warn('[adv-sessions] getAdvSession failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'getAdvSession');
     return null;
   }
 }
@@ -583,7 +599,7 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
       if (mapped.coordOwnerId && !out.has(mapped.coordOwnerId)) out.set(mapped.coordOwnerId, mapped);
     }
   } catch (e) {
-    console.warn('[adv-sessions] advSessionsByCoordOwner failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'advSessionsByCoordOwner');
   }
   return out;
 }
@@ -635,7 +651,7 @@ export async function listRecordedLiveSessions(
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
-    console.warn('[adv-sessions] listRecordedLiveSessions failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'listRecordedLiveSessions');
     return [];
   }
 }
@@ -671,7 +687,7 @@ export async function endedRecordedOwnerIds(coordOwnerIds: string[]): Promise<Se
     `;
     return new Set(rows.filter((r) => r.ended_at != null).map((r) => r.coord_owner_id));
   } catch (e) {
-    console.warn('[adv-sessions] endedRecordedOwnerIds failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'endedRecordedOwnerIds');
     return new Set();
   }
 }
@@ -725,7 +741,7 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
     `;
     return new Set(rows.map((r) => r.owner_id));
   } catch (e) {
-    console.warn('[adv-sessions] recordedLiveOwnerIds failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'recordedLiveOwnerIds');
     return new Set();
   }
 }
@@ -751,7 +767,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
     const r = rows[0];
     return r ? mapAdvSessionRow(r) : null;
   } catch (e) {
-    console.warn('[adv-sessions] latestAdvSessionByCoordOwner failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'latestAdvSessionByCoordOwner');
     return null;
   }
 }
@@ -801,7 +817,7 @@ export async function listEndedAdvSessions(
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
-    console.warn('[adv-sessions] listEndedAdvSessions failed:', (e as Error).message);
+    warnUnlessMissingTable(e, 'listEndedAdvSessions');
     return [];
   }
 }

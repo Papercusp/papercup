@@ -56,7 +56,7 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
       slug: PAPERCUSP_HIVE_SLUG,
     })),
     setHomeWorkspace: vi.fn(),
-    rekeyHarness: vi.fn(async () => undefined),
+    bootActiveWorkspace: vi.fn(async () => ({ attempted: 1, booted: 1, alreadyBooted: 0, failed: 0 })),
     initSubmodules: vi.fn(),
     recordProgress: vi.fn(),
     adoptShare: vi.fn(async () => null),
@@ -549,7 +549,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(selfAdmitCanonical).toHaveBeenCalledOnce();
     expect(scheduleGitSeedRetry).toHaveBeenCalledOnce(); // code checkout back-fills in the background
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
-    expect(deps.rekeyHarness).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG); // pot booted LIVE
+    expect(deps.bootActiveWorkspace).toHaveBeenCalledOnce(); // pot booted LIVE via the full startup boot-all (WI-3232 first-boot ordering fix, replaces the no-op single rekeyHarness)
     warn.mockRestore();
   });
 

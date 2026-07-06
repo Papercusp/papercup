@@ -800,6 +800,19 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
           // `text+CR` burst (the pre-fix behavior) would land INSIDE the window and
           // be swallowed as a literal newline → no submit.
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '120',
+          // EI-8188: the agent-busy mid-turn gate (coord-wake-mid-turn-2026-06-30)
+          // defers every gated `turn` inject until the pty's OUTPUT has been quiet
+          // for OUTPUT_QUIET_MS (prod default 1500ms) — and the child's own READY
+          // marker below (EI-7662) counts as output, so `lastOutputAt` is reset to
+          // "just now" the instant we're allowed to inject. Every OTHER test in this
+          // file that can hit this gate already pins OUTPUT_QUIET_MS to a small
+          // deterministic value (see the C2 describe block above); this test never
+          // did, so it silently inherited the full 1500ms production wait — pushing
+          // the real submit past this test's fixed 700ms post-inject sleep and
+          // failing with only the pre-submit 'READY' marker captured. Pin it fast
+          // here too so the CR-delay behavior under test isn't entangled with an
+          // unrelated gate's wall-clock default.
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         },
         ownerId,
         advSessionId: 4244,

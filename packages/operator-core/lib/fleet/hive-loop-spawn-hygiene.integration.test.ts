@@ -47,24 +47,31 @@ const h = vi.hoisted(() => ({
   pids: [] as number[],
   sleepSec: 30,
 }));
+const stubInvokeOnce = async (
+  _projectDir: string,
+  _role: string,
+  _extras: string[],
+  _extraEnv: Record<string, string>,
+  opts?: { signal?: AbortSignal },
+) =>
+  new Promise<{ output: string; exitCode: number; stderr: string }>((resolve) => {
+    const child = spawnProc('sleep', [String(h.sleepSec)], { stdio: 'ignore' });
+    if (child.pid) h.pids.push(child.pid);
+    const onAbort = () => child.kill('SIGTERM');
+    opts?.signal?.addEventListener('abort', onAbort, { once: true });
+    child.on('exit', (code, sig) => {
+      opts?.signal?.removeEventListener('abort', onAbort);
+      resolve({ output: 'stub agent done', exitCode: sig ? 1 : (code ?? 0), stderr: sig ? `killed: ${sig}` : '' });
+    });
+  });
 vi.mock('../dbos/orchestrator-runner', () => ({
-  spawnInvokeOnce: async (
-    _projectDir: string,
-    _role: string,
-    _extras: string[],
-    _extraEnv: Record<string, string>,
-    opts?: { signal?: AbortSignal },
-  ) =>
-    new Promise<{ output: string; exitCode: number; stderr: string }>((resolve) => {
-      const child = spawnProc('sleep', [String(h.sleepSec)], { stdio: 'ignore' });
-      if (child.pid) h.pids.push(child.pid);
-      const onAbort = () => child.kill('SIGTERM');
-      opts?.signal?.addEventListener('abort', onAbort, { once: true });
-      child.on('exit', (code, sig) => {
-        opts?.signal?.removeEventListener('abort', onAbort);
-        resolve({ output: 'stub agent done', exitCode: sig ? 1 : (code ?? 0), stderr: sig ? `killed: ${sig}` : '' });
-      });
-    }),
+  spawnInvokeOnce: stubInvokeOnce,
+  // spawnInvokeOnceWithFallback (the sidecar-rollout wrapper, PAPERCUSP_SPAWNER_SIDECAR
+  // opt-in) is what operator-spawn.ts actually calls now; with the env unset (the
+  // default, and unset here) it just delegates straight to spawnInvokeOnce, so the
+  // mock does the same — vi.mock replaces the WHOLE module, so an unlisted export is
+  // undefined, not "falls through to the real implementation".
+  spawnInvokeOnceWithFallback: stubInvokeOnce,
 }));
 // Pin the fleet ceiling to 2 so the test fills it with two spawns.
 vi.mock('../rate-limit-config', async (importOriginal) => {
@@ -113,8 +120,14 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
+// coding-hive-bee-vs-coding-factory-scoper-2026-06-23: `validator` is a coding-FACTORY
+// push-pipeline role that `spawnAgentInHarness` now refuses without pushed-feature
+// context (no featureId / FEATURE_ID= extra / chunkId — "has nothing to do"). This
+// test only exercises the generic spawn/nursery/ceiling machinery (concurrency,
+// cancel, stale-heartbeat reclaim), not real pipeline routing, so a dummy featureId
+// satisfies the guard exactly as its own error message suggests.
 const spawnOne = () =>
-  spawnAgentInHarness({ workspaceId: WS, harness: SLUG, role: 'validator', parentRole: 'operator' });
+  spawnAgentInHarness({ workspaceId: WS, harness: SLUG, role: 'validator', parentRole: 'operator', featureId: 'F-spawn-hyg-test' });
 
 async function rowStatus(spawnId: string): Promise<string> {
   const [r] = await db.adminSql`

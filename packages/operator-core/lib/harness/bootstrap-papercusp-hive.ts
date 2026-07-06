@@ -214,11 +214,22 @@ export interface BootstrapPapercuspHiveDeps {
     invite: CanonicalHiveInvite,
     record: BootstrapPapercuspHiveDeps['recordProgress'],
   ) => Promise<SelfAdmitCanonicalResult>;
-  /** WI-3232 (offline pot): after a self-admit materializes the remote-hive view, BOOT its
-   *  substrate so the pot is LIVE (corestore opened + epoch-decrypted, served to
-   *  /api/discovery/pots) offline — the offline analog of joinHiveAsView's 2c′ boot. Default:
-   *  boot-all's `rekeyHarness` (which falls back to a fresh `bootSingleHarness`). Best-effort. */
-  rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
+  /** WI-3232 (offline FIRST-boot pot): after self-admit registers + `setHome`s the remote-hive
+   *  view, RE-RUN the startup substrate boot so its corestore opens + epoch-decrypts on the
+   *  FIRST boot. The startup `bootAllHarnessesForActiveWorkspace` already ran with the OLD active
+   *  workspace (`default`, before papercusp was registered) so it booted NOTHING for this hive
+   *  (attempted=0); only a restart otherwise heals it. MUST be the full boot-all — NOT the old
+   *  single `rekeyHarness`→`bootSingleHarness`, which booted the handle OUTSIDE the startup
+   *  factory-default flow (never queryable) AND cached it so a later boot-all short-circuited
+   *  `alreadyBooted` and no-op'd (bf97d/b0fbf, 2026-07-06). Default:
+   *  {@link bootAllHarnessesForActiveWorkspace} with NO overrides (inherits startup routing).
+   *  Best-effort — never fails the bootstrap; a restart still heals it. */
+  bootActiveWorkspace?: () => Promise<{
+    attempted: number;
+    booted: number;
+    alreadyBooted: number;
+    failed: number;
+  } | void>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -781,21 +792,35 @@ export async function bootstrapPapercuspHive(
         const selfRes = await selfAdmit(canonicalInvite, record);
         if (selfRes.state === 'admitted') {
           setHome(PAPERCUSP_WORKSPACE_ID);
-          // WI-3232: BOOT the just-self-admitted remote-hive view so the pot is LIVE offline —
-          // opens + epoch-decrypts its restored corestore content via the epoch-boot deps' bundled
-          // key (Change A), so /api/discovery/pots shows the pot WITH plans/work-items. Mirrors
-          // joinHiveAsView's 2c′ home-view boot (rekeyHarness → bootSingleHarness), minus network
-          // admission — without it the registry entry exists but nothing opens the corestore, so
-          // the pot stays empty/absent until a later restart. Best-effort: never fails the bootstrap.
+          // WI-3232 (offline FIRST-boot fix, bf97d 2026-07-06): the startup substrate boot
+          // (bootAllHarnessesForActiveWorkspace) already ran with the OLD active workspace
+          // (`default`, before self-admit registered papercusp) → it booted NOTHING for this hive
+          // (attempted=0). Now that self-admit has registered papercusp under PAPERCUSP_WORKSPACE_ID
+          // AND `setHome`'d the active workspace to it, RE-RUN the SAME startup boot-all so the
+          // corestore opens + epoch-decrypts on THIS (first) boot — exactly what a restart does
+          // (boot-2's boot-all, with the pot already registered, yields a queryable offline pot;
+          // its content is readable via the sync resolver, e.g. plans.list, with no network).
+          // This REPLACES the earlier single `rekeyHarness`→`bootSingleHarness` call: that booted
+          // the handle OUTSIDE the startup factory-default flow (in-process vs sidecar routing the
+          // query layer expects) so it never became queryable, AND it CACHED a handle for
+          // `papercusp-workspace::papercusp` that made any subsequent boot-all short-circuit
+          // `alreadyBooted` and no-op — the fix looked landed but the pot stayed dark (b0fbf
+          // boot-all review). Call the PUBLIC boot-all with NO per-call overrides so it inherits
+          // the startup module bootHarness/skipSendSideWiring routing. Best-effort: never fails the
+          // bootstrap; a restart still heals it.
           try {
-            const rekey =
-              deps.rekeyHarness ??
-              (async (ws: string, slug: string) =>
-                (await import('../sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
-            await rekey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
+            const bootActive =
+              deps.bootActiveWorkspace ??
+              (async () =>
+                (await import('../sync/hyperbee/boot-all')).bootAllHarnessesForActiveWorkspace());
+            const r = await bootActive();
+            console.warn(
+              `[papercusp-hive] self-admit substrate boot: attempted=${r?.attempted ?? '?'} ` +
+                `booted=${r?.booted ?? '?'} alreadyBooted=${r?.alreadyBooted ?? '?'} failed=${r?.failed ?? '?'}`,
+            );
           } catch (e) {
             console.warn(
-              `[papercusp-hive] self-admit view boot failed (non-fatal; retry next boot): ${(e as Error)?.message ?? e}`,
+              `[papercusp-hive] self-admit substrate boot failed (non-fatal; retry next boot): ${(e as Error)?.message ?? e}`,
             );
           }
           record('clone', 'done', { detail: 'offline seed self-admit' });

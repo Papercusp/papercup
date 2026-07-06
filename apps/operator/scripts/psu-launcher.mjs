@@ -97,7 +97,7 @@ export function defaultMcpProxyProbe(port) {
  * operator.json in steady state, so each environment lands on the right branch
  * with no cross-contamination. Exported for tests; `probe`/`warn` injectable.
  */
-export function resolveOperatorUrl({
+export function resolveOperatorTarget({
   env = process.env,
   home = homedir(),
   probe = defaultMcpProxyProbe,
@@ -114,23 +114,34 @@ export function resolveOperatorUrl({
           `this session bypasses deploy-restart resilience (WI-1457). Unset the override (or point it at :${proxyPort}) to ride the proxy.`,
       );
     }
-    return env.PAPERCUSP_OPERATOR_URL;
+    return { url: env.PAPERCUSP_OPERATOR_URL, source: 'env', startedAt: null };
   }
   try {
     const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
-    if (d && typeof d.httpUrl === 'string' && d.httpUrl) return d.httpUrl;
-    if (d && d.port) return `http://127.0.0.1:${d.port}`;
+    // startedAt (epoch ms, written by serve on come-up) dates the record: a
+    // desktop whose operator died leaves a STALE record behind, and psu's
+    // connection-failure handling uses that age to fail fast with real guidance
+    // instead of a quiet 30s retry (WI-3271).
+    const startedAt = Number(d?.startedAt) > 0 ? Number(d.startedAt) : null;
+    if (d && typeof d.httpUrl === 'string' && d.httpUrl) return { url: d.httpUrl, source: 'discovery', startedAt };
+    if (d && d.port) return { url: `http://127.0.0.1:${d.port}`, source: 'discovery', startedAt };
   } catch {
     /* no/!readable operator.json (the dev box) → proxy / dev-port fallback below */
   }
   // WI-1457 hardening: prefer the always-up resilient proxy over direct :3070
   // whenever it is verifiably alive, so re-minted configs / fresh launches can
   // never silently regress the P-006 cutover again.
-  if (!proxyOptedOut && probe(proxyPort)) return `http://127.0.0.1:${proxyPort}`;
-  return 'http://localhost:3070';
+  if (!proxyOptedOut && probe(proxyPort)) return { url: `http://127.0.0.1:${proxyPort}`, source: 'proxy', startedAt: null };
+  return { url: 'http://localhost:3070', source: 'dev-default', startedAt: null };
 }
 
-const OPERATOR_URL = resolveOperatorUrl();
+/** Back-compat string form of resolveOperatorTarget (exported for tests/callers). */
+export function resolveOperatorUrl(opts = {}) {
+  return resolveOperatorTarget(opts).url;
+}
+
+const OPERATOR_TARGET = resolveOperatorTarget();
+const OPERATOR_URL = OPERATOR_TARGET.url;
 
 /**
  * Per-request timeout (ms). `fetch` has no default timeout, so a wedged or
@@ -156,6 +167,27 @@ const TIMEOUT_RETRIES = Number(process.env.PAPERCUSP_PSU_RETRIES) || 1;
 // tick. A genuine outage still fails once the budget is spent. 0 disables.
 const _connectRetryRaw = Number(process.env.PAPERCUSP_PSU_CONNECT_RETRY_MS);
 const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetryRaw : 30_000;
+// WI-3271: the 30s ride-through is for a MID-RESTART operator. On a desktop
+// install whose operator DIED (app closed / supervision gave up), operator.json
+// keeps the dead port with an old startedAt — burning the full budget there is
+// the owner-reported "psu → nothing happened" UX. When the discovery record is
+// older than this, a connection failure fails FAST (budget below) with an
+// actionable "start the Papercusp app" message instead. A record younger than
+// this still gets the full ride-through (a restarting operator rewrites
+// operator.json on come-up, so a fresh record = plausibly mid-boot).
+const STALE_DISCOVERY_MS = 10 * 60_000;
+const STALE_FAST_FAIL_BUDGET_MS = 5_000;
+
+/** Coarse human age ("3m" / "2h" / "5d") for the stale-operator message. */
+function fmtAgo(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return 'an unknown time';
+  const m = Math.round(ms / 60_000);
+  if (m < 1) return 'under a minute';
+  if (m < 120) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
@@ -1710,13 +1742,22 @@ export async function fetchWithResilience(
     connectBudgetMs = CONNECT_RETRY_BUDGET_MS,
     timeoutRetries = TIMEOUT_RETRIES,
     label = url,
+    target = OPERATOR_TARGET,
   } = {},
 ) {
   // A caller-supplied AbortSignal owns the request lifetime — never retry it.
   const callerSignal = init.signal ?? null;
   const retryable = !callerSignal;
+  // WI-3271: a desktop (operator.json-discovered) target whose record is old is
+  // almost certainly a DEAD operator (app closed / supervision gave up), not a
+  // mid-restart one — shrink the connection-retry budget so psu answers in
+  // seconds with the "start the Papercusp app" guidance instead of sitting
+  // quietly through the full ride-through window.
+  const targetAgeMs = target?.source === 'discovery' && target.startedAt ? now() - target.startedAt : null;
+  const targetStale = targetAgeMs != null && targetAgeMs > STALE_DISCOVERY_MS;
+  const effectiveConnectBudgetMs = targetStale ? Math.min(connectBudgetMs, STALE_FAST_FAIL_BUDGET_MS) : connectBudgetMs;
   // Wall-clock deadline for retrying CONNECTION failures (host mid-recycle).
-  const connectDeadline = now() + connectBudgetMs;
+  const connectDeadline = now() + effectiveConnectBudgetMs;
   let timeoutRetriesLeft = timeoutRetries;
   let announcedConnRetry = false;
   let lastErr;
@@ -1749,8 +1790,11 @@ export async function fetchWithResilience(
       if (remaining <= 0) break;
       if (!announcedConnRetry) {
         onNotice(
-          `psu: operator at ${OPERATOR_URL} unreachable (${label}) — it may be restarting; ` +
-            `retrying for up to ${Math.ceil(connectBudgetMs / 1000)}s…\n`,
+          targetStale
+            ? `psu: the Papercusp app's server at ${target.url} isn't answering (${label}) and its boot record is ` +
+              `${fmtAgo(targetAgeMs)} old — checking for ${Math.ceil(effectiveConnectBudgetMs / 1000)}s…\n`
+            : `psu: operator at ${target?.url ?? OPERATOR_URL} unreachable (${label}) — it may be restarting; ` +
+              `retrying for up to ${Math.ceil(effectiveConnectBudgetMs / 1000)}s…\n`,
         );
         announcedConnRetry = true;
       }
@@ -1758,15 +1802,30 @@ export async function fetchWithResilience(
     }
   }
   const e = lastErr;
+  const shownUrl = target?.url ?? OPERATOR_URL;
+  // WI-3271: guidance must match the install. A desktop (discovery) target has
+  // no systemd — telling a Windows/desktop user to systemctl is a dead end; the
+  // fix there is starting (or restarting) the Papercusp app itself.
+  const isDesktop = target?.source === 'discovery';
   if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
     throw new Error(
-      `the operator at ${OPERATOR_URL} did not respond within ${timeoutMs}ms (${label}). ` +
-        `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
+      `the operator at ${shownUrl} did not respond within ${timeoutMs}ms (${label}). ` +
+        (isDesktop
+          ? `It may be wedged — restart the Papercusp desktop app, `
+          : `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), `) +
         `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
     );
   }
+  if (isDesktop) {
+    throw new Error(
+      `the Papercusp app's server isn't running (${shownUrl} refused for ${Math.ceil(effectiveConnectBudgetMs / 1000)}s` +
+        (targetAgeMs != null ? `; it last reported up ${fmtAgo(targetAgeMs)} ago` : '') +
+        `). Start (or restart) the Papercusp desktop app, wait for it to finish loading, then re-run psu. ` +
+        `Override with PAPERCUSP_OPERATOR_URL.`,
+    );
+  }
   throw new Error(
-    `could not reach the operator at ${OPERATOR_URL} after ${Math.ceil(connectBudgetMs / 1000)}s (${e?.message || e}). ` +
+    `could not reach the operator at ${shownUrl} after ${Math.ceil(effectiveConnectBudgetMs / 1000)}s (${e?.message || e}). ` +
       `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
   );
 }

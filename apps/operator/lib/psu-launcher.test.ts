@@ -65,6 +65,7 @@ import {
   BRAIN_TOMBSTONE_MESSAGE,
   fetchWithResilience,
   resolveOperatorUrl,
+  resolveOperatorTarget,
   readToken,
   claudeOAuthTokenPath,
   readStoredClaudeOAuthToken,
@@ -2330,13 +2331,16 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
   }
   const connFail = () => { throw new TypeError('fetch failed'); };
   const timeoutErr = () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; };
+  // Pin the target so these tests never inherit the RUNNER box's real
+  // operator.json via the module-level OPERATOR_TARGET default (WI-3271).
+  const devTarget = { url: 'http://op', source: 'dev-default', startedAt: null };
 
   it('rides through a recycle: retries a connection failure on a backoff and returns once the host is back', async () => {
     const clock = fakeClock();
     let n = 0;
     const fetchImpl = async () => { n += 1; if (n < 3) connFail(); return { ok: true, id: 'live' } as unknown as Response; };
     const res = await fetchWithResilience('http://op/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000,
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: devTarget,
     });
     expect((res as unknown as { id: string }).id).toBe('live');
     expect(n).toBe(3); // two dead-window failures ridden through, third succeeds
@@ -2348,7 +2352,7 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
     const fetchImpl = async () => { n += 1; connFail(); return undefined as unknown as Response; };
     await expect(
       fetchWithResilience('http://op/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 5_000,
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 5_000, target: devTarget,
       }),
     ).rejects.toThrow(/could not reach the operator .* after \d+s/);
     expect(n).toBeGreaterThan(1); // it retried within the budget, not a single shot
@@ -2359,7 +2363,7 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
     const notices: string[] = [];
     const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
     await fetchWithResilience('http://op/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 6_000,
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 6_000, target: devTarget,
     }).catch(() => {});
     expect(notices.filter((m) => /unreachable .* retrying for up to/.test(m))).toHaveLength(1);
   });
@@ -2370,7 +2374,7 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
     const fetchImpl = async () => { n += 1; timeoutErr(); return undefined as unknown as Response; };
     await expect(
       fetchWithResilience('http://op/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 1,
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 1, target: devTarget,
       }),
     ).rejects.toThrow(/did not respond within \d+ms/);
     expect(n).toBe(2); // initial attempt + 1 capped retry, then give up
@@ -2383,10 +2387,59 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
     const ac = new AbortController();
     await expect(
       fetchWithResilience('http://op/x', { signal: ac.signal }, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000,
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: devTarget,
       }),
     ).rejects.toThrow(/could not reach/);
     expect(n).toBe(1); // single attempt — no retry when the caller owns the signal
+  });
+
+  // ── WI-3271: dead-desktop fail-fast (the owner's "psu → nothing happened") ──
+
+  it('STALE desktop discovery + refused → fails FAST (~5s, not the 30s budget) with "start the Papercusp app" guidance', async () => {
+    const clock = fakeClock();
+    // startedAt an hour before the fake clock's origin → record is stale.
+    const staleTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -3_600_000 };
+    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    await expect(
+      fetchWithResilience('http://127.0.0.1:21487/x', {}, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: staleTarget,
+      }),
+    ).rejects.toThrow(/Papercusp app's server isn't running .*Start \(or restart\) the Papercusp desktop app/);
+    expect(clock.now()).toBeLessThanOrEqual(6_000); // fast fail — never burned the 30s ride-through
+  });
+
+  it('FRESH desktop discovery + refused → keeps the full ride-through (operator plausibly mid-boot), desktop-flavored final error', async () => {
+    const clock = fakeClock();
+    const freshTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -60_000 }; // 1 min old
+    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    await expect(
+      fetchWithResilience('http://127.0.0.1:21487/x', {}, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: freshTarget,
+      }),
+    ).rejects.toThrow(/Start \(or restart\) the Papercusp desktop app/);
+    expect(clock.now()).toBeGreaterThanOrEqual(30_000); // full budget honored for a mid-restart window
+  });
+
+  it('desktop discovery TIMEOUT advice says restart-the-app, never dev-box systemctl', async () => {
+    const clock = fakeClock();
+    const target = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -60_000 };
+    const fetchImpl = async () => { timeoutErr(); return undefined as unknown as Response; };
+    const err = await fetchWithResilience('http://127.0.0.1:21487/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 0, target,
+    }).then(() => null, (e: Error) => e);
+    expect(err?.message).toMatch(/restart the Papercusp desktop app/);
+    expect(err?.message).not.toMatch(/systemctl/);
+  });
+
+  it('stale-desktop announce notice names the app and the short check window, once', async () => {
+    const clock = fakeClock();
+    const staleTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -3_600_000 };
+    const notices: string[] = [];
+    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    await fetchWithResilience('http://127.0.0.1:21487/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 30_000, target: staleTarget,
+    }).catch(() => {});
+    expect(notices.filter((m) => /Papercusp app's server .* isn't answering .* checking for 5s/.test(m))).toHaveLength(1);
   });
 });
 
@@ -2428,6 +2481,34 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
     it('falls back to :3070 on a malformed operator.json', () => {
       writeFileSync(join(home, '.papercusp', 'operator.json'), '{ not json');
       expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://localhost:3070');
+    });
+
+    // ── WI-3271: resolveOperatorTarget carries the SOURCE + record age so the
+    // connection-failure path can tell a dead desktop from a dev box ──
+
+    it('resolveOperatorTarget: operator.json → source "discovery" with its startedAt', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', port: 24689, startedAt: 1783377109561 });
+      expect(resolveOperatorTarget({ env: {}, home, probe: noProxy })).toEqual({
+        url: 'http://127.0.0.1:24689',
+        source: 'discovery',
+        startedAt: 1783377109561,
+      });
+    });
+
+    it('resolveOperatorTarget: missing/invalid startedAt stays null (age unknown → no fast-fail)', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
+      expect(resolveOperatorTarget({ env: {}, home, probe: noProxy }).startedAt).toBeNull();
+    });
+
+    it('resolveOperatorTarget: env override → source "env"; bare dev box → "dev-default"', () => {
+      expect(
+        resolveOperatorTarget({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home, probe: noProxy }),
+      ).toEqual({ url: 'http://override:9999', source: 'env', startedAt: null });
+      expect(resolveOperatorTarget({ env: {}, home, probe: noProxy })).toEqual({
+        url: 'http://localhost:3070',
+        source: 'dev-default',
+        startedAt: null,
+      });
     });
 
     // ── WI-1457: the resilient MCP proxy preference (re-cutover hardening) ──
