@@ -16,6 +16,7 @@
  * socket. Unix socket paths have a ~108-char limit, so the base must stay short
  * (tmpdir), never a deep workspace path.
  */
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -54,6 +55,100 @@ export function resolveSubstrateSocketPath(): string {
  *
  * `env` defaults to `process.env`; injectable for tests so this stays pure otherwise.
  */
+/**
+ * EI-7832: at every sidecar boot, remove socket files left behind by DEAD
+ * processes. The path scheme in `resolveSubstrateSocketPath` is PID-keyed, so
+ * every process restart computes a brand-new, never-before-seen path — which
+ * means `substrate-sidecar-server.ts`'s own `existsSync(socketPath)` guard
+ * (written for the case of restarting into the SAME path) can never fire
+ * against an OLDER process's leftover file, since that older file lives at a
+ * different (dead) pid's path. With no shutdown-time cleanup either (fixed
+ * separately in substrate-sidecar-server.ts's `exit` handler) and no reaper,
+ * these accumulate unbounded in `os.tmpdir()` — 60+ observed since 2026-07-03.
+ *
+ * Pure + fully injectable (listDir / isAlive / unlink) so the pid-liveness
+ * sweep logic is unit-testable without touching the real filesystem or
+ * spawning/killing real processes. Best-effort per file and never throws:
+ * this runs at sidecar boot before anything else, and cleanup must never
+ * block or fail startup. A permission error or a benign race (the file
+ * disappearing between list and unlink, e.g. a peer reaper winning first) on
+ * ONE file is recorded in `errors` but never aborts the sweep of the rest.
+ */
+export function reapOrphanedSubstrateSockets(
+  opts: {
+    tmpdir?: string;
+    listDir?: (dir: string) => string[];
+    isAlive?: (pid: number) => boolean;
+    unlink?: (p: string) => void;
+    ownPid?: number;
+  } = {},
+): { removed: string[]; kept: string[]; errors: Array<{ path: string; error: string }> } {
+  const dir = opts.tmpdir ?? os.tmpdir();
+  const listDir = opts.listDir ?? ((d: string) => fs.readdirSync(d));
+  const isAlive = opts.isAlive ?? defaultPidIsAlive;
+  const unlink = opts.unlink ?? ((p: string) => fs.unlinkSync(p));
+  const ownPid = opts.ownPid ?? process.pid;
+
+  const removed: string[] = [];
+  const kept: string[] = [];
+  const errors: Array<{ path: string; error: string }> = [];
+
+  let entries: string[];
+  try {
+    entries = listDir(dir);
+  } catch (e) {
+    return { removed, kept, errors: [{ path: dir, error: e instanceof Error ? e.message : String(e) }] };
+  }
+
+  for (const name of entries) {
+    const m = /^papercusp-substrate-(\d+)\.sock$/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const full = path.join(dir, name);
+    if (pid === ownPid) {
+      kept.push(full); // never touch our own live socket
+      continue;
+    }
+    let alive: boolean;
+    try {
+      alive = isAlive(pid);
+    } catch (e) {
+      // Liveness undetermined — err on the side of NOT deleting.
+      errors.push({ path: full, error: e instanceof Error ? e.message : String(e) });
+      kept.push(full);
+      continue;
+    }
+    if (alive) {
+      kept.push(full);
+      continue;
+    }
+    try {
+      unlink(full);
+      removed.push(full);
+    } catch (e) {
+      errors.push({ path: full, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { removed, kept, errors };
+}
+
+/**
+ * `process.kill(pid, 0)` signals liveness without actually sending a signal:
+ * it throws `ESRCH` when the pid is dead. Any OTHER throw (most commonly
+ * `EPERM` — the pid is alive but owned by another user) is treated as ALIVE:
+ * never delete a socket whose owning process we merely lack permission to
+ * signal.
+ */
+function defaultPidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    return err.code !== 'ESRCH';
+  }
+}
+
 export function pinSubstrateSocketForCluster(
   clusterWorkers: number,
   env: NodeJS.ProcessEnv = process.env,

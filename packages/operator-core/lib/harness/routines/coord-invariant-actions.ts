@@ -100,10 +100,7 @@ export const ESCALATION_RECONCILE_GRACE_MS = (() => {
   const env = Number(process.env.PAPERCUSP_ESCALATION_RECONCILE_GRACE_MS);
   return Number.isFinite(env) && env > 0 ? env : 60 * 60 * 1000;
 })();
-import {
-  sweepDeadOwnerPendingWakes,
-  sweepStalePendingWakes,
-} from '../../agent-tools/coordination/pending-wakes';
+import { sweepDeadOwnerPendingWakes, sweepStalePendingWakes } from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   ensureBootstrap,
@@ -312,7 +309,10 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   if (
     !(await timed('lock-contend', async () => {
       const r = await deps.acquire(idB.ownerId);
-      return { ok: !r.ok && r.busyOwner === idA.ownerId, detail: r.ok ? 'contender was GRANTED a held lock' : undefined };
+      return {
+        ok: !r.ok && r.busyOwner === idA.ownerId,
+        detail: r.ok ? 'contender was GRANTED a held lock' : undefined,
+      };
     }))
   ) {
     // Leave no probe debris even on the failure path.
@@ -405,7 +405,9 @@ async function probeForensics(workspaceId: string): Promise<string> {
       FROM harness_shared.coord_event_log
       WHERE workspace_id = ${workspaceId} AND writer_key IN (${PROBE_A}, ${PROBE_B})
       ORDER BY id DESC LIMIT 20`;
-    parts.push(`coord_event_log (probe rows, newest 20):\n${rows.map((r) => `  ${r.ts} ${r.surface} ${r.msg_id} by ${r.writer_key}`).join('\n') || '  (none)'}`);
+    parts.push(
+      `coord_event_log (probe rows, newest 20):\n${rows.map((r) => `  ${r.ts} ${r.surface} ${r.msg_id} by ${r.writer_key}`).join('\n') || '  (none)'}`,
+    );
   } catch (err) {
     parts.push(`coord_event_log forensics unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -414,7 +416,9 @@ async function probeForensics(workspaceId: string): Promise<string> {
     const locks = await sql<{ path: string; owner: string; expires_ts: string }[]>`
       SELECT path, owner, expires_ts::text FROM agent_file_locks
       WHERE coordination_domain = ${PROBE_DOMAIN} LIMIT 20`;
-    parts.push(`agent_file_locks (probe domain):\n${locks.map((l) => `  ${l.path} held by ${l.owner} until ${l.expires_ts}`).join('\n') || '  (none)'}`);
+    parts.push(
+      `agent_file_locks (probe domain):\n${locks.map((l) => `  ${l.path} held by ${l.owner} until ${l.expires_ts}`).join('\n') || '  (none)'}`,
+    );
   } catch (err) {
     parts.push(`lock-table forensics unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -436,7 +440,9 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
 
   const disposition = breachDisposition(verdict, steps);
   if (disposition !== 'ok') {
-    const stepLines = steps.map((s) => `  ${s.ok ? '✓' : '×'} ${s.step} ${s.ms}ms${s.detail ? ` — ${s.detail}` : ''}`).join('\n');
+    const stepLines = steps
+      .map((s) => `  ${s.ok ? '✓' : '×'} ${s.step} ${s.ms}ms${s.detail ? ` — ${s.detail}` : ''}`)
+      .join('\n');
 
     // EI-401 (owner-ratified "accept + tune", 2026-06-13): a pure SLO breach the
     // baseline control pins on DB-wide / pool contention is a transient shared-box
@@ -526,11 +532,7 @@ export interface Violation {
 }
 
 /** Pure: judge a snapshot against the thresholds. */
-export function evaluateInvariants(
-  snap: InvariantSnapshot,
-  t: InvariantThresholds,
-  nowMs: number,
-): Violation[] {
+export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThresholds, nowMs: number): Violation[] {
   const out: Violation[] = [];
   const olderThanH = (tsList: string[], hours: number) =>
     tsList.filter((ts) => nowMs - Date.parse(ts) > hours * 3_600_000).length;
@@ -563,7 +565,9 @@ export function evaluateInvariants(
     // doc comment for why (absorbs the normal reconcile-tick-vs-invariant-check cadence
     // race instead of false-firing on it every time an escalation crosses the TTL boundary
     // between two reconcile ticks).
-    return Number.isFinite(openedMs) && nowMs - openedMs > OPERATIONAL_ESCALATION_TTL_MS + ESCALATION_RECONCILE_GRACE_MS;
+    return (
+      Number.isFinite(openedMs) && nowMs - openedMs > OPERATIONAL_ESCALATION_TTL_MS + ESCALATION_RECONCILE_GRACE_MS
+    );
   }).length;
   if (undrainedOperationalEsc > 0) {
     const ttlHours = Math.round((OPERATIONAL_ESCALATION_TTL_MS + ESCALATION_RECONCILE_GRACE_MS) / 3_600_000);
@@ -849,7 +853,10 @@ export async function sweepDrainedOutbox(
 }
 
 registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => {
-  const t: InvariantThresholds = { ...DEFAULT_THRESHOLDS, ...(ctx.payloadTemplate as Partial<InvariantThresholds> | null) };
+  const t: InvariantThresholds = {
+    ...DEFAULT_THRESHOLDS,
+    ...(ctx.payloadTemplate as Partial<InvariantThresholds> | null),
+  };
   // EI-436: GC drained substrate_outbox rows for DORMANT harnesses (the inline
   // per-handle drain GC only reaches currently-booted slugs). Best-effort — a
   // sweep failure never aborts the pass.

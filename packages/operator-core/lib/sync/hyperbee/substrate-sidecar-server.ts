@@ -24,7 +24,7 @@ import {
   createSubstrateSidecarHost,
   type SubstrateSidecarHost,
 } from './substrate-sidecar-host';
-import { resolveSubstrateSocketPath } from './substrate-socket-path';
+import { resolveSubstrateSocketPath, reapOrphanedSubstrateSockets } from './substrate-socket-path';
 import {
   startEventLoopLagMonitor,
   type LagMonitorHandle,
@@ -159,6 +159,38 @@ export function runSubstrateSidecarServer(): void {
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
   if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+
+  // EI-7832: sweep OTHER sidecars' orphaned socket files (dead pids) before
+  // claiming our own. Our own path is pid-keyed and brand-new every restart,
+  // so the existsSync/unlinkSync above never catches a PRIOR process's
+  // leftover file — only this reaper does. Best-effort: never blocks boot.
+  try {
+    const { removed, errors } = reapOrphanedSubstrateSockets();
+    if (removed.length > 0) {
+      console.log(`[substrate-sidecar] reaped ${removed.length} orphaned socket(s) from dead pids: ${removed.join(', ')}`);
+    }
+    if (errors.length > 0) {
+      console.error(`[substrate-sidecar] socket reap had ${errors.length} error(s): ${JSON.stringify(errors)}`);
+    }
+  } catch (e) {
+    console.error('[substrate-sidecar] socket reap threw (non-fatal)', e);
+  }
+
+  // EI-7832: unlink OUR OWN socket on any process exit — the graceful
+  // SIGTERM/SIGINT shutdown() path already tears down the server, but a
+  // hard `process.exit()` from installSidecarCrashGuards' uncaughtException
+  // handler (or any other exit path) bypasses shutdown() entirely and would
+  // otherwise leave this pid's socket file behind for the NEXT boot's
+  // reaper to eventually clean up. `exit` fires synchronously on every exit
+  // path (signals excepted only for SIGKILL, which no cleanup can survive
+  // anyway), so this is the one place guaranteed to run first.
+  process.on('exit', () => {
+    try {
+      if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+    } catch {
+      /* best-effort — the process is exiting regardless */
+    }
+  });
 
   registerHandleListener(host);
 

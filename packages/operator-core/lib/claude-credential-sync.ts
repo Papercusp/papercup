@@ -35,6 +35,19 @@
  *    tree produces zero writes — the fs.watch feedback loop terminates.
  *  - Nothing is ever deleted and absence is never propagated: a `/logout` in
  *    one session stays local to that session.
+ *
+ * ── macOS Keychain bridge (REQ B: reuse the login across consoles like Linux) ──
+ * On macOS Claude Code stores its OAuth in the login KEYCHAIN, not in a
+ * `.credentials.json` file — so the file scan above finds NOTHING and a psu
+ * session's `CLAUDE_CONFIG_DIR` fork inherits no login, forcing `/login` in every
+ * new console (the owner's exact report). The darwin branch adds the Keychain
+ * bundle as a READ-ONLY candidate (winner-eligible, never a write target): it
+ * seeds the global `~/.claude/.credentials.json` + every session fork, which
+ * claude reads by CLAUDE_CONFIG_DIR file-precedence (verified live: claude 2.1.201
+ * honours `$CLAUDE_CONFIG_DIR/.credentials.json`). When a fork later refreshes and
+ * its bundle out-dates the Keychain, the newer bundle is WRITTEN BACK to the
+ * Keychain (best-effort) so the owner's direct `claude` — which reads the Keychain —
+ * stays on the live token: one logical credential across Keychain + file + forks.
  */
 import {
   existsSync,
@@ -47,10 +60,11 @@ import {
   writeFileSync,
   type FSWatcher,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { dirname, join } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
+import { readClaudeKeychainOAuthBundle, writeClaudeKeychainOAuthBundle } from './agent-auth-detect';
 
 /** Upper bound on a plausible interactive-OAuth `expiresAt` distance: real
  *  access tokens live ~8h; anything claiming >30d out is garbage or forged. */
@@ -71,6 +85,11 @@ interface Candidate {
   /** The valid bundle, or null (missing / malformed / implausible). */
   bundle: ClaudeAiOauth | null;
   isGlobal: boolean;
+  /** A synthetic, READ-ONLY source (the macOS Keychain): winner-eligible but NEVER a write
+   *  target (it has no real file path). Written back separately via `security add-generic-password`. */
+  readOnly?: boolean;
+  /** For a Keychain candidate: the `security` service label to write a newer bundle back to. */
+  keychainService?: string;
 }
 
 export interface ReconcileResult {
@@ -80,6 +99,9 @@ export interface ReconcileResult {
   updated: string[];
   /** Winner provenance, or null when no valid bundle exists anywhere. */
   winner: { path: string; expiresAt: number } | null;
+  /** darwin only — set when a newer file bundle was written back to the login Keychain this
+   *  pass (so the owner's direct `claude` stays fresh); null/absent otherwise. */
+  keychainWriteBack?: { service: string; expiresAt: number } | null;
 }
 
 export interface ReconcileOptions {
@@ -89,6 +111,10 @@ export interface ReconcileOptions {
   sessionRoot?: string;
   /** Clock override (testability). */
   now?: number;
+  /** Platform override (testability); defaults to `process.platform`. Drives the Keychain bridge. */
+  platform?: NodeJS.Platform;
+  /** Keychain account for write-back (testability); defaults to the login user (`$USER`). */
+  keychainAccount?: string;
 }
 
 function globalCredentialsPath(home: string): string {
@@ -149,6 +175,7 @@ export function reconcileClaudeCredentials(opts: ReconcileOptions = {}): Reconci
   const home = opts.home ?? homedir();
   const sessionRoot = opts.sessionRoot ?? sessionClaudeRoot();
   const now = opts.now ?? Date.now();
+  const platform = opts.platform ?? process.platform;
 
   const candidates: Candidate[] = [];
   const globalPath = globalCredentialsPath(home);
@@ -163,6 +190,28 @@ export function reconcileClaudeCredentials(opts: ReconcileOptions = {}): Reconci
   for (const dir of sessionDirs) {
     const p = join(sessionRoot, dir, '.credentials.json');
     if (isRealFile(p)) candidates.push(readCandidate(p, false, now));
+  }
+
+  // macOS Keychain bridge (REQ B): Claude Code keeps the OAuth bundle in the login Keychain,
+  // not a file — so on a Mac the scan above finds nothing and a psu fork inherits no login. Add
+  // the Keychain bundle as a READ-ONLY candidate so it seeds the global file + every fork (which
+  // claude reads by CLAUDE_CONFIG_DIR file-precedence). Fail-soft: an ACL-blocked / non-macOS
+  // read returns null and this is a no-op, leaving the pure-file behaviour byte-identical.
+  let keychainCandidate: Candidate | null = null;
+  if (platform === 'darwin') {
+    const kc = readClaudeKeychainOAuthBundle(platform);
+    if (kc) {
+      const json = kc.bundle as Record<string, unknown>;
+      keychainCandidate = {
+        path: `keychain:${kc.service}`,
+        json,
+        bundle: parseBundle(json, now),
+        isGlobal: false,
+        readOnly: true,
+        keychainService: kc.service,
+      };
+      if (keychainCandidate.bundle) candidates.push(keychainCandidate);
+    }
   }
 
   // Winner: newest expiresAt; ties prefer global, then lexicographic path —
@@ -193,6 +242,7 @@ export function reconcileClaudeCredentials(opts: ReconcileOptions = {}): Reconci
 
   for (const c of candidates) {
     if (c === winner) continue;
+    if (c.readOnly) continue; // the Keychain source is written back separately (below), not via writeBundle
     if (c.bundle && c.bundle.expiresAt >= winningBundle.expiresAt) continue;
     try {
       writeBundle(c, winningBundle);
@@ -204,10 +254,38 @@ export function reconcileClaudeCredentials(opts: ReconcileOptions = {}): Reconci
     }
   }
 
+  // Keychain write-back (REQ B): when a FILE member (typically a session fork that just
+  // refreshed) is strictly newer than the Keychain bundle, push it back so the owner's direct
+  // `claude` — which reads the Keychain — stays on the live token family. Skipped when the
+  // Keychain itself is the winner (it is already the source). Best-effort: an ACL-blocked write
+  // returns false and degrades to a single re-login at next expiry, never a throw.
+  let keychainWriteBack: ReconcileResult['keychainWriteBack'] = null;
+  if (
+    platform === 'darwin' &&
+    keychainCandidate?.bundle &&
+    winner !== keychainCandidate &&
+    winningBundle.expiresAt > keychainCandidate.bundle.expiresAt
+  ) {
+    try {
+      const account = opts.keychainAccount ?? userInfo().username;
+      const merged = { ...keychainCandidate.json, claudeAiOauth: winningBundle };
+      const ok = writeClaudeKeychainOAuthBundle(
+        keychainCandidate.keychainService!,
+        account,
+        JSON.stringify(merged),
+        platform,
+      );
+      if (ok) keychainWriteBack = { service: keychainCandidate.keychainService!, expiresAt: winningBundle.expiresAt };
+    } catch {
+      /* best-effort — a failed Keychain write just means the owner's direct claude re-logs once */
+    }
+  }
+
   return {
     scanned: candidates.length,
     updated,
     winner: { path: winner.path, expiresAt: winningBundle.expiresAt },
+    keychainWriteBack,
   };
 }
 

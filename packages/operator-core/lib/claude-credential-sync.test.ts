@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { reconcileClaudeCredentials } from './claude-credential-sync';
+import { _setClaudeKeychainAccessForTests, type KeychainAccess } from './agent-auth-detect';
 
 const NOW = 1_780_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -61,6 +62,26 @@ function run() {
   return reconcileClaudeCredentials({ home, sessionRoot, now: NOW });
 }
 
+// ── macOS Keychain bridge test harness (REQ B) ────────────────────────────────
+let keychainWrites: Array<{ service: string; account: string; secret: string }> = [];
+function installFakeKeychain(readSecret: string | null, writeOk = true) {
+  keychainWrites = [];
+  const access: KeychainAccess = {
+    read: (service) => (service === 'Claude Code-credentials' ? readSecret : null),
+    write: (service, account, secret) => {
+      keychainWrites.push({ service, account, secret });
+      return writeOk;
+    },
+  };
+  _setClaudeKeychainAccessForTests(access);
+}
+function runMac() {
+  return reconcileClaudeCredentials({ home, sessionRoot, now: NOW, platform: 'darwin', keychainAccount: 'testuser' });
+}
+function kcSecret(expiresAt: number, tag: string) {
+  return JSON.stringify({ claudeAiOauth: bundle(expiresAt, tag) });
+}
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'credsync-home-'));
   sessionRoot = mkdtempSync(join(tmpdir(), 'credsync-sessions-'));
@@ -70,6 +91,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(sessionRoot, { recursive: true, force: true });
+  _setClaudeKeychainAccessForTests(null);
 });
 
 describe('reconcileClaudeCredentials', () => {
@@ -188,5 +210,104 @@ describe('reconcileClaudeCredentials', () => {
 
     expect(r.winner?.path).toBe(sessionPath('su-a'));
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-newest');
+  });
+});
+
+describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
+  it('darwin: seeds the global file from the login Keychain when no file creds exist', () => {
+    // The owner's exact case: a signed-in Mac (creds in the Keychain, no ~/.claude/.credentials.json).
+    installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
+
+    const r = runMac();
+
+    expect(r.winner?.path).toMatch(/^keychain:/);
+    expect(r.updated).toEqual([globalPath()]);
+    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-kc');
+    // A materialized global is bundle-only.
+    expect(readJson(globalPath()).mcpOAuth).toBeUndefined();
+    expect(statSync(globalPath()).mode & 0o777).toBe(0o600);
+    // The Keychain IS the source here → no write-back, and no bogus "keychain:*" file written.
+    expect(r.keychainWriteBack).toBeNull();
+    expect(keychainWrites).toEqual([]);
+    expect(existsSync(join(process.cwd(), 'keychain:Claude Code-credentials'))).toBe(false);
+  });
+
+  it('darwin: propagates the Keychain bundle into a stale session fork (sibling keys preserved)', () => {
+    installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
+    writeCreds(sessionPath('su-stale'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old'), mcpOAuth: { s: 1 } });
+
+    const r = runMac();
+
+    expect(r.winner?.path).toMatch(/^keychain:/);
+    expect(r.updated.sort()).toEqual([globalPath(), sessionPath('su-stale')].sort());
+    expect(readJson(sessionPath('su-stale')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-kc');
+    expect(readJson(sessionPath('su-stale')).mcpOAuth).toEqual({ s: 1 });
+    expect(keychainWrites).toEqual([]);
+  });
+
+  it('darwin: writes a newer fork bundle BACK to the Keychain (keeps the direct claude fresh)', () => {
+    // A psu fork refreshed → its bundle out-dates the Keychain → must flow back so the owner's
+    // direct `claude` (a Keychain reader) does not re-login when its own token expires.
+    installFakeKeychain(kcSecret(NOW + 2 * HOUR, 'kc'));
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 2 * HOUR, 'kc') });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'refreshed') });
+
+    const r = runMac();
+
+    expect(r.winner?.path).toBe(sessionPath('su-fresh'));
+    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-refreshed');
+    expect(r.keychainWriteBack).toEqual({ service: 'Claude Code-credentials', expiresAt: NOW + 8 * HOUR });
+    expect(keychainWrites).toHaveLength(1);
+    expect(keychainWrites[0]).toMatchObject({ service: 'Claude Code-credentials', account: 'testuser' });
+    expect(JSON.parse(keychainWrites[0].secret).claudeAiOauth.accessToken).toBe('sk-ant-oat01-refreshed');
+    // The read-only Keychain candidate is never written as a file.
+    expect(existsSync(join(process.cwd(), 'keychain:Claude Code-credentials'))).toBe(false);
+  });
+
+  it('darwin: a converged Keychain==file tree produces zero writes and no write-back', () => {
+    installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'kc') });
+
+    const r = runMac();
+
+    expect(r.updated).toEqual([]);
+    expect(r.keychainWriteBack).toBeNull();
+    expect(keychainWrites).toEqual([]);
+  });
+
+  it('darwin: an ACL-blocked / absent Keychain read leaves pure-file behaviour intact', () => {
+    installFakeKeychain(null); // errSecInteractionNotAllowed (non-GUI) or not signed in
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    const r = runMac();
+
+    expect(r.winner?.path).toBe(sessionPath('su-fresh'));
+    expect(r.updated).toEqual([globalPath()]);
+    expect(r.keychainWriteBack).toBeNull();
+    expect(keychainWrites).toEqual([]);
+  });
+
+  it('darwin: a failed Keychain write-back still propagates to files (degrades, never throws)', () => {
+    installFakeKeychain(kcSecret(NOW + 2 * HOUR, 'kc'), /* writeOk */ false);
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'refreshed') });
+
+    const r = runMac();
+
+    expect(r.winner?.path).toBe(sessionPath('su-fresh'));
+    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-refreshed');
+    expect(keychainWrites).toHaveLength(1); // attempted…
+    expect(r.keychainWriteBack).toBeNull(); // …but not confirmed
+  });
+
+  it('non-darwin ignores the Keychain even if a reader would return a (winning) bundle', () => {
+    installFakeKeychain(kcSecret(NOW + 20 * 24 * HOUR, 'kc')); // huge (but plausible) expiry → would win IF consulted
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+
+    const r = reconcileClaudeCredentials({ home, sessionRoot, now: NOW, platform: 'linux', keychainAccount: 'testuser' });
+
+    expect(r.winner?.path).toBe(globalPath());
+    expect(r.keychainWriteBack).toBeNull();
+    expect(keychainWrites).toEqual([]);
   });
 });

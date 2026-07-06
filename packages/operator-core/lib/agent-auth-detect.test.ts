@@ -22,7 +22,19 @@ vi.mock('node:os', async (orig) => {
   return { ...actual, homedir: () => '/home/u' };
 });
 
-import { claudeSignedIn, claudeKeychainSignedIn, codexSignedIn, ompSignedIn, ompAuthStatus, githubSignedIn, anyAgentSignedIn } from './agent-auth-detect';
+import {
+  claudeSignedIn,
+  claudeKeychainSignedIn,
+  codexSignedIn,
+  ompSignedIn,
+  ompAuthStatus,
+  githubSignedIn,
+  anyAgentSignedIn,
+  readClaudeKeychainOAuthBundle,
+  writeClaudeKeychainOAuthBundle,
+  _setClaudeKeychainAccessForTests,
+  type KeychainAccess,
+} from './agent-auth-detect';
 
 /** Mark exactly the given absolute paths as existing. */
 function onlyExist(...present: string[]) {
@@ -83,6 +95,69 @@ describe('claudeKeychainSignedIn (P-004 — macOS Keychain-aware detection)', ()
   it('fails SAFE: a throwing `security` spawn is swallowed → false', () => {
     spawnSync.mockImplementation(() => { throw new Error('ENOENT'); });
     expect(claudeKeychainSignedIn('darwin')).toBe(false);
+  });
+});
+
+describe('readClaudeKeychainOAuthBundle / writeClaudeKeychainOAuthBundle (REQ B — Mac cred bridge)', () => {
+  afterEach(() => _setClaudeKeychainAccessForTests(null));
+
+  const validSecret = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-x', refreshToken: 'sk-ant-ort01-x', expiresAt: 123 } });
+
+  it('read is a no-op off macOS (returns null; the injected reader is never consulted)', () => {
+    let consulted = false;
+    _setClaudeKeychainAccessForTests({ read: () => { consulted = true; return validSecret; }, write: () => true });
+    expect(readClaudeKeychainOAuthBundle('linux')).toBeNull();
+    expect(consulted).toBe(false);
+  });
+
+  it('on darwin, parses the secret JSON and returns { bundle, service }', () => {
+    _setClaudeKeychainAccessForTests({ read: (s) => (s === 'Claude Code-credentials' ? validSecret : null), write: () => true });
+    const r = readClaudeKeychainOAuthBundle('darwin');
+    expect(r?.service).toBe('Claude Code-credentials');
+    expect(r?.bundle.claudeAiOauth?.accessToken).toBe('sk-ant-oat01-x');
+  });
+
+  it('on darwin, falls through to the second service label when the first is absent', () => {
+    _setClaudeKeychainAccessForTests({ read: (s) => (s === 'Claude Code' ? validSecret : null), write: () => true });
+    expect(readClaudeKeychainOAuthBundle('darwin')?.service).toBe('Claude Code');
+  });
+
+  it('on darwin, returns null when the reader is ACL-blocked (null) or the secret is not JSON', () => {
+    _setClaudeKeychainAccessForTests({ read: () => null, write: () => true });
+    expect(readClaudeKeychainOAuthBundle('darwin')).toBeNull();
+    _setClaudeKeychainAccessForTests({ read: () => 'not-json{', write: () => true });
+    expect(readClaudeKeychainOAuthBundle('darwin')).toBeNull();
+  });
+
+  it('write is a no-op off macOS (returns false without touching the Keychain)', () => {
+    let wrote = false;
+    _setClaudeKeychainAccessForTests({ read: () => null, write: () => { wrote = true; return true; } });
+    expect(writeClaudeKeychainOAuthBundle('Claude Code-credentials', 'u', validSecret, 'win32')).toBe(false);
+    expect(wrote).toBe(false);
+  });
+
+  it('on darwin, write forwards to the access shim and returns its success', () => {
+    const calls: Array<{ service: string; account: string; secret: string }> = [];
+    _setClaudeKeychainAccessForTests({ read: () => null, write: (service, account, secret) => { calls.push({ service, account, secret }); return true; } });
+    expect(writeClaudeKeychainOAuthBundle('Claude Code-credentials', 'u', validSecret, 'darwin')).toBe(true);
+    expect(calls).toEqual([{ service: 'Claude Code-credentials', account: 'u', secret: validSecret }]);
+  });
+
+  it('the DEFAULT access wires the real `security` CLI: read uses `-w`, write uses `add-generic-password -U`', () => {
+    // Restore the default (spawnSync-backed) access, and drive the mocked spawnSync.
+    _setClaudeKeychainAccessForTests(null);
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (args[0] === 'find-generic-password') return { status: 0, stdout: validSecret, stderr: '' };
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    expect(readClaudeKeychainOAuthBundle('darwin')?.bundle.claudeAiOauth?.accessToken).toBe('sk-ant-oat01-x');
+    const readArgs = spawnSync.mock.calls.at(-1)?.[1] as string[];
+    expect(readArgs).toContain('-w');
+
+    expect(writeClaudeKeychainOAuthBundle('Claude Code-credentials', 'u', validSecret, 'darwin')).toBe(true);
+    const writeArgs = spawnSync.mock.calls.at(-1)?.[1] as string[];
+    expect(writeArgs[0]).toBe('add-generic-password');
+    expect(writeArgs).toContain('-U');
   });
 });
 

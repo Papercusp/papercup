@@ -71,9 +71,7 @@ export const BOARD_READ_LIMIT = 500;
 function assertOwnerId(ownerId: string, fn: string): void {
   if (typeof ownerId !== 'string' || ownerId.length === 0) {
     throw new Error(
-      `pending-wakes.${fn}: ownerId is required (got ${
-        ownerId === undefined ? 'undefined' : JSON.stringify(ownerId)
-      })`,
+      `pending-wakes.${fn}: ownerId is required (got ${ownerId === undefined ? 'undefined' : JSON.stringify(ownerId)})`,
     );
   }
 }
@@ -199,10 +197,7 @@ export async function countAllPendingWakes(): Promise<Map<string, number>> {
  * satisfied — re-checking seams must skip, not stage again (mirrors the
  * auto-mode "a wake is already armed" skip).
  */
-export async function hasPendingWakeFromSource(
-  ownerId: string,
-  sourcePrefix: string,
-): Promise<boolean> {
+export async function hasPendingWakeFromSource(ownerId: string, sourcePrefix: string): Promise<boolean> {
   assertOwnerId(ownerId, 'hasPendingWakeFromSource');
   const { sql } = getOrgPg();
   const rows = await sql`

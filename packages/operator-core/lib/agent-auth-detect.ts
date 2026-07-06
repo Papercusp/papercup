@@ -48,6 +48,116 @@ export function claudeKeychainSignedIn(platform: NodeJS.Platform = process.platf
   return false;
 }
 
+// ── macOS Keychain OAuth bundle read + write-back (REQ B: Mac cred reuse across consoles) ──────
+// Claude Code on macOS stores its OAuth in the login KEYCHAIN as a generic-password whose secret
+// is the SAME JSON as ~/.claude/.credentials.json ({ claudeAiOauth: { accessToken, refreshToken,
+// expiresAt, … } }). The per-session CLAUDE_CONFIG_DIR fork model (interactive-claude-config.ts)
+// and claude-credential-sync are FILE-based, so on a Mac (no `.credentials.json` on disk) a psu
+// session inherits NO login and forces /login — the every-console-relogin bug the owner reported.
+// The reconcile bridge (claude-credential-sync.ts, darwin branch) READS this item to materialize
+// the file family, and WRITES it back so a session-fork refresh keeps the owner's direct `claude`
+// (which reads the Keychain) fresh — one logical credential across Keychain + file + forks.
+
+/** The macOS Keychain OAuth secret payload — same JSON shape as `~/.claude/.credentials.json`. */
+export interface ClaudeKeychainOAuthBundle {
+  claudeAiOauth?: {
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+/** Injectable `security` shim (there is no Keychain off macOS): read a service's secret (`-w`),
+ *  or write it back (`-U`). Return the raw secret string / write success. Defaults to the real
+ *  `security` CLI; the reconcile tests inject a fake so no real Keychain is touched. */
+export interface KeychainAccess {
+  read(service: string): string | null;
+  write(service: string, account: string, secret: string): boolean;
+}
+
+const defaultKeychainAccess: KeychainAccess = {
+  read(service) {
+    try {
+      const r = spawnSync('security', ['find-generic-password', '-s', service, '-w'], {
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      if (r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim()) return r.stdout;
+    } catch {
+      /* security absent / ACL-blocked (errSecInteractionNotAllowed, exit 36 in a non-GUI SSH
+         session) / errored → treated as not-found */
+    }
+    return null;
+  },
+  write(service, account, secret) {
+    try {
+      // `-U` updates the item in place if it exists (same service+account), else creates it.
+      const r = spawnSync(
+        'security',
+        ['add-generic-password', '-U', '-s', service, '-a', account, '-w', secret],
+        { encoding: 'utf8', timeout: 5000 },
+      );
+      return r.status === 0;
+    } catch {
+      return false;
+    }
+  },
+};
+
+let keychainAccess: KeychainAccess = defaultKeychainAccess;
+/** Test seam — inject a fake Keychain (or null to restore the real `security` CLI). */
+export function _setClaudeKeychainAccessForTests(access: KeychainAccess | null): void {
+  keychainAccess = access ?? defaultKeychainAccess;
+}
+
+/**
+ * Read + parse Claude Code's macOS login-Keychain OAuth bundle. Returns null on ANY miss — off
+ * macOS, `security` absent, ACL-blocked, item absent, or non-JSON secret. NEVER throws: the
+ * credential reconcile calls this inline in session launch and must not fail a launch.
+ *
+ * ⚠ Reads the SECRET (`-w`), unlike `claudeKeychainSignedIn`'s metadata-only probe — so the FIRST
+ * read on a Mac may raise a one-time "allow access" GUI prompt (click "Always Allow"). A non-GUI
+ * SSH session cannot answer it and gets null (fail-soft); the packaged app runs in the GUI session
+ * where the prompt is answerable, and one grant covers every later read by that process.
+ */
+export function readClaudeKeychainOAuthBundle(
+  platform: NodeJS.Platform = process.platform,
+): { bundle: ClaudeKeychainOAuthBundle; service: string } | null {
+  if (platform !== 'darwin') return null;
+  for (const service of CLAUDE_KEYCHAIN_SERVICES) {
+    const raw = keychainAccess.read(service);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw.trim()) as ClaudeKeychainOAuthBundle;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { bundle: parsed, service };
+    } catch {
+      /* not JSON — try the next service label */
+    }
+  }
+  return null;
+}
+
+/**
+ * Best-effort write-back of a (refreshed) OAuth bundle into Claude Code's Keychain item so the
+ * owner's direct `claude` stays on the newest token family member. Returns true on a confirmed
+ * write. NEVER throws. Fails soft (returns false) when off macOS, `security` is absent, or the
+ * item's ACL blocks a non-creating writer — in which case the owner's direct `claude` simply
+ * re-logs-in once when its access token next expires (a graceful degradation, not a break).
+ *
+ * `account` is the Keychain item's account (Claude Code uses the login user, `$USER`).
+ */
+export function writeClaudeKeychainOAuthBundle(
+  service: string,
+  account: string,
+  bundleJson: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'darwin') return false;
+  return keychainAccess.write(service, account, bundleJson);
+}
+
 export function claudeSignedIn(): boolean {
   if (claudeKeychainSignedIn()) return true;
   const home = homedir();

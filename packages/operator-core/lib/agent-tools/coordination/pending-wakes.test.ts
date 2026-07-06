@@ -73,9 +73,7 @@ function fakeStore() {
         const oid = String(r.owner_id);
         counts.set(oid, (counts.get(oid) ?? 0) + 1);
       }
-      return Promise.resolve(
-        [...counts.entries()].map(([owner_id, n]) => ({ owner_id, n })),
-      );
+      return Promise.resolve([...counts.entries()].map(([owner_id, n]) => ({ owner_id, n })));
     }
     if (q.includes('count(*)')) {
       return Promise.resolve([{ n: rows.filter((r) => r.owner_id === vals[0]).length }]);
@@ -94,9 +92,7 @@ function fakeStore() {
     // hasPendingWakeFromSource: owner + source-prefix LIKE existence probe.
     if (q.includes('LIKE')) {
       const prefix = String(vals[1]).replace(/%$/, '');
-      const hit = rows.some(
-        (r) => r.owner_id === vals[0] && String(r.source ?? '').startsWith(prefix),
-      );
+      const hit = rows.some((r) => r.owner_id === vals[0] && String(r.source ?? '').startsWith(prefix));
       return Promise.resolve(hit ? [{ '?column?': 1 }] : []);
     }
     // Per-owner SELECT list (listPendingWakes): owner-filtered, id order.
@@ -113,11 +109,7 @@ function fakeStore() {
         [...rows]
           .filter((r) => r.workspace_id === ws)
           .sort((a, b) =>
-            a.owner_id === b.owner_id
-              ? Number(a.id) - Number(b.id)
-              : String(a.owner_id) < String(b.owner_id)
-                ? -1
-                : 1,
+            a.owner_id === b.owner_id ? Number(a.id) - Number(b.id) : String(a.owner_id) < String(b.owner_id) ? -1 : 1,
           )
           .slice(0, limit),
       );
@@ -127,11 +119,7 @@ function fakeStore() {
     return Promise.resolve(
       [...rows]
         .sort((a, b) =>
-          a.owner_id === b.owner_id
-            ? Number(a.id) - Number(b.id)
-            : String(a.owner_id) < String(b.owner_id)
-              ? -1
-              : 1,
+          a.owner_id === b.owner_id ? Number(a.id) - Number(b.id) : String(a.owner_id) < String(b.owner_id) ? -1 : 1,
         )
         .slice(0, limit),
     );
@@ -172,7 +160,12 @@ describe('pending-wakes (P-007)', () => {
 
 describe('pending-wakes staging coalescing (EI-312)', () => {
   it('an identical re-fire coalesces into ONE row: count bumps, no new insert', async () => {
-    const boot = { ownerId: 's-1', summary: 'Watchdog wake (boot)', source: 'hive-watchdog:boot', workspaceId: 'ws-active' };
+    const boot = {
+      ownerId: 's-1',
+      summary: 'Watchdog wake (boot)',
+      source: 'hive-watchdog:boot',
+      workspaceId: 'ws-active',
+    };
     for (let i = 0; i < 11; i++) await stagePendingWake({ ...boot, payload: { fire: i } });
 
     expect(await countPendingWakes('s-1')).toBe(1); // badge reads 1, not 11
@@ -267,12 +260,8 @@ describe('pending-wakes binding safety + bounded board read (EI-943)', () => {
     await expect(listPendingWakes(bad)).rejects.toThrow(/listPendingWakes: ownerId is required/);
     await expect(clearPendingWakes(bad)).rejects.toThrow(/clearPendingWakes: ownerId is required/);
     await expect(countPendingWakes(bad)).rejects.toThrow(/countPendingWakes: ownerId is required/);
-    await expect(stagePendingWake({ ownerId: bad })).rejects.toThrow(
-      /stagePendingWake: ownerId is required/,
-    );
-    await expect(hasPendingWakeFromSource(bad, 'x:')).rejects.toThrow(
-      /hasPendingWakeFromSource: ownerId is required/,
-    );
+    await expect(stagePendingWake({ ownerId: bad })).rejects.toThrow(/stagePendingWake: ownerId is required/);
+    await expect(hasPendingWakeFromSource(bad, 'x:')).rejects.toThrow(/hasPendingWakeFromSource: ownerId is required/);
     await expect(releasePendingWake(undefined as unknown as number)).rejects.toThrow(
       /releasePendingWake: id must be a finite number/,
     );
@@ -330,5 +319,55 @@ describe('pending-wakes workspace isolation (F-C3 / EI-1426)', () => {
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-2');
     const from2 = await listAllPendingWakes();
     expect(from2.map((w) => w.ownerId)).toEqual(['s-ws2']);
+  });
+});
+
+// WI-3097 (root-cause follow-up to EI-7765): a LIVE owner's unreviewed wake must still
+// auto-expire past a plain age cap — sweepDeadOwnerPendingWakes only reaps a DEAD
+// owner's orphans (it joins coord_presence), so this sweep is deliberately a bare
+// DELETE-by-age with no presence lookup at all. A dedicated local `sql` mock (not the
+// shared fakeStore, which doesn't model created_at aging or DELETE...RETURNING) makes
+// that "no liveness check happens" property directly assertable.
+describe('sweepStalePendingWakes (WI-3097)', () => {
+  it('deletes rows older than staleHours and returns the count, with no presence/liveness query at all', async () => {
+    const capturedQueries: string[] = [];
+    const sql = vi.fn((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      const q = strings.join('§');
+      capturedQueries.push(q);
+      expect(q).toContain('DELETE FROM harness_shared.pending_wakes');
+      expect(q).not.toContain('coord_presence'); // never joins liveness — age alone decides
+      expect(vals).toEqual([24]); // the staleHours interval param
+      return Promise.resolve([{ id: 101 }, { id: 102 }]);
+    });
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+
+    const n = await sweepStalePendingWakes({ staleHours: 24 });
+
+    expect(n).toBe(2);
+    expect(capturedQueries).toHaveLength(1);
+  });
+
+  it('defaults staleHours to 24 when omitted, and clamps below 1', async () => {
+    const sql = vi.fn((_strings: TemplateStringsArray, ...vals: unknown[]) => {
+      expect(vals).toEqual([24]);
+      return Promise.resolve([]);
+    });
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    expect(await sweepStalePendingWakes()).toBe(0);
+
+    const sqlClamped = vi.fn((_strings: TemplateStringsArray, ...vals: unknown[]) => {
+      expect(vals).toEqual([1]); // clamped up from an invalid 0
+      return Promise.resolve([]);
+    });
+    vi.mocked(getOrgPg).mockReturnValue({ sql: sqlClamped } as never);
+    await sweepStalePendingWakes({ staleHours: 0 });
+  });
+
+  it('a no-op sweep (nothing stale) does not push the wake board', async () => {
+    const sql = vi.fn(() => Promise.resolve([]));
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    // pushWakeBoard is fire-and-forget (dynamic import of sync-sse); absence of a thrown
+    // error / hang here is sufficient evidence the 0-row branch took the no-push path.
+    await expect(sweepStalePendingWakes({ staleHours: 48 })).resolves.toBe(0);
   });
 });

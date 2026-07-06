@@ -470,7 +470,7 @@ export function writeRoleCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
-    ...inheritedCodexTrustedWorkspaceToml(),
+    ...inheritedCodexTrustToml(),
     ...gatewayConfig.tables,
     ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
@@ -704,7 +704,7 @@ export function writeSuCodexHome(opts: {
   const toml = [
     ...gatewayConfig.root,
     CODEX_ISOLATION_PREAMBLE,
-    ...inheritedCodexTrustedWorkspaceToml(),
+    ...inheritedCodexTrustToml(),
     ...gatewayConfig.tables,
     ...CODEX_HOOK_OWNS_TITLE_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',

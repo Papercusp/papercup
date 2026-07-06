@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import {
   resolveSubstrateSocketPath,
   pinSubstrateSocketForCluster,
+  reapOrphanedSubstrateSockets,
   SUBSTRATE_SOCKET_ENV,
 } from './substrate-socket-path';
 
@@ -74,5 +75,108 @@ describe('pinSubstrateSocketForCluster (WI-1879 — cross-fork socket-path pinni
     } finally {
       delete process.env[SUBSTRATE_SOCKET_ENV];
     }
+  });
+});
+
+describe('reapOrphanedSubstrateSockets (EI-7832 — dead-pid orphaned socket cleanup)', () => {
+  it('removes socket files whose pid is confirmed dead and keeps ones whose pid is alive', () => {
+    const unlinked: string[] = [];
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => ['papercusp-substrate-111.sock', 'papercusp-substrate-222.sock', 'not-a-socket.txt'],
+      isAlive: (pid) => pid === 222, // 111 dead, 222 alive
+      unlink: (p) => {
+        unlinked.push(p);
+      },
+      ownPid: 999,
+    });
+    expect(result.removed).toEqual(['/tmp/fake/papercusp-substrate-111.sock']);
+    expect(result.kept).toEqual(['/tmp/fake/papercusp-substrate-222.sock']);
+    expect(unlinked).toEqual(['/tmp/fake/papercusp-substrate-111.sock']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('never touches its OWN socket file, even if isAlive would (wrongly) report it dead', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => ['papercusp-substrate-500.sock'],
+      isAlive: () => false,
+      unlink: () => {
+        throw new Error('should never be called for our own socket');
+      },
+      ownPid: 500,
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual(['/tmp/fake/papercusp-substrate-500.sock']);
+  });
+
+  it('records an unlink failure as an error without aborting the sweep of the remaining files', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => ['papercusp-substrate-1.sock', 'papercusp-substrate-2.sock'],
+      isAlive: () => false,
+      unlink: (p) => {
+        if (p.endsWith('-1.sock')) throw new Error('EACCES');
+      },
+      ownPid: 999,
+    });
+    expect(result.removed).toEqual(['/tmp/fake/papercusp-substrate-2.sock']);
+    expect(result.errors).toEqual([{ path: '/tmp/fake/papercusp-substrate-1.sock', error: 'EACCES' }]);
+  });
+
+  it('treats a liveness check that throws EPERM (alive but owned by another user) as ALIVE — never deletes', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => ['papercusp-substrate-42.sock'],
+      isAlive: () => {
+        const e = new Error('perm') as NodeJS.ErrnoException;
+        e.code = 'EPERM';
+        throw e;
+      },
+      unlink: () => {
+        throw new Error('should never be called');
+      },
+      ownPid: 999,
+    });
+    expect(result.kept).toEqual(['/tmp/fake/papercusp-substrate-42.sock']);
+    expect(result.removed).toEqual([]);
+    expect(result.errors.length).toBe(1);
+  });
+
+  it('ignores files that do not match the papercusp-substrate-<pid>.sock naming pattern', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => ['random.sock', 'papercusp-substrate-abc.sock', 'papercusp-substrate-1.sock.bak'],
+      isAlive: () => false,
+      unlink: () => {},
+      ownPid: 999,
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([]);
+  });
+
+  it('a listDir failure (e.g. tmpdir unreadable) is reported as an error and never throws', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => {
+        throw new Error('ENOENT: no such directory');
+      },
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([]);
+    expect(result.errors).toEqual([{ path: '/tmp/fake', error: 'ENOENT: no such directory' }]);
+  });
+
+  it('the default isAlive (real process.kill(pid,0)) reports the CURRENT process as alive, so its own file is kept even when forced through the isAlive path', () => {
+    const result = reapOrphanedSubstrateSockets({
+      tmpdir: '/tmp/fake',
+      listDir: () => [`papercusp-substrate-${process.pid}.sock`],
+      ownPid: -1, // force it through the isAlive check, not the own-pid skip
+      unlink: () => {
+        throw new Error('should never be called — this pid IS alive');
+      },
+    });
+    expect(result.kept).toEqual([`/tmp/fake/papercusp-substrate-${process.pid}.sock`]);
+    expect(result.removed).toEqual([]);
   });
 });
