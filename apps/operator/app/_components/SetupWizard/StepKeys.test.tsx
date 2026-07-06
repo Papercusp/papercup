@@ -53,7 +53,7 @@ describe('StepKeys (SetupWizard API-keys step)', () => {
     expect(screen.getByText(/This app is alpha\./i)).toBeTruthy();
     expect(screen.getByText(/OpenAI — embeddings/i)).toBeTruthy();
     expect(screen.getByText(/ElevenLabs — voice/i)).toBeTruthy();
-    expect(screen.getByText('Required for semantic search')).toBeTruthy();
+    expect(screen.getByText('Required for memory & search')).toBeTruthy();
     expect(screen.getByText('Optional')).toBeTruthy();
   });
 

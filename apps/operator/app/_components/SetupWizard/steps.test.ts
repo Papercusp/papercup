@@ -20,12 +20,15 @@ describe('Setup Wizard steps', () => {
     ]);
   });
 
-  it('exactly 3 required steps (embedded-pg, workspace, agents)', () => {
+  it('exactly 4 required steps (embedded-pg, workspace, agents, keys)', () => {
     const required = SETUP_STEPS.filter((s) => s.required).map((s) => s.id);
     // `logins` is deliberately OPTIONAL (owner call 2026-06-12): sign-in
     // can happen later from Settings or a terminal, and API keys are an
     // alternative credential path — the wizard must not gate on it.
-    expect(required).toEqual(['embedded-pg', 'workspace', 'agents']);
+    // `keys` IS required (owner 2026-07-06): the OpenAI embeddings key powers
+    // mem0 memory + semantic search, so it's a required setup step (skippable
+    // with a warning, but the setup reads incomplete until it's added).
+    expect(required).toEqual(['embedded-pg', 'workspace', 'agents', 'keys']);
   });
 
   it('findStep returns the matching definition', () => {
