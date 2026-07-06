@@ -24,6 +24,7 @@ import TutorialButton from './TutorialButton';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
+import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
@@ -217,6 +218,12 @@ export default function ChromeShell() {
           {/* Terminal-launch CTA: opens the pui workbench (apps/tui) in an OS
               terminal via a server-side spawn. Sits next to OPS. (Brief 26) */}
           <PuiLauncherButton />
+          {/* Native-console + psu superuser-session launcher (WI-3093). The
+              owner reported "I don't see the psu button in the Windows app" —
+              ConsoleLauncherButton existed but was never rendered anywhere. It
+              self-hides its psu affordance behind the owner-authority
+              PSU_END_USER flag (the server re-checks before honoring runPsu). */}
+          <ConsoleLauncherButton />
           {/* The Start/Pause-Hive control (start-hive-wake P-006) lives in the
               AdvShell harness bar (AdvNowRunning), not here. */}
         </div>

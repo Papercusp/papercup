@@ -169,8 +169,7 @@ async function writeToPg(
     typeof row.scope === 'string' && row.scope.startsWith('harness:')
       ? row.scope.slice(8)
       : `operator:${opts.workspaceId || 'default'}`;
-  const basePayload =
-    row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
+  const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
   const payloadText = JSON.stringify({
     ...basePayload,
     _ei: {
@@ -258,9 +257,7 @@ async function deleteFromPg(
   `;
 }
 
-export function buildEngineerIssuesProjection(
-  opts: EngineerIssuesProjectionOpts,
-): TableProjection<EngineerIssueRow> {
+export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts): TableProjection<EngineerIssueRow> {
   return {
     tableTag: 'engineer-issues',
     // EI-117: CDC-captured table (mig 197 custom capture) — own-log ops are replays.

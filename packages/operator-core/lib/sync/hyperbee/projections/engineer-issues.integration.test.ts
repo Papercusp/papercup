@@ -127,7 +127,9 @@ beforeEach(async () => {
 const proj = () => buildEngineerIssuesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
 
 async function getIssue(id: string) {
-  const rows = await db.sql<{ issue_id: string; scope: string; state: string; title: string; origin: string; fed_ts: number | null }[]>`
+  const rows = await db.sql<
+    { issue_id: string; scope: string; state: string; title: string; origin: string; fed_ts: number | null }[]
+  >`
     SELECT issue_id, scope, state, title, origin, fed_ts FROM harness_shared.engineer_issues
      WHERE workspace_id = ${WS} AND issue_id = ${id}`;
   return rows[0] ?? null;
@@ -202,10 +204,22 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
 
   it('LWW: a newer fed_ts wins, an older one is dropped', async () => {
     const p = proj();
-    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v200' }), { ts: 200, origin: 'remote', authorPubkey: 'peer' });
-    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v100-stale' }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
+    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v200' }), {
+      ts: 200,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v100-stale' }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
     expect((await getIssue('EI-9'))?.title).toBe('v200'); // newer held
-    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v300' }), { ts: 300, origin: 'remote', authorPubkey: 'peer' });
+    await p.writeToPg(issueRow({ issue_id: 'EI-9', title: 'v300' }), {
+      ts: 300,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
     expect((await getIssue('EI-9'))?.title).toBe('v300');
   });
 

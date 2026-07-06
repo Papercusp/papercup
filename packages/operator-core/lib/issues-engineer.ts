@@ -189,7 +189,11 @@ export function issuesScopeWorkspace(): string {
 
 // Substrate stores resolve under the COORD scope (axis 2 above) so writes land where every
 // consumer reads. The engineer_issues ROW queries below keep issuesScopeWorkspace() (axis 1).
-const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, getWorkspaceId: () => coordScopeWorkspace() };
+const coordOpts = {
+  getSql: () => getOrgPg().sql,
+  ensureSchema: async () => {},
+  getWorkspaceId: () => coordScopeWorkspace(),
+};
 const tags = new PgTaggableStore(coordOpts);
 const threads = new PgThreadStore(coordOpts);
 const subs = new PgEntitySubscriptionStore(coordOpts);
@@ -261,10 +265,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     // legacy rows are organic by definition. Junk can't pass the CHECK constraint.
     signalOrigin: (r.signal_origin ?? DEFAULT_SIGNAL_ORIGIN) as SignalOrigin,
     assigneeRank: r.assignee_rank,
-    rankWriter:
-      r.rank_writer === 'cup' || r.rank_writer === 'mug'
-        ? r.rank_writer
-        : null,
+    rankWriter: r.rank_writer === 'cup' || r.rank_writer === 'mug' ? r.rank_writer : null,
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
     terminalOwner: r.terminal_owner,
     terminalCompletionRef: r.terminal_completion_ref,
@@ -280,7 +281,9 @@ const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state,
 
 const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence }) : null;
+  return evidence && Object.keys(evidence).length > 0
+    ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence })
+    : null;
 }
 
 /** Allocate the next globally-unique EI-<n> id. */
@@ -302,7 +305,12 @@ const ISSUE_NOTIFY_KINDS = {
   resolved: 'issue_resolved',
 } as const;
 
-async function deliver(issue: EngineerIssue, op: keyof typeof ISSUE_NOTIFY_KINDS, summary: string, actor = 'substrate'): Promise<number> {
+async function deliver(
+  issue: EngineerIssue,
+  op: keyof typeof ISSUE_NOTIFY_KINDS,
+  summary: string,
+  actor = 'substrate',
+): Promise<number> {
   // Fan out to the issue's subscribers (direct ∪ topic), excluding the actor so
   // an agent is never notified of its own action. Routed through the canonical
   // fanoutForObject seam (A6) instead of an inline resolve→deliverInjectMany —
@@ -377,9 +385,20 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   }
   // Deliver to topic subscribers BEFORE the author subscribes, so the author is
   // not notified of their own filing (but is subscribed for future updates).
-  await deliver(issue, 'created', `issue ${id} filed (${issue.severity}): ${issue.title}`, input.createdBy ?? 'substrate');
+  await deliver(
+    issue,
+    'created',
+    `issue ${id} filed (${issue.severity}): ${issue.title}`,
+    input.createdBy ?? 'substrate',
+  );
   if (input.createdBy) {
-    await subs.subscribe({ subscriber_id: input.createdBy, target_kind: 'object', target_ref: `${ISSUE_KIND}:${id}`, delivery_mode: 'full', created_ts: created });
+    await subs.subscribe({
+      subscriber_id: input.createdBy,
+      target_kind: 'object',
+      target_ref: `${ISSUE_KIND}:${id}`,
+      delivery_mode: 'full',
+      created_ts: created,
+    });
   }
   return issue;
 }
@@ -414,8 +433,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
   }
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
-  const kindSet: readonly IssueStoreKind[] =
-    filter.kind ? [filter.kind] : filter.kinds ?? ISSUE_KINDS;
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)}
       FROM harness_shared.engineer_issues
@@ -442,8 +460,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
 export async function countIssues(filter: ListIssuesFilter = {}): Promise<number> {
   if (filter.topic) return (await listIssues({ ...filter, limit: 100_000 })).length;
   const { sql } = getOrgPg();
-  const kindSet: readonly IssueStoreKind[] =
-    filter.kind ? [filter.kind] : filter.kinds ?? ISSUE_KINDS;
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
       FROM harness_shared.engineer_issues
@@ -502,7 +519,12 @@ export async function getIssueDetail(id: string): Promise<EngineerIssueDetail | 
   const thread = await threads.getThreadByParent(issueRef(id));
   const posts = thread ? await threads.listPosts(thread.thread_id) : [];
   const out = await links.listOut(issueRef(id));
-  return { ...issue, topics, posts, links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })) };
+  return {
+    ...issue,
+    topics,
+    posts,
+    links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })),
+  };
 }
 
 export interface UpdateIssuePatch {
@@ -560,7 +582,13 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   // The claimer follows the issue.
-  await subs.subscribe({ subscriber_id: assignee, target_kind: 'object', target_ref: `${ISSUE_KIND}:${id}`, delivery_mode: 'full', created_ts: nowIso() });
+  await subs.subscribe({
+    subscriber_id: assignee,
+    target_kind: 'object',
+    target_ref: `${ISSUE_KIND}:${id}`,
+    delivery_mode: 'full',
+    created_ts: nowIso(),
+  });
   await deliver(issue, 'updated', `issue ${id} claimed by ${assignee}`, assignee);
   return issue;
 }
@@ -810,12 +838,22 @@ export async function commentIssue(id: string, body: string, authorId?: string):
   // statement_timeout). A tx-bound PgThreadStore reuses the exact tested store SQL.
   const post = await boundedOrgTxn(async (tx) => {
     const txThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
-    const thread = await txThreads.getOrCreateThread(issueRef(id), { thread_id: threadId(id), title: issue.title, created_by: issue.createdBy ?? undefined, created_ts: issue.createdAt });
+    const thread = await txThreads.getOrCreateThread(issueRef(id), {
+      thread_id: threadId(id),
+      title: issue.title,
+      created_by: issue.createdBy ?? undefined,
+      created_ts: issue.createdAt,
+    });
     return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: created });
   });
   // Fan-out is best-effort + deadline-bounded (fanoutForObject) — it runs AFTER the
   // durable write commits and can never hang or roll back the caller's comment.
-  await deliver(issue, 'commented', `issue ${id} — new comment${authorId ? ` from ${authorId}` : ''}`, authorId ?? 'substrate');
+  await deliver(
+    issue,
+    'commented',
+    `issue ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,
+    authorId ?? 'substrate',
+  );
   return post;
 }
 
@@ -829,7 +867,13 @@ export async function untagIssue(id: string, topic: string): Promise<void> {
 
 /** Subscribable.subscribe / unsubscribe to the issue object. */
 export async function subscribeIssue(subscriberId: string, id: string, mode: DeliveryMode = 'full'): Promise<void> {
-  await subs.subscribe({ subscriber_id: subscriberId, target_kind: 'object', target_ref: `${ISSUE_KIND}:${id}`, delivery_mode: mode, created_ts: nowIso() });
+  await subs.subscribe({
+    subscriber_id: subscriberId,
+    target_kind: 'object',
+    target_ref: `${ISSUE_KIND}:${id}`,
+    delivery_mode: mode,
+    created_ts: nowIso(),
+  });
 }
 export async function unsubscribeIssue(subscriberId: string, id: string): Promise<void> {
   await subs.unsubscribe(subscriberId, 'object', `${ISSUE_KIND}:${id}`);
@@ -861,10 +905,7 @@ export async function issueLinkCounts(ids: readonly string[]): Promise<Map<strin
   if (ids.length === 0) return out;
   for (const id of ids) out.set(id, { blocksOut: 0, inboundRefs: 0 });
   const refs = ids.map(issueRef);
-  const [outRows, inRows] = await Promise.all([
-    links.listOutMany(refs, { rel: 'blocks' }),
-    links.listInMany(refs),
-  ]);
+  const [outRows, inRows] = await Promise.all([links.listOutMany(refs, { rel: 'blocks' }), links.listInMany(refs)]);
   for (const r of outRows) {
     const c = out.get(r.src.ref);
     if (c) c.blocksOut += 1;
@@ -896,8 +937,7 @@ export async function promoteIssue(
   if (!issue) return { error: 'issue not found' };
   if (issue.linkedFeatureId) return { error: `already promoted to ${issue.linkedFeatureId}` };
 
-  const harness =
-    opts.harness ?? (issue.scope.startsWith('harness:') ? issue.scope.slice('harness:'.length) : null);
+  const harness = opts.harness ?? (issue.scope.startsWith('harness:') ? issue.scope.slice('harness:'.length) : null);
   if (!harness) return { error: 'operator-scope issue needs a target harness — pass { harness }' };
   const project = await resolveProject(harness);
   if (!project) return { error: `unknown harness '${harness}'` };

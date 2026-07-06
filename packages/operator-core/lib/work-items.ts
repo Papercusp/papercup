@@ -53,7 +53,11 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { autoPickableWhereSql } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
-import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
+import {
+  FEATURE_NON_REQUEUE_STATES,
+  FEATURE_TERMINAL_STATES,
+  normalizeFeatureStateInput,
+} from './work-item-dispatch-states';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
@@ -284,7 +288,9 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
 }
 
 function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence }) : null;
+  return evidence && Object.keys(evidence).length > 0
+    ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence })
+    : null;
 }
 
 /** Allocate the next kind-independent WI-NNN id (D-008). */
@@ -625,11 +631,19 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   const thread = await threads.getThreadByParent(ref);
   const posts = thread ? await threads.listPosts(thread.thread_id) : [];
   const out = await links.listOut(ref);
-  return { ...wi, topics, posts, links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })) };
+  return {
+    ...wi,
+    topics,
+    posts,
+    links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })),
+  };
 }
 
 /** Cross-kind full-text search over both kind-tables (parity with issues:search). */
-export async function searchWorkItems(query: string, opts: { harness?: string; kind?: WorkItemKind; limit?: number } = {}): Promise<WorkItem[]> {
+export async function searchWorkItems(
+  query: string,
+  opts: { harness?: string; kind?: WorkItemKind; limit?: number } = {},
+): Promise<WorkItem[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const wantFeature = !opts.kind || familyOf(opts.kind) === 'feature';
   const wantIssue = !opts.kind || familyOf(opts.kind) === 'issue';
@@ -743,9 +757,7 @@ function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
  */
 function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
   if (!assignTo) return;
-  void import('./work-items-events')
-    .then((m) => m.emitWorkItemClaimedEvent(wi, assignTo))
-    .catch(() => {});
+  void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)).catch(() => {});
 }
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
@@ -769,8 +781,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // row in the gap). Issue-family claims via createIssue's assignee/assigned_by
   // columns; feature-family stamps taken_by/taken_at in the INSERT below. A
   // freshly-created row is origin='local' ⇒ always admissible, so no auditor guard.
-  const assignTo =
-    typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
+  const assignTo = typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
 
   if (familyOf(input.kind) === 'issue') {
     const issue = await createIssue({
@@ -846,13 +857,37 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     sourcePlanSlug,
   ];
   const cols = [
-    'harness_slug', 'feature_id', 'title', 'summary', 'status', 'attempts',
-    'item_kind', 'payload', 'parent_id', 'needs_design', 'needs_human_review', 'ts', 'created_ts', 'updated_ts',
+    'harness_slug',
+    'feature_id',
+    'title',
+    'summary',
+    'status',
+    'attempts',
+    'item_kind',
+    'payload',
+    'parent_id',
+    'needs_design',
+    'needs_human_review',
+    'ts',
+    'created_ts',
+    'updated_ts',
     'source_plan_slug',
   ];
   const vals = [
-    '$1', '$2', '$3', '$4', `'todo'`, '0',
-    '$5', '$6::jsonb', '$7', 'FALSE', 'FALSE', '$8', '$9', '$10',
+    '$1',
+    '$2',
+    '$3',
+    '$4',
+    `'todo'`,
+    '0',
+    '$5',
+    '$6::jsonb',
+    '$7',
+    'FALSE',
+    'FALSE',
+    '$8',
+    '$9',
+    '$10',
     '$11::text',
   ];
   if (assignTo) {
@@ -977,7 +1012,7 @@ export function normalizeWorkItemState(
     // needs-human) collapses to the issue family's single not-yet-settled state
     // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
     // so these would otherwise throw the structural refusal (EI-450).
-    'in_progress': 'open',
+    in_progress: 'open',
     'in-progress': 'open',
     inprogress: 'open',
     'in progress': 'open',
@@ -1187,9 +1222,7 @@ export async function setWorkItemState(
   if (result && result.state !== wi.state) {
     const transitioned = result;
     const prevState = wi.state;
-    void import('./work-items-events')
-      .then((m) => m.emitWorkItemStatusEvent(transitioned, prevState))
-      .catch(() => {});
+    void import('./work-items-events').then((m) => m.emitWorkItemStatusEvent(transitioned, prevState)).catch(() => {});
   }
   // await-event-primitive P-012/P-013: a SETTLED item fires
   // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
@@ -1197,9 +1230,7 @@ export async function setWorkItemState(
   // imports this module statically) — an emit failure never breaks the write.
   if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
-    void import('./work-items-events')
-      .then((m) => m.emitWorkItemSettledEvents(settled))
-      .catch(() => {});
+    void import('./work-items-events').then((m) => m.emitWorkItemSettledEvents(settled)).catch(() => {});
     // sentinel-herald P-016: when a SETTLED item is a Sentinel handoff (carries
     // the `user-requested` topic), report its landing back to the operator via
     // the hindsight "[While you were away]" channel. Same fire-and-forget +
@@ -1229,8 +1260,7 @@ export async function setWorkItemState(
             title: settled.title,
             state: settled.state,
             harness: settled.harness,
-            terminalCompletionRef:
-              (settled as { terminalCompletionRef?: string | null }).terminalCompletionRef ?? null,
+            terminalCompletionRef: (settled as { terminalCompletionRef?: string | null }).terminalCompletionRef ?? null,
           },
           async (wid, harness) => {
             const detail = await getWorkItemDetail(wid, harness ?? undefined);
@@ -1245,9 +1275,7 @@ export async function setWorkItemState(
   // durable signal, not a prose message. Same fire-and-forget shape.
   if (result && result.state === 'blocked' && wi.state !== 'blocked') {
     const blocked = result;
-    void import('./work-items-events')
-      .then((m) => m.emitWorkItemBlockedEvent(blocked))
-      .catch(() => {});
+    void import('./work-items-events').then((m) => m.emitWorkItemBlockedEvent(blocked)).catch(() => {});
   }
   return result;
 }
@@ -1366,10 +1394,8 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
       FROM harness_shared.engineer_issues
       WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`,
   ]);
-  const terminalTotal =
-    Number(featureRows[0]?.terminal_total ?? 0) + Number(issueRows[0]?.terminal_total ?? 0);
-  const genuineCompletions =
-    Number(featureRows[0]?.genuine ?? 0) + Number(issueRows[0]?.genuine ?? 0);
+  const terminalTotal = Number(featureRows[0]?.terminal_total ?? 0) + Number(issueRows[0]?.terminal_total ?? 0);
+  const genuineCompletions = Number(featureRows[0]?.genuine ?? 0) + Number(issueRows[0]?.genuine ?? 0);
   return { harness, terminalTotal, genuineCompletions, dedupOrUnverified: terminalTotal - genuineCompletions };
 }
 
@@ -1508,7 +1534,11 @@ export async function mergeWorkItemOutputPayload(
  * this same assignee (idempotent). A competing claim on a held item gets null — exactly
  * one agent wins, instead of the old last-write-wins overwrite where both "won".
  */
-export async function claimWorkItem(id: string, assignee: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
+export async function claimWorkItem(
+  id: string,
+  assignee: string,
+  opts: { harness?: string } = {},
+): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   let claimed: WorkItem | null;
@@ -1541,9 +1571,7 @@ export async function claimWorkItem(id: string, assignee: string, opts: { harnes
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
-    void import('./work-items-events')
-      .then((m) => m.emitWorkItemClaimedEvent(won, assignee))
-      .catch(() => {});
+    void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(won, assignee)).catch(() => {});
   }
   return claimed;
 }
@@ -1576,10 +1604,7 @@ export type ClaimFailure =
   | { reason: 'conflict'; holder: string }
   | { reason: 'gated'; holder: null };
 
-export function classifyClaimFailure(
-  current: { assignee?: string | null } | null,
-  claimer: string,
-): ClaimFailure {
+export function classifyClaimFailure(current: { assignee?: string | null } | null, claimer: string): ClaimFailure {
   if (!current) return { reason: 'not_found', holder: null };
   const holder = current.assignee?.trim();
   if (holder && holder !== claimer) return { reason: 'conflict', holder };
@@ -1681,12 +1706,14 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     AND workspace_id = ${opts.workspaceId}
     -- Release-cooldown floor (mig 485 / EI-6956): NULL-safe — rows never released, or
     -- released by someone else, or released long enough ago, all pass.
-    AND ${opts.cooldownAssignee && cooldown > 0
-      ? sql`(last_released_by IS NULL
+    AND ${
+      opts.cooldownAssignee && cooldown > 0
+        ? sql`(last_released_by IS NULL
         OR last_released_by <> ${opts.cooldownAssignee}
         OR last_released_at IS NULL
         OR last_released_at < now() - make_interval(secs => ${cooldown}))`
-      : sql`TRUE`}
+        : sql`TRUE`
+    }
     -- Built-in placeable kinds + any generic-kind datatype that opted into placement
     -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
     AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
@@ -1717,15 +1744,16 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- ready) the wir_ triggers keep exact, instead of recomputing the correlated subquery per claim.
     -- The two forms are equivalent (the sidecar is materialized from this exact predicate + a
     -- reconciliation oracle); OFF is the byte-identical inline form.
-    AND ${opts.useMaintainedReady
-      ? sql`NOT EXISTS (
+    AND ${
+      opts.useMaintainedReady
+        ? sql`NOT EXISTS (
       SELECT 1
         FROM harness_shared.work_item_blocked wb
        WHERE wb.workspace_id = harness_shared.harness_features_consolidated.workspace_id
          AND wb.harness_slug = harness_shared.harness_features_consolidated.harness_slug
          AND wb.feature_id   = harness_shared.harness_features_consolidated.feature_id
     )`
-      : sql`NOT EXISTS (
+        : sql`NOT EXISTS (
       SELECT 1
         FROM harness_shared.work_item_deps d
        WHERE d.workspace_id = 'default'
@@ -1745,7 +1773,8 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
                 AND bi.state NOT IN ('resolved', 'closed')
            )
          )
-    )`}`;
+    )`
+    }`;
 }
 
 /**
@@ -2248,12 +2277,14 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${needsHumanExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
-         AND ${issueCooldown > 0
-           ? sql`(wi.last_released_by IS NULL
+         AND ${
+           issueCooldown > 0
+             ? sql`(wi.last_released_by IS NULL
                OR wi.last_released_by <> ${filter.assignee}
                OR wi.last_released_at IS NULL
                OR wi.last_released_at < now() - make_interval(secs => ${issueCooldown}))`
-           : sql`TRUE`}`;
+             : sql`TRUE`
+         }`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -2368,12 +2399,14 @@ export async function claimNextIssueWorkItem(
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"
           -- excludes the row from MY OWN next self-select.
-          AND ${cooldown > 0
-            ? sql`(wi.last_released_by IS NULL
+          AND ${
+            cooldown > 0
+              ? sql`(wi.last_released_by IS NULL
                 OR wi.last_released_by <> ${filter.assignee}
                 OR wi.last_released_at IS NULL
                 OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-            : sql`TRUE`}
+              : sql`TRUE`
+          }
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
         -- this function's own doc above — "the Queen can now steer issues too, P-007" — with
         -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated
@@ -2430,7 +2463,10 @@ export interface WorkItemObservation {
  * selecting agent can decide before taking. (list/get are the bulk rd surface; this is
  * the explicit single-item observe-with-claimability.)
  */
-export async function observeWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItemObservation | null> {
+export async function observeWorkItem(
+  id: string,
+  opts: { harness?: string } = {},
+): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   return { item: wi, available: !wi.assignee, claimedBy: wi.assignee };
@@ -2456,9 +2492,7 @@ export async function releaseWorkItem(
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = (released: WorkItem | null): void => {
     if (released && wasClaimed) {
-      void import('./work-items-events')
-        .then((m) => m.emitClaimReleasedEvent(released))
-        .catch(() => {});
+      void import('./work-items-events').then((m) => m.emitClaimReleasedEvent(released)).catch(() => {});
     }
   };
   if (wi.family === 'issue') {
@@ -2725,7 +2759,7 @@ export async function bumpWorkItemPriority(
          AND feature_id <> ${id}`;
     const minI = extI[0]?.min_ord ?? null;
     const maxI = extI[0]?.max_ord ?? null;
-    const targetI = position === 'top' ? (minI === null ? 0 : minI - 1) : (maxI === null ? 0 : maxI + 1);
+    const targetI = position === 'top' ? (minI === null ? 0 : minI - 1) : maxI === null ? 0 : maxI + 1;
     return setWorkItemPriority(id, targetI, opts);
   }
   const { sql } = getOrgPg();
@@ -2739,7 +2773,7 @@ export async function bumpWorkItemPriority(
        AND feature_id <> ${id}`;
   const min = ext[0]?.min_ord ?? null;
   const max = ext[0]?.max_ord ?? null;
-  const target = position === 'top' ? (min === null ? 0 : min - 1) : (max === null ? 0 : max + 1);
+  const target = position === 'top' ? (min === null ? 0 : min - 1) : max === null ? 0 : max + 1;
   return setWorkItemPriority(id, target, opts);
 }
 
@@ -2753,7 +2787,8 @@ export async function getWorkItemPriority(
   if (wi.family !== 'feature') {
     // P-007: read the issue's feature_order off the base when issues are claimable; else
     // applicable:false (byte-identical to the feature-only behavior).
-    if (!(await schedulerIssuesClaimableEnabled())) return { id, harness: wi.harness, priority: null, applicable: false };
+    if (!(await schedulerIssuesClaimableEnabled()))
+      return { id, harness: wi.harness, priority: null, applicable: false };
     const { sql } = getOrgPg();
     const rows = await sql<{ feature_order: number | null }[]>`
       SELECT feature_order FROM harness_shared.work_items
@@ -2832,7 +2867,12 @@ export async function reorderWorkItem(
 }
 
 /** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
-export async function linkWorkItem(id: string, dst: ObjectRef, rel: string, opts: { harness?: string; by?: string } = {}): Promise<{ ok: true } | { error: string }> {
+export async function linkWorkItem(
+  id: string,
+  dst: ObjectRef,
+  rel: string,
+  opts: { harness?: string; by?: string } = {},
+): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (dst.kind === FEATURE_KIND && !isQualifiedFeatureRef(dst.ref)) {
@@ -2846,7 +2886,12 @@ export async function linkWorkItem(id: string, dst: ObjectRef, rel: string, opts
   return { ok: true };
 }
 
-export async function unlinkWorkItem(id: string, dst: ObjectRef, rel: string, opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+export async function unlinkWorkItem(
+  id: string,
+  dst: ObjectRef,
+  rel: string,
+  opts: { harness?: string } = {},
+): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
@@ -2861,14 +2906,22 @@ export async function resolveWorkItemRef(targetId: string, harness?: string): Pr
 }
 
 /** Taggable.addTag / removeTag (topic tags via coord_links rel='tagged'). */
-export async function tagWorkItem(id: string, topic: string, opts: { harness?: string; by?: string } = {}): Promise<{ ok: true } | { error: string }> {
+export async function tagWorkItem(
+  id: string,
+  topic: string,
+  opts: { harness?: string; by?: string } = {},
+): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await tagIssue(id, topic, opts.by);
   else await tags.addTag(workItemObjectRef(wi), topic, { created_by: opts.by, created_ts: nowIso() });
   return { ok: true };
 }
-export async function untagWorkItem(id: string, topic: string, opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+export async function untagWorkItem(
+  id: string,
+  topic: string,
+  opts: { harness?: string } = {},
+): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await untagIssue(id, topic);
@@ -2877,7 +2930,12 @@ export async function untagWorkItem(id: string, topic: string, opts: { harness?:
 }
 
 /** Subscribable.subscribe. */
-export async function subscribeWorkItem(subscriberId: string, id: string, mode: DeliveryMode = 'full', opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+export async function subscribeWorkItem(
+  subscriberId: string,
+  id: string,
+  mode: DeliveryMode = 'full',
+  opts: { harness?: string } = {},
+): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') {
@@ -2895,7 +2953,12 @@ export async function subscribeWorkItem(subscriberId: string, id: string, mode: 
 }
 
 /** Threadable.addPost (D-003) — comment on a work-item (creates the thread on first post). */
-export async function commentWorkItem(id: string, body: string, authorId?: string, opts: { harness?: string } = {}): Promise<ThreadPostRow | null> {
+export async function commentWorkItem(
+  id: string,
+  body: string,
+  authorId?: string,
+  opts: { harness?: string } = {},
+): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
@@ -2971,7 +3034,10 @@ export interface PromoteToPipelineResult {
  * pipeline run, by minting an F-FIX feature (reusing issues:promote's mintFixFeatureRow)
  * and linking it. A feature-family work-item already IS a pipeline item — no-op.
  */
-export async function promoteToPipeline(id: string, opts: { harness?: string; actor?: string } = {}): Promise<PromoteToPipelineResult | { error: string }> {
+export async function promoteToPipeline(
+  id: string,
+  opts: { harness?: string; actor?: string } = {},
+): Promise<PromoteToPipelineResult | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'feature') {
