@@ -1,0 +1,88 @@
+---
+title: Mac desktop E2E battery — repeatable scripts homed in papercusp-desktop/bin
+description: WI-3133's standing Mac-app E2E effort. 11 verified bash scripts (fresh-install, lifecycle/gateway, relaunch-crash regression, log-scan, gateway-sidecar probes, seed-runtime check, credential-precedence check) live in papercusp-desktop/bin/mac-vm-*.sh. Run them over SSH against the Mac build VM — no GPU on the VM, so pixel/visual checks still need real Mac hardware.
+discovered: 2026-07-06
+tags: [desktop, macos, vm, testing, e2e, gotcha]
+status: active
+---
+
+## What this is
+
+A standing owner directive (2026-07-05, aviynw: "keep putting the mac app
+through thorough end to end testing") asked for a repeatable Mac-desktop E2E
+battery, not a one-shot pass. WI-3133 tracks the ongoing effort; this doc is
+the durable home for the **scripts** (previously stranded in an agent
+session's scratchpad — see the 2026-07-06 WI-3133 handoff comment for
+provenance). They now live as committed, re-runnable ops scripts:
+
+```
+papercusp-desktop/bin/mac-vm-fresh-install-e2e.sh   DESTRUCTIVE full fresh-install E2E
+papercusp-desktop/bin/mac-vm-lifecycle-gw-e2e.sh    quit/relaunch + real gateway model call (:8788)
+papercusp-desktop/bin/mac-vm-relaunch-verify.sh     WI-3139 relaunch-crash regression (relaunch x3, assert no new wry panic)
+papercusp-desktop/bin/mac-vm-log-scan.sh            all-logs error/panic/crash scan (read-only)
+papercusp-desktop/bin/mac-vm-inspect-running.sh     non-disruptive running-instance inspection
+papercusp-desktop/bin/mac-vm-gw-prep.sh             read-only prep inspection for a standalone gateway-sidecar test
+papercusp-desktop/bin/mac-vm-gw-prep2.sh            same, v2 (mounts the Server DMG, captures DATABASE_URL)
+papercusp-desktop/bin/mac-vm-gw-run.sh              launches the bundled gateway sidecar standalone on :8799
+papercusp-desktop/bin/mac-vm-seed-runtime-test.sh   isolated fresh-user PGDATA-seed provisioning check
+papercusp-desktop/bin/mac-vm-reqb-fileprec.sh       does `claude` honor $CLAUDE_CONFIG_DIR/.credentials.json (file) vs Keychain-only
+papercusp-desktop/bin/mac-vm-verify-build.sh        cut a real x86_64 fast-iter build + scp DMGs back (drives mac-vm-build.sh remotely)
+```
+
+All verified against the QEMU macOS 14.8.5 x86_64 build VM
+(`ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1`), builds around
+sha `2ae833a3a1`. `mac-vm-verify-build.sh` runs from the tower/monorepo
+checkout and rsyncs+builds remotely; every other `mac-vm-*.sh` here runs
+**on the VM itself** — copy it over (it's already carried by
+`mac-vm-verify-build.sh`'s rsync into `papercup-build-mac/papercup/…`) or
+pipe it directly: `ssh … 'bash -s' < papercusp-desktop/bin/mac-vm-X.sh`.
+
+## Why visual/pixel checks are excluded
+
+**This QEMU VM has no GPU, so WKWebView cannot paint** — a `screendump`
+during boot shows a black/blank frame even when the app is fully healthy
+underneath. Don't chase "blank screenshot" as a bug signal on this VM; it's
+an environment limitation, not an app defect. Everything else — operator
+HTTP routes, embedded PG (schema/migrations), the real inference gateway,
+lifecycle relaunch (same-DB reuse, no re-provisioning), log/crash scanning,
+credential-file precedence — is fully verifiable headless over SSH. Actual
+pixel/visual verification needs real Mac hardware (or a VM with GPU
+passthrough) — track that gap separately, don't assume this battery covers it.
+
+## The 5 verified dimensions (first thorough pass, 2026-07-05, all green)
+
+1. **Visual** — webview loads + renders (VM-GPU-blank pixels only; see above).
+2. **HTTP routes** — `/api/health`, `/api/desktop/*`, `/internal/docs`, SPA root shell.
+3. **Embedded PG** — full migrated schema (hundreds of tables/migrations) provisions on fresh install.
+4. **Real gateway model call** — a live `/v1/messages` round-trip through the app's auto-supervised `:8788` gateway sidecar.
+5. **Lifecycle relaunch** — quit + relaunch reuses the same physical DB (`system_identifier` unchanged), doesn't re-provision.
+
+## Backlog depth dimensions (WI-3133, not yet scripted as a battery)
+
+6. All-logs error scan — `mac-vm-log-scan.sh` now covers this.
+7. Functional data write→read roundtrip through the operator API + sync/resolver.
+8. code-server bundled IDE health.
+9. Resource/stability over time (no leak/crash-loop) — partially covered by repeated `mac-vm-inspect-running.sh` runs.
+10. Onboarding first-run completion.
+11. Run the full fresh-install E2E (`mac-vm-fresh-install-e2e.sh`) on each NEW build — don't run it in a tight loop (it's destructive: wipes `/Applications` and reinstalls).
+
+## Running cadence
+
+- **Non-destructive health+functional probe** (`mac-vm-inspect-running.sh`,
+  `mac-vm-log-scan.sh`, a `mac-vm-lifecycle-gw-e2e.sh` pass) — safe to run
+  frequently against whatever build is currently installed.
+- **Full fresh-install E2E** (`mac-vm-fresh-install-e2e.sh`) — once per NEW
+  build, not on a tight loop (it quits the running app, wipes
+  `/Applications`, reinstalls from the latest DMGs in
+  `~/papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg`,
+  and relaunches).
+- **`mac-vm-relaunch-verify.sh`** is the regression check for WI-3139 (a GUI
+  crash-on-relaunch bug); reuse it whenever a wry/webview or Tauri-runtime
+  change lands.
+
+## Related
+
+- Mac build VM recovery: [mac-vm-qmp-recovery](/internal/docs/agent-insights/mac-vm-qmp-recovery)
+- Desktop app testing conventions (Tauri agent-driven UI checks — a
+  *different* battery, for the interactive webview control surface, not this
+  SSH-driven VM battery): `/internal/docs/testing/agent-e2e`
