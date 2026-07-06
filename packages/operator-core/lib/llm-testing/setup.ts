@@ -30,6 +30,7 @@
 import type { ScenarioSetup, SetupCleanup } from '@papercusp/testing-shell/llm';
 
 import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
+import { getResolvedMode } from '../memory/mem0-client';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Default harness pool for seeds that don't name a scope. */
@@ -75,6 +76,14 @@ export async function applyScenarioSetup(
         throw new Error(
           `[llm-testing] memory seed stored NOTHING (backend '${backend.name}', scope '${scope}') — ` +
             `the scenario would run without its gotcha. Seed body: ${seed.body.slice(0, 80)}…`,
+        );
+      }
+      const recall = await backend.search(seed.body, { scope, limit: 5 });
+      if (!recall.some((hit) => hit.id && ids.includes(hit.id))) {
+        const mode = getResolvedMode() ?? 'unknown';
+        throw new Error(
+          `[llm-testing] memory seed was not immediately recallable after write (backend '${backend.name}', scope '${scope}', resolved mode='${mode}') — ` +
+            `the scenario would be flaky under degraded embedder mode. Seed body: ${seed.body.slice(0, 80)}…`,
         );
       }
       seededIds.push(...ids);

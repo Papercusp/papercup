@@ -8,8 +8,8 @@
  * late / out-of-order / backfilled op can never clobber a newer projected row.
  * The in-process `cursor.winners` fold guards this within one process; these
  * tests prove the SECOND, independent floor: every mutating projection writer is
- * PG-level last-write-wins via its `fed_ts` column guard
- * (`WHERE EXCLUDED.fed_ts >= <table>.fed_ts`), so correctness holds even when the
+ * PG-level last-write-wins via its `fed_order_key(fed_hlc, fed_ts)` guard plus
+ * the equal-key `fed_apply_wins` tie-break, so correctness holds even when the
  * op arrives WITHOUT going through (or after a reset of) the cursor fold — e.g. a
  * fresh process replaying an old op, or two writers to the same shared row.
  *
@@ -141,7 +141,7 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
     expect(await statusOf(id)).toBe('newer');
 
     // The older op arrives late (out-of-order replication / a backfilling peer).
-    // The writer's `WHERE EXCLUDED.fed_ts >= fed_ts` guard makes the UPDATE a
+    // The writer's `fed_order_key` / `fed_apply_wins` guard makes the UPDATE a
     // no-op — the row is NOT clobbered back to 'older'.
     await apply(featurePut(id, 'older', 1000));
     expect(await statusOf(id)).toBe('newer');
@@ -155,11 +155,16 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
     expect(await statusOf(id)).toBe('newer');
   });
 
-  it('an equal-ts put applies (>= ; LWW ties never lose data either way)', async () => {
+  it('an equal-ts same-writer put is resolved by the deterministic content tie-break', async () => {
     const id = 'F-oo-eq';
     expect(await apply(featurePut(id, 'first', 1500))).toBe(true);
     await apply(featurePut(id, 'second', 1500));
-    expect(await statusOf(id)).toBe('second');
+    // WI-2923/mig 504 replaced unconditional equal-key apply (`>=`) with
+    // fed_apply_wins: same-writer equal keys fall to the symmetric content digest
+    // so healed replicas converge instead of swapping values. For these two
+    // payloads the standing row wins the digest tie-break; the contract is
+    // deterministic convergence, not "the second apply always wins".
+    expect(await statusOf(id)).toBe('first');
   });
 
   it('a STALE del (older than the standing row) must NOT erase it', async () => {
@@ -179,7 +184,7 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
     expect(await apply(featurePut(id, 'A-newer', 5000))).toBe(true);
     // Process B boots with an EMPTY cursor fold and happens to replay an OLD op
     // first (its in-memory guard sees no prior winner, so it WOULD apply it —
-    // the PG fed_ts guard is the only thing protecting the row here).
+    // the PG order-key guard is the only thing protecting the row here).
     const freshApply = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
     await freshApply(featurePut(id, 'B-older', 2000));
     expect(await statusOf(id)).toBe('A-newer');

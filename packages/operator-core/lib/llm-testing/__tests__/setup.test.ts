@@ -22,12 +22,13 @@ interface FakeState {
   entries: Map<string, { text: string; opts: RememberOptions }>;
   forgets: string[];
   remembers: Array<{ text: string; opts: RememberOptions }>;
+  searches: Array<{ query: string; scope: string | readonly string[]; limit?: number }>;
 }
 
 function makeFakeBackend(
   over: Partial<MemoryBackend> = {},
 ): { backend: MemoryBackend; state: FakeState } {
-  const state: FakeState = { entries: new Map(), forgets: [], remembers: [] };
+  const state: FakeState = { entries: new Map(), forgets: [], remembers: [], searches: [] };
   let nextId = 1;
   const backend: MemoryBackend = {
     name: 'fake',
@@ -38,7 +39,14 @@ function makeFakeBackend(
       state.entries.set(id, { text, opts });
       return { ids: [id], storedEvents: 1 };
     },
-    search: async () => [],
+    search: async (query, opts) => {
+      state.searches.push({ query, scope: opts.scope, limit: opts.limit });
+      const hits = [...state.entries.entries()]
+        .map(([id, entry]) => ({ id, text: entry.text, scope: entry.opts.scope, kind: entry.opts.kind, metadata: entry.opts.metadata }))
+        .filter((entry) => entry.scope === opts.scope || (Array.isArray(opts.scope) && opts.scope.includes(entry.scope)))
+        .filter((entry) => entry.text === query);
+      return hits as MemoryEntry[];
+    },
     list: async () => [],
     get: async () => null as MemoryEntry | null,
     forget: async (id) => {
@@ -66,6 +74,10 @@ describe('applyScenarioSetup', () => {
     );
 
     expect(state.remembers).toHaveLength(2);
+    expect(state.searches).toEqual([
+      { query: 'fact one', scope: defaultSeedScope(), limit: 5 },
+      { query: 'fact two', scope: 'harness:sheets', limit: 5 },
+    ]);
     for (const r of state.remembers) {
       expect(r.opts.verbatim).toBe(true);
       expect(r.opts.metadata).toMatchObject({ llm_testing: true, run_id: 'run-1' });
@@ -124,5 +136,14 @@ describe('applyScenarioSetup', () => {
     await expect(
       applyScenarioSetup({ mem0: [{ kind: 'project', body: 'x' }] }, { runId: 'r' }, backend),
     ).rejects.toThrow(/unavailable \(pg_down\)/);
+  });
+
+  it('throws when a freshly written seed is not immediately recallable', async () => {
+    const { backend } = makeFakeBackend({
+      search: async () => [],
+    });
+    await expect(
+      applyScenarioSetup({ mem0: [{ kind: 'project', body: 'ghost' }] }, { runId: 'r' }, backend),
+    ).rejects.toThrow(/not immediately recallable after write/);
   });
 });
