@@ -821,7 +821,9 @@ describe('tools/call — auth failures reject before any dispatch', () => {
       expect(legacyName).toBeTruthy();
       const res = await callTool(legacyName!, {}, extraFor(signedUrl()));
       expect(res.isError).toBe(true);
-      expect(textOf(res)).toBe('request_rejected: spawn_sig_expired');
+      expect(textOf(res)).toMatch(/^request_rejected: spawn_sig_expired\b/);
+      expect(textOf(res)).toMatch(/scripts\/mcp-call\.mjs/);
+      expect(textOf(res)).toMatch(/RE-SPAWN/);
       expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
       expect(seen).toEqual([]);
     } finally {
