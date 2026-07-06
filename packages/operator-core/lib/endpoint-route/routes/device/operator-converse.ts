@@ -138,14 +138,14 @@ const converse = defineTool({
     try {
       const { loadVoicePrefs } = await import('../../../voice-prefs');
       const prefs = await loadVoicePrefs();
-      if (prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup') role = 'papercup';
+      if (prefs.humanFacingRole === 'papercup') role = 'papercup';
     } catch {
       /* best-effort; fall back to operator */
     }
     // The papercup persona brain is registered under `papercup:converse`
     // (sentinel-converse.ts); every other role resolves `${role}:converse`.
     // A stale explicit 'sentinel' still routes there during the expand phase.
-    const converseToolName = role === 'sentinel' || role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
+    const converseToolName = role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {

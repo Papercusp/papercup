@@ -25,6 +25,7 @@ import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-r
 import { inferWorkspaceRoot } from '@papercusp/operator-core/lib/testing-domain-glob';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 interface TestRunRow {
   filePath: string;
@@ -33,6 +34,40 @@ interface TestRunRow {
   startedAt: Date;
   finishedAt: Date;
   outputTail: string | null;
+}
+
+let _loopLagMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
+
+function ensureLoopLagMonitor(): void {
+  if (_loopLagMonitor) return;
+  try {
+    _loopLagMonitor = monitorEventLoopDelay({ resolution: 20 });
+    _loopLagMonitor.enable();
+  } catch {
+    _loopLagMonitor = null;
+  }
+}
+
+function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
+  let loopLagP95Ms: number | null = null;
+  try {
+    ensureLoopLagMonitor();
+    const p95Ns = _loopLagMonitor?.percentile(95);
+    if (typeof p95Ns === 'number' && Number.isFinite(p95Ns)) {
+      loopLagP95Ms = Math.round((p95Ns / 1_000_000) * 10) / 10;
+    }
+    _loopLagMonitor?.reset();
+  } catch {
+    loopLagP95Ms = null;
+  }
+
+  let rssMb: number | null = null;
+  try {
+    rssMb = Math.round((process.memoryUsage().rss / 1_048_576) * 10) / 10;
+  } catch {
+    rssMb = null;
+  }
+  return { loopLagP95Ms, rssMb };
 }
 
 function toWorkspaceRel(absPath: string): string {
@@ -79,15 +114,16 @@ async function insertRow(row: TestRunRow): Promise<void> {
 
   const source = resolveTestRunSource();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
+  const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
 
   try {
     await Promise.race([
       pg.sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, loop_lag_p95_ms, rss_mb)
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit})
+           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${loopLagP95Ms}, ${rssMb})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -110,6 +146,10 @@ interface PerFile {
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private byFile = new Map<string, PerFile>();
   private pending: Promise<void>[] = [];
+
+  onBegin(): void {
+    ensureLoopLagMonitor();
+  }
 
   onTestEnd(test: TestCase, result: TestResult): void {
     try {

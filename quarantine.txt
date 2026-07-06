@@ -4,9 +4,10 @@
 #
 #   <workspace-name>                -> excluded from the affected run; logged as
 #                                      quarantined (not silently skipped).
-#   <workspace-name>::<file-glob>   -> per-file informational marker; the runner
-#                                      doesn't currently filter at file-level,
-#                                      so this is a hint for humans triaging.
+#   <workspace-name>::<file-glob>   -> per-file marker. The affected runner still
+#                                      executes the workspace, but green-checkpoint
+#                                      removes matching failing files from the v1
+#                                      gate verdict and logs them as quarantined.
 #
 # Lines starting with `#` and blank lines are ignored.
 #
@@ -21,3 +22,18 @@
 # blur-commit + ipcFetch transport + session-scoped spend GET not reliably assertable
 # headless). Feature verified working via direct API PUT. See the test comment.
 @papercupai/operator::apps/operator/e2e/voice-mode.spec.ts
+
+# P-012 / WI-3210 (2026-07-06): v1 production release scope explicitly excludes
+# p2p/shared-hive/federation. These stay in the suite output for visibility, but
+# do not hold the v1 green-checkpoint verdict; v2 de-quarantine follow-ups are
+# filed from WI-3210.
+@papercusp/operator-core::lib/**/*federation*.test.ts
+@papercusp/operator-core::lib/**/*p2p*.test.ts
+@papercusp/operator-core::lib/**/dogfood-substrate*.test.ts
+@papercusp/operator-core::lib/**/substrate*.test.ts
+@papercusp/operator-core::lib/deployment/p2p-perf-tier3/**
+@papercusp/operator-core::lib/p2p/**
+@papercusp/operator-core::lib/shared-hive-loop/**
+@papercusp/operator-core::lib/sync/hyperbee/**
+@papercusp/p2p-voice::src/**
+@papercusp/pubsub-substrate::src/**

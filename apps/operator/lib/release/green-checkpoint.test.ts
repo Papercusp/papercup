@@ -17,6 +17,9 @@ import {
   checkpointFailureSignature,
   historicalFlakeAnnotations,
   summarizeSuiteOutput,
+  parseTestQuarantine,
+  applyTestQuarantine,
+  isQuarantinedTestFile,
   parseFailingFilesByWorkspace,
   decideFlakeAbsorption,
   attemptFlakeAbsorption,
@@ -766,6 +769,56 @@ describe('parseFailingFilesByWorkspace (load-flake isolation)', () => {
   it('returns [] on empty / non-vitest output (build break)', () => {
     expect(parseFailingFilesByWorkspace('')).toEqual([]);
     expect(parseFailingFilesByWorkspace('=== SPA BUILD FAILED (@papercusp/operator-vite) ===\nerror TS2304')).toEqual([]);
+  });
+});
+
+describe('test quarantine filtering (v1 gate scope)', () => {
+  const quarantine = parseTestQuarantine([
+    '# workspace and file-level forms',
+    '@papercusp/operator-core::lib/sync/hyperbee/**',
+    '@papercusp/operator-core::lib/shared-hive-loop/**',
+    '@papercusp/pubsub-substrate',
+  ].join('\n'));
+
+  it('matches workspace-scoped glob quarantine entries', () => {
+    expect(isQuarantinedTestFile(
+      { workspace: '@papercusp/operator-core', file: 'lib/sync/hyperbee/__tests__/two-peer.test.ts' },
+      quarantine,
+    )).toBe(true);
+    expect(isQuarantinedTestFile(
+      { workspace: '@papercusp/operator-core', file: 'lib/work-items-view.integration.test.ts' },
+      quarantine,
+    )).toBe(false);
+    expect(isQuarantinedTestFile(
+      { workspace: '@papercusp/pubsub-substrate', file: 'src/core/core.test.ts' },
+      quarantine,
+    )).toBe(true);
+  });
+
+  it('turns an all-quarantined p2p/federation failure into a non-gating verdict', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      ' FAIL  lib/sync/hyperbee/__tests__/two-peer.test.ts > joins',
+      '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED)',
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+    const q = applyTestQuarantine(out, extractFailingTests(out), quarantine);
+    expect(q.allFailuresQuarantined).toBe(true);
+    expect(q.failingTests).toEqual([]);
+    expect(q.quarantined).toEqual(['@papercusp/operator-core::lib/sync/hyperbee/__tests__/two-peer.test.ts']);
+  });
+
+  it('keeps unrelated failures gating while removing quarantined file signatures', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      ' FAIL  lib/sync/hyperbee/__tests__/two-peer.test.ts > joins',
+      ' FAIL  lib/work-items-view.integration.test.ts > renders',
+      '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED)',
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+    const q = applyTestQuarantine(out, extractFailingTests(out), quarantine);
+    expect(q.allFailuresQuarantined).toBe(false);
+    expect(q.failingTests).toEqual(['@papercusp/operator-core', 'lib/work-items-view.integration.test.ts']);
   });
 });
 

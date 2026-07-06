@@ -258,7 +258,7 @@ export default defineTool({
         if (status === 'superseded' && args.learnings) {
           const id = resolveAgentIdentity(ctx);
           const ctxRole = (ctx as { role?: string } | undefined)?.role;
-          const deprecatedBy = ctxRole === 'queen' || ctxRole === 'mug' ? 'Queen' : 'owner';
+          const deprecatedBy = ctxRole === 'mug' ? 'Queen' : 'owner';
           try {
             const obs = await emitDeprecateLearnings({
               planSlug: slug,

@@ -137,7 +137,7 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
   // (mirrors pot:start/pause + recordHiveWake); name-only/{} matches the no-arg consumer;
   // the 90s source-dedupe caps the rate. A rolled-back caller txn is harmless — the
   // resolver just re-reads the unchanged max.
-  if (input.childRole === 'queen' || input.childRole === 'mug') {
+  if (input.childRole === 'mug') {
     void import('../sync-sse')
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
       .catch(() => {});

@@ -37,9 +37,43 @@ import { resolve, dirname, relative, sep, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
+let loopLagMonitor = null;
+
+function ensureLoopLagMonitor() {
+  if (loopLagMonitor) return;
+  try {
+    loopLagMonitor = monitorEventLoopDelay({ resolution: 20 });
+    loopLagMonitor.enable();
+  } catch {
+    loopLagMonitor = null;
+  }
+}
+
+function captureReporterSaturationSnapshot() {
+  let loopLagP95Ms = null;
+  try {
+    ensureLoopLagMonitor();
+    const p95Ns = loopLagMonitor?.percentile(95);
+    if (typeof p95Ns === 'number' && Number.isFinite(p95Ns)) {
+      loopLagP95Ms = Math.round((p95Ns / 1_000_000) * 10) / 10;
+    }
+    loopLagMonitor?.reset();
+  } catch {
+    loopLagP95Ms = null;
+  }
+
+  let rssMb = null;
+  try {
+    rssMb = Math.round((process.memoryUsage().rss / 1_048_576) * 10) / 10;
+  } catch {
+    rssMb = null;
+  }
+  return { loopLagP95Ms, rssMb };
+}
 
 /**
  * Resolve an actual `cargo` binary rather than trusting a bare `spawn('cargo', ...)`
@@ -139,14 +173,15 @@ async function tryGetPg() {
 async function insertRows(sql, rows) {
   if (!sql) return 0;
   let inserted = 0;
+  const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
   for (const row of rows) {
     try {
       await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb})
         `,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
       ]);
@@ -167,6 +202,7 @@ async function main() {
   const manifestAbs = resolve(REPO_ROOT, manifestPath);
   const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/');
 
+  ensureLoopLagMonitor();
   console.log(`[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`);
   const { code, stdout, stderr, startedAt, finishedAt } = await runCargoTest(manifestAbs, cargoArgs);
   const combined = `${stdout}\n${stderr}`;

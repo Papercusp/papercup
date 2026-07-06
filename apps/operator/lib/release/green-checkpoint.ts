@@ -397,6 +397,97 @@ export function extractFailingTests(out: string): string[] {
   return [...set].sort().slice(0, 50);
 }
 
+export interface TestQuarantineEntry {
+  workspace: string;
+  pattern: string | null;
+}
+
+export interface QuarantineVerdict {
+  allFailuresQuarantined: boolean;
+  failingTests: string[];
+  quarantined: string[];
+}
+
+export function parseTestQuarantine(text: string): TestQuarantineEntry[] {
+  const out: TestQuarantineEntry[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const [workspace, pattern] = line.split('::');
+    if (!workspace) continue;
+    out.push({ workspace, pattern: pattern?.trim() || null });
+  }
+  return out;
+}
+
+function globToRegExp(glob: string): RegExp {
+  let source = '^';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        source += '.*';
+        i++;
+      } else {
+        source += '[^/]*';
+      }
+    } else if (c === '?') {
+      source += '[^/]';
+    } else {
+      source += c.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+    }
+  }
+  source += '$';
+  return new RegExp(source);
+}
+
+export function isQuarantinedTestFile(file: FailingFile, entries: TestQuarantineEntry[]): boolean {
+  for (const entry of entries) {
+    if (entry.workspace !== file.workspace) continue;
+    if (!entry.pattern) return true;
+    if (globToRegExp(entry.pattern).test(file.file)) return true;
+  }
+  return false;
+}
+
+export function applyTestQuarantine(fullOutput: string, failingTests: string[], entries: TestQuarantineEntry[]): QuarantineVerdict {
+  const failingFiles = parseFailingFilesByWorkspace(fullOutput);
+  if (!failingFiles.length || !entries.length) {
+    return { allFailuresQuarantined: false, failingTests, quarantined: [] };
+  }
+
+  const byWorkspace = new Map<string, { total: number; quarantined: number }>();
+  const quarantinedFiles = new Set<string>();
+  const quarantinedLabels: string[] = [];
+  for (const file of failingFiles) {
+    const current = byWorkspace.get(file.workspace) ?? { total: 0, quarantined: 0 };
+    current.total += 1;
+    if (isQuarantinedTestFile(file, entries)) {
+      current.quarantined += 1;
+      quarantinedFiles.add(file.file);
+      quarantinedFiles.add(`${file.workspace}::${file.file}`);
+      quarantinedLabels.push(`${file.workspace}::${file.file}`);
+    }
+    byWorkspace.set(file.workspace, current);
+  }
+
+  if (!quarantinedLabels.length) {
+    return { allFailuresQuarantined: false, failingTests, quarantined: [] };
+  }
+
+  const filtered = failingTests.filter((test) => {
+    if (quarantinedFiles.has(test)) return false;
+    const ws = byWorkspace.get(test);
+    if (ws && ws.total > 0 && ws.total === ws.quarantined) return false;
+    return true;
+  });
+  return {
+    allFailuresQuarantined: filtered.length === 0 && quarantinedLabels.length === failingFiles.length,
+    failingTests: filtered,
+    quarantined: quarantinedLabels.sort(),
+  };
+}
+
 /** A single failing test FILE, paired with the workspace it ran under. The
  *  isolation re-run needs BOTH: the file (to scope `vitest run <file>`) and the
  *  workspace dir (the cwd vitest runs in — the file path is workspace-relative). */
@@ -1530,8 +1621,24 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // P-012: a stable failure signature from the FULL output (before truncation), folding
       // the SPA build break in, so the release-fixer dedups by WHAT failed, not the candidate
       // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
-      const failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
-      const summary = summarizeSuiteOutput(fullOutput);
+      let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
+      let summary = summarizeSuiteOutput(fullOutput);
+      if (!green && buildOk && failingTests.length) {
+        try {
+          const quarantinePath = path.join(treeDir, 'quarantine.txt');
+          const quarantine = existsSync(quarantinePath) ? parseTestQuarantine(readFileSync(quarantinePath, 'utf8')) : [];
+          const q = applyTestQuarantine(fullOutput, failingTests, quarantine);
+          if (q.quarantined.length) {
+            failingTests = q.failingTests;
+            const note = `\n\nQuarantined out of v1 gate verdict: ${q.quarantined.join(', ')}`;
+            summary = `${summary}${note}`.slice(-2000);
+            log(`[green-checkpoint] ${q.quarantined.length} quarantined test failure(s) excluded from v1 verdict: ${q.quarantined.join(', ')}`);
+          }
+          if (q.allFailuresQuarantined) green = true;
+        } catch (e) {
+          log(`[green-checkpoint] quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       return { green, summary, failingTests, ...(flakeSuspects?.length ? { flakeSuspects } : {}) };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),

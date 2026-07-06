@@ -16,7 +16,7 @@ apps/operator/lib/backup/
 ├── singleton.ts        — per-workspaceId cache
 ├── server.ts           — kopia server lifecycle (iframe target)
 ├── scheduler.ts        — 1-min tick + triggerSnapshotEvent + kopia detect
-├── hook.ts             — pre-snapshot pg_dumpall hook
+├── hook.ts             — pre-snapshot pg_dump hook
 ├── index.ts            — public exports
 └── README.md
 ```
@@ -30,7 +30,7 @@ apps/operator/lib/backup/
 ├── cache/                — local cache
 └── logs/                 — kopia client logs
 ~/.papercusp-workspaces/<id>/db-dumps/
-├── pg-embedded.sql.gz    — transactional dump of :16534
+├── pg-embedded.sql.gz    — transactional dump of the resolved harness-admin database
 └── hook.log              — hook results
 ~/.papercusp-workspaces/<id>/.restored/<snapshotId>/<slug>/
 ~/.papercusp-workspaces/<id>/.broken-<ts>-<name>/    — pre-promote live
@@ -105,8 +105,7 @@ Per-workspace `event_triggers` setting gates which reasons fire.
 
 ## Pre-snapshot DB hook
 
-`hook.ts` runs once per `snapshot()` call. Currently dumps embedded-pg
-:16534 (password=postgres) into `<workspaceRoot>/db-dumps/pg-embedded.sql.gz`.
+`hook.ts` runs once per `snapshot()` call. Currently dumps the resolved harness-admin database into `<workspaceRoot>/db-dumps/pg-embedded.sql.gz`.
 Failures log to `hook.log` and never abort the snapshot.
 
 ## Threat model — what this protects against
@@ -118,7 +117,7 @@ Failures log to `hook.log` and never abort the snapshot.
 - **User deletes a workspace by mistake** → kopia repo is archived to
   `~/.papercusp-workspaces/.archive/<id>-<ts>/` before the dir is
   removed, so the snapshots survive.
-- **Hot DB state (embedded-pg :16534)** → transactional pg_dumpall on
+- **Hot DB state (operator PG)** → transactional pg_dump on
   every snapshot.
 
 ## Threat model — what this does NOT protect against

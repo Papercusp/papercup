@@ -91,7 +91,7 @@ export default defineTool({
         const prefs = await loadVoicePrefs();
         // 'sentinel' is the pre-rename pref value (WI-2932) — accepted, resolves
         // to the canonical 'papercup' role id.
-        role = prefs.humanFacingRole === 'sentinel' || prefs.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
+        role = prefs.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
       } catch {
         role = 'operator';
       }
@@ -99,7 +99,7 @@ export default defineTool({
     // The papercup persona brain is registered under `papercup:converse`
     // (sentinel-converse.ts); every other role resolves `${role}:converse`.
     // A stale explicit 'sentinel' still routes there during the expand phase.
-    const converseToolName = role === 'sentinel' || role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
+    const converseToolName = role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {

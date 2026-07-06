@@ -38,7 +38,7 @@ export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
  * UI proxy, SU sessions, operator chat) is the owner acting directly or by proxy.
  */
 export function deriveGradedBy(ctx: { role?: string } | undefined): GradedBy {
-  return ctx?.role === 'queen' || ctx?.role === 'mug' ? 'Queen' : 'owner';
+  return ctx?.role === 'mug' ? 'Queen' : 'owner';
 }
 
 /** Post-write summary of the graded ledger row, returned to the caller (C-3). */

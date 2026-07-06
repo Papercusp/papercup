@@ -258,7 +258,7 @@ export class OperatorVoiceSession {
     return {
       sessionLive: this.status !== 'off',
       ownsVoiceLease: this.playerId !== null,
-      humanFacingRole: this.brainRole === 'sentinel' || this.brainRole === 'papercup' ? 'papercup' : 'operator',
+      humanFacingRole: this.brainRole === 'papercup' ? 'papercup' : 'operator',
     };
   }
 
@@ -315,7 +315,7 @@ export class OperatorVoiceSession {
       }
       // Repoint the live brain to the configured persona (P-011). Default
       // 'operator' keeps the existing voice path byte-for-byte unchanged.
-      this.brainRole = resolved.config.humanFacingRole === 'sentinel' || resolved.config.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
+      this.brainRole = resolved.config.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
       const socket = await this.deps.connect(resolved.config.signedUrl, {
         onText: (t) => this.onElText(t),
         onClose: (reason) => void this.teardown(reason),

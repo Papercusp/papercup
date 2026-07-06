@@ -304,7 +304,7 @@ export function annotateFleetsWithCounts(
  *  desktop su member)? deriveAgentRole maps fleet-spawn/signed-spawn sources → 'bee';
  *  visible su desktop sessions → 'su'/'human'. WI-1764 #4. */
 export function isBeeRole(agentRole: string | null | undefined): boolean {
-  return agentRole === 'bee' || agentRole === 'cup';
+  return agentRole === 'cup';
 }
 
 /** Pure: split a set of live fleet-roster entries into member vs bee counts by
