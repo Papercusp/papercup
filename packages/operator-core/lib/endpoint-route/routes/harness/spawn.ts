@@ -406,6 +406,23 @@ const invoke = defineTool({
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
     const env: Record<string, string> = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
+    // EI-7871 (WI-3082 follow-up): this /invoke route is the ONE chokepoint every
+    // launch-blueprint spawn traverses (queen via bpkind=hive, overwatch via
+    // bpkind=overwatch, doc-steward/sentinel/scan/deploy/audit/merge-resolution/
+    // content-fix/release-fix/coding/implement via fireLaunchBlueprint) — and none
+    // of them stamped PAPERCUSP_TURN_TRIGGER, so invoke.ts's usage-sample record
+    // (libs/papercusp/packages/orchestrator/src/invoke.ts:3453) always saw it
+    // undefined -> NULL turn_trigger for these roles' agent_usage_samples rows
+    // (WI-3082's buildPipelineExtraEnv fix only covered the DBOS invoke-once
+    // pipeline path — a DIFFERENT chokepoint from this HTTP /invoke route). Every
+    // caller of this route fires from a scheduled cadence / event-driven system
+    // trigger (never a live human or an interactive coord-wake resume — that's
+    // wake-executor.ts's separate resume path, fixed alongside this), so 'cron' is
+    // the correct default; a caller that knows better (e.g. wake-executor.ts's
+    // defaultFireHiveWake, which fires because of an actual coord/events:await
+    // wake) can override via bodyExtra.turnTrigger.
+    const turnTrigger = typeof (body as any)?.turnTrigger === 'string' ? (body as any).turnTrigger : 'cron';
+    env.PAPERCUSP_TURN_TRIGGER = turnTrigger;
     if (hiveSpawnId) {
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
       if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
