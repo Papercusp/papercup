@@ -177,6 +177,26 @@ describe('composeAgenticDocsSystemPrompt (agentic path)', () => {
   it('points the agent at harness/glossary for short "what is X" terminology questions', () => {
     expect(composeAgenticDocsSystemPrompt({})).toContain('harness/glossary');
   });
+
+  it('REQUIRES `harness: "all"` on every docs tool call (the :3070 harness_required derailment fix)', () => {
+    // Root cause of the owner-reported "it still uses the old functionality" bug: the
+    // superuser ctx sets harnessSlug='*' → resolveHarnessScope returns `none` →
+    // docs:search/get/outline reject with `harness_required` unless the agent passes
+    // `harness: "all"` explicitly. The prompt now mandates it deterministically.
+    const p = composeAgenticDocsSystemPrompt({});
+    expect(p).toContain('harness: "all"');
+    expect(p).toMatch(/MUST include the argument `harness: "all"`/);
+    // docs:get example carries the arg too (citations path).
+    expect(p).toContain('docs:get { harness: "all"');
+  });
+
+  it('forbids asking the user about harness/scope; retries with `harness: "all"` on a scope error', () => {
+    // On :3070 the agent turned a harness_required error into "which harness/project are
+    // you in?" — a broken answer for a newcomer. The prompt now bans that derailment.
+    const p = composeAgenticDocsSystemPrompt({});
+    expect(p).toMatch(/NEVER ask the user which harness, project, workspace, or scope/);
+    expect(p).toMatch(/RETRY the SAME call with `harness: "all"`/);
+  });
 });
 
 describe('slugsFromDocsToolCall (agentic citations)', () => {

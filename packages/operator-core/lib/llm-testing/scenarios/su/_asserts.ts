@@ -173,11 +173,32 @@ export function assertTextForbidsInTurn(pattern: RegExp, turnIdx: number, meta: 
   };
 }
 
-/** ERROR if the selected assistant turn's text matches `pattern` after
- *  `sectionStart`. Useful when the answer may legitimately discuss a removed
- *  item in a "what changed" preamble, but must not include it in the current
- *  list that follows. If the section marker is absent, fall back to the full
- *  turn so the assert still catches obviously wrong current-list answers. */
+/** Index of the LAST match of `pattern` in `text`, or -1 if none. Used by
+ *  `assertTextForbidsInTurnAfter` (EI-7923/WI-3229): a model may legitimately
+ *  use an anchor-like phrase in a lead-in sentence ("Here's the updated
+ *  list. Two changes: ...") before the REAL section header right before the
+ *  table ("**Current open work items:**"). Anchoring on the FIRST match (the
+ *  lead-in) would fail to skip past an intervening "what changed" narration
+ *  that legitimately mentions the forbidden term; the last match is the one
+ *  closest to the actual content under test. */
+function lastMatchIndex(text: string, pattern: RegExp): number {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const re = new RegExp(pattern.source, flags);
+  let last = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    last = m.index;
+    if (m[0].length === 0) re.lastIndex += 1; // avoid an infinite loop on a zero-length match
+  }
+  return last;
+}
+
+/** ERROR if the selected assistant turn's text matches `pattern` after the
+ *  LAST match of `sectionStart`. Useful when the answer may legitimately
+ *  discuss a removed item in a "what changed" preamble, but must not include
+ *  it in the current list that follows. If the section marker is absent,
+ *  fall back to the full turn so the assert still catches obviously wrong
+ *  current-list answers. */
 export function assertTextForbidsInTurnAfter(
   pattern: RegExp,
   turnIdx: number,
@@ -190,7 +211,7 @@ export function assertTextForbidsInTurnAfter(
     eval: (run) => {
       const turn = run.turns[turnIdx];
       if (!turn) return [violation(meta)];
-      const marker = turn.assistantText.search(sectionStart);
+      const marker = lastMatchIndex(turn.assistantText, sectionStart);
       const text = marker >= 0 ? turn.assistantText.slice(marker) : turn.assistantText;
       return pattern.test(text) ? [violation(meta, turnIdx)] : [];
     },

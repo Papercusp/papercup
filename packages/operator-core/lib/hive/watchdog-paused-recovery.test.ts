@@ -54,6 +54,21 @@ describe('shouldActOnPausedHive', () => {
   });
 });
 
+describe('effectiveAutoResumeForPause (WI-3261 — owner-reported: "I keep pausing the Mug and it keeps getting unpaused")', () => {
+  it('a DELIBERATE pause is NEVER auto-resumed, even with the global knob on', () => {
+    expect(effectiveAutoResumeForPause(true, true)).toBe(false);
+  });
+  it('a deliberate pause stays alert-only even if the global knob is already off', () => {
+    expect(effectiveAutoResumeForPause(false, true)).toBe(false);
+  });
+  it('a NON-deliberate (plain/silent-outage) pause still auto-resumes when the global knob is on', () => {
+    expect(effectiveAutoResumeForPause(true, false)).toBe(true);
+  });
+  it('a non-deliberate pause respects the global knob being off', () => {
+    expect(effectiveAutoResumeForPause(false, false)).toBe(false);
+  });
+});
+
 describe('paused-recovery tunables', () => {
   const saved = { ...process.env };
   afterEach(() => {
