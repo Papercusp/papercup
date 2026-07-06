@@ -46,6 +46,7 @@ function decision(over: Partial<AutonomyDecision> = {}): AutonomyDecision {
     protected: false,
     armed: true,
     wouldAutoIfArmed: true,
+    ownerFullAutonomy: false,
     reasons: [],
     ...over,
   };

@@ -41,7 +41,7 @@ describe('work_items:record_replica_result handler', () => {
     recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } as never);
     const b = body(await call({ meta: { k: 1 } }));
     expect(b).toMatchObject({ ok: true, replica: { workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } });
-    const arg = recordM.mock.calls[0]![0] as Record<string, unknown>;
+    const arg = recordM.mock.calls[0]![0] as unknown as Record<string, unknown>;
     expect(arg.owner).toBe('me'); // defaulted to caller
     expect(arg.result).toMatchObject({ text: 'my distilled result', meta: { k: 1 } });
   });
@@ -49,6 +49,6 @@ describe('work_items:record_replica_result handler', () => {
   it('honors an explicit owner override', async () => {
     recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 1, status: 'complete', redundancy: 2 } as never);
     await call({ owner: 'other-swarm', replicaIndex: 1 });
-    expect((recordM.mock.calls[0]![0] as Record<string, unknown>).owner).toBe('other-swarm');
+    expect((recordM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('other-swarm');
   });
 });

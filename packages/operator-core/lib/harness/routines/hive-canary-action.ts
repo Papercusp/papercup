@@ -95,8 +95,8 @@ export function planCanaryTick(
   const cutoff = nowMs - deadlineHours * 3_600_000;
   const candidates = rows
     .filter((r) => r.payload !== null && r.payload !== undefined)
-    .filter((r) => r.payload.canary === true)
-    .filter((r) => r.payload.canary_reported !== true)
+    .filter((r) => r.payload?.canary === true)
+    .filter((r) => r.payload?.canary_reported !== true)
     .filter((r) => !CANARY_TERMINAL.has(r.status))
     .filter((r) => Number(r.created_ts) < cutoff)
     .map((r) => r.feature_id);

@@ -34,7 +34,7 @@ function post(body: unknown): Promise<Response> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return (route as { handler: (req: Request) => Promise<Response> }).handler(req);
+  return (route as unknown as { handler: (req: Request) => Promise<Response> }).handler(req);
 }
 
 beforeEach(() => {
@@ -94,7 +94,7 @@ describe('POST /cupboard/install-deps', () => {
 
   it('400s on invalid JSON', async () => {
     const req = new Request('http://localhost/cupboard/install-deps', { method: 'POST', body: '{not json' });
-    const res = await (route as { handler: (req: Request) => Promise<Response> }).handler(req);
+    const res = await (route as unknown as { handler: (req: Request) => Promise<Response> }).handler(req);
     expect(res.status).toBe(400);
   });
 });

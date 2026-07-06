@@ -323,6 +323,7 @@ describe('armTripwireForDecision', () => {
       protected: false,
       armed: true,
       wouldAutoIfArmed: true,
+      ownerFullAutonomy: false,
       reasons: [],
       ...over,
     };

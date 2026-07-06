@@ -16,7 +16,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const M = vi.hoisted(() => ({
-  sendMessage: vi.fn(async () => ({}) as unknown),
+  sendMessage: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
 
@@ -24,7 +24,7 @@ import { broadcastSevereEvent, broadcastSevereEventResolved } from './severe-eve
 
 beforeEach(() => {
   vi.clearAllMocks();
-  M.sendMessage.mockImplementation(async () => ({}) as unknown);
+  M.sendMessage.mockImplementation(async (..._args: unknown[]) => ({}) as unknown);
 });
 
 describe('broadcastSevereEvent', () => {

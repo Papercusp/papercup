@@ -142,3 +142,11 @@ declare module 'hyperbee' {
     del(key: string): Promise<void>;
   }
 }
+
+// hyperdht + blind-relay: the Holepunch DHT + hole-punch relay used by the P2P
+// voice relay (voice-node/voice-relay.ts) and the swarm (sync/hyperbee/swarm.ts).
+// Upstream ships no .d.ts, so a bare import is implicit-`any` (TS7016). Declared
+// here (surfaces intentionally `any` — no consumer needs strict types on them,
+// per this file's stated convention) to keep the operator-core typecheck clean.
+declare module 'hyperdht';
+declare module 'blind-relay';

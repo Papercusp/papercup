@@ -22,6 +22,7 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,
+    lastProgressAt: null,
     createdAt: '2026-06-04T00:00:00Z',
     updatedAt: '2026-06-04T00:00:00Z',
     ...p,

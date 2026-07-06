@@ -78,7 +78,7 @@ describe('events:emit scope:\'hive\' (P-009 federated event keys)', () => {
     const out = await call({ event: 'k1', payload: { sha: 'abc' }, scope: 'hive' });
     expect(out.federated).toBe(true);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    const opts = vi.mocked(sendMessage).mock.calls[0][1] as Record<string, unknown>;
+    const opts = vi.mocked(sendMessage).mock.calls[0][1] as unknown as Record<string, unknown>;
     expect(opts.to).toEqual([]); // zero inbox noise
     expect(opts.harnessSlug).toBe('my-hive');
     expect((opts.extra as { fed_event: { key: string; payload: unknown; source: string } }).fed_event).toMatchObject({
@@ -114,7 +114,9 @@ describe('events:emit scope:\'hive\' (P-009 federated event keys)', () => {
     const out = await call({ event: 'k1', payload: { blob: 'x'.repeat(10_000) }, scope: 'hive' });
     expect(out.federated).toBe(true);
     expect(out.federation_error).toBe('payload_too_large_dropped');
-    const opts = vi.mocked(sendMessage).mock.calls[0][1] as { extra: { fed_event: Record<string, unknown> } };
+    const opts = vi.mocked(sendMessage).mock.calls[0][1] as unknown as {
+      extra: { fed_event: Record<string, unknown> };
+    };
     expect(opts.extra.fed_event.payload).toBeUndefined();
   });
 });

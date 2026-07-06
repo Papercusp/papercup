@@ -146,6 +146,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,
+    lastProgressAt: null,
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     ...p,

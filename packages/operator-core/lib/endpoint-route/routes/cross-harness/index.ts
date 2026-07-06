@@ -72,6 +72,13 @@ const inbox = defineTool({
       }
       return Response.json({ slug, status, role: role ?? null, messages: rows });
     } catch (e: any) {
+      // scaffoldHarnessSchema is best-effort at join time (join-link.ts) — a
+      // harness can be legitimately "usable without schema" (comment there),
+      // so an undefined-table/relation error here means "no schema yet", not
+      // a real failure. Degrade to an empty inbox instead of a 500 (EI-8xxx).
+      if (e?.code === '42P01' || /relation .* does not exist/i.test(String(e?.message))) {
+        return Response.json({ slug, status, role: role ?? null, messages: [] });
+      }
       return Response.json({ error: 'failed', detail: String(e?.message).slice(0, 300) }, { status: 500 });
     }
   },
@@ -131,6 +138,10 @@ const supervisorNotes = defineTool({
       );
       return Response.json({ slug, notes: rows });
     } catch (e: any) {
+      // Same best-effort-schema rationale as inbox above.
+      if (e?.code === '42P01' || /relation .* does not exist/i.test(String(e?.message))) {
+        return Response.json({ slug, notes: [] });
+      }
       return Response.json({ error: 'failed', detail: String(e?.message).slice(0, 300) }, { status: 500 });
     }
   },

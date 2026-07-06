@@ -39,6 +39,7 @@ function decision(over: Partial<AutonomyDecision> = {}): AutonomyDecision {
     protected: false,
     armed: false,
     wouldAutoIfArmed: false,
+    ownerFullAutonomy: false,
     reasons: ['policy-not-armed'],
     ...over,
   };
