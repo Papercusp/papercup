@@ -8,7 +8,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { pollGraduationOnce, shouldRouteExternalConsole } from './OnboardingConsole';
+import {
+  loadOnboardConcierge,
+  pollGraduationOnce,
+  shouldRouteExternalConsole,
+} from './OnboardingConsole';
 
 const WINDOWS_WEBVIEW2_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0';
@@ -58,5 +62,66 @@ describe('pollGraduationOnce (WI-3092: external-console auto-nav home)', () => {
       throw new Error('network down');
     });
     await expect(pollGraduationOnce(fetchImpl as unknown as typeof fetch)).resolves.toBe(false);
+  });
+});
+
+describe('loadOnboardConcierge (WI-2902: retry the concierge fetch past operator boot)', () => {
+  const spec = { command: 'bash', args: ['-lc', 'onboard'], cwd: '/home/tester', env: {} };
+  const noSleep = async () => {};
+
+  it('returns the spawn spec on the first successful response', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ onboardConcierge: spec }), { status: 200 }),
+    );
+    await expect(
+      loadOnboardConcierge(fetchImpl as unknown as typeof fetch, { sleepImpl: noSleep }),
+    ).resolves.toEqual(spec);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('RETRIES connection-refused (fast boot races the disk-served SPA past operator startup) then returns the spec — the WI-2902 regression', async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async () => {
+      n += 1;
+      if (n < 3) throw new Error('connect ECONNREFUSED 127.0.0.1'); // operator not listening yet
+      return new Response(JSON.stringify({ onboardConcierge: spec }), { status: 200 });
+    });
+    await expect(
+      loadOnboardConcierge(fetchImpl as unknown as typeof fetch, { sleepImpl: noSleep }),
+    ).resolves.toEqual(spec);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats a successful { onboardConcierge: null } as authoritative — no retry, falls back to the wizard', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ onboardConcierge: null }), { status: 200 }),
+    );
+    await expect(
+      loadOnboardConcierge(fetchImpl as unknown as typeof fetch, { sleepImpl: noSleep }),
+    ).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up (null → explicit wizard fallback) once the deadline passes instead of spinning forever', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('endpoint down');
+    });
+    await expect(
+      loadOnboardConcierge(fetchImpl as unknown as typeof fetch, { deadlineMs: 0, sleepImpl: noSleep }),
+    ).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops immediately when shouldContinue is false (component unmounted mid-retry)', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('endpoint down');
+    });
+    await expect(
+      loadOnboardConcierge(fetchImpl as unknown as typeof fetch, {
+        shouldContinue: () => false,
+        sleepImpl: noSleep,
+      }),
+    ).resolves.toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

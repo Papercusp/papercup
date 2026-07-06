@@ -82,6 +82,55 @@ export async function pollGraduationOnce(
   }
 }
 
+/**
+ * WI-2902: fetch the onboarding concierge spawn spec, RETRYING transient failures
+ * past operator boot instead of the old one-shot fetch.
+ *
+ * The mount fetch used to give up after a single failure → setSpec(null) → the
+ * permanent "onboarding console is unavailable — use the setup wizard" fallback.
+ * But on a fast/warm boot the SPA renders (served from disk via custom_protocol —
+ * WI-2902 Fix B) BEFORE the operator's HTTP endpoint is listening, so that fetch
+ * hits connection-refused and a brand-new user is stranded on the wizard fallback
+ * until they manually reload — even though the concierge is available seconds later
+ * (confirmed on the clean-room VM 2026-07-06: a reload made the console appear).
+ *
+ * A SUCCESSFUL (2xx) response is authoritative: a present `onboardConcierge` → its
+ * spec; an explicit `null` → genuinely no concierge (fall back). Only a THROWN fetch
+ * / non-2xx is transient — retry with backoff until the operator is up, bounded by
+ * `deadlineMs` (defaults past a cold-seed first boot, ~minutes) so a truly dead
+ * endpoint eventually shows the explicit fallback instead of spinning forever. Pure +
+ * exported for unit tests (the component render paths need a live Tauri webview).
+ */
+export async function loadOnboardConcierge(
+  fetchImpl: typeof fetch = fetch,
+  opts: {
+    deadlineMs?: number;
+    sleepImpl?: (ms: number) => Promise<void>;
+    shouldContinue?: () => boolean;
+  } = {},
+): Promise<SpawnSpec | null> {
+  const deadlineMs = opts.deadlineMs ?? 240_000;
+  const sleep = opts.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const shouldContinue = opts.shouldContinue ?? (() => true);
+  const start = Date.now();
+  let attempt = 0;
+  for (;;) {
+    if (!shouldContinue()) return null;
+    try {
+      const r = await fetchImpl('/api/desktop/setup-pty-commands', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as { onboardConcierge?: SpawnSpec | null };
+      return j.onboardConcierge ?? null; // a 2xx is authoritative (spec, or definitively none)
+    } catch {
+      // Transient — the operator/endpoint isn't listening yet (fast boot races the
+      // disk-served SPA). Keep the component in 'loading' and retry until it's up.
+      if (Date.now() - start >= deadlineMs) return null; // deadline → explicit wizard fallback
+      attempt += 1;
+      await sleep(Math.min(2000, 250 * attempt));
+    }
+  }
+}
+
 type ExternalState = 'idle' | 'launching' | 'running' | 'error';
 
 interface WindowWithTauriInvoke extends Window {
@@ -103,15 +152,14 @@ export function OnboardingConsole() {
   useEffect(() => {
     setTauri(isTauriNative());
     let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = (await r.json()) as { onboardConcierge?: SpawnSpec | null };
-        if (!cancelled) setSpec(j.onboardConcierge ?? null);
-      } catch {
-        if (!cancelled) setSpec(null);
-      }
+    void (async () => {
+      // Retry past operator boot instead of one-shot (WI-2902): on a fast/warm boot
+      // the SPA renders (disk-served — Fix B) BEFORE the operator endpoint is up, so a
+      // single fetch hit connection-refused and stranded a new user on the "console
+      // unavailable — use the wizard" fallback until a manual reload. While retrying we
+      // stay 'loading' → "Starting onboarding…" (footer wizard link stays as escape).
+      const s = await loadOnboardConcierge(fetch, { shouldContinue: () => !cancelled });
+      if (!cancelled) setSpec(s);
     })();
     return () => {
       cancelled = true;

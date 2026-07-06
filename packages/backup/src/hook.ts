@@ -1,7 +1,7 @@
 /**
  * Pre-snapshot DB dump hook for a workspace.
  *
- * Writes transactionally-consistent dumps of the workspace's live DBs
+ * Writes transactionally-consistent per-database dumps of the workspace's live DBs
  * into `<workspaceRoot>/db-dumps/` so kopia captures them in the same
  * snapshot as the file tree. Restoration path:
  *   1. Restore the snapshot to a clone.
@@ -78,6 +78,7 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
     port: Number(parsed.port) || 5432,
     user: parsed.username || 'postgres',
     password: decodeURIComponent(parsed.password || 'postgres'),
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, '')) || 'papercusp',
     outPath: join(dumpDir, 'pg-embedded.sql.gz'),
     log,
   });
@@ -90,6 +91,7 @@ async function dumpPg(opts: {
   port: number;
   user: string;
   password: string;
+  database: string;
   outPath: string;
   log: (msg: string) => Promise<void>;
 }): Promise<void> {
@@ -100,11 +102,14 @@ async function dumpPg(opts: {
     PGCONNECT_TIMEOUT: '5',
   };
   await new Promise<void>((resolve) => {
-    const dump = spawn('pg_dumpall', [
+    const dump = spawn('pg_dump', [
       '-h', opts.host,
       '-p', String(opts.port),
       '-U', opts.user,
       '-w',
+      '-d', opts.database,
+      '--no-owner',
+      '--no-privileges',
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
@@ -140,12 +145,12 @@ async function dumpPg(opts: {
       resolve();
     };
 
-    // A missing binary (pg_dumpall / gzip) makes Node emit an 'error'
+    // A missing binary (pg_dump / gzip) makes Node emit an 'error'
     // event on the child; with no listener that crashes the operator
     // process. Route it through finalize(false) so the snapshot still
     // proceeds without the dump.
     dump.on('error', (e) => {
-      stderr += `pg_dumpall spawn failed: ${e.message}\n`;
+      stderr += `pg_dump spawn failed: ${e.message}\n`;
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
@@ -165,15 +170,27 @@ async function dumpPg(opts: {
       void finalize(false);
     });
 
-    let closed = 0;
-    const onClose = (code: number | null) => {
-      closed++;
-      if (closed >= 2) {
-        void finalize(code === 0);
+    let dumpClosed = false;
+    let gzipClosed = false;
+    let dumpCode: number | null = null;
+    let gzipCode: number | null = null;
+    const maybeFinalize = () => {
+      if (dumpClosed && gzipClosed) {
+        void finalize(dumpCode === 0 && gzipCode === 0);
       }
     };
-    dump.on('close', onClose);
-    gz.on('close', onClose);
+    dump.on('close', (code: number | null) => {
+      dumpClosed = true;
+      dumpCode = code;
+      if (code !== 0) stderr += `pg_dump exited ${code ?? 'null'}\n`;
+      maybeFinalize();
+    });
+    gz.on('close', (code: number | null) => {
+      gzipClosed = true;
+      gzipCode = code;
+      if (code !== 0) stderr += `gzip exited ${code ?? 'null'}\n`;
+      maybeFinalize();
+    });
   });
 }
 
