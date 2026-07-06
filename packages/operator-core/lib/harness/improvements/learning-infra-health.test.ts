@@ -78,6 +78,36 @@ describe('composeLearningHealth', () => {
   });
 });
 
+describe('composeLearningHealth — no-consumer gate (WI-3167)', () => {
+  it('llm-spine down but NO learning consumers → ok (shipped desktop has no gym/lane/Claude session)', () => {
+    const h = composeLearningHealth(
+      [leg('llm-spine', 'down', 'stateless LLM path needs a live Claude session'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')],
+      0,
+      { learningConsumersPresent: false },
+    );
+    expect(h.status).toBe('ok');
+    expect(h.reason).toContain('no self-improvement workload on this host');
+    // The down leg is still carried in `legs` for the chip's detail — only its
+    // contribution to the composite STATUS is suppressed.
+    expect(h.legs.find((l) => l.name === 'llm-spine')?.status).toBe('down');
+  });
+
+  it('a genuine non-spine failure still surfaces even with no consumers (only the spine is gated)', () => {
+    const h = composeLearningHealth(
+      [leg('llm-spine', 'down'), leg('spawn-path', 'down'), leg('gym-circuit', 'ok')],
+      0,
+      { learningConsumersPresent: false },
+    );
+    expect(h.status).toBe('degraded'); // spawn-path down = one real non-spine leg
+  });
+
+  it('default (consumers present) preserves the spine-down ⇒ OFFLINE rule', () => {
+    expect(
+      composeLearningHealth([leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')], 0).status,
+    ).toBe('offline');
+  });
+});
+
 describe('diffLearningHealth', () => {
   it('alerts on every →offline edge, including first-seen', () => {
     expect(diffLearningHealth(null, 'offline')).toBe('offline');
@@ -103,30 +133,71 @@ describe('runLearningInfraHealthTick', () => {
   beforeEach(() => _resetLearningInfraHealthState());
   afterEach(() => _resetLearningInfraHealthState());
 
-  const tick = (legs: InfraLeg[], notify: ReturnType<typeof vi.fn>, invalidate: ReturnType<typeof vi.fn>) =>
+  const tick = (
+    legs: InfraLeg[],
+    notify: ReturnType<typeof vi.fn>,
+    invalidate: ReturnType<typeof vi.fn>,
+    consumersPresent = true,
+  ) =>
     runLearningInfraHealthTick({
       legs: async () => legs,
+      consumersPresent: async () => consumersPresent,
       notify: notify as unknown as (t: 'offline' | 'recovered', h: LearningInfraHealth) => Promise<void>,
       invalidate: invalidate as unknown as () => Promise<void>,
       now: () => 42,
     });
 
-  it('notifies exactly once per offline transition, then once on recovery', async () => {
+  const down = [leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
+
+  it('debounces the owner page: one offline tick shows degraded (no page); the 2nd consecutive confirms + pages', async () => {
     const notify = vi.fn(async () => {});
     const invalidate = vi.fn(async () => {});
-    const down = [leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
 
     const first = await tick(down, notify, invalidate);
-    expect(first.transition).toBe('offline');
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith('offline', expect.objectContaining({ status: 'offline' }));
+    expect(first.health.status).toBe('degraded'); // a real leg is down, but not yet confirmed offline
+    expect(first.transition).toBeNull();
+    expect(notify).not.toHaveBeenCalled();
 
     const second = await tick(down, notify, invalidate);
-    expect(second.transition).toBeNull();
+    expect(second.health.status).toBe('offline');
+    expect(second.transition).toBe('offline');
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith('offline', expect.objectContaining({ status: 'offline' }));
+  });
+
+  it('a one-tick flap (offline then recovered) never pages — the exact dev-box gateway-timeout noise', async () => {
+    const notify = vi.fn(async () => {});
+    const invalidate = vi.fn(async () => {});
+    await tick(down, notify, invalidate); // offline tick 1 → debounced to degraded
+    await tick(ALL_OK, notify, invalidate); // recovers before confirmation
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('a down llm-spine with NO learning consumers (shipped desktop) reports ok and never pages', async () => {
+    const notify = vi.fn(async () => {});
+    const invalidate = vi.fn(async () => {});
+    const r1 = await tick(down, notify, invalidate, /* consumersPresent */ false);
+    expect(r1.health.status).toBe('ok');
+    const r2 = await tick(down, notify, invalidate, false);
+    expect(r2.health.status).toBe('ok');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('notifies once per confirmed offline transition, then once on recovery', async () => {
+    const notify = vi.fn(async () => {});
+    const invalidate = vi.fn(async () => {});
+
+    await tick(down, notify, invalidate); // 1st offline → degraded (debounced)
+    const confirmed = await tick(down, notify, invalidate); // 2nd → confirmed offline
+    expect(confirmed.transition).toBe('offline');
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    const persist = await tick(down, notify, invalidate);
+    expect(persist.transition).toBeNull();
     expect(notify).toHaveBeenCalledTimes(1); // persisting offline: no re-alert
 
-    const third = await tick(ALL_OK, notify, invalidate);
-    expect(third.transition).toBe('recovered');
+    const recovered = await tick(ALL_OK, notify, invalidate);
+    expect(recovered.transition).toBe('recovered');
     expect(notify).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenLastCalledWith('recovered', expect.objectContaining({ status: 'ok' }));
   });
@@ -149,9 +220,9 @@ describe('runLearningInfraHealthTick', () => {
       throw new Error('toast write failed');
     });
     const invalidate = vi.fn(async () => {});
-    const down = [leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
 
-    const { health } = await tick(down, notify, invalidate);
+    await tick(down, notify, invalidate); // debounce → degraded
+    const { health } = await tick(down, notify, invalidate); // confirmed offline (notify throws)
     expect(health.status).toBe('offline');
     expect(lastLearningInfraHealth()).toEqual(health);
     expect(lastLearningInfraHealth()?.evaluatedAt).toBe(42);

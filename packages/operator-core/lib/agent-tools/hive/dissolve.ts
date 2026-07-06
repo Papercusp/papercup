@@ -114,7 +114,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'insufficient_tier',
-        message: gate.message ?? 'You lack owner-tier access to this hive.',
+        message: gate.message ?? 'You lack owner-tier access to this pot.',
         tier: gate.tier,
         reason: gate.reason,
       });
