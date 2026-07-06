@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
 
 const TABS: Array<{ href: string; label: string; hint: string }> = [
   { href: '/marketplace', label: 'Overview', hint: 'How it works' },

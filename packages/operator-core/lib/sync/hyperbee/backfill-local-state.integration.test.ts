@@ -218,7 +218,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         row          JSONB,
         ts           BIGINT NOT NULL,
         op_hlc       TEXT,
-        drained_at   BIGINT
+        drained_at   BIGINT,
+        drained_log_key TEXT
       );
       CREATE TABLE harness_shared.substrate_meta (
         workspace_id TEXT NOT NULL,

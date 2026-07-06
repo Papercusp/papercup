@@ -140,7 +140,8 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
-        drained_at   BIGINT
+        drained_at   BIGINT,
+        drained_log_key TEXT
       );
       CREATE INDEX substrate_outbox_drain_idx
         ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);

@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+import React from 'react';
 import { MarketplaceLayout } from './MarketplaceLayout';
 
 afterEach(cleanup);

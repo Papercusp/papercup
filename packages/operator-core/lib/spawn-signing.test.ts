@@ -131,3 +131,115 @@ describe('structural rejection', () => {
     expect(res).toEqual({ ok: false, reason: 'duplicate_param:role' });
   });
 });
+
+// ── WI-3190: rotation-strand detection, blast radius, self-recovery guidance ──
+//
+// A key rotation is a coarse revocation — every in-flight signed URL fails its
+// NEXT verify with `invalid_signature`, byte-identical to a role-escalation
+// attempt. These cover the pure logic that tells an operational strand from an
+// attack, dedupes the alert, reports a rotate's blast radius, and hands the
+// stranded agent actionable recovery text. No crypto behaviour is changed.
+describe('verified-spawn tracker + strand classification (WI-3190)', () => {
+  beforeEach(() => _resetVerifiedSpawns());
+
+  it('a never-verified spawn cannot be a strand (an attack signature, not a rotation)', () => {
+    expect(classifyAndConsumeFailure('invalid_signature', 's-forged')).toBe('unverified');
+  });
+
+  it('recordVerifiedSpawn is a no-op for a null / undefined / empty spawn', () => {
+    recordVerifiedSpawn({ spawn: null });
+    recordVerifiedSpawn({ spawn: undefined });
+    recordVerifiedSpawn({ spawn: '' });
+    expect(classifyAndConsumeFailure('invalid_signature', 's-x')).toBe('unverified');
+  });
+
+  it('classifies a post-verify signature failure for a known spawn as a rotation_strand', () => {
+    recordVerifiedSpawn({ spawn: 's-1', role: 'worker', harness: 'h', nowMs: 1000 });
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('rotation_strand');
+  });
+
+  it('treats expiry of a previously-verified spawn as a strand as well', () => {
+    recordVerifiedSpawn({ spawn: 's-1', nowMs: 1000 });
+    expect(classifyAndConsumeFailure('expired', 's-1')).toBe('rotation_strand');
+  });
+
+  it('a failure for a DIFFERENT (never-verified) spawn stays unverified', () => {
+    recordVerifiedSpawn({ spawn: 's-known', nowMs: 1000 });
+    expect(classifyAndConsumeFailure('invalid_signature', 's-forged')).toBe('unverified');
+  });
+
+  it('consumes the strand signal — the SECOND failure for the same dead spawn no longer alerts', () => {
+    recordVerifiedSpawn({ spawn: 's-1', nowMs: 1000 });
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('rotation_strand');
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('unverified'); // deduped
+  });
+
+  it('a non-revocation reason never strand-classifies AND does not consume the known spawn', () => {
+    recordVerifiedSpawn({ spawn: 's-1', nowMs: 1000 });
+    expect(classifyAndConsumeFailure('missing_sig', 's-1')).toBe('unverified');
+    // still tracked: a later genuine revocation failure is still a strand
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('rotation_strand');
+  });
+
+  it('re-recording the same spawn refreshes it without duplicating (still one strand)', () => {
+    recordVerifiedSpawn({ spawn: 's-1', nowMs: 1000 });
+    recordVerifiedSpawn({ spawn: 's-1', nowMs: 2000 });
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('rotation_strand');
+    expect(classifyAndConsumeFailure('invalid_signature', 's-1')).toBe('unverified');
+  });
+});
+
+describe('rotateSpawnSigningKey blast-radius report (WI-3190)', () => {
+  beforeEach(() => {
+    _resetVerifiedSpawns();
+    _resetSpawnSigningKeyCache();
+  });
+
+  it('reports zero invalidated spawns when this process verified none', async () => {
+    const r = await rotateSpawnSigningKey();
+    expect(r.invalidatedSpawnCount).toBe(0);
+    expect(r.invalidatedSpawns).toEqual([]);
+    expect(typeof r.rotatedAt).toBe('string');
+  });
+
+  it('enumerates just-invalidated spawns most-recent-first, without clearing the tracker', async () => {
+    // rotate deliberately logs the blast radius loudly — assert it (and silence
+    // the console so vitest-fail-on-console doesn't flag the intentional warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      recordVerifiedSpawn({ spawn: 's-old', role: 'worker', harness: 'h', nowMs: 1000 });
+      recordVerifiedSpawn({ spawn: 's-new', role: 'cup', harness: 'papercusp', nowMs: 5000 });
+      const r = await rotateSpawnSigningKey();
+      expect(r.invalidatedSpawnCount).toBe(2);
+      expect(r.invalidatedSpawns.map((s) => s.spawn)).toEqual(['s-new', 's-old']); // recency desc
+      expect(r.invalidatedSpawns[0]).toMatchObject({
+        spawn: 's-new',
+        role: 'cup',
+        harness: 'papercusp',
+      });
+      // the loud blast-radius log is the whole point — it must have fired.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[spawn-signing][ROTATE]'));
+      // rotate must NOT clear the set — each stranded spawn's next failing call
+      // is still recognisable as a strand rather than an attack.
+      expect(classifyAndConsumeFailure('invalid_signature', 's-new')).toBe('rotation_strand');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('spawnSigFailureGuidance (WI-3190)', () => {
+  it('gives revocation-specific recovery for invalid_signature and expired', () => {
+    for (const reason of ['invalid_signature', 'expired']) {
+      const g = spawnSigFailureGuidance(reason);
+      expect(g).toMatch(/mcp-call\.mjs/);
+      expect(g).toMatch(/re-?spawn/i);
+    }
+  });
+
+  it('covers the missing-signature family and an unknown reason with actionable text', () => {
+    expect(spawnSigFailureGuidance('missing_sig')).toMatch(/mcp-call\.mjs/);
+    expect(spawnSigFailureGuidance('missing_sig_required_mode')).toMatch(/mcp-call\.mjs/);
+    expect(spawnSigFailureGuidance('something_unexpected')).toMatch(/mcp-call\.mjs/);
+  });
+});
