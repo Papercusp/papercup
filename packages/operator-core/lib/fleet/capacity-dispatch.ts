@@ -396,7 +396,10 @@ export function buildFleetSizingAdvisory(
     extraMembers,
     message:
       `Sizing advisory: requested ${requested} fleet members, but only ${healthyHeadroom} ${accountLabel} ` +
-      `are currently routable. Launch will continue, but the extra ${extraMembers} ${memberLabel} will likely ` +
-      `thrash account rotation / rate-limit churn. Prefer <=${healthyHeadroom} members or add healthy accounts.`,
+      `are currently routable. All ${requested} members WILL still launch — ONE account paces many concurrent ` +
+      `Claude sessions through the gateway, so account count is NOT a per-member cap. The only caution is ` +
+      `rate-limit churn: the ${extraMembers} ${memberLabel} beyond the routable accounts share account rotation ` +
+      `and may hit 429s under sustained load. To reduce churn (optional) add healthy accounts or lower the count — ` +
+      `you are NOT limited to ${healthyHeadroom} member${healthyHeadroom === 1 ? '' : 's'}.`,
   };
 }

@@ -28,7 +28,10 @@ import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import type { AdmittedLog } from '../read-merge';
-import { setReplicationStallEpisodeReporterForTests } from '../replication-liveness';
+import {
+  setReplicationStallEpisodeReporterForTests,
+  setReplicationStallRecoveryReporterForTests,
+} from '../replication-liveness';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -1672,8 +1675,23 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
   // reporter for THIS describe only — the bootHistory entries these tests
   // assert come from the LEGACY checkReplicationStall path (no_replicator
   // kind), not from the reporter, so silencing it changes nothing they read.
-  beforeEach(() => setReplicationStallEpisodeReporterForTests(() => {}));
-  afterEach(() => setReplicationStallEpisodeReporterForTests(null));
+  //
+  // EI-7788 also added a drop-time RECOVERY report: `handle.close()` (fired
+  // by each test's `cleanups.push(() => handle.close())`, which runs in the
+  // outer `afterEach` — AFTER this describe's own `afterEach` above already
+  // ran) calls `dropReplicationLiveness`, which fires the default recovery
+  // reporter's `console.error('[replication-liveness] recovered ...')` for
+  // any log this suite left latched-alarmed. Silence that reporter here too
+  // (same rationale as the episode reporter above) so teardown doesn't trip
+  // vitest-fail-on-console.
+  beforeEach(() => {
+    setReplicationStallEpisodeReporterForTests(() => {});
+    setReplicationStallRecoveryReporterForTests(() => {});
+  });
+  afterEach(() => {
+    setReplicationStallEpisodeReporterForTests(null);
+    setReplicationStallRecoveryReporterForTests(null);
+  });
 
   function tmpWorkspaceRoot(): string {
     const dir = mkdtempSync(join(tmpdir(), 'mb-boot-stall-'));

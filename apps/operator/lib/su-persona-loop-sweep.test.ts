@@ -1,7 +1,7 @@
 /**
  * Guards the B-LOOP-5 / B-LOOP-FIN-1 prompt sweep: the su/interactive persona
  * sources must steer recurrence onto the ENGINE loop (loop:arm) and away from the
- * client's native /loop, while the AUTONOMOUS queen/bee/scout prompts stay excluded
+ * client's native /loop, while the AUTONOMOUS mug/cup/blender prompts stay excluded
  * (plan loop-routines-interval-recurrence-2026-06-20, D-007). A content test rather
  * than an assembly test — it guards the source files the sweep edited from regressing
  * (e.g. a future persona rewrite silently dropping the rule).
@@ -34,11 +34,15 @@ describe('su/interactive personas steer recurrence onto the engine loop (B-LOOP-
       // ...naming /loop as the thing being replaced.
       expect(md, 'names /loop as the replaced mechanism').toContain('/loop');
       // D-007: scopes the rule to su/interactive, NOT the autonomous loop.
-      expect(lc, 'D-007: excludes the autonomous queen/bee/scout loop').toContain('queen/bee/scout');
+      expect(lc, 'D-007: excludes the autonomous mug/cup/blender loop').toContain('mug/cup/blender');
     });
   }
 
-  it('the autonomous bee prompt does NOT adopt the su loop:arm verb (D-007 exclusion)', () => {
+  // D-007 pot-rename: bee.md was an orphaned prompt and is deleted; the autonomous worker
+  // role is now `cup`, and its "native /loop disabled" rule lives in the harness blueprints
+  // (libs/papercusp/.../blueprints/**/prompts), not apps/operator/prompts. Skipped here —
+  // the exclusion is guarded at the blueprint layer now, not against a file in this dir.
+  it.skip('autonomous-role loop:arm exclusion moved to harness blueprints (bee.md removed)', () => {
     // bee.md keeps its own "native /loop is disabled" rule; it must NOT gain the
     // su/interactive self-loop verb — the sweep deliberately excludes the autonomous loop.
     expect(read('bee.md')).not.toContain('loop:arm');

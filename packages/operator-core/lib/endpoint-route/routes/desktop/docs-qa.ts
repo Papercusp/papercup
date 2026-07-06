@@ -479,6 +479,14 @@ const docsQa = defineTool({
         }
 
         const citedSlugs = new Set<string>();
+        let answerText = '';
+        const citeSlug = (slug: string) => {
+          const clean = slug.replace(/[).,;:]+$/, '').trim();
+          if (clean && !citedSlugs.has(clean)) {
+            citedSlugs.add(clean);
+            sink.event('citation', { slug: clean, title: clean, url: `/internal/docs/${clean}` });
+          }
+        };
         try {
           for await (const ev of runAgentChat(runOpts)) {
             if (ev.type === 'delta') {
@@ -486,18 +494,14 @@ const docsQa = defineTool({
                 sawDelta = true;
                 clearFirstToken();
               }
+              answerText += ev.text;
               sink.event('delta', { text: ev.text });
             } else if (ev.type === 'tool_call') {
               // The agent is searching/reading — progress. Re-arm the first-token
               // deadline so a multi-search turn is never killed early, and surface
               // the pages it actually reads (docs:get) as citations.
               if (!sawDelta) armFirstToken();
-              for (const slug of slugsFromDocsToolCall(ev.name, ev.input)) {
-                if (!citedSlugs.has(slug)) {
-                  citedSlugs.add(slug);
-                  sink.event('citation', { slug, title: slug, url: `/internal/docs/${slug}` });
-                }
-              }
+              for (const slug of slugsFromDocsToolCall(ev.name, ev.input)) citeSlug(slug);
             } else if (ev.type === 'error') {
               sink.event('error', { message: ev.message });
             }
@@ -518,6 +522,12 @@ const docsQa = defineTool({
           clearTimeout(hardTimer);
           clearFirstToken();
           req.signal?.removeEventListener('abort', onReqAbort);
+        }
+        // Best-effort citations from pages the agent referenced inline in its
+        // answer (it retrieves via docs:search/outline, which don't carry a slug
+        // on the tool_call event). Deduped against any docs:get citations above.
+        for (const m of answerText.matchAll(/\/internal\/docs\/([a-z0-9][a-z0-9/_-]*)/gi)) {
+          citeSlug(m[1]);
         }
         if (!sawDelta && !req.signal?.aborted && !ac.signal.aborted) {
           // Backend produced nothing (auth expired, crashed) — give the caller a

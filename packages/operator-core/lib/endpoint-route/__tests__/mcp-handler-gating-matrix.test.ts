@@ -835,7 +835,7 @@ describe('tools/call — auth failures reject before any dispatch', () => {
     process.env.PAPERCUSP_REQUIRE_SPAWN_SIG = '1';
     const res = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ sig: '', exp: '' })));
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toBe('request_rejected: spawn_sig_missing_sig_required_mode');
+    expect(textOf(res)).toMatch(/^request_rejected: spawn_sig_missing_sig_required_mode\b/);
     expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
     expect(h.logVerificationFailure.mock.calls[0][0]).toMatchObject({
       reason: 'missing_sig_required_mode',

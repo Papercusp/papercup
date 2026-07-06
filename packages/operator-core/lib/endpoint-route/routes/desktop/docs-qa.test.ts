@@ -4,7 +4,14 @@
  * in-process retrieval against the engineering /internal/docs content.
  */
 import { describe, expect, it } from 'vitest';
-import { composeDocsQaPrompt, backendAvailable, retrieveDocsContext, buildDocsMcpConfig } from './docs-qa';
+import {
+  composeDocsQaPrompt,
+  composeAgenticDocsSystemPrompt,
+  slugsFromDocsToolCall,
+  backendAvailable,
+  retrieveDocsContext,
+  buildDocsMcpConfig,
+} from './docs-qa';
 
 describe('composeDocsQaPrompt', () => {
   it('grounds on the retrieved blocks, the section, and the question, and asks for citations', () => {
@@ -76,11 +83,10 @@ describe('buildDocsMcpConfig', () => {
       uiClientId: 'client/abc',
       readToken: () => 'superuser-token-value',
       readPrincipal: async () => ({
-        role: 'oracle',
         bearer: 'principal-token',
+        name: 'oracle',
         workspaceId: 'ws main',
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
+        capabilities: [],
       }),
     });
 
@@ -105,11 +111,10 @@ describe('buildDocsMcpConfig', () => {
       workspaceId: 'ws',
       readToken: () => null,
       readPrincipal: async () => ({
-        role: 'oracle',
         bearer: 'principal-token',
+        name: 'oracle',
         workspaceId: 'ws',
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
+        capabilities: [],
       }),
     })).resolves.toBeNull();
   });
@@ -134,4 +139,39 @@ describe('retrieveDocsContext — real in-process /internal/docs retrieval', () 
     },
     30_000,
   );
+});
+
+describe('composeAgenticDocsSystemPrompt (agentic path)', () => {
+  it('instructs the agent to search + read our real docs before answering', () => {
+    const p = composeAgenticDocsSystemPrompt({});
+    expect(p).toContain('docs:search');
+    expect(p).toContain('docs:get');
+  });
+
+  it('forces a concept-first definition and forbids leading with the branding/skin meaning', () => {
+    // The owner-reported "a Pot is a visual identity" regression guard.
+    const p = composeAgenticDocsSystemPrompt({ sectionTitle: 'Orientation' });
+    expect(p).toMatch(/PRODUCT CONCEPT/);
+    expect(p).toMatch(/"Pot" is primarily a PROJECT/);
+    expect(p).toMatch(/do NOT lead by calling X a "visual identity"/);
+    expect(p).toContain('"Orientation" section'); // section context threads through
+  });
+
+  it('does not leak the retrieval mechanism', () => {
+    expect(composeAgenticDocsSystemPrompt({})).toMatch(/NEVER mention "the docs"/);
+  });
+});
+
+describe('slugsFromDocsToolCall (agentic citations)', () => {
+  it('extracts a single slug from a docs:get call', () => {
+    expect(slugsFromDocsToolCall('docs:get', { slug: 'branding' })).toEqual(['branding']);
+  });
+  it('extracts multiple slugs from docs:get { slugs } — incl. the mcp-prefixed name', () => {
+    expect(slugsFromDocsToolCall('mcp__agentmcp__docs:get', { slugs: ['a/b', 'c'] })).toEqual(['a/b', 'c']);
+  });
+  it('returns nothing for docs:search (no page slug on input) or malformed input', () => {
+    expect(slugsFromDocsToolCall('docs:search', { query: 'pot' })).toEqual([]);
+    expect(slugsFromDocsToolCall('docs:get', null)).toEqual([]);
+    expect(slugsFromDocsToolCall('docs:get', { slug: '' })).toEqual([]);
+  });
 });

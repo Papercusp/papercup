@@ -1323,6 +1323,16 @@ export function hostThroughPty(o) {
         writeMeta();
         wireChildData();
         wireChildExit();
+        // WI-1818: mark THIS instant as fresh output activity so the carry-inject
+        // retry loop below evaluates the FRESH child's own settledness, not stale
+        // quiet-time inherited from the OLD (just-killed) child. Without this, a
+        // pre-kill busy gate that had ALREADY been satisfied (the old child was
+        // quiet for quietMs before the kill) leaves `lastOutputAt` stale by
+        // (at least) quietMs the instant this fresh child boots — so the very
+        // FIRST waitAtPrompt() call below could read that staleness as "already
+        // at prompt" and inject the carry before the fresh child has emitted a
+        // single byte, even one that will stay busy from its first tick.
+        activity.touchOutput();
       } catch (e) {
         try {
           process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);

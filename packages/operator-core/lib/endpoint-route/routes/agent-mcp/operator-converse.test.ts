@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const budgetMocks = vi.hoisted(() => ({
+  checkBudget: vi.fn(),
+  shouldBypassOperatorBudget: vi.fn((uiClientId?: string | null) =>
+    typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/')),
+}));
+
 vi.mock('@papercusp/sse', () => ({
   sseResponse: vi.fn(() => new Response('stream-started', { status: 200 })),
 }));
@@ -17,13 +23,11 @@ vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'default'),
 }));
 vi.mock('../../../operator-budget', () => ({
-  checkBudget: vi.fn(),
-  shouldBypassOperatorBudget: (uiClientId?: string | null) =>
-    typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/'),
+  checkBudget: budgetMocks.checkBudget,
+  shouldBypassOperatorBudget: budgetMocks.shouldBypassOperatorBudget,
 }));
 
 import { sseResponse } from '@papercusp/sse';
-import { checkBudget } from '../../../operator-budget';
 import route from './operator-converse';
 
 const handler = (body: unknown) =>
@@ -37,7 +41,7 @@ const handler = (body: unknown) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(checkBudget).mockResolvedValue({
+  budgetMocks.checkBudget.mockResolvedValue({
     state: { dailyCapUsd: 5, spend: [] },
     exceeded: true,
     todaySpendUsd: 5.5,
@@ -50,7 +54,8 @@ describe('operator-converse route budget preflight', () => {
     const res = await handler({ messages: [], uiClientId: 'desktop-client' });
     expect(res.status).toBe(402);
     expect(await res.text()).toContain('Papercup daily budget reached');
-    expect(checkBudget).toHaveBeenCalledTimes(1);
+    expect(budgetMocks.shouldBypassOperatorBudget).toHaveBeenCalledWith('desktop-client');
+    expect(budgetMocks.checkBudget).toHaveBeenCalledTimes(1);
     expect(sseResponse).not.toHaveBeenCalled();
   });
 
@@ -61,7 +66,8 @@ describe('operator-converse route budget preflight', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('stream-started');
-    expect(checkBudget).not.toHaveBeenCalled();
+    expect(budgetMocks.shouldBypassOperatorBudget).toHaveBeenCalledWith('llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(budgetMocks.checkBudget).not.toHaveBeenCalled();
     expect(sseResponse).toHaveBeenCalledTimes(1);
   });
 });

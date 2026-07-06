@@ -356,14 +356,23 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
 
-      // The child SPINS FOREVER (never goes quiet) — so every waitAtPrompt attempt
-      // across the budget defers and the carry is ultimately DROPPED. The dropped
-      // iteration must be OBSERVABLE (WI-1941: never traceless) — asserted via the
-      // durable meta counter. QUIT still lands (raw inject bypasses the gate; the
-      // stdin handler fires between the non-blocking spin ticks).
+      // WI-1818 (clean-boundary-only kill): the pre-recycle busy gate is now
+      // unconditional (applies regardless of bridgeTty), so the ORIGINAL child
+      // must genuinely settle before the recycle can fire at all — else the kill
+      // itself would be (correctly) refused and this test would never exercise
+      // the POST-recycle carry-drop path it's actually about. So the ORIGINAL
+      // boot bursts briefly then goes quiet; the RESPAWNED boot (marked via
+      // mintRecycleArgs, WI-1980-style) SPINS FOREVER — every post-recycle
+      // waitAtPrompt attempt across the budget defers and the carry is
+      // ultimately DROPPED. The dropped iteration must be OBSERVABLE (WI-1941:
+      // never traceless) — asserted via the durable meta counter. QUIT still
+      // lands (raw inject bypasses the gate; the stdin handler fires between
+      // the non-blocking spin ticks).
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'setInterval(()=>process.stdout.write("."),20);' +
+        "const marker=process.argv[process.argv.length-1];" +
+        "if(marker==='RECYCLED'){setInterval(()=>process.stdout.write('.'),20);}" +
+        "else{let n=0;const iv=setInterval(()=>{process.stdout.write('.');if(++n>8)clearInterval(iv);},20);}" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -372,7 +381,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', childCode],
+        args: ['-e', childCode, 'INITIAL'],
         cwd: '/tmp',
         env: {
           ...process.env,
@@ -386,6 +395,10 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         ownerId,
         io,
         bridgeTty: false,
+        // Rewrite the respawn argv so ONLY the post-recycle boot spins forever —
+        // the ORIGINAL boot must settle for the pre-kill busy gate to let the
+        // recycle fire at all (see the comment above).
+        mintRecycleArgs: (a: string[]) => ({ args: a.slice(0, -1).concat('RECYCLED'), nativeId: null }),
         onExit: (c: number) => { exitCode = c; },
       });
 

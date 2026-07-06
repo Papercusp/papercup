@@ -250,7 +250,9 @@ describe('memberLaunchCommand', () => {
 });
 
 describe('clampFleetTopUpToCapacity', () => {
-  it('clamps the requested top-up to the tightest reachable capacity signal', () => {
+  it('clamps to the tightest REAL capacity signal (dispatchBudget/recommendedHeadroom), NOT account count', () => {
+    // healthyAccounts=2 must NOT be the binding cap: the real caps are the admission
+    // signals. min(dispatchBudget 3, recommendedHeadroom 4) = 3 — the 2-account count is ignored.
     expect(
       clampFleetTopUpToCapacity(4, {
         reachable: true,
@@ -260,12 +262,52 @@ describe('clampFleetTopUpToCapacity', () => {
       }),
     ).toMatchObject({
       requestedOpenCount: 4,
-      openCount: 2,
+      openCount: 3,
       clamped: true,
       healthyAccounts: 2,
       dispatchBudget: 3,
       recommendedHeadroom: 4,
     });
+  });
+
+  it('does NOT clamp a multi-member launch to a single healthy account (the 1-account=1-session bug)', () => {
+    // The reported incident: 3 members requested, pool had ONE healthy account, launch
+    // collapsed to 1. One account paces many concurrent sessions (gateway concurrency=24),
+    // so with ample dispatchBudget the full request opens — account count is not a cap.
+    const clamp = clampFleetTopUpToCapacity(3, {
+      reachable: true,
+      healthyAccounts: 1,
+      dispatchBudget: 24,
+      recommendedHeadroom: 3,
+    });
+    expect(clamp).toMatchObject({ requestedOpenCount: 3, openCount: 3, clamped: false, healthyAccounts: 1 });
+    expect(clamp?.reason).toMatch(/accounts do NOT cap sessions/);
+  });
+
+  it('still clamps when the bee-tier dispatchBudget is the genuine limit', () => {
+    // A REAL capacity limit (only 1 free admission slot) still clamps — this is legitimate,
+    // unlike the account-count clamp above.
+    expect(
+      clampFleetTopUpToCapacity(3, {
+        reachable: true,
+        healthyAccounts: 5,
+        dispatchBudget: 1,
+        recommendedHeadroom: 3,
+      }),
+    ).toMatchObject({ requestedOpenCount: 3, openCount: 1, clamped: true });
+  });
+
+  it('suppresses the top-up entirely when ZERO accounts are routable (no credential to authenticate)', () => {
+    // healthyAccounts=0 is the one account signal that IS a gate: no routable account means
+    // no valid credential, so nothing could authenticate — open 0 even if slots look free.
+    expect(
+      clampFleetTopUpToCapacity(3, {
+        reachable: true,
+        healthyAccounts: 0,
+        dispatchBudget: 24,
+        recommendedHeadroom: 3,
+      }),
+    ).toMatchObject({ requestedOpenCount: 3, openCount: 0, clamped: true });
   });
 
   it('fails open when the gateway headroom report is unreachable', () => {

@@ -203,11 +203,24 @@ export function clampFleetTopUpToCapacity(
   const healthyAccounts = floorCap(report.healthyAccounts);
   const dispatchBudget = floorCap(report.dispatchBudget);
   const recommendedHeadroom = floorCap(report.recommendedHeadroom);
-  const caps = [healthyAccounts, dispatchBudget, recommendedHeadroom].filter((n): n is number => n != null);
+  // `healthyAccounts` is NOT a per-member cap. ONE account paces MANY concurrent Claude
+  // sessions through the gateway — admission concurrency is the authority (gateway
+  // DEFAULT_CONCURRENCY 24, surfaced here as `dispatchBudget` = bee-tier spare slots),
+  // and it is INDEPENDENT of how many accounts back the pool. Putting account-count into
+  // this min() was the "1 account = 1 session" bug: a fleet top-up of N collapsed to 1
+  // whenever the pool had a single healthy account (the common single-default-account
+  // install), even with tens of free admission slots. Account-count only informs the
+  // sizing ADVISORY (buildFleetSizingAdvisory) — a rotation-thrash WARNING, never a hard
+  // cap. The real capacity caps are `dispatchBudget` (spare admission slots) and
+  // `recommendedHeadroom` (util/queue-clamped headroom). `healthyAccounts` gates only the
+  // ZERO case: no routable account ⇒ no valid credential ⇒ nothing could authenticate.
+  const caps = [dispatchBudget, recommendedHeadroom].filter((n): n is number => n != null);
+  if (healthyAccounts === 0) caps.push(0); // no routable account ⇒ suppress the top-up entirely
   if (caps.length === 0) return null;
   const capacityHeadroom = Math.min(...caps);
   const openCount = Math.min(requested, capacityHeadroom);
   const clamped = openCount < requested;
+  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'}, healthyAccounts=${healthyAccounts ?? 'n/a'} (accounts do NOT cap sessions)`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -217,8 +230,8 @@ export function clampFleetTopUpToCapacity(
     dispatchBudget,
     recommendedHeadroom,
     reason: clamped
-      ? `capacity-clamped top-up ${requested}→${openCount} (healthyAccounts=${healthyAccounts ?? 'n/a'}, dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'})`
-      : `capacity-ok top-up ${requested} (healthyAccounts=${healthyAccounts ?? 'n/a'}, dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'})`,
+      ? `capacity-clamped top-up ${requested}→${openCount} (${detail})`
+      : `capacity-ok top-up ${requested} (${detail})`,
   };
 }
 
