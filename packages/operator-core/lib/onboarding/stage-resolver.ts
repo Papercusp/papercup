@@ -13,27 +13,24 @@
  *   pick → install → login → embeddings → handoff → (setup:complete) → done
  */
 
-export type OnboardingFramework = 'claude' | 'codex' | 'omp-meridian';
+export type OnboardingFramework = 'claude' | 'codex';
 
 /** Display labels for the concierge picker. */
 export const FRAMEWORK_LABELS: Record<OnboardingFramework, string> = {
   claude: 'Claude Code',
   codex: 'Codex (OpenAI)',
-  'omp-meridian': 'oh-my-pi + Meridian',
 };
 
 /** Auto-skip preference order (pre-detection): first ready framework wins. */
 export const FRAMEWORK_PREFERENCE: readonly OnboardingFramework[] = [
   'claude',
   'codex',
-  'omp-meridian',
 ];
 
 export interface OnboardingSnapshot {
   claudeInstalled: boolean;
   codexInstalled: boolean;
   ompInstalled: boolean;
-  meridianInstalled: boolean;
   claudeSignedIn: boolean;
   codexSignedIn: boolean;
   /** omp path auth = provider auth.json present (agent-auth-detect.ompSignedIn). */
@@ -58,22 +55,23 @@ export type OnboardingStage =
   /** Everything ready — exec the agent with the tutor launch-context. */
   | { stage: 'handoff'; framework: OnboardingFramework };
 
-/** Windows v1 ships no omp (D-006 @ windows-desktop-release-readiness). */
+/**
+ * Onboarding frameworks are the standalone CLI agents (Claude Code / Codex) on
+ * every OS. The `os` param is retained for signature stability (callers thread
+ * `process.platform`) even though the set no longer varies by OS.
+ */
 export function allowedFrameworks(os: string): OnboardingFramework[] {
-  return os === 'win32'
-    ? ['claude', 'codex']
-    : [...FRAMEWORK_PREFERENCE];
+  void os;
+  return [...FRAMEWORK_PREFERENCE];
 }
 
-/** A framework is INSTALLED when its full path exists (omp path needs BOTH halves). */
+/** A framework is INSTALLED when its full path exists. */
 export function frameworkInstalled(f: OnboardingFramework, s: OnboardingSnapshot): boolean {
   switch (f) {
     case 'claude':
       return s.claudeInstalled;
     case 'codex':
       return s.codexInstalled;
-    case 'omp-meridian':
-      return s.ompInstalled && s.meridianInstalled;
   }
 }
 
@@ -83,8 +81,6 @@ export function frameworkSignedIn(f: OnboardingFramework, s: OnboardingSnapshot)
       return s.claudeSignedIn;
     case 'codex':
       return s.codexSignedIn;
-    case 'omp-meridian':
-      return s.ompSignedIn;
   }
 }
 

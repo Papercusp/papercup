@@ -1,6 +1,6 @@
 /**
  * GET     /api/desktop/preflight — environment readiness checks (node,
- *   postgres, omp, meridian, bash, harness, claude, soft prereqs).
+ *   postgres, omp, bash, harness, claude, soft prereqs).
  * OPTIONS /api/desktop/preflight — CORS preflight.
  *
  * Ported from app/api/desktop/preflight/route.ts. `auth: 'public'` —
@@ -13,8 +13,6 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { defineTool } from '@papercusp/agent-mcp';
-
-const MERIDIAN_BASE = process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
 
 const exec = promisify(execFile);
 
@@ -35,24 +33,6 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
     return { name: bin, status: 'ok', detail: out };
   } catch (err: any) {
     if (err?.code === 'ENOENT') {
-      // claude ships as a bundled npm dep of meridian-host (stripped at
-      // build time, npm-installed at first launch by Rust). Probe the
-      // sidecar's meridian-host/node_modules/.bin too.
-      if (bin === 'claude') {
-        const candidates = [
-          `${process.cwd()}/meridian-host/node_modules/.bin/claude`,
-          `${process.cwd()}/../meridian-host/node_modules/.bin/claude`,
-        ];
-        for (const path of candidates) {
-          if (existsSync(path)) {
-            try {
-              const probe = await exec(path, args, { timeout: 5000 });
-              const out = (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] ?? '';
-              return { name: bin, status: 'ok', detail: `${out} (bundled)` };
-            } catch {/* fall through */}
-          }
-        }
-      }
       // gh ships bundled in the desktop sidecar (build-desktop-sidecar.sh →
       // sidecar/bin/gh), but a GUI launch's operator process rarely has it on
       // PATH — so the Setup Wizard's "Sign in to GitHub" button would read as

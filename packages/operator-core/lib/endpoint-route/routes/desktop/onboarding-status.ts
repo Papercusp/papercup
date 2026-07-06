@@ -8,7 +8,7 @@
  * detection, sign-in probes, credentials, wizard state) and threads the
  * concierge's session choices in via query params:
  *
- *   ?chosen=<claude|codex|omp-meridian>   the user's picked framework
+ *   ?chosen=<claude|codex>                the user's picked framework
  *   ?forcePick=1                          decline the pre-detection auto-skip
  *   ?embeddingsSkipped=1                  user skipped the embeddings-key step
  *   ?tutorial=1                           tutorial re-entry (P-014): finished
@@ -23,7 +23,6 @@ import {
   detectClaude,
   detectCodex,
   detectOmp,
-  detectMeridianInstalled,
 } from '../../../preflight-binaries';
 import { claudeSignedIn, codexSignedIn, ompSignedIn } from '../../../agent-auth-detect';
 import { readCredentials } from '../../../credentials';
@@ -72,7 +71,6 @@ export default defineTool({
       claudeInstalled,
       codexInstalled,
       ompInstalled,
-      meridianInstalled,
       claudeAuth,
       codexAuth,
       ompAuth,
@@ -82,7 +80,6 @@ export default defineTool({
       safe(detectClaude(), false),
       safe(detectCodex(), false),
       safe(detectOmp(), false),
-      safe(Promise.resolve(detectMeridianInstalled()), false),
       safe(Promise.resolve(claudeSignedIn()), false),
       safe(Promise.resolve(codexSignedIn()), false),
       safe(Promise.resolve(ompSignedIn()), false),
@@ -94,7 +91,6 @@ export default defineTool({
       claudeInstalled,
       codexInstalled,
       ompInstalled,
-      meridianInstalled,
       claudeSignedIn: claudeAuth,
       codexSignedIn: codexAuth,
       ompSignedIn: ompAuth,

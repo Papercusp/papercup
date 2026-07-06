@@ -9,7 +9,6 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { allowedFrameworks, type OnboardingFramework } from '../../../onboarding/stage-resolver';
 
-const MERIDIAN_VERSION = '1.42.1';
 // oh-my-pi has NO live npm package (`oh-my-pi` was unpublished 2026-05-21;
 // `@oh-my-pi/cli` never existed — a dead ref here 404s and aborts the whole
 // npm step, taking the codex install down with it; found live on the Windows
@@ -40,9 +39,9 @@ $runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 @'
 { "name":"papercusp-runtime","version":"0.0.0","private":true,
-  "dependencies":{"@rynfar/meridian":"${MERIDIAN_VERSION}","${CODEX_PACKAGE}":"latest"} }
+  "dependencies":{"${CODEX_PACKAGE}":"latest"} }
 '@ | Set-Content -Path (Join-Path $runtime 'package.json') -Encoding UTF8
-Write-Host '==> installing meridian + codex'
+Write-Host '==> installing codex'
 npm install --prefix $runtime --no-audit --no-fund
 Write-Host '==> done'
 `;
@@ -64,12 +63,11 @@ cat > ~/.papercusp/runtime/package.json <<JSON
   "version": "0.0.0",
   "private": true,
   "dependencies": {
-    "@rynfar/meridian": "${MERIDIAN_VERSION}",
     "${CODEX_PACKAGE}": "latest"
   }
 }
 JSON
-echo '==> installing meridian + codex'
+echo '==> installing codex'
 npm install --prefix ~/.papercusp/runtime --no-audit --no-fund
 echo '==> done'
 `;
@@ -81,16 +79,9 @@ echo '==> done'
  * onboarding concierge installs ONLY the framework the user picked, unlike the
  * wizard's all-in-one `buildInstallSpec` (kept above for the GUI wizard).
  *
- * Composability: the codex / meridian installs go into the SAME
- * `~/.papercusp/runtime` prefix the wizard uses (and detection probes), via
- * incremental `npm install --prefix` — installing one framework never removes
- * another. oh-my-pi itself has NO npm package (unpublished 2026-05-21): it
- * ships bundled with the desktop sidecar, so the omp-meridian spec installs
- * Meridian only and says so.
- *
- * Throws on `omp-meridian` + win32 — Windows v1 ships no omp (D-006 @
- * windows-desktop-release-readiness); callers gate the picker with
- * `allowedFrameworks(os)` so a throw here is a caller bug, loud on purpose.
+ * Composability: the codex install goes into the SAME `~/.papercusp/runtime`
+ * prefix the wizard uses (and detection probes), via incremental
+ * `npm install --prefix` — installing one framework never removes another.
  */
 export function buildFrameworkInstallSpec(
   framework: OnboardingFramework,
@@ -98,11 +89,6 @@ export function buildFrameworkInstallSpec(
   home: string,
 ): SpawnSpec {
   if (os === 'win32') {
-    if (framework === 'omp-meridian') {
-      throw new Error(
-        'omp-meridian is not installable on Windows (D-006: Windows v1 ships no omp)',
-      );
-    }
     const script =
       framework === 'claude'
         ? `
@@ -143,14 +129,6 @@ echo '==> bootstrapping runtime'
 ${runtimeBootstrap}
 echo '==> installing codex'
 npm install --prefix ~/.papercusp/runtime --no-audit --no-fund ${CODEX_PACKAGE}@latest
-echo '==> done'
-`,
-    'omp-meridian': `set -e
-echo '==> bootstrapping runtime'
-${runtimeBootstrap}
-echo '==> installing meridian'
-npm install --prefix ~/.papercusp/runtime --no-audit --no-fund @rynfar/meridian@${MERIDIAN_VERSION}
-echo '==> note: oh-my-pi itself ships bundled with the desktop app (no npm package)'
 echo '==> done'
 `,
   };

@@ -15,7 +15,7 @@ import { listDevices } from '../../../device-store';
 import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
 import { workspaceBackupFor } from '../../../backup';
 import { anyAgentSignedIn } from '../../../agent-auth-detect';
-import { detectClaude, detectCodex, detectOmp, detectMeridianInstalled } from '../../../preflight-binaries';
+import { detectClaude, detectCodex, detectOmp } from '../../../preflight-binaries';
 import { defineTool } from '@papercusp/agent-mcp';
 
 type StepStatus = 'ok' | 'needs-attention' | 'unknown';
@@ -112,7 +112,6 @@ export async function collectSetupStatus() {
     claudeOk,
     codexOk,
     ompOk,
-    meridianOk,
     creds,
     wizardState,
     devices,
@@ -123,7 +122,6 @@ export async function collectSetupStatus() {
     safe(detectClaude(), false),
     safe(detectCodex(), false),
     safe(detectOmp(), false),
-    safe(Promise.resolve(detectMeridianInstalled()), false),
     safe(readCredentials(), {} as Awaited<ReturnType<typeof readCredentials>>),
     safe(
       readOperatorState<{
@@ -152,11 +150,10 @@ export async function collectSetupStatus() {
   // workspace: registry has at least one entry.
   const workspaceOk = readRegistry().workspaces.length > 0;
 
-  // agents: a complete backend is EITHER a standalone CLI agent
-  // (Claude Code or Codex — the orchestrator drives the CLI directly)
-  // OR oh-my-pi + Meridian (the multi-provider path). Any one
+  // agents: a complete backend is any standalone CLI agent — Claude Code,
+  // Codex, or oh-my-pi (the orchestrator drives the CLI directly). Any one
   // satisfies the step.
-  const agentsOk = claudeOk || codexOk || (ompOk && meridianOk);
+  const agentsOk = claudeOk || codexOk || ompOk;
 
   // keys: any of openai/anthropic/github saved.
   const keysOk = Boolean(
@@ -185,7 +182,7 @@ export async function collectSetupStatus() {
   };
 
   // Per-component breakdown for the Agent Runtime step.
-  const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk, meridian: meridianOk };
+  const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk };
 
   return { statuses, agentRuntime };
 }
