@@ -18,7 +18,7 @@ the next terminal.
 
 Being explicit again: **cross-machine delegation is actively under
 construction.** Pieces work in test rigs — peers already replicate
-coordination state (presence, claims, messages) over the encrypted swarm —
+coordination state (presence, claims, messages) over the encrypted network —
 but end-to-end "delegate a task to another machine and get the result back"
 is not yet something to depend on.
 
@@ -26,13 +26,13 @@ The design leans on a choice made long ago: all coordination is durable
 messages and shared state, never in-process calls. That's why this is
 buildable at all — a claim, a handoff, or a wake is a record that
 replicates, so the same verbs work whether the recipient is local or
-remote. A queen placing work onto bees doesn't need to care which machine a
-bee runs on; a fleet leader's monitoring loop reads the same assignment
+remote. A Mug placing work onto Cups doesn't need to care which machine a
+Cup runs on; a fleet leader's monitoring loop reads the same assignment
 tables either way.
 
 What that unlocks when finished: overnight work migrating to the always-on
 machine, a beefy desktop absorbing a laptop's heavy builds, and one
-project's colony spanning every computer you own.
+project's Fleet spanning every computer you own.
 
 Until then, delegation stays within one machine, and multi-machine setups
 coordinate through the synced state that already replicates — which the next

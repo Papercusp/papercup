@@ -157,6 +157,22 @@ export function assertTextForbids(pattern: RegExp, meta: Meta): CustomAssert {
   };
 }
 
+/** ERROR if the selected assistant turn's text matches `pattern`. Use when an
+ *  earlier turn may legitimately mention text that must be absent from the
+ *  answer under test (for example, a delta scenario's base-list turn naming a
+ *  row that the final merged-list turn must remove). */
+export function assertTextForbidsInTurn(pattern: RegExp, turnIdx: number, meta: Meta): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turn = run.turns[turnIdx];
+      if (!turn) return [violation(meta)];
+      return pattern.test(turn.assistantText) ? [violation(meta, turnIdx)] : [];
+    },
+  };
+}
+
 /** ERROR unless SOME turn's assistant text matches `pattern` (the model points
  *  at the blessed path — e.g. names the Tauri/desktop flow, or SSE/IPC push). */
 export function assertTextRequires(pattern: RegExp, meta: Meta): CustomAssert {
@@ -164,6 +180,19 @@ export function assertTextRequires(pattern: RegExp, meta: Meta): CustomAssert {
     kind: 'custom',
     name: meta.name,
     eval: (run) => (run.turns.some((t) => pattern.test(t.assistantText)) ? [] : [violation(meta)]),
+  };
+}
+
+/** ERROR unless the selected assistant turn's text matches `pattern`. */
+export function assertTextRequiresInTurn(pattern: RegExp, turnIdx: number, meta: Meta): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turn = run.turns[turnIdx];
+      if (!turn) return [violation(meta)];
+      return pattern.test(turn.assistantText) ? [] : [violation(meta, turnIdx)];
+    },
   };
 }
 

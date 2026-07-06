@@ -24,7 +24,7 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequires, assertTextForbids } from './_asserts';
+import { assertTextForbidsInTurn, assertTextRequiresInTurn } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
@@ -36,7 +36,16 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
     'A developer first asks the engineer to list the current open work items — the assistant calls work_items:list and gets a full snapshot of 5 items, which it lists. The developer then asks "what has changed since you checked, and give me the updated full list" — work_items:list now returns a DELTA (mode:delta): one item removed, one retitled, one added. The earlier full snapshot is still in the conversation, so the delta-aware target/wrapper should apply the delta and the assistant should report the correct merged current list.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
-  caps: { maxTurns: 4, maxWallSecs: 180, maxCostUsd: 2 },
+  caps: { maxTurns: 4, maxWallSecs: 360, maxCostUsd: 2 },
+  triggers: [
+    { on: 'after_turn', param: 0, fire: 'user_message', text: 'List the current open work items.' },
+    {
+      on: 'after_turn',
+      param: 1,
+      fire: 'user_message',
+      text: 'What has changed since you checked, and give me the updated full list.',
+    },
+  ],
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   // Stateful: call 1 → full snapshot, call 2 → delta. Getter ⇒ per-run-fresh
   // call-count state across the matrix repeats.
@@ -44,25 +53,25 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
     return makeDeltaSnapshotOverride();
   },
   asserts: [
-    assertTextRequires(/EROFS/i, {
+    assertTextRequiresInTurn(/EROFS/i, 1, {
       name: 'delta-add-applied',
       claim:
         'Expected the merged list to include the ADDED row (WI-7006 "Sandbox npm-install EROFS") — the delta added it, so a correct merge surfaces it.',
       suggestion: 'The delta-aware wrapper must apply change=added rows before the model answers.',
     }),
-    assertTextRequires(/circuit-breaker/i, {
+    assertTextRequiresInTurn(/circuit-breaker/i, 1, {
       name: 'delta-update-applied',
       claim:
         "Expected the merged list to show WI-7004's NEW title ('Gateway pool circuit-breaker') — the delta updated it.",
       suggestion: "The delta-aware wrapper must replace updated rows with the delta's new data before the model answers.",
     }),
-    assertTextRequires(/NUL bytes/i, {
+    assertTextRequiresInTurn(/NUL bytes/i, 1, {
       name: 'delta-keeps-unchanged',
       claim:
         'Expected the merged list to still include the UNCHANGED row WI-7003 ("Audit log drops NUL bytes") — a delta carries only changes, so unchanged base rows must be retained.',
       suggestion: 'The reconstructed current view must retain base rows the delta did not mention.',
     }),
-    assertTextForbids(/debounce/i, {
+    assertTextForbidsInTurn(/debounce/i, 1, {
       name: 'delta-remove-applied',
       claim:
         'The merged list still named the REMOVED row (WI-7002 "Flaky harness-fs-watcher debounce") — a silent failure to apply change=removed.',

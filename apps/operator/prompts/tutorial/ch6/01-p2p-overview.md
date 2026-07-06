@@ -2,7 +2,7 @@
 id: ch6-01-p2p-overview
 chapter: 6
 order: 1
-title: The peer-to-peer vision — many machines, one hive
+title: The peer-to-peer vision — many machines, one Pot
 docSlugs: spec/multi-topology, spec/distribution
 ---
 
@@ -11,14 +11,14 @@ docSlugs: spec/multi-topology, spec/distribution
 **Everything in this chapter is under construction — it describes where
 Papercusp is going, not what it reliably does today.** The vision: several
 machines — your laptop, a desktop, a tower in the closet, a teammate's box —
-form one **peer-to-peer hive**. Work, agents, accounts, and even GPU time
+form one **peer-to-peer Pot**. Work, agents, accounts, and even GPU time
 flow to wherever they're best served, with no central server anywhere.
 
 ## Details
 
 To be explicit up front: **this is the aspirational chapter.** The p2p
 substrate exists and parts of it work in test rigs (machines already sync
-coordination state over an encrypted peer swarm), but the features described
+coordination state over an encrypted peer network), but the features described
 in the next four sections are being actively built and should not be relied
 on yet. They're in the tutorial because they explain the design decisions
 you've already seen — why state lives in durable, syncable stores, why

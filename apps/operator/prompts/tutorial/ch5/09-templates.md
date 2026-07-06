@@ -31,7 +31,7 @@ aspect templates (`tauri-desktop-shell`, `papercusp-data-layer`,
 
 The official set was extracted from real apps built on Papercusp (the
 quartermaster and oddsmith pattern: a deterministic app joined to a judgment
-hive by one work-item seam), and a scheduled "template gym" continuously
+Pot by one work-item seam), and a scheduled "template gym" continuously
 rebuilds the reference composition so templates can't silently rot as the
 platform moves.
 

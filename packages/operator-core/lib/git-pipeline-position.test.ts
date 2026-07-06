@@ -260,7 +260,7 @@ describe('gitPipelinePosition (P-002)', () => {
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
       deployedSha: 'deployedsha0',
-      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1 },
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
         lastGreenShortSha: 'readysha',

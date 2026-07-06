@@ -2,14 +2,14 @@
 id: ch6-02-gpu-allocation
 chapter: 6
 order: 2
-title: GPU allocation — lending compute across the hive
+title: GPU allocation — lending compute across the Pot
 docSlugs:
 ---
 
 ## Brief
 
 **Still being built — do not expect this to work today.** The idea: machines
-in a hive advertise their GPUs, and workloads that need one (local model
+in a Pot advertise their GPUs, and workloads that need one (local model
 inference, embeddings, media work) get placed on whichever peer has capacity
 — your laptop borrowing the tower's GPU without you configuring anything.
 
@@ -27,9 +27,9 @@ channel, and returns results as if they'd run locally. Priorities and quotas
 keep one machine's batch job from starving another's interactive session.
 
 Why it's worth building: local models are increasingly good enough for real
-agent work (drafting, classification, embeddings), and most hives have
+agent work (drafting, classification, embeddings), and most Pots have
 exactly one machine with a serious GPU. Pooling it turns "the one box that
-can run models" into "the hive can run models."
+can run models" into "the Pot can run models."
 
 Until this ships, the practical answer for model workloads remains the
 inference gateway and hosted accounts. When GPU pooling lands it will be

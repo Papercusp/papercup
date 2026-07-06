@@ -287,7 +287,7 @@ test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS u
     { pool, log: (_level, msg) => logs.push(msg) },
   );
   const res = await post({ model: 'claude-sonnet-5', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] });
-  assert.equal(res.status, 200, `failover A→B ultimately succeeds; status=${res.status} body=${await res.clone().text().catch(() => '?')}\nLOGS:\n${logs.join('\n')}`);
+  assert.equal(res.status, 200, `failover A→B ultimately succeeds; status=${res.status}\nLOGS:\n${logs.join('\n')}`);
 
   const retryLine = logs.find((m) => m.includes('internal retry') && m.includes('util7d='));
   assert.ok(retryLine, `expected an internal-retry log line carrying util headers; got:\n${logs.join('\n')}`);

@@ -9,9 +9,9 @@ docSlugs:
 ## Brief
 
 **Under construction — this does not reliably work yet.** The plan: extend
-the inference gateway's account pool (chapter 5) across the whole hive, so
+the inference gateway's account pool (chapter 5) across the whole Pot, so
 credentialed accounts attached to any machine can serve sessions on every
-machine — one shared budget, one governor, hive-wide.
+machine — one shared budget, one governor, Pot-wide.
 
 ## Details
 
@@ -21,7 +21,7 @@ accounts configured on that machine.
 
 The single-machine version already exists and you've met it: the gateway
 pools several accounts, routes each session to the best one, and fails over
-around rate limits. The p2p extension makes that pool a hive resource. Your
+around rate limits. The p2p extension makes that pool a Pot resource. Your
 laptop, with no accounts of its own, borrows capacity through the tower's
 gateway; the rate governor sees aggregate usage across every peer so one
 machine can't silently exhaust an account the others depend on; billing

@@ -25,14 +25,14 @@ export default defineTool({
   name: 'pot:status',
   profile: 'engineer',
   description:
-    "The Hive operator's current state: started/paused (the Start-Hive bit), the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, the floor, and the watchdog health signal (fallback fires in 24h). Read-only.",
+    "The Pot operator's current state: started/paused (the Start-Hive bit), the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, the floor, and the watchdog health signal (fallback fires in 24h). Read-only.",
   guidance: {
     when: 'To see when/whether the operator will wake next, or to verify a pot:declare-wake landed.',
     chaining: 'pot:declare-wake to change the declaration; pot:wake to fire now.',
     seeAlso: [
       'pot:declare-wake (change the wake declaration)',
       'pot:wake (fire the Queen now)',
-      'pot:get (full hive detail — bees, load, queued work)',
+      'pot:get (full pot detail — bees, load, queued work)',
     ],
   },
   capability: 'harness:read',

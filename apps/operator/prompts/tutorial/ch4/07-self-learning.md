@@ -11,7 +11,7 @@ docSlugs: system/learning-packs
 Everything in this chapter feeds one loop: observations and gradings
 accumulate → pattern-mining agents digest them → the strongest signals
 become proposals (new features, fixes, doc updates) → proposals get triaged,
-built, and shipped — often by the colony itself. Papercusp literally
+built, and shipped — often by the autonomous system itself. Papercusp literally
 improves itself using the same queue and agents that do your work.
 
 ## Details

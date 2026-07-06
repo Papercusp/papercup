@@ -406,16 +406,24 @@ export default defineTool({
               });
               batches.push({ harnessSlug, rows });
             } catch (err) {
-              // infra round-3 F5: a stale/unregistered slug must not spike the
-              // error-rate on plans:list (the highest-volume tool — ~2% of calls
-              // were `resolvePlanScope: harness '…' is not registered`, from callers
-              // querying a deregistered/stale hive slug). A LIST read of a
-              // nonexistent harness is empty, not an error — match the harness_slugs
-              // fan-out path above (which already catches → unknownHarnesses). Only
-              // the not-registered resolve failure is swallowed; any OTHER error
-              // (a real DB/query fault) still throws so genuine failures stay loud.
+              // infra round-3 F5 (+ EI-7864 follow-up): a stale/unregistered OR
+              // non-Hive-scoped slug must not spike the error-rate on plans:list
+              // (the highest-volume tool — ~2% of calls were `resolvePlanScope:
+              // harness '…' is not registered`, from callers querying a
+              // deregistered/stale hive slug). A LIST read of a harness that
+              // resolvePlanScope refuses is empty, not an error — match the
+              // harness_slugs fan-out path above (which already catches →
+              // unknownHarnesses). EI-7864: a standalone/scratch harness that is
+              // registered in `projects` but is NOT a Hive home (e.g. pot-verify,
+              // used for manual UI verification — WI-1992 plans are Hive-scoped)
+              // hit the SAME "list against a harness with no plans" shape but the
+              // narrower `/not registered/i` regex didn't cover its distinct
+              // "is not a Hive home" message, so it fell through to `throw err`
+              // uncaught. Both resolvePlanScope failure messages are swallowed
+              // here; any OTHER error (a real DB/query fault) still throws so
+              // genuine failures stay loud.
               const msg = err instanceof Error ? err.message : String(err);
-              if (/not registered/i.test(msg)) {
+              if (/not registered|not a Hive home/i.test(msg)) {
                 batchUnknown.push(harnessSlug);
               } else {
                 throw err;

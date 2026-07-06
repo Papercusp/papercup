@@ -2821,15 +2821,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Hard-evidence 429-shape suffix for the retry log (set inside the 429 block where the headers are in
         // scope; empty for non-429). Makes the capacity-vs-routing read come from data, not a guess.
         let shape429Suffix = '';
+        // WI-3150: the account that ACTUALLY threw this 429 — captured BEFORE the failover branch below may
+        // reassign `active` to a rotated-to account. `shape429Suffix` (util5h/util7d + provenance) is built
+        // from THIS attempt's response headers, so the retry log MUST name this same account or the util
+        // headers get attributed to the wrong account (the shuffle that made a bare-burst on a healthy account
+        // read as weekly exhaustion on the account we rotated TO). Declared in the outer scope (like
+        // shape429Suffix) because the retry-log site lives past the 429 block's close; assigned just below.
+        let throttled429AccountId = active.accountId;
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
-          // WI-3150: the account that ACTUALLY threw this 429 — captured BEFORE the failover branch below
-          // may reassign `active` to a rotated-to account. `shape429Suffix` (util5h/util7d + provenance) is
-          // built from THIS attempt's response headers, so the retry log MUST name this same account or the
-          // util headers get attributed to the wrong account (the shuffle that made a bare-burst on a healthy
-          // account read as weekly exhaustion on the account we rotated TO). Name + headers must agree.
-          const throttled429AccountId = active.accountId;
+          throttled429AccountId = active.accountId;
           // AIMD signal (B-GW-1, refined 2026-06-21 budget-aware routing): a 429 shrinks GLOBAL admission
           // concurrency ONLY when it's genuine pool-wide over-drive — i.e. we could NOT route it around to a
           // healthy account. recordThrottle() is therefore DEFERRED to the failover decision below: a

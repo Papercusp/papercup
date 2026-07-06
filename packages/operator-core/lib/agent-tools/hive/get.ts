@@ -20,14 +20,14 @@ export default defineTool({
   name: 'pot:get',
   profile: 'engineer',
   description:
-    'The full state of one hive: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live bees with {doing, queued, load}, and its todo-work frontier depth. Composes resolveHive + fleet:assignments + work_items — the one call for "how is hive X doing".',
+    'The full state of one pot: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live bees with {doing, queued, load}, and its todo-work frontier depth. Composes resolveHive + fleet:assignments + work_items — the one call for "how is pot X doing".',
   guidance: {
-    when: 'You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.',
-    notWhen: 'A list of all hives — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
+    when: 'You want one pot in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.',
+    notWhen: 'A list of all pots — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
       'pot:list to find the slug; pot:wake to fire the Queen now; pot:declare-wake to change the cadence; pot:dissolve to tear it down.',
     seeAlso: [
-      'pot:list (all hives at a glance)',
+      'pot:list (all pots at a glance)',
       'fleet:assignments (the raw per-agent fleet view)',
       'pot:status (next-wake schedule detail)',
     ],
@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    slug: z.string().min(1).max(120).describe("The hive's home-harness slug (or its hiveId)."),
+    slug: z.string().min(1).max(120).describe("The pot's home-harness slug (or its hiveId)."),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
@@ -51,7 +51,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'hive_not_found',
-              message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the hives.`,
+              message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the pots.`,
             }),
           },
         ],

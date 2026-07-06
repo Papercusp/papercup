@@ -27,7 +27,7 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequires, assertTextForbids } from './_asserts';
+import { assertTextForbidsInTurn, assertTextRequiresInTurn } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S25_DELTA_WRONG_MERGE_DETECTOR: Scenario = {
@@ -39,45 +39,54 @@ export const SU_S25_DELTA_WRONG_MERGE_DETECTOR: Scenario = {
     'A developer asks the engineer to list the current open work items (work_items:list returns a full snapshot of 5 items). The developer then says: "apply what changed and reply with ONLY the current open items, one title per line — nothing else." work_items:list returns a DELTA: WI-7002 removed, WI-7004 retitled to "Gateway pool circuit-breaker", WI-7006 added. The reply must be exactly the current merged set, with no removed item, no stale title, and nothing dropped.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
-  caps: { maxTurns: 4, maxWallSecs: 180, maxCostUsd: 2 },
+  caps: { maxTurns: 4, maxWallSecs: 360, maxCostUsd: 2 },
+  triggers: [
+    { on: 'after_turn', param: 0, fire: 'user_message', text: 'List the current open work items.' },
+    {
+      on: 'after_turn',
+      param: 1,
+      fire: 'user_message',
+      text: 'Apply what changed and reply with ONLY the current open items, one title per line - nothing else.',
+    },
+  ],
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   get toolOverride() {
     return makeDeltaSnapshotOverride();
   },
   asserts: [
     // REQUIRE every correct current row — drops/omissions are wrong merges.
-    assertTextRequires(/CSV backend/i, {
+    assertTextRequiresInTurn(/CSV backend/i, 1, {
       name: 'has-kept-csv',
       claim: 'Missing kept row WI-7001 ("Export picker → CSV backend") — a delta dropped an unchanged base row.',
       suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
-    assertTextRequires(/NUL bytes/i, {
+    assertTextRequiresInTurn(/NUL bytes/i, 1, {
       name: 'has-kept-nul',
       claim: 'Missing kept row WI-7003 ("Audit log drops NUL bytes") — a delta dropped an unchanged base row.',
       suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
-    assertTextRequires(/palette/i, {
+    assertTextRequiresInTurn(/palette/i, 1, {
       name: 'has-kept-palette',
       claim: 'Missing kept row WI-7005 ("Operator palette poll-to-push") — a delta dropped an unchanged base row.',
       suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
-    assertTextRequires(/circuit-breaker/i, {
+    assertTextRequiresInTurn(/circuit-breaker/i, 1, {
       name: 'has-updated-new',
       claim: "Missing WI-7004's updated title ('Gateway pool circuit-breaker') — the change=updated row was not applied.",
       suggestion: 'The reconstructed current view must replace updated rows with their new data from the delta.',
     }),
-    assertTextRequires(/EROFS/i, {
+    assertTextRequiresInTurn(/EROFS/i, 1, {
       name: 'has-added',
       claim: 'Missing added row WI-7006 ("Sandbox npm-install EROFS") — the change=added row was ignored.',
       suggestion: 'The reconstructed current view must include change=added rows.',
     }),
     // FORBID the removed row + the stale value — silent wrong-merges.
-    assertTextForbids(/debounce/i, {
+    assertTextForbidsInTurn(/debounce/i, 1, {
       name: 'no-removed',
       claim: 'Named the REMOVED row (WI-7002 "...debounce") as a current item — change=removed was not applied.',
       suggestion: 'The reconstructed current view must drop change=removed ids.',
     }),
-    assertTextForbids(/naive-retry/i, {
+    assertTextForbidsInTurn(/naive-retry/i, 1, {
       name: 'no-stale-update',
       claim: "Showed WI-7004's STALE pre-update title ('naive-retry') — the update was not applied (the row silently kept its old data).",
       suggestion: 'When change=updated, the reconstructed current view must use the new data and discard the old title.',

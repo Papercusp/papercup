@@ -175,7 +175,7 @@ export function loadTutorialPack(root: string): TutorialSection[] {
 export const CHAPTER_TITLES: Readonly<Record<number, string>> = {
   1: 'Orientation',
   2: 'Directing work',
-  3: 'The colony',
+  3: 'The Fleet',
   4: 'Agent cognition & learning',
   5: 'The platform',
   6: 'Under construction (aspirational p2p)',

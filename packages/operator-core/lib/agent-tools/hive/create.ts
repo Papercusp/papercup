@@ -24,16 +24,16 @@ export default defineTool({
   name: 'pot:create',
   profile: 'engineer',
   description:
-    "Stand up a NEW local hive (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+    "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:hive).",
   guidance: {
-    when: 'Standing up a NEW local hive (its home harness + Queen) in one call. Operator/user only.',
+    when: 'Standing up a NEW local pot (its home harness + Queen) in one call. Operator/user only.',
     notWhen:
-      'Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
+      'Deploying an EXISTING pot to a cloud frame — deploy:hive. A plain non-pot harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
     chaining:
       'pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; pot:dissolve to tear it down.',
     seeAlso: [
-      'pot:create_from_repo (onboard a GitHub repo as a hive instead)',
-      'pot:start (boot the new hive into autonomous operation)',
+      'pot:create_from_repo (onboard a GitHub repo as a pot instead)',
+      'pot:start (boot the new pot into autonomous operation)',
       'pot:dissolve (tear it down)',
     ],
   },
@@ -46,7 +46,7 @@ export default defineTool({
       .min(1)
       .max(120)
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
-      .describe('Unique hive home-harness slug.'),
+      .describe('Unique pot home-harness slug.'),
     parentDir: z.string().min(1).optional().describe('Parent dir for the home harness (default ~/.papercusp/hives).'),
     deployment: DeploymentConfigSchema.optional().describe(
       'Execution plane (default local). Cloud placement is usually a later deploy:hive step.',
@@ -64,20 +64,20 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "The kind:'hive' blueprint to run — default 'hive' (the coding hive); 'work' for a non-coding hive (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the hive blueprints.",
+        "The kind:'hive' blueprint to run — default 'hive' (the coding pot); 'work' for a non-coding pot (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the pot blueprints.",
       ),
     learningPack: z
       .string()
       .max(120)
       .optional()
       .describe(
-        "Learning pack to seed into the hive's shared memory (learning-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. learning_packs:list enumerates the available packs.",
+        "Learning pack to seed into the pot's shared memory (learning-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. learning_packs:list enumerates the available packs.",
       ),
     repoRemote: z
       .enum(['auto', 'local-only'])
       .optional()
       .describe(
-        "Fresh coding-hive repo remote policy (per-hive-git-and-release-gate). 'auto' (default) ⇒ create a PRIVATE GitHub remote + push when git creds are present (gh auth), else local-only. 'local-only' ⇒ never create a remote (the local staging→main gate still runs). Ignored when cloning/linking an existing repo.",
+        "Fresh coding-pot repo remote policy (per-hive-git-and-release-gate). 'auto' (default) ⇒ create a PRIVATE GitHub remote + push when git creds are present (gh auth), else local-only. 'local-only' ⇒ never create a remote (the local staging→main gate still runs). Ignored when cloning/linking an existing repo.",
       ),
     repoOwner: z
       .string()
@@ -113,7 +113,7 @@ export default defineTool({
         ok: false,
         error: 'hive_create_root_only',
         message:
-          'pot:create cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a hive.',
+          'pot:create cannot be called from a bee (a spawned/parented agent). Pots are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a pot.',
       });
     }
 

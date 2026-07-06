@@ -10,25 +10,25 @@ docSlugs: system/hive-git-sync
 
 **Under construction — not yet a dependable feature.** The aim: the shared
 working tree that git-sync commits (chapter 5) replicates directly between
-hive machines over the p2p channel — every peer holds the code, no GitHub or
-central server required for the hive to function.
+the machines in a Pot over the p2p channel — every peer holds the code, no GitHub or
+central server required for the Pot to function.
 
 ## Details
 
 Honest labeling first: **p2p git replication is still being built.** Today
 the canonical flow runs through a conventional git remote; the p2p path
-exists in early form (the hive-git-sync design describes it) but is not
+exists in early form (the git-sync design describes it) but is not
 what's keeping your code safe right now.
 
 The design extends git-sync's existing rhythm. You've seen that agents never
 commit — a background routine sweeps the tree on a schedule. In the p2p
 version, each sweep also announces new commits to peers over the encrypted
-swarm, and peers fetch objects directly from each other. Git's content-
+network, and peers fetch objects directly from each other. Git's content-
 addressed model is a natural fit: commits are immutable, verifiable blobs,
 so replication is just "who has which objects," and any peer can serve any
 other.
 
-Why bother, when GitHub exists? Resilience and privacy: a hive that fully
+Why bother, when GitHub exists? Resilience and privacy: a Pot that fully
 replicates its own history keeps working — including merges, deploys, and
 the green gate — with no internet, and code never has to leave machines you
 own. A conventional remote becomes an optional mirror rather than a
