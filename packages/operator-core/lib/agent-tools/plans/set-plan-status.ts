@@ -83,7 +83,7 @@ const argsSchema = z.object({
       salvageable: z
         .string()
         .min(1)
-        .describe("what's salvageable — the reusable signal a future Scout cycle can re-ideate from"),
+        .describe("what's salvageable — the reusable signal a future Blender cycle can re-ideate from"),
     })
     .optional()
     .describe(
@@ -152,7 +152,7 @@ export default defineTool({
   description:
     "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped, →superseded reject). Plan-level frontmatter, not an item's status. Also the Queen↔Scout DEPRECATE handler: pass `learnings` with status='superseded' to also emit a salvage observation into Scout's digest (no dead ends) — see guidance.",
   guidance: {
-    when: "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded). DEPRECATING a Queen↔Scout draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
+    when: "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded). DEPRECATING a Mug↔Blender draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
     notWhen:
       "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line). `learnings` on a non-superseded status is ignored (it is a deprecate-only field).",
     chaining:

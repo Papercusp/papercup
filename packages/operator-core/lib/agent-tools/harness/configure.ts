@@ -62,7 +62,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'harness_configure_root_only',
-        message: 'harness:configure cannot be called from a bee (a spawned/parented agent). Only the operator/user edits a harness config.',
+        message: 'harness:configure cannot be called from a cup (a spawned/parented agent). Only the operator/user edits a harness config.',
       });
     }
     if (Object.keys(args.configOverrides).length === 0) {
@@ -84,7 +84,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'is_a_hive',
-        message: `'${args.slug}' is a hive harness — use pot:update to change its configOverrides instead.`,
+        message: `'${args.slug}' is a pot — use pot:update to change its configOverrides instead.`,
       });
     }
 

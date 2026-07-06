@@ -1,33 +1,43 @@
-# The hive:* tool namespace — local hive lifecycle
+# The pot:* tool namespace — local hive lifecycle
 URL: /internal/docs/agent-insights/hive-tool-namespace
 
-The hive:* namespace is the full LOCAL hive lifecycle (a kind:'hive' harness + its Queen/bees) — list/get/create/dissolve/update plus the Queen run-loop verbs (start/pause/wake/declare-wake/status/survey). Gotchas — create/dissolve/update are root-only; create must stamp harness_kind:'hive' (harness:create doesn't); deploy:hive is a DISTINCT cloud step; bee placement stays fleet:*.
+The pot:* namespace is the full LOCAL hive lifecycle (a kind:'hive' harness + its Queen/bees) — list/get/create/dissolve/update plus the Queen run-loop verbs (start/pause/wake/declare-wake/status/survey). Gotchas — create/dissolve/update are root-only; create must stamp harness_kind:'hive' (harness:create doesn't); deploy:hive is a DISTINCT cloud step; bee placement stays fleet:*.
+
+import { Aside } from '@astrojs/starlight/components';
+
+The tool NAMES in this namespace were renamed `hive:*` → `pot:*` (the Pot rename,
+WI-2932). The underlying entity/identifier vocabulary is UNCHANGED — the code still
+lives under `packages/operator-core/lib/agent-tools/hive/`, the harness marker is
+still `harness_kind:'hive'`, `resolveHive`/`createHiveHarness` keep their names, and
+the shared-hive FEDERATION concept (a remote/joined hive across the P2P network)
+still says "hive". Only the local, single-instance entity's agent-facing verbs
+became `pot:*`.
 
 ## What
 
-`hive:*` (`packages/operator-core/lib/agent-tools/hive/`) is the **local hive
+`pot:*` (`packages/operator-core/lib/agent-tools/hive/`) is the **local hive
 lifecycle** surface — the verbs that manage a hive on this machine:
 
-* **`hive:list`** — workspace-local hives (kind:'hive' harnesses) + a live-agent count (one batched fleet read, no per-hive fan-out).
-* **`hive:get`** — one hive in depth: wake schedule + bees `{doing,queued,load}` + todo frontier depth. A pure aggregator.
-* **`hive:create`** / **`hive:create_from_repo`** — stand up a new hive (home harness + the `hive` blueprint + optional Queen wake), transactional with rollback; the `_from_repo` variant onboards a GitHub URL.
-* **`hive:dissolve`** — tear one down (clear the wake, cancel bees, delete `hive_members`, tear down the learning loop + sandbox desktop, deregister; optional schema drop), confirm-gated + owner-tier-gated.
-* **`hive:update`** — edit deployment target / per-instance config overrides.
-* **`hive:start`** / **`hive:pause`** / **`hive:wake`** / **`hive:declare-wake`** / **`hive:status`** / **`hive:survey`** / **`hive:set-steering`** — the Queen run-loop control surface (start/pause the hive, fire or schedule the next wake, read status, the placement survey, owner steering).
+* **`pot:list`** — workspace-local hives (kind:'hive' harnesses) + a live-agent count (one batched fleet read, no per-hive fan-out).
+* **`pot:get`** — one hive in depth: wake schedule + bees `{doing,queued,load}` + todo frontier depth. A pure aggregator.
+* **`pot:create`** / **`pot:create_from_repo`** — stand up a new hive (home harness + the `hive` blueprint + optional Queen wake), transactional with rollback; the `_from_repo` variant onboards a GitHub URL.
+* **`pot:dissolve`** — tear one down (clear the wake, cancel bees, delete `hive_members`, tear down the learning loop + sandbox desktop, deregister; optional schema drop), confirm-gated + owner-tier-gated.
+* **`pot:update`** — edit deployment target / per-instance config overrides.
+* **`pot:start`** / **`pot:pause`** / **`pot:wake`** / **`pot:declare-wake`** / **`pot:status`** / **`pot:survey`** / **`pot:set-steering`** — the Queen run-loop control surface (start/pause the hive, fire or schedule the next wake, read status, the placement survey, owner steering).
 
-It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` internals) rather than reinventing them. A hive is read through one seam, `resolveHive` (`_resolve.ts`), which now points onto the first-class Hive entity (`shared-hive-federation`) — the verbs didn't have to change. (The same `hive:*` namespace also carries the **shared-hive** surface — membership/approval, moderation, and cross-hive ask/grant — covered in the [shared hives guide](/system/shared-hive-guide/).)
+It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` internals) rather than reinventing them. A hive is read through one seam, `resolveHive` (`_resolve.ts`), which now points onto the first-class Hive entity (`shared-hive-federation`) — the verbs didn't have to change. (The same `pot:*` namespace also carries the **shared-hive** surface — membership/approval, moderation, and cross-hive ask/grant — covered in the [shared hives guide](/system/shared-hive-guide/).)
 
 ## Gotchas
 
 * **Create/dissolve/update are ROOT-ONLY.** They refuse a parented bee (a `bee:spawn` child — `resolveAgentIdentity(ctx).source === 'fleet-spawn'`) up front; the `assertNotNestedHive` guard in `fireLaunchBlueprint` is the runtime backstop. Hives are peers, never nested — a bee that needs structure spins a `kind:'harness'` subharness, never a hive.
 
-* **`hive:create` must stamp `harness_kind:'hive'` itself.** `harness:create` never sets `harness_kind`, and `resolveHive`/`hive:list` filter on it — so a hive home harness created any other way (or a pre-existing plain harness) is **invisible** to the namespace until stamped. `createHiveHarness` sets it; that's the one non-negotiable difference from a plain `harness:create { blueprintId:'hive' }`.
+* **`pot:create` must stamp `harness_kind:'hive'` itself.** `harness:create` never sets `harness_kind`, and `resolveHive`/`pot:list` filter on it — so a hive home harness created any other way (or a pre-existing plain harness) is **invisible** to the namespace until stamped. `createHiveHarness` sets it; that's the one non-negotiable difference from a plain `harness:create { blueprintId:'hive' }`.
 
-* **`deploy:hive` / `deploy:teardown_hive` are DISTINCT** — they are the *cloud execution-plane* (provision/destroy frames for an already-existing hive), not local lifecycle. `hive:create` does NOT deploy; `hive:dissolve` does NOT destroy a cloud frame. Order: `hive:create` → (later) `deploy:hive`; `deploy:teardown_hive` → `hive:dissolve`.
+* **`deploy:hive` / `deploy:teardown_hive` are DISTINCT** — they are the *cloud execution-plane* (provision/destroy frames for an already-existing hive), not local lifecycle. `pot:create` does NOT deploy; `pot:dissolve` does NOT destroy a cloud frame. Order: `pot:create` → (later) `deploy:hive`; `deploy:teardown_hive` → `pot:dissolve`.
 
-* **The Queen run-loop verbs live under `hive:*`.** `hive:start` / `hive:pause` (the hive on/off switch), `hive:wake` / `hive:declare-wake` (fire or schedule the next Queen wake; pause-without-stopping = `hive:declare-wake { mode:'none' }`), and `hive:status` / `hive:survey` are all in the namespace. (This supersedes the original `pot:*` aliasing — there is **no** `pot:*` tool namespace.) Bee placement stays `fleet:*`; per-loop error/backoff control is `autoloop:control`.
+* **The Queen run-loop verbs live under `pot:*`.** `pot:start` / `pot:pause` (the hive on/off switch), `pot:wake` / `pot:declare-wake` (fire or schedule the next Queen wake; pause-without-stopping = `pot:declare-wake { mode:'none' }`), and `pot:status` / `pot:survey` are all in the namespace. Bee placement stays `fleet:*`; per-loop error/backoff control is `autoloop:control`.
 
-* **`hive:dissolve` leaves workspace-scoped event-wake subscriptions.** The hive time-wake routine is per-home-slug (cleared cleanly), but the hive's event-wake subscriptions are one row per *workspace* today — so dissolve clears only the time wake to avoid clobbering sibling hives (`dissolve.ts` step 1). The first-class Hive entity makes event subs per-hive.
+* **`pot:dissolve` leaves workspace-scoped event-wake subscriptions.** The hive time-wake routine is per-home-slug (cleared cleanly), but the hive's event-wake subscriptions are one row per *workspace* today — so dissolve clears only the time wake to avoid clobbering sibling hives (`dissolve.ts` step 1). The first-class Hive entity makes event subs per-hive.
 
 ## Tests
 

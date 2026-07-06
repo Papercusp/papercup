@@ -73,7 +73,7 @@ export default defineTool({
     force: z.boolean().optional().describe('file even if a likely duplicate exists (default false → search-first declines)'),
     checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
     origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
-    lane: z.enum(['improvement', 'observation']).optional().describe("'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Scout's corpus-digest + the Observations pane read it. Default 'improvement'."),
+    lane: z.enum(['improvement', 'observation']).optional().describe("'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'."),
     observation: z
       .object({
         kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
@@ -84,8 +84,8 @@ export default defineTool({
         // Converges the source-hive tag (workspace-scoped-coordination P-001) + rubric
         // grading (this plan) into ONE coherent extension. All optional — free-text
         // observations stay first-class.
-        sourceHive: z.string().max(120).optional().describe('the hive the observation came FROM — AUTO-DERIVED from ctx (the agent harness/hive) when omitted; explicit callers (Overwatch/Scout) may set it'),
-        targetHive: z.string().max(120).optional().describe('optional: the hive the observation is ABOUT (a cross-hive observation)'),
+        sourceHive: z.string().max(120).optional().describe('the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it'),
+        targetHive: z.string().max(120).optional().describe('optional: the pot the observation is ABOUT (a cross-pot observation)'),
         rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'hive-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
         ratings: z
           .record(

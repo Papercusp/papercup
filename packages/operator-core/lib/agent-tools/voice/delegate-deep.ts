@@ -26,7 +26,7 @@ export default defineTool({
   capability: 'operator:read',
   guidance: {
     when: `The user asked something that needs REAL investigation (minutes of reading code/state/docs) and expects an ANSWER back in conversation. Delegate it, voice:say a short ack ("digging into that — I'll come back to you"), and stay responsive. When the [deep-answer WI-NNN] message arrives in your pane, present it: voice:say the speakable core + show the detail.`,
-    notWhen: `Trivia you can answer now (just answer). Buildable WORK ("build X", "fix Y") — that's a Queen handoff, not a deep dive. More than 2 in flight — the tool refuses; tell the user one is already cooking.`,
+    notWhen: `Trivia you can answer now (just answer). Buildable WORK ("build X", "fix Y") — that's a Mug handoff, not a deep dive. More than 2 in flight — the tool refuses; tell the user one is already cooking.`,
     chaining: `voice:delegate_deep { question } → voice:say the ack → (later) the [deep-answer] arrives as pane input → voice:say the answer. Check progress via work_items:get on the returned workItemId.`,
     seeAlso: ['voice:say (speak the ack + the answer)', 'work_items:get (progress on a delegation)'],
   },
@@ -43,7 +43,7 @@ export default defineTool({
     harness: z
       .string()
       .optional()
-      .describe('Harness the background agent spawns into (default: the hive home).'),
+      .describe('Harness the background agent spawns into (default: the pot home).'),
   }),
   async handler(args, ctx) {
     // Lazy imports keep the spawn/DBOS chain off the tool-mount path (the same

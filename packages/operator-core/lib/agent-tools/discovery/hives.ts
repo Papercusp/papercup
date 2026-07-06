@@ -53,7 +53,7 @@ export default defineTool({
   guidance: {
     when: 'You want to see hives available to join across the P2P network (the browse list behind the pui Hives/Network board + the desktop HiveDirectoryPanel).',
     notWhen:
-      'To list the workspace-local deployed hive frames (hiveControlFrames) use the harness/hive surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic.',
+      'To list the workspace-local deployed pot frames (hiveControlFrames) use the harness/pot surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic.',
     seeAlso: [
       'discovery:set_hive (edit your own hive\'s public listing)',
       'pot:ask (ask a peer Hive you discovered)',

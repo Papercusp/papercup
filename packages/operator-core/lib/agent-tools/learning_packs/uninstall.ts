@@ -13,7 +13,7 @@ export default defineTool({
   description:
     "Remove a learning pack's rows from a hive's shared memory (provenance-driven). Rows the user edited since seeding are KEPT by default and reported; keepEdited: false removes those too. Organic (hive-learned) rows are never touched.",
   guidance: {
-    when: 'The user wants a pack gone from a hive, or before re-installing a pack from scratch.',
+    when: 'The user wants a pack gone from a pot, or before re-installing a pack from scratch.',
     notWhen:
       'To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.',
     chaining: 'learning_packs:list { hive } shows what remains; kept edited rows are listed in the response.',

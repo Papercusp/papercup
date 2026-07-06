@@ -28,7 +28,7 @@ export default defineTool({
   guidance: {
     when: 'You see a recurring characteristic worth grading consistently and no rubric covers it. Author the criteria (each: model + how-to-investigate + drift markers); reference an agent-insights runbook via methodRef for the long-form method.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
-    chaining: 'rubrics:search (dedup) → rubrics:propose → rubrics:ratify (Queen/owner).',
+    chaining: 'rubrics:search (dedup) → rubrics:propose → rubrics:ratify (Mug/owner).',
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:ratify (Queen/owner activates the proposed rubric)',

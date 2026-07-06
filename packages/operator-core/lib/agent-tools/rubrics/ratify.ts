@@ -25,10 +25,10 @@ export default defineTool({
   name: 'rubrics:ratify',
   profile: 'engineer',
   description:
-    'Ratify one OR many proposed rubrics → status "active" (D-001: the Queen/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest.',
+    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest.',
   guidance: {
-    when: 'You are the Queen/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].',
-    notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Queen.',
+    when: 'You are the Mug/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].',
+    notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Mug.',
     chaining: 'rubrics:list { status: "proposed" } → rubrics:get → rubrics:ratify { rubricIds:[…] }. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
     seeAlso: [
       'rubrics:propose (author or revise content, not activate)',

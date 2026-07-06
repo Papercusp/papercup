@@ -26,9 +26,9 @@ export default defineTool({
   name: 'computer:provision_desktop',
   profile: 'engineer',
   description:
-    'Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a hive so its bees can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or pot:dissolve.',
+    'Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a pot so its cups can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or pot:dissolve.',
   guidance: {
-    when: 'Equipping a hive for visual/GUI work — before a bee in that hive uses capability:computer. Pass `apps` to pre-launch the programs the bee will operate (e.g. a browser, a spreadsheet).',
+    when: 'Equipping a pot for visual/GUI work — before a cup in that pot uses capability:computer. Pass `apps` to pre-launch the programs the cup will operate (e.g. a browser, a spreadsheet).',
     notWhen:
       'For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.',
     chaining:
@@ -46,7 +46,7 @@ export default defineTool({
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The hive's home-harness slug to equip with a desktop."),
+      hive: z.string().min(1).max(120).describe("The pot's home-harness slug to equip with a desktop."),
       apps: z
         .array(z.array(z.string().min(1)).min(1).max(16))
         .max(16)

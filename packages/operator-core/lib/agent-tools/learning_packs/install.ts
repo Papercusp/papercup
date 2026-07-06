@@ -34,7 +34,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120).describe('Hive home slug.'),
+    hive: z.string().min(1).max(120).describe('Pot home slug.'),
     pack: z.string().min(1).max(120).describe('Pack id (learning_packs:list enumerates).'),
     resolutions: z
       .array(z.object({ itemId: z.string().min(1), action: z.enum(['install', 'skip', 'replace', 'keep-both']) }))

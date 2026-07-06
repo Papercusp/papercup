@@ -19,7 +19,7 @@ export default defineTool({
   name: 'pot:list',
   profile: 'engineer',
   description:
-    "The workspace-local pots (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one pot in depth use pot:get.",
+    "The workspace-local pots (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-cup placement detail use fleet:assignments, for one pot in depth use pot:get.",
   guidance: {
     when: 'You want the workspace-local pots (the Pots) and their wake/load at a glance.',
     notWhen:

@@ -369,6 +369,35 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it("EI-7293 real shape: an orphaned loop-su-* row at EXACTLY the threshold (6) is suppressed by its role name", () => {
+    // EI-7293 (loop-su-c267121c-9987-4abd-a5af-d1193b355713@*, red 6 consecutive fires): filed
+    // 2026-07-04 03:47 (same batch as EI-7294 loop-su-caab983b…), over a day BEFORE the EI-7220
+    // role-name guard (`isLoopArmOwnerRole`) landed 2026-07-05 12:10 (commit 34ab1dc348).
+    // Byte-for-byte the SAME class as EI-7294 / EI-7312 (loop-su-9ff27e79…) / EI-7297 (loop-su-91ee2629…)
+    // / EI-7299 (loop-su-cd477d93…): a dead su session's loop:arm loop whose stale-red autoloop_state
+    // row outlived its owner. Pre-fix (owner-id marker only) it would escalate as if a witness-less
+    // fixed system role; the role-NAME marker (`loop-su-…` begins with `loop-`) is join-independent and
+    // suppresses it regardless of the LEFT JOIN. This pin models the WORST case (routine GC'd →
+    // routine_active NULL and routine_target_owner_id NULL, fired recently so the staleness guard also
+    // misses) so ONLY the role-name marker can catch it — the strongest guard for the actual fix.
+    // Verified live at resolution: the c267121c autoloop_state row is fully GC'd (0 rows) and its
+    // routine is active=false (target_owner_id non-null, target_role system:loop-wake) — the live
+    // condition is gone AND the deployed guard would suppress it. A distinct real-incident pin at the
+    // exact chronic threshold (6) guarding against a `> threshold` slip re-opening this loop-su-* flood.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-c267121c-9987-4abd-a5af-d1193b355713',
+        consecutive_errors: 6, // exactly the threshold — "red 6 consecutive fires"
+        last_status: 'loop-stuck-backstop',
+        routine_active: null, // worst case: routine GC'd — no matching routines row
+        routine_target_owner_id: null, // JOIN yielded null — the fragile owner-id marker fails open
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(), // fired 1min ago — not stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it("EI-6727 real shape: a LIVE (routine active, recently fired) loop:arm owner loop is NOT escalated — pre-pause window", () => {
     // EI-6727 (loop-su-dad90f05…) and 27 siblings: a dead su session's loop:arm loop climbs
     // past the chronic threshold (6) and the sweep escalates it in the WINDOW before the

@@ -21,9 +21,9 @@ export default defineTool({
   name: 'p2p:trace',
   profile: 'engineer',
   description:
-    "Assemble the cross-machine P2P timeline for a hive (optionally one offer): loud-refusal receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Receipts with kind='excused-breach' are preemption-class interruptions (X8) — excluded from reliability signals.",
+    "Assemble the cross-machine P2P timeline for a pot (optionally one offer): loud-refusal receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Receipts with kind='excused-breach' are preemption-class interruptions (X8) — excluded from reliability signals.",
   guidance: {
-    when: 'Debugging a refused/silent-looking cross-peer action ("why did my offer/wake/spawn not run on peer X?"): pass the hive (and offerId when you have one) to see every receipt both sides produced, ordered by event time, plus the unauthenticated-refusal counters. The receipt names the EXACT missing capability/budget.',
+    when: 'Debugging a refused/silent-looking cross-peer action ("why did my offer/wake/spawn not run on peer X?"): pass the pot (and offerId when you have one) to see every receipt both sides produced, ordered by event time, plus the unauthenticated-refusal counters. The receipt names the EXACT missing capability/budget.',
     notWhen:
       'Inspecting grant STATE (who may do what right now) — read the grants surface / checkP2pCapability instead; trace is the event TIMELINE, not the authorization table. General coord message history — coord:feed / coord:catch-up.',
     chaining: 'p2p:trace (you) → fix the named gap (grant a capability, raise a cap, re-attest a device) → retry the action.',
@@ -33,7 +33,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).describe('the hive HOME slug whose P2P timeline to read'),
+    hive: z.string().min(1).describe('the pot HOME slug whose P2P timeline to read'),
     offerId: z
       .string()
       .min(1)

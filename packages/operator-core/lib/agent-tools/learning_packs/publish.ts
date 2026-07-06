@@ -28,7 +28,7 @@ export const exportTool = defineTool({
   description:
     "Export a hive's shared learnings into the standard pack shape (learning-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
   guidance: {
-    when: "The user wants to share their hive's accumulated learnings — first step of the publish flow.",
+    when: "The user wants to share their pot's accumulated learnings — first step of the publish flow.",
     notWhen: 'Installing or browsing packs — learning_packs:list/install.',
     chaining:
       "After the files are committed + pushed by the project's normal flow, learning_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007).",

@@ -21,7 +21,7 @@ export default defineTool({
     "Speak a short line ALOUD to the local app user via the desktop's TTS (the Sentinel's voice-out). LOCAL app user only — not the P2P voice channels.",
   capability: 'operator:read',
   guidance: {
-    when: `You are the voice-first Sentinel and want the user to HEAR something — call voice:say with the spoken words (short: one or two sentences). The user hears ONLY what you pass here.`,
+    when: `You are the voice-first Papercup and want the user to HEAR something — call voice:say with the spoken words (short: one or two sentences). The user hears ONLY what you pass here.`,
     notWhen: `Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this.`,
     seeAlso: [
       'voice:join (multi-peer P2P voice)',

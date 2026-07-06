@@ -18,7 +18,7 @@ export default defineTool({
   description:
     'List the sandbox-desktop leases held in this operator process — each hive that holds a desktop and its display/width/height. Use to confirm computer:provision_desktop landed or to spot a leaked lease.',
   guidance: {
-    when: 'Checking which hives currently hold a sandbox desktop — after provisioning, before a VNC view, or auditing for leaks.',
+    when: 'Checking which pots currently hold a sandbox desktop — after provisioning, before a VNC view, or auditing for leaks.',
     notWhen: 'Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).',
     chaining: 'computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop.',
     seeAlso: [

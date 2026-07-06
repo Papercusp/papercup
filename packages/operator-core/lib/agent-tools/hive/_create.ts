@@ -673,11 +673,11 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     if (opts.wakeInSeconds != null) {
       const seededNote =
         seededLearnings && !seededLearnings.error && (seededLearnings.count ?? 0) > 0
-          ? ` Your hive's shared memory was pre-seeded with ${seededLearnings.count} learnings from the '${seededLearnings.packId}' pack — starting wisdom, editable, not gospel; run convention discovery to bind its discovery rules to this project.`
+          ? ` Your pot's shared memory was pre-seeded with ${seededLearnings.count} learnings from the '${seededLearnings.packId}' pack — starting wisdom, editable, not gospel; run convention discovery to bind its discovery rules to this project.`
           : '';
       const kickoff =
         opts.kickoff ??
-        `Hive '${opts.slug}' created. You are the Queen/operator in charge; survey the fleet and figure out what to do.${seededNote}`;
+        `Pot '${opts.slug}' created. You are the Mug/operator in charge; survey the fleet and figure out what to do.${seededNote}`;
       if (opts.wakeInSeconds <= 0) {
         await fireLaunchBlueprint(blueprintId, { installSlug: opts.slug, workspaceId: ws, kickoff });
         await recordHiveWake(ws);

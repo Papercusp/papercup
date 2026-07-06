@@ -16,9 +16,9 @@ export default defineTool({
   name: 'decision_ledger:summary',
   profile: 'engineer',
   description:
-    "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
+    "Roll-up of the Mug decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
   guidance: {
-    when: "Getting oriented: 'how much is the Queen auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
+    when: "Getting oriented: 'how much is the Mug auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
     notWhen: 'You want the actual rows — decision_ledger:list. Live ceilings — autonomy:policy_get.',
     chaining: 'decision_ledger:summary → decision_ledger:list { the posture/category that stands out }.',
     seeAlso: [

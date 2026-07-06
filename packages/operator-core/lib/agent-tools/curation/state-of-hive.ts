@@ -23,14 +23,14 @@ const MAX_PER_CATEGORY = 100;
 export default defineTool({
   name: 'curation:state-of-hive',
   description:
-    'The "state of the Hive" corpus digest — a deterministic rollup of cross-corpus meta-patterns (recurring friction, time/token sinks, chronic deferrals, capability gaps) over the change feed + completions + reverts. The Scout loop\'s grounded ideation substrate; each pattern references the originals (drill in via work_items:get / plans:get / curation:change-feed).',
+    'The "state of the Pot" corpus digest — a deterministic rollup of cross-corpus meta-patterns (recurring friction, time/token sinks, chronic deferrals, capability gaps) over the change feed + completions + reverts. The Blender loop\'s grounded ideation substrate; each pattern references the originals (drill in via work_items:get / plans:get / curation:change-feed).',
   capability: 'curation:read',
   guidance: {
-    when: 'You want the introspective "what are the Hive\'s standing meta-patterns" rollup — the recurring friction, where time/tokens go, what keeps being deferred, and the absent capabilities — as the grounded substrate for generative ideation (the Scout loop) or a state-of-the-Hive review. Each pattern carries refs back to the originals.',
+    when: 'You want the introspective "what are the Pot\'s standing meta-patterns" rollup — the recurring friction, where time/tokens go, what keeps being deferred, and the absent capabilities — as the grounded substrate for generative ideation (the Blender loop) or a state-of-the-Pot review. Each pattern carries refs back to the originals.',
     notWhen:
       'For the raw stream of recent completions use curation:change-feed. For salience-ranked live fleet signals (escalations/blockers) use curation:feed. For the captured-improvement triage queue (auto vs human lanes) use improvements:digest.',
     chaining:
-      'curation:state-of-hive → drill into a pattern via its refs (work_items:get on wi:<id>, plans:get on plan:<slug>, curation:change-feed) → feed the digest to the Scout ideators.',
+      'curation:state-of-hive → drill into a pattern via its refs (work_items:get on wi:<id>, plans:get on plan:<slug>, curation:change-feed) → feed the digest to the Blender ideators.',
     seeAlso: [
       'curation:change-feed (the change feed it rolls up)',
       'work_items:get (drill into a surfaced pattern)',

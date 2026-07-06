@@ -45,7 +45,7 @@ export default defineTool({
   crossWorkspace: true,
   args: z
     .object({
-      hive: z.string().min(1).max(120).optional().describe('the hive — for the inline pack / every pack in `packs`'),
+      hive: z.string().min(1).max(120).optional().describe('the pot — for the inline pack / every pack in `packs`'),
       pack: z.string().min(1).max(120).optional().describe('single-flip shorthand: the pack id (use with `hive`, `enabled`)'),
       enabled: z.boolean().optional().describe('enabled state for the inline pack / every pack in `packs`'),
       packs: z.array(z.string().min(1).max(120)).min(1).max(200).optional().describe('flip MANY packs for the same `hive` + `enabled` (homogeneous)'),

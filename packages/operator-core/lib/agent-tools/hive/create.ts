@@ -24,11 +24,11 @@ export default defineTool({
   name: 'pot:create',
   profile: 'engineer',
   description:
-    "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+    "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:hive).",
   guidance: {
-    when: 'Standing up a NEW local pot (its home harness + Queen) in one call. Operator/user only.',
+    when: 'Standing up a NEW local pot (its home harness + Mug) in one call. Operator/user only.',
     notWhen:
-      'Deploying an EXISTING pot to a cloud frame — deploy:hive. A plain non-pot harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
+      'Deploying an EXISTING pot to a cloud frame — deploy:hive. A plain non-pot harness — harness:create. From a cup — not allowed (spin a kind:harness subharness instead).',
     chaining:
       'pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; pot:dissolve to tear it down.',
     seeAlso: [
@@ -57,7 +57,7 @@ export default defineTool({
       .min(0)
       .max(86_400)
       .optional()
-      .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
+      .describe('Wake the Mug after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the first wake. Auto-truncated to 2000 chars if longer.'),
     blueprintId: z
       .string()
@@ -113,7 +113,7 @@ export default defineTool({
         ok: false,
         error: 'hive_create_root_only',
         message:
-          'pot:create cannot be called from a bee (a spawned/parented agent). Pots are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a pot.',
+          'pot:create cannot be called from a cup (a spawned/parented agent). Pots are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a pot.',
       });
     }
 

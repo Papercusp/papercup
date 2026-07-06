@@ -28,9 +28,9 @@ export default defineTool({
   name: 'pot:cross_grant',
   profile: 'engineer',
   description:
-    "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Queen can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
+    "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Mug can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
   guidance: {
-    when: "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Queen's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
+    when: "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Mug's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
     notWhen:
       'Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.',
     chaining:

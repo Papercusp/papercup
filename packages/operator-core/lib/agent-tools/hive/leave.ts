@@ -33,7 +33,7 @@ export default defineTool({
   guidance: {
     when: 'A joiner cleanly leaving a shared hive they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.',
     notWhen:
-      'Tearing down a LOCAL pot you OWN (stop its Queen, cancel its bees) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
+      'Tearing down a LOCAL pot you OWN (stop its Mug, cancel its cups) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.',
     chaining: 'pot:list / pot:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind.',
     seeAlso: [
       'pot:list (find the joined hive slug first)',
@@ -67,7 +67,7 @@ export default defineTool({
         ok: false,
         error: 'hive_leave_root_only',
         message:
-          'pot:leave cannot be called from a bee (a spawned/parented agent). Only the operator/user leaves a hive.',
+          'pot:leave cannot be called from a cup (a spawned/parented agent). Only the operator/user leaves a hive.',
       });
     }
     if (!args.confirm) {

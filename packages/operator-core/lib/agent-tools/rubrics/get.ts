@@ -23,7 +23,7 @@ export default defineTool({
   description:
     "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass `rubricId` for one or `rubricIds` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing id never fails the rest.",
   guidance: {
-    when: 'You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Overwatch emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.',
+    when: 'You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
     chaining: "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.",
     seeAlso: [

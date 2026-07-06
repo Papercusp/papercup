@@ -27,7 +27,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().max(120).optional().describe("Hive home slug — include this hive's installed state."),
+    hive: z.string().max(120).optional().describe("Pot home slug — include this pot's installed state."),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {

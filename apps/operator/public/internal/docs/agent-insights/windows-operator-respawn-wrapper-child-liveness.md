@@ -114,6 +114,37 @@ child_exited=false, operator_reachable=false, unreachable_respawn_ready=true
 in `src-tauri/src/main.rs`). `cargo test` in `src-tauri` covers this plus all the
 pre-existing WI-2667 decider cases.
 
+## VERIFIED LIVE on the Windows VM (2026-07-06, WI-3170 P-004)
+
+Confirmed end-to-end on the QEMU Windows VM against the installed Inno full-seed
+build (`/api/health` sha `99f2214b3b`). The operator runs inside the
+**`papercup-runtime`** WSL distro (NOT the default `Ubuntu`; user `papercup`,
+`/home/papercup/.papercusp/operator.json`) — reach it with
+`wsl.exe -d papercup-runtime`. Two destructive runs, same Server app (pid 12336)
+supervising throughout:
+
+* **Run 1** (`verify-operator-respawn-vm.sh`): killed operator pid 9 + `pkill serve.mjs`
+  → Server respawned a healthy operator (fresh pid 8207) in **\~15s**. Exit 0 = PASS.
+* **Run 2** (instrumented, per-second trace): killed pid 8207 → `/api/health` **DOWN
+  continuously for \~15s** (operator.json emptied) → **recovered at t≈17s** (fresh pid
+  9770\).
+
+**Why this proves the debounce path (not the old `child_exited` path):** the
+supervision loop polls every **1.5s** (`main.rs` `sleep(from_millis(1500))`). A
+`child_exited==true` respawn fires on the *next* poll → recovery in \~3–5s. The
+observed \~15s dead-window before respawn is `SERVE_UNREACHABLE_DEBOUNCE` (15s)
+elapsing — i.e. `child_exited` stayed **false** (the `wsl.exe` wrapper outlived the
+killed inner operator, the exact blind spot) and the new
+`unreachable_respawn_ready` arming is what triggered the respawn. The
+owner-reported "operator goes down and stays down" symptom is resolved.
+
+> VM gotchas for the next verifier: the operator lives in `papercup-runtime`, not
+> the default distro (probing the default shows a listening 16069 socket via the
+> shared WSL2 netns but **no** process/operator.json — separate PID+mount ns).
+> `tasklist.exe` interop is **off** inside `papercup-runtime`, so read the
+> Windows-side `wsl.exe`/Server pids over SSH (`tasklist /FI ...`), not from within
+> the distro.
+
 ## Co-install guard (only the Server role owns the operator)
 
 VM forensics also found **two** `papercusp-desktop.exe` running — the Server

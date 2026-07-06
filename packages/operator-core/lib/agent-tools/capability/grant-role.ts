@@ -32,7 +32,7 @@ export default defineTool({
     "Runtime-grant capabilities to a role (unioned into loadRoleCapabilities, flag-gated). Replaces editing BLUEPRINT_ROLE_CAPS + redeploying to unblock a role. Privilege-escalation surface — enforces D-007: no protected-floor caps (secrets:*/processes:kill), cannot grant above the granter's own envelope, operator-authority only. Audited + one-call-revertible. Dark until papercusp-capability-grant-tool is enabled.",
   capability: 'operator:write',
   guidance: {
-    when: 'A role is blocked from its job for lack of a capability and you (operator/architect/queen) need to grant it live, instead of editing role-principal-caps.ts + redeploying.',
+    when: 'A role is blocked from its job for lack of a capability and you (operator/architect/mug) need to grant it live, instead of editing role-principal-caps.ts + redeploying.',
     notWhen: 'To REMOVE a cap, use capability:revoke_role. The protected floor (secrets:*, processes:kill) can never be granted. While the papercusp-capability-grant-tool flag is off this refuses (the grant surface is owner-ratified, D-007).',
     chaining: 'config:list-overrides shows active grants (concern role-capability-grants); config:reset-overrides wipes them.',
     seeAlso: [

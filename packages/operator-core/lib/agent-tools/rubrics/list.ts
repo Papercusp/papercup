@@ -15,7 +15,7 @@ export default defineTool({
   description:
     'List rubrics (shared standards for a system characteristic) — active first, then proposed. Filter by status / characteristic. A rubric carries the model (how it should work), method, rating scale + drift markers, and per-characteristic criteria that agents grade STRUCTURED OBSERVATIONS against. Returns summary rows; use rubrics:get for full criteria.',
   guidance: {
-    when: 'Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Scout: discover the rubric set to grade against.',
+    when: 'Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Kettle/Blender: discover the rubric set to grade against.',
     notWhen: 'You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search.',
     chaining: 'rubrics:list { status: "active" } → rubrics:get { rubricId } → file a structured observation.',
     seeAlso: [

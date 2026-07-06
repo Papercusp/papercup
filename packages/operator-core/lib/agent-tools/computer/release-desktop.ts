@@ -17,15 +17,15 @@ export default defineTool({
   name: 'computer:release_desktop',
   profile: 'engineer',
   description:
-    "Tear down a hive's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the hive. Idempotent — a no-op if the hive holds no desktop. (pot:dissolve releases automatically.)",
+    "Tear down a pot's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the pot. Idempotent — a no-op if the pot holds no desktop. (pot:dissolve releases automatically.)",
   guidance: {
-    when: 'A hive is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.',
-    notWhen: 'Tearing down the whole hive — pot:dissolve already releases the desktop. There is nothing to release if the hive never provisioned one.',
+    when: 'A pot is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.',
+    notWhen: 'Tearing down the whole pot — pot:dissolve already releases the desktop. There is nothing to release if the pot never provisioned one.',
     chaining: 'computer:list_desktops to see what is leased → computer:release_desktop { hive }.',
     seeAlso: [
       'computer:list_desktops (see what is leased first)',
       'computer:provision_desktop (stand one back up)',
-      'pot:dissolve (tears down the whole hive incl desktop)',
+      'pot:dissolve (tears down the whole pot incl desktop)',
     ],
   },
   capability: 'harness:write',
@@ -33,7 +33,7 @@ export default defineTool({
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The hive's home-harness slug whose desktop to release."),
+      hive: z.string().min(1).max(120).describe("The pot's home-harness slug whose desktop to release."),
     })
     .strict(),
   async handler(args) {

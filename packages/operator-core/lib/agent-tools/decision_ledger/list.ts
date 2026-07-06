@@ -17,9 +17,9 @@ export default defineTool({
   name: 'decision_ledger:list',
   profile: 'engineer',
   description:
-    "The Queen's decision ledger newest-first: governed actions (layer=action — what ran, with posture auto/gated/rejected) and the Queen's per-item dispositions (layer=disposition — act/defer/reject/route-to-research/no-op + why). Filter by layer/category/posture/disposition/time. Each row carries the autonomy axes (category, risk_tier, reversibility, authority) + provenance links. Read-only.",
+    "The Mug's decision ledger newest-first: governed actions (layer=action — what ran, with posture auto/gated/rejected) and the Mug's per-item dispositions (layer=disposition — act/defer/reject/route-to-research/no-op + why). Filter by layer/category/posture/disposition/time. Each row carries the autonomy axes (category, risk_tier, reversibility, authority) + provenance links. Read-only.",
   guidance: {
-    when: "Auditing what the Queen has decided / what the fleet has done: 'what auto-decisions happened?', 'show the gated actions in spend-budget', 'what did she defer?'. Pair with autonomy:policy_get to see why a category gates.",
+    when: "Auditing what the Mug has decided / what the fleet has done: 'what auto-decisions happened?', 'show the gated actions in spend-budget', 'what did it defer?'. Pair with autonomy:policy_get to see why a category gates.",
     notWhen:
       'A roll-up of counts by posture/category — decision_ledger:summary. Prompt/rule mutations specifically — change_ledger:list. The live policy ceilings — autonomy:policy_get.',
     chaining:
@@ -34,7 +34,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    layer: z.enum(['action', 'disposition']).optional().describe('action (governed actions) | disposition (Queen choices)'),
+    layer: z.enum(['action', 'disposition']).optional().describe('action (governed actions) | disposition (Mug choices)'),
     category: z.string().min(1).max(60).optional().describe('one autonomy category (e.g. spend-budget, plan-governance)'),
     posture: z
       .enum(['auto', 'proposed', 'gated', 'rejected'])

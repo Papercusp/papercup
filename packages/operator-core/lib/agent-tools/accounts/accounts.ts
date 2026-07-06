@@ -28,9 +28,9 @@ export default defineTool({
   description:
     "Register (or update) a provider account in the pool. `provider:'claude'` (default) uses a Claude Max OAuth credential: `token:<path>` (`claude setup-token`) | `file:<path>` / absolute / `~` (`.credentials.json`). `provider:'codex'` uses a bearer credential for the Codex/OpenAI-compatible gateway: `token:<path>` or `env:NAME`. Credential refs are references, never the secret. Optional `egress` pins the account to its own outbound IP. Re-registering an existing id updates credentialRef/provider/label/egress, preserving bindings + rate state. Returns {ok, account}.",
   guidance: {
-    when: 'Adding a Claude Max subscription the Queen can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
+    when: 'Adding a Claude Max subscription the Mug can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
-    chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → bees route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member.',
+    chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → cups route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member.',
     seeAlso: [
       'accounts:link-start (register via one-click OAuth instead of a setup-token)',
       'accounts:list (verify the pool after registering)',
@@ -83,9 +83,9 @@ export default defineTool({
 export const accountsListTool = defineTool({
   name: 'accounts:list',
   description:
-    "List the Queen's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
+    "List the Mug's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
   guidance: {
-    when: 'Seeing which accounts the Queen can draw from and what each is bound to.',
+    when: 'Seeing which accounts the Mug can draw from and what each is bound to.',
     notWhen: 'Wanting live headroom + sustained-limit flags — accounts:status.',
     seeAlso: [
       'accounts:status (live headroom + sustained-limit flags per account)',

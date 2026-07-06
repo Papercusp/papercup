@@ -57,7 +57,7 @@ export default defineTool({
     kind: z.enum(KINDS).optional(),
     harness_slug: z.string().optional(),
     hive_slug: z.string().optional()
-      .describe("Also list the Hive's shared pool (seeded learnings + recorded conventions — learning-packs P-004)."),
+      .describe("Also list the Pot's shared pool (seeded learnings + recorded conventions — learning-packs P-004)."),
   }),
   async handler(args) {
     const user = await getSessionUserOrDefault();

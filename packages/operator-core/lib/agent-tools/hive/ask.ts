@@ -27,7 +27,7 @@ export default defineTool({
   description:
     "Initiate a cross-Hive ASK to a peer Hive (by pubkey): a question the peer Hive owns the answer to. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; the peer's answer arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
   guidance: {
-    when: 'The Queen/owner needs an answer another Hive is the authority on (it owns that domain). Find the peer via discovery:hives, then pot:ask, then events:await the returned answeredEvent.',
+    when: 'The Mug/owner needs an answer another Hive is the authority on (it owns that domain). Find the peer via discovery:hives, then pot:ask, then events:await the returned answeredEvent.',
     notWhen:
       'Handing the peer WORK to do (use pot:request_work). Within-Hive questions (coord:ask / conversations). Granting a peer to send asks INTO this Hive (that is the inbound pot:cross_grant).',
     chaining:

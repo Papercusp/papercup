@@ -30,7 +30,7 @@ export default defineTool({
   description:
     'Inspect the self-learning loop routines: per workspace-singleton learning loop (calibration, scout, graduation, iq-battery, …) its routine state — firing / stale (active but not firing) / dark-by-design (frontier, unarmed) / should-be-on-but-dark (an always-on loop gone dark) / absent — plus the @singleton↔legacy double-state. Read-only — the dark-loop visibility surface so a built-but-never-armed loop does not rot unseen.',
   guidance: {
-    when: 'To answer "which learning loops are dark / wedged / never armed?" — the standing health of the self-learning machinery (calibration sweep, scout, graduation, gym, iq-battery, …). Catches the recurring class: a loop seeded inactive behind a default-OFF flag that nobody armed, an always-on loop that wedged (stopped firing), or a @singleton↔legacy migration collision.',
+    when: 'To answer "which learning loops are dark / wedged / never armed?" — the standing health of the self-learning machinery (calibration sweep, blender, graduation, gym, iq-battery, …). Catches the recurring class: a loop seeded inactive behind a default-OFF flag that nobody armed, an always-on loop that wedged (stopped firing), or a @singleton↔legacy migration collision.',
     notWhen: 'For the watchdog tick health + auto-implement dispatch ledger use improvements:watchdog-status. For the captured backlog use improvements:digest.',
     chaining:
       'improvements:learning_loops → (a dark frontier loop) the per-lane arming runbook; (a should-be-on-but-dark / stale loop) investigate the routine then improvements:capture.',

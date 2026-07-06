@@ -46,7 +46,7 @@ export default defineTool({
     body: z.string().min(1).max(4000).describe(`The conclusion — stored truncated to ${FACT_BODY_MAX_CHARS} chars (write tight conclusions, not documents).`),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it (WI-/EI- id, plan slug) so readers can verify.'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
-    shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the hive over the substrate. Default false — facts are hive-private.'),
+    shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
   }),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');

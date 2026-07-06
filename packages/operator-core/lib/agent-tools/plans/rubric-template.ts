@@ -61,7 +61,7 @@ export const rubricTemplateDataSchema = z
     characteristic: z
       .string()
       .min(1)
-      .describe('umbrella domain, e.g. "hive-coordination" — Scout\'s digest groups by this'),
+      .describe('umbrella domain, e.g. "hive-coordination" — Blender\'s digest groups by this'),
     criteria: z
       .array(rubricCriterionSchema)
       .min(1)

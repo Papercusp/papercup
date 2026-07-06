@@ -4092,13 +4092,15 @@ Claude Code on macOS stores its OAuth bundle in the **login Keychain** (service 
 * **Sign-in detection** (`agent-auth-detect.ts` `claudeKeychainSignedIn`): metadata-only probe (`security find-generic-password -s <service>` WITHOUT `-w`) — no secret fetch, no unlock prompt, fail-safe fallthrough to the file probe.
 * **Gateway local-fallback credential** (`credential-store.ts` `keychain:` credentialRef kind + `account-resolver.ts` `localLoginCredentialRef()`): when the file bundle is absent on darwin, the `local` fallback account resolves to `keychain:Claude Code-credentials`. The resolver is **read-only by design** — Claude Code owns the item + its refresh; the gateway re-READS near expiry and fails with actionable guidance if the bundle went stale. ⚠ Keychain ACL: the FIRST `security -w` read of an item created by another app raises a GUI “allow access” prompt — click **Always Allow** once.
 
-⚠ **Mac-VM verification pending**: the service labels, the ACL-prompt behavior, and an E2E supervisor smoke (packaged app boots → gateway spawns → keychain credential serves a request).
+✅ **Mac-VM E2E smoke verified (2026-07-06, WI-3080)**: packaged app running, gateway spawns (`gateway.log`: “up on 127.0.0.1:8788 → account ‘local’ (local-fallback)”, “supervision up in 3241ms — spawned”), `/healthz` 200, `totalRequests`/`egressAttemptsByAccount` confirm a real served request end-to-end. ⚠ **Still unverified**: this VM has a hand-provisioned `~/.claude/.credentials.json`, so it resolves the FILE credential channel — `localLoginCredentialRef()` only takes the `keychain:` path when that file is ABSENT on darwin. The keychain-specific fallback branch + the “Always Allow” ACL prompt remain unverified live; that needs a fresh-install Mac VM pass without the file (tracked as a follow-up, not blocking).
 
 ## Windows / WSL (the P-010 answer)
 
 [Section titled “Windows / WSL (the P-010 answer)”](#windows--wsl-the-p-010-answer)
 
 The Windows desktop runs the sidecar **under WSL**, where `process.platform === 'linux'` but systemd is absent by default. The host-bootstrap supervisor block runs there identically: the port probe finds nothing → it **spawns** the gateway child (bundled re-exec, since the packaged sidecar is the bundle). A WSL user who has enabled systemd + installed the unit gets adopted via the probe instead. No WSL-specific code was needed — the gap closed with P-006. Note: service-health’s bg-host code-drift probe (below) is deliberately NOT short-circuited under WSL, since WSL reports `linux`.
+
+✅ **Windows-VM E2E smoke verified (2026-07-06, WI-3080)**: full boot watched live under the `papercup-runtime` WSL distro — `serve.mjs --ensure` → embedded PG boots + migrates → operator up (`operator.json` + `/api/health` 200 over the WSL loopback) → the gateway-sidecar supervisor spawns with no WSL-specific code and logs “up on 127.0.0.1:8788” in `~/.papercusp/gateway.log`, confirmed live with `/healthz` 200. Confirms the P-006/007/008 port-probe-first-adoption + managed-child-spawn shape genuinely works under WSL as claimed above.
 
 ## Verified CAT1 runtime table (P-009)
 
@@ -4122,8 +4124,8 @@ Everything else lives in the dev/CI/release plane and never ships in the desktop
 
 [Section titled “Open items”](#open-items)
 
-1. **Mac-VM E2E smoke** — packaged supervisor boot, Keychain labels + ACL prompt, gateway serving with the `keychain:` credential.
-2. **Windows-VM equivalent** — WSL sidecar boots the supervisor; gateway reachable from agents.
+1. **Mac-VM Keychain-fallback smoke** — the supervisor boot + gateway spawn is now verified (2026-07-06), but the specific `keychain:` credential branch (file bundle ABSENT) still needs a fresh-install Mac VM pass, since the current VM has a hand-provisioned credentials file.
+2. ~~Windows-VM equivalent~~ — verified 2026-07-06 (WI-3080): WSL sidecar boots the supervisor, gateway reachable, confirmed live.
 3. **Sidecar-spawn extraction** — `gateway-sidecar-spawn.ts` is the third copy of the spawn/respawn/backoff shape; extract to a shared lib.
 
 # Workspace-agnostic tools need `crossWorkspace: true` (or they fail on fleet sessions)
@@ -10854,24 +10856,28 @@ Because a seeded install stops exercising the full cold join on every boot, the 
 | `PAPERCUSP_SEED_DIR=<dir>`                    | override the seed dir (must contain `manifest.json`) |
 | `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)      |
 
-# The hive:* tool namespace — local hive lifecycle
+# The pot:* tool namespace — local hive lifecycle
 
-> The hive:* namespace is the full LOCAL hive lifecycle (a kind:'hive' harness + its Queen/bees) — list/get/create/dissolve/update plus the Queen run-loop verbs (start/pause/wake/declare-wake/status/survey). Gotchas — create/dissolve/update are root-only; create must stamp harness_kind:'hive' (harness:create doesn't); deploy:hive is a DISTINCT cloud step; bee placement stays fleet:*.
+> The pot:* namespace is the full LOCAL hive lifecycle (a kind:'hive' harness + its Queen/bees) — list/get/create/dissolve/update plus the Queen run-loop verbs (start/pause/wake/declare-wake/status/survey). Gotchas — create/dissolve/update are root-only; create must stamp harness_kind:'hive' (harness:create doesn't); deploy:hive is a DISTINCT cloud step; bee placement stays fleet:*.
+
+Renamed 2026-07 — hive:\* is now pot:\*
+
+The tool NAMES in this namespace were renamed `hive:*` → `pot:*` (the Pot rename, WI-2932). The underlying entity/identifier vocabulary is UNCHANGED — the code still lives under `packages/operator-core/lib/agent-tools/hive/`, the harness marker is still `harness_kind:'hive'`, `resolveHive`/`createHiveHarness` keep their names, and the shared-hive FEDERATION concept (a remote/joined hive across the P2P network) still says “hive”. Only the local, single-instance entity’s agent-facing verbs became `pot:*`.
 
 ## What
 
 [Section titled “What”](#what)
 
-`hive:*` (`packages/operator-core/lib/agent-tools/hive/`) is the **local hive lifecycle** surface — the verbs that manage a hive on this machine:
+`pot:*` (`packages/operator-core/lib/agent-tools/hive/`) is the **local hive lifecycle** surface — the verbs that manage a hive on this machine:
 
-* **`hive:list`** — workspace-local hives (kind:‘hive’ harnesses) + a live-agent count (one batched fleet read, no per-hive fan-out).
-* **`hive:get`** — one hive in depth: wake schedule + bees `{doing,queued,load}` + todo frontier depth. A pure aggregator.
-* **`hive:create`** / **`hive:create_from_repo`** — stand up a new hive (home harness + the `hive` blueprint + optional Queen wake), transactional with rollback; the `_from_repo` variant onboards a GitHub URL.
-* **`hive:dissolve`** — tear one down (clear the wake, cancel bees, delete `hive_members`, tear down the learning loop + sandbox desktop, deregister; optional schema drop), confirm-gated + owner-tier-gated.
-* **`hive:update`** — edit deployment target / per-instance config overrides.
-* **`hive:start`** / **`hive:pause`** / **`hive:wake`** / **`hive:declare-wake`** / **`hive:status`** / **`hive:survey`** / **`hive:set-steering`** — the Queen run-loop control surface (start/pause the hive, fire or schedule the next wake, read status, the placement survey, owner steering).
+* **`pot:list`** — workspace-local hives (kind:‘hive’ harnesses) + a live-agent count (one batched fleet read, no per-hive fan-out).
+* **`pot:get`** — one hive in depth: wake schedule + bees `{doing,queued,load}` + todo frontier depth. A pure aggregator.
+* **`pot:create`** / **`pot:create_from_repo`** — stand up a new hive (home harness + the `hive` blueprint + optional Queen wake), transactional with rollback; the `_from_repo` variant onboards a GitHub URL.
+* **`pot:dissolve`** — tear one down (clear the wake, cancel bees, delete `hive_members`, tear down the learning loop + sandbox desktop, deregister; optional schema drop), confirm-gated + owner-tier-gated.
+* **`pot:update`** — edit deployment target / per-instance config overrides.
+* **`pot:start`** / **`pot:pause`** / **`pot:wake`** / **`pot:declare-wake`** / **`pot:status`** / **`pot:survey`** / **`pot:set-steering`** — the Queen run-loop control surface (start/pause the hive, fire or schedule the next wake, read status, the placement survey, owner steering).
 
-It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` internals) rather than reinventing them. A hive is read through one seam, `resolveHive` (`_resolve.ts`), which now points onto the first-class Hive entity (`shared-hive-federation`) — the verbs didn’t have to change. (The same `hive:*` namespace also carries the **shared-hive** surface — membership/approval, moderation, and cross-hive ask/grant — covered in the [shared hives guide](/system/shared-hive-guide/).)
+It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` internals) rather than reinventing them. A hive is read through one seam, `resolveHive` (`_resolve.ts`), which now points onto the first-class Hive entity (`shared-hive-federation`) — the verbs didn’t have to change. (The same `pot:*` namespace also carries the **shared-hive** surface — membership/approval, moderation, and cross-hive ask/grant — covered in the [shared hives guide](/system/shared-hive-guide/).)
 
 ## Gotchas
 
@@ -10879,13 +10885,13 @@ It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` inte
 
 * **Create/dissolve/update are ROOT-ONLY.** They refuse a parented bee (a `bee:spawn` child — `resolveAgentIdentity(ctx).source === 'fleet-spawn'`) up front; the `assertNotNestedHive` guard in `fireLaunchBlueprint` is the runtime backstop. Hives are peers, never nested — a bee that needs structure spins a `kind:'harness'` subharness, never a hive.
 
-* **`hive:create` must stamp `harness_kind:'hive'` itself.** `harness:create` never sets `harness_kind`, and `resolveHive`/`hive:list` filter on it — so a hive home harness created any other way (or a pre-existing plain harness) is **invisible** to the namespace until stamped. `createHiveHarness` sets it; that’s the one non-negotiable difference from a plain `harness:create { blueprintId:'hive' }`.
+* **`pot:create` must stamp `harness_kind:'hive'` itself.** `harness:create` never sets `harness_kind`, and `resolveHive`/`pot:list` filter on it — so a hive home harness created any other way (or a pre-existing plain harness) is **invisible** to the namespace until stamped. `createHiveHarness` sets it; that’s the one non-negotiable difference from a plain `harness:create { blueprintId:'hive' }`.
 
-* **`deploy:hive` / `deploy:teardown_hive` are DISTINCT** — they are the *cloud execution-plane* (provision/destroy frames for an already-existing hive), not local lifecycle. `hive:create` does NOT deploy; `hive:dissolve` does NOT destroy a cloud frame. Order: `hive:create` → (later) `deploy:hive`; `deploy:teardown_hive` → `hive:dissolve`.
+* **`deploy:hive` / `deploy:teardown_hive` are DISTINCT** — they are the *cloud execution-plane* (provision/destroy frames for an already-existing hive), not local lifecycle. `pot:create` does NOT deploy; `pot:dissolve` does NOT destroy a cloud frame. Order: `pot:create` → (later) `deploy:hive`; `deploy:teardown_hive` → `pot:dissolve`.
 
-* **The Queen run-loop verbs live under `hive:*`.** `hive:start` / `hive:pause` (the hive on/off switch), `hive:wake` / `hive:declare-wake` (fire or schedule the next Queen wake; pause-without-stopping = `hive:declare-wake { mode:'none' }`), and `hive:status` / `hive:survey` are all in the namespace. (This supersedes the original `pot:*` aliasing — there is **no** `pot:*` tool namespace.) Bee placement stays `fleet:*`; per-loop error/backoff control is `autoloop:control`.
+* **The Queen run-loop verbs live under `pot:*`.** `pot:start` / `pot:pause` (the hive on/off switch), `pot:wake` / `pot:declare-wake` (fire or schedule the next Queen wake; pause-without-stopping = `pot:declare-wake { mode:'none' }`), and `pot:status` / `pot:survey` are all in the namespace. Bee placement stays `fleet:*`; per-loop error/backoff control is `autoloop:control`.
 
-* **`hive:dissolve` leaves workspace-scoped event-wake subscriptions.** The hive time-wake routine is per-home-slug (cleared cleanly), but the hive’s event-wake subscriptions are one row per *workspace* today — so dissolve clears only the time wake to avoid clobbering sibling hives (`dissolve.ts` step 1). The first-class Hive entity makes event subs per-hive.
+* **`pot:dissolve` leaves workspace-scoped event-wake subscriptions.** The hive time-wake routine is per-home-slug (cleared cleanly), but the hive’s event-wake subscriptions are one row per *workspace* today — so dissolve clears only the time wake to avoid clobbering sibling hives (`dissolve.ts` step 1). The first-class Hive entity makes event subs per-hive.
 
 ## Tests
 
@@ -28148,6 +28154,19 @@ child_exited=false, operator_reachable=false, unreachable_respawn_ready=true
 ```
 
 (see `serve_respawn_when_operator_unreachable_past_debounce_despite_live_wrapper_child` in `src-tauri/src/main.rs`). `cargo test` in `src-tauri` covers this plus all the pre-existing WI-2667 decider cases.
+
+## VERIFIED LIVE on the Windows VM (2026-07-06, WI-3170 P-004)
+
+[Section titled “VERIFIED LIVE on the Windows VM (2026-07-06, WI-3170 P-004)”](#verified-live-on-the-windows-vm-2026-07-06-wi-3170-p-004)
+
+Confirmed end-to-end on the QEMU Windows VM against the installed Inno full-seed build (`/api/health` sha `99f2214b3b`). The operator runs inside the **`papercup-runtime`** WSL distro (NOT the default `Ubuntu`; user `papercup`, `/home/papercup/.papercusp/operator.json`) — reach it with `wsl.exe -d papercup-runtime`. Two destructive runs, same Server app (pid 12336) supervising throughout:
+
+* **Run 1** (`verify-operator-respawn-vm.sh`): killed operator pid 9 + `pkill serve.mjs` → Server respawned a healthy operator (fresh pid 8207) in **\~15s**. Exit 0 = PASS.
+* **Run 2** (instrumented, per-second trace): killed pid 8207 → `/api/health` **DOWN continuously for \~15s** (operator.json emptied) → **recovered at t≈17s** (fresh pid 9770).
+
+**Why this proves the debounce path (not the old `child_exited` path):** the supervision loop polls every **1.5s** (`main.rs` `sleep(from_millis(1500))`). A `child_exited==true` respawn fires on the *next* poll → recovery in \~3–5s. The observed \~15s dead-window before respawn is `SERVE_UNREACHABLE_DEBOUNCE` (15s) elapsing — i.e. `child_exited` stayed **false** (the `wsl.exe` wrapper outlived the killed inner operator, the exact blind spot) and the new `unreachable_respawn_ready` arming is what triggered the respawn. The owner-reported “operator goes down and stays down” symptom is resolved.
+
+> VM gotchas for the next verifier: the operator lives in `papercup-runtime`, not the default distro (probing the default shows a listening 16069 socket via the shared WSL2 netns but **no** process/operator.json — separate PID+mount ns). `tasklist.exe` interop is **off** inside `papercup-runtime`, so read the Windows-side `wsl.exe`/Server pids over SSH (`tasklist /FI ...`), not from within the distro.
 
 ## Co-install guard (only the Server role owns the operator)
 

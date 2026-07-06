@@ -35,13 +35,13 @@ export default defineTool({
   name: 'pot:add-member',
   profile: 'engineer',
   description:
-    "Wire an existing harness in as a MEMBER of a local pot (sets its hive_slug so its work federates within the pot and surfaces in the Queen's member-scoped pot:survey). Registry edit only — never moves the harness folder or run data; best-effort seeds the member's git-sync routine. Idempotent (re-adding is a no-op success). Use this to remediate a member-less pot whose Queen surveys workspace-wide and escalates out-of-scope debris.",
+    "Wire an existing harness in as a MEMBER of a local pot (sets its hive_slug so its work federates within the pot and surfaces in the Mug's member-scoped pot:survey). Registry edit only — never moves the harness folder or run data; best-effort seeds the member's git-sync routine. Idempotent (re-adding is a no-op success). Use this to remediate a member-less pot whose Mug surveys workspace-wide and escalates out-of-scope debris.",
   guidance: {
-    when: "A pot has no members so pot:survey falls back to workspace-wide scope (frontier empty / Queen-unresolvable escalations) — wire the real harness in. Also the producer for shared-hive federation membership.",
+    when: "A pot has no members so pot:survey falls back to workspace-wide scope (frontier empty / Mug-unresolvable escalations) — wire the real harness in. Also the producer for shared-hive federation membership.",
     notWhen:
       'Adding a person/device to a pot (that is admission, a separate concern). Removing a member (re-point via the registry / pot:leave for a joined remote hive). Nesting a pot home as a member (rejected — pots compose as peers).',
     chaining:
-      'pot:list / pot:get to find the pot home + the member slug → pot:add-member → pot:start (or pot:wake) so the Queen surveys the now-scoped frontier → pot:survey to confirm members[] is non-empty + scope is pot-local.',
+      'pot:list / pot:get to find the pot home + the member slug → pot:add-member → pot:start (or pot:wake) so the Mug surveys the now-scoped frontier → pot:survey to confirm members[] is non-empty + scope is pot-local.',
     seeAlso: [
       'pot:ban_member (remove a member)',
       'pot:membership_pending (approve a self-requested join instead of adding directly)',

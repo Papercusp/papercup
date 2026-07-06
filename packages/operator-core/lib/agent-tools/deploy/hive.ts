@@ -18,7 +18,7 @@ const fail = (payload: Record<string, unknown>) => ({
 });
 
 const hiveSpecArgs = z.object({
-  hiveId: z.string().min(1).describe('Hive id (the grouping)'),
+  hiveId: z.string().min(1).describe('Pot id (the grouping)'),
   members: z.array(z.string().min(1)).describe('Member harness slugs to deploy onto the Swarm'),
   swarm: DeploymentConfigSchema.describe('The cloud target for execution frames (e.g. {target:"latitude",region:"NYC",size:"m4-metal-small"}). Set desktop:true (or {displays,geometry}) for GUI-capable frames — one Xvfb display per agent slot.'),
   queen: z
@@ -34,15 +34,15 @@ const hiveSpecArgs = z.object({
 export default defineTool({
   name: 'deploy:hive',
   description:
-    "Deploy a Hive (grouping of harnesses) to a Swarm (cloud fleet): place the Queen (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
+    "Deploy a pot (grouping of harnesses) to a Swarm (cloud fleet): place the Mug (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
   guidance: {
     when: 'Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.',
     notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_hive.',
     chaining: 'deploy:hive { hiveId, members, swarm } → deploy:teardown_hive when done.',
     seeAlso: [
-      'deploy:teardown_hive (tear down the deployed hive when done)',
+      'deploy:teardown_hive (tear down the deployed pot when done)',
       'deploy:status (check deployment state)',
-      'pot:get (the hive being deployed)',
+      'pot:get (the pot being deployed)',
     ],
   },
   capability: 'harness:write',
@@ -64,12 +64,12 @@ export default defineTool({
 export const deployTeardownHiveTool = defineTool({
   name: 'deploy:teardown_hive',
   description:
-    'Tear down a Hive — DESTROY every member execution frame + the Queen control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
+    'Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
   guidance: {
-    when: 'Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
+    when: 'Done with a deployed pot (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
     seeAlso: [
-      'deploy:hive (re-deploy the hive)',
-      'pot:dissolve (permanently tear down the hive itself, not just its deployment)',
+      'deploy:hive (re-deploy the pot)',
+      'pot:dissolve (permanently tear down the pot itself, not just its deployment)',
       'deploy:status (confirm what is deployed)',
     ],
   },

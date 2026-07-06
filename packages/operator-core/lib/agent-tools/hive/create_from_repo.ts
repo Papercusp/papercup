@@ -26,16 +26,16 @@ export default defineTool({
   name: 'pot:create_from_repo',
   profile: 'engineer',
   description:
-    'Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
+    'Create a pot FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
   guidance: {
-    when: 'Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
+    when: 'Onboarding a GitHub repository as a NEW pot in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
     notWhen:
-      'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — pot:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).',
+      'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less pot — pot:create. Adding a repo into an EXISTING pot — harness:create { hive } after cloning (the into-hive picker mode).',
     chaining:
       'pot:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} pot:get / discovery:set_hive to edit the listing.',
     seeAlso: [
-      'pot:create (stand up a hive without a repo)',
-      'pot:get (inspect / edit the created hive)',
+      'pot:create (stand up a pot without a repo)',
+      'pot:get (inspect / edit the created pot)',
       'discovery:set_hive (edit the public listing)',
     ],
   },
@@ -50,11 +50,11 @@ export default defineTool({
       .max(100)
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
       .optional()
-      .describe('Base slug (default: repo name). Member = <base>, Hive home = <base>-hive; auto-suffixed on collision.'),
+      .describe('Base slug (default: repo name). Member = <base>, pot home = <base>-hive; auto-suffixed on collision.'),
     shallow: z.boolean().optional().describe('Shallow clone (--depth 1) for large repos.'),
     runTests: z.boolean().default(false).describe('OPT-IN: run the detected test command once to verify it — this EXECUTES CODE from the pasted repo (hardening D-001). Default false; verify after create via harness:generate-from-repo on the clone if preferred.'),
     testTimeoutMs: z.number().int().positive().optional().describe('Budget for the test-verify run (default 120s).'),
-    parentDir: z.string().min(1).optional().describe('Parent dir for the HIVE HOME folder (default ~/.papercusp/hives).'),
+    parentDir: z.string().min(1).optional().describe('Parent dir for the POT HOME folder (default ~/.papercusp/hives).'),
     force: z
       .boolean()
       .optional()
@@ -65,7 +65,7 @@ export default defineTool({
       .max(120)
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional()
-      .describe("P-009 into-hive mode: add the repo as a member of this EXISTING kind:'hive' home instead of standing up a new hive (no new identity/listing; the existing listing re-publishes with the new member)."),
+      .describe("P-009 into-hive mode: add the repo as a member of this EXISTING kind:'hive' home instead of standing up a new pot (no new identity/listing; the existing listing re-publishes with the new member)."),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
@@ -76,7 +76,7 @@ export default defineTool({
         ok: false,
         error: 'hive_create_root_only',
         message:
-          'pot:create_from_repo cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested.',
+          'pot:create_from_repo cannot be called from a cup (a spawned/parented agent). Pots are peers, never nested.',
       });
     }
 

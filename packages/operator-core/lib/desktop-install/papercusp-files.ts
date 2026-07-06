@@ -766,6 +766,164 @@ export function resolveInstallPaths(home: string): InstallPaths {
   };
 }
 
+type HookCommand = { type: 'command'; command: string };
+type HookEntry = { matcher?: string; hooks: HookCommand[] };
+
+/** Drop every entry in `arr` whose command references one of `ours` (full path OR
+ *  basename), then append `fresh`. Mirrors the python is_ours filter + append used by
+ *  every merge_* helper in install-standalone-mcp.sh. */
+function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh: HookEntry): HookEntry[] {
+  const isOurs = (e: HookEntry) =>
+    Array.isArray(e?.hooks) && e.hooks.some((h) => ours.some((o) => String(h?.command ?? '').includes(o)));
+  return [...arr.filter((e) => !isOurs(e)), fresh];
+}
+
+/**
+ * Non-destructive, idempotent merge of the papercusp CC hooks + fleet statusline into a Claude
+ * `settings.json` object (mutated + returned). FAITHFUL TS port of the merge_lock_hooks /
+ * merge_coord_hook / merge_activity_hook / merge_lifecycle_hooks / merge_workitem_nudge_hook /
+ * merge_statusline / merge_bash_gate_hook python helpers in
+ * apps/operator/scripts/install-standalone-mcp.sh — KEEP THE TWO IN SYNC. For each event, any prior
+ * entry pointing at OUR script (by full path OR basename) is dropped then a fresh one appended,
+ * preserving every other user hook. `statusLine` is set only when absent or already ours (never
+ * clobbers a personal one).
+ *
+ * `destDir` = the installed hook dir (~/.papercusp/hooks/cc). `present` = the hook basenames actually
+ * installed (mirrors the bash `[ -x … ]` gates), so a missing source degrades gracefully. The
+ * `PAPERCUSP_WORKSPACE_ROOT` env prefix the bash installer threads onto the lock/coord/bash-gate
+ * commands is intentionally OMITTED: those hooks fall back to `~/papercupai-workspace` (== what the
+ * bash installer computes on the standard layout) and self-gate on PAPERCUSP_SID, so behavior is
+ * identical and the port stays cross-platform-simple. `isClaudeSettings` gates the Claude-only
+ * `enableAllProjectMcpServers` flag. Exported for unit tests.
+ */
+export function mergeClaudeHookSettings(
+  cfg: Record<string, any>,
+  destDir: string,
+  opts: { present?: ReadonlySet<string>; isClaudeSettings?: boolean } = {},
+): Record<string, any> {
+  const present = opts.present ?? new Set<string>(CC_HOOK_FILES);
+  const has = (name: string) => present.has(name);
+  const p = (name: string) => path.join(destDir, name);
+  const ours = (name: string): readonly string[] => [p(name), name];
+  const cmd = (name: string): HookCommand[] => [{ type: 'command', command: p(name) }];
+
+  const hooks: Record<string, HookEntry[]> =
+    cfg.hooks && typeof cfg.hooks === 'object' && !Array.isArray(cfg.hooks) ? cfg.hooks : (cfg.hooks = {});
+  const ev = (name: string): HookEntry[] => (Array.isArray(hooks[name]) ? hooks[name] : []);
+
+  // merge_lock_hooks — PreToolUse + PostToolUse, matcher Edit|Write|MultiEdit.
+  if (has('pretooluse-locks-acquire.sh') && has('posttooluse-locks-release.sh')) {
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-locks-acquire.sh'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-locks-acquire.sh'),
+    });
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-locks-release.sh'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-locks-release.sh'),
+    });
+    // Claude-only: auto-approve project-scoped .mcp.json servers (operator-signed papercusp MCP).
+    if (opts.isClaudeSettings) cfg.enableAllProjectMcpServers = true;
+  }
+  // merge_coord_hook — PostToolUse, matcher '*'.
+  if (has('posttooluse-coord-inbox.sh'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-coord-inbox.sh'), {
+      matcher: '*',
+      hooks: cmd('posttooluse-coord-inbox.sh'),
+    });
+  // merge_activity_hook — PostToolUse, matcher '*'.
+  if (has('posttooluse-activity-report.sh'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-activity-report.sh'), {
+      matcher: '*',
+      hooks: cmd('posttooluse-activity-report.sh'),
+    });
+  // merge_lifecycle_hooks — SessionStart + SessionEnd, no matcher.
+  if (has('lifecycle-report.sh'))
+    for (const e of ['SessionStart', 'SessionEnd'])
+      hooks[e] = replaceOurHookEntries(ev(e), ours('lifecycle-report.sh'), { hooks: cmd('lifecycle-report.sh') });
+  // merge_workitem_nudge_hook — PostToolUse Edit|Write|MultiEdit + Stop + SessionEnd.
+  if (has('workitem-verify-nudge.sh')) {
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('workitem-verify-nudge.sh'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('workitem-verify-nudge.sh'),
+    });
+    for (const e of ['Stop', 'SessionEnd'])
+      hooks[e] = replaceOurHookEntries(ev(e), ours('workitem-verify-nudge.sh'), { hooks: cmd('workitem-verify-nudge.sh') });
+  }
+  // merge_statusline — non-destructive: set only when absent or already ours.
+  if (has('statusline-fleet.sh')) {
+    const sl = p('statusline-fleet.sh');
+    const existing = cfg.statusLine;
+    const mine = existing && typeof existing === 'object' && String(existing.command ?? '').includes(sl);
+    if (!existing || mine) cfg.statusLine = { type: 'command', command: sl };
+  }
+  // merge_bash_gate_hook — PreToolUse, matcher 'Bash'.
+  if (has('pretooluse-bash-resource-gate.sh'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-bash-resource-gate.sh'), {
+      matcher: 'Bash',
+      hooks: cmd('pretooluse-bash-resource-gate.sh'),
+    });
+
+  return cfg;
+}
+
+/**
+ * Install the Claude/Codex CC hooks to ~/.papercusp/hooks/cc/ and merge them (+ the fleet
+ * statusline) into ~/.claude/settings.json — the desktop-installer equivalent of the CC-hook block in
+ * install-standalone-mcp.sh (EI-8191: the packaged Mac/Windows apps shipped NEITHER the sources NOR the
+ * merge, so Claude rendered a blank statusline + lock/coord enforcement was silently off). Cross-platform:
+ * runs under Node natively on macOS and inside the WSL distro on Windows, so both get the hooks from this
+ * ONE path. Best-effort + idempotent; a missing source (hooks not shipped) degrades to "nothing
+ * installed" and leaves settings.json untouched. `srcDir` = the resolved sidecar/dev hooks/cc dir.
+ */
+async function installClaudeHooks(
+  home: string,
+  srcDir: string,
+): Promise<{ installed: string[]; settingsMerged: boolean }> {
+  const destDir = path.join(home, '.papercusp', 'hooks', 'cc');
+  await fs.mkdir(destDir, { recursive: true, mode: 0o755 });
+  const installed: string[] = [];
+  for (const name of CC_HOOK_FILES) {
+    try {
+      const data = await fs.readFile(path.join(srcDir, name));
+      const dst = path.join(destDir, name);
+      await fs.writeFile(dst, data, { mode: 0o755 });
+      await fs.chmod(dst, 0o755);
+      installed.push(name);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+  }
+  // Gate the settings merge on the primary lock hook landing (parity with the bash `[ -x $CC_PRE_HOOK ]`).
+  if (!installed.includes('pretooluse-locks-acquire.sh')) return { installed, settingsMerged: false };
+
+  const settingsPath = path.join(home, '.claude', 'settings.json');
+  let cfg: Record<string, any> = {};
+  try {
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      cfg = parsed as Record<string, any>;
+    } else {
+      // Corrupt / non-object → back up then start fresh (mirrors the python except branch).
+      await fs.rename(settingsPath, `${settingsPath}.bak.${Date.now()}`).catch(() => {});
+      cfg = {};
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    cfg = {};
+  }
+  mergeClaudeHookSettings(cfg, destDir, { present: new Set(installed), isClaudeSettings: true });
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fs.writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  await fs.chmod(settingsPath, 0o600);
+  return { installed, settingsMerged: true };
+}
+
 export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<InstallResult> {
   const home = opts.home ?? os.homedir();
   const explicitRoot = !!opts.operatorAppRoot;
@@ -799,6 +957,16 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // copy (coord-hook.ts has no overlay).
   const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
   const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
+
+  // Claude/Codex CC hooks + fleet statusline (EI-8191): install the hooks to
+  // ~/.papercusp/hooks/cc/ and merge them into ~/.claude/settings.json — the packaged
+  // Mac/Windows apps shipped neither, so Claude rendered a blank statusline + lock/coord
+  // enforcement was silently off. Cross-platform (Node native on macOS / WSL distro on
+  // Windows). Best-effort: sources not shipped ⇒ nothing installed, settings untouched.
+  const ccHookSrcDir = await firstExisting(ccHookDirCandidates(operatorAppRoot, explicitRoot));
+  const claudeHooks = ccHookSrcDir
+    ? await installClaudeHooks(home, ccHookSrcDir)
+    : { installed: [] as string[], settingsMerged: false };
 
   // agent-managed-compaction: render the Claude compaction floor (base + claude overlay)
   // to ~/.papercusp/compaction-strategy.md and @import it from ~/.claude/CLAUDE.md's
@@ -870,6 +1038,8 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',
     pathProfilesUpdated,
+    claudeHooksInstalled: claudeHooks.installed,
+    claudeSettingsMerged: claudeHooks.settingsMerged,
   };
 }
 

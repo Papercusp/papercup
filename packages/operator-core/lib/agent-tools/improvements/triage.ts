@@ -51,9 +51,9 @@ export default defineTool({
     decision: z
       .enum(['place', 'gate', 'gym', 'reject'])
       .optional()
-      .describe('For triage-one, the Queen\'s decision'),
+      .describe('For triage-one, the Mug\'s decision'),
     reason: z.string().optional().describe('Reason for the decision (required if decision is set)'),
-    harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Hive\'s ideas (default: all)'),
+    harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Pot\'s ideas (default: all)'),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);

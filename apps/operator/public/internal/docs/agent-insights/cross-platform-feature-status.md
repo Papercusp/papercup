@@ -60,8 +60,14 @@ Claude Code on macOS stores its OAuth bundle in the **login Keychain** (service
   `security -w` read of an item created by another app raises a GUI "allow access" prompt — click
   **Always Allow** once.
 
-⚠ **Mac-VM verification pending**: the service labels, the ACL-prompt behavior, and an E2E
-supervisor smoke (packaged app boots → gateway spawns → keychain credential serves a request).
+✅ **Mac-VM E2E smoke verified (2026-07-06, WI-3080)**: packaged app running, gateway spawns
+(`gateway.log`: "up on 127.0.0.1:8788 → account 'local' (local-fallback)", "supervision up in
+3241ms — spawned"), `/healthz` 200, `totalRequests`/`egressAttemptsByAccount` confirm a real
+served request end-to-end. ⚠ **Still unverified**: this VM has a hand-provisioned
+`~/.claude/.credentials.json`, so it resolves the FILE credential channel — `localLoginCredentialRef()`
+only takes the `keychain:` path when that file is ABSENT on darwin. The keychain-specific fallback
+branch + the "Always Allow" ACL prompt remain unverified live; that needs a fresh-install Mac VM
+pass without the file (tracked as a follow-up, not blocking).
 
 ## Windows / WSL (the P-010 answer)
 
@@ -72,6 +78,13 @@ is the bundle). A WSL user who has enabled systemd + installed the unit gets ado
 instead. No WSL-specific code was needed — the gap closed with P-006. Note: service-health's
 bg-host code-drift probe (below) is deliberately NOT short-circuited under WSL, since WSL reports
 `linux`.
+
+✅ **Windows-VM E2E smoke verified (2026-07-06, WI-3080)**: full boot watched live under the
+`papercup-runtime` WSL distro — `serve.mjs --ensure` → embedded PG boots + migrates → operator up
+(`operator.json` + `/api/health` 200 over the WSL loopback) → the gateway-sidecar supervisor spawns
+with no WSL-specific code and logs "up on 127.0.0.1:8788" in `~/.papercusp/gateway.log`, confirmed
+live with `/healthz` 200. Confirms the P-006/007/008 port-probe-first-adoption + managed-child-spawn
+shape genuinely works under WSL as claimed above.
 
 ## Verified CAT1 runtime table (P-009)
 
@@ -92,8 +105,10 @@ would be effort spent on infrastructure that only ever runs on the Linux dev box
 
 ## Open items
 
-1. **Mac-VM E2E smoke** — packaged supervisor boot, Keychain labels + ACL prompt, gateway serving
-   with the `keychain:` credential.
-2. **Windows-VM equivalent** — WSL sidecar boots the supervisor; gateway reachable from agents.
+1. **Mac-VM Keychain-fallback smoke** — the supervisor boot + gateway spawn is now verified
+   (2026-07-06), but the specific `keychain:` credential branch (file bundle ABSENT) still needs a
+   fresh-install Mac VM pass, since the current VM has a hand-provisioned credentials file.
+2. ~~Windows-VM equivalent~~ — verified 2026-07-06 (WI-3080): WSL sidecar boots the supervisor,
+   gateway reachable, confirmed live.
 3. **Sidecar-spawn extraction** — `gateway-sidecar-spawn.ts` is the third copy of the
    spawn/respawn/backoff shape; extract to a shared lib.
