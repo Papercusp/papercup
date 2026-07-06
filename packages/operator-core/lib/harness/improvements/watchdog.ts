@@ -1051,7 +1051,18 @@ interface RoutineFailureRow {
    *  next_fire_at is 'infinity' while healthily parked awaiting its next wake —
    *  that's why loops keep their own dedicated loop-stalled collector instead. */
   next_fire_at?: string | Date | null;
+  /** Last successful fire. A RECENT value is direct, non-racy proof the routine
+   *  fired again since the reaper's self-heal requeue — unlike `next_fire_at`,
+   *  it can't be caught mid-cadence between "just fired" and "scheduler hasn't
+   *  advanced next_fire_at past now() yet" (WI-3098 / EI-7771: cross-hive-outbox-drain
+   *  read next_fire_at <= now() for ~10/16 harnesses at the collection instant despite
+   *  every one being genuinely healthy — active, last_fired_at within minutes, cycling
+   *  on its normal ~4-6min cadence). */
+  last_fired_at?: string | Date | null;
 }
+/** WI-3098: generous fixed window (not cadence-relative — cadence isn't always
+ *  known here) within which a `last_fired_at` counts as proof of recovery. */
+const RECENT_FIRE_PROOF_MS = 30 * 60 * 1000;
 /**
  * Pure: routines carrying a recorded error → signals — EXCEPT a self-heal requeue
  * stamped by the dbos-executor-reaper (EI-5302 / EI-6172): that is the reaper
@@ -1060,13 +1071,20 @@ interface RoutineFailureRow {
  *     wedge is already surfaced by the separate loop-stalled collector (which
  *     reads parked_secs, since a loop's next_fire_at sits at 'infinity' whether
  *     healthy or stuck and so can't disambiguate).
- *   - A NON-loop routine's reaper-tagged error is suppressed only when its
- *     `next_fire_at` is a concrete FUTURE timestamp — proof the routine was
- *     already successfully rescheduled since the error, not just carrying a
- *     stale marker while genuinely wedged (EI-6172: bp-singleton-iq-battery-0 /
- *     bp-singleton-prompt-ablation-0 / hive-eval-battery all recorded a reaper
- *     self-heal yet were confirmed healthy — active, on-cadence, next_fire_at
- *     weeks out — and still churned the improvement queue as phantom bugs).
+ *   - A NON-loop routine's reaper-tagged error is suppressed when EITHER:
+ *     (a) `next_fire_at` is a concrete FUTURE timestamp — proof the routine was
+ *     already successfully rescheduled since the error, or (b) `last_fired_at`
+ *     is within the last `RECENT_FIRE_PROOF_MS` — proof it actually fired again
+ *     since the requeue. (a) alone raced against the collection instant for a
+ *     routine caught between "just fired" and "scheduler hasn't advanced
+ *     next_fire_at past now() yet" in its normal cadence — exactly what let
+ *     EI-7771 fire as a false positive for cross-hive-outbox-drain despite the
+ *     routine being fully healthy (WI-3098). `last_fired_at` recency is a
+ *     strictly more direct signal and isn't racy against that instant.
+ *     (EI-6172: bp-singleton-iq-battery-0 / bp-singleton-prompt-ablation-0 /
+ *     hive-eval-battery all recorded a reaper self-heal yet were confirmed
+ *     healthy — active, on-cadence, next_fire_at weeks out — and still churned
+ *     the improvement queue as phantom bugs).
  * Flagging either case as a MAJOR bug double-reports self-healed routines,
  * churning the auto-implement queue with noise (27 live loop instances observed
  * 2026-06-30; 67 open `routine-failure:routine:%` issues observed 2026-07-01,
@@ -1080,7 +1098,10 @@ export function routineFailureSignalsFromRows(rows: RoutineFailureRow[]): Watchd
       if (r.is_loop) return false;
       const nextFireAt = r.next_fire_at ? new Date(r.next_fire_at) : null;
       const isConcreteFuture = !!nextFireAt && !Number.isNaN(nextFireAt.getTime()) && nextFireAt.getTime() > Date.now();
-      return !isConcreteFuture;
+      const lastFiredAt = r.last_fired_at ? new Date(r.last_fired_at) : null;
+      const firedRecently =
+        !!lastFiredAt && !Number.isNaN(lastFiredAt.getTime()) && Date.now() - lastFiredAt.getTime() < RECENT_FIRE_PROOF_MS;
+      return !(isConcreteFuture || firedRecently);
     })
     .map((r) => ({
       source: 'routine-failure' as const,
