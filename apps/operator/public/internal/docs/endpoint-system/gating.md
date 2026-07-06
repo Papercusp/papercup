@@ -121,7 +121,7 @@ Every denial emits an authorization audit event (see below).
 
 ## Harness-required gate (gate 6)
 
-A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. "No harness in scope" means `ctx.harnessSlug` is unset/empty **or** the literal `'*'` wildcard sentinel — the superuser "no harness picked" case (a harness that is present-but-unselected), not only a missing slug (`if (slug && slug !== '*') return null`). This gate **fails closed even for privileged callers** — `GateBypass.papercusp` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. "No harness in scope" means `ctx.harnessSlug` is unset/empty **or** the literal `'*'` wildcard sentinel — the superuser "no harness picked" case (a harness that is present-but-unselected), not only a missing slug (`if (slug && slug !== '*') return null`). This gate **fails closed even for privileged callers** by default, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler. There is a narrow explicit dispatcher escape hatch, `GateBypass.harness`, but the normal superuser/power-user mapping does not set it.
 
 ## Per-window quota (gate 7)
 
@@ -262,7 +262,7 @@ HTTP status: 504. The `tool_invocations` row records `status='timeout'`.
 
 ## The whole error code → HTTP status table
 
-For HTTP transport, `statusForErrorCode` in `http-projection.ts` maps:
+For HTTP transport, `statusForErrorCode` in `libs/generic/tooldef-http/src/http-projection.ts` maps:
 
 | Error code             | HTTP                                     | Source                                                                                                                                      |
 | ---------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |

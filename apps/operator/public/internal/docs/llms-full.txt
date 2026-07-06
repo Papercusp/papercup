@@ -17252,6 +17252,64 @@ Scoped to `home === own slug` so a joiner keeps its rebound `hiveHomeProjectionS
 
 This is the CONTENT-apply (code) layer only. A live 2-machine witness additionally needs the swarm peered (FED-2 self-heal / `substrate-swarm-self-heal-no-restart`) and the build deployed to both VMs (the rig — `federation-rig-restart-runbook`); those are separate lanes from this fix.
 
+# P2P / shared-hive federation is NOT a V1 target (owner directive)
+
+> Owner directive 2026-07-06: don't spend V1 release-readiness effort testing or prepping P2P/cross-machine federation; the single-box desktop app is V1. P2P is post-V1.
+
+# P2P / shared-hive federation is NOT a V1 target
+
+[Section titled “P2P / shared-hive federation is NOT a V1 target”](#p2p--shared-hive-federation-is-not-a-v1-target)
+
+**Owner directive — 2026-07-06 (aviynw8).** Verbatim intent: *“Why are we testing P2P mode — we are not getting P2P mode ready for V1.”*
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+**P2P / shared-hive / cross-machine federation is out of scope for V1.** Do **not** spend V1 release-readiness effort testing, verifying, or prepping any P2P / federation / multi-box / 2-box-rig feature. It is **deferred to post-V1**. Do not treat P2P readiness as a V1 release blocker.
+
+## What is OUT of V1 (post-V1)
+
+[Section titled “What is OUT of V1 (post-V1)”](#what-is-out-of-v1-post-v1)
+
+Cross-machine / peer-to-peer coordination and everything built to make it release-ready, e.g.:
+
+* The `shared-hive-p2p-release-readiness-2026-07-03` plan and `p2p-work-distribution-2026-07-02` plan (and their design docs: per-fleet federation scope, foreign-worktree git plumbing, foreign-work isolation sandbox, etc.).
+* 2-box / cross-machine **rig verifies** — e.g. `WI-2119` (THIS box ↔ Mac VM seat-delegation), the LIVE-1 parity-rig runbook.
+* **Federation-crypto** items worked *for release gating* — `WI-2003` (epoch-key divergence), `WI-1981`, `WI-183`. These stay tracked, but as **post-V1** work, not V1 blockers.
+* Substrate/holepunch peer connectivity, cross-machine seat delegation, shared-hive convergence — all post-V1.
+
+## What IS in V1 (stays fully in scope)
+
+[Section titled “What IS in V1 (stays fully in scope)”](#what-is-in-v1-stays-fully-in-scope)
+
+The **single-box Tauri desktop app** — the shipping product:
+
+* Local operator sidecar, embedded PG, migrations.
+* Local fleet / agents on one machine.
+* **Desktop SSE sync** — the desktop’s *local* sync path. **This directive does NOT touch it.** “Sync” ≠ “P2P”: SSE desktop sync is core V1; only *cross-machine* P2P/federation is out.
+* Onboarding, the operator UI, everything a single desktop install does on its own.
+
+## Common misread to avoid
+
+[Section titled “Common misread to avoid”](#common-misread-to-avoid)
+
+Do **not** over-apply this to the desktop’s local data-sync layer (`@papercusp/sync`, SSE). That is V1. The line is **single-box (V1) vs. cross-machine P2P/federation (post-V1)** — not “anything with the word sync/hive in it.”
+
+## If you lead a P2P-for-release plan
+
+[Section titled “If you lead a P2P-for-release plan”](#if-you-lead-a-p2p-for-release-plan)
+
+Re-scope it out of V1 (park items / pause the plan with this reason), and pick up V1-scoped backlog. Don’t re-derive scope from the older P2P design/plan docs — they predate this directive.
+
+## Durable anchors
+
+[Section titled “Durable anchors”](#durable-anchors)
+
+* Standing fact `p2p-not-a-v1-target` (workspace + harness:papercusp scope) — folds into every orient.
+* mem0 (project / papercusp).
+* Broadcast to all agents 2026-07-06 (msg `mr9ujyz0`).
+
 # Add a P2P request/response RPC channel by riding the existing Hyperswarm connection
 
 > To reach a NAT'd peer for an RPC (lock authority, eviction relay-probe), don't resolve a URL — multiplex a protomux channel onto the connection the substrate already holds open. The connection IS the address. Mirror cross-hive-swarm-transport.ts; touch NOTHING in swarm.ts.
@@ -18170,14 +18228,14 @@ Live incident (2026-06-09): the GREEN release checkout `/home/marsh-office/paper
 Hash the domain into the channel name so the total length is always 41 bytes:
 
 ```ts
-// workspace-listener.ts (TypeScript LISTEN side)
+// libs/papercusp/packages/locks/src/workspace-listener.ts (TypeScript LISTEN side)
 export function coordNotifyChannel(coordinationDomain: string): string {
   return `ch_coord_${createHash('md5').update(coordinationDomain).digest('hex')}`;
 }
 ```
 
 ```sql
--- 013-bounded-notify-channel.sql (SQL pg_notify side)
+-- libs/papercusp/packages/locks/src/sql/013-bounded-notify-channel.sql (SQL pg_notify side)
 CREATE OR REPLACE FUNCTION coord_notify_channel(p_coordination_domain text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
   SELECT 'ch_coord_' || md5(p_coordination_domain)
@@ -18186,7 +18244,7 @@ $$;
 
 Both sides must use **exactly the same transformation** — any dual-mode “only hash when long” branch will eventually desync. Apply the hash unconditionally.
 
-The migration also adds a `coord_notify_channel_legacy()` function that notifies the old truncated name during the rolling upgrade window (so pre-fix listeners already LISTEN-ing on the truncated name still wake). Drop it once no pre-fix process remains.
+The package migration also adds a `coord_notify_channel_legacy()` function that notifies the old truncated name during the rolling upgrade window (so pre-fix listeners already LISTEN-ing on the truncated name still wake). Drop it once no pre-fix process remains. The operator-core `workspace-listener.ts` path is now a host-adapter shim that imports lock host configuration and re-exports `@papercusp/locks`; the bounded channel implementation lives in the shared locks package.
 
 ## How to avoid it in the future
 
@@ -18203,7 +18261,7 @@ Whenever you derive a PG channel name from a string that originates outside the 
 'prefix_' || input
 ```
 
-Test with an integration test that uses a coordination domain longer than 54 chars and asserts the waiter wakes promptly (not via the 30 s poll ceiling). The §9 test in `su-locks-http-mcp.integration.test.ts` does exactly this — keep it.
+Test with integration cases that use a coordination domain longer than 54 chars and assert the waiter wakes promptly (not via the 30 s poll ceiling). Keep both the file-lock wait coverage in `su-locks-wait.integration.test.ts` and the resource-lock coverage in `resource-locks.integration.test.ts`; they exercise the same bounded channel contract through different lock paths.
 
 # PG migrations — bash heredocs collapse $body$ tokens
 
@@ -33033,7 +33091,7 @@ The 2026-06-17 su-vs-mini-swe Opus-4.6 run **failed several of these** (audited 
 
 * **The budget is multi-dimensional — report ALL of: `calls/task`, `$/task`, tokens/task, AND `wall-clock/task`.** Wall-clock is load-bearing for long-horizon benchmarks (FrontierSWE tasks run hours): a topology that finishes in 1h vs 5h at the same call-count is a different result, and a multi-agent arm can trade wall-clock for parallelism. The default headline is **score at equal model-call budget** (call-count is the cleanest cross-topology unit), but a long-horizon benchmark MUST also report the **score-vs-wall-clock** curve. Never claim a win without disclosing all four budget axes for every arm.
 
-* **The auto-generated audit only partly satisfies C3.** `buildFairnessAudit`’s C3 row surfaces just `$/task` and `calls/task`; **tokens/task and wall-clock/task must still be added manually** for a full C3 pass. And its `calls/task` is computed from `row.turns` (`totalTurns / scoredRows`), so it is a **turns proxy, not the `maxModelCalls` axis** the iso-budget actually caps on — don’t read the auto-table’s `calls/task` as the model-call budget.
+* **The auto-generated audit only partly satisfies C3.** `buildFairnessAudit`’s C3 row surfaces just `$/task` and `calls/task`; **tokens/task and wall-clock/task must still be added manually** for a full C3 pass. And its `calls/task` is computed from `row.turns` (`totalTurns / scoredRows`), so it is a **turns proxy, not the `maxModelCalls` axis** the iso-budget can cap on — don’t read the auto-table’s `calls/task` as the model-call budget. The persisted `TaskRunResult` row currently records `budgetTokens`, but not `maxModelCalls`, `maxCostUsd`, or `maxWallMs`; therefore the generated C3 row can auto-detect uniform token caps only. When a run uses call/cost/wall caps, the report must state those caps from the run config beside the auto-table.
 
 ### C4 — Test what you claim (the capability must actually be exercised)
 
@@ -33172,7 +33230,7 @@ The column below is the **arm id** (the `ArmId` on every `TaskRunResult` row), w
 [Section titled “Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)”](#runtime-enforcement--how-the-driver-makes-c1--c3--c4-mechanical-not-aspirational)
 
 * **C1 (same denominator):** `runTopology` emits a `TaskRunResult` row only for tasks it actually ran. A task the iso-budget couldn’t reach gets **no row** — and `buildCapabilityAttribution` (default `sameDenominator:true`) counts a task with no row, or one whose rows are all infra-failed, as **`false`**. So a less-efficient arm that finishes fewer tasks is penalised, never flattered by exclusion (the exact failure mode of the 2026-06-17 audit). The report’s task universe is the full backlog; `skippedTaskIds` is surfaced for the C6 coverage table.
-* **C3 (iso-budget):** one `IsoBudget` (`maxModelCalls` primary, + `$`/tokens/wall) is applied **uniformly** across every arm and is a **hard ceiling** checked before each task-unit dispatches (bounded ≤`cap` overshoot, since a unit’s call cost is only known after it runs). A cap-terminated attempt sets `capped:true` (graded normally — a capped run ≠ a genuine fail). The driver’s operative defaults (both overridable per run): per-task concurrency **`cap = 2`** and ensemble size **3 solvers/task** — these are the knobs behind the worked-audit’s `cap=2` reference.
+* **C3 (iso-budget):** one `IsoBudget` (`maxModelCalls` primary when configured, + `$`/tokens/wall) is applied **uniformly** across every arm and is a **hard ceiling** checked before each task-unit dispatches (bounded ≤`cap` overshoot, since a unit’s call cost is only known after it runs). A cap-terminated attempt sets `capped:true` (graded normally — a capped run ≠ a genuine fail). The row contract persists `budgetTokens`; call/cost/wall ceilings are enforced by the driver but must be carried in the run report/config evidence until the row contract grows those fields. The driver’s operative defaults (both overridable per run): per-task concurrency **`cap = 2`** and ensemble size **3 solvers/task** — these are the knobs behind the worked-audit’s `cap=2` reference.
 * **C4 (capability actually exercised):** each agent run reports `coordCalls` (the count of coordination tool calls it actually made); the driver sums it onto `armMeta.coordCalls`. A coordination arm whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE** — the topology was never exercised, so any “delta” is variance, not capability (the trap that sank a peer’s tau2 +memory “lift”: the +memory arm made zero memory calls). Verify coordination is non-zero on a probe before any claim.
 * **No-debris teardown:** each run retires its **own** work-items (`retireBenchDebris`, scoped to the run’s hive slug) on clean exit AND signal-kill/crash — scoped so it can never deprecate a concurrent peer benchmark’s in-flight items.
 * **Constant per-task solver (D-006 — the topology study’s fairness factorization):** the topology study isolates *cross-agent coordination* as the only variable, so the *per-task solver* must be held CONSTANT across every one-agent-per-task arm. Every su-system arm (`su-independent`, `dist-*`, `hier-lead-worker` workers, `hive` bees) runs the **full external-bench su spine** (scoper→architect→worker→validator→reviewer→documenter→curator) as its per-task solver — never a single plain worker. `ensemble-solve` = N full-spine attempts + a judge; `pair` = two su-**role** workers on one task (the spine already has an internal reviewer); the coordinators (`hier` lead, `hive` Queen) are su-role coordinators, not solvers. The baseline (`mini-swe`/`vanilla`) is `coding-solo` (a single plain agent — the floor, deliberately NOT the su system). Using a weaker solver for the coordinated arms would confound “topology” with “weaker agent than su-independent.” Wired by `sweProSolverBlueprint(arm)` in `swe-pro-seam.ts`; `vanilla` ≠ `su-independent` (same `su-independent` topology, different solver → isolates the su-spine capability; `su` vs `hive` share the spine, differ in topology → isolates coordination).
@@ -42920,7 +42978,7 @@ Every denial emits an authorization audit event (see below).
 
 [Section titled “Harness-required gate (gate 6)”](#harness-required-gate-gate-6)
 
-A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. “No harness in scope” means `ctx.harnessSlug` is unset/empty **or** the literal `'*'` wildcard sentinel — the superuser “no harness picked” case (a harness that is present-but-unselected), not only a missing slug (`if (slug && slug !== '*') return null`). This gate **fails closed even for privileged callers** — `GateBypass.papercusp` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can’t function without a harness; the point is to return the uniform “harness required” hint rather than push the failure into the handler.
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. “No harness in scope” means `ctx.harnessSlug` is unset/empty **or** the literal `'*'` wildcard sentinel — the superuser “no harness picked” case (a harness that is present-but-unselected), not only a missing slug (`if (slug && slug !== '*') return null`). This gate **fails closed even for privileged callers** by default, because a `harness: 'required'` tool genuinely can’t function without a harness; the point is to return the uniform “harness required” hint rather than push the failure into the handler. There is a narrow explicit dispatcher escape hatch, `GateBypass.harness`, but the normal superuser/power-user mapping does not set it.
 
 ## Per-window quota (gate 7)
 
@@ -43081,7 +43139,7 @@ HTTP status: 504. The `tool_invocations` row records `status='timeout'`.
 
 [Section titled “The whole error code → HTTP status table”](#the-whole-error-code--http-status-table)
 
-For HTTP transport, `statusForErrorCode` in `http-projection.ts` maps:
+For HTTP transport, `statusForErrorCode` in `libs/generic/tooldef-http/src/http-projection.ts` maps:
 
 | Error code             | HTTP                                     | Source                                                                                                                                      |
 | ---------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
