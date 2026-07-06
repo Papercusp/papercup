@@ -239,6 +239,18 @@ const invoke = defineTool({
     if (!/^[A-Za-z0-9_-]+$/.test(role)) {
       return Response.json({ error: 'invalid role name' }, { status: 400 });
     }
+    // pot-rename compat (WI-3168-adjacent): this route is the ONE chokepoint every
+    // launch-blueprint spawn traverses, but real callers still invoke with the OLD
+    // role spelling (queen-brief-launch.ts's header comment documents `?role=queen`
+    // as the actual production convention for Queen wakes; migration 519 backfilled
+    // every DB column from old→new). Every role-identity CHECK below dual-checks via
+    // `canonicalRole` (matching the `role === 'queen' || role === 'mug'` pattern
+    // used elsewhere: bee/spawn.ts, blueprint/launch-blueprint.ts, role-launch-spec.ts,
+    // …) and the STORED adv_sessions `role` field is canonicalized to match every
+    // other role-scoped column. The raw `role` var is kept as-is for the argv/label
+    // forensic record and the spawned child/response (those reflect what was
+    // literally invoked, not what's canonically stored).
+    const canonicalRole = canonicalCoordRole(role);
     const body = await req.json().catch(() => ({} as any));
     const isHiveLaunch = url.searchParams.get('bpkind') === 'hive';
     // overwatch-role-2026-06-15 B-04 (C-3): an overwatch wake is also a tracked
@@ -332,7 +344,7 @@ const invoke = defineTool({
         sessionId: nativeSessionId,
         coordOwnerId: hiveSpawnId,
         agent: trackedInteractiveBackend === 'codex' ? 'codex' : 'claude',
-        role,
+        role: canonicalRole,
         cwd: project.path,
         mode: 'console',
         label: `${isOverwatchLaunch ? 'overwatch' : 'hive'} · ${project.slug}/${role}`,
@@ -449,7 +461,7 @@ const invoke = defineTool({
     // buildPrompt({ queenBrief }) → a <system-reminder> in the volatile tail
     // (D-006). Distinct from QUEEN_BRIEF (the kickoff / Queen→bee overlay).
     let queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
-    if (role === 'mug' && !queenWakeBrief.trim()) {
+    if (canonicalRole === 'mug' && !queenWakeBrief.trim()) {
       const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
       queenWakeBrief = (await computeQueenWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
     }
@@ -479,7 +491,7 @@ const invoke = defineTool({
     // overwatch (B-04): its wake reason rides the OverwatchBrief's `wokeBy`, so
     // setting QUEEN_BRIEF would render a misleading "## Queen brief" overlay (the
     // EI-506 reasoning, applied to the overwatch) — exclude it like the briefed Queen.
-    if (kickoff && role !== 'kettle' && (role !== 'mug' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
+    if (kickoff && canonicalRole !== 'kettle' && (canonicalRole !== 'mug' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
     // hive-inference-gateway routing (D-011 fix): the /invoke spawn path is the SECOND spawn
     // chokepoint and had DRIFTED from the bee chokepoint (operator-spawn.ts:1045-1063) — it never
     // routed Queen/overwatch/blueprint-run agents through the localhost pacing gateway, so they

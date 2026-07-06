@@ -71,10 +71,20 @@ function expectGitDeny(out: { stdout: string; status: number | null }) {
 }
 
 const AGENT = { PAPERCUSP_AGENT_SESSION: '1' };
-const bashCmd = (command: string, tool = 'Bash') => ({
-  tool_name: tool,
+// A deterministic stand-in for the canonical shared staging tree. The hook
+// resolves the canonical tree from PAPERCUSP_CANONICAL_TREE (or ~/papercupai-
+// workspace/papercusp); we pin it via env + pass an explicit payload `cwd` so
+// the tree-based git guard (EI-7872) is tested independent of where vitest runs.
+const CANON = '/ws/papercupai-workspace/papercusp';
+const CANON_ENV = { PAPERCUSP_CANONICAL_TREE: CANON };
+const bashCmd = (
+  command: string,
+  opts: { tool?: string; cwd?: string } = {},
+) => ({
+  tool_name: opts.tool ?? 'Bash',
   tool_input: { command },
   session_id: 's-test',
+  ...(opts.cwd ? { cwd: opts.cwd } : {}),
 });
 
 describe('native-scheduler lockout (agent sessions)', () => {
@@ -104,7 +114,7 @@ describe('native-scheduler lockout (agent sessions)', () => {
   });
 
   it('accepts codex shell tool names (exec_command) — same wire contract', () => {
-    expectDeny(runGate(bashCmd('crontab -l', 'exec_command'), AGENT));
+    expectDeny(runGate(bashCmd('crontab -l', { tool: 'exec_command' }), AGENT));
   });
 
   it('ignores non-shell tools even in agent sessions', () => {
@@ -172,8 +182,32 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     expectAllow(runGate(bashCmd(command), AGENT));
   });
 
-  it("never fires without the agent marker — the owner's own tree-cleaning is their business (D-003 exemption mirrors the scheduler lockout)", () => {
-    expectAllow(runGate(bashCmd('git reset --hard')));
+  // ── EI-7872: the guard keys on the SHARED TREE, not a fragile env marker ──
+  // The PAPERCUSP_AGENT_SESSION marker is silently absent in fleet-launched
+  // sessions (verified 2026-07-06 in the Claude process env this hook inherits),
+  // which left this rail INERT for exactly the sessions it must protect. The
+  // guard now fires on cwd ∈ the canonical staging tree — WITHOUT any marker —
+  // and stays exempt in the owner's own separate checkouts (a different cwd),
+  // preserving the D-003 intent by TREE rather than by marker.
+  it.each([
+    ['reset --hard in the canonical tree', 'git reset --hard', CANON],
+    ['clean -fd in a subdir of the canonical tree', 'git clean -fd', `${CANON}/apps/operator`],
+    ['bare stash in the canonical tree', 'git stash', CANON],
+    ['checkout . in the canonical tree', 'git checkout .', CANON],
+  ])('fires WITHOUT the agent marker: %s (EI-7872 fail-open fix)', (_label, command, cwd) => {
+    expectGitDeny(runGate(bashCmd(command, { cwd }), CANON_ENV));
+  });
+
+  it.each([
+    ["owner's release checkout (sibling of the canonical tree)", '/ws/papercupai-workspace/papercup-release'],
+    ['a name that PREFIXES the canonical tree but is a sibling', '/ws/papercupai-workspace/papercusp-staging'],
+    ['an unrelated repo outside the workspace', '/tmp/some-other-repo'],
+  ])('does NOT fire without the marker outside the canonical tree — %s (D-003 preserved)', (_label, cwd) => {
+    expectAllow(runGate(bashCmd('git reset --hard', { cwd }), CANON_ENV));
+  });
+
+  it('still honors the agent marker even OUTSIDE the canonical tree (OR-trigger)', () => {
+    expectGitDeny(runGate(bashCmd('git reset --hard', { cwd: '/tmp/elsewhere' }), { ...AGENT, ...CANON_ENV }));
   });
 });
 
