@@ -17,6 +17,7 @@ import {
   CLAUDE_CODE_IDENTIFIER,
   SU_PLAYBOOK_FRAMING,
   SuTarget,
+  adaptDeltaToolResultForModel,
   buildSuSystemBlocks,
   filterCatalog,
   loadPlaybookBody,
@@ -195,5 +196,80 @@ describe('su SUT mergeConsecutiveRoles (compaction-seam role validity, agent-too
     const copy = input.map((m) => ({ ...m }));
     mergeConsecutiveRoles(input);
     expect(input).toEqual(copy);
+  });
+});
+
+describe('su SUT delta tool-result adapter (agent-tool-delta-protocol P-007)', () => {
+  it('caches a full snapshot and then exposes reconstructed full rows for a delta', async () => {
+    const views = new Map<string, { rows: unknown[]; cursor?: string }>();
+    const full = await adaptDeltaToolResultForModel(
+      views,
+      'work_items:list:{}',
+      {
+        content: [{ text: JSON.stringify({
+          ok: true,
+          mode: 'full',
+          cursor: 'c1',
+          items: [
+            { id: 'WI-1', title: 'keep' },
+            { id: 'WI-2', title: 'remove me' },
+            { id: 'WI-3', title: 'old title' },
+          ],
+        }) }],
+      },
+    );
+    expect(JSON.parse(full.content[0].text as string).mode).toBe('full');
+
+    const delta = await adaptDeltaToolResultForModel(
+      views,
+      'work_items:list:{}',
+      {
+        content: [{ text: JSON.stringify({
+          ok: true,
+          mode: 'delta',
+          cursor: 'c2',
+          items: [
+            { change: 'removed', id: 'WI-2' },
+            { change: 'updated', id: 'WI-3', data: { id: 'WI-3', title: 'new title' } },
+            { change: 'added', id: 'WI-4', data: { id: 'WI-4', title: 'added' } },
+          ],
+        }) }],
+      },
+    );
+    const body = JSON.parse(delta.content[0].text as string);
+    expect(body.mode).toBe('full');
+    expect(body.items.map((r: { title: string }) => r.title)).toEqual(['keep', 'new title', 'added']);
+  });
+
+  it('refetches full when a delta arrives without a cached base', async () => {
+    const views = new Map<string, { rows: unknown[]; cursor?: string }>();
+    let refetches = 0;
+    const result = await adaptDeltaToolResultForModel(
+      views,
+      'work_items:list:{}',
+      {
+        content: [{ text: JSON.stringify({
+          ok: true,
+          mode: 'delta',
+          cursor: 'c2',
+          items: [{ change: 'removed', id: 'WI-2' }],
+        }) }],
+      },
+      async () => {
+        refetches++;
+        return {
+          content: [{ text: JSON.stringify({
+            ok: true,
+            mode: 'full',
+            cursor: 'c2',
+            items: [{ id: 'WI-1', title: 'fresh full' }],
+          }) }],
+        };
+      },
+    );
+    expect(refetches).toBe(1);
+    const body = JSON.parse(result.content[0].text as string);
+    expect(body.mode).toBe('full');
+    expect(body.items).toEqual([{ id: 'WI-1', title: 'fresh full' }]);
   });
 });

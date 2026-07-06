@@ -79,7 +79,7 @@ export async function presenceCellSetup(sql: postgres.Sql): Promise<void> {
       current_view   text,
       last_seen_at   timestamptz NOT NULL DEFAULT now(),
       schema_version bigint      NOT NULL DEFAULT 1,
-      hive_slug      text,
+      pot_slug       text,
       fed_ts         bigint,
       fed_hlc        text,
       author_pubkey  text,

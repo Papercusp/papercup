@@ -3,6 +3,7 @@ id: ch5-09-templates
 chapter: 5
 order: 9
 title: Templates — building whole apps on Papercusp
+docSlugs: spec/spawnable-templates
 ---
 
 ## Brief

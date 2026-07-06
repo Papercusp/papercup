@@ -169,6 +169,12 @@ export async function composeOrient(
     ...(args.harness ? { harness: args.harness } : {}),
     state: args.claimableState ?? 'todo',
     limit: args.claimableLimit ?? 20,
+    // EI-7841: orient's claimable backlog feeds self-select loop agents — exclude
+    // feature-family items the G2 admission/trust gate would refuse a claim on, so
+    // "claimable" here matches what work_items:claim / claim_next will actually do
+    // (previously a remote un-admitted item looked pickable here and bounced with
+    // not_claimable on the real claim, burning a wake cycle).
+    admissibleOnly: true,
   });
   const inbox = (await call('coord:inbox', {
     limit: args.inboxLimit ?? 10,

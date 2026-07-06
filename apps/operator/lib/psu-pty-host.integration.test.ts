@@ -474,3 +474,108 @@ describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-for
     15_000,
   );
 });
+
+describe('orphan / vanished-terminal teardown (WI-3141)', () => {
+  it(
+    'tears down (kills the child, cleans up socket+meta) when the bridged terminal closes — stdin EOF/close',
+    async () => {
+      // A managed-pty host must not outlive the interactive terminal it bridges.
+      // Simulate the terminal vanishing: a real interactive bridge (bridgeTty) whose
+      // stdin emits 'close'. The host must kill its (still-alive, 20s-safety-net)
+      // child and clean up — instead of lingering as a forwarding orphan (the
+      // "random characters appear without typing" report).
+      const ownerId = `su-orphan-eof-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      let captured = '';
+      const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
+      const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
+
+      // Long-lived child (20s net) that would keep the host alive forever if the
+      // terminal-close teardown didn't fire.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        'process.stdin.on(\'data\',()=>{});' +
+        'setTimeout(()=>process.exit(0),20000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io: { stdin, stdout },
+        bridgeTty: true,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(500);
+      expect(existsSync(sock)).toBe(true);
+      expect(captured).toContain('BOOT:');
+
+      // The terminal closes: stdin hits EOF/close. The host must tear down promptly
+      // (well inside this test's 15s budget — not the child's 20s safety net).
+      (stdin as EventEmitter).emit('close');
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    15_000,
+  );
+
+  it(
+    'tears down when the launching parent dies (reparent-to-init) even if the pts stays alive',
+    async () => {
+      // The exact 2026-07-05 orphan: psu's launching shell exits (ppid→init) while
+      // the /dev/pts stays alive (a fresh shell took it over), so stdin never hits
+      // EOF. The parent-death watchdog must catch it. parentPidFn is injected to
+      // fake the reparent without a real fork; a short poll keeps the test fast.
+      const ownerId = `su-orphan-ppid-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      let captured = '';
+      const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
+      const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
+
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        'process.stdin.on(\'data\',()=>{});' +
+        'setTimeout(()=>process.exit(0),20000);';
+
+      // Starts NON-init (a live shell); flip to init to simulate the shell exiting.
+      let fakeParent = 424242;
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100' },
+        ownerId,
+        io: { stdin, stdout },
+        bridgeTty: true,
+        parentPidFn: () => fakeParent,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(500);
+      expect(existsSync(sock)).toBe(true);
+      expect(captured).toContain('BOOT:');
+
+      // The launching shell exits → we get reparented to init. The watchdog's next
+      // poll (≤100ms) must observe ppid===1 and tear the orphaned host down.
+      fakeParent = 1;
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    15_000,
+  );
+});

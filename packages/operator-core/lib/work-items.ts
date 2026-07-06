@@ -50,7 +50,7 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
-import { autoPickableWhereSql } from './work-items-admission';
+import { autoPickableWhereSql, isAutoPickable, loadTrustedGithubUserIds } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
 import {
@@ -437,6 +437,17 @@ export interface ListWorkItemsFilter {
    */
   orderByRank?: boolean;
   limit?: number;
+  /**
+   * EI-7841: when true, apply the SAME feature-family G2 admission/trust gate
+   * (autoPickableWhereSql) the claim paths (`claimWorkItem` / `claimFloorsWhereSql`)
+   * enforce — a remote, un-admitted item is excluded rather than listed as if
+   * claimable. Default false/omitted: byte-identical to before (every existing
+   * caller — dashboards, leader overviews, general `work_items:list` calls — keeps
+   * seeing the full backlog including gated items). Opt in for a SELF-SELECT
+   * consumer (e.g. coord:orient's claimable backlog) so "claimable" actually means
+   * claimable.
+   */
+  admissibleOnly?: boolean;
 }
 
 /**
@@ -516,6 +527,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
                ? sql`TRUE`
                : sql`(parent_id IS NULL OR parent_id = '')`
          }
+         AND ${filter.admissibleOnly ? autoPickableWhereSql(sql, ws) : sql`TRUE`}
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
        LIMIT ${limit}`;
     out.push(...rows.map(featureRowToWorkItem));
@@ -2460,9 +2472,20 @@ export async function claimNextIssueWorkItem(
 
 export interface WorkItemObservation {
   item: WorkItem;
-  /** Unclaimed and so available to claim. */
+  /** Unclaimed AND not refused by the G2 admission/trust gate — i.e. a claim would
+   *  actually succeed. False for both "someone holds it" and "unclaimed but gated". */
   available: boolean;
   claimedBy: string | null;
+  /**
+   * EI-7841: true only when the item is UNCLAIMED yet still not-`available` because
+   * the feature-family G2 admission/trust gate (autoPickableWhereSql /
+   * isAutoPickable — the same gate `work_items:claim` and `claim_next` enforce)
+   * would refuse it: a remote, un-admitted, untrusted-author item. Omitted (not just
+   * false) when the gate doesn't apply, so existing `available`-only callers are
+   * unaffected. Lets a self-selecting agent see WHY an apparently-free item can't be
+   * claimed instead of discovering it only via a `not_claimable` claim failure.
+   */
+  gated?: boolean;
 }
 
 /**
@@ -2470,6 +2493,16 @@ export interface WorkItemObservation {
  * primitive, kept DISTINCT from the `in` of claim. Reports claimability so a self-
  * selecting agent can decide before taking. (list/get are the bulk rd surface; this is
  * the explicit single-item observe-with-claimability.)
+ *
+ * EI-7841: `work_items:list` (→ coord:orient's claimable backlog) and this observe
+ * read historically reported `available: true` for ANY unclaimed row, while the two
+ * claim paths (`claimWorkItem` / `claimFloorsWhereSql`) additionally enforce the G2
+ * admission/trust gate (autoPickableWhereSql) for feature-family items — so a
+ * remote, un-admitted item looked claimable here and then bounced with
+ * `not_claimable` on the actual claim, burning a wake cycle. This applies the SAME
+ * gate (via the pure-JS `isAutoPickable`, mirroring placement-gather's usage — no
+ * extra per-row query beyond the one-off trust-list load) so `available` here
+ * matches what `work_items:claim` will actually do.
  */
 export async function observeWorkItem(
   id: string,
@@ -2477,7 +2510,19 @@ export async function observeWorkItem(
 ): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  return { item: wi, available: !wi.assignee, claimedBy: wi.assignee };
+  const unclaimed = !wi.assignee;
+  if (unclaimed && wi.family === 'feature') {
+    // Cheap path first — local/admitted items (the vast majority) resolve without
+    // touching the DB at all; only a remote+un-admitted item needs the trust-list
+    // read to check the Phase-3 fast-path before concluding it's truly gated.
+    let pickable = isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, undefined);
+    if (!pickable) {
+      const trusted = await loadTrustedGithubUserIds(activeWorkspaceId()).catch(() => new Set<number>());
+      pickable = isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trusted);
+    }
+    if (!pickable) return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+  }
+  return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }
 
 export async function releaseWorkItem(

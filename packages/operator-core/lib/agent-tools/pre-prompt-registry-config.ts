@@ -51,17 +51,20 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // check downgrades it to TOON. Clean + lossless both ways.
   { name: 'audit:list', read: 'csv', note: 'flat audit rows; ~hot on investigation' },
 
-  // ── Write (positional-CSV args) — candidates, GATED OFF pending P-013 ──────
-  // Both are all-scalar, arrayless, free-text-free positional fits. They are NOT
-  // yet flipped to `write:'positional'` on the live fleet: their misalignment
-  // guard is ARITY-ONLY (neither `state` nor the ids carry an enum/regex the
-  // guard can sanity-check), so a swapped row could write wrong-but-valid data
-  // (D-007). The plan gates this on the P-013 LLM-scenario emit-correctness
-  // measurement (P-016) — flip `write` to `'positional'` here once it passes on
-  // a non-contended run. The mechanism + guard + scenarios are built and tested
-  // (positional-integration.test.ts, su S07/S08); only the live default waits.
-  { name: 'work_items:set_state', read: 'off', write: 'off', note: '→positional after P-013 (cols id,state,harness?)' },
-  { name: 'work_items:claim', read: 'off', write: 'off', note: '→positional after P-013 (cols id,assignee?,harness?)' },
+  // ── Write (positional-CSV args) — LIVE since 2026-07-06 (the P-013 gate PASSED) ──
+  // Both are all-scalar, arrayless, free-text-free positional fits. The P-013
+  // emit-correctness gate passed on a non-contended live run 2026-07-06
+  // (definetool-token-reduction-uncovered-surfaces-2026-07-06 P-001/P-002):
+  // su-S07 verdict=pass with a DISTINCT judge (claude-opus-4-6 vs SUT
+  // sonnet-4-6 per Plan §6.3 — the earlier red verdict was SUT==judge
+  // self-grade bias on orthogonal behavioral dims); the load-bearing positional
+  // assert (row === "WI-42,passed") passed 6/6 across both runs; su-S08
+  // compact-read passed 3/3. Residual (D-007): the misalignment guard is still
+  // ARITY-ONLY — an id-shape/enum column check would further harden the
+  // swapped-row case (EI follow-up filed), but the empirical gate this default
+  // waited on is met.
+  { name: 'work_items:set_state', read: 'off', write: 'positional', note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?)' },
+  { name: 'work_items:claim', read: 'off', write: 'positional', note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?)' },
 ];
 
 configurePrePromptRegistry(PRE_PROMPT_REGISTRY);

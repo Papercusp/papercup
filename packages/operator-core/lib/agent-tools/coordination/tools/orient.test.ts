@@ -57,7 +57,9 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:whoami',
     ]);
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
-    expect(calls[1].args).toMatchObject({ harness: 'h', state: 'todo', limit: 20 });
+    // EI-7841: claimable is self-select context — must ask work_items:list to
+    // exclude G2-admission-gated items so "claimable" matches what claim will do.
+    expect(calls[1].args).toMatchObject({ harness: 'h', state: 'todo', limit: 20, admissibleOnly: true });
     expect(calls[2].args).toMatchObject({ limit: 10, max_body_chars: 300 });
     expect(calls[3].args).toMatchObject({ limit: 10 });
   });

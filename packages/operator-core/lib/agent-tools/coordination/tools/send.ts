@@ -621,33 +621,54 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z
-    .object({
-      // Caller-DX (watchdog P-006): actionable validation messages — agents
-      // repeatedly bounced off the bare "Required" / "Array must contain at least
-      // 1 element(s)" zod default on these two required fields.
-      to: toArg.optional(),
-      summary: summaryArg.optional(),
-      body: z.string().optional(),
-      files: z.array(z.string()).optional(),
-      plan_slug: z.string().optional(),
-      related_msg_id: z.string().optional(),
-      wake: wakeArg,
-      wakeOnReply: wakeOnReplyArg,
-      endTurn: endTurnArg,
-      backstop: backstopArg,
-      scope: scopeArg,
-      allHive: allHiveArg,
-      items: z
-        .array(itemSpec)
-        .min(1)
-        .max(100)
-        .optional()
-        .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }'),
-    })
-    .refine((a) => (a.items?.length ?? 0) > 0 || ((a.to?.length ?? 0) > 0 && Boolean(a.summary)), {
-      message: 'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
-    }),
+  // EI-7838: this cross-field "need {to,summary} (or items)" check used to live in
+  // a trailing `.refine()` on the object below. Zod only RUNS a `.refine()` /
+  // `.superRefine()` after the base object schema parses EVERY field successfully —
+  // when a SIBLING field (e.g. `wake`) ALSO fails its own type check (a stray
+  // string "true" instead of boolean/enum, or any other bad value), zod short-
+  // circuits and returns ONLY that field's issue; the refine never runs, so a
+  // genuinely-missing `summary` goes unreported and the caller is misdirected
+  // toward an unrelated field ("wake: Invalid input") instead of the real,
+  // actionable problem. A `z.preprocess` wrapping the object runs BEFORE the
+  // object's own per-field validation, so its `ctx.addIssue` fires independently
+  // of whether `wake`/etc. later fail their own checks — this makes the
+  // fundamental "you forgot to/summary" message win over a secondary field-shape
+  // issue (confirmed via z.toJSONSchema: preprocess is transparent to schema
+  // introspection, so the advertised tool schema is byte-identical either way).
+  args: z.preprocess((data, pctx) => {
+    const a = data as { items?: unknown[]; to?: unknown[]; summary?: unknown } | null | undefined;
+    const hasItems = Array.isArray(a?.items) && a.items.length > 0;
+    const hasSingle = Array.isArray(a?.to) && a.to.length > 0 && Boolean(a?.summary);
+    if (!hasItems && !hasSingle) {
+      pctx.addIssue({
+        code: 'custom',
+        message: 'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
+      });
+    }
+    return data;
+  }, z.object({
+    // Caller-DX (watchdog P-006): actionable validation messages — agents
+    // repeatedly bounced off the bare "Required" / "Array must contain at least
+    // 1 element(s)" zod default on these two required fields.
+    to: toArg.optional(),
+    summary: summaryArg.optional(),
+    body: z.string().optional(),
+    files: z.array(z.string()).optional(),
+    plan_slug: z.string().optional(),
+    related_msg_id: z.string().optional(),
+    wake: wakeArg,
+    wakeOnReply: wakeOnReplyArg,
+    endTurn: endTurnArg,
+    backstop: backstopArg,
+    scope: scopeArg,
+    allHive: allHiveArg,
+    items: z
+      .array(itemSpec)
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('send many DISTINCT messages at once — each { to, summary, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }'),
+  })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // The sender's own harness when it's a real, harness-scoped agent (pipeline

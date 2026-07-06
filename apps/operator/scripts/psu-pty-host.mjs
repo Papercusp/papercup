@@ -211,6 +211,18 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
 
+/** Orphan watchdog poll (WI-3141). A bridged interactive host exists ONLY to
+ *  bridge the user's terminal to the agent under psu's own pty; once its
+ *  launching shell dies it has no human to serve and MUST tear down — else it
+ *  lingers as an orphan forwarding its live child's output to a /dev/pts fd the
+ *  OS has recycled to the owner's NEXT terminal (the 2026-07-05 "random
+ *  characters appear without typing" report). SIGHUP is the nominal signal but
+ *  is NOT reliably delivered on a WSL/console-session teardown (the orphan was
+ *  reparented to init with no SIGHUP), so this cheap unref'd poll is the
+ *  belt-and-suspenders: only a TRANSITION to init (ppid 1) triggers teardown, so
+ *  a host deliberately launched under init is left alone. Env-tunable. */
+const ORPHAN_POLL_MS = Number(process.env.PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS) || 2_000;
+
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
@@ -813,6 +825,9 @@ export function hostThroughPty(o) {
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
     onRespawn = () => {},
+    // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
+    // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
+    parentPidFn = () => process.ppid,
   } = o;
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
@@ -1191,6 +1206,7 @@ export function hostThroughPty(o) {
 
   return new Promise((resolve) => {
     let cleaned = false;
+    let orphanTimer = null; // WI-3141 orphan watchdog; assigned below, cleared in cleanup
     const cleanup = (code) => {
       if (cleaned) return;
       cleaned = true;
@@ -1214,6 +1230,11 @@ export function hostThroughPty(o) {
       }
       try {
         clearInterval(activityTimer);
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (orphanTimer) clearInterval(orphanTimer);
       } catch {
         /* ignore */
       }
@@ -1383,5 +1404,73 @@ export function hostThroughPty(o) {
     };
     process.on('SIGTERM', killChild);
     process.on('SIGHUP', killChild);
+
+    // ── Orphan / vanished-terminal teardown (WI-3141) ──────────────────────────
+    // A managed-pty host must NOT outlive the interactive terminal it bridges.
+    // SIGHUP (above) is the nominal "terminal closed" signal, but a WSL/console-
+    // session teardown can reparent psu to init WITHOUT delivering it — leaving a
+    // host that keeps its child alive and keeps forwarding the child's output to a
+    // /dev/pts fd the OS has since recycled to the owner's NEXT terminal (the
+    // 2026-07-05 "random characters appear without typing" report). So the moment
+    // the human is gone, kill the child and exit — hard, not the soft SIGTERM
+    // killChild uses, since an orphan may be forwarding a wedged/looping child.
+    // Only engaged for a real interactive TTY bridge (bridgeTty): a non-tty
+    // (piped/programmatic) host has no terminal to spam and treats stdin EOF as
+    // ordinary end-of-input, so these guards would be wrong there.
+    if (bridgeTty) {
+      const teardownOrphan = (why) => {
+        if (cleaned) return;
+        try {
+          process.stderr.write(
+            `psu-pty-host: session orphaned (${why}) for ${ownerId} — killing child + exiting\n`,
+          );
+        } catch {
+          /* the terminal we'd warn on may be the very one that vanished */
+        }
+        try {
+          child.kill('SIGHUP');
+        } catch {
+          /* already gone */
+        }
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        cleanup(0);
+      };
+
+      // (1) The bridged TTY going EOF / closed / errored = the terminal vanished.
+      stdin.once?.('end', () => teardownOrphan('stdin-eof'));
+      stdin.once?.('close', () => teardownOrphan('stdin-close'));
+      stdin.on?.('error', () => teardownOrphan('stdin-error'));
+      // A write error on our stdout (EIO/EPIPE) = the terminal is gone. Wiring a
+      // listener also keeps a stray write error from throwing uncaught.
+      if (typeof stdout.on === 'function') stdout.on('error', () => teardownOrphan('stdout-error'));
+
+      // (2) Parent-death watchdog — catches the case the pts stays ALIVE (a fresh
+      // shell took over the same /dev/pts number, so stdin never hits EOF) but the
+      // shell that LAUNCHED psu has died: the exact 2026-07-05 orphan (ppid→init).
+      // Only a TRANSITION to init counts; a host already under init at launch (a
+      // service/nohup start) is left alone.
+      let initialParentPid = 1;
+      try {
+        initialParentPid = parentPidFn();
+      } catch {
+        /* if we can't read ppid, skip the watchdog (the EOF guards still apply) */
+      }
+      if (initialParentPid && initialParentPid !== 1) {
+        orphanTimer = setInterval(() => {
+          let ppid = initialParentPid;
+          try {
+            ppid = parentPidFn();
+          } catch {
+            return; // transient read failure — try again next tick
+          }
+          if (ppid === 1) teardownOrphan('parent-exited');
+        }, ORPHAN_POLL_MS);
+        if (typeof orphanTimer.unref === 'function') orphanTimer.unref();
+      }
+    }
   });
 }

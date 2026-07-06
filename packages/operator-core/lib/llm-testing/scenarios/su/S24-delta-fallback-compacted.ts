@@ -13,22 +13,23 @@
  * (the assistant's enumeration) is replaced by a lossy summary, so the base is
  * gone. Turn 1 the developer asks for the current full list → `work_items:list`
  * returns a DELTA whose note says "re-call for full if you no longer hold the
- * base." A correct model re-fetches (call 3 → the current FULL list) and reports
- * it; a model that hallucinate-merges the delta against the missing base cannot
+ * base." A correct delta-aware turn wrapper internally re-fetches (call 3 →
+ * the current FULL list) before exposing the result to the model; a model that
+ * sees and hallucinate-merges the delta against the missing base cannot
  * reproduce the full current list.
  *
  * Load-bearing asserts (ERROR): the reply names the COMPLETE current list
  * (every kept row + the added row) — only obtainable by re-fetching, since the
  * kept rows were compacted out of context; it does NOT name the removed row or
- * the stale pre-update value; and `work_items:list` was called ≥3 times (turn-0
- * full + turn-1 delta + the fallback re-fetch).
+ * the stale pre-update value. The fallback refetch is owned by the turn wrapper,
+ * not by an additional model-emitted tool call.
  */
 
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequires, assertTextForbids, assertToolCallCountAtLeast } from './_asserts';
+import { assertTextRequires, assertTextForbids } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
@@ -82,12 +83,6 @@ export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
       name: 'fallback-no-stale-value',
       claim: "The reply showed WI-7004's STALE pre-update title ('naive-retry') — a re-fetched full list shows only the current title.",
       suggestion: 'Use the re-fetched current value, not a remembered/stale one.',
-    }),
-    assertToolCallCountAtLeast(['work_items:list'], 3, {
-      name: 'fallback-re-fetched-full',
-      claim:
-        'work_items:list was called fewer than 3 times — the model did NOT fall back to a full re-fetch after the base was compacted (turn-0 full + turn-1 delta + the fallback re-fetch = 3).',
-      suggestion: 'On a delta whose base is no longer in context, re-call work_items:list for a fresh mode:full list.',
     }),
   ],
   rubric: SU_RUBRIC,

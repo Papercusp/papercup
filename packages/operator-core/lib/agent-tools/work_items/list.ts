@@ -207,6 +207,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe("include child items (chunks) in the list"),
+    admissibleOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "EI-7841: exclude feature-family items the G2 admission/trust gate would refuse a claim on (remote, un-admitted, untrusted-author) — the same gate work_items:claim / claim_next enforce. Default false (full backlog, including gated items, for overview/leader reads). Pass true for a SELF-SELECT read so 'claimable' actually means claimable.",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
   result: z.array(WORK_ITEM_ROW),
@@ -254,6 +260,7 @@ export default defineTool({
           assignee: assignee ?? null,
           parent: args.parent ?? null,
           includeChildren: args.includeChildren === true,
+          admissibleOnly: args.admissibleOnly === true,
           limit: args.limit ?? null,
         },
         tags: ["harness_features_consolidated"],
@@ -267,6 +274,7 @@ export default defineTool({
           assignee,
           parent: args.parent,
           includeChildren: args.includeChildren,
+          admissibleOnly: args.admissibleOnly,
           limit: args.limit,
         });
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent

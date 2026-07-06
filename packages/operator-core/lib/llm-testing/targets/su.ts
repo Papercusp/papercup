@@ -37,6 +37,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { applySemanticDelta } from '@papercusp/tooldef';
 import { resolveAnthropicBaseUrl } from '@papercusp/papercusp-shared/agent';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type {
@@ -214,6 +215,7 @@ interface AnthropicMessage { role: 'user' | 'assistant'; content: string | Conte
 type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 
 const MAX_TOOL_ITERATIONS = 6;
+const COMPACTION_SUMMARY_MARKER = 'Earlier conversation compacted';
 
 /**
  * The Claude Code identifier. It MUST be the first `system` block on the SUT's
@@ -370,6 +372,8 @@ interface SessionState {
 class SuSession implements ChatSession {
   readonly sessionId: string;
   private readonly state: SessionState;
+  private readonly deltaViews = new Map<string, DeltaViewState>();
+  private sawCompactionSummary = false;
 
   constructor(state: SessionState) {
     this.state = state;
@@ -432,6 +436,14 @@ class SuSession implements ChatSession {
     // Built via the exported helper so the framing invariant is regression-tested.
     const system = buildSuSystemBlocks(this.state.loadSystemPrompt(), cache, this.state.promptOverlay);
     const tools = this.state.catalog.tools;
+
+    const sawCompactionSummary = input.messages.some((m) => (
+      typeof m.content === 'string' && m.content.includes(COMPACTION_SUMMARY_MARKER)
+    ));
+    if (sawCompactionSummary && !this.sawCompactionSummary) {
+      this.deltaViews.clear();
+    }
+    this.sawCompactionSummary = sawCompactionSummary;
 
     // The conversation transcript for THIS turn (stateless: caller threads the
     // full history each send()). System prompt is the playbook; drop any
@@ -540,7 +552,17 @@ class SuSession implements ChatSession {
       for (const candidate of [name, `mcp__agentmcp__${name}`]) {
         const res = await override.override(candidate, input);
         if (res !== PASS_THROUGH) {
-          return renderToolResult(res as ToolResult);
+          const viewKey = deltaViewKey(name, input);
+          const adapted = await adaptDeltaToolResultForModel(
+            this.deltaViews,
+            viewKey,
+            res as ToolResult,
+            async () => {
+              const refetched = await override.override(candidate, input);
+              return refetched === PASS_THROUGH ? null : (refetched as ToolResult);
+            },
+          );
+          return renderToolResult(adapted);
         }
       }
     }
@@ -549,6 +571,118 @@ class SuSession implements ChatSession {
       isError: false,
     };
   }
+}
+
+interface DeltaViewState {
+  rows: unknown[];
+  cursor?: string;
+}
+
+type DeltaToolPayload =
+  | { ok?: boolean; mode: 'full'; cursor?: string; items?: unknown[]; count?: number; [k: string]: unknown }
+  | { ok?: boolean; mode: 'delta'; cursor?: string; items?: unknown[]; counts?: unknown; [k: string]: unknown }
+  | { ok?: boolean; mode: 'not_modified'; cursor?: string; [k: string]: unknown };
+
+/**
+ * LLM-test target adapter for the delta scenarios. Production's safe contract is
+ * "the turn wrapper owns base-presence and merge/refetch"; the model should not
+ * receive raw semantic-delta rows and be trusted to merge them. This adapter
+ * makes the hermetic live-model target emulate that wrapper when a scenario
+ * override returns a `{ mode: 'delta' }` payload.
+ */
+export async function adaptDeltaToolResultForModel(
+  views: Map<string, DeltaViewState>,
+  viewKey: string,
+  result: ToolResult,
+  refetchFull?: () => Promise<ToolResult | null>,
+): Promise<ToolResult> {
+  const payload = parseSingleJsonToolPayload(result);
+  if (!payload || !isDeltaPayload(payload)) return result;
+
+  if (payload.mode === 'full') {
+    if (Array.isArray(payload.items)) {
+      views.set(viewKey, { rows: payload.items, cursor: typeof payload.cursor === 'string' ? payload.cursor : undefined });
+    }
+    return result;
+  }
+
+  if (payload.mode === 'not_modified') {
+    const cached = views.get(viewKey);
+    if (!cached) return result;
+    const full = {
+      ok: payload.ok ?? true,
+      mode: 'full',
+      cursor: typeof payload.cursor === 'string' ? payload.cursor : cached.cursor,
+      count: cached.rows.length,
+      items: cached.rows,
+      note: 'Delta-aware target reconstructed this full result from its cached base for the model.',
+    };
+    return replaceToolJson(result, full);
+  }
+
+  const cached = views.get(viewKey);
+  if (!cached) {
+    const refetched = await refetchFull?.();
+    if (!refetched) return result;
+    const refetchedPayload = parseSingleJsonToolPayload(refetched);
+    if (refetchedPayload && isDeltaPayload(refetchedPayload) && refetchedPayload.mode === 'full' && Array.isArray(refetchedPayload.items)) {
+      views.set(viewKey, {
+        rows: refetchedPayload.items,
+        cursor: typeof refetchedPayload.cursor === 'string' ? refetchedPayload.cursor : undefined,
+      });
+    }
+    return refetched;
+  }
+
+  if (!Array.isArray(payload.items)) return result;
+  const merged = applySemanticDelta(cached.rows, payload.items as never, (row) => {
+    const id = (row as { id?: unknown }).id;
+    return String(id ?? '');
+  });
+  views.set(viewKey, { rows: merged, cursor: typeof payload.cursor === 'string' ? payload.cursor : cached.cursor });
+  return replaceToolJson(result, {
+    ok: payload.ok ?? true,
+    mode: 'full',
+    cursor: typeof payload.cursor === 'string' ? payload.cursor : cached.cursor,
+    count: merged.length,
+    items: merged,
+    note: 'Delta-aware target applied the semantic delta before exposing the result to the model.',
+  });
+}
+
+function deltaViewKey(name: string, input: unknown): string {
+  return `${name}:${stableStringify(input)}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
+function parseSingleJsonToolPayload(result: ToolResult): unknown | null {
+  if (result.content.length !== 1) return null;
+  const text = result.content[0]?.text;
+  if (typeof text !== 'string') return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function isDeltaPayload(payload: unknown): payload is DeltaToolPayload {
+  if (!payload || typeof payload !== 'object') return false;
+  const mode = (payload as { mode?: unknown }).mode;
+  return mode === 'full' || mode === 'delta' || mode === 'not_modified';
+}
+
+function replaceToolJson(result: ToolResult, payload: unknown): ToolResult {
+  return {
+    ...result,
+    content: [{ ...result.content[0], text: JSON.stringify(payload) }],
+  };
 }
 
 /**

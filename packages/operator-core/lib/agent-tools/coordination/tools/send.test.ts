@@ -512,3 +512,46 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     expect(getPresenceM).not.toHaveBeenCalled(); // nor the cue-authority resolver's read
   });
 });
+
+describe('coord:send args schema (EI-7838: missing-summary must not be masked by a sibling field error)', () => {
+  it('missing `summary` alone reports the actionable "pass { to, summary }" message', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], wake: true });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.map((i) => i.message)).toContain(
+        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
+      );
+    }
+  });
+
+  it('a genuinely-invalid `wake` value ALONE (to+summary both present) reports the wake issue, not the cross-field one', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', wake: 'not-a-real-value' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.path.join('.') === 'wake')).toBe(true);
+      expect(r.error.issues.map((i) => i.message)).not.toContain(
+        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
+      );
+    }
+  });
+
+  it('EI-7838 repro: missing `summary` AND an invalid `wake` value together — the cross-field "need to+summary" message must still surface (previously the wake type error alone was reported, silently hiding the missing-summary problem)', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], body: 'test', wake: 'not-a-real-value' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.map((i) => i.message)).toContain(
+        'pass { to, summary } for one message, or items:[{ to, summary }] for many distinct messages',
+      );
+    }
+  });
+
+  it('a fully valid single-message payload still parses cleanly through the preprocess wrapper', () => {
+    const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', wake: true });
+    expect(r.success).toBe(true);
+  });
+
+  it('a valid items:[…] payload (no top-level to/summary) still parses cleanly', () => {
+    const r = tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi' }] });
+    expect(r.success).toBe(true);
+  });
+});

@@ -3405,6 +3405,159 @@ describe('linkAdvSessionFromContext — ADV row linkage', () => {
   });
 });
 
+describe('withDeadline — handler wall-clock cap (WI-3147)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves normally (via the promise path) when the work settles before the deadline', async () => {
+    let done = false;
+    await withDeadline(
+      Promise.resolve().then(() => {
+        done = true;
+      }),
+      20_000,
+    );
+    expect(done).toBe(true);
+  });
+
+  it('resolves at the deadline when the work never settles — graceful degrade, never a framework kill', async () => {
+    vi.useFakeTimers();
+    let settled = false;
+    // A wedged operator: the inner promise NEVER settles (models the event-loop-starvation
+    // case where even the per-call 6s AbortController guard slips past its budget).
+    const p = withDeadline(new Promise<void>(() => {}), 20_000).then(() => {
+      settled = true;
+    });
+    // Just before the deadline: still pending.
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(settled).toBe(false);
+    // Past the deadline: withDeadline resolves on its own, so the handler always returns.
+    await vi.advanceTimersByTimeAsync(2);
+    await p;
+    expect(settled).toBe(true);
+  });
+
+  it('never surfaces an unhandled rejection when the losing (deadline-won) promise later rejects', async () => {
+    vi.useFakeTimers();
+    let rej!: (e: unknown) => void;
+    const hang = new Promise<void>((_resolve, reject) => {
+      rej = reject;
+    });
+    const p = withDeadline(hang, 1_000);
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(p).resolves.toBeUndefined();
+    // The losing promise rejects AFTER we stopped awaiting it — must not throw / go unhandled.
+    rej(new Error('late failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+});
+
+describe('onSessionStart — concurrent + bounded (WI-3147)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevAdv = process.env.PAPERCUSP_ADV_SESSION_ID;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevAdv === undefined) delete process.env.PAPERCUSP_ADV_SESSION_ID;
+    else process.env.PAPERCUSP_ADV_SESSION_ID = prevAdv;
+    _resetHookOwnerIdForTests();
+    _resetToolCallCacheForTests();
+    vi.useRealTimers();
+  });
+
+  it('dispatches the ADV link and declare-intent CONCURRENTLY (a serial impl could not have both in flight)', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    const started: string[] = [];
+    const releasers: Array<() => void> = [];
+    global.fetch = (async (url: unknown, init?: { body?: string }) => {
+      if (String(url).endsWith('/api/health')) return { ok: true } as Response;
+      const name =
+        (JSON.parse(init?.body ?? '{}') as { params?: { name?: string } }).params?.name ?? '';
+      started.push(name);
+      // Hold BOTH coord calls open — a purely sequential onSessionStart would never
+      // START the second before the first resolved, so it could never reach 2 in flight.
+      await new Promise<void>((resolve) => releasers.push(resolve));
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true,"result":"linked"}' }] },
+          }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const p = onSessionStart({
+      cwd: '/repo',
+      sessionManager: { getSessionId: () => '019ab123' },
+    });
+    // Flush microtasks so refreshMode + the concurrent Promise.all have dispatched both fetches.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(started).toEqual(expect.arrayContaining(['omp:sessions', 'coord:declare-intent']));
+    expect(started.length).toBe(2);
+    releasers.forEach((fn) => fn());
+    await p;
+  });
+
+  it('returns even when a coord call hangs — the deadline keeps it under pi’s 30s cap', async () => {
+    vi.useFakeTimers();
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    global.fetch = (async (url: unknown) => {
+      if (String(url).endsWith('/api/health')) return { ok: true } as Response;
+      // The coord fetch never settles AND ignores the abort signal (starvation case).
+      return new Promise(() => {}) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    let settled = false;
+    const p = onSessionStart({
+      cwd: '/repo',
+      sessionManager: { getSessionId: () => '019ab123' },
+    }).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(19_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await p;
+    expect(settled).toBe(true);
+  });
+
+  it('makes NO coord calls in detached mode (operator unreachable)', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    const coordCalls: string[] = [];
+    global.fetch = (async (url: unknown, init?: { body?: string }) => {
+      if (String(url).endsWith('/api/health')) return { ok: false } as Response;
+      const name =
+        (JSON.parse(init?.body ?? '{}') as { params?: { name?: string } }).params?.name ?? '';
+      coordCalls.push(name);
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+          }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await onSessionStart({
+      cwd: '/repo',
+      sessionManager: { getSessionId: () => '019ab123' },
+    });
+    expect(coordCalls).toEqual([]);
+  });
+});
+
 describe('onSessionShutdown — defensive lock release (file-locking #2)', () => {
   const originalFetch = global.fetch;
   const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;

@@ -196,9 +196,20 @@ const { rows, mode } = await dispatchWithBasePresence(
   { wantSemantic: true },
 );
 // mode === 'full'         → inject `rows` into the model context
-// mode === 'delta'        → inject only the changed rows (the token win)
+// mode === 'delta'        → the client has checksum-merged a delta into `rows`;
+//                           inject a deterministic representation of `rows`
+//                           for any full-list/user-visible answer. Do not hand
+//                           raw delta rows to the model and rely on it to merge.
 // mode === 'not_modified' → inject NOTHING; the base already stands
 ```
+
+`mode` is the **wire mode the client observed**, not a blanket instruction to
+expose that wire body to the model. The client always returns `rows`, the
+authoritative reconstructed view. A runtime may use a reduced presentation only
+when the user-visible task does not require the full current view; otherwise it
+must render from `rows` (or re-fetch full after compaction). The `su-S23`/`S24`/
+`S25` gate is specifically about this user-visible correctness class: removed
+rows and stale updated rows must not reach the final answer.
 
 **Where this lands (and where it does NOT).** Every delta-capable consumer today is an
 EXTERNAL MCP-client runtime — `transport: 'mcp'` calls from spawned bees / psu sessions
