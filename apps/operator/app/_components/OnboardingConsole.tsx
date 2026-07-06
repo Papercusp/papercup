@@ -146,6 +146,36 @@ export function OnboardingConsole() {
     void launchExternal(spec);
   }, [routeExternal, external, spec, launchExternal]);
 
+  // External path (Windows/Linux, WI-3092): unlike the embedded pane, the
+  // webview CANNOT observe the external terminal window's process exit — so
+  // the exited→home effect above never fires for it, and until now the ONLY
+  // way home was the manual "I've finished — continue" button. Mirror that
+  // auto-nav here by POLLING setup-wizard-state (the tutor's setup:complete
+  // call stamps `finished_at`) while the external console is running, and
+  // navigate home the moment graduation lands. The manual button stays as
+  // the escape hatch for a user who quits the terminal without graduating
+  // (finished_at never gets set, so polling alone would never advance).
+  useEffect(() => {
+    if (!routeExternal || external !== 'running') return;
+    let cancelled = false;
+    const checkGraduated = async () => {
+      try {
+        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = (await r.json()) as { finished_at?: string };
+        if (!cancelled && j.finished_at) window.location.href = '/';
+      } catch {
+        // transient network hiccup — the next poll retries
+      }
+    };
+    void checkGraduated(); // don't wait a full interval if already graduated
+    const id = setInterval(() => void checkGraduated(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [routeExternal, external]);
+
   // USER-INITIATED focus (button click) — mirrors focus_window_by_title's
   // no-focus-steal contract; never call from an automated driver.
   const focusExternal = useCallback(() => {
