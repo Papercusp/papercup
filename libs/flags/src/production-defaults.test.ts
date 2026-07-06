@@ -268,7 +268,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(offCount).toBe(16);
   });
 
-  it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {
+  it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
     // A coarse human-readable cross-check on top of the snapshot equality above.
     for (const key of [FLAGS.CLOUDFLARE_PUBLISH, FLAGS.HARNESS_PHASES, FLAGS.DESIGN, FLAGS.TESTING]) {
       expect(DARK_FLAGS.get(key)?.case).toBe('parked');
@@ -276,6 +276,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     }
     expect(DARK_FLAGS.get(FLAGS.OPEN_SIGNUP)?.case).toBe('owner-authority');
     expect(DARK_FLAGS.get(FLAGS.AUTH_CONFIG_OVERRIDES)?.case).toBe('owner-authority');
+    // WI-3093: psu end-user exposure (a full superuser agent shell) is the highest-stakes
+    // owner-authority entry in the set — pin it explicitly so a future edit can't silently
+    // re-flip it to default-ON the way the P-011 inversion originally did.
+    expect(DARK_FLAGS.get(FLAGS.PSU_END_USER)?.case).toBe('owner-authority');
+    expect(FLAG_DEFAULTS[FLAGS.PSU_END_USER]).toBe(false);
   });
 
   it('P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark', () => {
