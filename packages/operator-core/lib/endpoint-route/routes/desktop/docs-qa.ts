@@ -201,6 +201,15 @@ export function composeDocsQaPrompt(
     '- For a "what is X" question, LEAD with ONE plain sentence defining X in everyday ' +
     'terms, then add at most 2–3 short sentences of the most useful context. Keep the ' +
     'whole answer brief; stop when the question is answered.\n' +
+    '- CRITICAL: many core terms name a PRODUCT CONCEPT first and are ALSO the label of a ' +
+    'visual theme / branding / lexicon skin. "Pot" is primarily a PROJECT (the top-level ' +
+    'thing you create and run agents in) and only incidentally the name of the default ' +
+    'lexicon; "Swarm" is a concept and also a skin name; etc. Define the PRODUCT CONCEPT — ' +
+    'what X IS and what it does for the user — and do NOT lead by calling X a "visual ' +
+    'identity", "branding", "theme", "skin", "look and feel", "vocabulary", or "lexicon" ' +
+    'unless the user EXPLICITLY asked about appearance or branding. If a reference page is ' +
+    'about branding/skins, use it only for the term’s display name, never as the ' +
+    'definition of what the concept IS.\n' +
     '- Answer immediately, with no preamble. You have NO tools and cannot look anything ' +
     'up — never narrate a process or say "let me check" / "let me confirm".\n' +
     '- Ground every factual claim in the reference material above. Do NOT invent tool, ' +
