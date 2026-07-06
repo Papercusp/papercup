@@ -390,6 +390,22 @@ export async function setOwnerSteering(
   if (patch.federatedPriming !== undefined) {
     writes.push([OWNER_STEERING_KEYS.federatedPriming, asFederatedPriming(patch.federatedPriming)]);
   }
+  // EI-8277 root cause: a bare pause write (`pot:set-steering { pauseNewWork:true }`,
+  // e.g. from the operator palette/Queen tab) used to preserve a prior directive
+  // that said "gate lifted; resume normal placement". The structured gate was
+  // intentionally paused, but every later read looked like drift because the
+  // stale free-text directive still said resume. Keep omitted fields untouched
+  // in general, but do not preserve a resume-sounding directive across an
+  // explicit pause unless the caller also supplied a directive in the same patch.
+  const enablingPause =
+    patch.pauseNewWork === true ||
+    (patch.pausedUntil !== undefined && asFiniteNumber(patch.pausedUntil) != null);
+  if (enablingPause && patch.directive === undefined) {
+    const current = await getOwnerSteering(workspaceId, hiveHomeSlug, sql);
+    if (directiveSuggestsResume(current.directive)) {
+      writes.push([OWNER_STEERING_KEYS.directive, null]);
+    }
+  }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);
   }

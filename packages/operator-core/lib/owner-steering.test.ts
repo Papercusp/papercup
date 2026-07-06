@@ -171,6 +171,47 @@ describe('setOwnerSteering — write fan-out', () => {
     expect(deleteHiveSetting).not.toHaveBeenCalled();
   });
 
+  it('EI-8277: a bare pause write clears a stale resume-language directive', async () => {
+    listHiveSettings
+      .mockResolvedValueOnce(
+        rows({
+          [OWNER_STEERING_KEYS.directive]:
+            'Gate hold lifted at 2026-07-05T21:36Z; resume normal autonomous placement',
+          [OWNER_STEERING_KEYS.pauseNewWork]: false,
+        }),
+      )
+      .mockResolvedValueOnce([]);
+
+    await setOwnerSteering('ws', 'hive', { pauseNewWork: true });
+
+    const wrote = Object.fromEntries(
+      setHiveSetting.mock.calls.map((c) => [
+        (c[0] as { settingKey: string }).settingKey,
+        (c[0] as { value: unknown }).value,
+      ]),
+    );
+    expect(wrote[OWNER_STEERING_KEYS.directive]).toBeNull();
+    expect(wrote[OWNER_STEERING_KEYS.pauseNewWork]).toBe(true);
+  });
+
+  it('EI-8277: an explicit directive is honored even when pausing', async () => {
+    listHiveSettings.mockResolvedValue([]);
+
+    await setOwnerSteering('ws', 'hive', {
+      directive: 'Incident hold: start no new work.',
+      pauseNewWork: true,
+    });
+
+    const wrote = Object.fromEntries(
+      setHiveSetting.mock.calls.map((c) => [
+        (c[0] as { settingKey: string }).settingKey,
+        (c[0] as { value: unknown }).value,
+      ]),
+    );
+    expect(wrote[OWNER_STEERING_KEYS.directive]).toBe('Incident hold: start no new work.');
+    expect(wrote[OWNER_STEERING_KEYS.pauseNewWork]).toBe(true);
+  });
+
   it('writes every provided field with the normalized value', async () => {
     listHiveSettings.mockResolvedValue([]);
     await setOwnerSteering('ws', 'hive', {
