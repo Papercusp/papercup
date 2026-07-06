@@ -65,6 +65,9 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('intreq');
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
+  // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug; mig 523 renamed
+  // it → pot_slug. Replaying only 441 predates the rename, so apply it in-place.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
 }, 120_000);
 
 afterAll(async () => {

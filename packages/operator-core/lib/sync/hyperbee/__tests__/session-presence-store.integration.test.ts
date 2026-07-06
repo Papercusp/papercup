@@ -65,6 +65,9 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
     await db.sql.unsafe(stripMeta(readFileSync(MIG_479, 'utf8')));
+    // D-007 pot-rename: mig 434 creates shared_session_presence.hive_slug; mig 523 renamed
+    // it → pot_slug. Replaying only 434/479 predates the rename, so apply it in-place.
+    await db.sql.unsafe(`ALTER TABLE harness_shared.shared_session_presence RENAME COLUMN hive_slug TO pot_slug`);
   }, 60_000);
 
   afterAll(async () => {
