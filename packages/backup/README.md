@@ -105,8 +105,13 @@ Per-workspace `event_triggers` setting gates which reasons fire.
 
 ## Pre-snapshot DB hook
 
-`hook.ts` runs once per `snapshot()` call. Currently dumps the resolved harness-admin database into `<workspaceRoot>/db-dumps/pg-embedded.sql.gz`.
-Failures log to `hook.log` and never abort the snapshot.
+`hook.ts` runs once per `snapshot()` call. Currently dumps the resolved
+harness-admin database's release-critical tables (harness registry, plans,
+work items, backup metadata, and operator/hive settings) into
+`<workspaceRoot>/db-dumps/pg-embedded.sql.gz`. The dump is intentionally bounded:
+multi-GB telemetry/audit streams and plugin-private schemas are not part of the
+5-minute hot-state backup. Failures log to `hook.log` and never abort the
+snapshot.
 
 ## Threat model — what this protects against
 

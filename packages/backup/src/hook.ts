@@ -35,6 +35,29 @@ interface HookContext {
 // Use the discovery helper instead of a hardcoded port.
 import { backupHost } from './config';
 
+// Keep the hot-state dump bounded and restorable. A full database dump on the
+// standing dev box includes multi-GB telemetry/audit streams and plugin schemas
+// the harness_admin role cannot read; that made the hook produce only a tiny
+// pg_dumpall header while logging success. The release-critical state we need to
+// prove in restore drills lives in these durable tables: harness registry,
+// plans, work items, backup metadata, and operator/hive settings.
+const CRITICAL_TABLES = [
+  'harness_shared.harness_registry',
+  'harness_shared.hive_settings',
+  'harness_shared.operator_settings',
+  'harness_shared.orchestrator_settings',
+  'harness_shared.pr_reviewer_settings',
+  'harness_shared.workspace_backup_settings',
+  'harness_shared.backup_snapshots',
+  'harness_shared.harness_plans',
+  'harness_shared.harness_plan_parts',
+  'harness_shared.harness_plan_status',
+  'harness_shared.plan_revisions',
+  'harness_shared.plan_item_assignments',
+  'harness_shared.plan_item_claims',
+  'harness_shared.work_items',
+] as const;
+
 /**
  * gzip args for the PG dump. `--rsyncable` inserts periodic flush
  * points so an unchanged region of the dump compresses to a stable
@@ -110,6 +133,7 @@ async function dumpPg(opts: {
       '-d', opts.database,
       '--no-owner',
       '--no-privileges',
+      ...CRITICAL_TABLES.flatMap((table) => ['-t', table]),
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
@@ -199,4 +223,3 @@ async function renameAtomic(from: string, to: string): Promise<void> {
   try { await unlink(to); } catch { /* fine */ }
   await rename(from, to);
 }
-
