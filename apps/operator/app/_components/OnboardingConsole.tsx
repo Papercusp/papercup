@@ -298,7 +298,26 @@ export function OnboardingConsole() {
                     <button
                       type="button"
                       className="pc-btn pc-btn--primary"
-                      onClick={() => {
+                      onClick={async () => {
+                        // This is the ESCAPE HATCH for a user who quits the
+                        // terminal WITHOUT the tutor calling setup:complete — so
+                        // `finished_at` is unset. Navigating straight to `/`
+                        // bounced right back here: app/page.tsx redirects `/` →
+                        // `/setup` whenever `finished_at` is unset, an infinite
+                        // reload loop (owner-reported 2026-07-06). Stamp
+                        // finished_at ourselves (best-effort) BEFORE navigating so
+                        // `/` actually loads the app. Mirrors SetupWizard's
+                        // markFinished; the tutor's own setup:complete path is
+                        // unaffected.
+                        try {
+                          await fetch('/api/desktop/setup-wizard-state', {
+                            method: 'PATCH',
+                            headers: { 'content-type': 'application/json' },
+                            body: JSON.stringify({ finished_at: new Date().toISOString() }),
+                          });
+                        } catch {
+                          // best-effort — navigate regardless; page.tsx re-checks
+                        }
                         window.location.href = '/';
                       }}
                     >

@@ -105,7 +105,10 @@ function moduleStatus(m: TestModule): TestRunRow['status'] {
   }
 }
 
-type PgHandle = { sql: ReturnType<typeof import('postgres')['default']> } | null;
+type PgSql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>) & {
+  end(opts?: { timeout?: number }): Promise<unknown>;
+};
+type PgHandle = { sql: PgSql } | null;
 
 // ONE shared pg client reused for EVERY per-file insert across the whole run,
 // memoized as a PROMISE so the fire-and-forget per-file inserts (onTestModuleEnd)
@@ -121,7 +124,8 @@ function tryGetPg(): Promise<PgHandle> {
   if (_pgPromise) return _pgPromise;
   _pgPromise = (async (): Promise<PgHandle> => {
     try {
-      const pg = (await import('postgres')).default;
+      const mod = (await import('postgres')) as { default?: unknown };
+      const pg = (mod.default ?? mod) as (url: string, opts: Record<string, unknown>) => PgSql;
       const url =
         process.env.HARNESS_ADMIN_DATABASE_URL ??
         process.env.PAPERCUSP_TEST_RUNS_DB_URL ??

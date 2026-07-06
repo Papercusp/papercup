@@ -777,6 +777,7 @@ describe('test quarantine filtering (v1 gate scope)', () => {
     '# workspace and file-level forms',
     '@papercusp/operator-core::lib/sync/hyperbee/**',
     '@papercusp/operator-core::lib/shared-hive-loop/**',
+    '@papercusp/operator-core::lib/*federation*.test.ts',
     '@papercusp/pubsub-substrate',
   ].join('\n'));
 
@@ -789,6 +790,10 @@ describe('test quarantine filtering (v1 gate scope)', () => {
       { workspace: '@papercusp/operator-core', file: 'lib/work-items-view.integration.test.ts' },
       quarantine,
     )).toBe(false);
+    expect(isQuarantinedTestFile(
+      { workspace: '@papercusp/operator-core', file: 'lib/hive-federation.test.ts' },
+      quarantine,
+    )).toBe(true);
     expect(isQuarantinedTestFile(
       { workspace: '@papercusp/pubsub-substrate', file: 'src/core/core.test.ts' },
       quarantine,

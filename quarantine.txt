@@ -31,6 +31,9 @@
 @papercusp/operator-core::lib/**/*p2p*.test.ts
 @papercusp/operator-core::lib/**/dogfood-substrate*.test.ts
 @papercusp/operator-core::lib/**/substrate*.test.ts
+@papercusp/operator-core::lib/*federation*.test.ts
+@papercusp/operator-core::lib/*p2p*.test.ts
+@papercusp/operator-core::lib/*substrate*.test.ts
 @papercusp/operator-core::lib/deployment/p2p-perf-tier3/**
 @papercusp/operator-core::lib/p2p/**
 @papercusp/operator-core::lib/shared-hive-loop/**
