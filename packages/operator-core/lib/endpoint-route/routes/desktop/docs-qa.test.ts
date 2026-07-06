@@ -160,6 +160,22 @@ describe('composeAgenticDocsSystemPrompt (agentic path)', () => {
   it('does not leak the retrieval mechanism', () => {
     expect(composeAgenticDocsSystemPrompt({})).toMatch(/NEVER mention "the docs"/);
   });
+
+  it('forbids narrating tool use as visible text (owner-reported "let me try…" leaking to the answer)', () => {
+    const p = composeAgenticDocsSystemPrompt({});
+    expect(p).toMatch(/NO text output/);
+    expect(p).toMatch(/never narrate what you are about to do/);
+  });
+
+  it('tells the agent to treat everyday-sounding words as Papercusp jargon first (owner-reported "bee" answered as an insect)', () => {
+    const p = composeAgenticDocsSystemPrompt({});
+    expect(p).toMatch(/bee, pot, mug, queen, hive, cup, swarm/);
+    expect(p).toMatch(/ALWAYS assume the Papercusp meaning/);
+  });
+
+  it('points the agent at harness/glossary for short "what is X" terminology questions', () => {
+    expect(composeAgenticDocsSystemPrompt({})).toContain('harness/glossary');
+  });
 });
 
 describe('slugsFromDocsToolCall (agentic citations)', () => {

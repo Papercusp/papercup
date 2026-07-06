@@ -22,6 +22,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { createEpochKeyProvider } from './hive-epoch-key-provider';
 import { createPgWrappedKeyLoader } from './hive-epoch-keys-store';
+import { createBundledEpochKeyProvider } from './bundled-epoch-key-provider';
+import { chainEpochKeyProviders } from './epoch-key-provider-chain';
+import { resolveSeedDir } from './restore-hive-seed';
 import { resolveHiveEpochCrypto, type EpochKeyProvider } from './hive-epoch-serving';
 import { getHiveEpoch } from './hive-epoch-state';
 import { PendingEpochContent } from './pending-epoch-content';
@@ -50,9 +53,29 @@ export interface HiveRekeyBootDeps {
 }
 
 /**
+ * WI-3232 (offline pot): build the BUNDLED (offline) seed epoch-key provider when a seed
+ * ships with this install, else null. Cheap: {@link resolveSeedDir} is an env/path check and
+ * the provider reads epoch-keys.json LAZILY (only on first `keyForEpoch`), so attaching it
+ * costs nothing until a decrypt actually needs it. Best-effort → null (a missing/unreadable
+ * seed dir simply means no bundled fallback). A non-papercusp hive on a seeded install gets a
+ * provider whose lookups all miss (its id is not in epoch-keys.json) ⇒ the chain stays
+ * effectively member-only for it.
+ */
+function tryBuildBundledSeedProvider(): EpochKeyProvider | null {
+  try {
+    const resolved = resolveSeedDir();
+    if (resolved.disabled || !resolved.seedDir) return null;
+    return createBundledEpochKeyProvider(resolved.seedDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the re-key apply/capture deps for a harness boot, or null when the re-key is NOT
- * active for it (flag off / not a hive / no local device identity). undefined-equivalent
- * (null) ⇒ the callers do today's plaintext path, byte-for-byte.
+ * active for it (flag off / not a hive / no key source — neither a local device identity NOR
+ * a bundled seed key). undefined-equivalent (null) ⇒ the callers do today's plaintext path,
+ * byte-for-byte.
  */
 export async function buildHiveRekeyBootDeps(opts: {
   workspaceId: string;
@@ -73,36 +96,55 @@ export async function buildHiveRekeyBootDeps(opts: {
     // 2. The re-key applies only to a hive harness.
     const hiveHomeSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
     if (!hiveHomeSlug) return null;
-    // 3. This device's identity — the FIRST real LocalDevice (same keypair the announce uses).
-    //    No local GitHub identity ⇒ cannot build a device ⇒ no re-key on this box.
+    // WI-3232 (offline pot): a BUNDLED seed epoch key is an OFFLINE key source needing NO
+    // device identity / PG-wrapped row. Attached (as the chain's FALLBACK) whenever a seed
+    // ships this hive's key, so a fresh NO-ADMISSION install decrypts the restored corestore
+    // content through this SAME gate. Null on dev boxes + non-seed installs ⇒ the chain is
+    // member-only, byte-for-byte today's behavior.
+    const bundledProvider = tryBuildBundledSeedProvider();
+
+    // 3. This device's identity — the FIRST real LocalDevice (same keypair the announce
+    //    uses). No local GitHub identity ⇒ no MEMBER (PG-wrapped) provider on this box; that
+    //    is fine ONLY when the bundled seed provider can serve the key (the offline pot).
     const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
     const ident = await resolveLocalGithubIdentity();
-    if (ident.kind !== 'ok') return null;
-    const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
-    // WI-2009 / wake-#5742 (v3 instrumentation, leg a): the SPLIT-IDENTITY class —
-    // presence stamps one device pubkey while THIS tier resolves another (an OS
-    // keychain unreadable in the service context → a different file-tier key, or a
-    // per-boot regenerate). Record what the epoch tier ACTUALLY resolved + which
-    // keychain tier(s) hold the id, so a mismatch is diagnosable from boot-history.
-    try {
-      const { keychainProbeTiers } = await import('../../identity/keychain');
-      const tiers = await keychainProbeTiers(localDevice.keychainId);
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'epoch_boot_device' as BootHistoryKind,
-        `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}`,
-      );
-    } catch {
-      /* diagnostics must never affect boot */
-    }
+    // No member key source AND no bundled key ⇒ this box can resolve no epoch key; return
+    // null so the callers keep today's plaintext path, byte-for-byte (the cheap off-path —
+    // no crypto/keychain touched below).
+    if (ident.kind !== 'ok' && !bundledProvider) return null;
+
     // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
     const crypto = await resolveHiveEpochCrypto(true);
-    const provider = createEpochKeyProvider(
-      crypto,
-      createPgWrappedKeyLoader(opts.workspaceId, hiveHomeSlug),
-      localDevice,
-    );
+    let memberProvider: EpochKeyProvider | null = null;
+    if (ident.kind === 'ok') {
+      const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
+      // WI-2009 / wake-#5742 (v3 instrumentation, leg a): the SPLIT-IDENTITY class —
+      // presence stamps one device pubkey while THIS tier resolves another (an OS
+      // keychain unreadable in the service context → a different file-tier key, or a
+      // per-boot regenerate). Record what the epoch tier ACTUALLY resolved + which
+      // keychain tier(s) hold the id, so a mismatch is diagnosable from boot-history.
+      try {
+        const { keychainProbeTiers } = await import('../../identity/keychain');
+        const tiers = await keychainProbeTiers(localDevice.keychainId);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'epoch_boot_device' as BootHistoryKind,
+          `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}`,
+        );
+      } catch {
+        /* diagnostics must never affect boot */
+      }
+      memberProvider = createEpochKeyProvider(
+        crypto,
+        createPgWrappedKeyLoader(opts.workspaceId, hiveHomeSlug),
+        localDevice,
+      );
+    }
+    // WI-3232: member (federated, all granted epochs) FIRST; bundled seed key (offline,
+    // cutAtEpoch) as the fallback — see epoch-key-provider-chain. A one-provider chain is
+    // transparent, so an online member with no seed is byte-for-byte unchanged.
+    const provider = chainEpochKeyProviders([memberProvider, bundledProvider]);
     const resolveKey = buildEpochKeyResolver({
       crypto,
       provider,

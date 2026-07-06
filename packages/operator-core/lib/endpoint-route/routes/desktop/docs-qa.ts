@@ -326,8 +326,21 @@ export function composeAgenticDocsSystemPrompt(ctx: { sectionTitle?: string; cur
     'You have Papercusp documentation-search tools. Before you answer:\n' +
     '1. Call `docs:search` with the user’s question; if the first results look thin, ' +
     'refine the query and search again.\n' +
-    '2. Read the most relevant page(s) with `docs:get` before answering.\n' +
-    '3. Base your answer on what those real pages actually say.\n\n' +
+    '2. Read the most relevant page(s) with `docs:get` before answering — always try ' +
+    '`harness/glossary` when the question is "what is X" for a short/ambiguous term, ' +
+    'since it is the authoritative one-line definition for every core Papercusp term.\n' +
+    '3. Base your answer on what those real pages actually say.\n' +
+    '4. Do ALL of your searching and reading FIRST, back-to-back, with NO text output ' +
+    'in between tool calls — never narrate what you are about to do ("let me check…", ' +
+    '"I need to…", "let me try…"). Only after you are done searching do you write your ' +
+    'one final answer, as plain running text. Any words you emit before your last tool ' +
+    'call are shown directly to the user as your answer, so a mid-search narration line ' +
+    'IS a broken, confusing answer — never emit one.\n' +
+    '- Many short, everyday-sounding words (bee, pot, mug, queen, hive, cup, swarm, …) ' +
+    'are ALSO first-class Papercusp product terms with a specific meaning here. When the ' +
+    'question is "what is X" for one of these, ALWAYS assume the Papercusp meaning is ' +
+    'wanted and search/ground your answer in the docs — do NOT answer with the generic ' +
+    'dictionary/everyday meaning of the word instead of looking it up.\n\n' +
     '## How to answer\n\n' +
     'You are talking to a NEWCOMER still learning Papercusp. Give the plain, current, ' +
     'user-facing answer — not an internals tour.\n' +

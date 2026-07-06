@@ -46,6 +46,8 @@ import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
 import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
 import { triggerDeferredGitRestore, type TriggerDeferredGitRestoreResult } from '../sync/hyperbee/deferred-git-restore';
 import { buildMemberEpochKeyProvider } from '../sync/hyperbee/hive-epoch-boot-deps';
+import { createBundledEpochKeyProvider } from '../sync/hyperbee/bundled-epoch-key-provider';
+import { chainEpochKeyProviders } from '../sync/hyperbee/epoch-key-provider-chain';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
@@ -261,13 +263,19 @@ function seedTargetDirs(): { targetStoreDir: string; targetRepoDir: string } {
 }
 
 /**
- * P-010 live-wire 2 default: after the join admits this device and delivers the hive
- * epoch keys, restore the git seed that {@link defaultRestoreHiveSeed} DEFERRED (its
- * bundles are encrypted at rest; the key = the hive epoch key at cutAtEpoch, which a
- * fresh member now holds — Q-4). Resolves the member EpochKeyProvider and hands it to
- * the trigger, which unwraps the key + re-restores just the git store. Best-effort +
- * safe: no seed / --no-seed / no local device identity ⇒ the store stays deferred and
- * the join's normal cold clone fills the repo in — never a boot failure.
+ * P-010 live-wire 2 default: restore the git seed that {@link defaultRestoreHiveSeed}
+ * DEFERRED (its bundles are encrypted at rest; the key = the hive epoch key at
+ * cutAtEpoch). Resolves that key from a provider CHAIN and hands it to the trigger,
+ * which unwraps + re-restores just the git store.
+ *
+ * WI-3232 (offline pot): the chain is the FEDERATED member provider FIRST (post-admission;
+ * holds every granted epoch — Q-4) then the BUNDLED seed provider (epoch-keys.json —
+ * OFFLINE, cutAtEpoch). The bundled provider is always available once a seed shipped, so a
+ * fresh install with NO admission (no gh, owner offline) still decrypts the git seed
+ * instead of cold-cloning — the crux of the offline pot. Online federated boots are
+ * unchanged: the member provider resolves first and the fallback is never consulted.
+ * Best-effort + safe: no seed / --no-seed ⇒ no-op; an unresolved key leaves the store
+ * deferred and the join's normal cold clone fills the repo in — never a boot failure.
  */
 async function defaultRestoreDeferredGitSeed(
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
@@ -278,15 +286,16 @@ async function defaultRestoreDeferredGitSeed(
   const resolved = resolveSeedDir();
   if (resolved.disabled || !resolved.seedDir) return { ran: false, restored: [], stillDeferred: [] };
   const { targetStoreDir, targetRepoDir } = seedTargetDirs();
-  const epochKeyProvider = await buildMemberEpochKeyProvider({
+  // Member provider (may be null offline — no device identity) FIRST, bundled seed
+  // provider (always present when a seed shipped) as the offline fallback.
+  const memberProvider = await buildMemberEpochKeyProvider({
     workspaceId: PAPERCUSP_WORKSPACE_ID,
     hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
   });
-  if (!epochKeyProvider) {
-    // No device identity / crypto yet ⇒ can't unwrap the epoch key this boot; the git
-    // store stays deferred and the join's cold clone back-fills the repo.
-    return { ran: false, restored: [], stillDeferred: ['git'] };
-  }
+  const epochKeyProvider = chainEpochKeyProviders([
+    memberProvider,
+    createBundledEpochKeyProvider(resolved.seedDir),
+  ]);
   return triggerDeferredGitRestore({
     seedDir: resolved.seedDir,
     targetStoreDir,
