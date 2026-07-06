@@ -102,7 +102,7 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
       null,
     );
     expect(systemPromptText).toContain('# Operator persona');
-    expect(systemPromptText).not.toContain('# Sentinel persona');
+    expect(systemPromptText).not.toContain('# Papercup persona');
 
     // Explicit role:'operator' is identical to the default.
     const explicit = await buildOperatorPrompt(
@@ -117,14 +117,14 @@ describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
       { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', role: 'papercup' },
       null,
     );
-    // The sentinel persona (sentinel.persona.md), NOT the operator one.
-    expect(systemPromptText).toContain('# Sentinel persona');
+    // The papercup persona (papercup.persona.md), NOT the operator one.
+    expect(systemPromptText).toContain('# Papercup persona');
     expect(systemPromptText).not.toContain('# Operator persona');
-    // The sentinel converse rules (sentinel.converse.md) — the file-and-nudge,
+    // The papercup converse rules (papercup.converse.md) — the file-and-nudge,
     // never-place charter is the load-bearing difference from the operator.
-    expect(systemPromptText).toMatch(/You are the Sentinel, not the placer/i);
-    // The sentinel tools playbook (sentinel.tools.md).
-    expect(systemPromptText).toContain('# Sentinel tool playbook');
+    expect(systemPromptText).toMatch(/You are the Papercup, not the placer/i);
+    // The papercup tools playbook (papercup.tools.md).
+    expect(systemPromptText).toContain('# Papercup tool playbook');
   });
 
   it("role:'papercup' picks the sentinel audience-mode overlay (novice)", async () => {

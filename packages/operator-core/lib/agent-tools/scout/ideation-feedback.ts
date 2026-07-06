@@ -19,11 +19,11 @@ export default defineTool({
     "Your IDEATE-pass read of your OWN past graded proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature'), formatted as a grader-feedback priming block (newest-first; owner grades outrank Mug volume grades). Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
   capability: 'curation:read',
   guidance: {
-    when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded, so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-hive + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',
+    when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded, so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',
     notWhen:
       "Grading an idea — that is blender:grade-idea. Reading Blender's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
     chaining:
-      'curation:state-of-hive + rubrics:list + scorecards:freshness + blender:ideation-feedback → your IDEATE pass, grounded.',
+      'curation:state-of-pot + rubrics:list + scorecards:freshness + blender:ideation-feedback → your IDEATE pass, grounded.',
     seeAlso: [
       'blender:grade-idea (record a grade on a routed idea)',
       'improvements:capture (file a kind:"feature" — it becomes a su-ideate ledger row)',

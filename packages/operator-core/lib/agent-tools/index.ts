@@ -119,7 +119,7 @@ import './activity/recent';
 import './curation/feed';
 import './curation/change-feed';
 // hive-creative-ideation-2026-06-08 P-003 (B1) — the "state of the Hive" corpus digest (Scout loop substrate):
-import './curation/state-of-hive';
+import './curation/state-of-pot';
 // p2p-hive-directory-2026-06-06 P-005 — browse the discovered P2P hive directory:
 import './discovery/hives';
 // p2p-hive-directory-2026-06-06 P-004 — create/edit a hive's directory listing:

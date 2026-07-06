@@ -23,13 +23,13 @@ export default defineTool({
   guidance: {
     when: 'You want to see how a rubric\'s criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.',
     notWhen:
-      'You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-hive.',
+      'You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-pot.',
     chaining:
       'rubrics:list { status: "active" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the queen↔scout loop (revise template_data → plans:set-plan-status).',
     seeAlso: [
       'scorecards:list (raw point-in-time scores vs this over-time view)',
       'rubrics:get (the rubric DEFINITION — criteria/model/method)',
-      'curation:state-of-hive (the cross-corpus ideation rollup)',
+      'curation:state-of-pot (the cross-corpus ideation rollup)',
     ],
   },
   capability: 'coord:read',

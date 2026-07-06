@@ -1677,20 +1677,24 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
   // kind), not from the reporter, so silencing it changes nothing they read.
   //
   // EI-7788 also added a drop-time RECOVERY report: `handle.close()` (fired
-  // by each test's `cleanups.push(() => handle.close())`, which runs in the
-  // outer `afterEach` — AFTER this describe's own `afterEach` above already
-  // ran) calls `dropReplicationLiveness`, which fires the default recovery
-  // reporter's `console.error('[replication-liveness] recovered ...')` for
-  // any log this suite left latched-alarmed. Silence that reporter here too
-  // (same rationale as the episode reporter above) so teardown doesn't trip
-  // vitest-fail-on-console.
+  // by each test's `cleanups.push(() => handle.close())`) also runs inside
+  // the outer, file-scoped `afterEach` (which drains `cleanups` LIFO). A
+  // describe-scoped `afterEach` here would run BEFORE that outer afterEach
+  // (inner-before-outer hook ordering), so resetting the reporters there
+  // un-silences them *before* `handle.close()` fires — the exact regression
+  // this comment used to describe as already-handled. Instead, push the
+  // reset onto the SAME `cleanups` LIFO stack each test's `handle.close()`
+  // is pushed onto: push it here, in `beforeEach`, so it lands BELOW the
+  // test's own `cleanups.push(() => handle.close())` and therefore pops
+  // (runs) AFTER close() drains — reporters stay silenced through the whole
+  // teardown, never just through the test body.
   beforeEach(() => {
     setReplicationStallEpisodeReporterForTests(() => {});
     setReplicationStallRecoveryReporterForTests(() => {});
-  });
-  afterEach(() => {
-    setReplicationStallEpisodeReporterForTests(null);
-    setReplicationStallRecoveryReporterForTests(null);
+    cleanups.push(() => {
+      setReplicationStallEpisodeReporterForTests(null);
+      setReplicationStallRecoveryReporterForTests(null);
+    });
   });
 
   function tmpWorkspaceRoot(): string {

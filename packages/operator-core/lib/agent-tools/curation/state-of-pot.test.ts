@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import stateOfHiveTool from './state-of-hive';
+import stateOfHiveTool from './state-of-pot';
 import { synthesizeStateOfHive } from '../../scout/corpus-digest';
 import { buildStateOfHiveReaders } from '../../scout/corpus-digest-deps';
 
@@ -24,7 +24,7 @@ function callTool(args: Record<string, unknown>) {
   ).handler(args, {});
 }
 
-describe('curation:state-of-hive tool', () => {
+describe('curation:state-of-pot tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReaders.mockReturnValue({} as ReturnType<typeof buildStateOfHiveReaders>);

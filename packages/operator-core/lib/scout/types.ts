@@ -97,7 +97,7 @@ export interface MetaPattern {
  * ideators read so their leaps are anchored to real Hive history, not invented.
  *
  * STRUCTURAL CONTRACT: this is the shape P-004 consumes. The production digest
- * is `StateOfHiveDigest` from `curation/state-of-hive` (su-7a8ee, P-003); when
+ * is `StateOfHiveDigest` from `curation/state-of-pot` (su-7a8ee, P-003); when
  * it lands, the loop seam adapts it to this shape (the four ref-carrying
  * categories are the agreed contract). Kept here so P-004 is buildable +
  * testable independently of P-003's in-flight implementation.

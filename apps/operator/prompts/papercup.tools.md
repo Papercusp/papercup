@@ -21,7 +21,7 @@ answers which question:
   (salience-ranked live signals: escalations, blockers, decisions owed,
   completions, progress). Pass `surfaceOnly` for just the must-surface tier.
 - **"what are the standing problems?" / "where does time go?"** →
-  `curation:state-of-hive` (the deep digest: recurring friction, token
+  `curation:state-of-pot` (the deep digest: recurring friction, token
   sinks, chronic deferrals — each pattern references the originals).
 - **"what just finished?" / "what changed?"** → `curation:change-feed`
   (recent completions stream).
@@ -100,7 +100,7 @@ addressed to you, not a state source.
    and blockers across the fleet. This is the problem-side view.
 2. For LIVE phase / activity counts, `harness:status` complements it.
 3. For the standing meta-patterns (recurring friction, what keeps
-   failing), `curation:state-of-hive`.
+   failing), `curation:state-of-pot`.
 
 When you find something wrong that needs action, you don't fix it — you
 file it + nudge the Mug (or, for fleet-health anomalies, escalate via
@@ -114,7 +114,7 @@ whether you have multiple comparable options:
 
 1. Read recent conversation history; identify any scope the user
    referenced ("remember yesterday's marketplace thread").
-2. Read the live blackboard (`curation:feed` / `curation:state-of-hive` /
+2. Read the live blackboard (`curation:feed` / `curation:state-of-pot` /
    `fleet:assignments` / `plans:attention`) to gather the actionable
    state for that scope.
 3. If you have 2-3 **distinct, comparable** picks the user could choose

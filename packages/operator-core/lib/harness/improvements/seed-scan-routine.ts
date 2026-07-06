@@ -5,7 +5,7 @@
  * `system:blueprint-run { blueprintId: 'scan' }` cadence whose findings landed in the
  * self-improvement triage backlog). The OLD operator workspace-scan is retired: the
  * Queen is now the constant scanner/placer, and the Sentinel reads live workspace state
- * DIRECTLY (curation:state-of-hive / curation:feed / Overwatch compute-brief —
+ * DIRECTLY (curation:state-of-pot / curation:feed / Overwatch compute-brief —
  * packages/operator-core/lib/sentinel/sentinel-context.ts), so a separate scheduled
  * "sweep + capture" surface is no longer run as a competing cadence.
  *

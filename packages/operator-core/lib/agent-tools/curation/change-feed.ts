@@ -60,7 +60,7 @@ export default defineTool({
       'For the raw fleet signals use curation:feed. For historical audit of all changes use the underlying work-items / coord-event-log directly.',
     seeAlso: [
       'curation:feed (the raw fleet signals)',
-      'curation:state-of-hive (the cross-corpus ideation rollup)',
+      'curation:state-of-pot (the cross-corpus ideation rollup)',
       'work_items:set_priority (steer the backlog after reading the feed)',
     ],
   },

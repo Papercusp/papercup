@@ -46,7 +46,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // the read-mostly watcher: it CONVERSES (operator:converse — the brain loaded
   // with role='sentinel'), drives the VOICE channel (voice:* → operator:read /
   // operator:write), reads the live blackboard it heralds from (curation:read →
-  // curation:feed / state-of-hive / change-feed; plans:read → plans:attention),
+  // curation:feed / state-of-pot / change-feed; plans:read → plans:attention),
   // and ACTS on a user request the ONLY way it is allowed to — it FILES a
   // high-priority work_item (work_items:write → work_items:create /
   // set_priority) and NUDGES the Queen (coord:write → coord:send / escalate). It

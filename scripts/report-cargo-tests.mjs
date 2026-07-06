@@ -33,11 +33,38 @@
  * (`<crate-dir> (cargo aggregate)`) so the Tests tab still has a duration signal.
  */
 import { spawn } from 'node:child_process';
-import { resolve, dirname, relative, sep } from 'node:path';
+import { resolve, dirname, relative, sep, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
+
+/**
+ * Resolve an actual `cargo` binary rather than trusting a bare `spawn('cargo', ...)`
+ * to find it on inherited PATH. A rustup-managed toolchain lives at `~/.cargo/bin/cargo`
+ * (a shim), but a service-managed PATH (a systemd --user unit, a routine ticker host,
+ * CI) can easily omit that dir — the exact same ENOENT class that already hit `node`
+ * once (EI-2048) and hit `cargo` here (WI-3206, 2026-07-06: the scheduled routine's
+ * first live fire recorded a single `spawn cargo ENOENT` error row instead of running
+ * the suite, because papercup-bg-host.service's PATH override didn't include
+ * ~/.cargo/bin). Falling back to well-known install dirs makes this recorder resilient
+ * to that class of environment drift wherever it runs, not just on this one box's
+ * systemd drop-in fix.
+ */
+function resolveCargoBin() {
+  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const candidates = [
+    ...pathDirs.map((d) => join(d, 'cargo')),
+    process.env.CARGO_HOME ? join(process.env.CARGO_HOME, 'bin', 'cargo') : null,
+    join(homedir(), '.cargo', 'bin', 'cargo'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return 'cargo'; // last resort — let spawn's own ENOENT surface if truly absent
+}
 
 function parseArgs(argv) {
   const out = { manifestPath: null, cargoArgs: [] };
@@ -57,7 +84,7 @@ function runCargoTest(manifestAbs, extraArgs) {
   return new Promise((resolvePromise) => {
     const args = ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
     const startedAt = new Date();
-    const child = spawn('cargo', args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(resolveCargoBin(), args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });

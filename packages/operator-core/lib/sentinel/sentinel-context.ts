@@ -14,7 +14,7 @@
  *     and the same input always renders the same bytes;
  *   - a deps-wiring adapter (`gatherSentinelContext`) that consumes the READY-MADE
  *     digests (NOT raw coord): `curation:feed`'s salience ranking (rankFleetFeed
- *     over gatherFleetSignals), the `curation:state-of-hive` corpus digest
+ *     over gatherFleetSignals), the `curation:state-of-pot` corpus digest
  *     (synthesizeStateOfHive), and the Overwatch anomaly brief
  *     (computeOverwatchBrief). Each source is fail-soft — a flaky leg degrades to
  *     an empty section, never throws the whole gather.
@@ -51,7 +51,7 @@ export interface SentinelSignal {
   urgent?: boolean;
 }
 
-/** One standing meta-pattern from the state-of-hive corpus digest — the
+/** One standing meta-pattern from the state-of-pot corpus digest — the
  *  "what keeps biting us" substrate (recurring friction / time-token sink /
  *  chronic deferral / capability gap). A MetaPattern slice. */
 export interface SentinelPattern {
@@ -95,13 +95,13 @@ export interface SentinelContextInput {
   signals?: readonly SentinelSignal[];
   /** Detected drift + suggested action (Overwatch brief), already severity-ordered. */
   anomalies?: readonly Anomaly[];
-  /** Standing meta-patterns (state-of-hive corpus digest). */
+  /** Standing meta-patterns (state-of-pot corpus digest). */
   patterns?: readonly SentinelPattern[];
   /** Live agent load + liveness (fleet:assignments) — the progress floor. */
   bees?: readonly SentinelBee[];
   /** Open deep-thinking delegations already in flight for the conversation lane. */
   delegations?: readonly SentinelDelegation[];
-  /** The state-of-hive one-line headline (the digest's own rollup). */
+  /** The state-of-pot one-line headline (the digest's own rollup). */
   headline?: string | null;
   /** Override the default per-section caps. */
   caps?: Partial<SentinelContextCaps>;
@@ -189,11 +189,11 @@ export function renderSentinelContext(input: SentinelContextInput): string {
   out.push(`## Live system status${scope} (your standing context — you watch the whole system)`);
   out.push(
     'This is the deterministic snapshot of the running system, built from the ready-made ' +
-      'digests (the salience-ranked signal feed, the Overwatch anomaly brief, the state-of-hive ' +
+      'digests (the salience-ranked signal feed, the Overwatch anomaly brief, the state-of-pot ' +
       'corpus digest, and the live fleet). It is your STANDING awareness as the Sentinel: act on ' +
       'it by SURFACING what matters to the user, FILING an observation/escalation, or NUDGING a ' +
       'running agent — never by re-placing work (that is the Queen). Drill into anything this ' +
-      'digest omits with a tool (curation:feed, curation:state-of-hive, fleet:assignments) only ' +
+      'digest omits with a tool (curation:feed, curation:state-of-pot, fleet:assignments) only ' +
       'when you need it.',
   );
 
@@ -243,7 +243,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
     'Standing patterns — recurring friction / sinks / deferrals / gaps',
     (input.patterns ?? []).map((p) => `- [${p.lane}] ${p.summary}${p.ref ? ` — ${p.ref}` : ''}`),
     caps.patterns,
-    'curation:state-of-hive to drill down',
+    'curation:state-of-pot to drill down',
   );
 
   // PROGRESS — who's running (the live fleet floor).
@@ -294,7 +294,7 @@ export interface SentinelContextDeps {
   signals(): Promise<readonly SentinelSignal[]>;
   /** The Overwatch anomaly brief's detected drift. */
   anomalies(): Promise<readonly Anomaly[]>;
-  /** The state-of-hive corpus digest: standing meta-patterns + headline. */
+  /** The state-of-pot corpus digest: standing meta-patterns + headline. */
   patterns(): Promise<{ patterns: readonly SentinelPattern[]; headline?: string | null }>;
   /** The live fleet (fleet:assignments). */
   bees(): Promise<readonly SentinelBee[]>;

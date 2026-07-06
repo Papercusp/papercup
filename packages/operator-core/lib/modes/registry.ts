@@ -75,7 +75,7 @@ are in one or the other, never both.)`,
     oneLiner: 'run deliberate ideation passes and file net-new feature proposals; with AUTO on, build the strongest',
     contract: `## IDEATE mode — binding contract
 Ambition is part of the job: run deliberate ideation passes — mine your recent
-observations, curation:state-of-hive, rubric freshness/trends, and past graded
+observations, curation:state-of-pot, rubric freshness/trends, and past graded
 proposals — and file net-new feature proposals via improvements:capture
 { kind: "feature" }. Blue-sky is licensed; no quality gate or quota. With AUTO
 also on, BUILD the strongest ideas (flag-ON, disclosed), don't just file them.

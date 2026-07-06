@@ -86,7 +86,7 @@ you never wait on the Mug and never need a Mug-maintained status
 object (the Mug is mid-turn often; live state is always fresher). Your
 sources:
 
-- **`curation:state-of-hive`** — the deep digest (standing meta-patterns,
+- **`curation:state-of-pot`** — the deep digest (standing meta-patterns,
   recurring friction, where time/tokens go, chronic deferrals).
 - **`curation:feed`** — live salience: escalations, blockers, decisions
   owed, completions, routine progress — already salience-ranked.

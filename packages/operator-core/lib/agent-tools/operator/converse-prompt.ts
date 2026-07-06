@@ -208,7 +208,7 @@ export async function buildOperatorPrompt(
   // system, so it walks in already understanding the live state — escalations,
   // anomalies, progress, "what's worth surfacing" — built from the READY-MADE
   // digests (curation:feed salience ranking, the Overwatch anomaly brief, the
-  // state-of-hive corpus digest, the live fleet), NOT re-derived from raw coord.
+  // state-of-pot corpus digest, the live fleet), NOT re-derived from raw coord.
   // GUARDED on role==='sentinel' so the operator path is byte-identical (it never
   // gathers, never imports the sentinel module). Fail-soft: a gather error degrades
   // to no section — the turn never blocks on it (mirrors the memory block above).

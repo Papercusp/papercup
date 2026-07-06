@@ -2,7 +2,7 @@
  * Guards on the rendered operating-modes clause (renderModesPolicy).
  *
  * su-loop-capability-parity-2026-07-03:
- *   - P-004: the IDEATE pre-pass grounds in the shared substrate (curation:state-of-hive,
+ *   - P-004: the IDEATE pre-pass grounds in the shared substrate (curation:state-of-pot,
  *     rubrics/scorecards, own graded proposals), files rubric-graded observations, grades
  *     Scout-routed ideas, and varies the ideation lens — WITHOUT gating filing.
  *   - D-005: the "no quality gate and no quota — file freely" owner directive survives
@@ -15,7 +15,7 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
   const full = renderModesPolicy();
 
   it('grounds each pass in the shared substrate (the reads Scout/Queen already use)', () => {
-    expect(full).toContain('curation:state-of-hive');
+    expect(full).toContain('curation:state-of-pot');
     expect(full).toContain('rubrics:list');
     expect(full).toContain('rubrics:search');
     expect(full).toContain('scorecards:freshness');
@@ -44,7 +44,7 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
   it('the fleet tier stays IDEATE-free (grounding is a leader/interactive posture)', () => {
     const fleet = renderModesPolicy('fleet');
     expect(fleet).not.toContain('IDEATE');
-    expect(fleet).not.toContain('curation:state-of-hive');
+    expect(fleet).not.toContain('curation:state-of-pot');
     expect(fleet).not.toContain('blender:grade-idea');
   });
 });

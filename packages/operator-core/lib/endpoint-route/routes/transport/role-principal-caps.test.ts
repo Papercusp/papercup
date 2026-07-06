@@ -133,7 +133,7 @@ describe('loadRoleCapabilities', () => {
 
     test('Herald reads the live blackboard it narrates: curation:read + plans:read caps (+ plans:attention allowlists it)', async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
-      expect(caps.has('curation:read')).toBe(true); // curation:feed / state-of-hive / change-feed (capability-only, no allowlist)
+      expect(caps.has('curation:read')).toBe(true); // curation:feed / state-of-pot / change-feed (capability-only, no allowlist)
       expect(caps.has('plans:read')).toBe(true);
       const { default: attention } = await import('../../../agent-tools/plans/attention.js');
       expect(attention.agentRoles).toContain('papercup');

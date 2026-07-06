@@ -18,7 +18,7 @@
  *                       absent = OFF; no consent ⇒ maybeBuildHiveBeacon returns
  *                       undefined and nothing goes on the wire.
  *
- * NOTE on the focus source: P-005/B-06 named `curation:state-of-hive`, but that
+ * NOTE on the focus source: P-005/B-06 named `curation:state-of-pot`, but that
  * digest is a WORKSPACE-GLOBAL meta-pattern rollup (no per-hive scope) and runs
  * a multi-corpus synthesis — the wrong granularity AND too heavy for the
  * per-announce path. The work-item backlog gives a genuinely per-hive, cheap

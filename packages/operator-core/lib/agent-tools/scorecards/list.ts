@@ -24,7 +24,7 @@ export default defineTool({
   guidance: {
     when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE hive-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.',
     notWhen:
-      'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-hive. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
+      'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
     chaining:
       'scorecards:list { rubricRef: "hive-coordination-health", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions.',
     seeAlso: [

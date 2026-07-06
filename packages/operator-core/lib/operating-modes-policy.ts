@@ -217,7 +217,7 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   running it.
 - **Ground each pass in the shared substrate BEFORE you invent — the same rails Scout / the
   Queen already use, which you were simply never told to read back.** Open a pass with a quick
-  grounding read: (i) **\`curation:state-of-hive\`** — the meta-pattern digest the Queen's
+  grounding read: (i) **\`curation:state-of-pot\`** — the meta-pattern digest the Queen's
   ideators mine; your OWN observations already feed it, so this is you reading your corpus back
   synthesized, not a cold start; (ii) **\`rubrics:list\` / \`rubrics:search\`** + **\`scorecards:freshness\`**
   for what the system already knows how to MEASURE and where a signal has gone stale (a stale
