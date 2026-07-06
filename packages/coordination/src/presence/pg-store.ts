@@ -42,7 +42,7 @@ interface CoordPresenceDbRow {
   heartbeat_at: string;
   last_active_at: string | null;
   agent_role: string | null;
-  pot_slug: string | null;
+  hive_slug: string | null;
   compaction_limit: number | null;
   context_tokens: number | null;
   context_estimated_at: string | null;
@@ -87,7 +87,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     heartbeatAt: r.heartbeat_at,
     lastActiveAt: r.last_active_at,
     agentRole: r.agent_role,
-    hiveSlug: r.pot_slug,
+    hiveSlug: r.hive_slug,
     compactionLimit: r.compaction_limit,
     contextTokens: r.context_tokens,
     contextEstimatedAt: r.context_estimated_at,
@@ -104,14 +104,14 @@ export class PgPresenceStore implements PresenceStore {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // A declared write IS genuine activity, so bump last_active_at + heartbeat.
-    // agent_role / pot_slug are populate-once-then-keep: COALESCE(EXCLUDED, existing)
+    // agent_role / hive_slug are populate-once-then-keep: COALESCE(EXCLUDED, existing)
     // so a write that omits them (passes null) never WIPES a previously-resolved
     // value (D-004).
     await sql`
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
          current_plan_slug, current_files, host, pid,
-         agent_role, pot_slug, heartbeat_at, last_active_at)
+         agent_role, hive_slug, heartbeat_at, last_active_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
@@ -130,7 +130,7 @@ export class PgPresenceStore implements PresenceStore {
         host              = EXCLUDED.host,
         pid               = EXCLUDED.pid,
         agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),
-        pot_slug          = COALESCE(EXCLUDED.pot_slug, harness_shared.coord_presence.pot_slug),
+        hive_slug         = COALESCE(EXCLUDED.hive_slug, harness_shared.coord_presence.hive_slug),
         heartbeat_at      = now(),
         last_active_at    = now()
     `;
@@ -228,14 +228,14 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.agent_role, cp.hive_slug, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN harness_shared.power_user_sessions pus
           ON pus.auth_session_id = cp.owner_id
        WHERE ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
-         AND ${hive == null ? sql`TRUE` : sql`cp.pot_slug = ${hive}`}
+         AND ${hive == null ? sql`TRUE` : sql`cp.hive_slug = ${hive}`}
        ORDER BY cp.owner_id
     `;
     const now = Date.now();
@@ -249,7 +249,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.agent_role, cp.hive_slug, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -308,7 +308,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       heartbeat_at      timestamptz NOT NULL DEFAULT now(),
       last_active_at    timestamptz,
       agent_role        text,
-      pot_slug          text,
+      hive_slug         text,
       compaction_limit  integer,
       context_tokens    integer,
       context_estimated_at timestamptz
@@ -320,7 +320,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
     ALTER TABLE harness_shared.coord_presence
       ADD COLUMN IF NOT EXISTS last_active_at   timestamptz,
       ADD COLUMN IF NOT EXISTS agent_role       text,
-      ADD COLUMN IF NOT EXISTS pot_slug         text,
+      ADD COLUMN IF NOT EXISTS hive_slug        text,
       ADD COLUMN IF NOT EXISTS compaction_limit integer,
       ADD COLUMN IF NOT EXISTS context_tokens   integer,
       ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz

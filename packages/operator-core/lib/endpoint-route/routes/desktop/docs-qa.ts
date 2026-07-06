@@ -74,21 +74,32 @@ export interface DocsContextBlock {
  * the composed prompt stays small.
  */
 // Foundational docs seeded into EVERY tutorial/palette retrieval so core-vocabulary
-// questions are always grounded, even when keyword search ranks them out. The
-// owner-reported "what is a pot" failure (2026-07-05): keyword search returned
-// agent-policies/plans-index/etc. and NOT branding.mdx — the one page that holds the
-// whole lexicon table (Pot=project, Papercup=operator, Mug=brain, …) — so the model
-// had to guess and confidently hallucinated. `branding` grounds every lexicon term.
-export const FOUNDATIONAL_DOC_SLUGS = ['branding'] as const;
+// questions are always grounded, even when keyword search ranks them out. Two pages,
+// two complementary jobs (both owner-reported 2026-07-05):
+//   - `branding`        — the display LEXICON (Pot=project, Papercup=operator,
+//     Mug=brain, …). Without it, "what is a pot" hallucinated.
+//   - `harness/glossary` — the authoritative CONCEPT definitions (Harness · one
+//     managed work pipeline; Blueprint; Bee; Queen; Work item; Spine; …), each
+//     traceable to code. Without it, "what is a harness" force-mapped the concept
+//     into the coffee lexicon and wrongly answered "it's the Mug/brain". The glossary
+//     gives the model a correct one-line definition for every core term.
+// These are always fetched at FULL body (see foundationalBodyChars) so a "what is X"
+// question always has X's real definition in context.
+export const FOUNDATIONAL_DOC_SLUGS = ['branding', 'harness/glossary'] as const;
 
 export async function retrieveDocsContext(
   question: string,
-  opts: { docSlugs?: string[]; limit?: number; deepen?: number; bodyChars?: number; foundationalSlugs?: readonly string[]; signal?: AbortSignal } = {},
+  opts: { docSlugs?: string[]; limit?: number; deepen?: number; bodyChars?: number; foundationalBodyChars?: number; foundationalSlugs?: readonly string[]; signal?: AbortSignal } = {},
 ): Promise<DocsContextBlock[]> {
-  const limit = opts.limit ?? 8;
+  const limit = opts.limit ?? 6;
   const deepen = opts.deepen ?? 3;
   const bodyChars = opts.bodyChars ?? 2200;
+  // Foundational glossary/lexicon docs get a much larger slice so the WHOLE
+  // alphabetical glossary survives (a 2200-char cap truncates it around "C" and
+  // loses Harness/Queen/Work-item — the very terms newcomers ask about).
+  const foundationalBodyChars = opts.foundationalBodyChars ?? 9000;
   const foundational = opts.foundationalSlugs ?? FOUNDATIONAL_DOC_SLUGS;
+  const foundationalSet = new Set<string>(foundational);
   const adapter = engineeringAdapter;
 
   let hits: Array<{ slug: string; url?: string; title?: string; excerpt?: string }> = [];
@@ -108,8 +119,15 @@ export async function retrieveDocsContext(
   for (const s of foundational) {
     if (s && !seen.has(s)) { seen.add(s); orderedSlugs.push(s); }
   }
+  // Auto-generated index/listing pages (reference/*-index, …) are just tables of
+  // links with no real prose — they add noise to the prompt and, worse, PRIME the
+  // model to confabulate: an index that merely LISTS `hive:declare-wake` is what led
+  // Opus to invent a non-existent `pot:declare-wake` for "what's a pot" (owner-
+  // reported 2026-07-05b). Drop them from the ranked search hits (never from the
+  // intentional foundational/section-linked seeds above).
+  const isNoiseSlug = (slug: string): boolean => /(^|\/)[a-z0-9-]*-index$/i.test(slug);
   for (const h of hits) {
-    if (h.slug && !seen.has(h.slug)) { seen.add(h.slug); orderedSlugs.push(h.slug); }
+    if (h.slug && !seen.has(h.slug) && !isNoiseSlug(h.slug)) { seen.add(h.slug); orderedSlugs.push(h.slug); }
   }
 
   const blocks: DocsContextBlock[] = [];
@@ -119,16 +137,21 @@ export async function retrieveDocsContext(
     let title = hit?.title ?? slug;
     let url = hit?.url ?? `/internal/docs/${slug}`;
     let text = hit?.excerpt ?? '';
-    // Fetch fuller body for the first `deepen` blocks (and for section-linked
-    // slugs that had no excerpt) so the answer is grounded in real prose.
-    if (deepened < deepen || !text) {
+    const isFoundational = foundationalSet.has(slug);
+    // Foundational glossary/lexicon docs are ALWAYS fetched at full body (never a thin
+    // excerpt) with a larger cap. Other blocks: fuller body for the first `deepen`, or
+    // whenever the excerpt was empty.
+    if (isFoundational || deepened < deepen || !text) {
       try {
         const page = await adapter.getPage(slug);
         if (page) {
           title = page.title || title;
           url = page.url || url;
           const body = await adapter.getContent(page);
-          if (body) { text = body.replace(/\s+/g, ' ').trim().slice(0, bodyChars); deepened += 1; }
+          if (body) {
+            text = body.replace(/\s+/g, ' ').trim().slice(0, isFoundational ? foundationalBodyChars : bodyChars);
+            if (!isFoundational) deepened += 1;
+          }
         }
       } catch { /* keep the excerpt */ }
     }
@@ -153,13 +176,18 @@ export function composeDocsQaPrompt(
     : ctx.currentPath
       ? `The user is currently on: ${ctx.currentPath}\n`
       : '';
-  // Prompt intent (owner-reported 2026-07-05: answers read like a canned "static
-  // search" that deflects with "the documentation excerpt provided doesn't cover
-  // this"). The fixes: (1) frame the model as a knowledgeable Papercusp teammate,
-  // not a doc-lookup that can only parrot excerpts; (2) let it answer from general
-  // Papercusp knowledge when retrieval is thin instead of dead-ending; (3) FORBID
-  // leaking the retrieval mechanism ("the excerpt/provided documentation") — the
-  // user can't see it, and that phrasing is exactly what made it feel like search.
+  // Prompt intent. Two owner-reported failure classes this guards against:
+  //  (2026-07-05a) answers read like a canned "static search" that deflects with
+  //    "the documentation excerpt provided doesn't cover this" — fixed by the
+  //    knowledgeable-teammate framing + general-knowledge fallback + the ban on
+  //    leaking the retrieval mechanism.
+  //  (2026-07-05b) even a strong model (Opus) CONFABULATES for a NEWCOMER: it
+  //    invents verb names (`pot:declare-wake`), fabricates deprecation histories,
+  //    and dumps retired internals (main-loop.ts, _retired/…) that a first-time
+  //    user neither needs nor can trust. Fixed by: newcomer calibration, a
+  //    lead-with-a-plain-definition rule, an explicit ban on inventing
+  //    tool/verb/path/flag names or histories not present verbatim in the
+  //    reference, and a ban on volunteering internal/retired detail unprompted.
   return (
     'You are a knowledgeable Papercusp teammate helping a user during onboarding. ' +
     'Answer their ONE question directly, helpfully, and in a natural voice — the way ' +
@@ -168,12 +196,24 @@ export function composeDocsQaPrompt(
     '\n## Reference material (your primary source of truth)\n\n' +
     `${docBlock}\n\n` +
     '## How to answer\n\n' +
-    '- Answer the question directly, in 3–6 plain sentences, with no preamble.\n' +
-    '- You have NO tools and cannot look anything up — do not narrate a process or say ' +
-    '"let me check" / "let me confirm"; just state the answer immediately.\n' +
-    '- Lead with the reference material above; where it is thin or missing, still give ' +
-    'the best genuinely useful answer you can from it plus your own knowledge of ' +
-    'Papercusp — do NOT refuse, stall, or dead-end.\n' +
+    'You are talking to a NEWCOMER still learning Papercusp. Give them the plain, ' +
+    'current, user-facing answer — not an internals tour.\n\n' +
+    '- For a "what is X" question, LEAD with ONE plain sentence defining X in everyday ' +
+    'terms, then add at most 2–3 short sentences of the most useful context. Keep the ' +
+    'whole answer brief; stop when the question is answered.\n' +
+    '- Answer immediately, with no preamble. You have NO tools and cannot look anything ' +
+    'up — never narrate a process or say "let me check" / "let me confirm".\n' +
+    '- Ground every factual claim in the reference material above. Do NOT invent tool, ' +
+    'command, or verb names (anything shaped like `x:y`), file paths, flags, or feature/' +
+    'deprecation histories that do not appear verbatim above — if you are unsure a ' +
+    'specific technical detail is real, LEAVE IT OUT. A short answer with no invented ' +
+    'specifics is far better than a longer one that guesses.\n' +
+    '- Do NOT volunteer internal implementation detail, source-file paths, code ' +
+    'identifiers, or deprecated/retired/historical features unless the user explicitly ' +
+    'asks — a newcomer does not need them, and they are the #1 thing that makes an ' +
+    'answer feel wrong.\n' +
+    '- Where the reference is thin, still give the best genuinely useful answer you can ' +
+    'from it plus your general knowledge of Papercusp — do NOT refuse, stall, or dead-end.\n' +
     '- NEVER mention "the excerpts", "the provided documentation", "the retrieved ' +
     'docs", or that anything was looked up — the user cannot see any of that. Just ' +
     'answer as if you simply know it.\n' +
