@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783244190502
+updated_at: 1783297138622
 _body: "content"
 ---
 
@@ -20,3 +20,5 @@ _body: "content"
 [2026-07-04T22:45:00Z] worker EI-6693: chronic-autoloop-failure EIs for a `loop-su-<uuid>@*` row are a data-hygiene class, not a code bug. Reproduce: JOIN autoloop_state↔routines on (name, workspace_id) — a dead-owner loop:arm loop has routine active=false + non-null target_owner_id + stale last_fired_at, so selectChronicFailures already triple-excludes it (skipped-paused/skipped-loop-arm/skipped-stale). Resolution = `autoloop:control reset-errors {harness:<any real>, role:<the loop-su-uuid>}` (resetErrorScopes adds the '*' scope, EI-6753) → resolve fixed. Class durable-fix already landed (EI-6727/EI-6765); don't touch watchdog/scheduler code.
 
 [2026-07-05T09:36:00Z] worker EI-7539: orphaned-dispatch EIs are dominated by exit-143 (SIGTERM) worker deaths at ~40min that fall THROUGH the WI-2162 timeout classifier — isWorkerTimeoutExit requires runtime ≥ configuredTimeout−10s (2690s for the 45-min implementTimeoutMs), so a SIGTERM BEFORE the 45-min clock gets the generic `worker-exit-backedge` tag → isLaneBreakageOrphan()=true → a false "lane broken" EI. Also exit-0-no-resolve (worker ran, exited 0, never called improvements:resolve) is DESIGNED to signal as lane breakage. Any fix is a design call on self-improvement-loop protected surfaces (orphaned-dispatch.ts / implement-worker-exit.ts / spawn.ts) → needs-human.
+[2026-07-05T20:20:00Z] worker EI-7312: loop-su-*@* "chronic autoloop failure red N fires" EIs filed BEFORE 2026-07-05 12:10 (commit 34ab1dc348) are phantoms — that commit added isLoopArmOwnerRole() (autoloop-chronic-failure.ts), a join-independent guard suppressing any autoloop_state.role starting with `loop-` (loop:arm owner loops are owner-witnessed + auto-terminated by the reconcile dead-owner guard). Verify a phantom: autoloop_state row gone (0) + routine active=false + no coord_presence for the su owner ⇒ resolve fixed. Each real incident gets its own pinned selectChronicFailures test even when byte-identical (house style).
+
