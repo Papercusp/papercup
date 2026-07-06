@@ -85,11 +85,20 @@ describe('findOrphanTestRunGroups', () => {
     ]);
   });
 
-  it('excludes the restored-checkout prefix at the query level (WHERE clause, not post-filtered)', async () => {
-    const { sql, calls } = fakeSql([]);
-    await findOrphanTestRunGroups({ workspaceId: 'ws', sql });
-    const call = calls[0] as { text: string; values: unknown[] };
-    expect(call.values).toContain('papercupai-workspace/papercup-%');
+  it('flags known non-signal path classes even when harness_slug is null', async () => {
+    const { sql } = fakeSql([
+      { harness_slug: null, file_path: '_retired/snapshot-system/x.test.ts', row_count: 3 },
+      { harness_slug: null, file_path: '.papercusp/scratch/tdg-abc/app/x.test.ts', row_count: 4 },
+      { harness_slug: null, file_path: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', row_count: 5 },
+      { harness_slug: null, file_path: 'packages/live.test.ts', row_count: 6 },
+    ]);
+    const out = await findOrphanTestRunGroups({ workspaceId: 'ws', sql });
+    expect(out).toEqual<OrphanRunGroup[]>([
+      { harnessSlug: null, filePath: '_retired/snapshot-system/x.test.ts', rowCount: 3, reason: 'retired_path' },
+      { harnessSlug: null, filePath: '.papercusp/scratch/tdg-abc/app/x.test.ts', rowCount: 4, reason: 'scratch_path' },
+      { harnessSlug: null, filePath: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', rowCount: 5, reason: 'wrong_tree_path' },
+    ]);
+    expect(existsSyncMock).not.toHaveBeenCalled();
   });
 });
 
@@ -127,5 +136,18 @@ describe('pruneOrphanTestRunGroups', () => {
     ];
     const deleted = await pruneOrphanTestRunGroups(groups, { sql });
     expect(deleted).toBe(1);
+  });
+
+  it('deletes null-scoped phantom groups with IS NULL, not harness_slug = NULL', async () => {
+    const calls: unknown[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve({ count: 4 });
+    }) as never;
+    const deleted = await pruneOrphanTestRunGroups([
+      { harnessSlug: null, filePath: '.papercusp/scratch/tdg-abc/app/x.test.ts', rowCount: 4, reason: 'scratch_path' },
+    ], { sql });
+    expect(deleted).toBe(4);
+    expect((calls[0] as { text: string }).text).toContain('harness_slug IS NULL');
   });
 });

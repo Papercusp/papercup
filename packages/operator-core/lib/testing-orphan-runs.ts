@@ -21,12 +21,10 @@
  * or the harness itself was since removed) is also reported as orphaned —
  * pruning is still safe (nothing can resolve it to a real file).
  *
- * EXCLUSION: rows whose file_path starts with a restored-checkout prefix
- * (`papercupai-workspace/papercup-`) come from a different addressing scheme
- * (a full workspace-relative path from a checkpoint/gate run rather than a
- * plain harness-root-relative path) and are deliberately SKIPPED — checking
- * them against a harness's staging root would misclassify live files as
- * orphaned. They are not this tool's concern.
+ * PHANTOM-PATHS: rows under preserved `_retired/` trees, scratch `tdg-*`
+ * throwaway directories, or sibling checkout prefixes are not active test
+ * signal even when the path exists on disk. They are pruned by explicit path
+ * classification, not by file-existence inference.
  *
  * Prune is DELETE-only on the exact orphaned (harness_slug, file_path) pairs
  * this scan found — never a broader sweep — and is dry-run by default.
@@ -36,16 +34,26 @@ import { join } from 'node:path';
 import { loadHarnessRegistry } from './harness-registry';
 import { phasePath } from './harness-phases';
 
-/** Rows whose file_path uses a different (non-harness-root-relative) addressing scheme — skip. */
-const RESTORED_CHECKOUT_PREFIX = 'papercupai-workspace/papercup-';
+const WRONG_TREE_PREFIXES = [
+  'papercupai-workspace/papercup-checkpoint/',
+  'papercupai-workspace/papercusp-checkpoint/',
+  'papercupai-workspace/papercup-staging/',
+] as const;
+
+export type OrphanRunReason =
+  | 'file_not_found'
+  | 'harness_not_found'
+  | 'retired_path'
+  | 'scratch_path'
+  | 'wrong_tree_path';
 
 export interface OrphanRunGroup {
-  harnessSlug: string;
+  harnessSlug: string | null;
   filePath: string;
   /** How many test_runs rows share this (harness_slug, file_path) pair. */
   rowCount: number;
   /** Why it's considered orphaned. */
-  reason: 'file_not_found' | 'harness_not_found';
+  reason: OrphanRunReason;
 }
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
@@ -55,6 +63,25 @@ async function resolveSql(sql?: SqlLike): Promise<SqlLike> {
   if (sql) return sql;
   const { getOrgPg } = await import('@papercusp/db-org');
   return getOrgPg().sql as unknown as SqlLike;
+}
+
+function classifyPhantomPath(filePath: string): OrphanRunReason | null {
+  if (
+    filePath.startsWith('_retired/') ||
+    filePath.includes('/_retired/')
+  ) {
+    return 'retired_path';
+  }
+  if (
+    filePath.startsWith('.papercusp/scratch/tdg-') ||
+    filePath.includes('/.papercusp/scratch/tdg-')
+  ) {
+    return 'scratch_path';
+  }
+  if (WRONG_TREE_PREFIXES.some((prefix) => filePath.startsWith(prefix))) {
+    return 'wrong_tree_path';
+  }
+  return null;
 }
 
 /**
@@ -69,11 +96,9 @@ export async function findOrphanTestRunGroups(opts: {
   const rows = (await sql`
     SELECT harness_slug, file_path, count(*)::int AS row_count
       FROM harness_shared.test_runs
-     WHERE harness_slug IS NOT NULL
-       AND file_path IS NOT NULL
-       AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+     WHERE file_path IS NOT NULL
      GROUP BY harness_slug, file_path
-  `) as Array<{ harness_slug: string; file_path: string; row_count: number }>;
+  `) as Array<{ harness_slug: string | null; file_path: string; row_count: number }>;
   if (rows.length === 0) return [];
 
   const { projects } = await loadHarnessRegistry(opts.workspaceId);
@@ -82,6 +107,17 @@ export async function findOrphanTestRunGroups(opts: {
 
   const orphans: OrphanRunGroup[] = [];
   for (const r of rows) {
+    const phantomReason = classifyPhantomPath(r.file_path);
+    if (phantomReason) {
+      orphans.push({
+        harnessSlug: r.harness_slug,
+        filePath: r.file_path,
+        rowCount: r.row_count,
+        reason: phantomReason,
+      });
+      continue;
+    }
+    if (!r.harness_slug) continue;
     const root = rootBySlug.get(r.harness_slug);
     if (!root) {
       orphans.push({ harnessSlug: r.harness_slug, filePath: r.file_path, rowCount: r.row_count, reason: 'harness_not_found' });
@@ -108,10 +144,15 @@ export async function pruneOrphanTestRunGroups(
   const sql = await resolveSql(opts.sql);
   let deleted = 0;
   for (const g of groups) {
-    const res = (await sql`
-      DELETE FROM harness_shared.test_runs
-       WHERE harness_slug = ${g.harnessSlug} AND file_path = ${g.filePath}
-    `) as unknown as { count?: number };
+    const res = g.harnessSlug === null
+      ? (await sql`
+        DELETE FROM harness_shared.test_runs
+         WHERE harness_slug IS NULL AND file_path = ${g.filePath}
+      `) as unknown as { count?: number }
+      : (await sql`
+        DELETE FROM harness_shared.test_runs
+         WHERE harness_slug = ${g.harnessSlug} AND file_path = ${g.filePath}
+      `) as unknown as { count?: number };
     deleted += typeof res?.count === 'number' ? res.count : g.rowCount;
   }
   return deleted;

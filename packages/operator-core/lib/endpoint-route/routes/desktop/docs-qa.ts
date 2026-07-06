@@ -33,10 +33,15 @@
 import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { searchDocs } from '@papercusp/docs-engine';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { engineeringAdapter } from '../../../agent-tools/docs/_engineering-adapter';
 import { runAgentChat } from '../../../agent-chat-stream';
 import { surfaceBackend, surfaceModel } from '../../../agent-config';
 import { claudeSignedIn, codexSignedIn, ompSignedIn } from '../../../agent-auth-detect';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { readSystemPrincipal } from '../../../system-principal';
 
 const NOT_FOUND = () => new Response(null, { status: 404 });
 
@@ -58,6 +63,67 @@ export function backendAvailable(): boolean {
   try { if (codexSignedIn()) return true; } catch { /* */ }
   try { if (ompSignedIn()) return true; } catch { /* */ }
   return false;
+}
+
+export const DOCS_QA_MCP_TOOLS = ['docs:search', 'docs:get', 'docs:outline'] as const;
+
+export type DocsQaMcpConfig = {
+  mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
+};
+
+function readDocsQaSuperuserToken(): string | null {
+  try {
+    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
+    const token = readFileSync(tokenPath, 'utf8').trim();
+    return token.length >= 16 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the docs-only MCP surface used by the upcoming agentic docs-QA path.
+ * It deliberately reuses the oracle principal/token bridge, but narrows the
+ * listed MCP catalog to docs reads so the spawned agent can search and fetch
+ * docs without inheriting the broad oracle/operator tool surface.
+ */
+export async function buildDocsMcpConfig(opts: {
+  uiClientId?: string | null;
+  baseUrl?: string;
+  workspaceId?: string;
+  readPrincipal?: typeof readSystemPrincipal;
+  readToken?: () => string | null;
+} = {}): Promise<DocsQaMcpConfig | null> {
+  const readPrincipal = opts.readPrincipal ?? readSystemPrincipal;
+  const principal = await readPrincipal('oracle', opts.workspaceId);
+  if (!principal?.bearer) return null;
+  const superuserToken = opts.readToken ? opts.readToken() : readDocsQaSuperuserToken();
+  if (!superuserToken) return null;
+
+  const baseUrl = opts.baseUrl ?? process.env.ORACLE_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const toolsParam = DOCS_QA_MCP_TOOLS.join(',');
+  const clientParam = opts.uiClientId ? `&client=${encodeURIComponent(opts.uiClientId)}` : '';
+  const mcpUrl =
+    `${baseUrl}/api/mcp?superuser=1` +
+    `&workspace=${encodeURIComponent(workspaceId)}` +
+    `&tools=${encodeURIComponent(toolsParam)}` +
+    clientParam;
+
+  return {
+    mcpServers: {
+      agentmcp: {
+        command: 'npx',
+        args: [
+          '-y',
+          'mcp-remote@latest',
+          mcpUrl,
+          '--header',
+          `Authorization:Bearer ${superuserToken}`,
+        ],
+      },
+    },
+  };
 }
 
 export interface DocsContextBlock {

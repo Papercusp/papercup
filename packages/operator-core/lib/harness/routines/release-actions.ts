@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import type postgres from 'postgres';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -62,6 +63,26 @@ function integrationRoot(): string {
 
 function tsxBin(root: string): string {
   return path.join(root, 'node_modules/.bin/tsx');
+}
+
+export interface ReleaseToolingStatus {
+  ok: boolean;
+  reason?: 'missing_tsx' | 'missing_script';
+  root: string;
+  tsx: string;
+  script: string;
+}
+
+export function releaseToolingStatus(
+  root: string,
+  relScript: string,
+  exists: (p: string) => boolean = existsSync,
+): ReleaseToolingStatus {
+  const tsx = tsxBin(root);
+  const script = path.join(root, relScript);
+  if (!exists(tsx)) return { ok: false, reason: 'missing_tsx', root, tsx, script };
+  if (!exists(script)) return { ok: false, reason: 'missing_script', root, tsx, script };
+  return { ok: true, root, tsx, script };
 }
 
 interface RunResult {
@@ -209,6 +230,20 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     return;
   }
   const root = routing.root;
+  const tooling = releaseToolingStatus(root, 'apps/operator/lib/release/green-checkpoint.ts');
+  if (!tooling.ok) {
+    console.warn(
+      `[green-checkpoint] skip ${ctx.installSlug}: release tooling unavailable (${tooling.reason}) at ${root}`,
+    );
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'skipped-no-tooling',
+      detail: { reason: tooling.reason, root },
+    });
+    return;
+  }
   const r = await runScript(
     root,
     'apps/operator/lib/release/green-checkpoint.ts',
@@ -1036,6 +1071,18 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
     return;
   }
   const root = integrationRoot();
+  const tooling = releaseToolingStatus(root, 'apps/operator/lib/release/deploy-cli.ts');
+  if (!tooling.ok) {
+    console.warn(`[release-trigger] release tooling unavailable (${tooling.reason}) at ${root} — skipping this tick`);
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'deploy',
+      status: 'skipped-no-tooling',
+      detail: { reason: tooling.reason, root },
+    });
+    return;
+  }
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);
   // P-008: parse the delimited plan marker, not a brace-slice of all stdout.

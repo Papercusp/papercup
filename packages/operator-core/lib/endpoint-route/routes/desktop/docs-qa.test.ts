@@ -4,7 +4,7 @@
  * in-process retrieval against the engineering /internal/docs content.
  */
 import { describe, expect, it } from 'vitest';
-import { composeDocsQaPrompt, backendAvailable, retrieveDocsContext } from './docs-qa';
+import { composeDocsQaPrompt, backendAvailable, retrieveDocsContext, buildDocsMcpConfig } from './docs-qa';
 
 describe('composeDocsQaPrompt', () => {
   it('grounds on the retrieved blocks, the section, and the question, and asks for citations', () => {
@@ -65,6 +65,53 @@ describe('backendAvailable', () => {
       if (prev === undefined) delete process.env.PAPERCUSP_FAKE_LLM;
       else process.env.PAPERCUSP_FAKE_LLM = prev;
     }
+  });
+});
+
+describe('buildDocsMcpConfig', () => {
+  it('builds a docs-only agentmcp bridge with workspace, client, and bearer token', async () => {
+    const config = await buildDocsMcpConfig({
+      baseUrl: 'http://operator.test',
+      workspaceId: 'ws main',
+      uiClientId: 'client/abc',
+      readToken: () => 'superuser-token-value',
+      readPrincipal: async () => ({
+        role: 'oracle',
+        bearer: 'principal-token',
+        workspaceId: 'ws main',
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      }),
+    });
+
+    const server = config?.mcpServers.agentmcp;
+    expect(server?.command).toBe('npx');
+    expect(server?.args.slice(0, 3)).toEqual(['-y', 'mcp-remote@latest', expect.stringContaining('/api/mcp?superuser=1')]);
+    const url = new URL(server!.args[2]);
+    expect(url.searchParams.get('workspace')).toBe('ws main');
+    expect(url.searchParams.get('tools')).toBe('docs:search,docs:get,docs:outline');
+    expect(url.searchParams.get('client')).toBe('client/abc');
+    expect(server?.args).toContain('Authorization:Bearer superuser-token-value');
+  });
+
+  it('returns null when the oracle principal or superuser token is unavailable', async () => {
+    await expect(buildDocsMcpConfig({
+      workspaceId: 'ws',
+      readToken: () => 'superuser-token-value',
+      readPrincipal: async () => null,
+    })).resolves.toBeNull();
+
+    await expect(buildDocsMcpConfig({
+      workspaceId: 'ws',
+      readToken: () => null,
+      readPrincipal: async () => ({
+        role: 'oracle',
+        bearer: 'principal-token',
+        workspaceId: 'ws',
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      }),
+    })).resolves.toBeNull();
   });
 });
 

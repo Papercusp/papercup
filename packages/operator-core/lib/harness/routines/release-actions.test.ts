@@ -47,6 +47,7 @@ import {
   classifyGateStallStatus,
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
+  releaseToolingStatus,
   RELEASE_FIXER_DEDUP_MS,
   type AutoServePlan,
   type DeployEventRow,
@@ -212,7 +213,48 @@ describe('register-system-actions — registry population', () => {
   });
 });
 
+describe('releaseToolingStatus — packaged sidecar guard', () => {
+  it('rejects a packaged .app Contents root that has no dev tsx binary', () => {
+    const root = '/Applications/Papercusp Server.app/Contents';
+    const script = 'apps/operator/lib/release/green-checkpoint.ts';
+    const exists = (p: string) => p.endsWith(script);
+
+    expect(releaseToolingStatus(root, script, exists)).toEqual({
+      ok: false,
+      reason: 'missing_tsx',
+      root,
+      tsx: `${root}/node_modules/.bin/tsx`,
+      script: `${root}/${script}`,
+    });
+  });
+});
+
 describe('release-trigger — noop gating + detached auto-deploy', () => {
+  it('skips without spawning when the packaged host has no release tooling', async () => {
+    const oldRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/Applications/Papercusp Server.app/Contents';
+    const action = getSystemAction('release-trigger')!;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+    } finally {
+      if (oldRoot == null) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = oldRoot;
+      warn.mockRestore();
+    }
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installSlug: 'my-harness',
+        kind: 'deploy',
+        status: 'skipped-no-tooling',
+        detail: expect.objectContaining({ reason: 'missing_tsx' }),
+      }),
+    );
+  });
+
   it('does NOT deploy when the deploy plan is noop:true', async () => {
     spawnMock.mockImplementation(() => fakeSpawn(planJson(true), 0));
     const action = getSystemAction('release-trigger')!;
