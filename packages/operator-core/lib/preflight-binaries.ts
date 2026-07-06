@@ -21,13 +21,10 @@ async function tryProbe(path: string, timeoutMs = 3000): Promise<boolean> {
 
 export async function detectClaude(): Promise<boolean> {
   if (await tryProbe('claude')) return true;
-  // Desktop bundle: claude ships under meridian-host/node_modules/.bin.
   // ~/.local/bin is where the official claude.ai/install.sh installs —
   // missing it left the wizard's own successful install undetected
   // (found live on the Windows VM 2026-06-12).
   const candidates = [
-    `${process.cwd()}/meridian-host/node_modules/.bin/claude`,
-    `${process.cwd()}/../meridian-host/node_modules/.bin/claude`,
     `${process.env.HOME ?? ''}/.local/bin/claude`,
     `${process.env.HOME ?? ''}/.papercusp/runtime/node_modules/.bin/claude`,
     `${process.env.HOME ?? ''}/.claude/bin/claude`,
@@ -76,23 +73,4 @@ export async function detectCodex(): Promise<boolean> {
     if (existsSync(path) && (await tryProbe(path))) return true;
   }
   return false;
-}
-
-/**
- * Detect whether Meridian is *installed* (package present), not
- * whether it's currently running. The Setup Wizard treats "installed"
- * as setup-complete — the desktop app spawns the daemon on boot, so a
- * fresh install shows ready without forcing a restart first.
- *
- * `/api/desktop/preflight` keeps its own port-reachability check for
- * "usable right now"; the two endpoints answer different questions.
- */
-export function detectMeridianInstalled(): boolean {
-  const home = process.env.HOME ?? '';
-  const candidates = [
-    `${home}/.papercusp/runtime/node_modules/@rynfar/meridian/package.json`,
-    `${process.cwd()}/meridian-host/node_modules/@rynfar/meridian/package.json`,
-    `${process.cwd()}/../meridian-host/node_modules/@rynfar/meridian/package.json`,
-  ].filter(Boolean);
-  return candidates.some((p) => existsSync(p));
 }

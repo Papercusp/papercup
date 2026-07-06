@@ -12,7 +12,7 @@ export default defineTool({
   name: 'setup:status',
   profile: 'engineer',
   description:
-    'Auto-detected setup state: every Setup-Wizard step status (ok / needs-attention / unknown) plus the per-runtime agent breakdown (claude / codex / omp / meridian). Same detection read the GUI wizard uses.',
+    'Auto-detected setup state: every Setup-Wizard step status (ok / needs-attention / unknown) plus the per-runtime agent breakdown (claude / codex / omp). Same detection read the GUI wizard uses.',
   capability: 'operator:read',
   guidance: {
     when: `Onboarding/tutorial flows: read BEFORE offering a setup step (skip what is already ok) and RE-READ after acting — never tell the user a step is configured without this re-read.`,

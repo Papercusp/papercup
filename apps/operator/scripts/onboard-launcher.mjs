@@ -21,7 +21,7 @@
  * on all three CLIs.
  *
  * Interactive:  papercusp onboard          (also: node onboard-launcher.mjs)
- * Scripting:    onboard --framework=<claude|codex|omp-meridian> [--operator-url=…]
+ * Scripting:    onboard --framework=<claude|codex> [--operator-url=…]
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -29,7 +29,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
-export const FRAMEWORKS = ['claude', 'codex', 'omp-meridian'];
+export const FRAMEWORKS = ['claude', 'codex'];
 
 /** Owner-specified intro banner — verbatim (plan D: intro message). */
 export const INTRO_BANNER =
@@ -42,9 +42,10 @@ export const INTRO_BANNER =
 /** Detection poll cadence — same 5s the GUI wizard's StepAgents uses. */
 export const DETECT_POLL_MS = 5_000;
 
-/** The `psu` agent id each framework hands off to. Pure; exported for tests. */
+/** The `psu` agent id each framework hands off to — the framework id IS the
+ *  agent id (claude / codex). Pure; exported for tests. */
 export function mapFrameworkToAgent(framework) {
-  return framework === 'omp-meridian' ? 'omp' : framework;
+  return framework;
 }
 
 /**
@@ -215,9 +216,7 @@ async function main() {
             description:
               f === 'claude'
                 ? 'Just the claude CLI signed into your Claude subscription.'
-                : f === 'codex'
-                  ? 'The codex CLI (OpenAI), driven the same way.'
-                  : 'The multi-provider path — routes through other providers.',
+                : 'The codex CLI (OpenAI), driven the same way.',
           })),
         });
         session.forcePick = false;

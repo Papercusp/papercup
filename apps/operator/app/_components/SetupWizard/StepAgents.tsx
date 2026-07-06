@@ -8,7 +8,6 @@ interface AgentRuntime {
   claude: boolean;
   codex: boolean;
   omp: boolean;
-  meridian: boolean;
 }
 
 interface SpawnSpec {
@@ -59,15 +58,11 @@ export function StepAgents() {
   const claudeOk = runtime?.claude ?? false;
   const codexOk = runtime?.codex ?? false;
   const ompOk = runtime?.omp ?? false;
-  const meridianOk = runtime?.meridian ?? false;
-  // A complete backend is EITHER a standalone CLI agent (Claude Code or
-  // Codex — the orchestrator drives the CLI directly) OR oh-my-pi +
-  // Meridian (the multi-provider path).
-  const ompPathOk = ompOk && meridianOk;
-  const allOk = claudeOk || codexOk || ompPathOk;
+  // A complete backend is any standalone CLI agent — Claude Code, Codex, or
+  // oh-my-pi — the orchestrator drives the CLI directly.
+  const allOk = claudeOk || codexOk || ompOk;
 
-  // Per-runtime breakdown rows. The omp path needs BOTH halves, so its
-  // not-ok state names which half is missing instead of a bare "missing".
+  // Per-runtime breakdown rows.
   const runtimeRows: { label: string; hint: string; ok: boolean; detail: string }[] = [
     {
       label: 'Claude Code',
@@ -82,16 +77,10 @@ export function StepAgents() {
       detail: codexOk ? 'Installed.' : 'Not installed.',
     },
     {
-      label: 'oh-my-pi + Meridian',
-      hint: 'multi-provider path, needs both',
-      ok: ompPathOk,
-      detail: ompPathOk
-        ? 'Installed.'
-        : ompOk
-          ? 'oh-my-pi installed — Meridian missing.'
-          : meridianOk
-            ? 'Meridian installed — oh-my-pi missing.'
-            : 'Not installed.',
+      label: 'oh-my-pi',
+      hint: 'multi-provider omp CLI',
+      ok: ompOk,
+      detail: ompOk ? 'Installed.' : 'Not installed.',
     },
   ];
 
@@ -136,8 +125,8 @@ export function StepAgents() {
         <strong>Claude Code</strong> — just the <code>claude</code> CLI signed into
         your Claude subscription; the orchestrator drives it and background calls go
         straight to Anthropic. <strong>Codex</strong> (the <code>codex</code> CLI,
-        OpenAI) works the same way. Or use <strong>oh-my-pi + Meridian</strong> to
-        route through other providers. You need <em>one</em> complete path, not all
+        OpenAI) works the same way. Or use <strong>oh-my-pi</strong> to route
+        through other providers. You need <em>one</em> complete path, not all
         of them.
       </p>
 
@@ -152,7 +141,7 @@ export function StepAgents() {
                   {[
                     claudeOk && 'Claude Code',
                     codexOk && 'Codex',
-                    ompPathOk && 'oh-my-pi + Meridian',
+                    ompOk && 'oh-my-pi',
                   ]
                     .filter(Boolean)
                     .join(', ')}{' '}
@@ -164,8 +153,8 @@ export function StepAgents() {
                 <strong>No agent backend yet.</strong>
                 <span>
                   Install <strong>Claude Code</strong> (the <code>claude</code> CLI),{' '}
-                  <strong>Codex</strong> (the <code>codex</code> CLI) — or oh-my-pi +
-                  Meridian. Click Install to run the commands here in the wizard.
+                  <strong>Codex</strong> (the <code>codex</code> CLI) — or oh-my-pi.
+                  Click Install to run the commands here in the wizard.
                 </span>
               </>
             )}
@@ -279,11 +268,7 @@ iwr https://claude.ai/install.ps1 | iex          # Windows PowerShell
 # Codex (OpenAI)
 npm install -g @openai/codex
 
-# Meridian (per-workspace install root; oh-my-pi ships bundled
-# with the desktop app — it has no npm package)
-mkdir -p ~/.papercusp/runtime
-cd ~/.papercusp/runtime && npm init -y
-npm install @rynfar/meridian
+# oh-my-pi ships bundled with the desktop app (it has no npm package)
 `}
           </pre>
           <p className="pc-agent-card__link">

@@ -141,58 +141,6 @@ async function checkPostgres(): Promise<Check> {
   });
 }
 
-/**
- * Probe meridian's HTTP daemon on 127.0.0.1:3456. omp routes through
- * meridian to use the user's Claude Max subscription instead of API keys.
- */
-async function checkMeridian(): Promise<Check> {
-  const workspaceHome = process.env.HOME || process.env.USERPROFILE;
-  if (workspaceHome) {
-    try {
-      const fs = await import('node:fs/promises');
-      const path = `${workspaceHome}/.papercusp/meridian-state.json`;
-      const raw = await fs.readFile(path, 'utf8');
-      const json = JSON.parse(raw) as { state?: string; detail?: string };
-      if (json.state === 'installing') {
-        return {
-          name: 'meridian',
-          status: 'error',
-          detail: `installing claude-code… ${json.detail ?? ''}`.trim(),
-          hint: 'First-launch dependency install — this page will refresh automatically once meridian is ready (~30s on a fast connection).',
-        };
-      }
-      if (json.state === 'error') {
-        return {
-          name: 'meridian',
-          status: 'missing',
-          detail: `install failed: ${json.detail ?? 'unknown'}`,
-          hint: 'meridian failed to install its claude-code dependency. Check your internet connection and restart the app.',
-        };
-      }
-      // state === 'ready' falls through to the live port probe below
-    } catch {
-      // No state file yet — fall through to probe.
-    }
-  }
-  return new Promise((resolve) => {
-    const url = new URL(MERIDIAN_BASE);
-    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    const socket = new net.Socket();
-    let settled = false;
-    const finish = (status: CheckStatus, detail: string, extra: Partial<Check> = {}) => {
-      if (settled) return;
-      settled = true;
-      try { socket.destroy(); } catch { /* ignore */ }
-      resolve({ name: 'meridian', status, detail, ...extra });
-    };
-    socket.setTimeout(2000);
-    socket.once('connect', () => finish('ok', `${url.hostname}:${port} reachable`));
-    socket.once('timeout', () => finish('missing', `${url.hostname}:${port} timeout`));
-    socket.once('error', (e: any) => finish('missing', `${url.hostname}:${port} ${e?.code ?? 'unreachable'}`));
-    socket.connect(port, url.hostname);
-  });
-}
-
 function checkHarnessDir(): Check {
   const harnessRootPath = harnessRoot();
   const orchBinDir = `${harnessRootPath}/../orchestrator/bin`;
@@ -246,28 +194,20 @@ const get = defineTool({
   path: '/desktop/preflight',
   auth: 'public',
   async handler() {
-    const [node, claude, bash, postgres, pi, meridian, ...softs] = await Promise.all([
+    const [node, claude, bash, postgres, pi, ...softs] = await Promise.all([
       checkBinary('node'),
       checkBinary('claude'),
       checkBinary('bash'),
       checkPostgres(),
       checkPi(),
-      checkMeridian(),
       ...SOFT_PREREQS.map((p) => checkSoftPrereq(p.name, p.hint)),
     ]);
     // claude is optional (only required if AGENT_BACKEND=claude-code).
     const claudeOptional: Check = { ...claude, optional: true, hint: claude.status === 'ok'
       ? undefined
       : 'Optional unless AGENT_BACKEND=claude-code. Install: https://docs.anthropic.com/en/docs/claude-code/setup' };
-    // meridian is optional — it only routes omp/claude through the user's Claude
-    // Max subscription; omp/claude work with API keys without it, so a down
-    // daemon must not block boot. (Full first-launch-install + daemon spawn is a
-    // separate feature; see plan linux-test-vm-and-federation-2026-06-04 D-014.)
-    const meridianOptional: Check = { ...meridian, optional: true, hint: meridian.status === 'ok'
-      ? undefined
-      : 'Optional — only needed to route omp/claude through your Claude Max subscription (API keys work without it). Set up in Settings → Meridian.' };
     const harness = checkHarnessDir();
-    const checks = [node, postgres, pi, meridianOptional, bash, harness, claudeOptional, ...softs];
+    const checks = [node, postgres, pi, bash, harness, claudeOptional, ...softs];
     const required = checks.filter((c) => !c.optional);
     const allOk = required.every((c) => c.status === 'ok');
     return Response.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
