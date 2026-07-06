@@ -19,6 +19,7 @@ interface SpawnSpec {
 
 interface PtyCommands {
   installRuntime: SpawnSpec;
+  installFramework?: Partial<Record<'claude' | 'codex' | 'omp', SpawnSpec>>;
 }
 
 export function StepAgents() {
@@ -62,27 +63,41 @@ export function StepAgents() {
   // oh-my-pi — the orchestrator drives the CLI directly.
   const allOk = claudeOk || codexOk || ompOk;
 
-  // Per-runtime breakdown rows.
-  const runtimeRows: { label: string; hint: string; ok: boolean; detail: string }[] = [
+  // Per-runtime breakdown rows. `id` keys the per-framework installer.
+  const runtimeRows: { id: 'claude' | 'codex' | 'omp'; label: string; hint: string; ok: boolean; detail: string }[] = [
     {
+      id: 'claude',
       label: 'Claude Code',
       hint: 'standalone claude CLI',
       ok: claudeOk,
       detail: claudeOk ? 'Installed.' : 'Not installed.',
     },
     {
+      id: 'codex',
       label: 'Codex',
       hint: 'standalone codex CLI (OpenAI)',
       ok: codexOk,
       detail: codexOk ? 'Installed.' : 'Not installed.',
     },
     {
+      id: 'omp',
       label: 'oh-my-pi',
-      hint: 'multi-provider omp CLI',
+      hint: 'multi-provider omp CLI (downloaded from GitHub releases)',
       ok: ompOk,
       detail: ompOk ? 'Installed.' : 'Not installed.',
     },
   ];
+
+  // Shared launcher for a fetched install SpawnSpec (streams into the pty pane).
+  const runInstallSpec = (spec: SpawnSpec | undefined, source: string) => {
+    if (!spec?.command) {
+      setStartError(`Couldn't start the installer for ${source}. Use the manual commands below.`);
+      return;
+    }
+    setAttempt((n) => n + 1);
+    setInstallSpec(spec);
+    setInstalling(true);
+  };
 
   const startInstall = async () => {
     setLastExitCode(null);
@@ -91,15 +106,32 @@ export function StepAgents() {
       const r = await fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as PtyCommands;
-      if (!j.installRuntime?.command) throw new Error('malformed install command');
-      setAttempt((n) => n + 1);
-      setInstallSpec(j.installRuntime);
-      setInstalling(true);
+      runInstallSpec(j.installRuntime, 'the agent runtime');
     } catch (e: any) {
       setInstallSpec(null);
       setInstalling(false);
       setStartError(
         `Couldn't start the installer: ${e?.message ?? e}. Use the manual commands below.`,
+      );
+    }
+  };
+
+  // Install ONE backend (claude / codex / oh-my-pi) via its per-framework spec —
+  // this is how oh-my-pi (no npm package) gets installed: a direct download of the
+  // omp binary from GitHub releases (installFramework.omp), same as the CLI setup.
+  const startInstallFramework = async (framework: 'claude' | 'codex' | 'omp') => {
+    setLastExitCode(null);
+    setStartError(null);
+    try {
+      const r = await fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as PtyCommands;
+      runInstallSpec(j.installFramework?.[framework], framework);
+    } catch (e: any) {
+      setInstallSpec(null);
+      setInstalling(false);
+      setStartError(
+        `Couldn't start the ${framework} installer: ${e?.message ?? e}. Use the manual commands below.`,
       );
     }
   };
@@ -169,15 +201,26 @@ export function StepAgents() {
               key={r.label}
               className="pc-step__progress"
               data-status={r.ok ? 'ok' : 'missing'}
-              style={{ margin: 0 }}
+              style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}
             >
               <div className="pc-step__progress-dot" />
-              <div className="pc-step__progress-text">
+              <div className="pc-step__progress-text" style={{ flex: 1 }}>
                 <strong>{r.label}</strong>
                 <span>
                   {r.detail} <em style={{ opacity: 0.7 }}>({r.hint})</em>
                 </span>
               </div>
+              {tauri && !r.ok && (
+                <button
+                  type="button"
+                  className="pc-btn"
+                  onClick={() => void startInstallFramework(r.id)}
+                  disabled={loading || installing}
+                  style={{ flexShrink: 0 }}
+                >
+                  Install {r.label}
+                </button>
+              )}
             </div>
           ))}
         </div>

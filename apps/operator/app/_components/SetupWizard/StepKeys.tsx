@@ -220,7 +220,7 @@ function KeyCard({
     <div className="pc-key-card">
       <div className="pc-key-card__head">
         <h3>{title}</h3>
-        {required && <span className="pc-badge pc-badge--required">Required for semantic search</span>}
+        {required && <span className="pc-badge pc-badge--required">Required for memory &amp; search</span>}
         {!required && <span className="pc-badge pc-badge--optional">Optional</span>}
       </div>
       <p className="pc-key-card__desc">{description}</p>

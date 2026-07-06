@@ -22,7 +22,7 @@ export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'agents',
     title: 'Agent Runtime',
-    summary: 'Claude Code, Codex, or oh-my-pi — install one agent backend.',
+    summary: 'Claude Code, Codex, or oh-my-pi — install one agent backend (Install runs here).',
     required: true,
   },
   {
@@ -40,9 +40,10 @@ export const SETUP_STEPS: readonly StepDef[] = [
   },
   {
     id: 'keys',
-    title: 'API keys',
-    summary: 'Pay-per-use providers for embeddings and voice. Optional.',
-    required: false,
+    title: 'API keys & Memory',
+    summary:
+      'An OpenAI embeddings key is REQUIRED for agent memory (mem0); other provider/voice keys are optional.',
+    required: true,
   },
   {
     id: 'git',

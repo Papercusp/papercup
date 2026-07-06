@@ -23,7 +23,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, delimiter } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostThroughPty, fleetOscFromEnv } from './psu-pty-host.mjs';
 
@@ -3369,6 +3369,10 @@ async function roleFlow(args, role, rolesMeta) {
     plan = args.noPlan ? null : (args.plan || null);
   }
 
+  // Backend-not-installed → offer to install it before we spawn (owner req
+  // 2026-07-06), same as the SU flow. Aborts if the user declines / it doesn't land.
+  if (!(await ensureBackendInstalled(agent))) process.exit(1);
+
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
     body: JSON.stringify(roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, fleet: args.fleet, fleetRole: args.fleetRole, fleetName: args.fleetName, fleetScheme: args.fleetScheme })),
@@ -3483,6 +3487,160 @@ function clearClaudeTokenFlow() {
   }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Backend-not-installed → offer to install it (owner req 2026-07-06). If the
+// chosen agent CLI (claude / codex / omp) isn't present, psu prompts and runs the
+// SAME installer the setup CLI uses (/api/desktop/setup-pty-commands →
+// installFramework[agent]), then re-detects — so `psu --agent=omp` on a machine
+// without omp installs it in place instead of ENOENT-ing on the bare-name spawn.
+// ───────────────────────────────────────────────────────────────────────────
+
+export const AGENT_LABELS = {
+  claude: 'Claude Code',
+  codex: 'Codex (OpenAI)',
+  omp: 'oh-my-pi (omp)',
+};
+
+/** which/where <bin> → absolute path or null — the exact gate for psu's bare-name
+ *  spawn (runWrapper execs `claude`/`codex`/`omp` off PATH). Pure-ish; exported. */
+export function whichBin(bin, { platform = process.platform } = {}) {
+  try {
+    const cmd = platform === 'win32' ? 'where' : 'which';
+    const r = spawnSync(cmd, [bin], { encoding: 'utf8', timeout: 4_000 });
+    const out = String(r.stdout ?? '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find(Boolean);
+    return r.status === 0 && out ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Well-known install locations per backend (mirrors preflight-binaries) — for a
+ *  bin the setup flow just installed that PATH hasn't picked up yet. Abs path or
+ *  null. Exported for tests. */
+export function wellKnownBackendBin(agent, { home = homedir(), env = process.env } = {}) {
+  const winHome = env.USERPROFILE || home;
+  const lists = {
+    claude: [
+      join(home, '.local/bin/claude'),
+      join(home, '.papercusp/runtime/node_modules/.bin/claude'),
+      join(home, '.claude/bin/claude'),
+    ],
+    codex: [
+      join(home, '.papercusp/runtime/node_modules/.bin/codex'),
+      join(home, '.local/bin/codex'),
+      join(home, '.npm-global/bin/codex'),
+    ],
+    omp: [
+      join(home, '.local/bin/omp'),
+      join(home, '.papercusp/bin/omp'),
+      join(winHome, '.papercusp', 'bin', 'omp.exe'),
+    ],
+  };
+  for (const p of lists[agent] ?? []) {
+    try {
+      if (existsSync(p)) return p;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+/** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
+export function detectBackendBin(agent) {
+  const onPath = whichBin(agent);
+  if (onPath) return { path: onPath, onPath: true };
+  const wk = wellKnownBackendBin(agent);
+  return wk ? { path: wk, onPath: false } : null;
+}
+
+/** Prepend a bin's dir to THIS process's PATH so the bare-name launch (runWrapper
+ *  inherits process.env) resolves a just-installed backend not yet on PATH. */
+function ensureDirOnPath(binPath) {
+  const dir = dirname(binPath);
+  const parts = String(process.env.PATH ?? '').split(delimiter);
+  if (!parts.includes(dir)) process.env.PATH = dir + delimiter + (process.env.PATH ?? '');
+}
+
+/** Spawn an installer SpawnSpec inheriting this terminal (installs are interactive). */
+function runInstallerInherit(spec) {
+  return new Promise((resolve) => {
+    const child = spawn(spec.command, spec.args, {
+      cwd: spec.cwd || process.cwd(),
+      env: { ...process.env, ...(spec.env ?? {}) },
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => resolve(code ?? 1));
+    child.on('error', () => resolve(1));
+  });
+}
+
+/**
+ * Ensure the chosen backend CLI is installed before we launch it. Returns true when
+ * it's usable (already present, or installed here + made resolvable), false when the
+ * user declined or it didn't land — the caller then aborts the launch. Non-interactive
+ * (scripted / non-TTY) launches never prompt; they fail with guidance instead.
+ */
+async function ensureBackendInstalled(agent, { interactive = Boolean(process.stdout.isTTY) } = {}) {
+  const present = detectBackendBin(agent);
+  if (present) {
+    if (!present.onPath) ensureDirOnPath(present.path);
+    return true;
+  }
+  const label = AGENT_LABELS[agent] ?? agent;
+  console.error(`psu: the ${label} backend (\`${agent}\`) is not installed.`);
+  if (!interactive) {
+    console.error('psu: install it with `papercusp setup` (or run psu interactively to be prompted), then re-run.');
+    return false;
+  }
+  const { confirm } = await import('@inquirer/prompts');
+  const wants = await confirm({
+    message: `The ${label} AI backend isn't installed. Install it now?`,
+    default: true,
+  });
+  if (!wants) {
+    console.error(`psu: skipped. Install ${label} yourself or run \`papercusp setup\`, then re-run psu.`);
+    return false;
+  }
+  let cmds;
+  try {
+    cmds = await api('/api/desktop/setup-pty-commands');
+  } catch (e) {
+    console.error(`psu: couldn't fetch the installer (${e?.message ?? e}). Finish setup with \`papercusp setup\`.`);
+    return false;
+  }
+  const spec = cmds?.installFramework?.[agent];
+  if (!spec?.command) {
+    console.error(
+      `psu: no installer available for ${label} on this platform. Install it manually` +
+        (agent === 'omp' ? ' (see https://github.com/can1357/oh-my-pi)' : '') +
+        ', then re-run psu.',
+    );
+    return false;
+  }
+  console.error(`psu: installing ${label} — streaming the installer here…`);
+  const code = await runInstallerInherit(spec);
+  if (code !== 0) console.error(`psu: the installer exited ${code}; re-checking anyway.`);
+  const after = detectBackendBin(agent);
+  if (!after) {
+    console.error(
+      `psu: ${label} still isn't detected. Open a new terminal (so PATH refreshes) and re-run psu, or finish setup with \`papercusp setup\`.`,
+    );
+    return false;
+  }
+  if (!after.onPath) {
+    ensureDirOnPath(after.path);
+    console.error(
+      `psu: using ${after.path} (added its dir to PATH for this launch; restart your shell to make it permanent).`,
+    );
+  }
+  console.error(`psu: ${label} is ready. ✓`);
+  return true;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   // One-time credential maintenance commands run before any launch flow.
@@ -3560,6 +3718,10 @@ async function main() {
   } else {
     selections = selectionsFromArgs(args);
   }
+
+  // Backend-not-installed → offer to install it before we spawn (owner req
+  // 2026-07-06). Aborts the launch if the user declines / it doesn't land.
+  if (!(await ensureBackendInstalled(selections.agent))) process.exit(1);
 
   await launchFreshSu(selections, args);
 }

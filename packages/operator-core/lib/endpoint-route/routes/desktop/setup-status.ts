@@ -155,10 +155,10 @@ export async function collectSetupStatus() {
   // satisfies the step.
   const agentsOk = claudeOk || codexOk || ompOk;
 
-  // keys: any of openai/anthropic/github saved.
-  const keysOk = Boolean(
-    creds.openai_api_key || creds.anthropic_api_key || creds.github_pat,
-  );
+  // keys/memory: the OpenAI embeddings key is REQUIRED (mem0 memory + semantic
+  // search — owner 2026-07-06); other provider/voice keys are optional, so the
+  // step's status tracks the required key specifically.
+  const keysOk = Boolean(creds.openai_api_key);
 
   const statuses: Record<StepId, StepStatus> = {
     'os-permissions': osPermissionsStatus,

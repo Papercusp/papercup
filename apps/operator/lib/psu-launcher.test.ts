@@ -85,6 +85,9 @@ import {
   COMPACTION_LIMIT_1M_LEADER,
   COMPACTION_LIMIT_1M_FLEET_MEMBER,
   setupReminderLines,
+  AGENT_LABELS,
+  whichBin,
+  wellKnownBackendBin,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -105,6 +108,57 @@ import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once
 // granular lock tools — became a no-op when the 2026-07-05 rebalance cut them from the
 // canonical list too.)
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+
+describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-install)', () => {
+  it('AGENT_LABELS names all three backends', () => {
+    expect(AGENT_LABELS.claude).toMatch(/Claude/);
+    expect(AGENT_LABELS.codex).toMatch(/Codex/);
+    expect(AGENT_LABELS.omp).toMatch(/oh-my-pi/);
+  });
+
+  it('whichBin returns null for a binary that cannot exist', () => {
+    expect(whichBin('definitely-not-a-real-binary-xyz-123')).toBeNull();
+  });
+
+  it('wellKnownBackendBin finds a bin the setup flow installed under a known path', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-wk-'));
+    try {
+      // omp installer target on unix: ~/.local/bin/omp
+      mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+      writeFileSync(join(home, '.local', 'bin', 'omp'), '#!/bin/sh\n');
+      expect(wellKnownBackendBin('omp', { home, env: {} })).toBe(join(home, '.local/bin/omp'));
+      // codex installer target: ~/.papercusp/runtime/node_modules/.bin/codex
+      mkdirSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin'), { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin', 'codex'), '');
+      expect(wellKnownBackendBin('codex', { home, env: {} })).toBe(
+        join(home, '.papercusp/runtime/node_modules/.bin/codex'),
+      );
+      // nothing installed → null
+      expect(wellKnownBackendBin('claude', { home, env: {} })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('wellKnownBackendBin honors %USERPROFILE% for the Windows omp path', () => {
+    const winHome = mkdtempSync(join(tmpdir(), 'psu-win-'));
+    try {
+      mkdirSync(join(winHome, '.papercusp', 'bin'), { recursive: true });
+      writeFileSync(join(winHome, '.papercusp', 'bin', 'omp.exe'), '');
+      // home has no omp; USERPROFILE does → resolves via the winHome candidate
+      const home = mkdtempSync(join(tmpdir(), 'psu-home-'));
+      try {
+        expect(wellKnownBackendBin('omp', { home, env: { USERPROFILE: winHome } })).toBe(
+          join(winHome, '.papercusp', 'bin', 'omp.exe'),
+        );
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(winHome, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
   const KICK =
