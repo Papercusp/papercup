@@ -35,7 +35,7 @@ const WORK_ITEM_CLAIMS_DDL = `
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,
     work_item_id text NOT NULL,
-    hive_slug text,
+    pot_slug text,
     claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
     owner text NOT NULL,
     owner_label text,
@@ -76,7 +76,7 @@ beforeEach(async () => {
 });
 
 describe('work-item claim lease store (real PG)', () => {
-  it('acquires a free item — ok, with hive_slug + holder_pubkey persisted', async () => {
+  it('acquires a free item — ok, with pot_slug + holder_pubkey persisted', async () => {
     const r = await acquireClaim(base({ workItemId: 'F-001', owner: 'su-a', holderPubkey: 'pk-a' }));
     expect(r.ok).toBe(true);
     if (!r.ok) return;

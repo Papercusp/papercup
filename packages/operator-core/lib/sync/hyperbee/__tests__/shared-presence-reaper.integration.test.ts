@@ -49,7 +49,8 @@ describe('shared-presence-reaper (real PG)', () => {
   beforeAll(async () => {
     db = await createFreshPgDb('shared_presence_reaper');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
-    // shared_presence — faithful to the baseline (4-col PK + mig-187 hive_slug + fed cols).
+    // shared_presence — faithful to the baseline (4-col PK + the pot_slug scope col
+    // [mig-187 hive_slug, renamed by the D-007 pot-rename mig 523] + fed cols).
     await db.sql.unsafe(`
       CREATE TABLE harness_shared.shared_presence (
         workspace_id text DEFAULT '' NOT NULL,
@@ -60,12 +61,15 @@ describe('shared-presence-reaper (real PG)', () => {
         intent text, current_view text,
         last_seen_at timestamptz DEFAULT now() NOT NULL,
         schema_version bigint DEFAULT 1 NOT NULL,
-        hive_slug text, fed_ts bigint, fed_hlc text,
+        pot_slug text, fed_ts bigint, fed_hlc text,
         CONSTRAINT shared_presence_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
       )`);
-    // shared_session_presence — mig 434 verbatim.
+    // shared_session_presence — mig 434 verbatim, then the D-007 pot-rename (mig 523
+    // renamed its hive_slug scope col → pot_slug; apply that in-place so this hand-rolled
+    // table matches the post-rename schema the production reaper reads).
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
     await db.sql.unsafe(stripMeta(readFileSync(MIG_479, 'utf8')));
+    await db.sql.unsafe(`ALTER TABLE harness_shared.shared_session_presence RENAME COLUMN hive_slug TO pot_slug`);
   }, 90_000);
 
   afterAll(async () => {

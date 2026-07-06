@@ -46,19 +46,19 @@ const HIVE_SETTINGS_DDL = `
 // Mirrors migration 196 (minus psql directives + role grants the test DB lacks).
 const OUTBOX_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_outbox (
-    workspace_id text NOT NULL, hive_slug text NOT NULL, id text NOT NULL,
+    workspace_id text NOT NULL, pot_slug text NOT NULL, id text NOT NULL,
     from_hive_pubkey text NOT NULL, to_hive_pubkey text NOT NULL, kind text NOT NULL,
     subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
     correlation_id text, sig text NOT NULL,
     created_at bigint NOT NULL DEFAULT 0, attempt_count integer NOT NULL DEFAULT 0,
     last_attempt_at bigint NOT NULL DEFAULT 0,
-    PRIMARY KEY (workspace_id, hive_slug, id),
+    PRIMARY KEY (workspace_id, pot_slug, id),
     CONSTRAINT cross_hive_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
 // Mirrors migration 231 (the C-1 ask ledger) — the boot-wired boundary's default
 // quota ledger records every ADMITTED inbound request as an `in` row (P-013).
 const ASKS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_asks (
-    workspace_id text NOT NULL, hive_slug text NOT NULL,
+    workspace_id text NOT NULL, pot_slug text NOT NULL,
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     peer_pubkey text NOT NULL, direction text NOT NULL DEFAULT 'out',
     kind text NOT NULL, subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
@@ -71,7 +71,7 @@ const ASKS_DDL = `
     CONSTRAINT cross_hive_asks_direction_check CHECK (direction IN ('out','in')),
     CONSTRAINT cross_hive_asks_kind_check CHECK (kind IN ('ask','work-request')),
     CONSTRAINT cross_hive_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
-    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, hive_slug, correlation_id))`;
+    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
 
 let db: FreshPgDb;
 

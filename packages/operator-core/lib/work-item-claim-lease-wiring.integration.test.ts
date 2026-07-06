@@ -47,7 +47,7 @@ async function setLeaseFlag(on: boolean): Promise<void> {
 const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
-    hive_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    pot_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
     owner text NOT NULL, owner_label text, holder_pubkey text,
     intent text DEFAULT ''::text NOT NULL, ttl_sec integer DEFAULT 1800 NOT NULL,
     acquired_ts timestamptz DEFAULT clock_timestamp() NOT NULL,

@@ -23,13 +23,13 @@ const HIVE_B = 'hive-b';
 // Mirrors migration 196 (minus the psql directives + role grants the test DB lacks).
 const OUTBOX_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_outbox (
-    workspace_id text NOT NULL, hive_slug text NOT NULL, id text NOT NULL,
+    workspace_id text NOT NULL, pot_slug text NOT NULL, id text NOT NULL,
     from_hive_pubkey text NOT NULL, to_hive_pubkey text NOT NULL, kind text NOT NULL,
     subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
     correlation_id text, sig text NOT NULL,
     created_at bigint NOT NULL DEFAULT 0, attempt_count integer NOT NULL DEFAULT 0,
     last_attempt_at bigint NOT NULL DEFAULT 0,
-    PRIMARY KEY (workspace_id, hive_slug, id),
+    PRIMARY KEY (workspace_id, pot_slug, id),
     CONSTRAINT cross_hive_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
 
 let db: FreshPgDb;

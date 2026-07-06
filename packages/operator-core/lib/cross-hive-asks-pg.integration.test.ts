@@ -23,7 +23,7 @@ const PEER2 = 'peer-pubkey-2';
 // Mirrors migration 231 (minus the psql directives + role grants the test DB lacks).
 const ASKS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_asks (
-    workspace_id text NOT NULL, hive_slug text NOT NULL,
+    workspace_id text NOT NULL, pot_slug text NOT NULL,
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     peer_pubkey text NOT NULL, direction text NOT NULL DEFAULT 'out',
     kind text NOT NULL, subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
@@ -36,7 +36,7 @@ const ASKS_DDL = `
     CONSTRAINT cross_hive_asks_direction_check CHECK (direction IN ('out','in')),
     CONSTRAINT cross_hive_asks_kind_check CHECK (kind IN ('ask','work-request')),
     CONSTRAINT cross_hive_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
-    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, hive_slug, correlation_id))`;
+    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
 
 let db: FreshPgDb;
 let store: PgCrossHiveAsks;
@@ -274,7 +274,7 @@ describe('expireStale', () => {
 });
 
 describe('per-Hive scoping', () => {
-  it('isolates rows by (workspace, hive_slug); same correlation_id coexists across Hives', async () => {
+  it('isolates rows by (workspace, pot_slug); same correlation_id coexists across Hives', async () => {
     const a = new PgCrossHiveAsks(WS, HIVE_A, db.sql);
     const b = new PgCrossHiveAsks(WS, HIVE_B, db.sql);
     await a.insert({ peerPubkey: PEER, kind: 'ask', correlationId: 'shared' });
