@@ -61,11 +61,14 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.event_wake_deliveries',
   'harness_shared.shared_presence',
   'harness_shared.benchmark_rollout',
+  'harness_shared.benchmark_run_result',
   'harness_shared.spawned_agents',
   'harness_shared.agent_usage_samples',
   'harness_shared.telemetry_reports_archive',
   'harness_shared.audit_log',
 ] as const;
+
+const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 
 /**
  * gzip args for the PG dump. `--rsyncable` inserts periodic flush
@@ -143,6 +146,7 @@ async function dumpPg(opts: {
       '--no-owner',
       '--no-privileges',
       '-n', 'harness_shared',
+      '-e', 'vector',
       ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -164,7 +168,7 @@ async function dumpPg(opts: {
       if (ok) {
         try {
           const s = await stat(tmp);
-          if (s.size > 100) {
+          if (s.size >= MIN_RESTORABLE_DUMP_BYTES) {
             await renameAtomic(tmp, opts.outPath);
             await opts.log(`pg ${opts.host}:${opts.port} ok (${s.size} bytes)`);
           } else {

@@ -17,8 +17,8 @@ import { EventEmitter } from 'node:events';
 const h = vi.hoisted(() => ({
   adminUrl: { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' },
   spawnCalls: [] as Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }>,
-  // Size returned by the mocked stat() of the temp dump — >100 ⇒ success path.
-  dumpSize: 5000,
+  // Size returned by the mocked stat() of the temp dump — >=10KiB ⇒ success path.
+  dumpSize: 16_384,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
   stdinWrites: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
@@ -77,7 +77,7 @@ const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
 beforeEach(() => {
   h.adminUrl = { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' };
   h.spawnCalls = [];
-  h.dumpSize = 5000;
+  h.dumpSize = 16_384;
   h.closeCodes = { pg_dump: 0, gzip: 0 };
   h.stdinWrites = [];
   h.renameCalls = [];
@@ -96,6 +96,7 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(c.args).toEqual(expect.arrayContaining(['-h', 'db.local', '-p', '6789', '-U', 'alice', '-w', '-d', 'x', '--no-owner', '--no-privileges', '-n', 'harness_shared']));
     expect(c.args).toContain('--exclude-table-data=harness_shared.route_invocations');
     expect(c.args).toContain('--exclude-table-data=harness_shared.tool_invocations');
+    expect(c.args).toContain('--exclude-table-data=harness_shared.benchmark_run_result');
     expect(c.args).not.toContain('-t');
   });
 
@@ -138,6 +139,13 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(pgDumpCall()!.env?.PGCONNECT_TIMEOUT).toBe('5');
   });
 
+  it('includes the vector extension required by harness_shared vector columns', async () => {
+    await runPreSnapshotHook(ctx);
+    const c = pgDumpCall()!;
+    expect(c.args).toContain('-e');
+    expect(c.args).toContain('vector');
+  });
+
   it('does not prefix a schema preamble because pg_dump -n emits schema DDL', async () => {
     await runPreSnapshotHook(ctx);
     expect(h.stdinWrites.join('')).not.toContain('CREATE SCHEMA IF NOT EXISTS harness_shared;');
@@ -145,24 +153,24 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
 });
 
 describe('runPreSnapshotHook outcome logging', () => {
-  it('renames the temp dump into place and logs ok on a non-trivial dump (>100 bytes)', async () => {
-    h.dumpSize = 4096;
+  it('renames the temp dump into place and logs ok on a non-trivial dump', async () => {
+    h.dumpSize = 16_384;
     await runPreSnapshotHook(ctx);
     expect(h.renameCalls).toHaveLength(1);
     expect(h.renameCalls[0].to).toContain('pg-embedded.sql.gz');
-    expect(h.logLines.join('')).toMatch(/ok \(4096 bytes\)/);
+    expect(h.logLines.join('')).toMatch(/ok \(16384 bytes\)/);
   });
 
   it('does NOT rename when pg_dump fails even if gzip closes cleanly', async () => {
-    h.dumpSize = 4096;
+    h.dumpSize = 16_384;
     h.closeCodes = { pg_dump: 1, gzip: 0 };
     await runPreSnapshotHook(ctx);
     expect(h.renameCalls).toHaveLength(0);
     expect(h.logLines.join('')).toMatch(/FAIL: .*pg_dump exited 1/s);
   });
 
-  it('SKIPs (no rename) and logs empty-dump when the dump is ≤100 bytes', async () => {
-    h.dumpSize = 12;
+  it('SKIPs (no rename) and logs empty-dump when the dump is too small to be restorable', async () => {
+    h.dumpSize = 215;
     await runPreSnapshotHook(ctx);
     expect(h.renameCalls).toHaveLength(0);
     expect(h.logLines.join('')).toMatch(/SKIP \(empty dump\)/);

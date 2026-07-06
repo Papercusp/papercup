@@ -11,20 +11,29 @@
  *
  * Stage order (first-run):
  *   pick → install → login → embeddings → handoff → (setup:complete) → done
+ *
+ * The embeddings key (mem0 memory) is a REQUIRED step (owner 2026-07-06): a
+ * machine is only `done` when it BOTH graduated (setup_wizard_state.finished_at)
+ * AND has an OpenAI embeddings key. A user may still SKIP the key to finish the
+ * rest of setup (the concierge honors `embeddingsSkipped` this session), but the
+ * machine then reads as INCOMPLETE — the concierge/`papercusp setup` re-offer it
+ * and psu nags on every launch — until a key is added.
  */
 
-export type OnboardingFramework = 'claude' | 'codex';
+export type OnboardingFramework = 'claude' | 'codex' | 'omp';
 
 /** Display labels for the concierge picker. */
 export const FRAMEWORK_LABELS: Record<OnboardingFramework, string> = {
   claude: 'Claude Code',
   codex: 'Codex (OpenAI)',
+  omp: 'oh-my-pi (omp)',
 };
 
 /** Auto-skip preference order (pre-detection): first ready framework wins. */
 export const FRAMEWORK_PREFERENCE: readonly OnboardingFramework[] = [
   'claude',
   'codex',
+  'omp',
 ];
 
 export interface OnboardingSnapshot {
@@ -56,9 +65,11 @@ export type OnboardingStage =
   | { stage: 'handoff'; framework: OnboardingFramework };
 
 /**
- * Onboarding frameworks are the standalone CLI agents (Claude Code / Codex) on
- * every OS. The `os` param is retained for signature stability (callers thread
- * `process.platform`) even though the set no longer varies by OS.
+ * Onboarding frameworks are the standalone CLI agents (Claude Code / Codex /
+ * oh-my-pi) on every OS. All three are installable cross-platform now (omp via
+ * a direct GitHub-release download — see buildFrameworkInstallSpec), so the set
+ * no longer varies by OS. The `os` param is retained for signature stability
+ * (callers thread `process.platform`).
  */
 export function allowedFrameworks(os: string): OnboardingFramework[] {
   void os;
@@ -72,6 +83,8 @@ export function frameworkInstalled(f: OnboardingFramework, s: OnboardingSnapshot
       return s.claudeInstalled;
     case 'codex':
       return s.codexInstalled;
+    case 'omp':
+      return s.ompInstalled;
   }
 }
 
@@ -81,6 +94,8 @@ export function frameworkSignedIn(f: OnboardingFramework, s: OnboardingSnapshot)
       return s.claudeSignedIn;
     case 'codex':
       return s.codexSignedIn;
+    case 'omp':
+      return s.ompSignedIn;
   }
 }
 
