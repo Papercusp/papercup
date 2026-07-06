@@ -3,7 +3,7 @@
  * (shared-hive-hardening-2026-06-13 P-012). The durable inverse of joining a
  * hive (joinHiveAsView): the thin tool wrapper over `leaveHive` (leave-hive.ts).
  *
- * Distinct from pot:dissolve — that is the OWNER tearing down a LOCAL hive
+ * Distinct from pot:dissolve — that is the OWNER tearing down a LOCAL pot
  * (stops the Queen, cancels bees, deregisters the home harness). pot:leave is a
  * JOINER walking away from a remote hive they joined: stop federating (leave the
  * swarm topic), delete the member git-sync routines, drop local presence, and
@@ -29,11 +29,11 @@ export default defineTool({
   name: 'pot:leave',
   profile: 'engineer',
   description:
-    "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local hive you own — that is pot:dissolve.",
+    "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local pot you own — that is pot:dissolve.",
   guidance: {
     when: 'A joiner cleanly leaving a shared hive they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.',
     notWhen:
-      'Tearing down a LOCAL hive you OWN (stop its Queen, cancel its bees) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
+      'Tearing down a LOCAL pot you OWN (stop its Queen, cancel its bees) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
     chaining: 'pot:list / pot:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind.',
     seeAlso: [
       'pot:list (find the joined hive slug first)',
