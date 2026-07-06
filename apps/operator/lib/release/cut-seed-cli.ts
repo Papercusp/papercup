@@ -50,21 +50,34 @@
  *                          git bundles at rest (env: PAPERCUSP_SEED_KEY_HEX) — never for a real release
  *   --no-git               skip the code half (hive-state-only seed)
  *   --no-corestore         skip the federated-state half (code-only seed)
+ *   --reuse-corestore <dir> WI-3232: graft the ALREADY-CUT corestore from an existing seed dir onto this
+ *                          (git-only) cut instead of re-snapshotting the live store. No operator quiesce
+ *                          needed (git bundles from the checkout, not the store) — the safe way to re-cut
+ *                          FULL-HISTORY git while keeping an earlier corestore snapshot. Same-dir (reuse ==
+ *                          --out) is the normal case: the corestore is moved aside across the outDir wipe
+ *                          and moved back. Requires the git half (not --no-git); epoch must match.
+ *   --emit-epoch-key       WI-3232 (owner "Full pot, plaintext seed", alpha): also write epoch-keys.json
+ *                          (the hive epoch key) into the seed so a FRESH packaged install decrypts the pot
+ *                          OFFLINE (no admission). Ships the hive READABLE — deliberate, flag-gated. Needs
+ *                          an epoch context (--workspace-id or --epoch).
  *   --json                 print the manifest + size report as JSON
  */
 
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rm, readFile, writeFile, rename, cp } from 'node:fs/promises';
 import Corestore from 'corestore';
 import {
   cutHiveSeed,
   enumerateOwnStoreCoreKeys,
   formatBytes,
+  CORESTORE_SUBDIR,
+  SEED_MANIFEST_FILE,
   type GitCutSpec,
   type CorestoreCutSpec,
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
+import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry } from '@papercusp/seed-bundle';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
@@ -182,6 +195,68 @@ export async function assertEpochSealIdentityPresent(inp: {
   );
 }
 
+/** The bundled-epoch-key file (WI-3232). Ships INSIDE the seed dir alongside the
+ *  manifest so a fresh packaged install can decrypt the pot OFFLINE (no admission).
+ *  Shape: { "<hive>": { "<epoch>": "<base64 32-byte key>" } }. */
+export const EPOCH_KEYS_FILE = 'epoch-keys.json';
+
+/** WI-3232 (owner "Full pot, plaintext seed", alpha-authorised): serialize the hive
+ *  epoch key so the bundled EpochKeyProvider can unwrap the seed's git bundles AND
+ *  the corestore content with NO federation join. Ships the hive READABLE — only
+ *  emitted behind the explicit --emit-epoch-key flag. */
+export function encodeEpochKeysFile(hive: string, epoch: number, key: Uint8Array): string {
+  if (key.length !== 32) throw new Error(`epoch key must be 32 bytes, got ${key.length}`);
+  return JSON.stringify({ [hive]: { [String(epoch)]: Buffer.from(key).toString('base64') } }, null, 2) + '\n';
+}
+
+/**
+ * WI-3232 --reuse-corestore: read the reusable corestore store-entry from an EXISTING
+ * seed dir's manifest. Lets a git-only re-cut (e.g. full-history) graft the already-cut
+ * corestore back on WITHOUT re-snapshotting the live store — so no operator quiesce is
+ * needed (avoids the outage class). Throws if the dir has no manifest, no corestore
+ * entry, or no corestore payload on disk. Injected fs for tests.
+ */
+export async function readReusableCorestore(
+  seedDir: string,
+  deps: { readManifest?: (p: string) => Promise<string>; exists?: (p: string) => boolean } = {},
+): Promise<{ entry: SeedStoreEntry; cutAtEpoch: number }> {
+  const readManifest = deps.readManifest ?? ((p: string) => readFile(p, 'utf8'));
+  const exists = deps.exists ?? existsSync;
+  const manifestPath = join(seedDir, SEED_MANIFEST_FILE);
+  if (!exists(manifestPath)) {
+    throw new Error(`--reuse-corestore: no ${SEED_MANIFEST_FILE} in ${seedDir} (not a seed dir?)`);
+  }
+  const manifest = decodeManifest(await readManifest(manifestPath));
+  const entry = manifest.stores.find((s) => s.kind === 'corestore');
+  if (!entry) {
+    throw new Error(`--reuse-corestore: ${join(seedDir, SEED_MANIFEST_FILE)} has no 'corestore' store entry — nothing to reuse`);
+  }
+  if (!exists(join(seedDir, CORESTORE_SUBDIR))) {
+    throw new Error(`--reuse-corestore: manifest lists a corestore but ${join(seedDir, CORESTORE_SUBDIR)} is missing on disk`);
+  }
+  return { entry, cutAtEpoch: manifest.cutAtEpoch };
+}
+
+/** Graft a reused corestore entry onto a git-only cut's manifest (pure — exported for
+ *  tests). Refuses to double-add a corestore. */
+export function graftCorestoreEntry(gitManifest: SeedManifest, corestoreEntry: SeedStoreEntry): SeedManifest {
+  if (gitManifest.stores.some((s) => s.kind === 'corestore')) {
+    throw new Error('graftCorestoreEntry: manifest already has a corestore entry');
+  }
+  return { ...gitManifest, stores: [...gitManifest.stores, corestoreEntry] };
+}
+
+/** Move a dir, falling back to copy+remove across filesystems (EXDEV). */
+async function moveDir(src: string, dst: string): Promise<void> {
+  try {
+    await rename(src, dst);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+    await cp(src, dst, { recursive: true });
+    await rm(src, { recursive: true, force: true });
+  }
+}
+
 function resolveWorkspaceRoot(): string {
   // Mirrors role-codex-home.ts. From apps/operator/lib/release → up to the repo root.
   const here = dirname(fileURLToPath(import.meta.url));
@@ -243,10 +318,21 @@ async function main(): Promise<void> {
   const rev = str(args, 'rev') ?? 'HEAD';
   const depth = parseGitDepth(args);
   const wantGit = args['no-git'] !== true;
-  const wantCorestore = args['no-corestore'] !== true;
+  // WI-3232 --reuse-corestore: graft an existing corestore instead of cutting a fresh
+  // one from the live store (no quiesce). Mutually exclusive with cutting a corestore.
+  const reuseCorestoreRaw = str(args, 'reuse-corestore');
+  const reuseCorestoreDir = reuseCorestoreRaw ? resolve(reuseCorestoreRaw) : undefined;
+  const emitEpochKey = args['emit-epoch-key'] === true;
+  const wantCorestore = args['no-corestore'] !== true && !reuseCorestoreDir;
   const asJson = args['json'] === true;
 
-  if (!wantGit && !wantCorestore) {
+  if (reuseCorestoreDir && args['no-corestore'] === true) {
+    throw new Error('--reuse-corestore and --no-corestore are mutually exclusive (reuse IS the corestore source)');
+  }
+  if (reuseCorestoreDir && !wantGit) {
+    throw new Error('--reuse-corestore grafts the corestore onto a FRESH git cut; with --no-git there is nothing new to cut');
+  }
+  if (!wantGit && !wantCorestore && !reuseCorestoreDir) {
     throw new Error('nothing to cut: both --no-git and --no-corestore given');
   }
 
@@ -263,8 +349,25 @@ async function main(): Promise<void> {
     console.warn('[cut-seed] no --workspace-id/--epoch — defaulting cutAtEpoch=0 (canonical dogfood hive).');
   }
 
+  // WI-3232: read the reusable corestore entry BEFORE any outDir wipe. Refuse an epoch
+  // mismatch — a corestore cut at a different epoch would ship inconsistent hive state.
+  let reused: { entry: SeedStoreEntry; cutAtEpoch: number } | undefined;
+  if (reuseCorestoreDir) {
+    reused = await readReusableCorestore(reuseCorestoreDir);
+    if (reused.cutAtEpoch !== cutAtEpoch) {
+      throw new Error(
+        `--reuse-corestore: the reused corestore was cut at epoch ${reused.cutAtEpoch} but this cut resolves epoch ` +
+          `${cutAtEpoch} — refusing to mix epochs (pass --epoch ${reused.cutAtEpoch} to match, or re-cut the corestore).`,
+      );
+    }
+  }
+
   const cutTs = Date.now();
   const cutHlc = stampOpHlc({ ts: cutTs }).hlc;
+
+  // WI-3232 --emit-epoch-key: captured from the git epoch seal when available (no
+  // re-derive), else derived on demand in the emit step below.
+  let epochKeyForEmit: Uint8Array | undefined;
 
   // --- git half ---
   let git: GitCutSpec | null = null;
@@ -289,6 +392,9 @@ async function main(): Promise<void> {
       warn: (m) => console.warn(m),
     });
     git = { sourceRepoDir: repo, originUrl: origin, rev, ...(depth !== undefined ? { depth } : {}), ...(encryption ? { encryption } : {}) };
+    // WI-3232: the epoch seal already derived the hive epoch key — reuse it for
+    // --emit-epoch-key rather than deriving twice.
+    if (encryption && encryption.keyRef.via === 'epoch') epochKeyForEmit = encryption.key;
   }
 
   // --- corestore (federated hive state) half ---
@@ -327,11 +433,55 @@ async function main(): Promise<void> {
     corestore = { sourceStore: store, coreKeys };
   }
 
+  // WI-3232 --reuse-corestore: preserve the existing corestore across the outDir wipe
+  // so the git-only cut can graft it back (no live-store re-snapshot ⇒ no quiesce). The
+  // normal case is same-dir (reuse == --out): move the corestore aside then back (instant
+  // on one fs). Different-dir: copy from the source AFTER the cut (leaves the source seed
+  // intact). The pre-read (readReusableCorestore, above) already validated both exist.
+  const sameReuseDir = reuseCorestoreDir !== undefined && resolve(reuseCorestoreDir) === resolve(outDir);
+  let stashDir: string | undefined;
+  if (reuseCorestoreDir && sameReuseDir) {
+    stashDir = join(dirname(outDir), `.seed-corestore-reuse-${cutTs}`);
+    await moveDir(join(outDir, CORESTORE_SUBDIR), stashDir);
+  }
+
   // Fresh output dir (providers write into subdirs; a stale seed would poison the hash).
   await rm(outDir, { recursive: true, force: true });
 
   try {
     const res = await cutHiveSeed({ hiveId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
+
+    // WI-3232: graft the reused corestore back in + merge its manifest entry.
+    if (reuseCorestoreDir && reused) {
+      const dst = join(outDir, CORESTORE_SUBDIR);
+      if (stashDir) await moveDir(stashDir, dst);
+      else await cp(join(reuseCorestoreDir, CORESTORE_SUBDIR), dst, { recursive: true });
+      const grafted = graftCorestoreEntry(res.manifest, reused.entry);
+      await writeFile(res.manifestPath, encodeManifest(grafted));
+      console.warn(
+        `[cut-seed] reused corestore from ${reuseCorestoreDir} (${formatBytes(reused.entry.sizeBytes)}, no live-store snapshot).`,
+      );
+    }
+
+    // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.
+    if (emitEpochKey) {
+      let key = epochKeyForEmit;
+      if (!key) {
+        if (!workspaceId && str(args, 'epoch') === undefined) {
+          throw new Error('--emit-epoch-key needs an epoch context — pass --workspace-id (or --epoch).');
+        }
+        if (workspaceId) {
+          await assertEpochSealIdentityPresent({ workspaceId, hive, allowMint: args['allow-mint-epoch-key'] === true });
+        }
+        key = Uint8Array.from(await (await resolveHiveEpochCrypto(true)).deriveEpochKey(hive, cutAtEpoch));
+      }
+      await writeFile(join(outDir, EPOCH_KEYS_FILE), encodeEpochKeysFile(hive, cutAtEpoch, key));
+      console.warn(
+        `[cut-seed] ⚠ WI-3232: wrote ${EPOCH_KEYS_FILE} (hive '${hive}' epoch ${cutAtEpoch}) — the seed is now ` +
+          'OFFLINE-DECRYPTABLE (owner-authorised for alpha; the pot ships READABLE).',
+      );
+    }
+
     if (asJson) {
       console.log(JSON.stringify({ manifest: res.manifest, sizeReport: res.sizeReport, manifestPath: res.manifestPath }, null, 2));
     } else {

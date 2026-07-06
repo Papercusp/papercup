@@ -42,7 +42,7 @@ once. (Plan: `bulk-endpoint-standardization-2026-06-21`, D-001.)
 ## Skeleton
 
 ```ts
-import { scalarOrArray, mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
+import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 // …
 args: z.object({ id: z.string().optional(), ids: z.array(z.string()).optional() }),
 async handler(args, ctx) {
@@ -51,7 +51,44 @@ async handler(args, ctx) {
     const row = await load(id, ctx);
     if (!row) return { ok: false as const, id, error: 'not found' };
     return { ok: true as const, id, ...row };
-  }));
+  }, { keyOf: (id) => ({ id }) }));
+}
+```
+
+## Real-world example: work_items:get
+
+The production exemplar includes SWR caching (cache-expensive-tool-reads-2026-06-22 P-005) and work-item checkpoints (EI-7252). Checkpoints surface resumable state left by `work_items:checkpoint` on work items in progress — a cold successor (after compaction) must know if in-flight work was checkpointed before assuming state was lost:
+
+```ts
+// SWR backstop for work_items:get: per-id entry tagged with harness_features_consolidated
+// and harness_features_consolidated:<id>, so data-model generic-notify invalidates exactly
+// that item on a write. Not on the claim hot path (D-004-safe).
+const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
+
+async handler(args, ctx) {
+  const ids = mergeIds(args.id, args.ids);
+  const env = await runBulk(ids, async (id) => {
+    const workItem = await cachedRead(
+      ctx as CachedReadCtx,
+      {
+        tool: "work_items:get",
+        key: { id, harness: args.harness ?? null, detail: args.detail === true },
+        tags: ["harness_features_consolidated", `harness_features_consolidated:${id}`],
+        softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
+      },
+      () => args.detail ? getWorkItemDetail(id, args.harness) : getWorkItem(id, args.harness),
+    );
+    if (!workItem) {
+      return { ok: false as const, id, error: `work_item '${id}' not found` };
+    }
+    // Surface checkpoint (EI-7252): in-flight carry-note scope `workitem:<harness>:<id>`.
+    // Read-only, uncached (checkpoints change out-of-band), cheap (single indexed row lookup).
+    const checkpoint = workItem.harness
+      ? await getWorkItemCheckpoint({ harness: workItem.harness, workItemId: workItem.id }).catch(() => null)
+      : null;
+    return { ok: true as const, id, workItem, checkpoint };
+  }, { keyOf: (id) => ({ id }) });
+  return bulkContent(env);
 }
 ```
 

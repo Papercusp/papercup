@@ -8,7 +8,15 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { parseGitDepth, pickGitEncryption, assertEpochSealIdentityPresent } from './cut-seed-cli';
+import {
+  parseGitDepth,
+  pickGitEncryption,
+  assertEpochSealIdentityPresent,
+  encodeEpochKeysFile,
+  graftCorestoreEntry,
+  readReusableCorestore,
+} from './cut-seed-cli';
+import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
 const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
@@ -118,5 +126,71 @@ describe('parseGitDepth', () => {
     expect(() => parseGitDepth({ depth: '0' })).toThrow(/positive integer/);
     expect(() => parseGitDepth({ depth: '2' })).toThrow(/only 1/);
     expect(() => parseGitDepth({ shallow: true, depth: '2' })).toThrow(/alias/);
+  });
+});
+
+// --- WI-3232: offline-pot cutter helpers ---
+
+const GIT_ENTRY: SeedStoreEntry = {
+  kind: 'git',
+  hash: 'gh1',
+  sizeBytes: 100,
+  source: { type: 'resource', path: 'git' },
+  encryption: { scheme: 'xchacha20poly1305', keyRef: { via: 'epoch', hiveId: 'papercusp', epoch: 0 } },
+};
+const CORESTORE_ENTRY: SeedStoreEntry = {
+  kind: 'corestore',
+  hash: 'ch1',
+  sizeBytes: 2048,
+  source: { type: 'resource', path: 'corestore' },
+};
+function manifest(stores: SeedStoreEntry[], cutAtEpoch = 0): SeedManifest {
+  return { seedFormatVersion: 1, hiveId: 'papercusp', cutAtEpoch, cutHlc: '0:0', cutTs: 1, stores };
+}
+
+describe('encodeEpochKeysFile (WI-3232 bundled epoch key)', () => {
+  it('serializes { hive: { epoch: base64 } } for a 32-byte key', () => {
+    const key = Uint8Array.from(Array.from({ length: 32 }, (_, i) => i));
+    const out = JSON.parse(encodeEpochKeysFile('papercusp', 0, key));
+    expect(out).toEqual({ papercusp: { '0': Buffer.from(key).toString('base64') } });
+    // round-trips back to the exact 32 bytes
+    expect(Uint8Array.from(Buffer.from(out.papercusp['0'], 'base64'))).toEqual(key);
+  });
+  it('rejects a non-32-byte key (never ship a truncated seal key)', () => {
+    expect(() => encodeEpochKeysFile('papercusp', 0, new Uint8Array(16))).toThrow(/32 bytes/);
+  });
+});
+
+describe('graftCorestoreEntry (WI-3232 --reuse-corestore)', () => {
+  it('appends the corestore entry to a git-only manifest', () => {
+    const grafted = graftCorestoreEntry(manifest([GIT_ENTRY]), CORESTORE_ENTRY);
+    expect(grafted.stores.map((s) => s.kind)).toEqual(['git', 'corestore']);
+    expect(grafted.stores[1]).toEqual(CORESTORE_ENTRY);
+    expect(grafted.hiveId).toBe('papercusp'); // preserves the rest of the manifest
+  });
+  it('refuses to double-add a corestore', () => {
+    expect(() => graftCorestoreEntry(manifest([GIT_ENTRY, CORESTORE_ENTRY]), CORESTORE_ENTRY)).toThrow(/already has a corestore/);
+  });
+});
+
+describe('readReusableCorestore (WI-3232 --reuse-corestore)', () => {
+  const okExists = () => true;
+  it('returns the corestore entry + epoch from an existing seed manifest', async () => {
+    const readManifest = vi.fn(async () => JSON.stringify(manifest([GIT_ENTRY, CORESTORE_ENTRY], 0)));
+    const res = await readReusableCorestore('/seed', { readManifest, exists: okExists });
+    expect(res.entry).toEqual(CORESTORE_ENTRY);
+    expect(res.cutAtEpoch).toBe(0);
+  });
+  it('throws when the seed dir has no manifest', async () => {
+    await expect(readReusableCorestore('/seed', { exists: (p) => !p.endsWith('manifest.json') })).rejects.toThrow(/no manifest.json/);
+  });
+  it('throws when the manifest has no corestore entry (nothing to reuse)', async () => {
+    const readManifest = vi.fn(async () => JSON.stringify(manifest([GIT_ENTRY])));
+    await expect(readReusableCorestore('/seed', { readManifest, exists: okExists })).rejects.toThrow(/no 'corestore' store entry/);
+  });
+  it('throws when the corestore payload dir is missing on disk', async () => {
+    const readManifest = vi.fn(async () => JSON.stringify(manifest([GIT_ENTRY, CORESTORE_ENTRY])));
+    const exists = (p: string) => !p.endsWith('corestore');
+    await expect(readReusableCorestore('/seed', { readManifest, exists })).rejects.toThrow(/is missing on disk/);
   });
 });

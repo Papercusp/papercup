@@ -1,7 +1,7 @@
 ---
 title: Production release checklist (v1)
 sidebar:
-  order: 2
+  order: 5
 plans:
   - production-test-readiness-2026-07-06
 ---
@@ -143,3 +143,17 @@ suite:
    last release; triage per §1.9 of [`testing/index`](./index).
 6. Cut the release. Record the gate SHA, deploy SHA, and drill evidence on
    the release work-item/plan for the audit trail.
+
+## 6. Most recent verified gate + deploy (2026-07-06, P-007)
+
+- Fresh green-checkpoint run fired manually (`release:checkpoint-run`)
+  after Phases 1-2 landed → **gate went green** (`consecutiveReds: 0`),
+  green pin advanced to `8abf9cd2ab48686f8549136b4693af820efa112c`.
+- `release:deploy { op: 'trigger', confirm: true }` promoted the pin;
+  deploy steps (swap/preflight/migrate/restart/health/verify-paths/
+  broadcast) all `ok: true`.
+- Confirmed `deploy.deployedSha === deploy.greenPinSha` and `:3070`
+  serving live (`GET /api/harness/papercusp/status` responds 200 with
+  current harness state).
+- State right after: `staging-buffered` (a few more staging commits
+  awaiting the next tick) — expected, not an error.
