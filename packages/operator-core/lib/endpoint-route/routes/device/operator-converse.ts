@@ -146,8 +146,7 @@ const converse = defineTool({
     // (sentinel-converse.ts); every other role resolves `${role}:converse`.
     // A stale explicit 'sentinel' still routes there during the expand phase.
     const converseToolName = role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
-    const operatorConverseTool =
-      lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
+    const operatorConverseTool = lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {
       return new Response(`${converseToolName} tool not registered`, { status: 500 });
     }
@@ -199,10 +198,14 @@ const converse = defineTool({
         sink.onClose(() => ctrl.abort());
 
         const ctxBase: UnifiedToolContext = {
-          log: (msg) => { console.log(`[${converseToolName}][tool] ${msg}`); },
+          log: (msg) => {
+            console.log(`[${converseToolName}][tool] ${msg}`);
+          },
           signal: ctrl.signal,
           progress: () => {},
-          emit: () => { /* installed by dispatchProjectedToolStream */ },
+          emit: () => {
+            /* installed by dispatchProjectedToolStream */
+          },
           workspaceId,
           role,
           runId: globalThis.crypto.randomUUID(),

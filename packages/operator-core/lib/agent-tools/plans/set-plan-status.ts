@@ -56,54 +56,63 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
   return mapped ? { status: mapped, mappedFrom: status } : { status };
 }
 
-const argsSchema = z.object({
-  harness: harnessArg,
-  slug: z.string().min(1).optional(),
-  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to move to the same lifecycle status in one call.'),
-  status: z
-    .enum(ACCEPTED)
-    .describe(
-      "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
-    ),
-  expectedCurrent: z
-    .enum(GUARDABLE)
-    .optional()
-    .describe(
-      'Optional transition guard — only flip if the current status matches. e.g. approve passes `draft` so it never overwrites an already-shipped plan.',
-    ),
-  rationale: z
-    .string()
-    .optional()
-    .describe('Optional note on why the lifecycle moved. Stored on the plan revision (D-009), not in the frontmatter.'),
-  // ── queen-scout-feedback-loop-2026-06-20 P-006 / B10: the DEPRECATE path.
-  learnings: z
-    .object({
-      tried: z.string().min(1).describe('what approach / premise was attempted on the draft'),
-      stalled: z.string().min(1).describe("why it stalled — the reason it won't reach ready"),
-      salvageable: z
-        .string()
-        .min(1)
-        .describe("what's salvageable — the reusable signal a future Blender cycle can re-ideate from"),
-    })
-    .optional()
-    .describe(
-      "ONLY honored on status='superseded' (a DEPRECATE): the free-text learnings (what was tried / why it stalled / what's salvageable). Providing it makes the deprecate ALSO emit a structured, source-tagged 'learnings' observation into the observation lane, so a dead draft still feeds Scout's corpus-digest (queen-scout-feedback-loop P-006 — 'no dead ends'). Omit on a plain reject.",
-    ),
-  sourceHive: z
-    .string()
-    .max(120)
-    .optional()
-    .describe(
-      "deprecate-learnings only: the observation's source hive (the hive the draft belonged to). Defaults to the plan's harness.",
-    ),
-  evidence: z
-    .array(z.string().max(200))
-    .max(12)
-    .optional()
-    .describe('deprecate-learnings only: refs grounding the learnings (the deprecated plan ref is always included).'),
-}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
-  message: 'pass `slug` or `slugs`',
-});
+const argsSchema = z
+  .object({
+    harness: harnessArg,
+    slug: z.string().min(1).optional(),
+    slugs: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Plan slugs to move to the same lifecycle status in one call.'),
+    status: z
+      .enum(ACCEPTED)
+      .describe(
+        "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
+      ),
+    expectedCurrent: z
+      .enum(GUARDABLE)
+      .optional()
+      .describe(
+        'Optional transition guard — only flip if the current status matches. e.g. approve passes `draft` so it never overwrites an already-shipped plan.',
+      ),
+    rationale: z
+      .string()
+      .optional()
+      .describe(
+        'Optional note on why the lifecycle moved. Stored on the plan revision (D-009), not in the frontmatter.',
+      ),
+    // ── queen-scout-feedback-loop-2026-06-20 P-006 / B10: the DEPRECATE path.
+    learnings: z
+      .object({
+        tried: z.string().min(1).describe('what approach / premise was attempted on the draft'),
+        stalled: z.string().min(1).describe("why it stalled — the reason it won't reach ready"),
+        salvageable: z
+          .string()
+          .min(1)
+          .describe("what's salvageable — the reusable signal a future Blender cycle can re-ideate from"),
+      })
+      .optional()
+      .describe(
+        "ONLY honored on status='superseded' (a DEPRECATE): the free-text learnings (what was tried / why it stalled / what's salvageable). Providing it makes the deprecate ALSO emit a structured, source-tagged 'learnings' observation into the observation lane, so a dead draft still feeds Scout's corpus-digest (queen-scout-feedback-loop P-006 — 'no dead ends'). Omit on a plain reject.",
+      ),
+    sourceHive: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "deprecate-learnings only: the observation's source hive (the hive the draft belonged to). Defaults to the plan's harness.",
+      ),
+    evidence: z
+      .array(z.string().max(200))
+      .max(12)
+      .optional()
+      .describe('deprecate-learnings only: refs grounding the learnings (the deprecated plan ref is always included).'),
+  })
+  .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+    message: 'pass `slug` or `slugs`',
+  });
 
 type SetPlanStatusValue =
   | { ok: true; oldStatus: string | null; newStatus: string; changed: boolean }
@@ -275,11 +284,7 @@ export default defineTool({
             };
           } catch (err) {
             const error =
-              err instanceof ObservationEvidenceError
-                ? err.message
-                : err instanceof Error
-                  ? err.message
-                  : String(err);
+              err instanceof ObservationEvidenceError ? err.message : err instanceof Error ? err.message : String(err);
             learningsObservation = { emitted: false, error };
           }
         }
@@ -291,10 +296,7 @@ export default defineTool({
           filePath: result.filePath,
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
-          revision:
-            result.value.changed && rev.recorded.current
-              ? { seq: rev.recorded.current.seq }
-              : null,
+          revision: result.value.changed && rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         };
       },
       { keyOf: (slug) => ({ slug }) },

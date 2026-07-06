@@ -254,7 +254,11 @@ export class OperatorVoiceSession {
    *   - humanFacingRole: the live persona behind the brain ('operator' | 'sentinel').
    * Read-only; never mutates the session.
    */
-  sweepState(): { sessionLive: boolean; ownsVoiceLease: boolean; humanFacingRole: 'operator' | 'sentinel' | 'papercup' } {
+  sweepState(): {
+    sessionLive: boolean;
+    ownsVoiceLease: boolean;
+    humanFacingRole: 'operator' | 'sentinel' | 'papercup';
+  } {
     return {
       sessionLive: this.status !== 'off',
       ownsVoiceLease: this.playerId !== null,
@@ -367,9 +371,7 @@ export class OperatorVoiceSession {
       }
       case 'audio': {
         const audio = decodeAudioB64(ev.audioB64);
-        this.deps.broadcast(
-          encodeResponseAudio({ format: this.audioFormat, sampleRate: this.sampleRate, audio }),
-        );
+        this.deps.broadcast(encodeResponseAudio({ format: this.audioFormat, sampleRate: this.sampleRate, audio }));
         if (this.status !== 'speaking') this.setStatus('speaking');
         return;
       }
@@ -419,7 +421,13 @@ export class OperatorVoiceSession {
     this.lastRelayedText = text;
     const p = this.deps
       .relayToBrain(text)
-      .catch((err): BrainRelayResult => ({ ok: false, reason: 'write-failed', error: (err as Error)?.message ?? String(err) }));
+      .catch(
+        (err): BrainRelayResult => ({
+          ok: false,
+          reason: 'write-failed',
+          error: (err as Error)?.message ?? String(err),
+        }),
+      );
     this.lastRelay = p;
     void p.then((r) => {
       if (!r.ok) this.deps.log?.(`brain relay failed (${r.reason}): ${r.error}`);
@@ -434,11 +442,7 @@ export class OperatorVoiceSession {
    * or a spoken failure when the relay is known to have missed. The pane's real
    * answer arrives later via the sentinel-says pump on this same bus.
    */
-  private async onToolCall(
-    toolName: string,
-    toolCallId: string,
-    parameters: Record<string, unknown>,
-  ): Promise<void> {
+  private async onToolCall(toolName: string, toolCallId: string, parameters: Record<string, unknown>): Promise<void> {
     if (toolName !== 'ask_operator') {
       this.socket?.send(
         elClientToolResultMessage(toolCallId, `tool '${toolName}' is not available on the voice host`, true),
@@ -455,10 +459,7 @@ export class OperatorVoiceSession {
     if (inFlight) {
       // The relay's warm-up gate can hold a write for seconds; don't make EL
       // wait it out — ack optimistically past the cap and trust the write.
-      result = await Promise.race([
-        inFlight,
-        new Promise<null>((r) => setTimeout(() => r(null), RELAY_ACK_WAIT_MS)),
-      ]);
+      result = await Promise.race([inFlight, new Promise<null>((r) => setTimeout(() => r(null), RELAY_ACK_WAIT_MS))]);
     }
     const speak = result && !result.ok ? relayFailureLine(result) : VOICE_RELAY_ACK;
     this.socket?.send(elClientToolResultMessage(toolCallId, speak, false));

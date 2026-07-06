@@ -31,12 +31,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { getOrCreateActiveConversation, appendTurn, type TurnRole } from '../operator-conversations';
 import { parseOperatorTurn } from '../operator-converse-tags';
 import { writeToSentinelPane } from '../sentinel/sentinel-pane-input';
-import type {
-  OperatorVoiceSessionDeps,
-  ElConnectHandlers,
-  ElSocket,
-  BrainRelayResult,
-} from './operator-voice-session';
+import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayResult } from './operator-voice-session';
 
 /**
  * The relay persona pushed as a conversation_config_override so the EL agent
@@ -121,9 +116,17 @@ function connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSock
       });
     });
     ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
-      handlers.onText(typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data as ArrayBuffer).toString('utf8'));
+      handlers.onText(
+        typeof data === 'string'
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString('utf8')
+            : Buffer.from(data as ArrayBuffer).toString('utf8'),
+      );
     });
-    ws.on('close', (code: number, reason: Buffer) => handlers.onClose(`el closed (${code})${reason?.length ? `: ${reason.toString()}` : ''}`));
+    ws.on('close', (code: number, reason: Buffer) =>
+      handlers.onClose(`el closed (${code})${reason?.length ? `: ${reason.toString()}` : ''}`),
+    );
     ws.on('error', (err: Error) => {
       if (opened) handlers.onError(err);
       else reject(err);
@@ -146,7 +149,11 @@ async function loadConversationId(): Promise<string | null> {
   }
 }
 
-async function persistTurn(role: TurnRole & ('user' | 'assistant'), text: string, elConvId: string | null): Promise<void> {
+async function persistTurn(
+  role: TurnRole & ('user' | 'assistant'),
+  text: string,
+  elConvId: string | null,
+): Promise<void> {
   try {
     const conv = await getOrCreateActiveConversation();
     await appendTurn({

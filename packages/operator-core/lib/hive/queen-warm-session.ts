@@ -67,17 +67,14 @@ export async function queenWarmWakeAttempt(args: {
   kickoff?: string;
 }): Promise<{ delivered: boolean; decision?: QueenWakeDecision }> {
   try {
-    if (args.role !== 'mug' && args.role !== 'brain')
-      return { delivered: false };
+    if (args.role !== 'mug' && args.role !== 'brain') return { delivered: false };
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.QUEEN_WARM_SESSION, 'system'))) return { delivered: false };
 
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
-    const rows = await sql<
-      Array<{ coord_owner_id: string | null; started_at: string }>
-    >`
+    const rows = await sql<Array<{ coord_owner_id: string | null; started_at: string }>>`
       SELECT coord_owner_id, started_at::text
         FROM harness_shared.adv_sessions
        WHERE role = ${args.role} AND coord_owner_id IS NOT NULL
@@ -98,7 +95,10 @@ export async function queenWarmWakeAttempt(args: {
     // Boot proxy: a session started BEFORE this process booted is cross-boot → rebirth.
     const crossBoot = row && Date.parse(row.started_at) < processBootMs;
     if (decision.mode !== 'warm' || crossBoot || !row?.coord_owner_id) {
-      return { delivered: false, decision: crossBoot ? { mode: 'rebirth', reason: 'session predates this process boot' } : decision };
+      return {
+        delivered: false,
+        decision: crossBoot ? { mode: 'rebirth', reason: 'session predates this process boot' } : decision,
+      };
     }
     const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
     const res = await wakeRecipients([row.coord_owner_id], {
@@ -113,7 +113,9 @@ export async function queenWarmWakeAttempt(args: {
     const woken = (res as { woken?: number } | undefined)?.woken ?? 0;
     // A wake that reached NO live/resumable session must fall through to the cold
     // spawn — never strand the queen on an undelivered warm wake.
-    return woken > 0 ? { delivered: true, decision } : { delivered: false, decision: { mode: 'cold', reason: 'warm wake undeliverable (woken=0)' } };
+    return woken > 0
+      ? { delivered: true, decision }
+      : { delivered: false, decision: { mode: 'cold', reason: 'warm wake undeliverable (woken=0)' } };
   } catch {
     return { delivered: false };
   }

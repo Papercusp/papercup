@@ -135,12 +135,8 @@ export async function heartbeatSpawns(
   outputAtMs?: ReadonlyMap<string, number>,
 ): Promise<void> {
   if (spawnIds.length === 0) return;
-  const withOutput = outputAtMs
-    ? spawnIds.filter((id) => outputAtMs.has(id))
-    : [];
-  const plain = withOutput.length === 0
-    ? spawnIds
-    : spawnIds.filter((id) => !outputAtMs!.has(id));
+  const withOutput = outputAtMs ? spawnIds.filter((id) => outputAtMs.has(id)) : [];
+  const plain = withOutput.length === 0 ? spawnIds : spawnIds.filter((id) => !outputAtMs!.has(id));
   if (plain.length > 0) {
     await sql`
       UPDATE harness_shared.spawned_agents
@@ -536,14 +532,17 @@ export async function reclaimOrphanedSpawns(
   // Dead-holder release (2026-07-02): free the work-item claims the reclaimed
   // spawns still hold — WITH the reclaim, not hours later via a slower lane —
   // plus the backstop for claims settled terminal by pre-fix sweeps.
-  const claimsReleased = await releaseClaimsOfDeadSpawns(sql, rows.map((r) => r.spawn_id));
+  const claimsReleased = await releaseClaimsOfDeadSpawns(
+    sql,
+    rows.map((r) => r.spawn_id),
+  );
   const backstop = await sweepStaleSpawnClaims(sql);
 
   // EI-108: Wake parents of reclaimed spawns (best-effort, concurrent, no await)
   for (const row of rows) {
-    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
-      () => { /* best-effort — logged inside wakeParentOnChildDeath */ },
-    );
+    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(() => {
+      /* best-effort — logged inside wakeParentOnChildDeath */
+    });
   }
 
   return {
@@ -954,7 +953,11 @@ export async function reclaimFirstOutputStalledSpawns(
  */
 export async function reconcileSpawnAdmissionOnBoot(
   sql: Db,
-  opts: { staleMs?: number; relaunch?: RelaunchSpawnFn; isAlive?: (pid: number, kind?: 'spawn' | 'launch') => boolean } = {},
+  opts: {
+    staleMs?: number;
+    relaunch?: RelaunchSpawnFn;
+    isAlive?: (pid: number, kind?: 'spawn' | 'launch') => boolean;
+  } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
   const me = hostname();
@@ -1072,7 +1075,10 @@ export async function reconcileSpawnAdmissionOnBoot(
   // predecessor's still-held `taken_by` would reject that compare-and-claim
   // ("could not be claimed for the new bee"), turning every boot relaunch into
   // a refusal.
-  await releaseClaimsOfDeadSpawns(sql, rows.map((r) => r.spawn_id));
+  await releaseClaimsOfDeadSpawns(
+    sql,
+    rows.map((r) => r.spawn_id),
+  );
 
   // Re-launch the survivors whose durable work-item is still non-terminal (EI-85),
   // BEFORE waking parents — a successful re-launch means the child did not really
@@ -1121,9 +1127,9 @@ export async function reconcileSpawnAdmissionOnBoot(
   const relaunchedSet = new Set(relaunched);
   for (const row of rows) {
     if (relaunchedSet.has(row.spawn_id)) continue;
-    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
-      () => { /* best-effort — logged inside wakeParentOnChildDeath */ },
-    );
+    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(() => {
+      /* best-effort — logged inside wakeParentOnChildDeath */
+    });
   }
 
   return {

@@ -19,7 +19,14 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed' | 'continue' | 'sentinel_scan';
+  trigger?:
+    | 'user_message'
+    | 'quiet_wait_resume'
+    | 'open_canvas'
+    | 'user_says_ready'
+    | 'user_welcomed'
+    | 'continue'
+    | 'sentinel_scan';
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
@@ -57,9 +64,7 @@ export default defineTool({
       return new Response('invalid JSON body', { status: 400 });
     }
 
-    const budget = shouldBypassOperatorBudget(body.uiClientId)
-      ? null
-      : await checkBudget();
+    const budget = shouldBypassOperatorBudget(body.uiClientId) ? null : await checkBudget();
     if (budget?.state && budget.exceeded) {
       return new Response(
         `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
@@ -100,8 +105,7 @@ export default defineTool({
     // (sentinel-converse.ts); every other role resolves `${role}:converse`.
     // A stale explicit 'sentinel' still routes there during the expand phase.
     const converseToolName = role === 'papercup' ? 'papercup:converse' : `${role}:converse`;
-    const operatorConverseTool =
-      lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
+    const operatorConverseTool = lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {
       return new Response(`${converseToolName} tool not registered`, { status: 500 });
     }
@@ -151,10 +155,14 @@ export default defineTool({
         }
 
         const ctxBase: UnifiedToolContext = {
-          log: (msg) => { console.log(`[${converseToolName}][tool] ${msg}`); },
+          log: (msg) => {
+            console.log(`[${converseToolName}][tool] ${msg}`);
+          },
           signal: ctrl.signal,
           progress: () => {},
-          emit: () => { /* installed by dispatchProjectedToolStream */ },
+          emit: () => {
+            /* installed by dispatchProjectedToolStream */
+          },
           workspaceId,
           role,
           runId: globalThis.crypto.randomUUID(),

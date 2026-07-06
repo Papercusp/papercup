@@ -31,7 +31,13 @@ import type {
   TombstoneRef,
   TombstoneStore,
 } from '@papercusp/structured-concurrency';
-import { isActiveStatus, type IntensityResult, type RestartStrategy, type SpawnNode, type SpawnStatus } from '@papercusp/structured-concurrency';
+import {
+  isActiveStatus,
+  type IntensityResult,
+  type RestartStrategy,
+  type SpawnNode,
+  type SpawnStatus,
+} from '@papercusp/structured-concurrency';
 
 /** A query handle the stores accept — a pooled client or an open transaction. */
 export type Db = Sql | TransactionSql;
@@ -172,7 +178,11 @@ export async function getSubtreePg(sql: Db, opts: SubtreeQuery): Promise<SpawnNo
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${opts.workspaceId} AND spawn_id = ${opts.rootSpawnId}
       UNION ALL
-      SELECT ${sql.unsafe(SELECT_COLS.split(',').map((c) => 'c.' + c.trim()).join(', '))}, t.depth + 1
+      SELECT ${sql.unsafe(
+        SELECT_COLS.split(',')
+          .map((c) => 'c.' + c.trim())
+          .join(', '),
+      )}, t.depth + 1
         FROM harness_shared.spawned_agents c
         JOIN tree t ON c.parent_spawn_id = t.spawn_id
        WHERE c.workspace_id = ${opts.workspaceId} AND t.depth < ${MAX_TREE_DEPTH}
@@ -209,7 +219,10 @@ export async function directChildrenPg(sql: Db, workspaceId: string, parentSpawn
 }
 
 /** Phase-1 of transitive cancellation: status flip + claim releases, atomically. */
-export async function cancelActiveSubtreePg(sql: Sql, opts: { workspaceId: string; rootSpawnId: string; reason: string }): Promise<CancelActiveResult> {
+export async function cancelActiveSubtreePg(
+  sql: Sql,
+  opts: { workspaceId: string; rootSpawnId: string; reason: string },
+): Promise<CancelActiveResult> {
   return sql.begin(async (tx) => {
     const subtree = await getSubtreePg(tx, { workspaceId: opts.workspaceId, rootSpawnId: opts.rootSpawnId });
     const toCancel = subtree.filter((n) => isActiveStatus(n.status));
@@ -289,7 +302,11 @@ export async function cancelActiveSubtreePg(sql: Sql, opts: { workspaceId: strin
       planClaimsReleased = released.length;
     }
 
-    return { cancelled: toCancel, alreadyTerminal, resourcesReleased: { claims: claimsReleased, planClaims: planClaimsReleased } };
+    return {
+      cancelled: toCancel,
+      alreadyTerminal,
+      resourcesReleased: { claims: claimsReleased, planClaims: planClaimsReleased },
+    };
   }) as Promise<CancelActiveResult>;
 }
 
@@ -307,7 +324,10 @@ export async function recordRestartIntensityPg(
        FOR UPDATE`;
     if (rows.length === 0) return null;
     const nowMs = Date.now();
-    const decision = decide({ restartCount: Number(rows[0].restart_count), restartWindowStart: rows[0].restart_window_start }, nowMs);
+    const decision = decide(
+      { restartCount: Number(rows[0].restart_count), restartWindowStart: rows[0].restart_window_start },
+      nowMs,
+    );
     const updated = await tx<{ restart_window_start: Date }[]>`
       UPDATE harness_shared.spawned_agents
          SET restart_count = ${decision.count},
@@ -369,7 +389,15 @@ function msOf(v: string | Date | null | undefined, fallback: number): number {
 function pgGovernorTx(tx: TransactionSql): GovernorTx {
   return {
     async lockCircuit(ws, scope) {
-      const r = await tx<{ cb_state: string | null; cb_failures: number; cb_threshold: number | null; cb_cooldown_sec: number | null; cb_opened_at: string | Date | null }[]>`
+      const r = await tx<
+        {
+          cb_state: string | null;
+          cb_failures: number;
+          cb_threshold: number | null;
+          cb_cooldown_sec: number | null;
+          cb_opened_at: string | Date | null;
+        }[]
+      >`
         SELECT cb_state, cb_failures, cb_threshold, cb_cooldown_sec, cb_opened_at
           FROM harness_shared.fleet_governor
          WHERE workspace_id = ${ws} AND kind = 'circuit' AND scope_key = ${scope}
@@ -400,7 +428,9 @@ function pgGovernorTx(tx: TransactionSql): GovernorTx {
       }
     },
     async lockBucket(ws, scope) {
-      const r = await tx<{ capacity: string; refill_per_sec: string; tokens: string; updated_at: string | Date | null }[]>`
+      const r = await tx<
+        { capacity: string; refill_per_sec: string; tokens: string; updated_at: string | Date | null }[]
+      >`
         SELECT capacity, refill_per_sec, tokens, updated_at
           FROM harness_shared.fleet_governor
          WHERE workspace_id = ${ws} AND kind = 'bucket' AND scope_key = ${scope}

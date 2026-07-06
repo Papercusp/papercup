@@ -125,9 +125,7 @@ export function filterPresenceToFleet(
   fleetSlug: string,
   includeUnattributed: boolean,
 ): FleetFoldPresence[] {
-  return presence.filter(
-    (p) => p.fleetSlug === fleetSlug || (includeUnattributed && p.fleetSlug == null),
-  );
+  return presence.filter((p) => p.fleetSlug === fleetSlug || (includeUnattributed && p.fleetSlug == null));
 }
 
 /**
@@ -203,9 +201,7 @@ export interface ListFleetRosterOpts {
 
 /** Default presence source: list local presence and join in the fleet_slug/fleet_role
  *  label (it does not ride the PresenceRecord). */
-async function defaultReadFleetPresence(opts: {
-  workspaceId?: string | null;
-}): Promise<FleetFoldPresence[]> {
+async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): Promise<FleetFoldPresence[]> {
   const records = await listPresence(opts);
   const fleetMap = await fetchPresenceFleet(records.map((r) => r.ownerId));
   return records.map((r) => {
@@ -310,9 +306,7 @@ export function isBeeRole(agentRole: string | null | undefined): boolean {
 /** Pure: split a set of live fleet-roster entries into member vs bee counts by
  *  agent_role (WI-1764 #4). Unit-testable without PG — the fleet:status analog of the
  *  liveFleetAgentCounts SQL split. */
-export function splitFleetRosterCounts(
-  entries: Array<{ agentRole: string | null }>,
-): FleetLiveCounts {
+export function splitFleetRosterCounts(entries: Array<{ agentRole: string | null }>): FleetLiveCounts {
   let members = 0;
   let bees = 0;
   for (const e of entries) {
@@ -338,9 +332,7 @@ async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, Fl
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
      GROUP BY fleet_slug
   `;
-  return new Map(
-    rows.map((r) => [r.fleet_slug, { members: Number(r.members), bees: Number(r.bees) }]),
-  );
+  return new Map(rows.map((r) => [r.fleet_slug, { members: Number(r.members), bees: Number(r.bees) }]));
 }
 
 /**
@@ -372,10 +364,7 @@ export async function countRunningWorkspaceBees(workspaceId: string): Promise<nu
  * presence-INDEPENDENT — unlike the old presence-label count it does not require the bee
  * to boot far enough to write a presence row. The authoritative source for
  * fleet:status.beeCount. Uses the spawned_agents_fleet_slug_running_idx partial index. */
-export async function countRunningFleetBees(
-  fleetSlug: string,
-  workspaceId: string,
-): Promise<number> {
+export async function countRunningFleetBees(fleetSlug: string, workspaceId: string): Promise<number> {
   const { sql } = getOrgPg();
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
@@ -394,9 +383,7 @@ export async function countRunningFleetBees(
  * per-fleet-map analog of countRunningFleetBees, feeding fleet:list's per-fleet beeCount
  * (members still come from presence — a member is a live desktop session, a bee is a
  * nursery row). Presence-independent + one query for all fleets. */
-export async function liveFleetBeeCountsFromNursery(
-  workspaceId: string,
-): Promise<Map<string, number>> {
+export async function liveFleetBeeCountsFromNursery(workspaceId: string): Promise<Map<string, number>> {
   const { sql } = getOrgPg();
   const rows = await sql<{ fleet_slug: string; n: number }[]>`
     SELECT fleet_slug, count(*)::int AS n

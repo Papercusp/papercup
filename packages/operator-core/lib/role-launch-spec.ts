@@ -54,10 +54,7 @@ import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { promptsDir } from './prompt-assembly';
-import {
-  sessionClaudeConfigDir,
-  sessionMcpDir,
-} from '@papercusp/orchestrator/session-launch-dirs';
+import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
 import { resolveProjectDir } from './spawn-config';
 import { getPromptOverride } from './harness-prompt-overrides';
@@ -156,9 +153,7 @@ export interface RoleLaunchSpec {
  * Build the launch spec for a role-scoped session. Throws if the harness
  * isn't registered (via `assembleRolePrompt`) — the caller surfaces it.
  */
-export async function buildRoleLaunchSpec(
-  input: BuildRoleLaunchSpecInput,
-): Promise<RoleLaunchSpec> {
+export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Promise<RoleLaunchSpec> {
   const spawnId = randomUUID();
   const featureId = input.featureId?.trim() || null;
   const harnessSlug = input.harnessSlug?.trim() || null;
@@ -210,9 +205,10 @@ export async function buildRoleLaunchSpec(
     //     leaves it undefined and the assembler uses the committed default.
     let promptOverrideText: string | undefined;
     try {
-      promptOverrideText =
-        (await getPromptOverride(input.workspaceId, harnessSlug, input.role)) ?? undefined;
-    } catch { /* store unavailable → assembler falls back to config.json */ }
+      promptOverrideText = (await getPromptOverride(input.workspaceId, harnessSlug, input.role)) ?? undefined;
+    } catch {
+      /* store unavailable → assembler falls back to config.json */
+    }
 
     // Hive-INSTANCE prompt override (domain-generic-agent-personas-2026-06-17 P-003 /
     // D-003): a Hive instance specializes its roles' personas via hive_settings
@@ -229,7 +225,9 @@ export async function buildRoleLaunchSpec(
         const inst = await getHiveInstancePromptOverride(input.workspaceId, hiveSlug, input.role);
         if (inst) promptOverrideText = promptOverrideText ? `${promptOverrideText}\n\n${inst}` : inst;
       }
-    } catch { /* best-effort: a resolve/store miss leaves the override untouched */ }
+    } catch {
+      /* best-effort: a resolve/store miss leaves the override untouched */
+    }
 
     // 1. Prompt (chat mode — a human drives this session). Same shared
     //    assembler the orchestrator's prompt path + operator brains use, but
@@ -292,11 +290,7 @@ export async function buildRoleLaunchSpec(
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
   const base = resolveAgentMcpBaseUrl(input.operatorBaseUrl);
   const mcpUrl = `${base}/api/mcp?${params.toString()}`;
-  const mcpJsonContents = JSON.stringify(
-    { mcpServers: { papercusp: { type: 'http', url: mcpUrl } } },
-    null,
-    2,
-  );
+  const mcpJsonContents = JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: mcpUrl } } }, null, 2);
 
   return {
     role: input.role,
@@ -353,14 +347,9 @@ export function assembleWorkspaceRolePrompt(opts: {
   } else {
     // Layered spawn persona (audit P-019): base/<role>.md first when present,
     // the concrete prompt last — joined like prompt-build does.
-    const spawnPersonaFiles = resolvePromptFiles(
-      { harnessDir: harnessRoot(), phase: '', dept: '' },
-      opts.role,
-    );
+    const spawnPersonaFiles = resolvePromptFiles({ harnessDir: harnessRoot(), phase: '', dept: '' }, opts.role);
     if (spawnPersonaFiles.length > 0) {
-      persona = spawnPersonaFiles
-        .map((f) => fsSync.readFileSync(f, 'utf8'))
-        .join('\n\n---\n\n');
+      persona = spawnPersonaFiles.map((f) => fsSync.readFileSync(f, 'utf8')).join('\n\n---\n\n');
       promptFile = spawnPersonaFiles[spawnPersonaFiles.length - 1];
     }
   }
@@ -379,9 +368,7 @@ export function assembleWorkspaceRolePrompt(opts: {
       "(pass `harness: '<slug>'`, or `harness: 'all'` for the operator-level surface).",
     ...(opts.extras ?? []),
   ];
-  let text = `${persona.replace(/\n+$/, '')}\n\n---\n## Runtime context\n${lines
-    .map((l) => `- ${l}`)
-    .join('\n')}\n`;
+  let text = `${persona.replace(/\n+$/, '')}\n\n---\n## Runtime context\n${lines.map((l) => `- ${l}`).join('\n')}\n`;
   if (opts.planContext?.trim()) {
     text += `\n---\n## Plan context\n\n${opts.planContext.trim()}\n`;
   }
@@ -437,9 +424,7 @@ export interface BuildSuLaunchSpecInput {
   operatorAppRoot?: string;
 }
 
-export type BuildLaunchSpecInput =
-  | (BuildRoleLaunchSpecInput & { kind: 'role' })
-  | BuildSuLaunchSpecInput;
+export type BuildLaunchSpecInput = (BuildRoleLaunchSpecInput & { kind: 'role' }) | BuildSuLaunchSpecInput;
 
 /**
  * The unified launch spec — a superset of `RoleLaunchSpec` that also
@@ -571,8 +556,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // default is today's playbook, byte-identical.
   const { modelWindowForSpec } = await import('./agent-config-constants');
   const personaTier: 'full' | 'fleet' =
-    input.personaTier ??
-    (input.model && modelWindowForSpec(input.model) <= 200_000 ? 'fleet' : 'full');
+    input.personaTier ?? (input.model && modelWindowForSpec(input.model) <= 200_000 ? 'fleet' : 'full');
   const rendered = await renderSuPlaybook({
     agent: input.agent,
     profile: input.profile,
@@ -607,9 +591,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     planTitle: input.planTitle ?? null,
     planNow: input.planNow ?? null,
   });
-  const promptText = launchCtx
-    ? suPersonaText.replace(/\n+$/, '') + '\n\n' + launchCtx
-    : suPersonaText;
+  const promptText = launchCtx ? suPersonaText.replace(/\n+$/, '') + '\n\n' + launchCtx : suPersonaText;
 
   // 3. Superuser MCP — the existing loopback door (NOT a signed,
   //    role-scoped URL): `?superuser=1&workspace=<ws>` + the bearer from

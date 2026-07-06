@@ -29,7 +29,8 @@ export default defineTool({
     'Spawn one background agent into a harness and return its spawn_id immediately. This is for autonomous-loop workers, not visible desktop terminals; use fleet:launch-on-plan for a desktop fleet on a plan. The run is tracked durably in the nursery, visible in fleet:tree, and stoppable with fleet:cancel. role="worker" requires chunk.',
   guidance: {
     when: 'Use to place a background autonomous worker on new work: a cup, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
-    notWhen: 'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
+    notWhen:
+      'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',
@@ -46,50 +47,91 @@ export default defineTool({
   // (unify-launch-mechanics D-004). Same carve-out as bee. Overwatch excluded too
   // (overwatch-role-2026-06-15 D-001): it NUDGES the Queen to re-place, never places.
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
-  args: z.object({
-    harness: z.string().min(1).max(80).optional()
-      .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
-    role: z.string().min(1).max(64)
-      .describe(
-        'Child agent role. The generic operator-world worker is "cup" — the default for placing a ranked task + brief (NO chunk needed). ' +
-        "Coding-pipeline roles (scoper, architect, worker, validator, reviewer, debugger, documenter, curator) apply only inside a kind:'harness' coding harness; " +
-        'role="worker" additionally REQUIRES a chunk (spawn a scoper first to chunk the feature). ' +
-        'Other spawnable specialists: sentinel, security-reviewer, infra-reviewer, ui-qa, crosscheck, auditor, planner, release-manager. ' +
-        'Plugin roles are "<plugin>:<role>". There is NO "engineer" role — an unknown name is rejected with the full valid list (EI-392).',
-      ),
-    feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
-    chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
-    brief: softText(LIMITS.BRIEF).optional()
-      .describe('Mug brief: situational overlay the cup is missing (cross-cup context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.'),
-    fleet: z.string().min(1).max(120).optional()
-      .describe('Place this cup in a NAMED fleet (the durable, color-coded group). Pass the fleet NAME or slug — it is created if absent (you become its leader) and the cup joins as a member at launch: grouped under that fleet in the roster + its terminal recolored to the fleet scheme, with NO brief directive needed. Use ONE fleet per plan/initiative, reused across waves. Omit for an ungrouped cup.'),
-    tier: z.string().max(40).optional()
-      .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
-    model: z.string().max(80).optional()
-      .describe('Direct per-spawn model spec `<modelId>[:<effort>]` (e.g. "opus:high") — operator/human escape hatch that bypasses the tier menu (still recorded on the nursery row). Prefer `tier`. When both are set, model wins.'),
-    account: z.string().min(1).max(120).optional()
-      .describe(
-        'account-routing-3-options: how THIS spawn\'s model calls are routed. One of three: ' +
-        'a POOL ACCOUNT ID → hard-pin to it via the inference gateway (no failover); ' +
-        '"auto" → route through the gateway, which auto-selects an available account + fails over; ' +
-        '"default" → skip the gateway entirely (system credential, direct egress). ' +
-        'Omit = the standing fleet behavior (gateway auto-route when the pool is on). ' +
-        'ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
-      ),
-    extras: z.array(z.string().max(500)).max(16).optional()
-      .describe('Extra KEY=value args passed to the child invoke.'),
-    workspace: z.string().max(120).optional(),
-    idempotency_key: z.string().min(1).max(200).optional()
-      .describe('Dedupe key for retries (EI-73): pass the SAME key when retrying a spawn that may have already landed (e.g. after a timeout) — a match returns the original spawn_id with deduped:true instead of launching a second agent.'),
-  // FAIL-LOUD on unknown arg keys (EI-72). zod's default z.object() STRIPS keys it
-  // doesn't recognize: when the Queen sent the (then-new) `brief` to a host still
-  // running pre-brief code, the unknown key was silently dropped and 5 task-less
-  // bees booted and exited 'done'. `.strict()` makes the projection-layer validator
-  // (standardValidate in define-tool.ts) reject any unrecognized key with
-  // `invalid_args` — so a newer-field caller against an older serving host gets a
-  // loud error instead of a silently no-op'd fleet. Placement is the highest-stakes
-  // surface to fail loud on; keep this schema closed as new fields are added.
-  }).strict(),
+  args: z
+    .object({
+      harness: z
+        .string()
+        .min(1)
+        .max(80)
+        .optional()
+        .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
+      role: z
+        .string()
+        .min(1)
+        .max(64)
+        .describe(
+          'Child agent role. The generic operator-world worker is "cup" — the default for placing a ranked task + brief (NO chunk needed). ' +
+            "Coding-pipeline roles (scoper, architect, worker, validator, reviewer, debugger, documenter, curator) apply only inside a kind:'harness' coding harness; " +
+            'role="worker" additionally REQUIRES a chunk (spawn a scoper first to chunk the feature). ' +
+            'Other spawnable specialists: sentinel, security-reviewer, infra-reviewer, ui-qa, crosscheck, auditor, planner, release-manager. ' +
+            'Plugin roles are "<plugin>:<role>". There is NO "engineer" role — an unknown name is rejected with the full valid list (EI-392).',
+        ),
+      feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
+      chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
+      brief: softText(LIMITS.BRIEF)
+        .optional()
+        .describe(
+          'Mug brief: situational overlay the cup is missing (cross-cup context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.',
+        ),
+      fleet: z
+        .string()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe(
+          'Place this cup in a NAMED fleet (the durable, color-coded group). Pass the fleet NAME or slug — it is created if absent (you become its leader) and the cup joins as a member at launch: grouped under that fleet in the roster + its terminal recolored to the fleet scheme, with NO brief directive needed. Use ONE fleet per plan/initiative, reused across waves. Omit for an ungrouped cup.',
+        ),
+      tier: z
+        .string()
+        .max(40)
+        .optional()
+        .describe(
+          "Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user's per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role's standing default. An unknown name fails loud listing the valid menu.",
+        ),
+      model: z
+        .string()
+        .max(80)
+        .optional()
+        .describe(
+          'Direct per-spawn model spec `<modelId>[:<effort>]` (e.g. "opus:high") — operator/human escape hatch that bypasses the tier menu (still recorded on the nursery row). Prefer `tier`. When both are set, model wins.',
+        ),
+      account: z
+        .string()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe(
+          "account-routing-3-options: how THIS spawn's model calls are routed. One of three: " +
+            'a POOL ACCOUNT ID → hard-pin to it via the inference gateway (no failover); ' +
+            '"auto" → route through the gateway, which auto-selects an available account + fails over; ' +
+            '"default" → skip the gateway entirely (system credential, direct egress). ' +
+            'Omit = the standing fleet behavior (gateway auto-route when the pool is on). ' +
+            'ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
+        ),
+      extras: z
+        .array(z.string().max(500))
+        .max(16)
+        .optional()
+        .describe('Extra KEY=value args passed to the child invoke.'),
+      workspace: z.string().max(120).optional(),
+      idempotency_key: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'Dedupe key for retries (EI-73): pass the SAME key when retrying a spawn that may have already landed (e.g. after a timeout) — a match returns the original spawn_id with deduped:true instead of launching a second agent.',
+        ),
+      // FAIL-LOUD on unknown arg keys (EI-72). zod's default z.object() STRIPS keys it
+      // doesn't recognize: when the Queen sent the (then-new) `brief` to a host still
+      // running pre-brief code, the unknown key was silently dropped and 5 task-less
+      // bees booted and exited 'done'. `.strict()` makes the projection-layer validator
+      // (standardValidate in define-tool.ts) reject any unrecognized key with
+      // `invalid_args` — so a newer-field caller against an older serving host gets a
+      // loud error instead of a silently no-op'd fleet. Placement is the highest-stakes
+      // surface to fail loud on; keep this schema closed as new fields are added.
+    })
+    .strict(),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
     // An unscoped (superuser) identity carries workspaceId='*' — never record a
@@ -109,7 +151,7 @@ export default defineTool({
     // queen-supplied tier is dropped — her spawns run at the role's standing
     // default. Human/operator tier picks are honored regardless.
     let tier = args.tier ?? null;
-    if (tier && (ctx.role === 'mug')) {
+    if (tier && ctx.role === 'mug') {
       const [{ FLAGS }, { getFlag }] = await Promise.all([
         import('@papercusp/flags'),
         import('@papercusp/flags/server'),
@@ -127,7 +169,7 @@ export default defineTool({
     const workItemId = args.feature ?? (args.role === 'cup' ? inferSingleWorkItemId(brief) : null);
     let reservedSpawnId: string | null = null;
     let reservedWorkItemId: string | null = null;
-    if ((args.role === 'cup') && workItemId) {
+    if (args.role === 'cup' && workItemId) {
       const { claimWorkItem } = await import('../../work-items');
       reservedSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const claim = await claimWorkItem(workItemId, reservedSpawnId, { harness: args.harness ?? undefined });
@@ -174,9 +216,7 @@ export default defineTool({
     // + its bound scheme, and thread it so the bee auto-joins (presence label) +
     // recolors its terminal at launch, with NO brief directive. Best-effort: a
     // resolve error just spawns the bee ungrouped.
-    let fleetPlacement:
-      | { slug: string; role: string; bg: string; fg: string; cursor: string }
-      | null = null;
+    let fleetPlacement: { slug: string; role: string; bg: string; fg: string; cursor: string } | null = null;
     // WI-1764 #2: nudge at the moment of confusion. If the `fleet` param names a
     // fleet that did NOT already exist, a BEE spawn just materialised it — which is
     // exactly the mistake that spun up 3 background bees when the caller meant
@@ -186,9 +226,7 @@ export default defineTool({
     let fleetAutoCreated = false;
     if (args.fleet) {
       try {
-        const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme } = await import(
-          '../../agent-fleets-store'
-        );
+        const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme } = await import('../../agent-fleets-store');
         const fleetSlug = fleetSlugFromName(args.fleet);
         const { record, created } = await createFleetIfAbsent({
           workspaceId,
@@ -222,7 +260,7 @@ export default defineTool({
       // The queen's model lever is tier NAMES only (propose/dispose split) —
       // a raw model spec from role=queen is ignored in favor of her tier.
       tier,
-      modelSpec: ctx.role === 'mug' ? null : args.model ?? null,
+      modelSpec: ctx.role === 'mug' ? null : (args.model ?? null),
       // account-routing-3-options: explicit per-spawn routing (pool-id pin / auto / default). Honored
       // for any caller role — the Queen places, but routing is operational, not a model lever.
       accountOverride: args.account ?? null,

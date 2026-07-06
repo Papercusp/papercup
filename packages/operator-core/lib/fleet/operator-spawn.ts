@@ -183,9 +183,7 @@ async function announceSpawnSlotFreed(workspaceId: string, summary: string): Pro
  * (spawn-reclaim.ts); the announce rides this call-site wrapper.
  */
 async function reclaimAndAnnounce(): Promise<void> {
-  const r = await reclaimOrphanedSpawns(getOrgPg().sql).catch(
-    () => ({ reclaimed: 0, spawnIds: [], workspaces: [] }),
-  );
+  const r = await reclaimOrphanedSpawns(getOrgPg().sql).catch(() => ({ reclaimed: 0, spawnIds: [], workspaces: [] }));
   // Rare (only when orphans were actually freed) — await so the announce lands
   // before the caller's cap check; announceSpawnSlotFreed never throws.
   await Promise.all(
@@ -327,32 +325,37 @@ async function reapWedgedLocalSpawns(now: number): Promise<void> {
 let heartbeatTimer: ManagedHandle | null = null;
 function ensureSpawnHeartbeatLoop(): void {
   if (heartbeatTimer) return;
-  heartbeatTimer = managedSetInterval('operator-spawn-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
-    const ids = [...localSpawnAborts.keys()];
-    if (ids.length === 0) {
-      if (heartbeatTimer) heartbeatTimer.stop();
-      heartbeatTimer = null;
-      return;
-    }
-    const outputAt = new Map<string, number>();
-    for (const id of ids) {
-      const e = localSpawnOutput.get(id);
-      if (e && e.at > e.persistedAt) {
-        outputAt.set(id, e.at);
-        e.persistedAt = e.at;
+  heartbeatTimer = managedSetInterval(
+    'operator-spawn-heartbeat',
+    SPAWN_HEARTBEAT_INTERVAL_MS,
+    () => {
+      const ids = [...localSpawnAborts.keys()];
+      if (ids.length === 0) {
+        if (heartbeatTimer) heartbeatTimer.stop();
+        heartbeatTimer = null;
+        return;
       }
-    }
-    void heartbeatSpawns(getOrgPg().sql, ids, outputAt).catch(() => {
-      /* best-effort — a missed beat at worst risks an early reclaim, which is
+      const outputAt = new Map<string, number>();
+      for (const id of ids) {
+        const e = localSpawnOutput.get(id);
+        if (e && e.at > e.persistedAt) {
+          outputAt.set(id, e.at);
+          e.persistedAt = e.at;
+        }
+      }
+      void heartbeatSpawns(getOrgPg().sql, ids, outputAt).catch(() => {
+        /* best-effort — a missed beat at worst risks an early reclaim, which is
          itself recoverable (an autonomous spawn re-runs; an interactive one is
          the human's to relaunch). */
-    });
-    // P-010/D-006: same tick, after the beat — reap local spawns wedged past
-    // the threshold (flag-gated inside; double-fire guarded).
-    void reapWedgedLocalSpawns(Date.now()).catch(() => {
-      /* best-effort — a failed reap retries next tick */
-    });
-  }, { category: 'lifecycle' });
+      });
+      // P-010/D-006: same tick, after the beat — reap local spawns wedged past
+      // the threshold (flag-gated inside; double-fire guarded).
+      void reapWedgedLocalSpawns(Date.now()).catch(() => {
+        /* best-effort — a failed reap retries next tick */
+      });
+    },
+    { category: 'lifecycle' },
+  );
 }
 
 /**
@@ -363,7 +366,11 @@ function ensureSpawnHeartbeatLoop(): void {
 export function abortLocalSpawn(spawnId: string): boolean {
   const ctrl = localSpawnAborts.get(spawnId);
   if (!ctrl) return false;
-  try { ctrl.abort(); } catch { /* already aborted */ }
+  try {
+    ctrl.abort();
+  } catch {
+    /* already aborted */
+  }
   return true;
 }
 
@@ -557,10 +564,7 @@ export async function admitSpawn(
  * silent console.warn — the row shows in fleet:tree / the Brew tab with the
  * reason in error_message.
  */
-async function recordFailedAttempt(
-  input: OperatorSpawnInput,
-  error: string,
-): Promise<string | null> {
+async function recordFailedAttempt(input: OperatorSpawnInput, error: string): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
     const spawnId = newSpawnId();
@@ -587,7 +591,9 @@ async function recordFailedAttempt(
     });
     return spawnId;
   } catch (err) {
-    console.error(`[operator-spawn] failed to record failed attempt: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `[operator-spawn] failed to record failed attempt: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
@@ -647,9 +653,7 @@ async function readEffectiveSpawnTierConfig(workspaceId: string): Promise<{
  * durable nursery. Returns immediately after the child process is launched
  * (fire-and-forget); the background completion flips the row to done/failed.
  */
-export async function spawnAgentInHarness(
-  input: OperatorSpawnInput,
-): Promise<OperatorSpawnResult> {
+export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<OperatorSpawnResult> {
   const role = (input.role ?? '').trim();
   const fail = async (error: string): Promise<OperatorSpawnResult> => {
     console.error(`[operator-spawn] ${error}`);
@@ -685,14 +689,7 @@ export async function spawnAgentInHarness(
   // legitimate factory spawn carries it (as input.featureId / a FEATURE_ID= extra) or an input.chunkId — and
   // this guard does NOT fire for those. Role-scoped + conservative: only the push-pipeline roles, only when
   // NO feature context is present.
-  const FACTORY_PIPELINE_ROLES = new Set([
-    'scoper',
-    'architect',
-    'validator',
-    'documenter',
-    'curator',
-    'director',
-  ]);
+  const FACTORY_PIPELINE_ROLES = new Set(['scoper', 'architect', 'validator', 'documenter', 'curator', 'director']);
   if (FACTORY_PIPELINE_ROLES.has(role)) {
     const hasFeatureExtra = (input.extras ?? []).some((e) => e.startsWith('FEATURE_ID='));
     const hasFeatureContext = !!input.featureId || hasFeatureExtra || !!input.chunkId;
@@ -716,7 +713,7 @@ export async function spawnAgentInHarness(
   // through (B-04 additionally gates the autonomous wake-loop routine; B-08 the UI
   // pane). Role-scoped so a flag-read fault never touches other roles; getFlag fails
   // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
-  if ((role === 'kettle') && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
+  if (role === 'kettle' && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
     return fail(
       'spawn rejected: role="kettle" is gated behind the papercusp-overwatch flag ' +
         '(default OFF until B-12 proves it live on staging) — enable it in /admin/features to spawn.',
@@ -777,7 +774,13 @@ export async function spawnAgentInHarness(
         const budget = await evaluateOpusBudgetForSpawn(criticality, input.workspaceId);
         if (budget.downgrade) {
           const { downgradeOpusTierForBudget } = await import('./model-tiers');
-          const dg = downgradeOpusTierForBudget({ currentSpec: spawnModelSpec, currentTier: spawnModelTier, role, tiers, tierCeilings });
+          const dg = downgradeOpusTierForBudget({
+            currentSpec: spawnModelSpec,
+            currentTier: spawnModelTier,
+            role,
+            tiers,
+            tierCeilings,
+          });
           if (dg.downgraded) {
             console.log(
               `[operator-spawn] opus-budget pacing: ${role} (${criticality}) tier "${spawnModelTier}" (${dg.from}) → ` +
@@ -789,7 +792,9 @@ export async function spawnAgentInHarness(
             spawnCompactionLimit = dg.compactionLimit ?? spawnCompactionLimit;
           }
         } else if (budget.pace) {
-          console.log(`[operator-spawn] opus-budget: ${role} (${criticality}) keeps opus but is paced — ${budget.reason}`);
+          console.log(
+            `[operator-spawn] opus-budget: ${role} (${criticality}) keeps opus but is paced — ${budget.reason}`,
+          );
         }
       }
     } catch (e) {
@@ -831,8 +836,7 @@ export async function spawnAgentInHarness(
       return fail(`spawn rejected: harness registry unreadable: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  let project = await resolveProject(slug, input.workspaceId)
-    ?? await resolveProject(slug); // cross-workspace safety net (matches harness routes)
+  let project = (await resolveProject(slug, input.workspaceId)) ?? (await resolveProject(slug)); // cross-workspace safety net (matches harness routes)
   if (!project) {
     // EI-429: the Queen sometimes passes its SU MCP server slug ("<project>-su",
     // or the legacy "papercusp-su") as a spawn target instead of the project.
@@ -854,7 +858,9 @@ export async function spawnAgentInHarness(
     try {
       const reg = await loadHarnessRegistry(input.workspaceId);
       registered = reg.projects.map((p) => p.slug).join(', ') || '(none)';
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
     return fail(`spawn rejected: harness "${slug}" is not a registered project (registered: ${registered})`);
   }
   if (!existsSync(project.path)) {
@@ -871,7 +877,7 @@ export async function spawnAgentInHarness(
   // carries the wake key the caller sleeps on.
   let admission: SpawnAdmission;
   let reclaimed: { count: number; workspaces: string[] };
-  const ownerBeeCeiling = (role === 'cup') ? await ownerMaxBeesCeiling(input.workspaceId) : null;
+  const ownerBeeCeiling = role === 'cup' ? await ownerMaxBeesCeiling(input.workspaceId) : null;
   try {
     ({ admission, reclaimed } = await admitSpawn(sql, {
       workspaceId: input.workspaceId,
@@ -907,17 +913,13 @@ export async function spawnAgentInHarness(
         }),
     }));
   } catch (err) {
-    return fail(
-      `spawn admission failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    return fail(`spawn admission failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Announce reclaimed slots AFTER commit (the announce wakes waiters who
   // immediately re-count — they must see our committed admission).
   await Promise.all(
-    reclaimed.workspaces.map((ws) =>
-      announceSpawnSlotFreed(ws, `${reclaimed.count} orphaned spawn slot(s) reclaimed`),
-    ),
+    reclaimed.workspaces.map((ws) => announceSpawnSlotFreed(ws, `${reclaimed.count} orphaned spawn slot(s) reclaimed`)),
   );
 
   if (admission.kind === 'duplicate') {
@@ -935,11 +937,11 @@ export async function spawnAgentInHarness(
   }
   if (admission.kind === 'over_cap') {
     const awaitEvent = spawnSlotEventKey(input.workspaceId);
-    const capLabel = (admission.role === 'cup') ? 'owner maxBees' : 'maxSimultaneousAgents';
-    const runningLabel = (admission.role === 'cup') ? `${admission.running} bee spawns` : `${admission.running} spawns`;
+    const capLabel = admission.role === 'cup' ? 'owner maxBees' : 'maxSimultaneousAgents';
+    const runningLabel = admission.role === 'cup' ? `${admission.running} bee spawns` : `${admission.running} spawns`;
     const res = await fail(
       `spawn rejected: ${runningLabel} already running (fleet ceiling ${admission.cap} — ${capLabel}). ` +
-      `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
+        `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
     );
     return { ...res, awaitEvent };
   }
@@ -1037,7 +1039,7 @@ export async function spawnAgentInHarness(
   // A bee is intrinsically a hive worker, so default its prompt blueprint to `coding`
   // unless the caller already pinned one. Arm-neutral (both hive + queen-ablated
   // benchmark arms place identical bees), so it cannot bias the comparison.
-  if ((role === 'cup') && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
+  if (role === 'cup' && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
     extras.push('BLUEPRINT_ID=coding');
   }
 
@@ -1049,13 +1051,10 @@ export async function spawnAgentInHarness(
   // overrides — required for dogfood (P-026/P-027). Best-effort + only when a BLUEPRINT_ID
   // is set: a miss leaves extras unchanged → built-in-only resolution (byte-identical).
   try {
-    const hiveBlueprintId = extras
-      .find((e) => e.startsWith('BLUEPRINT_ID='))
-      ?.slice('BLUEPRINT_ID='.length);
+    const hiveBlueprintId = extras.find((e) => e.startsWith('BLUEPRINT_ID='))?.slice('BLUEPRINT_ID='.length);
     if (hiveBlueprintId) {
-      const { resolveHiveLocalBlueprintRoot, blueprintLocalRootExtra } = await import(
-        '../hive-local-blueprint-resolve'
-      );
+      const { resolveHiveLocalBlueprintRoot, blueprintLocalRootExtra } =
+        await import('../hive-local-blueprint-resolve');
       const extra = blueprintLocalRootExtra(
         await resolveHiveLocalBlueprintRoot({
           workspaceId: input.workspaceId,
@@ -1098,7 +1097,7 @@ export async function spawnAgentInHarness(
   // regardless of which process built the spawn command. Only ever active under the bench env flag — normal
   // hive/operator spawns are untouched. The Queen's placement/eviction/re-placement/adaptive-wake treatment
   // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
-  const benchBeeDirective = (role === 'cup') ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
+  const benchBeeDirective = role === 'cup' ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
   if (benchBeeDirective) {
     // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
     // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so
@@ -1255,8 +1254,7 @@ export async function spawnAgentInHarness(
   // model-derived default.
   {
     const { defaultCompactionLimitForSpec } = await import('../agent-config-constants');
-    const spawnLimit =
-      spawnCompactionLimit ?? (spawnModelSpec ? defaultCompactionLimitForSpec(spawnModelSpec) : null);
+    const spawnLimit = spawnCompactionLimit ?? (spawnModelSpec ? defaultCompactionLimitForSpec(spawnModelSpec) : null);
     if (spawnLimit != null) extraEnv.PAPERCUSP_SPAWN_COMPACTION_LIMIT = String(spawnLimit);
   }
 
@@ -1350,7 +1348,7 @@ export async function spawnAgentInHarness(
       // cleanup that starts that sweep's staleness clock ticking.
       console.warn(
         `[operator-spawn] ${spawnId} completeSpawn durable-write failed — local bookkeeping ` +
-        `cleared anyway so the heartbeat stops (row will self-heal via the stale-heartbeat reclaim sweep):`,
+          `cleared anyway so the heartbeat stops (row will self-heal via the stale-heartbeat reclaim sweep):`,
         err instanceof Error ? err.message : err,
       );
     } finally {
@@ -1374,7 +1372,9 @@ export async function spawnAgentInHarness(
       status: 'failed',
       errorMessage: `spawn launch timed out before child process start after ${timeoutMs}ms`,
       releaseClaim: true,
-    }).catch(() => { /* PG down — nothing left to record to */ });
+    }).catch(() => {
+      /* PG down — nothing left to record to */
+    });
   }, spawnChildStartTimeoutMs());
   childStartTimer.unref?.();
 
@@ -1401,7 +1401,7 @@ export async function spawnAgentInHarness(
     onOutputActivity: () => noteSpawnOutput(spawnId),
   })
     .then(async (r) => {
-      finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
+      finalStatus = abort.signal.aborted ? 'cancelled' : r.exitCode === 0 ? 'done' : 'failed';
       // WI-222: post-bee-exit work-item completion safety net. A bee placed on a
       // feature that claimed it (→ in_progress), implemented + committed, and exited
       // rc=0 WITHOUT landing work_items:complete leaves the feature non-terminal — the
@@ -1435,7 +1435,9 @@ export async function spawnAgentInHarness(
         status: finalStatus,
         errorMessage: err instanceof Error ? err.message : String(err),
         releaseClaim: !childStarted,
-      }).catch(() => { /* PG down — nothing left to record to */ });
+      }).catch(() => {
+        /* PG down — nothing left to record to */
+      });
     })
     .finally(() => {
       if (childStartTimer && terminalRecorded) {

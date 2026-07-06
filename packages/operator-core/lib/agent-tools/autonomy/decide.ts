@@ -59,11 +59,11 @@ export default defineTool({
     capability: z
       .string()
       .optional()
-      .describe('The action\'s coarse RBAC capability string — last-resort category fallback only.'),
+      .describe("The action's coarse RBAC capability string — last-resort category fallback only."),
     riskTier: z
       .enum([...RISK_TIERS] as [string, ...string[]])
       .optional()
-      .describe('The item\'s graded risk. Omit ⇒ fail-safe critical.'),
+      .describe("The item's graded risk. Omit ⇒ fail-safe critical."),
     authority: z
       .enum([...AUTHORITY_LEVELS] as [string, ...string[]])
       .optional()
@@ -75,7 +75,9 @@ export default defineTool({
     role: z
       .string()
       .optional()
-      .describe('The deciding role. Defaults to the caller\'s role (ctx.role). "kettle" applies the Kettle envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Mug 13-category gate.'),
+      .describe(
+        'The deciding role. Defaults to the caller\'s role (ctx.role). "kettle" applies the Kettle envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Mug 13-category gate.',
+      ),
   }),
   async handler(args, ctx) {
     const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -114,9 +116,7 @@ export default defineTool({
     );
 
     return {
-      content: [
-        { type: 'text', text: JSON.stringify({ ok: true, workspaceId: ws, decision }, null, 2) },
-      ],
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, workspaceId: ws, decision }, null, 2) }],
     };
   },
 });

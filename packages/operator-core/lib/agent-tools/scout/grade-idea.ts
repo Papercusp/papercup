@@ -22,11 +22,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 
-import {
-  gradeRoutedIdea,
-  type GradeRoutedIdeaInput,
-  type GradeRoutedIdeaResult,
-} from '../../scout/routed-ledger';
+import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
 import { softText, clampText, LIMITS } from '../limits';
 
 /** Grader attribution vocabulary (C-1 / D-004) — the seam's input type is the pin. */
@@ -222,8 +218,7 @@ export default defineTool({
     "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
   capability: 'harness:write',
   guidance: {
-    when:
-      "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
+    when: "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
     notWhen:
       'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Mug vs owner surface).',
     chaining:

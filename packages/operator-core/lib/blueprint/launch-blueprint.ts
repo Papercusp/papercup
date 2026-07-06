@@ -26,7 +26,13 @@
  * `fireLaunchBlueprint`.
  */
 import { randomUUID } from 'node:crypto';
-import { loadBuiltinBlueprint, loadBlueprintFromFile, assertNotNestedHive, type Blueprint, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
+import {
+  loadBuiltinBlueprint,
+  loadBlueprintFromFile,
+  assertNotNestedHive,
+  type Blueprint,
+  type ResolveExtendsPath,
+} from '@papercusp/orchestrator/blueprint';
 import { getOrgPg } from '@papercusp/db-org';
 import { operatorResolveExtends } from './installed-blueprints';
 import { loopbackFetch, describeFetchError } from '../loopback-fetch';
@@ -49,7 +55,19 @@ const operatorBase = operatorApiBase;
  * a trigger (`triggers.schedule` for cadence launches, `triggers.event` for
  * event-driven ones). Firing one invokes that role once via the invoke route.
  */
-export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'doc-steward', 'release-fix', 'content-fix', 'audit', 'coding', 'bee', 'sentinel'] as const;
+export const BUILTIN_LAUNCH_BLUEPRINTS = [
+  'deploy',
+  'scan',
+  'implement',
+  'merge-resolution',
+  'doc-steward',
+  'release-fix',
+  'content-fix',
+  'audit',
+  'coding',
+  'bee',
+  'sentinel',
+] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 
 /** A Queen turn is a supervisor/control-loop turn, not a short route smoke.
@@ -106,7 +124,12 @@ export function installedAwareLaunchResolver(
 }
 
 /** Build the invoke-route URL for a role launch. */
-function invokeUrl(installSlug: string, role: string, workspaceId: string, bpkind?: 'hive' | 'pot' | 'harness'): string {
+function invokeUrl(
+  installSlug: string,
+  role: string,
+  workspaceId: string,
+  bpkind?: 'hive' | 'pot' | 'harness',
+): string {
   const ws = encodeURIComponent(workspaceId);
   // `bpkind=hive` tells the invoke route this launch is a kind:'hive' blueprint.
   // pot-rename dual-accept: a kind:'pot' blueprint ALSO sends bpkind=hive — it
@@ -385,7 +408,18 @@ export async function buildLaunchSpawnRequest(
   };
 }
 
-const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent, bodyExtra }) => {
+const defaultFire: LaunchFireFn = async ({
+  url,
+  role,
+  installSlug,
+  blueprintId,
+  kickoff,
+  extra,
+  timeoutMs,
+  workspaceId,
+  parent,
+  bodyExtra,
+}) => {
   const body = buildInvokeBody(blueprintId, { kickoff, extra, timeoutMs, bodyExtra });
 
   // DURABLE when DBOS is on (unify-agent-spawn-chokepoint P-010): the launch runs
@@ -400,20 +434,22 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       const { durableSpawnFire } = await import('../dbos/durable-spawn');
       const idempotencyKey = `launch:${installSlug}:${blueprintId}:${role}:${Date.now()}`;
       const dispatch = (bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
-      if (await durableSpawnFire({
-        url,
-        body,
-        idempotencyKey,
-        label: `${installSlug}/${role}`,
-        spawnRecord: {
-          workspaceId,
-          harnessSlug: installSlug,
-          childRole: role,
-          parentRole: parent?.role ?? 'operator',
-          parentSpawnId: parent?.spawnId ?? null,
-          itemId: dispatch?.itemId ?? null,
-        },
-      })) {
+      if (
+        await durableSpawnFire({
+          url,
+          body,
+          idempotencyKey,
+          label: `${installSlug}/${role}`,
+          spawnRecord: {
+            workspaceId,
+            harnessSlug: installSlug,
+            childRole: role,
+            parentRole: parent?.role ?? 'operator',
+            parentSpawnId: parent?.spawnId ?? null,
+            itemId: dispatch?.itemId ?? null,
+          },
+        })
+      ) {
         // The workflow id IS the durable correlation for this fire.
         return { spawnId: `durable-spawn:${idempotencyKey}`, runId: idempotencyKey, durable: true };
       }
@@ -460,12 +496,14 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       });
     };
     if (role === 'mug') {
-      const admission = await sql.begin(async (tx): Promise<
-        | { admitted: true }
-        | { admitted: false; activeSpawnId: string; activeHarnessSlug: string | null }
-      > => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext(${'queen-singleton:' + workspaceId}))`;
-        const active = await tx<{ spawn_id: string; harness_slug: string | null }[]>`
+      const admission = await sql.begin(
+        async (
+          tx,
+        ): Promise<
+          { admitted: true } | { admitted: false; activeSpawnId: string; activeHarnessSlug: string | null }
+        > => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext(${'queen-singleton:' + workspaceId}))`;
+          const active = await tx<{ spawn_id: string; harness_slug: string | null }[]>`
           SELECT spawn_id, harness_slug
             FROM harness_shared.spawned_agents
            WHERE workspace_id = ${workspaceId}
@@ -474,17 +512,18 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
              AND spawn_id <> ${spawnId}
            ORDER BY started_at DESC
            LIMIT 1`;
-        const incumbent = active[0];
-        if (incumbent) {
-          return {
-            admitted: false,
-            activeSpawnId: incumbent.spawn_id,
-            activeHarnessSlug: incumbent.harness_slug ?? null,
-          };
-        }
-        await writeRecord(tx);
-        return { admitted: true };
-      });
+          const incumbent = active[0];
+          if (incumbent) {
+            return {
+              admitted: false,
+              activeSpawnId: incumbent.spawn_id,
+              activeHarnessSlug: incumbent.harness_slug ?? null,
+            };
+          }
+          await writeRecord(tx);
+          return { admitted: true };
+        },
+      );
       if (!admission.admitted) {
         console.warn(
           `[launch-blueprint] skipped duplicate Queen launch (${installSlug}/${role}); ` +
@@ -519,12 +558,17 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
   let heartbeat: ManagedHandle | null = null;
   if (pg) {
     const sql = pg.sql;
-    heartbeat = managedSetInterval('launch-blueprint-heartbeat', SPAWN_HEARTBEAT_INTERVAL_MS, () => {
-      void heartbeatSpawns(sql, [spawnId]).catch(() => {
-        /* best-effort — a missed beat at worst risks an early reclaim, itself
+    heartbeat = managedSetInterval(
+      'launch-blueprint-heartbeat',
+      SPAWN_HEARTBEAT_INTERVAL_MS,
+      () => {
+        void heartbeatSpawns(sql, [spawnId]).catch(() => {
+          /* best-effort — a missed beat at worst risks an early reclaim, itself
            recoverable (the launch re-fires on the next cadence/wake). */
-      });
-    }, { category: 'lifecycle', instanced: true });
+        });
+      },
+      { category: 'lifecycle', instanced: true },
+    );
   }
   const stopHeartbeat = (): void => {
     if (heartbeat) {
@@ -655,7 +699,7 @@ export async function fireLaunchBlueprint(
   // (never substitutes) and the model-tiers floor-clamp never downgrades below the pin. Honors a caller-set
   // bodyExtra.spawnModel + PAPERCUSP_XBENCH_MODEL (default opus:xhigh) as the one knob.
   if (
-    (target.role === 'mug') &&
+    target.role === 'mug' &&
     fireInput.bodyExtra?.spawnModel == null &&
     (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() &&
     /^xbq/.test(input.installSlug)
@@ -678,11 +722,7 @@ export async function fireLaunchBlueprint(
   if (fireInput.bodyExtra?.spawnModel == null) {
     try {
       const [{ readAgentConfig }, { getOwnerSteering }, { effectiveTierConfig, resolveRoleOwnModelSpec }] =
-        await Promise.all([
-          import('../agent-config'),
-          import('../owner-steering'),
-          import('../fleet/model-tiers'),
-        ]);
+        await Promise.all([import('../agent-config'), import('../owner-steering'), import('../fleet/model-tiers')]);
       const [cfg, steering] = await Promise.all([
         readAgentConfig().catch(() => null),
         getOwnerSteering(input.workspaceId, input.installSlug).catch(() => null),

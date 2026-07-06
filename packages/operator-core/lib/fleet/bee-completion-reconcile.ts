@@ -61,11 +61,9 @@ export interface BeeExitContext {
  * that exited rc=0 cleanly (not cancelled) while placed on a concrete featureId.
  * Narrows `featureId` to a string for the caller.
  */
-export function shouldReconcileBeeCompletion(
-  ctx: BeeExitContext,
-): ctx is BeeExitContext & { featureId: string } {
+export function shouldReconcileBeeCompletion(ctx: BeeExitContext): ctx is BeeExitContext & { featureId: string } {
   return (
-    (ctx.role === 'cup') &&
+    ctx.role === 'cup' &&
     ctx.exitCode === 0 &&
     !ctx.aborted &&
     typeof ctx.featureId === 'string' &&

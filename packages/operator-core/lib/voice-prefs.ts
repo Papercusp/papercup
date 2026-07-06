@@ -29,35 +29,35 @@ export type FullAgentEngineKind =
   | 'off'
   | 'openai-realtime'
   | 'gemini-live'
-  | 'elevenlabs-conversational'  // legacy alias of elevenlabs-conv
-  | 'elevenlabs-conv';            // primary in v5+ (Conv AI agent platform)
+  | 'elevenlabs-conversational' // legacy alias of elevenlabs-conv
+  | 'elevenlabs-conv'; // primary in v5+ (Conv AI agent platform)
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
-  speakSuggestions: boolean;        // ON
-  speakBackgroundToasts: boolean;   // ON
-  speakReceivingFlips: boolean;     // OFF — chatty
-  speakEscalations: boolean;        // ON — significant
-  speakCadenceStatus: boolean;      // OFF — chatty
-  speakNudges: boolean;             // ON
-  wakeWordIntents: boolean;         // ON
+  speakSuggestions: boolean; // ON
+  speakBackgroundToasts: boolean; // ON
+  speakReceivingFlips: boolean; // OFF — chatty
+  speakEscalations: boolean; // ON — significant
+  speakCadenceStatus: boolean; // OFF — chatty
+  speakNudges: boolean; // ON
+  wakeWordIntents: boolean; // ON
   /** Speak open chat:ask_choice card prompts aloud when voice is on. */
-  speakOpenCards: boolean;          // ON
+  speakOpenCards: boolean; // ON
   /** Allow STT transcripts to resolve voiceAnswerable cards via /card-response. */
-  cardAnsweringEnabled: boolean;    // ON
+  cardAnsweringEnabled: boolean; // ON
   /**
    * After a silence-nudge card opens with no response, tear down the
    * active EL Conv AI session this many seconds later. Wake-word
    * listener kicks in (when configured) so the user can resume
    * hands-free. Range 5-120; 0 disables teardown entirely.
    */
-  silenceNudgeGraceSecs: number;    // 30
+  silenceNudgeGraceSecs: number; // 30
   /**
    * Speak a short handoff cue ("Going to wake-word listening...")
    * when the silence-nudge grace timer tears down the EL session.
    * No-op when EL wasn't active or wake-word isn't configured.
    */
-  speakSessionHandoff: boolean;     // ON
+  speakSessionHandoff: boolean; // ON
 
   // ── Operator behavior (active-mode proactive responses) ──────────
   /**
@@ -66,18 +66,18 @@ export interface VoicePrefs {
    * mode too — manual "Generate ideas" button still works).
    * Plan: active-mode-proactive-ticks-2026-05-14.md §C.4.
    */
-  proactiveTicksEnabled: boolean;   // ON
+  proactiveTicksEnabled: boolean; // ON
   /**
    * Maximum number of `<continue/>` chains the brain can run before
    * the runtime force-waits for user input. Prevents runaway chains.
    */
-  maxConsecutiveContinues: number;  // 5
+  maxConsecutiveContinues: number; // 5
   /**
    * Maximum wall-clock duration (seconds) of a single `<continue/>`
    * chain. Forces a wait once exceeded, even if `maxConsecutiveContinues`
    * hasn't been hit.
    */
-  maxContinueChainSecs: number;     // 300
+  maxContinueChainSecs: number; // 300
 
   // Engine selection
   sttEngine: SttEngineKind;
@@ -109,7 +109,21 @@ export interface VoicePrefs {
    */
   wakeWordEngine: 'off' | 'porcupine' | 'openwakeword';
   /** Wake-word keyword. Each engine has its own model name space. */
-  porcupineKeyword: 'Computer' | 'Jarvis' | 'Bumblebee' | 'Picovoice' | 'Porcupine' | 'Alexa' | 'Hey Google' | 'Hey Siri' | 'Okay Google' | 'Terminator' | 'Americano' | 'Blueberry' | 'Grapefruit' | 'Grasshopper';
+  porcupineKeyword:
+    | 'Computer'
+    | 'Jarvis'
+    | 'Bumblebee'
+    | 'Picovoice'
+    | 'Porcupine'
+    | 'Alexa'
+    | 'Hey Google'
+    | 'Hey Siri'
+    | 'Okay Google'
+    | 'Terminator'
+    | 'Americano'
+    | 'Blueberry'
+    | 'Grapefruit'
+    | 'Grasshopper';
   openwakewordKeyword: 'alexa' | 'hey_jarvis' | 'hey_mycroft' | 'hey_rhasspy' | 'ok_nabu' | 'weather' | 'timer';
   /**
    * Noise suppression engine for the mic input.
@@ -119,7 +133,7 @@ export interface VoicePrefs {
    * 'off' = no suppression.
    */
   noiseSuppressionEngine: 'off' | 'browser' | 'rnnoise' | 'koala';
-  elevenlabsVoiceId: string;        // default Adam preset
+  elevenlabsVoiceId: string; // default Adam preset
   openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   openaiModel: 'tts-1' | 'tts-1-hd';
   cartesiaVoiceId: string;
@@ -310,9 +324,9 @@ export interface VoicePrefs {
 
   // Internal: persisted nudge dedup last-spoken-at per kind
   nudgeDedup: {
-    budget:  { lastSpokenAt: string | null };
+    budget: { lastSpokenAt: string | null };
     breaker: { lastSpokenAt: string | null };
-    pause:   { lastSpokenAt: string | null };
+    pause: { lastSpokenAt: string | null };
   };
 }
 
@@ -379,9 +393,9 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {
-    budget:  { lastSpokenAt: null },
+    budget: { lastSpokenAt: null },
     breaker: { lastSpokenAt: null },
-    pause:   { lastSpokenAt: null },
+    pause: { lastSpokenAt: null },
   },
 };
 
@@ -406,9 +420,7 @@ export async function loadVoicePrefs(): Promise<VoicePrefs> {
   // needed for ADDED fields — only CHANGED defaults of existing fields
   // (concern #6, fullAgentIdleTimeoutMin 5→2) require a one-shot
   // migration if you want to retroactively apply.
-  const workspace = raw
-    ? mergePrefs(DEFAULT_VOICE_PREFS, raw)
-    : { ...DEFAULT_VOICE_PREFS };
+  const workspace = raw ? mergePrefs(DEFAULT_VOICE_PREFS, raw) : { ...DEFAULT_VOICE_PREFS };
 
   // Per-user overrides on top of workspace (Plan 4). If no session
   // user, returns workspace prefs unchanged. User-level overrides only
@@ -459,15 +471,15 @@ function mergePrefs(base: VoicePrefs, patch: Partial<VoicePrefs>): VoicePrefs {
   // Deep-merge nudgeDedup so partial patches don't drop unwritten kinds.
   if (patch.nudgeDedup) {
     out.nudgeDedup = {
-      budget:  { ...base.nudgeDedup.budget,  ...patch.nudgeDedup.budget  },
+      budget: { ...base.nudgeDedup.budget, ...patch.nudgeDedup.budget },
       breaker: { ...base.nudgeDedup.breaker, ...patch.nudgeDedup.breaker },
-      pause:   { ...base.nudgeDedup.pause,   ...patch.nudgeDedup.pause   },
+      pause: { ...base.nudgeDedup.pause, ...patch.nudgeDedup.pause },
     };
   } else {
     out.nudgeDedup = {
-      budget:  { ...base.nudgeDedup.budget  },
+      budget: { ...base.nudgeDedup.budget },
       breaker: { ...base.nudgeDedup.breaker },
-      pause:   { ...base.nudgeDedup.pause   },
+      pause: { ...base.nudgeDedup.pause },
     };
   }
   return out;
@@ -504,9 +516,8 @@ function voicePrefsOverrides(ws: VoicePrefs): OverrideEntry[] {
     if (VOICE_NON_TUNABLE_KEYS.has(k)) continue;
     const eff = ws[k];
     const def = DEFAULT_VOICE_PREFS[k];
-    const differs = typeof eff === 'object' || typeof def === 'object'
-      ? JSON.stringify(eff) !== JSON.stringify(def)
-      : eff !== def;
+    const differs =
+      typeof eff === 'object' || typeof def === 'object' ? JSON.stringify(eff) !== JSON.stringify(def) : eff !== def;
     if (differs) out.push({ key: k, effective: eff, default: def, layer: 'pg-settings' });
   }
   return out;
@@ -523,5 +534,7 @@ registerOverrideConcern({
   diff: async () => voicePrefsOverrides(await loadWorkspaceVoicePrefs()),
   capture: () => loadWorkspaceVoicePrefs(),
   reset: () => resetWorkspaceVoicePrefs(),
-  restore: async (snap) => { await writeOperatorState('operator_voice_prefs', snap as VoicePrefs); },
+  restore: async (snap) => {
+    await writeOperatorState('operator_voice_prefs', snap as VoicePrefs);
+  },
 });
