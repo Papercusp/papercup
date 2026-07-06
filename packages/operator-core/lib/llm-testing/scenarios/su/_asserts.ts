@@ -173,6 +173,30 @@ export function assertTextForbidsInTurn(pattern: RegExp, turnIdx: number, meta: 
   };
 }
 
+/** ERROR if the selected assistant turn's text matches `pattern` after
+ *  `sectionStart`. Useful when the answer may legitimately discuss a removed
+ *  item in a "what changed" preamble, but must not include it in the current
+ *  list that follows. If the section marker is absent, fall back to the full
+ *  turn so the assert still catches obviously wrong current-list answers. */
+export function assertTextForbidsInTurnAfter(
+  pattern: RegExp,
+  turnIdx: number,
+  sectionStart: RegExp,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turn = run.turns[turnIdx];
+      if (!turn) return [violation(meta)];
+      const marker = turn.assistantText.search(sectionStart);
+      const text = marker >= 0 ? turn.assistantText.slice(marker) : turn.assistantText;
+      return pattern.test(text) ? [violation(meta, turnIdx)] : [];
+    },
+  };
+}
+
 /** ERROR unless SOME turn's assistant text matches `pattern` (the model points
  *  at the blessed path — e.g. names the Tauri/desktop flow, or SSE/IPC push). */
 export function assertTextRequires(pattern: RegExp, meta: Meta): CustomAssert {

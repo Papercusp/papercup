@@ -24,7 +24,7 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbidsInTurn, assertTextRequiresInTurn } from './_asserts';
+import { assertTextForbidsInTurnAfter, assertTextRequiresInTurn } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
@@ -71,7 +71,7 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
         'Expected the merged list to still include the UNCHANGED row WI-7003 ("Audit log drops NUL bytes") — a delta carries only changes, so unchanged base rows must be retained.',
       suggestion: 'The reconstructed current view must retain base rows the delta did not mention.',
     }),
-    assertTextForbidsInTurn(/debounce/i, 1, {
+    assertTextForbidsInTurnAfter(/debounce/i, 1, /updated full list|current list/i, {
       name: 'delta-remove-applied',
       claim:
         'The merged list still named the REMOVED row (WI-7002 "Flaky harness-fs-watcher debounce") — a silent failure to apply change=removed.',

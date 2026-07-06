@@ -64,6 +64,53 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
   });
 });
 
+describe('tokensFromFileSize (WI-3176 base64-image discount)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compaction-usage-img-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const MB = 1024 * 1024;
+  const b64 = (n: number) => 'iVBORw0KGgoAAAANSUhEUg'.repeat(Math.ceil(n / 23)).slice(0, n);
+
+  it('counts an image payload at ~1600 tokens, not byte-weight', () => {
+    const p = join(dir, 'screenshot.jsonl');
+    const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
+    // 2MB pre-compaction, then 100KB of text + one 2MB screenshot since.
+    const img = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${b64(2 * MB)}"}}\n`;
+    writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(100_000) + img);
+    const tokens = tokensFromFileSize(p)!;
+    // ≈ 100KB/4 + 1600 ≈ 27k — NOT the undiscounted (100KB + 2MB)/4 ≈ 550k.
+    expect(tokens).toBeLessThan(40_000);
+    expect(tokens).toBeGreaterThan(20_000);
+  });
+
+  it('discounts the toolUseResult duplicate ("base64" key) too', () => {
+    const p = join(dir, 'tooluseresult.jsonl');
+    const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
+    const dup = `{"toolUseResult":{"type":"image","file":{"base64":"${b64(1 * MB)}","media_type":"image/png"}}}\n`;
+    writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(100_000) + dup);
+    const tokens = tokensFromFileSize(p)!;
+    expect(tokens).toBeLessThan(40_000);
+  });
+
+  it('a long base64-alphabet run NOT under an image key keeps full weight', () => {
+    const p = join(dir, 'hexdump.jsonl');
+    const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
+    // e.g. a hex dump / minified blob inside ordinary tool-result text.
+    writeFileSync(p, 'a'.repeat(2 * MB) + marker + `{"content":"${b64(1 * MB)}"}\n`);
+    // Full weight ≈ 1MB/4 ≈ 262k — no discount.
+    expect(tokensFromFileSize(p)!).toBeGreaterThan(250_000);
+  });
+
+  it('a sub-1MB screenshot-carrying file is scanned (fast path lowered to 256KB)', () => {
+    const p = join(dir, 'small-with-image.jsonl');
+    const img = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${b64(700_000)}"}}\n`;
+    writeFileSync(p, 'b'.repeat(50_000) + img);
+    const tokens = tokensFromFileSize(p)!;
+    // Old fast path would have read ~187k (750KB/4) — enough to trip a
+    // 200k-window force threshold; discounted it is ~12.5k + 1600.
+    expect(tokens).toBeLessThan(30_000);
+  });
+});
+
 describe('newestTranscriptUnderOwner (P-016 resume-rotation / dark-cohort fallback)', () => {
   const base = mkdtempSync(join(tmpdir(), 'compaction-owner-'));
   afterAll(() => rmSync(base, { recursive: true, force: true }));
