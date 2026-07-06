@@ -1995,6 +1995,36 @@ export function needsHumanExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The FEDERATION-DETECTOR self-select EXCLUSION floor for issue-family claims (WI-2633). The
+ * replication-liveness detector (replication-stall-ei.ts, P-004/WI-1840) auto-files durable EIs
+ * for connected-but-dead peers (no_replicator / frozen / connected_never_replicated /
+ * drain_stalled / drain_backlog_stalled / drain_orphan_tail). These land in the GENERAL
+ * papercusp backlog every fleet member self-pulls through, but a generic backlog-drain worker
+ * structurally CANNOT resolve one: verifying the current verdict needs the p2p-release-readiness
+ * fleet's live IN-PROCESS getReplicationLiveness()/dogfood-substrate-status (not PG-queryable),
+ * or design judgment on core swarm-join code that fleet owns. So each generic pickup can only
+ * ever close it as gated-to-another-fleet after a live-status check it can't cheaply make —
+ * burning a wake every time (WI-2633 observed this repeatedly). Compounding it, recovery
+ * auto-resolve (resolveReplicationStallEi, EI-7110) is edge-triggered on OBSERVING the same
+ * (harness,log,kind) recover, so an EI whose harness/log never re-boots sits open indefinitely
+ * and keeps re-surfacing to self-selectors.
+ *
+ * Keys on the `_ei` envelope work_items mirrors from engineer_issues — `_ei.created_by` is the
+ * detector's stable filer identity ('system:replication-liveness', == RECOVERY_OWNER) — so it
+ * covers every already-open detector EI with NO backfill/migration/filer change. Mirrors
+ * {@link needsHumanExclusionSql}'s shape/placement exactly (same NULL-safe COALESCE, same
+ * POOL+READY+claim call sites) so an all-federation-EI backlog also reads `drained:true`
+ * instead of idling a generic drainer on unpickable rows. UNCONDITIONAL (no caller bypass):
+ * no GENERIC self-select caller legitimately wants one — still directly claimable BY ID, so the
+ * p2p fleet (or an operator) can act on it via its own topic:'federation' triage.
+ */
+export function federationDetectorExclusionSql(sql: OrgSql) {
+  // COALESCE + nested #>> so a NULL-payload / no-_ei row reads NULL, and
+  // `NULL IS DISTINCT FROM 'system:replication-liveness'` = TRUE ⇒ the row is INCLUDED.
+  return sql`COALESCE(wi.payload, '{}'::jsonb) #>> '{_ei,created_by}' IS DISTINCT FROM 'system:replication-liveness'`;
+}
+
+/**
  * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
  * excluded from `claim_next`/`scheduler:get_next` self-selection (see
  * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
@@ -2245,7 +2275,12 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-7776: a needsHuman-routed row is likewise not work-queue material AT ALL — same
          -- pool-level exclusion as observation-lane, so an all-needs-human backlog also reads
          -- drained:true rather than idling a drainer on unpickable rows.
-         AND ${needsHumanExclusionSql(sql)}`;
+         AND ${needsHumanExclusionSql(sql)}
+         -- WI-2633: an auto-filed replication-liveness detector EI is gated to the p2p fleet and
+         -- unactionable by a generic self-selector — pool-exclude it too (like observation/
+         -- needsHuman) so an all-federation-EI backlog reads drained:true instead of idling a
+         -- drainer on unpickable rows.
+         AND ${federationDetectorExclusionSql(sql)}`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
 
     // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
@@ -2295,6 +2330,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-7776: a needsHuman-routed row is not work-queue material either — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
          AND ${needsHumanExclusionSql(sql)}
+         -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
+         -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
+         AND ${federationDetectorExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
          AND ${
@@ -2415,6 +2453,13 @@ export async function claimNextIssueWorkItem(
           -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
           -- afternoon). Still directly claimable BY ID.
           AND ${needsHumanExclusionSql(sql)}
+          -- WI-2633: never self-select an auto-filed replication-liveness detector EI
+          -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain
+          -- worker structurally cannot action it — verifying the current verdict needs the
+          -- p2p-release-readiness fleet's live in-process getReplicationLiveness()/dogfood-
+          -- substrate diagnostics — so it would only ever close it as gated-to-another-fleet,
+          -- burning a wake each time. Still directly claimable BY ID (the p2p fleet's triage).
+          AND ${federationDetectorExclusionSql(sql)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"
