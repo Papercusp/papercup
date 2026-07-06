@@ -26,7 +26,7 @@ describe('buildScoutPlanTemplate', () => {
   });
   it('falls back to a default background when no rationale', () => {
     const body = buildScoutPlanTemplate({ slug: 'x-2026-06-08', title: 'T', date: '2026-06-08' });
-    expect(body).toContain('Scout-generated broad-scope proposal');
+    expect(body).toContain('Blender-generated broad-scope proposal');
   });
 });
 

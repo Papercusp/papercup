@@ -102,7 +102,7 @@ updated: ${date}
 
 ## Now
 
-**State:** Draft rubric proposal — the Scout loop's auto-crystallization rail detected a RUBRIC GAP: a recurring friction the Hive keeps hitting with NO covering active rubric (plan-templates-and-rubric-v2 P-009 / D-003). Awaiting Queen ratification; NOT a live standard until promoted (active + templateData).
+**State:** Draft rubric proposal — the Blender loop's auto-crystallization rail detected a RUBRIC GAP: a recurring friction the Pot keeps hitting with NO covering active rubric (plan-templates-and-rubric-v2 P-009 / D-003). Awaiting Mug ratification; NOT a live standard until promoted (active + templateData).
 
 **Next:** ${SCOUT_DRAFT_LOOP_NOTE}
 
@@ -112,17 +112,17 @@ updated: ${date}
 
 **Signal:** ${evidence}${ref ? ` (drill-back: ${ref})` : ''}
 
-The Hive repeatedly hit this cluster (≥3 distinct authors across ≥2 cycles) yet has no
+The Pot repeatedly hit this cluster (≥3 distinct authors across ≥2 cycles) yet has no
 shared standard to grade it by — that absence is the gap. The clustered observations
 above are the raw material for the rubric's per-criterion model (how it should work),
 method (how to investigate it), and drift markers (what degraded/broken looks like).
 
-## Proposed rubric — Queen/Scout fills the structured \`templateData\` on ratification
+## Proposed rubric — Mug/Blender fills the structured \`templateData\` on ratification
 
 Define the rubric with \`plans:set-template-data\` (validated against the \`rubric\`
-template schema), then the Queen promotes this draft to \`active\`:
+template schema), then the Mug promotes this draft to \`active\`:
 
-- **characteristic:** the umbrella domain this rubric measures (Scout's digest groups by this).
+- **characteristic:** the umbrella domain this rubric measures (Blender's digest groups by this).
 - **criteria:** one or more \`{ key, title, model, method, driftMarkers }\` — what a structured observation grades.
 - **ratingScale:** the default rating vocabulary, e.g. \`["healthy","degraded","broken","unknown"]\`.
 

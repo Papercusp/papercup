@@ -79,9 +79,9 @@ describe('buildScoutRubricDraftBody', () => {
     expect(body).toContain('slug: scout-rubric-queen-placement-2026-06-21');
   });
 
-  it('embeds the queen↔scout loop note (enters the existing loop)', () => {
+  it('embeds the mug↔blender loop note (enters the existing loop)', () => {
     // Distinctive phrases from SCOUT_DRAFT_LOOP_NOTE — the draft self-documents its loop.
-    expect(body).toContain('Queen↔Scout feedback loop');
+    expect(body).toContain('Mug↔Blender feedback loop');
     expect(body).toContain('learnings');
   });
 
