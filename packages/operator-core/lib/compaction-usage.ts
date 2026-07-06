@@ -37,15 +37,35 @@ const COMPACT_BOUNDARY_MARKER = '"isCompactSummary":true';
 /** Bound the backward boundary scan. Not-found within the cap ⇒ ≥cap bytes
  *  since any compaction ⇒ the estimate is over every real limit anyway. */
 const BOUNDARY_SCAN_CAP = 8 * 1024 * 1024;
-/** Files below this skip the scan entirely (they can't be near any limit). */
-const BOUNDARY_SCAN_MIN = 1024 * 1024;
+/** Files below this skip the scan entirely: at bytes/4 a stat-only file caps at
+ *  ~64k tokens, below every force threshold (the smallest is ~190k on a 200k
+ *  window), so the fast path can never false-force. Was 1MB — a sub-1MB
+ *  screenshot-carrying transcript could stat-read ~250k and trip a 200k-window
+ *  force (WI-3176). */
+const BOUNDARY_SCAN_MIN = 256 * 1024;
+
+/** WI-3176 image discount: a screenshot in the transcript JSONL is 100–1000× its
+ *  real context cost — a 1920×1080 PNG is ~1.3MB of base64 (→ ~325k "tokens" at
+ *  bytes/4) but bills the model ≤~1600 tokens (vision pricing caps at the
+ *  downscale bound), AND Claude Code writes the payload TWICE per read (the
+ *  content block's `"data":"…"` + the toolUseResult's `"base64":"…"`, the latter
+ *  never entering context at all). A screenshot-heavy E2E session read ~1948k on
+ *  a real ~300k context and got force-compacted on it. Count each key-anchored
+ *  long base64 run as one image at the cap instead. Anchoring on the two JSON
+ *  keys (not bare runs) keeps ordinary long alphanumeric content — hex dumps,
+ *  minified code — counted at full weight. */
+const IMAGE_PAYLOAD_RE = /"(?:data|base64)":"[A-Za-z0-9+/=]{8192,}"/g;
+/** Claude's per-image billing cap (≥1568px images are downscaled to ~1600 tok). */
+const IMAGE_TOKEN_COST = 1600;
 
 /**
- * tokens ≈ bytes SINCE THE LAST COMPACTION / 4 (EI-6410: the transcript JSONL
- * accumulates across compactions, so whole-file/4 is monotonic and reads a
- * compacted session at 150–250%+ of its limit forever — false over-limit
- * warnings and compact-loops). Small files stay stat-only; larger ones scan a
- * bounded tail for the last compaction-summary entry and count from there.
+ * tokens ≈ (bytes SINCE THE LAST COMPACTION − base64-image excess) / 4.
+ * EI-6410: the transcript JSONL accumulates across compactions, so whole-file/4
+ * is monotonic and reads a compacted session at 150–250%+ of its limit forever —
+ * false over-limit warnings and compact-loops. WI-3176: base64 image payloads
+ * are counted at their real ~1600-token cost, not byte-weight. Small files stay
+ * stat-only; larger ones scan a bounded tail for the last compaction-summary
+ * entry and count from there.
  */
 export function tokensFromFileSize(pathStr: string): number | null {
   try {
@@ -58,7 +78,17 @@ export function tokensFromFileSize(pathStr: string): number | null {
       fs.readSync(fd, buf, 0, buf.length, start);
       const idx = buf.lastIndexOf(COMPACT_BOUNDARY_MARKER);
       const sinceBytes = idx === -1 ? size : buf.length - idx;
-      return Math.floor(sinceBytes / 4);
+      // Discount image payloads visible in the since-compaction region. latin1
+      // keeps string length == byte length (base64 is ASCII; surrounding
+      // multibyte content must not skew the byte math). When the marker fell
+      // outside the scan cap, only the buffered tail is discountable — the
+      // unseen head keeps full weight (estimate stays conservative).
+      const visible = buf.toString('latin1', idx === -1 ? 0 : idx);
+      let imageExcess = 0;
+      for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
+        imageExcess += m[0].length - IMAGE_TOKEN_COST * 4;
+      }
+      return Math.max(0, Math.floor((sinceBytes - imageExcess) / 4));
     } finally {
       fs.closeSync(fd);
     }

@@ -48,23 +48,23 @@ export default defineTool({
   name: 'pot:dissolve',
   profile: 'engineer',
   description:
-    "Tear down a local hive (root-only, destructive — pass confirm:true): clear the Queen's wake so she won't re-wake, cancel every live bee + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_hive.",
+    "Tear down a local pot (root-only, destructive — pass confirm:true): clear the Queen's wake so she won't re-wake, cancel every live bee + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_hive.",
   guidance: {
-    when: 'Permanently tearing down a local hive — stop the Queen, cancel its bees, deregister it. Operator/user only.',
+    when: 'Permanently tearing down a local pot — stop the Queen, cancel its bees, deregister it. Operator/user only.',
     notWhen:
-      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.',
-    chaining: 'pot:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm.',
+      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.',
+    chaining: 'pot:get { slug } to inspect before; deploy:teardown_hive first if the pot is deployed to a Swarm.',
     seeAlso: [
       'pot:pause (freeze instead of permanently tearing down)',
-      'pot:get (inspect the hive before dissolving)',
-      'deploy:teardown_hive (run first if the hive is deployed to a Swarm)',
+      'pot:get (inspect the pot before dissolving)',
+      'deploy:teardown_hive (run first if the pot is deployed to a Swarm)',
     ],
   },
   capability: 'harness:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    slug: z.string().min(1).max(120).describe("The hive's home-harness slug."),
+    slug: z.string().min(1).max(120).describe("The pot's home-harness slug."),
     confirm: z
       .boolean()
       .optional()
@@ -82,7 +82,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_dissolve_root_only',
-        message: 'pot:dissolve cannot be called from a bee (a spawned/parented agent). Only the operator/user dissolves a hive.',
+        message: 'pot:dissolve cannot be called from a bee (a spawned/parented agent). Only the operator/user dissolves a pot.',
       });
     }
     if (!args.confirm) {
@@ -101,7 +101,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_not_found',
-        message: `No kind:'hive' harness '${args.slug}' in this workspace (already dissolved?). Use pot:list to see the hives.`,
+        message: `No kind:'hive' harness '${args.slug}' in this workspace (already dissolved?). Use pot:list to see the pots.`,
       });
     }
 
