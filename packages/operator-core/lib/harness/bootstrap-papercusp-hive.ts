@@ -174,6 +174,15 @@ export interface BootstrapPapercuspHiveDeps {
   restoreDeferredGitSeed?: (
     record: BootstrapPapercuspHiveDeps['recordProgress'],
   ) => Promise<TriggerDeferredGitRestoreResult>;
+  /** WI-3070: when the FIRST post-admission attempt still reports `stillDeferred:['git']`
+   *  (this fresh member's epoch-key row has not yet federated down to it), retry in the
+   *  BACKGROUND with bounded backoff rather than permanently falling back to a full cold
+   *  clone. Default: {@link defaultScheduleGitSeedRetry}. Fired (not awaited) — must never
+   *  slow down boot. */
+  scheduleGitSeedRetry?: (
+    record: BootstrapPapercuspHiveDeps['recordProgress'],
+    retry: () => Promise<TriggerDeferredGitRestoreResult>,
+  ) => void;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -285,6 +294,58 @@ async function defaultRestoreDeferredGitSeed(
     epochKeyProvider,
     log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
   });
+}
+
+/** WI-3070: bounded backoff schedule (ms) for the post-admission deferred-git retry —
+ *  5 attempts over ~2 minutes. The epoch-key row for a fresh member's device federates
+ *  ASYNCHRONOUSLY after admission (a separate hyperbee row from the join itself, replicated
+ *  by the ordinary hive sync loop) with no hard delivery SLA, so the single immediate
+ *  attempt {@link defaultRestoreDeferredGitSeed} makes right after `joinCanonical` returns
+ *  has a real chance of racing ahead of it. */
+export const GIT_SEED_RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 40_000, 45_000];
+
+/**
+ * WI-3070 default: bounded background retry of the deferred git-seed restore. Root cause
+ * this fixes — `serve.log` on a fresh packaged install repeatedly showed
+ * `post-admission seed restore: restored=[] stillDeferred=[git]` and the repo silently fell
+ * back to a full cold network clone (~190M observed), because the ONE attempt fired right
+ * after admission almost always beat the epoch-key row's federation to this device.
+ *
+ * Each retry reuses the SAME `retry` closure (which the caller binds to the exact
+ * `restoreDeferredGitSeed(record)` call it already made) — that seam is idempotent BY
+ * CONSTRUCTION (see deferred-git-restore.ts's docstring): re-attempting after the epoch key
+ * has landed re-restores the git store; re-attempting after the join's ordinary cold clone
+ * has ALREADY back-filled `targetRepoDir` just fails the `git clone` (destination not empty)
+ * and reports `stillDeferred` again, harmlessly — so there is no separate "already restored"
+ * guard to add here, only a cap on how many times we bother trying. Fired-not-awaited
+ * (mirrors {@link defaultInitSubmodules}) — must never hold up boot. Never throws.
+ */
+function defaultScheduleGitSeedRetry(
+  record: BootstrapPapercuspHiveDeps['recordProgress'] | undefined,
+  retry: () => Promise<TriggerDeferredGitRestoreResult>,
+): void {
+  void (async () => {
+    for (const delayMs of GIT_SEED_RETRY_DELAYS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        const res = await retry();
+        if (res.restored.includes('git')) {
+          console.log('[papercusp-hive] deferred git seed restore succeeded on retry (epoch key had landed)');
+          record?.('clone', 'running', { detail: 'seed: git restored on retry (epoch key landed)' });
+          return;
+        }
+        if (!res.stillDeferred.includes('git')) {
+          // Nothing left to retry (e.g. the manifest/flag disappeared mid-boot) — stop quietly.
+          return;
+        }
+      } catch (e) {
+        console.warn(`[papercusp-hive] deferred git seed retry attempt failed (non-fatal): ${(e as Error)?.message ?? e}`);
+      }
+    }
+    console.warn(
+      '[papercusp-hive] deferred git seed restore gave up after retries — the ordinary cold clone has (or will) back-fill the repo instead',
+    );
+  })();
 }
 
 /** Count top-level submodules from `.gitmodules` (best-effort) — the progress
@@ -594,6 +655,15 @@ export async function bootstrapPapercuspHive(
           console.warn(
             `[papercusp-hive] post-admission seed restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
           );
+        }
+        // WI-3070: the FIRST attempt (right above) fires the instant `joinCanonical` returns
+        // 'joined' — but this device's epoch-key row federates as a SEPARATE, asynchronous
+        // hive-sync event, so it commonly hasn't landed yet at this exact instant. Rather than
+        // permanently accepting the cold-clone fallback, retry in the BACKGROUND with bounded
+        // backoff (never awaited — must not slow down boot).
+        if (gitRes.stillDeferred.includes('git')) {
+          const scheduleRetry = deps.scheduleGitSeedRetry ?? defaultScheduleGitSeedRetry;
+          scheduleRetry(record, () => restoreDeferred(record));
         }
       } catch (e) {
         console.warn(

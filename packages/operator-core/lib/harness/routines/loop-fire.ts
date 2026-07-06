@@ -28,6 +28,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import { getLoopCarryNote as defaultGetLoopCarryNote } from '../../carry-note';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   checkLoopDeadMan as defaultCheckLoopDeadMan,
@@ -73,6 +74,8 @@ export interface LoopFireDeps {
   incrementFireCount?: typeof defaultIncrementLoopFireCount;
   /** su-cold-auto P-003: read the prior fire count for the cold wakeCount cadence. */
   readFireCount?: typeof defaultReadLoopFireCount;
+  /** EI-7809: read the CURRENT loop:checkpoint at fire time so wake text does not stale at arm time. */
+  getLoopCarryNote?: typeof defaultGetLoopCarryNote;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
@@ -85,11 +88,7 @@ export interface LoopFireResult {
   detail?: string;
 }
 
-async function defaultDeactivateLoop(input: {
-  sql?: Sql;
-  installSlug: string;
-  routineName: string;
-}): Promise<boolean> {
+async function defaultDeactivateLoop(input: { sql?: Sql; installSlug: string; routineName: string }): Promise<boolean> {
   const sql = input.sql ?? getOrgPg().sql;
   const result = await sql`
     UPDATE harness_shared.routines
@@ -111,6 +110,23 @@ export function readLoopKickoff(payloadTemplate: Record<string, unknown> | null)
 export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | null): number | null {
   const c = payloadTemplate?.costCapCents;
   return typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : null;
+}
+
+export const LOOP_WAKE_CHECKPOINT_MAX_CHARS = 3_000;
+
+export function spliceCurrentLoopCheckpoint(kickoff: string, checkpoint: string | null | undefined): string {
+  const note = (checkpoint ?? '').trim();
+  if (!note) return kickoff;
+  const clipped =
+    note.length > LOOP_WAKE_CHECKPOINT_MAX_CHARS
+      ? `${note.slice(0, LOOP_WAKE_CHECKPOINT_MAX_CHARS)}\n… (loop:checkpoint truncated in wake prompt)`
+      : note;
+  return [
+    kickoff,
+    '',
+    'Current loop:checkpoint (fresh at fire time; prefer this over any stale arm-time goal text if they conflict):',
+    clipped,
+  ].join('\n');
 }
 
 /** Read the loop's carry MODE from payload_template (su-cold-auto-mode-2026-07-03 P-003).
@@ -145,6 +161,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
   const readFireCount = deps.readFireCount ?? defaultReadLoopFireCount;
+  const getLoopCarryNote = deps.getLoopCarryNote ?? defaultGetLoopCarryNote;
   const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
 
   if (!input.targetOwnerId) {
@@ -204,7 +221,13 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // adds NO resume code (D-005). Pre-record the attempt (preserves the streak counter), then
   // record the outcome.
   await recordFire(input.installSlug, input.routineName, 'firing', 'attempt').catch(() => {});
-  const kickoff = readLoopKickoff(input.payloadTemplate) ?? defaultLoopKickoff(input.routineId);
+  const armTimeKickoff = readLoopKickoff(input.payloadTemplate) ?? defaultLoopKickoff(input.routineId);
+  const currentCheckpoint = await getLoopCarryNote({
+    harness: input.installSlug,
+    ownerId: input.targetOwnerId,
+    workspaceId: input.workspaceId,
+  }).catch(() => null);
+  const kickoff = spliceCurrentLoopCheckpoint(armTimeKickoff, currentCheckpoint);
 
   // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor
   // forks to a fresh-context RESET / periodic RECYCLE instead of the warm in-place turn.
@@ -257,12 +280,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         : 'pinned warm session is no longer wakeable/resumable',
     };
   }
-  await recordFire(
-    input.installSlug,
-    input.routineName,
-    'queued',
-    'attempt',
-  ).catch(() => {});
+  await recordFire(input.installSlug, input.routineName, 'queued', 'attempt').catch(() => {});
 
   // P2a: bump the live fire counter so the dead-man `maxFires` bound can read it on the next
   // fire. Also bumped for a COLD loop (su-cold-auto P-003) so the cold wakeCount cadence

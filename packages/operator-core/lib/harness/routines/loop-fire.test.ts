@@ -1,15 +1,23 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireLoopWake, defaultLoopKickoff, type LoopFireDeps } from './loop-fire';
+import { fireLoopWake, defaultLoopKickoff, spliceCurrentLoopCheckpoint, type LoopFireDeps } from './loop-fire';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
   over: Partial<LoopFireDeps> = {},
-): Required<Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap' | 'deactivateLoop'>> {
+): Required<
+  Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap' | 'getLoopCarryNote' | 'deactivateLoop'>
+> {
   return {
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
     recordFire: vi.fn(async () => {}) as never,
-    wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: ['coord:inbox-wake:su-pinned'], woken: 1, staged: 0 })) as never,
+    wake: vi.fn(async () => ({
+      targets: ['su-pinned'],
+      keys: ['coord:inbox-wake:su-pinned'],
+      woken: 1,
+      staged: 0,
+    })) as never,
     costCap: vi.fn(async () => ({ breach: false, spendCents: 0, capCents: null })) as never,
+    getLoopCarryNote: vi.fn(async () => null) as never,
     deactivateLoop: vi.fn(async () => true) as never,
     ...over,
   };
@@ -54,12 +62,58 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     // No kickoff → the default self-assign-work-items prompt.
     const deps2 = mkDeps();
     await fireLoopWake(baseInput, deps2);
-    expect((deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(defaultLoopKickoff(baseInput.routineId));
+    expect((deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe(
+      defaultLoopKickoff(baseInput.routineId),
+    );
+  });
+
+  it('splices the CURRENT loop:checkpoint into the wake-turn text at fire time (EI-7809)', async () => {
+    const deps = mkDeps({
+      getLoopCarryNote: vi.fn(async () => '## Did\nclosed WI-1\n\n## Next action\nclaim_next again') as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'arm-time goal text' } }, deps);
+
+    expect(deps.getLoopCarryNote).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-pinned',
+      workspaceId: 'papercusp-workspace',
+    });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('arm-time goal text');
+    expect(opts.summary).toContain('Current loop:checkpoint');
+    expect(opts.summary).toContain('prefer this over any stale arm-time goal text');
+    expect(opts.summary).toContain('## Next action\nclaim_next again');
+  });
+
+  it('keeps the wake prompt byte-equivalent when no loop:checkpoint exists or the read fails', async () => {
+    const depsNoNote = mkDeps({ getLoopCarryNote: vi.fn(async () => null) as never });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, depsNoNote);
+    expect((depsNoNote.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan X');
+
+    const depsReadFail = mkDeps({
+      getLoopCarryNote: vi.fn(async () => {
+        throw new Error('carry store down');
+      }) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan Y' } }, depsReadFail);
+    expect((depsReadFail.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan Y');
+  });
+
+  it('caps an oversized checkpoint before putting it in the wake prompt', () => {
+    const out = spliceCurrentLoopCheckpoint('kickoff', 'x'.repeat(3_100));
+    expect(out).toContain('kickoff');
+    expect(out).toContain('loop:checkpoint truncated in wake prompt');
+    expect(out.length).toBeLessThan(3_300);
   });
 
   it('FAILURE-STREAK gate trips → fire WITHHELD, no wake', async () => {
     const deps = mkDeps({
-      checkFireGate: vi.fn(async () => ({ allow: false, reason: 'backoff', consecutiveErrors: 4, retryAfterSec: 120 })) as never,
+      checkFireGate: vi.fn(async () => ({
+        allow: false,
+        reason: 'backoff',
+        consecutiveErrors: 4,
+        retryAfterSec: 120,
+      })) as never,
     });
     const res = await fireLoopWake(baseInput, deps);
 
@@ -77,8 +131,15 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
     expect(res).toMatchObject({ fired: false, reason: 'cost-cap' });
     expect(deps.wake).not.toHaveBeenCalled();
-    expect(deps.costCap).toHaveBeenCalledWith(expect.objectContaining({ routineId: baseInput.routineId, capCents: 500 }));
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.stringContaining('cost-cap'), 'error');
+    expect(deps.costCap).toHaveBeenCalledWith(
+      expect.objectContaining({ routineId: baseInput.routineId, capCents: 500 }),
+    );
+    expect(deps.recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-pinned',
+      expect.stringContaining('cost-cap'),
+      'error',
+    );
   });
 
   it('no cost-cap configured → the cost guard is never consulted', async () => {
@@ -89,7 +150,12 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
   it('a missed wake (woke 0, staged 0) auto-ends the orphaned loop instead of leaving it parked', async () => {
     const deps = mkDeps({
-      wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: ['coord:inbox-wake:su-pinned'], woken: 0, staged: 0 })) as never,
+      wake: vi.fn(async () => ({
+        targets: ['su-pinned'],
+        keys: ['coord:inbox-wake:su-pinned'],
+        woken: 0,
+        staged: 0,
+      })) as never,
     });
     const res = await fireLoopWake(baseInput, deps);
 
@@ -119,7 +185,12 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { maxDurationSec: 3600 } }, deps);
     expect(res).toMatchObject({ fired: false, reason: 'dead-man' });
     expect(deps.wake).not.toHaveBeenCalled(); // the wake was withheld
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.stringContaining('dead-man'), 'error');
+    expect(deps.recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-pinned',
+      expect.stringContaining('dead-man'),
+      'error',
+    );
   });
 
   it('the fire counter is incremented ONLY when maxFires is configured (P2a)', async () => {
@@ -167,7 +238,10 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
       incrementFireCount: vi.fn(async () => {}) as never,
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
-    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({ carry: 'cold', wakeCount: 1 });
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({
+      carry: 'cold',
+      wakeCount: 1,
+    });
   });
 
   it('a fire-count read miss fails soft to wakeCount 1 — never a throw', async () => {
@@ -179,7 +253,10 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     });
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
     expect(res).toMatchObject({ fired: true });
-    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({ carry: 'cold', wakeCount: 1 });
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({
+      carry: 'cold',
+      wakeCount: 1,
+    });
   });
 
   it('a WARM loop stamps NO payload marker (byte-identical to today) and never touches the fire counter', async () => {

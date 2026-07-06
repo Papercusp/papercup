@@ -273,7 +273,7 @@ export default defineTool({
       .min(0)
       .optional()
       .describe(
-        "Truncate each entry's body to this many chars in the result (default 600) so a default read never overflows the agent result cap; truncated entries carry body_truncated:true and the full body is reachable via coord:thread. 0 = no truncation.",
+        "Truncate each entry's body to this many chars in the result (default dynamically budgets to roughly 15KB across entries) so a default read never overflows the agent result cap; truncated entries carry body_truncated:true and the full body is reachable via coord:thread. 0 = no truncation.",
       ),
   }),
   async handler(args, ctx) {
@@ -482,11 +482,11 @@ export default defineTool({
     // consume is left intact (coord-schema already clips it); only raw `entries` are bound.
     // su-707ed (EI-1752 review): an EXPLICIT max_body_chars is honored exactly, but the
     // DEFAULT scales with `limit` — a flat 600 × up-to-500 entries would still be ~300KB.
-    // min(600, floor(BUDGET/n)) keeps the entries payload ~<=BUDGET at ANY limit; at the
-    // default limit 50 it stays 600/entry (unchanged), only large limits tighten.
+    // min(600, floor(BUDGET/n)) keeps the content-bearing part of the entries payload
+    // bounded at ANY limit; at the default 50-row read this now caps fields at 300 chars.
     // context-trimming-tiers P-012: the per-entry default cap follows the
     // session tier (250/400/600); an explicit max_body_chars still wins.
-    const INBOX_ENTRY_BUDGET = 30_000;
+    const INBOX_ENTRY_BUDGET = 15_000;
     const effectiveCap =
       args.max_body_chars !== undefined
         ? args.max_body_chars

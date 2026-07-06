@@ -10,9 +10,10 @@
  *   - extractSeed(): a directory seed AND a .tar.gz seed both land a bootable-shaped
  *     data dir (PG_VERSION + nested files) at 0700.
  *   - SEED_INITDB_FLAGS locale portability: the WI-2649 recurrence guard — the
- *     shipped seed's postgresql.conf must name a PORTABLE locale (C.UTF-8), never
- *     the build host's (en_US.UTF-8), or first boot FATALs on the lean Windows
- *     WSL rootfs. Pure assertion on the single-source-of-truth flag, no real PG.
+ *     shipped seed's postgresql.conf must name a UNIVERSAL locale (C), never the
+ *     build host's (en_US.UTF-8) NOR the glibc-only C.UTF-8 (which FATALs macOS
+ *     initdb), or first boot FATALs on the lean Windows WSL rootfs / a fresh Mac.
+ *     Pure assertion on the single-source-of-truth flag, no real PG.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -106,21 +107,25 @@ describe('initdb locale portability (WI-2649 recurrence guard)', () => {
   // bundled `embedded-postgres` package hard-injects `--lc-messages=<getBestLocale()>`
   // into initdb BEFORE our SEED_INITDB_FLAGS, and getBestLocale prefers the build
   // host's en_US.UTF-8. A per-category `--lc-messages` overrides `--locale` for
-  // that ONE category, so `--locale=C.UTF-8` alone left lc_messages='en_US.utf8'
-  // in the seed while every other lc_* was C.UTF-8 — and that one FATALed the
+  // that ONE category, so `--locale=C` alone left lc_messages='en_US.utf8'
+  // in the seed while every other lc_* was C — and that one FATALed the
   // postmaster on the lean rootfs (WI-2749). The fix is two-layer: pin
-  // `--lc-messages=C.UTF-8` explicitly (below) AND normalize the on-disk conf on
+  // `--lc-messages=C` explicitly (below) AND normalize the on-disk conf on
   // every boot (the WI-2749 block). These flag tests still guard the --locale pin.
+  //
+  // The pin is `C`, not `C.UTF-8`: C.UTF-8 is glibc-only and macOS initdb REJECTS
+  // it outright ("invalid locale name C.UTF-8", mac build VM 2026-07-05), which
+  // bricked the seed build + the runtime seedless fallback on a fresh Mac.
 
-  it('SEED_INITDB_FLAGS pins an explicit, portable locale (== C.UTF-8)', () => {
-    expect(initdbLocale(SEED_INITDB_FLAGS)).toBe('C.UTF-8');
+  it('SEED_INITDB_FLAGS pins an explicit, universal locale (== C)', () => {
+    expect(initdbLocale(SEED_INITDB_FLAGS)).toBe('C');
     expect(initdbLocaleIsPortable(SEED_INITDB_FLAGS)).toBe(true);
   });
 
-  it('SEED_INITDB_FLAGS ALSO pins --lc-messages=C.UTF-8 (overrides the package injection — WI-2749)', () => {
+  it('SEED_INITDB_FLAGS ALSO pins --lc-messages=C (overrides the package injection — WI-2749)', () => {
     // The package prepends --lc-messages=<build-host locale>; ours must appear
     // (later, so initdb last-duplicate-wins picks it) or lc_messages slips through.
-    const i = SEED_INITDB_FLAGS.indexOf('--lc-messages=C.UTF-8');
+    const i = SEED_INITDB_FLAGS.indexOf('--lc-messages=C');
     expect(i).toBeGreaterThanOrEqual(0);
   });
 
@@ -177,11 +182,14 @@ describe('postgresql.conf lc_* portability (WI-2749 conf-level guard)', () => {
     "lc_time = 'C.UTF-8'\t\t\t# locale for time formatting",
   ].join('\n');
 
-  it('localeIsPortable (initdb scope) accepts C-family, rejects host locales', () => {
-    expect(localeIsPortable('C.UTF-8')).toBe(true);
-    expect(localeIsPortable('C.utf8')).toBe(true);
+  it('localeIsPortable (initdb scope) accepts ONLY C/POSIX — C.UTF-8 is glibc-only, FATALs macOS initdb', () => {
     expect(localeIsPortable('C')).toBe(true);
     expect(localeIsPortable('POSIX')).toBe(true);
+    // C.UTF-8 initdb's fine on glibc/WSL but macOS BSD libc has no such locale —
+    // "initdb: error: invalid locale name C.UTF-8" (mac build VM 2026-07-05). A
+    // desktop build ships to macOS, so C.UTF-8 is NOT a portable initdb locale.
+    expect(localeIsPortable('C.UTF-8')).toBe(false);
+    expect(localeIsPortable('C.utf8')).toBe(false);
     expect(localeIsPortable('en_US.utf8')).toBe(false);
     expect(localeIsPortable('en_US.UTF-8')).toBe(false);
     expect(localeIsPortable(undefined as unknown as string)).toBe(false);

@@ -235,8 +235,12 @@ test('reloadPool keeps the live pool when the DB resolves EMPTY (fail-safe, no w
 
 test('reloadPool keeps the live CODEX pool when only codex momentarily resolves EMPTY (WI-3069 fail-safe)', async () => {
   const up = await startUpstream();
+  process.env.OPENAI_BASE_URL_UPSTREAM = up.base;
+  tempDir = mkdtempSync(join(tmpdir(), 'codex-gw-failsafe-'));
+  const codexTokenPath = join(tempDir, 'codex-main.token');
+  writeFileSync(codexTokenPath, 'codex-main-tok\n', { mode: 0o600 });
   const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
-  let codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/codex', source: 'pool' as const }];
+  let codexDb = [{ accountId: 'codex-main', credentialRef: `token:${codexTokenPath}`, source: 'pool' as const }];
   svc = await startGatewayService({
     port: 0,
     upstreamBase: up.base,

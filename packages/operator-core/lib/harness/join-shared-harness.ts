@@ -281,7 +281,15 @@ export async function step2_cloneRepo(opts: {
     // broken checkout. Validate cheaply; remove + re-clone on failure.
     try {
       await exF('git', ['-C', cloneDir, 'rev-parse', '--verify', 'HEAD'], { timeout: 15_000 });
-      return { cloneDir }; // valid repo — idempotent adopt
+      // WI-3057 follow-up: an adopted dir can silently carry a leaked token in
+      // its `origin` remote from an EARLIER clone whose de-tokenize step
+      // predated this fix, failed silently, or raced a kill — the fresh-clone
+      // branch below is the ONLY place that ever ran `set-url`, so idempotent
+      // adopt alone would perpetuate a plaintext token forever. Always check
+      // (regardless of whether THIS call passed a token) and repair; treat a
+      // repair failure the same as an invalid repo (fall through to re-clone).
+      await ensureDetokenizedOrigin(exF, cloneDir, githubFullName);
+      return { cloneDir }; // valid repo, origin clean — idempotent adopt
     } catch {
       await rm(cloneDir, { recursive: true, force: true });
     }

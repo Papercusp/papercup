@@ -450,6 +450,44 @@ export const discoverSubmodulesRecursive = async (
   return paths.sort((a, b) => b.split('/').length - a.split('/').length);
 };
 
+/** One `git stash` entry, identified by its underlying commit SHA (stable across
+ *  ticks — unlike `stash@{N}`, which is purely POSITIONAL and shifts whenever an
+ *  older entry is popped/dropped). */
+export interface StashEntry {
+  sha: string;
+  subject: string;
+}
+
+/**
+ * WI-3072 (recurrence guard for the EI-7685 class — an agent ran `git stash` on the
+ * shared staging tree and it silently sat there looking like vanished work): list
+ * one repo's current stash entries. Read-only, never throws — a `git stash list`
+ * failure (odd env, detached/bare repo) reads as empty, same fail-open posture as
+ * the other best-effort git-sync primitives in this file.
+ */
+export async function listStashEntries(runGit: RunGit, repoPath: string): Promise<StashEntry[]> {
+  const r = await runGit(['stash', 'list', '--format=%H%x1f%s'], repoPath);
+  if (r.code !== 0) return [];
+  return r.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [sha = '', subject = ''] = line.split('\x1f');
+      return { sha, subject };
+    })
+    .filter((e) => e.sha.length > 0);
+}
+
+/** Pure: which of `current`'s stash entries were never in `knownShas` — i.e. genuinely
+ *  NEW since the last check. Exported so the comparison logic is unit-testable with
+ *  zero git subprocess involved (mirrors the other pure `*FromRows`/`*From*` helpers
+ *  in this codebase). */
+export function newStashEntries(current: StashEntry[], knownShas: readonly string[]): StashEntry[] {
+  const known = new Set(knownShas);
+  return current.filter((e) => !known.has(e.sha));
+}
+
 type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffender[] } & (
   | { status: 'nothing' }
   | { status: 'synced'; pushed: boolean; merged: boolean }

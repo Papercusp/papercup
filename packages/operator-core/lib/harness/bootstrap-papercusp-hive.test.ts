@@ -12,6 +12,7 @@ import {
   startBootstrapPapercuspHive,
   __resetBootstrapInFlight,
   PAPERCUP_DOGFOOD_REPO_URL,
+  GIT_SEED_RETRY_DELAYS_MS,
   type BootstrapPapercuspHiveDeps,
 } from './bootstrap-papercusp-hive';
 
@@ -270,6 +271,116 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(res.state).toBe('cloned-and-created'); // post-admission restore threw; join result unaffected
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/post-admission git seed restore failed \(non-fatal; cold clone\)/));
     warn.mockRestore();
+  });
+
+  it('WI-3070: schedules a background retry when the first post-admission attempt still reports stillDeferred=[git]', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: [], stillDeferred: ['git'] }));
+    const scheduleGitSeedRetry = vi.fn();
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      restoreDeferredGitSeed,
+      scheduleGitSeedRetry,
+    });
+    await bootstrapPapercuspHive(deps);
+    expect(scheduleGitSeedRetry).toHaveBeenCalledOnce();
+    // The scheduled retry closure re-invokes the SAME restoreDeferredGitSeed seam (bound to
+    // the same `record`) — proving the retry can actually make forward progress, not just a
+    // no-op closure.
+    const [, retryFn] = scheduleGitSeedRetry.mock.calls[0] as [unknown, () => Promise<unknown>];
+    expect(restoreDeferredGitSeed).toHaveBeenCalledOnce();
+    await retryFn();
+    expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('WI-3070: does NOT schedule a retry when the first post-admission attempt already restored git', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
+    const scheduleGitSeedRetry = vi.fn();
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      restoreDeferredGitSeed,
+      scheduleGitSeedRetry,
+    });
+    await bootstrapPapercuspHive(deps);
+    expect(scheduleGitSeedRetry).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('WI-3070: the REAL default retry succeeds on a later attempt once the epoch key has landed, then stops', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let call = 0;
+      const restoreDeferredGitSeed = vi.fn(async () => {
+        call += 1;
+        if (call === 1) return { ran: true, restored: [], stillDeferred: ['git'] };
+        if (call === 2) return { ran: true, restored: ['git'], stillDeferred: [] };
+        throw new Error('must not be called again once restored');
+      });
+      const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+      const deps = spyDeps({
+        canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+        findJoinedCanonical: vi.fn(async () => null),
+        restoreSeed,
+        joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+        restoreDeferredGitSeed,
+        // scheduleGitSeedRetry intentionally NOT overridden — exercises the real default.
+      });
+      await bootstrapPapercuspHive(deps);
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(1); // only the immediate attempt so far
+
+      await vi.advanceTimersByTimeAsync(GIT_SEED_RETRY_DELAYS_MS[0]!);
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(2); // the first background retry succeeded
+
+      // Advancing past every remaining delay must NOT produce a 3rd call (already stopped).
+      const rest = GIT_SEED_RETRY_DELAYS_MS.slice(1).reduce((a, b) => a + b, 0);
+      await vi.advanceTimersByTimeAsync(rest);
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('WI-3070: the REAL default retry gives up after exhausting every bounded attempt (never hangs forever)', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: [], stillDeferred: ['git'] }));
+      const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+      const deps = spyDeps({
+        canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+        findJoinedCanonical: vi.fn(async () => null),
+        restoreSeed,
+        joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+        restoreDeferredGitSeed,
+      });
+      await bootstrapPapercuspHive(deps);
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(1);
+
+      const total = GIT_SEED_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
+      await vi.advanceTimersByTimeAsync(total);
+      // 1 immediate attempt + one retry per scheduled delay, never more.
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(1 + GIT_SEED_RETRY_DELAYS_MS.length);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/gave up after retries/));
+
+      // No further attempts even after MORE time passes — the loop has genuinely ended.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(restoreDeferredGitSeed).toHaveBeenCalledTimes(1 + GIT_SEED_RETRY_DELAYS_MS.length);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('P-006: a join SKIP propagates as skipped (next-boot retry) — never falls through to clone+create', async () => {

@@ -23,6 +23,7 @@
  *     the open escalation (one resolver per harness). A clean sync clears the escalation.
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
  */
+import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -44,7 +45,21 @@ import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
-import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
+import {
+  runGitSync,
+  runGitBounded,
+  gitTimeoutMsFor,
+  discoverSubmodulesRecursive,
+  listStashEntries,
+  newStashEntries,
+  type RunGit,
+  type GitSyncConfig,
+  type GitSyncOutcome,
+  type RepoConflict,
+  type RepoError,
+  type ScopedOversized,
+  type ScopedContentError,
+} from './run-git-sync';
 import { emitGitSyncCommittedEvent } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 
@@ -705,6 +720,67 @@ async function recordOutcome(
   });
 }
 
+/**
+ * WI-3072: recurrence guard for the EI-7685 class — an agent ran `git stash` on the
+ * shared canonical staging tree (or a submodule) and it sat there silently, LOOKING
+ * like vanished/reverted work to every other agent (git-sync only ever commits the
+ * WORKING TREE; it never sees, let alone recovers, a stash). Detect any stash entry
+ * NOT in the known baseline and broadcast loudly — a silent-fleet-work-vanish
+ * detector, not a fix (stashing is sometimes deliberate; this only makes it VISIBLE).
+ *
+ * Deliberately outside the commit/push pipeline: PURELY ADDITIVE, read-only
+ * (`git stash list`, never `pop`/`drop`/`apply`), and must NEVER throw or block a
+ * commit/push — a detection failure here is silently skipped, not surfaced as a
+ * sync error (this is a courtesy alert, not a safety gate). The known-SHA baseline
+ * persists on the routine's own metadata (`known_stash_shas`), the same
+ * `patchRoutineMetadata` mechanism `recordOutcome` already uses for
+ * `last_pushed`/`last_conflicts` — no new table (reuse-first).
+ */
+async function checkForNewStashes(slug: string, superRepoPath: string): Promise<void> {
+  try {
+    const runGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
+    const subPaths = await discoverSubmodulesRecursive(runGit, superRepoPath);
+    const repos: { scope: string; path: string }[] = [
+      { scope: 'superproject', path: superRepoPath },
+      ...subPaths.map((s) => ({ scope: s, path: join(superRepoPath, s) })),
+    ];
+
+    const { sql } = getOrgPg();
+    const [row] = await sql<{ known: unknown }[]>`
+      SELECT metadata->'known_stash_shas' AS known
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1`;
+    const knownShas = Array.isArray(row?.known) ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string') : [];
+
+    const allShas: string[] = [];
+    const fresh: { scope: string; sha: string; subject: string }[] = [];
+    for (const r of repos) {
+      const entries = await listStashEntries(runGit, r.path);
+      for (const e of entries) allShas.push(e.sha);
+      for (const e of newStashEntries(entries, knownShas)) fresh.push({ scope: r.scope, ...e });
+    }
+
+    // Persist the CURRENT set every tick (not an ever-growing history) — a stash later
+    // popped/dropped and never recreated should not linger in the baseline forever, and
+    // an identical-content stash re-pushed after a drop legitimately re-alerts (it IS a
+    // new event worth re-surfacing, not noise).
+    await patchRoutineMetadata(slug, { known_stash_shas: allShas });
+    if (fresh.length === 0) return;
+
+    const detail = fresh.map((e) => `${e.scope}: ${e.sha.slice(0, 8)} "${e.subject.slice(0, 80)}"`).join('; ');
+    const summary =
+      `🚨 NEW git-stash entry on the canonical ${slug} tree (${fresh.length}) — a stash HIDES uncommitted ` +
+      `work from every agent (git-sync only ever commits the working tree, never a stash). If this wasn't ` +
+      `deliberate: 'git stash show -p <sha>' in the affected repo to inspect, then 'git stash pop' to recover ` +
+      `it (or drop it once confirmed unneeded). ${detail}`;
+    console.warn(`[git-sync] ${slug}: ${summary}`);
+    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: stash-check failed (non-fatal, best-effort, never blocks the sync): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 // ── Runtime eligibility gate (git-sync-any-hive P-008, action half) ─────────────
 
 /**
@@ -1040,6 +1116,21 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
+  }
+
+  // WI-3072: stash-detection recurrence guard — read-only (no lock needed), runs
+  // regardless of the sync outcome (even a conflict/error tick should still surface a
+  // surprise stash). Best-effort end-to-end, including resolving the repo path itself
+  // (lazy-imported like the other operator-notes call sites in this file) — a failure
+  // here must never break the tick this deep into the pipeline.
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const stashRepoPath = await projectDirForSlug(slug);
+    if (stashRepoPath) {
+      await runCheckpointedStep('git-sync:stash-check', () => checkForNewStashes(slug, stashRepoPath));
+    }
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: stash-check repo-path resolution failed (non-fatal): ${e instanceof Error ? e.message : e}`);
   }
 
   // P-003: count any tick whose errors[] is non-empty — a sibling push failure that

@@ -100,8 +100,10 @@ import { validateCloudModelSpec } from '@papercusp/operator-core/lib/agent-confi
 // again silently miss the other.
 import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
 // weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
-// (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it drops the
-// manual granular lock tools and adds fleet:launch-on-plan (drift guard below).
+// (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it adds
+// fleet:launch-on-plan (drift guard below). (The old second divergence — dropping the
+// granular lock tools — became a no-op when the 2026-07-05 rebalance cut them from the
+// canonical list too.)
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 
 describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
@@ -401,8 +403,10 @@ describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
   });
 
   it('drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order', () => {
-    const kept = ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:update, coord:glance' });
-    expect(kept).not.toContain('work_items:update');
+    // (work_items:update left the spine in the 2026-07-05 rebalance — exclude two tools
+    // that ARE in the spine so the length-2 assertion stays meaningful.)
+    const kept = ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:set_state, coord:glance' });
+    expect(kept).not.toContain('work_items:set_state');
     expect(kept).not.toContain('coord:glance');
     expect(kept.length).toBe(OMP_CORE_MCP_TOOL_NAMES.length - 2);
     expect(kept[0]).toBe(OMP_CORE_MCP_TOOL_NAMES[0]); // order preserved
@@ -525,12 +529,19 @@ describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)'
 describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
   // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the spine.
   // It is the omp/weak-model VARIANT of the canonical orchestrator CORE spine, and
-  // deliberately diverges in exactly two documented ways (asserted below); any OTHER
+  // deliberately diverges in exactly ONE documented way (asserted below); any OTHER
   // drift fails the build — edit the orchestrator source, then mirror here.
+  // (The former second divergence — OMP dropping locks:acquire_granular/release_granular —
+  // became a no-op in the 2026-07-05 demand-evidence rebalance, which cut the granular
+  // lock tools from the CANONICAL list too: hooks auto-lock every Edit/Write on all
+  // clients. The not-contains guard stays so they can't silently creep back into either.)
   const LOCK_TOOLS = ['locks:acquire_granular', 'locks:release_granular'];
 
-  it('drops the manual granular lock tools (omp auto-acquires on Edit/Write via the coord hook)', () => {
-    for (const t of LOCK_TOOLS) expect([...OMP_CORE_MCP_TOOL_NAMES]).not.toContain(t);
+  it('carries no manual granular lock tools (auto-acquired on Edit/Write via hooks, both spines)', () => {
+    for (const t of LOCK_TOOLS) {
+      expect([...OMP_CORE_MCP_TOOL_NAMES]).not.toContain(t);
+      expect([...CORE_MCP_TOOL_NAMES]).not.toContain(t);
+    }
   });
 
   it('adds fleet:launch-on-plan so a routing-gate leader can actually execute option C', () => {
@@ -540,9 +551,8 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
   });
 
   it('is otherwise identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
-    const coreMinusLocks = CORE_MCP_TOOL_NAMES.filter((n) => !LOCK_TOOLS.includes(n));
     const ompMinusFleet = OMP_CORE_MCP_TOOL_NAMES.filter((n) => n !== 'fleet:launch-on-plan');
-    expect([...ompMinusFleet]).toEqual([...coreMinusLocks]);
+    expect([...ompMinusFleet]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });
 });
 

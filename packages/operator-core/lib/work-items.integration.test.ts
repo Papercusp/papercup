@@ -821,7 +821,7 @@ describe('B-LOOP-4 — atomic create+claim (createWorkItem assignee, real PG)', 
   });
 
   it('issue-family: create-with-assignee+assignedBy stamps assignee + assigned_by + assigned_at atomically', async () => {
-    const task = await wi.createWorkItem({ kind: 'task', title: 'delegated', harness: 'papercup', createdBy: 'queen', assignee: 'bee-3', assignedBy: 'queen' });
+    const task = await wi.createWorkItem({ kind: 'task', title: 'delegated', harness: 'papercup', createdBy: 'mug', assignee: 'bee-3', assignedBy: 'mug' });
     expect(task.family).toBe('issue');
     expect(task.assignee).toBe('bee-3');
     expect(task.assignedBy).toBe('mug'); // the durable delegator

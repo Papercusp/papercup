@@ -262,3 +262,29 @@ describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => 
     expect(inc.entries.filter((e) => e.category === "doc-drift")).toHaveLength(2);
   });
 });
+
+describe("coord:inbox handler (default raw-entry budget)", () => {
+  const longPeerPing = (m: number) => ({
+    ts: at(m),
+    msg_id: `lp-${m}`,
+    from: "peer",
+    to: ["owner-a"],
+    kind: "message",
+    summary: `message ${m} ${"x".repeat(1000)}`,
+  });
+
+  it("keeps the no-arg 50-row read tight while honoring explicit max_body_chars", async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => longPeerPing(i));
+    M.readInbox.mockImplementation(async () => rows);
+
+    const def = await callInbox();
+    expect(def.entries).toHaveLength(50);
+    expect(def.entries[0]!.summary_truncated).toBe(true);
+    expect(String(def.entries[0]!.summary).length).toBe(300);
+
+    const explicit = await callInbox({ max_body_chars: 800 });
+    expect(explicit.entries).toHaveLength(50);
+    expect(explicit.entries[0]!.summary_truncated).toBe(true);
+    expect(String(explicit.entries[0]!.summary).length).toBe(800);
+  });
+});
