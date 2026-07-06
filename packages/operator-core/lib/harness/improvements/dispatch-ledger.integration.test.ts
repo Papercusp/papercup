@@ -43,7 +43,7 @@ const fire = (itemId: string, attempt = 1) =>
   recordDispatchFired({ workspaceId: WS, itemId, attempt, runnerHarness: 'runner-h' });
 
 describe('improvement_dispatches write path (migration 238)', () => {
-  it('(P-012, migration 289) stamps hive_slug on the dispatch row when provided; NULL when omitted', async () => {
+  it('(P-012, migration 289) stamps pot_slug on the dispatch row when provided; NULL when omitted', async () => {
     const id = await recordDispatchFired({
       workspaceId: WS,
       itemId: 'EI-HIVE',
@@ -52,14 +52,14 @@ describe('improvement_dispatches write path (migration 238)', () => {
       hiveSlug: 'acme-hive',
     });
     expect(id).toBeTruthy();
-    const [r] = await h.sql<{ hive_slug: string | null }[]>`
-      SELECT hive_slug FROM harness_shared.improvement_dispatches WHERE id = ${id}`;
-    expect(r?.hive_slug).toBe('acme-hive');
+    const [r] = await h.sql<{ pot_slug: string | null }[]>`
+      SELECT pot_slug FROM harness_shared.improvement_dispatches WHERE id = ${id}`;
+    expect(r?.pot_slug).toBe('acme-hive');
 
     const id2 = await recordDispatchFired({ workspaceId: WS, itemId: 'EI-NOHIVE', attempt: 1, runnerHarness: 'runner-h' });
-    const [r2] = await h.sql<{ hive_slug: string | null }[]>`
-      SELECT hive_slug FROM harness_shared.improvement_dispatches WHERE id = ${id2}`;
-    expect(r2?.hive_slug).toBeNull();
+    const [r2] = await h.sql<{ pot_slug: string | null }[]>`
+      SELECT pot_slug FROM harness_shared.improvement_dispatches WHERE id = ${id2}`;
+    expect(r2?.pot_slug).toBeNull();
   });
 
   it('fire-time insert → a pending row with the dispatch identity; ok-result records the spawn correlation', async () => {
