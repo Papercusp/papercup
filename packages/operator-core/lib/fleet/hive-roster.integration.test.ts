@@ -27,8 +27,9 @@ async function truncateAll(): Promise<void> {
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id LIKE 'HR-TEST-%'`;
 }
 
-/** Seed a coord_presence row WITH the mig-277 columns (hive_slug / last_active_at
- *  / agent_role) — the assignments fixture's seedPresence predates them. */
+/** Seed a coord_presence row WITH the mig-277 columns (pot_slug / last_active_at
+ *  / agent_role) — the assignments fixture's seedPresence predates them. (pot_slug
+ *  is the D-007 pot-rename successor to the mig-277 hive_slug hive-scope key.) */
 async function seedPresence(
   ownerId: string,
   opts: {
@@ -43,7 +44,7 @@ async function seedPresence(
   await admin`
     INSERT INTO harness_shared.coord_presence
       (owner_id, owner_label, workspace_id, source, intent, current_plan_slug,
-       heartbeat_at, last_active_at, agent_role, hive_slug)
+       heartbeat_at, last_active_at, agent_role, pot_slug)
     VALUES (
       ${ownerId}, ${ownerId}, ${WS}, 'test', ${opts.intent ?? ''}, ${opts.planSlug ?? null},
       now() - ${`${opts.heartbeatAgeSec ?? 0} seconds`}::interval,

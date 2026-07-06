@@ -17,7 +17,7 @@ describe('federated-presence query (real shared_presence)', () => {
       CREATE TABLE harness_shared.shared_presence (
         workspace_id   text NOT NULL DEFAULT '',
         harness_slug   text NOT NULL,
-        hive_slug      text,
+        pot_slug       text,
         github_user_id bigint NOT NULL,
         machine_label  text NOT NULL,
         device_pubkey  text NOT NULL,

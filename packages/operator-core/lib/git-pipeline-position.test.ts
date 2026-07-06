@@ -38,10 +38,28 @@ function fakeGit(opts: {
 const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
   ({ integrationRoot: '/repo', deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'], ...over } as DevDeployState);
 
-const snap = (gate: Partial<GitPipelineSnapshot['gate']> = {}, lastStatus = 'synced'): GitPipelineSnapshot =>
+/** Default snapshot-level deploy state (distinct from the `deploy()` fixture above,
+ *  which is the `loadDeploy` dep — this is `GitPipelineSnapshot.deploy`, the source
+ *  for verdictProvenance's ready/readyAtMainHead/deployedBehindReady). */
+const snapDeploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
+  ({
+    integrationRoot: '/repo',
+    ready: { sha: 'readysha0', shortSha: 'readysha', committedAtMs: 1000, subject: 'ready' } as DevDeployState['ready'],
+    deployed: { sha: 'deployedsha0' } as DevDeployState['deployed'],
+    readyAtMainHead: true,
+    deployedBehindReady: 0,
+    ...over,
+  } as DevDeployState);
+
+const snap = (
+  gate: Partial<GitPipelineSnapshot['gate']> = {},
+  lastStatus = 'synced',
+  deployOver: Partial<DevDeployState> = {},
+): GitPipelineSnapshot =>
   ({
     gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, ...gate },
     gitSync: { lastStatus },
+    deploy: snapDeploy(deployOver),
   } as GitPipelineSnapshot);
 
 describe('gitPipelinePosition (P-002)', () => {
@@ -148,6 +166,89 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).toContain('no commit found');
   });
 
+  // EI-7846: verdict-provenance — the last green sha/age, main-FF status, and
+  // whether the live deploy actually came from the gate-green pin.
+  it('EI-7846: deployedSha === ready.sha reports deployOrigin gate-green (the normal auto-deploy path)', async () => {
+    const git = fakeGit({
+      pathCommit: 'abc1234567',
+      contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': ['abc1234567'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy({ deployed: { sha: 'readysha0' } as DevDeployState['deployed'] }),
+        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: true, deployedBehindReady: 0 }),
+      },
+    );
+    expect(res.verdictProvenance.lastGreenSha).toBe('readysha0');
+    expect(res.verdictProvenance.lastGreenShortSha).toBe('readysha');
+    expect(res.verdictProvenance.lastGreenAgeMs).toBeGreaterThanOrEqual(0);
+    expect(res.verdictProvenance.mainFastForwarded).toBe(true);
+    expect(res.verdictProvenance.deployedBehindReady).toBe(0);
+    expect(res.verdictProvenance.deployOrigin).toBe('gate-green');
+  });
+
+  it('EI-7846: a deployed sha that IS an ancestor of ready reports stale-behind-gate (safe lag)', async () => {
+    const git = fakeGit({
+      pathCommit: 'abc1234567',
+      contains: {
+        HEAD: ['abc1234567'],
+        'origin/staging': ['abc1234567'],
+        'origin/main': ['abc1234567'],
+        readysha0: ['deployedsha0'], // ready's history contains the deployed sha
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(), // deployed.sha = 'deployedsha0' (fixture default)
+        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: true, deployedBehindReady: 2 }),
+      },
+    );
+    expect(res.verdictProvenance.deployOrigin).toBe('stale-behind-gate');
+    expect(res.verdictProvenance.deployedBehindReady).toBe(2);
+  });
+
+  it('EI-7846: a deployed sha NOT reachable from ready reports ahead-of-gate (force-deployed past the gate)', async () => {
+    const git = fakeGit({
+      pathCommit: 'abc1234567',
+      contains: {
+        HEAD: ['abc1234567'],
+        'origin/staging': ['abc1234567'],
+        'origin/main': ['abc1234567'],
+        // readysha0's history does NOT contain deployedsha0 — force-deployed ahead.
+        readysha0: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({}, 'synced', { readyAtMainHead: false }),
+      },
+    );
+    expect(res.verdictProvenance.deployOrigin).toBe('ahead-of-gate');
+    expect(res.verdictProvenance.mainFastForwarded).toBe(false);
+  });
+
+  it('EI-7846: no ready pin (fresh workspace, never green yet) reports unknown provenance, not a throw', async () => {
+    const git = fakeGit({ pathCommit: 'abc1234567', contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({}, 'synced', { ready: null }),
+      },
+    );
+    expect(res.verdictProvenance.lastGreenSha).toBeNull();
+    expect(res.verdictProvenance.lastGreenAgeMs).toBeNull();
+    expect(res.verdictProvenance.deployOrigin).toBe('unknown');
+  });
+
   it('summarizePosition is pure over the resolved facts', () => {
     const base: Omit<PipelinePosition, 'summary'> = {
       input: { path: 'a.ts', sha: null },
@@ -160,6 +261,14 @@ describe('gitPipelinePosition (P-002)', () => {
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1 },
+      verdictProvenance: {
+        lastGreenSha: 'readysha0',
+        lastGreenShortSha: 'readysha',
+        lastGreenAgeMs: 1000,
+        mainFastForwarded: true,
+        deployedBehindReady: 0,
+        deployOrigin: 'stale-behind-gate',
+      },
       gitSyncLastStatus: 'synced',
       notes: [],
     };

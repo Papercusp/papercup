@@ -27,7 +27,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { resolveOperatorBase } from './operator-discovery.mjs';
+import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
 export const FRAMEWORKS = ['claude', 'codex', 'omp-meridian'];
 
@@ -112,7 +112,10 @@ function operatorUrlFrom(args, env = process.env) {
 }
 
 async function api(base, path, init) {
-  const r = await fetch(`${base}/api${path}`, init);
+  // Resilient (WI-3141): ride through the operator's first-boot / recycle window
+  // rather than throwing on the first connection-refused. The concierge's outer
+  // loop already re-polls, but this removes the scary error on a transient blip.
+  const r = await fetchResilient(`${base}/api${path}`, init);
   if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
   return r.json();
 }

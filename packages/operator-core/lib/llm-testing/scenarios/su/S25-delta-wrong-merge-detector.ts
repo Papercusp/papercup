@@ -5,9 +5,10 @@
  * This is the safety gate the owner BUILD decision (D-007) hinges on: the
  * "silently wrong merge" — a delta applied so the result is plausible but wrong
  * — must be a deterministic, gated test FAILURE, not an unobservable production
- * hazard. Same mechanism as S23 (base present, full → delta) but the assertions
- * are EXHAUSTIVE and the data adversarial: a correct merge has exactly one
- * possible row set, and every wrong-merge failure mode is caught.
+ * hazard. Same mechanism as S23 (base present, full → delta), with the
+ * delta-aware wrapper owning the merge before model exposure, but the assertions
+ * are EXHAUSTIVE and the data adversarial: a correct current view has exactly
+ * one possible row set, and every wrong-merge failure mode is caught.
  *
  * The developer asks for the open work items (full snapshot of 5), then asks for
  * the current list after the changes and is told to reply with ONLY the current
@@ -48,38 +49,38 @@ export const SU_S25_DELTA_WRONG_MERGE_DETECTOR: Scenario = {
     assertTextRequires(/CSV backend/i, {
       name: 'has-kept-csv',
       claim: 'Missing kept row WI-7001 ("Export picker → CSV backend") — a delta dropped an unchanged base row.',
-      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+      suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
     assertTextRequires(/NUL bytes/i, {
       name: 'has-kept-nul',
       claim: 'Missing kept row WI-7003 ("Audit log drops NUL bytes") — a delta dropped an unchanged base row.',
-      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+      suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
     assertTextRequires(/palette/i, {
       name: 'has-kept-palette',
       claim: 'Missing kept row WI-7005 ("Operator palette poll-to-push") — a delta dropped an unchanged base row.',
-      suggestion: 'Retain unchanged base rows; a delta carries only changes.',
+      suggestion: 'The reconstructed current view must retain unchanged base rows; a delta carries only changes.',
     }),
     assertTextRequires(/circuit-breaker/i, {
       name: 'has-updated-new',
       claim: "Missing WI-7004's updated title ('Gateway pool circuit-breaker') — the change=updated row was not applied.",
-      suggestion: 'Replace the updated row with its new data from the delta.',
+      suggestion: 'The reconstructed current view must replace updated rows with their new data from the delta.',
     }),
     assertTextRequires(/EROFS/i, {
       name: 'has-added',
       claim: 'Missing added row WI-7006 ("Sandbox npm-install EROFS") — the change=added row was ignored.',
-      suggestion: 'Add change=added rows to the merged list.',
+      suggestion: 'The reconstructed current view must include change=added rows.',
     }),
     // FORBID the removed row + the stale value — silent wrong-merges.
     assertTextForbids(/debounce/i, {
       name: 'no-removed',
       claim: 'Named the REMOVED row (WI-7002 "...debounce") as a current item — change=removed was not applied.',
-      suggestion: 'Drop change=removed ids from the merged result.',
+      suggestion: 'The reconstructed current view must drop change=removed ids.',
     }),
     assertTextForbids(/naive-retry/i, {
       name: 'no-stale-update',
       claim: "Showed WI-7004's STALE pre-update title ('naive-retry') — the update was not applied (the row silently kept its old data).",
-      suggestion: 'When change=updated, use the new data and discard the old title.',
+      suggestion: 'When change=updated, the reconstructed current view must use the new data and discard the old title.',
     }),
   ],
   rubric: SU_RUBRIC,

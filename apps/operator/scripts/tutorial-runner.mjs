@@ -47,7 +47,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core';
-import { resolveOperatorBase } from './operator-discovery.mjs';
+import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for tests)
@@ -417,8 +417,11 @@ function operatorUrlFrom(args, env = process.env) {
   return resolveOperatorBase(args, env);
 }
 
-async function api(base, path, init) {
-  const r = await fetch(`${base}/api${path}`, init);
+async function api(base, path, init, opts) {
+  // Resilient (WI-3141): ride through the operator's first-boot / recycle window
+  // instead of hard-failing on the first connection-refused (the "3 attempts
+  // before the tutorial showed up" report). opts threads onRetry/timeouts.
+  const r = await fetchResilient(`${base}/api${path}`, init, opts);
   if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
   return r.json();
 }
@@ -426,8 +429,8 @@ async function api(base, path, init) {
 // ───────────────────────────────────────────────────────────────────────────
 // Server IO
 // ───────────────────────────────────────────────────────────────────────────
-async function fetchScript(base, tutorial) {
-  return api(base, `/desktop/tutorial-script${tutorial ? '?tutorial=1' : ''}`);
+async function fetchScript(base, tutorial, opts) {
+  return api(base, `/desktop/tutorial-script${tutorial ? '?tutorial=1' : ''}`, undefined, opts);
 }
 
 async function saveProgress(base, lastSectionId, completedIds) {
@@ -541,7 +544,11 @@ async function answerQuestion(base, section, question) {
   const ac = new AbortController();
   const deadline = setTimeout(() => ac.abort(), 100_000);
   try {
-    const r = await fetch(`${base}/api/desktop/docs-qa`, {
+    // WI-3141: retry a transient connection blip (operator mid-recycle) for a few
+    // seconds before falling to "I couldn't get a live answer" — the ac.signal (100s
+    // stream deadline) still owns the overall lifetime; a small connectBudget just
+    // rides through a brief unavailability at connect time.
+    const r = await fetchResilient(`${base}/api/desktop/docs-qa`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -550,7 +557,7 @@ async function answerQuestion(base, section, question) {
         docSlugs: section?.docSlugs ?? [],
       }),
       signal: ac.signal,
-    });
+    }, { connectBudgetMs: 8_000 });
     if (!r.ok || !r.body) {
       errored = true;
     } else {
@@ -1108,9 +1115,10 @@ async function main() {
   // welcome-banner animation below, instead of blocking the user before anything
   // shows (perf #1). Settle-wrap so an early rejection can't trip an unhandled
   // rejection while we're mid-import / mid-animation.
+  let scriptSettled = false;
   const scriptResult = fetchScript(base, args.tutorial).then(
-    (value) => ({ ok: true, value }),
-    (error) => ({ ok: false, error }),
+    (value) => { scriptSettled = true; return { ok: true, value }; },
+    (error) => { scriptSettled = true; return { ok: false, error }; },
   );
 
   const prompts = await import('@inquirer/prompts');
@@ -1119,6 +1127,15 @@ async function main() {
   // The banner animates (~0.8s) while the fetch is in flight — the fetch latency is
   // hidden under work we'd do anyway rather than added in front of it.
   await welcomeBanner();
+
+  // WI-3141: on a fresh app open the operator is often still booting (embedded-PG
+  // + migrations). fetchResilient rides through that instead of hard-failing, but
+  // that means the fetch can take several seconds — so once the banner is done, if
+  // the script hasn't arrived yet, tell the user we're waiting rather than showing
+  // a silent gap that reads as a hang. Printed AFTER the banner to avoid garbling it.
+  if (!scriptSettled) {
+    say(dim('Getting things ready — waiting for the Papercusp server to finish starting…'));
+  }
 
   const settled = await scriptResult;
   if (!settled.ok) {

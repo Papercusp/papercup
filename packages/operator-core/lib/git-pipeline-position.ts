@@ -81,6 +81,39 @@ export interface PipelinePosition {
     fireStale: boolean;
     fireStaleReason: string | null;
   };
+  /**
+   * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
+   * per-target `positions` above (which answer "where is THIS path/sha"), this
+   * answers "what does the pipeline consider green right now, and did the live
+   * deploy actually come from that verdict, or was it pinned/forced ahead of or
+   * behind it?" Derived entirely from already-loaded `deploy` state
+   * (git-pipeline-stats.ts's `GitPipelineSnapshot.deploy`, the same
+   * `devDeployState()` the /admin Git tab reads) — no new git calls except the
+   * one ancestor check for `deployOrigin`.
+   */
+  verdictProvenance: {
+    /** The full sha of `ready` — the green pin the LAST full-suite gate verdict produced. */
+    lastGreenSha: string | null;
+    lastGreenShortSha: string | null;
+    /** How long ago that commit was made (ms) — the age of the current green pin. */
+    lastGreenAgeMs: number | null;
+    /** True iff `ready` (the green pin) is exactly at `main` HEAD — main is fully
+     *  fast-forwarded to the newest green verdict, no un-gated commits ahead of it. */
+    mainFastForwarded: boolean | null;
+    /** Commits `ready` has that the deployed ref doesn't (0 once the live host has
+     *  caught up to the latest green verdict). */
+    deployedBehindReady: number | null;
+    /**
+     * 'gate-green': the deployed sha IS the last green pin (normal auto-deploy path).
+     * 'stale-behind-gate': deployed is an ancestor of `ready` — safe lag, will catch
+     *   up on the next release-trigger tick.
+     * 'ahead-of-gate': deployed carries commits `ready` does NOT — it was force-deployed
+     *   past the gate (release:deploy --execute bypassing the green pin), not sourced
+     *   from a full-suite green verdict. Flag this before trusting "deployed" as "tested".
+     * 'unknown': insufficient data (no `ready` pin, or no deployed sha) to classify.
+     */
+    deployOrigin: 'gate-green' | 'stale-behind-gate' | 'ahead-of-gate' | 'unknown';
+  };
   gitSyncLastStatus: string | null;
   /** One human-readable line. */
   summary: string;
@@ -210,6 +243,30 @@ export async function gitPipelinePosition(
     fireStaleReason: snap.gate.fireStaleReason,
   };
 
+  // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy
+  // state (ready = the green pin; readyAtMainHead / deployedBehindReady are already
+  // computed there) — no new I/O except the one ancestor check for deployOrigin.
+  const ready = snap.deploy?.ready ?? null;
+  let deployOrigin: PipelinePosition['verdictProvenance']['deployOrigin'] = 'unknown';
+  if (ready && deployedSha) {
+    if (deployedSha === ready.sha) {
+      deployOrigin = 'gate-green';
+    } else {
+      // Is the deployed sha an ancestor-or-equal of the green pin (safe lag), or does
+      // it carry commits the green pin doesn't (force-deployed past the gate)?
+      const deployedIsAncestorOfReady = await refContains(git, root, ready.sha, deployedSha);
+      deployOrigin = deployedIsAncestorOfReady ? 'stale-behind-gate' : 'ahead-of-gate';
+    }
+  }
+  const verdictProvenance: PipelinePosition['verdictProvenance'] = {
+    lastGreenSha: ready?.sha ?? null,
+    lastGreenShortSha: ready?.shortSha ?? null,
+    lastGreenAgeMs: ready ? Date.now() - ready.committedAtMs : null,
+    mainFastForwarded: snap.deploy?.readyAtMainHead ?? null,
+    deployedBehindReady: snap.deploy?.deployedBehindReady ?? null,
+    deployOrigin,
+  };
+
   const base: Omit<PipelinePosition, 'summary'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
@@ -219,6 +276,7 @@ export async function gitPipelinePosition(
     targetSubject,
     dirtyUncommitted,
     positions,
+    verdictProvenance,
     deployedSha,
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,

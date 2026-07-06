@@ -287,11 +287,11 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
 
     // The supervision rail's full evidence on the QUEEN's cell: presence row +
     // the ack — one Swarm's PG holds the whole cross-swarm supervision view.
-    const presenceRows = await a.sql<Array<{ device_pubkey: string; hive_slug: string | null }>>`
-      SELECT device_pubkey, hive_slug FROM harness_shared.shared_presence
+    const presenceRows = await a.sql<Array<{ device_pubkey: string; pot_slug: string | null }>>`
+      SELECT device_pubkey, pot_slug FROM harness_shared.shared_presence
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
     expect(presenceRows).toHaveLength(1);
     expect(presenceRows[0].device_pubkey).toBe(b.announcePubkey);
-    expect(presenceRows[0].hive_slug).toBe(rig.hiveSlug); // the P-008 Hive scoping rode along
+    expect(presenceRows[0].pot_slug).toBe(rig.hiveSlug); // the P-008 Hive scoping rode along
   }, 120_000);
 });

@@ -2824,6 +2824,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
+          // WI-3150: the account that ACTUALLY threw this 429 — captured BEFORE the failover branch below
+          // may reassign `active` to a rotated-to account. `shape429Suffix` (util5h/util7d + provenance) is
+          // built from THIS attempt's response headers, so the retry log MUST name this same account or the
+          // util headers get attributed to the wrong account (the shuffle that made a bare-burst on a healthy
+          // account read as weekly exhaustion on the account we rotated TO). Name + headers must agree.
+          const throttled429AccountId = active.accountId;
           // AIMD signal (B-GW-1, refined 2026-06-21 budget-aware routing): a 429 shrinks GLOBAL admission
           // concurrency ONLY when it's genuine pool-wide over-drive — i.e. we could NOT route it around to a
           // healthy account. recordThrottle() is therefore DEFERRED to the failover decision below: a
@@ -3152,7 +3158,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // = a real per-account wall, with the account's live util5h/util7d at the 429 site.
             log(
               'warn',
-              `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${active.accountId}'${shape429Suffix}`,
+              // WI-3150: name the account that THREW the 429 (throttled429AccountId), NOT `active` — which the
+              // rotate branch above may have already reassigned to the retry target. shape429Suffix's util
+              // headers belong to throttled429AccountId, so the two must match for the log to attribute correctly.
+              `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${throttled429AccountId}'${shape429Suffix}`,
             );
             continue;
           }

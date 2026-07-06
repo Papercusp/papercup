@@ -5,6 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
+import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 interface Upstream {
@@ -255,6 +256,46 @@ test('classify429Shape — a non-429 (e.g. 529) is unclassified', () => {
     classify429Shape({ status: 529, isUsageCap: false, bare: true, hasWindowReset: false, unifiedRejected: false }),
     'unclassified',
   );
+});
+
+test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS util headers, not the rotated-to account', async () => {
+  // A 2-account pool where account A throws a rate-window 429 (util7d=0.95) and the gateway fails over to B.
+  // The retry log line is built from A's response headers (shape429Suffix) but is emitted AFTER the rotate
+  // branch has reassigned `active` to B — so it MUST name A (throttled429AccountId), or A's util headers get
+  // attributed to B (the shuffle that made a bare/quota 429 on one account read as exhaustion on another).
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('acctA'), acct('acctB')]);
+  const logs: string[] = [];
+  const now = Date.now();
+  await boot(
+    (req, res, _body) => {
+      const auth = String(req.headers['authorization'] ?? '');
+      if (auth.includes('acctA-tok')) {
+        // Rate-window 429 (has a reset → not bare) carrying A's OWN weekly-utilization header.
+        res.writeHead(429, {
+          'content-type': 'application/json',
+          'anthropic-ratelimit-unified-5h-reset': String(Math.round(now / 1000) + 60),
+          'anthropic-ratelimit-unified-7d-utilization': '0.95',
+        });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+        return;
+      }
+      // acctB (rotated-to) succeeds, so the request resolves after exactly one failover.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    },
+    { pool, log: (_level, msg) => logs.push(msg) },
+  );
+  const res = await post({ model: 'claude-sonnet-5', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] });
+  assert.equal(res.status, 200, `failover A→B ultimately succeeds; status=${res.status} body=${await res.clone().text().catch(() => '?')}\nLOGS:\n${logs.join('\n')}`);
+
+  const retryLine = logs.find((m) => m.includes('internal retry') && m.includes('util7d='));
+  assert.ok(retryLine, `expected an internal-retry log line carrying util headers; got:\n${logs.join('\n')}`);
+  // A's util header (0.95) must be paired with A's NAME — the whole point of the fix.
+  assert.ok(retryLine!.includes('util7d=0.95'), `suffix should carry A's util7d; got: ${retryLine}`);
+  assert.ok(retryLine!.includes("on 'acctA'"), `log must name the THROTTLED account acctA; got: ${retryLine}`);
+  // The rotated-to account must NOT be the one the util header is attributed to (the pre-fix bug).
+  assert.ok(!retryLine!.includes("on 'acctB'"), `log must NOT attribute A's util to the rotated-to acctB; got: ${retryLine}`);
 });
 
 test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwards body + status', async () => {

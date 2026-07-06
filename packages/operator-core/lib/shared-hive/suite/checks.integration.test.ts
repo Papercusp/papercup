@@ -36,7 +36,7 @@ beforeAll(async () => {
       current_view   text,
       last_seen_at   timestamptz NOT NULL DEFAULT now(),
       schema_version bigint NOT NULL DEFAULT 1,
-      hive_slug      text,
+      pot_slug       text,
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     )
   `);

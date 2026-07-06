@@ -135,8 +135,9 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   beforeAll(async () => {
     db = await createFreshPgDb('presence_gossip_wiring');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
-    // shared_presence (baseline shape + mig 187 hive_slug + LWW guard cols) with
-    // the conflict target the projection upserts on.
+    // shared_presence (baseline shape + the pot_slug hive-scope key (mig 187 →
+    // renamed pot_slug by the D-007 pot-rename expand/contract) + LWW guard cols)
+    // with the conflict target the projection upserts on.
     await db.sql.unsafe(`
       CREATE TABLE harness_shared.shared_presence (
         workspace_id text NOT NULL DEFAULT '',
@@ -148,7 +149,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         current_view text,
         last_seen_at timestamptz NOT NULL DEFAULT now(),
         schema_version bigint NOT NULL DEFAULT 1,
-        hive_slug text,
+        pot_slug text,
         fed_ts bigint,
         fed_hlc text,
         author_pubkey text,
@@ -158,6 +159,13 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     // P-301: the fleet-membership columns the session-presence writer now sets.
     await db.sql.unsafe(
       stripMeta(readFileSync(resolve(SQL_DIR, '479-shared-session-presence-fleet-slug.sql'), 'utf8')),
+    );
+    // D-007 pot-rename: mig 434 creates shared_session_presence.hive_slug, but the
+    // session-presence writer now sets the pot_slug column (expand added it; S3
+    // drops hive_slug). Rename in-place so this hand-rolled table matches the
+    // post-contract production shape a single migrated column: pot_slug.
+    await db.sql.unsafe(
+      `ALTER TABLE harness_shared.shared_session_presence RENAME COLUMN hive_slug TO pot_slug`,
     );
 
     // Fake swarm + injected deps: the member device is attested; nobody revoked.
@@ -228,9 +236,9 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     await settle(async () =>
       (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='desktop'`).length > 0,
     );
-    const [pinned] = await db.sql<{ hive_slug: string }[]>`
-      SELECT hive_slug FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='desktop'`;
-    expect(pinned.hive_slug).toBe(HIVE); // never 'evil-foreign-hive'
+    const [pinned] = await db.sql<{ pot_slug: string }[]>`
+      SELECT pot_slug FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='desktop'`;
+    expect(pinned.pot_slug).toBe(HIVE); // never 'evil-foreign-hive'
   });
 
   it('a NON-member device\'s validly-signed frame is dropped (fail-closed member gate)', async () => {
@@ -262,10 +270,10 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     await settle(async () =>
       (await db.sql`SELECT 1 FROM harness_shared.shared_session_presence WHERE workspace_id=${WS}`).length >= 2,
     );
-    const rows = await db.sql<{ owner_id: string; hive_slug: string }[]>`
-      SELECT owner_id, hive_slug FROM harness_shared.shared_session_presence WHERE workspace_id=${WS} ORDER BY owner_id`;
+    const rows = await db.sql<{ owner_id: string; pot_slug: string }[]>`
+      SELECT owner_id, pot_slug FROM harness_shared.shared_session_presence WHERE workspace_id=${WS} ORDER BY owner_id`;
     expect(rows.map((r) => r.owner_id)).toEqual(['s-bee-9', 'su-remote-1']);
-    expect(rows.every((r) => r.hive_slug === HIVE)).toBe(true); // never 'evil-foreign-hive'
+    expect(rows.every((r) => r.pot_slug === HIVE)).toBe(true); // never 'evil-foreign-hive'
   });
 
   it('H2: a member device CANNOT evict another device\'s presence row (cross-device del is device-scoped)', async () => {
