@@ -14,6 +14,7 @@ import {
   DRAINED_RETENTION_MS,
   ORPHAN_UNDRAINED_RETENTION_MS,
   EPHEMERAL_UNDRAINED_RETENTION_MS,
+  NON_REGISTRY_UNDRAINED_RETENTION_MS,
 } from './substrate-outbox-backstop-gc';
 
 /** A fixed epoch-ms clock so the retention windows are deterministic. */
@@ -44,6 +45,16 @@ async function keysRemaining(sql: postgres.Sql): Promise<string[]> {
   return rows.map((r) => r.key);
 }
 
+async function seedRegistry(sql: postgres.Sql): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload, updated_at)
+    VALUES (
+      'default',
+      ${sql.json({ projects: [{ slug: 'papercusp', path: '/tmp/papercusp', harness_kind: 'hive' }] })},
+      ${NOW}
+    )`;
+}
+
 describe('substrate-outbox backstop GC', () => {
   let db: FreshPgDb;
   let sql: postgres.Sql;
@@ -68,12 +79,24 @@ describe('substrate-outbox backstop GC', () => {
         drained_log_key TEXT
       );
     `);
+    // runSubstrateOutboxBackstopGc also consults the registry to cheaply reap
+    // non-existent harness pairs on a shorter TTL. Keep this minimal schema in
+    // lockstep with migration 025 so this integration test exercises that clause.
+    await sql.unsafe(`
+      CREATE TABLE harness_shared.harness_registry (
+        workspace_id TEXT PRIMARY KEY,
+        payload      JSONB NOT NULL,
+        updated_at   BIGINT NOT NULL DEFAULT 0
+      );
+    `);
   }, 60_000);
   afterAll(async () => {
     await db.cleanup();
   });
   beforeEach(async () => {
     await sql`DELETE FROM harness_shared.substrate_outbox`;
+    await sql`DELETE FROM harness_shared.harness_registry`;
+    await seedRegistry(sql);
   });
 
   it('GCs orphaned undrained rows older than 48h, keeps recent undrained', async () => {
@@ -205,5 +228,25 @@ describe('substrate-outbox backstop GC', () => {
 
     expect(deleted).toBe(1);
     expect(await keysRemaining(sql)).toEqual(['ct-recent', 'real-2h']);
+  });
+
+  it('reaps non-registry undrained rows on the short TTL, sparing registered harnesses', async () => {
+    await seed(sql, {
+      key: 'registered-stale',
+      ts: NOW - NON_REGISTRY_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      harness_slug: 'papercusp',
+    });
+    await seed(sql, {
+      key: 'missing-registry-stale',
+      ts: NOW - NON_REGISTRY_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      harness_slug: 'deleted-harness',
+    });
+
+    const { deleted } = await runSubstrateOutboxBackstopGc({ now: NOW, sql });
+
+    expect(deleted).toBe(1);
+    expect(await keysRemaining(sql)).toEqual(['registered-stale']);
   });
 });
