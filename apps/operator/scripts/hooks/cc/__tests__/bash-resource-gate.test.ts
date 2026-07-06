@@ -132,6 +132,17 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['compound ; clean -f', 'git status ; git clean -f'],
     ['newline-separated stash', 'git status\ngit stash'],
     ['git -C <dir> reset --hard', 'git -C /some/repo reset --hard'],
+    // wrapper-prefix bypass class (definetool-token-reduction-uncovered-surfaces P-014;
+    // PROVEN 2026-07-06: the guard denied `git reset --hard` but ALLOWED `rtk git reset
+    // --hard`). rtk = the token-killer output filter, which rewrites `git …`→`rtk git …`.
+    ['rtk-wrapped reset --hard (the RTK rewrite that motivated this)', 'rtk git reset --hard HEAD'],
+    ['time-wrapped reset --hard', 'time git reset --hard'],
+    ['env-assignment-wrapped clean -fd', 'env FOO=bar git clean -fd'],
+    ['nice -n N wrapped stash', 'nice -n 5 git stash'],
+    ['command-wrapped checkout .', 'command git checkout .'],
+    ['nohup-wrapped restore .', 'nohup git restore .'],
+    ['sudo -u <user> value-flag checkout .', 'sudo -u marsh git checkout .'],
+    ['nested wrappers (time rtk) reset --hard', 'time rtk git reset --hard'],
   ])('denies %s', (_label, command) => {
     expectGitDeny(runGate(bashCmd(command), AGENT));
   });
@@ -154,6 +165,9 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
     ['ordinary diff', 'git diff --stat'],
     ['"reset --hard" only in a commit message, not command position', 'git commit -m "docs: explain git reset --hard"'],
     ['"git reset --hard" inside a string arg, not command position', 'echo "git reset --hard"'],
+    ['rtk-wrapped safe read (no false positive)', 'rtk git status'],
+    ['time-wrapped safe read (no false positive)', 'time git log --oneline'],
+    ['env-wrapped safe read (no false positive)', 'env FOO=bar git diff --stat'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command), AGENT));
   });
