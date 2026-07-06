@@ -28,17 +28,27 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_GATEWAY_PORT } from './launch';
+import {
+  resolveSidecarSpawnPlan,
+  respawnBackoffMs,
+  pruneRespawnWindow,
+  respawnBudgetExhausted,
+  gracefulStopChild,
+  registerSidecarShutdownHooks,
+} from '../process-supervision/sidecar-spawn-shared';
 
 // ESM (type:module): derive the module dir from import.meta (the EI-1612 __dirname fix).
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-// ── crash-respawn state (mirrors substrate-sidecar-spawn constants) ────────────
+// ── crash-respawn state (WI-3079: shared with substrate-sidecar-spawn via
+// process-supervision/sidecar-spawn-shared.ts) ──────────────────────────────
 export const GATEWAY_MAX_RESPAWN_ATTEMPTS = 5;
 export const GATEWAY_RESPAWN_WINDOW_MS = 5 * 60_000;
 /** Backoff before respawn attempt N (1-based) within the window: 1s·2^(N−1), capped 30s.
- *  Exported pure for tests. */
+ *  Exported pure for tests (kept as a named re-export for back-compat with
+ *  existing imports of this symbol). */
 export function gatewayRespawnBackoffMs(attemptInWindow: number): number {
-  return Math.min(1000 * 2 ** Math.max(0, attemptInWindow - 1), 30_000);
+  return respawnBackoffMs(attemptInWindow);
 }
 
 let gatewayProcess: ChildProcess | null = null;
@@ -91,22 +101,13 @@ export function buildGatewaySpawnPlan(opts?: {
   const selfPath = opts?.selfPath ?? fileURLToPath(import.meta.url);
   const execPath = opts?.execPath ?? process.execPath;
   const dir = opts?.moduleDirOverride ?? moduleDir;
-  const isBundled = !selfPath.endsWith('.ts') && !selfPath.endsWith('.tsx');
-  if (isBundled) {
-    return {
-      cmd: execPath,
-      args: [selfPath],
-      env: { PAPERCUSP_GATEWAY_SIDECAR_MODE: '1' },
-      mode: 'bundled-reexec',
-    };
-  }
   // Dev: bin.ts is a SIBLING of this module (same dir) — no fragile ../../../ hops.
-  return {
-    cmd: 'npx',
-    args: ['tsx', path.join(dir, 'bin.ts')],
-    env: {},
-    mode: 'dev-tsx',
-  };
+  return resolveSidecarSpawnPlan({
+    selfPath,
+    devScriptPath: path.join(dir, 'bin.ts'),
+    bundledModeEnvVar: 'PAPERCUSP_GATEWAY_SIDECAR_MODE',
+    execPath,
+  });
 }
 
 export type EnsureGatewayOutcome = 'disabled' | 'already-running' | 'adopted-external' | 'spawned';
@@ -190,8 +191,8 @@ function scheduleRespawn(port: number): void {
   if (deliberateStop) return;
   if (respawnTimer) return; // a respawn is already pending
   const now = Date.now();
-  respawnAttempts = respawnAttempts.filter((t) => now - t < GATEWAY_RESPAWN_WINDOW_MS);
-  if (respawnAttempts.length >= GATEWAY_MAX_RESPAWN_ATTEMPTS) {
+  respawnAttempts = pruneRespawnWindow(respawnAttempts, now, GATEWAY_RESPAWN_WINDOW_MS);
+  if (respawnBudgetExhausted(respawnAttempts, GATEWAY_MAX_RESPAWN_ATTEMPTS)) {
     console.error(
       `[gateway-sidecar] ${GATEWAY_MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(GATEWAY_RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
         'Agents get connection-refused on :' + port + ' (fail-closed) until an explicit ensureGatewaySidecar() call.',

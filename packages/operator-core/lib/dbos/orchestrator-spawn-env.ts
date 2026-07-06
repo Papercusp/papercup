@@ -33,6 +33,17 @@ export interface PipelineSpawnEnvInput {
   idempotencyKey?: string;
   /** Workspace to pin the spawn to (the pipeline's captured workspace). */
   workspaceId?: string;
+  /**
+   * WI-3082: per-turn trigger attribution — 'coord-wake' | 'cron' | 'autoloop' | 'user'
+   * (the same enum `invoke.ts` reads as `PAPERCUSP_TURN_TRIGGER` for cup:spawn'd bee/queen
+   * children). Every current caller of this builder is a DBOS-scheduled durable-pipeline
+   * tick (the next queued role step for a feature/chunk, picked up by the orchestrator's
+   * own recurring poll — never a human or a coordinating peer directly placing the run),
+   * so 'cron' is the correct default and callers need not pass it. Override only if a
+   * future caller invokes a pipeline role for a genuinely different reason (e.g. an
+   * immediate event-reaction re-dispatch rather than the periodic tick).
+   */
+  turnTrigger?: string;
 }
 
 export function buildPipelineExtraEnv(input: PipelineSpawnEnvInput): Record<string, string> {
@@ -47,6 +58,14 @@ export function buildPipelineExtraEnv(input: PipelineSpawnEnvInput): Record<stri
     // test path stays in-process. invoke-once also requires DATABASE_URL (set by
     // buildInvokeOnce) before it actually uses the PG backend.
     PAPERCUSP_CHUNK_LOCK_PG: '1',
+    // WI-3082: attribute this run's agent_usage_samples row so burn reports can split
+    // scheduled-pipeline spend from coord-wake/autoloop/user spend — previously NULL for
+    // every invoke-once pipeline role (worker/scoper/architect/reviewer/documenter/curator/
+    // auditor), the single largest unattributed jsonl-source slice the token-usage audit
+    // (P-002) found. `invoke.ts` reads this via `process.env.PAPERCUSP_TURN_TRIGGER` in the
+    // SAME child process this env is spawned into, so setting it here (rather than mutating
+    // the parent's shared process.env) is race-free across concurrent pipeline spawns.
+    PAPERCUSP_TURN_TRIGGER: input.turnTrigger ?? 'cron',
   };
   if (input.idempotencyKey) env.IDEMPOTENCY_KEY = input.idempotencyKey;
   if (input.workspaceId) env.PAPERCUSP_WORKSPACE_ID = input.workspaceId;

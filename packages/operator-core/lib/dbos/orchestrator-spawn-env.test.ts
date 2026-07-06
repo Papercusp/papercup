@@ -44,10 +44,22 @@ describe('buildPipelineExtraEnv — invoke-once spawn env for the durable pipeli
       PAPERCUSP_WORKSPACE_ID: 'default',
       // P-040: pipeline spawns route the worker chunk-loop through the PG lock backend.
       PAPERCUSP_CHUNK_LOCK_PG: '1',
+      // WI-3082: default trigger attribution for every durable-pipeline tick.
+      PAPERCUSP_TURN_TRIGGER: 'cron',
     });
   });
 
   test('always sets PAPERCUSP_CHUNK_LOCK_PG=1 (pipeline spawn → PG lock backend, P-040)', () => {
     expect(buildPipelineExtraEnv({ harnessSlug: 'sheets' }).PAPERCUSP_CHUNK_LOCK_PG).toBe('1');
+  });
+
+  test('WI-3082: defaults PAPERCUSP_TURN_TRIGGER to "cron" (every current caller is a DBOS-scheduled pipeline tick)', () => {
+    expect(buildPipelineExtraEnv({ harnessSlug: 'sheets' }).PAPERCUSP_TURN_TRIGGER).toBe('cron');
+  });
+
+  test('WI-3082: an explicit turnTrigger override wins over the "cron" default', () => {
+    expect(
+      buildPipelineExtraEnv({ harnessSlug: 'sheets', turnTrigger: 'event-reaction' }).PAPERCUSP_TURN_TRIGGER,
+    ).toBe('event-reaction');
   });
 });
