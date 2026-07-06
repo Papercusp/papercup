@@ -52,10 +52,10 @@ export default defineTool({
   name: 'pot:declare-wake',
   profile: 'engineer',
   description:
-    "Declare the Hive operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
+    "Declare the pot operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
   guidance: {
-    when: 'You are the hive/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
-    notWhen: 'To fire the hive right now — that is pot:wake.',
+    when: 'You are the pot/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
+    notWhen: 'To fire the pot right now — that is pot:wake.',
     chaining: 'pot:status to inspect the current declaration; pot:wake for an immediate manual fire.',
     seeAlso: [
       'pot:status (inspect the current wake declaration)',

@@ -101,18 +101,38 @@ function gatewayPort(): number {
 // ── pure core ────────────────────────────────────────────────────────────────
 
 /** Compose the three legs into the ONE status the chip + notification carry. */
-export function composeLearningHealth(legs: InfraLeg[], nowMs: number): LearningInfraHealth {
-  const down = legs.filter((l) => l.status === 'down');
+export function composeLearningHealth(
+  legs: InfraLeg[],
+  nowMs: number,
+  opts: { learningConsumersPresent?: boolean } = {},
+): LearningInfraHealth {
+  // No-consumer gate (WI-3167): on a host with no self-improvement workload — a
+  // shipped end-user desktop has no enabled gym autoloop, no auto-implement lane,
+  // and no Claude session — a down llm-spine is NOT an outage: nothing consumes the
+  // spine. Without this gate every fresh desktop install perpetually reports the
+  // learning system OFFLINE (its llm-spine leg is down for want of a Claude session)
+  // and the Sentinel relays "owner-facing infra is degraded" into the user's chat.
+  // Default true ⇒ unchanged behavior on the dev/owner fleet, where consumers exist.
+  // The down llm-spine leg is still kept in `legs` for the chip's detail; only its
+  // contribution to the composite STATUS is suppressed.
+  const learningConsumersPresent = opts.learningConsumersPresent ?? true;
+  const down = legs
+    .filter((l) => l.status === 'down')
+    .filter((l) => learningConsumersPresent || l.name !== 'llm-spine');
   const spineDown = down.some((l) => l.name === 'llm-spine');
   const status: LearningHealthStatus =
     spineDown || down.length >= 2 ? 'offline' : down.length === 1 ? 'degraded' : 'ok';
   const unknowns = legs.filter((l) => l.status === 'unknown');
+  const spineSuppressed =
+    !learningConsumersPresent && legs.some((l) => l.name === 'llm-spine' && l.status === 'down');
   const reason =
     down.length > 0
       ? down.map((l) => `${l.name}: ${l.detail}`).join('; ')
-      : unknowns.length > 0
-        ? `all checkable legs up (${unknowns.map((l) => l.name).join(', ')} unknown)`
-        : 'all legs up';
+      : spineSuppressed
+        ? 'no self-improvement workload on this host (no enabled gym autoloop) — a stateless-LLM spine is not required here'
+        : unknowns.length > 0
+          ? `all checkable legs up (${unknowns.map((l) => l.name).join(', ')} unknown)`
+          : 'all legs up';
   return { status, reason, legs, evaluatedAt: nowMs };
 }
 
@@ -265,6 +285,27 @@ async function collectLegs(): Promise<InfraLeg[]> {
   ]);
 }
 
+/**
+ * WI-3167: does this host actually run the self-improvement system? The concrete
+ * signal is at least one ENABLED gym autoloop — the dev/owner fleet has them; a
+ * shipped end-user desktop has none (no gym, no auto-implement lane, no Claude
+ * session). When false, composeLearningHealth stops treating a down llm-spine as an
+ * outage, so a fresh desktop no longer perpetually reports the learning system
+ * OFFLINE and the Sentinel no longer surfaces a phantom "infra degraded" to the
+ * user. Fail-SAFE to true on error — never suppress a real outage because the
+ * consumer probe itself threw (same fail-open stance as legSafe / checkFireGate).
+ */
+async function hasLearningConsumers(): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const ws = activeWorkspaceId();
+    const autoloops = await listAutoloopsForWorkspace(sql, { workspaceId: ws });
+    return autoloops.some((a) => a.enabled);
+  } catch {
+    return true;
+  }
+}
+
 // ── notification rail (D-002: infra escalates, it doesn't queue) ────────────
 
 const LEARNING_HEALTH_IDENTITY: AgentIdentity = {
@@ -318,6 +359,7 @@ async function notifyTransition(transition: 'offline' | 'recovered', health: Lea
 /** Injectable seams (tests). Production callers pass nothing. */
 export interface LearningInfraHealthDeps {
   legs: () => Promise<InfraLeg[]>;
+  consumersPresent: () => Promise<boolean>;
   notify: (transition: 'offline' | 'recovered', health: LearningInfraHealth) => Promise<void>;
   invalidate: () => Promise<void>;
   now: () => number;
@@ -325,14 +367,25 @@ export interface LearningInfraHealthDeps {
 
 const defaultDeps: LearningInfraHealthDeps = {
   legs: collectLegs,
+  consumersPresent: hasLearningConsumers,
   notify: notifyTransition,
   invalidate: () => notifySyncInvalidate('learning.health', undefined),
   now: () => Date.now(),
 };
 
-// Cross-tick state — module singleton by design (see header).
+// WI-3167: a single OFFLINE tick must not page the owner. The dev/owner-fleet
+// inference-gateway /healthz probe times out transiently under load (6s) and
+// recovers within a tick, and the creds file has a brief unreadable window during
+// its ~2-hourly atomic rotation — both produced repeated false OFFLINE→recovered
+// flaps in the toast_log. Require this many CONSECUTIVE offline ticks before the
+// owner-notifying 'offline' transition fires; a not-yet-confirmed offline presents
+// as 'degraded' (a real leg IS down) so the chip still reflects the trouble.
+const OFFLINE_DEBOUNCE_TICKS = 2;
+
+// Cross-tick state — module singletons by design (see header).
 let prevStatus: LearningHealthStatus | null = null;
 let lastHealth: LearningInfraHealth | null = null;
+let consecutiveOfflineTicks = 0;
 
 /** Last composite evaluation in this process, or null if never evaluated. */
 export function lastLearningInfraHealth(): LearningInfraHealth | null {
@@ -349,7 +402,23 @@ export async function runLearningInfraHealthTick(
   overrides: Partial<LearningInfraHealthDeps> = {},
 ): Promise<{ health: LearningInfraHealth; transition: LearningHealthTransition }> {
   const deps = { ...defaultDeps, ...overrides };
-  const health = composeLearningHealth(await deps.legs(), deps.now());
+  const [legs, learningConsumersPresent] = await Promise.all([deps.legs(), deps.consumersPresent()]);
+  const raw = composeLearningHealth(legs, deps.now(), { learningConsumersPresent });
+
+  // Debounce the owner-facing escalation (see OFFLINE_DEBOUNCE_TICKS): a raw OFFLINE
+  // becomes the CONFIRMED status only after N consecutive offline ticks. Before that
+  // it presents as 'degraded' unless we were already confirmed-offline (a persistent
+  // outage stays offline). Any non-offline tick clears the streak immediately, so
+  // recovery is never delayed.
+  consecutiveOfflineTicks = raw.status === 'offline' ? consecutiveOfflineTicks + 1 : 0;
+  const confirmedStatus: LearningHealthStatus =
+    raw.status === 'offline' && consecutiveOfflineTicks < OFFLINE_DEBOUNCE_TICKS
+      ? prevStatus === 'offline'
+        ? 'offline'
+        : 'degraded'
+      : raw.status;
+  const health: LearningInfraHealth = { ...raw, status: confirmedStatus };
+
   const transition = diffLearningHealth(prevStatus, health.status);
   const statusChanged = prevStatus !== health.status;
   prevStatus = health.status;
@@ -378,4 +447,5 @@ export async function getLearningInfraHealth(maxAgeMs = 5 * 60_000): Promise<Lea
 export function _resetLearningInfraHealthState(): void {
   prevStatus = null;
   lastHealth = null;
+  consecutiveOfflineTicks = 0;
 }
