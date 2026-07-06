@@ -314,7 +314,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
         SELECT count(*)::int AS n
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ctx.ws}
-           AND child_role IN ('cup', 'mug', 'kettle', 'scout')
+           AND child_role IN ('cup', 'mug', 'kettle', 'blender')
            AND status = 'failed'
            AND started_at >= ${new Date(ctx.now - WINDOW_MS)}
            AND (

@@ -60,7 +60,7 @@ async function seedIssue(
     status?: string;
     takenBy?: string | null;
     createdTs?: number;
-    payload?: Record<string, unknown> | null;
+    payload?: postgres.JSONValue | null;
     harness?: string;
   } = {},
 ) {

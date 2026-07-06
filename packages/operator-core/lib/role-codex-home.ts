@@ -210,18 +210,54 @@ const CODEX_HOOK_OWNS_TITLE_TOML = [
   '',
 ] as const;
 
-function inheritedCodexTrustedWorkspaceToml(): string[] {
-  const realHome = join(homedir(), '.codex');
-  const source = join(realHome, 'config.toml');
-  if (!existsSync(source)) return [];
+/** Trust state for the generated home's config.toml.
+ *
+ *  Two sources, one emission point (TOML forbids duplicate table headers):
+ *  1. INHERITED — the user's real ~/.codex/config.toml trust tables. Modern
+ *     codex records directory trust as `[projects."<path>"] trust_level`
+ *     (ProjectConfig); `[trusted_workspaces]` is the legacy shape we used to
+ *     inherit EXCLUSIVELY — which silently became a no-op once codex moved to
+ *     `projects.*`, so every fresh per-session home booted untrusted and the
+ *     TUI blocked on "Do you trust the contents of this directory?"
+ *     (live-caught 2026-07-05, psu codex session-10753).
+ *  2. SEEDED — `trustDir`, the directory the operator is launching the agent
+ *     into. A psu/role launch is trusted by definition (the launcher already
+ *     passes --dangerously-bypass-hook-trust + YOLO permissions), and a fresh
+ *     CODEX_HOME never carries an answer forward — without the seed, every
+ *     scripted codex launch hangs at the trust prompt.
+ */
+function inheritedCodexTrustToml(trustDir?: string | null): string[] {
+  const source = join(homedir(), '.codex', 'config.toml');
   const out: string[] = [];
-  let keep = false;
-  for (const line of readFileSync(source, 'utf8').split(/\r?\n/)) {
-    const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
-    if (table) keep = table[1] === 'trusted_workspaces' || table[1].startsWith('trusted_workspaces.');
-    if (keep) out.push(line);
+  if (existsSync(source)) {
+    let keep = false;
+    for (const line of readFileSync(source, 'utf8').split(/\r?\n/)) {
+      const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (table) {
+        keep =
+          table[1] === 'trusted_workspaces' ||
+          table[1].startsWith('trusted_workspaces.') ||
+          table[1] === 'projects' ||
+          table[1].startsWith('projects.');
+      }
+      if (keep) out.push(line);
+    }
   }
-  return out.length > 0 ? ['# Inherited trusted workspace state from ~/.codex/config.toml.', ...out, ''] : [];
+  const inherited = out.length > 0 ? ['# Inherited trust state from ~/.codex/config.toml.', ...out, ''] : [];
+  if (trustDir) {
+    const header = `[projects."${tomlEscape(trustDir)}"]`;
+    const alreadyInherited = inherited.some((l) => l.trim() === header);
+    if (!alreadyInherited) {
+      inherited.push(
+        '# Launch-dir trust seeded by the operator (a psu/role launch is trusted by',
+        '# definition) — a fresh CODEX_HOME otherwise blocks on the trust prompt.',
+        header,
+        'trust_level = "trusted"',
+        '',
+      );
+    }
+  }
+  return inherited;
 }
 
 function copyInheritedCodexPrompts(codexHome: string): boolean {
