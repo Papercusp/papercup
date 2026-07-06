@@ -41,6 +41,7 @@ import {
   backendFeatureGuard,
   interactiveBackendFromSpawnBackend,
 } from '../../../backend-feature-capabilities';
+import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke

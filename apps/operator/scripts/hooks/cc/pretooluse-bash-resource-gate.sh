@@ -95,13 +95,44 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
 # git-sync tick, so the loss is UNRECOVERABLE (git never made a blob; kopia
 # backs up workspace-state, ~14KB, NOT the code). Confirmed wiping a tested
 # in-flight fix on 2026-06-21 (an agent "cleaning the tree" between commits) —
-# the root of the recurring "my edits got reverted/overwritten" reports. Agent
-# sessions get the safe per-file alternative; the owner's own sessions (no
-# PAPERCUSP_AGENT_SESSION marker) are deliberately exempt, mirroring the
-# scheduler lockout above. Local decision, no HTTP. Per-segment + start-anchored
-# (re.match after splitting on ;&|newline and stripping sudo) so `cd x && git
-# reset --hard` is caught but `echo "git reset --hard"` is not.
-if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1':
+# the root of the recurring "my edits got reverted/overwritten" reports.
+#
+# GATE ON THE TREE, NOT THE MARKER (EI-7872, 2026-07-06): this block was gated
+# on `PAPERCUSP_AGENT_SESSION == '1'`, but that env marker is silently ABSENT
+# in fleet-launched sessions (fleet:launch-on-plan → the drain fleet) — VERIFIED
+# unset in the Claude PROCESS env (env A, what THIS hook inherits — read from
+# /proc/<pid>/environ, not just the Bash sub-shell), so the sole rail against
+# fleet-wide uncommitted-work loss was INERT (fail-OPEN) for exactly the sessions
+# it must protect. The resource being protected is the canonical SHARED staging
+# checkout, so gate on THAT directly: fire when the command runs IN that tree
+# (payload `cwd`, read the same way the sibling lock hook does), independent of
+# any env marker. The owner's OWN separate checkouts (papercup-release, other
+# worktrees) have a different cwd and stay exempt — the real D-003 intent, keyed
+# by TREE not marker (and nobody, owner included, should reset --hard the shared
+# concurrent tree). The marker is still honored as an OR-trigger, so any launch
+# path that DOES set it stays covered even outside the tree. Local decision, no
+# HTTP. Per-segment + start-anchored (re.match after splitting on ;&|newline and
+# stripping wrappers) so `cd x && git reset --hard` is caught but `echo "…"` is not.
+def _cmd_in_canonical_tree():
+    # True when the command's working dir is the canonical shared staging tree
+    # (or under it). cwd from the hook payload, falling back to the hook
+    # process cwd for shells that don't pass one (codex). realpath-compared so
+    # a symlinked checkout still matches; the `+ os.sep` guard stops a sibling
+    # like `papercusp-staging` from matching `papercusp`. Fail-open on our own
+    # error (a hook must never wedge every bash command).
+    try:
+        _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
+        _ws_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
+            or os.path.expanduser('~/papercupai-workspace'))
+        _canon = os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(_ws_root, 'papercusp'))
+        return _cwd == _canon or _cwd.startswith(_canon + os.sep)
+    except Exception:
+        return False
+
+if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
     _GIT = r'git\b(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--git-dir\S*|\s+--work-tree\S*)*\s+'
     _git_deny = (
         'shared-tree guard: `{op}` would discard EVERY concurrent agent\'s '

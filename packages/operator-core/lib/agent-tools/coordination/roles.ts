@@ -61,3 +61,29 @@ export const COORD_ROLES = [
   // && r !== 'kettle')` sites move in LOCKSTEP with this list. `mug` is deliberately
   // NOT excluded — it keeps the Mug's placement access.
 ] as const;
+
+/**
+ * pot-rename D-007 map (old role id → canonical new id) — the same mapping
+ * migration 519 (`519-pot-rename-slice2-role-contract.sql`) backfilled into
+ * every DB column (spawned_agents.child_role, agent_usage_samples.role, …)
+ * and `hive/soak-report.ts`'s read-side CASE reproduces. No shared TS helper
+ * existed anywhere in the repo (WI-3168-adjacent gap) — most call sites
+ * instead hand-roll a `role === 'queen' || role === 'mug'` dual-check inline
+ * (bee/spawn.ts, blueprint/launch-blueprint.ts, role-launch-spec.ts, …). This
+ * is the single reusable form: `canonicalCoordRole(x) === canonicalCoordRole(y)`
+ * is the general equivalence test, and `canonicalCoordRole(role)` is what a
+ * *storage* site (a DB column, a stored `role:` field) should persist instead
+ * of the raw, possibly-old-spelling literal a caller passed.
+ */
+const POT_RENAME_ROLE_MAP: Readonly<Record<string, string>> = {
+  bee: 'cup',
+  queen: 'mug',
+  sentinel: 'papercup',
+  overwatch: 'kettle',
+  scout: 'blender',
+};
+
+/** Canonicalize a role id through the pot-rename map (identity if already-canonical / unknown). */
+export function canonicalCoordRole(role: string): string {
+  return POT_RENAME_ROLE_MAP[role] ?? role;
+}
