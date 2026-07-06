@@ -1817,6 +1817,7 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     expect(classifySpawnError('401 unauthorized: bad api key')).toBe('auth');
     expect(classifySpawnError('ENOENT: no such file or directory')).toBe('missing-file');
     expect(classifySpawnError('invalid spawn config: missing role')).toBe('config');
+    expect(classifySpawnError('Autocompact is thrashing: the context window is already full')).toBe('context-overflow');
     expect(classifySpawnError('something else entirely')).toBe('other');
     expect(classifySpawnError(null)).toBe('other');
   });
@@ -1935,6 +1936,28 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     expect(out[0].body).toContain('other: 8');
     // Dominant is 'other' (the gateway-stall storm), NOT a phantom 'timeout: 13'.
     expect(out[0].key).toBe('failed-spawns:other');
+  });
+
+  it('classifies autocompaction-thrash no-turn deaths as context-overflow, not generic other (EI-8051)', () => {
+    const contextOverflow = (i: number) => ({
+      error_message:
+        'infra_loss: papercusp/doc-steward returned HTTP 200 but the agent produced no turn ' +
+        `(ok=false, exitCode=1, timedOut=false, outLen=257; rawStdoutTail="PG bootstrap: connected; ` +
+        `orchestrator running with ctx.pg active; prompt-budget role=doc-steward feature=- total=53542; ` +
+        `Autocompact is thrashing: the context window is already full (${i})")`,
+      started_at: '2026-07-06T11:00:00.000Z',
+    });
+    const rows = [
+      ...Array.from({ length: 6 }, (_, i) => contextOverflow(i)),
+      { error_message: 'connect ECONNREFUSED 127.0.0.1:3070', started_at: '2026-07-06T10:00:00.000Z' },
+      { error_message: 'spawn timed out after 280s', started_at: '2026-07-06T09:00:00.000Z' },
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    expect(out[0].key).toBe('failed-spawns:context-overflow');
+    expect(out[0].title).toContain('(context-overflow)');
+    expect(out[0].body).toContain('context-overflow: 6');
+    expect(out[0].body).not.toContain('other: 6');
   });
 
   it('EXCLUDES fleet infra-reclaim rows from the failed-spawn signal (EI-6018)', () => {

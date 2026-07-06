@@ -40,7 +40,13 @@ vi.mock('../../execute-action', () => ({
 }));
 vi.mock('../../backup/orphan-cleanup', () => ({ sweepOrphanSnapshots: vi.fn(async () => ({ swept: 0 })) }));
 vi.mock('../../search/embed-backfill', () => ({ runBackfillSweep: vi.fn(async () => ({ tables: [] })) }));
-vi.mock('../../spawn-signing', () => ({ rotateSpawnSigningKey: vi.fn(async () => {}) }));
+vi.mock('../../spawn-signing', () => ({
+  rotateSpawnSigningKey: vi.fn(async () => ({
+    rotatedAt: '2026-01-01T00:00:00.000Z',
+    invalidatedSpawnCount: 0,
+    invalidatedSpawns: [],
+  })),
+}));
 
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
@@ -130,7 +136,13 @@ describe('admin family ports', () => {
     const res = await appWith(adminSpawnSigningRotate as AnyRoute)
       .request('/admin/spawn-signing/rotate', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      blastRadius: {
+        invalidatedSpawnCount: 0,
+        invalidatedSpawns: [],
+      },
+    });
   });
 
   it('GET /admin/run rejects a missing ?cmd with 400', async () => {

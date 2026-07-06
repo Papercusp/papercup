@@ -160,21 +160,16 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         PRIMARY KEY (harness_slug, issue_id)
       );
       -- plans-pg-canonical-migration-2026-06-03 (Stage 2) added harness_plans to
-      -- BACKFILL_TARGETS (key == plan_slug); the fixture must create it or the
-      -- backfill's count query hits a missing relation. Subset of the real
-      -- columns the SELECT / to_jsonb touch.
-      CREATE TABLE harness_shared.harness_plans (
-        harness_slug TEXT NOT NULL,
-        plan_slug    TEXT NOT NULL,
-        workspace_id TEXT NOT NULL DEFAULT '',
-        title        TEXT,
-        status       TEXT,
-        content      TEXT,
-        origin       TEXT NOT NULL DEFAULT 'local',
-        fed_ts       BIGINT,
-        fed_hlc      TEXT,
-        PRIMARY KEY (harness_slug, plan_slug)
-      );
+      -- BACKFILL_TARGETS (key == plan_slug). HARNESS_FEATURES_CONSOLIDATED_DDL now
+      -- creates the key-column stub (workspace_id, harness_slug, plan_slug, status),
+      -- so COMPOSE onto it — a re-CREATE collides ("relation already exists", WI-3192).
+      -- Add only the extra columns the backfill's SELECT / to_jsonb + seedPlan touch.
+      ALTER TABLE harness_shared.harness_plans
+        ADD COLUMN IF NOT EXISTS title   TEXT,
+        ADD COLUMN IF NOT EXISTS content TEXT,
+        ADD COLUMN IF NOT EXISTS origin  TEXT NOT NULL DEFAULT 'local',
+        ADD COLUMN IF NOT EXISTS fed_ts  BIGINT,
+        ADD COLUMN IF NOT EXISTS fed_hlc TEXT;
       -- shared-hive-federation (P-005) added hive_settings to BACKFILL_TARGETS
       -- (scope == harness_slug) and (P-006) added hive_members (scope ==
       -- hive_home_slug). The fixture must create BOTH or the backfill's count query

@@ -1240,7 +1240,16 @@ export async function collectStuckPlanSignals(sql: Sql, workspaceId: string, sta
  * resolved timeout-storm item would mask a new auth breakage. Keying the signal
  * by DOMINANT class gives one capture per diagnosable problem.
  */
-export type SpawnErrorClass = 'backpressure' | 'reclaimed' | 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
+export type SpawnErrorClass =
+  | 'backpressure'
+  | 'reclaimed'
+  | 'context-overflow'
+  | 'timeout'
+  | 'network'
+  | 'auth'
+  | 'missing-file'
+  | 'config'
+  | 'other';
 export function classifySpawnError(message: string | null | undefined): SpawnErrorClass {
   const m = message ?? '';
   // Fleet infra-reclaim (EI-6018): a `running` row settled `failed` by the spawn-reclaim floor —
@@ -1258,6 +1267,20 @@ export function classifySpawnError(message: string | null | undefined): SpawnErr
   // backpressure — NOT a spawn failure. Checked FIRST so its message never falls through to a real
   // failure class (and so failedSpawnSignalsFromRows can exclude it — EI-5485).
   if (/fleet ceiling|spawn-slot:freed|max(?:Bees|SimultaneousAgents)|already running \(fleet/i.test(m)) return 'backpressure';
+  // EI-8051: no-turn spawn diagnostics can carry the more specific context-window
+  // death in rawStdoutTail ("Autocompact is thrashing", "Prompt is too long", etc.).
+  // Keep these out of the generic 'other' bucket: they are launch/prompt-size bugs,
+  // not gateway capacity, host loss, or wall-clock timeouts.
+  if (
+    /autocompact(?:ion)? is thrashing/i.test(m) ||
+    /prompt is too long/i.test(m) ||
+    /input (?:length )?is too long/i.test(m) ||
+    /\bcontext[_ -]?length[_ -]?exceeded\b/i.test(m) ||
+    /maximum context length/i.test(m) ||
+    /input length and `?max_tokens`? exceed/i.test(m) ||
+    /exceeds? the (?:model'?s )?maximum (?:context|(?:number of )?(?:input )?tokens)/i.test(m) ||
+    /reduce the length of (?:the )?(?:messages|prompt|input)/i.test(m)
+  ) return 'context-overflow';
   // EI-7520: EVERY no-turn diagnostic (invoke-outcome.ts `agentProducedTurn`) embeds a
   // literal `timedOut=<bool>` token. The generic `timed?\s*out` alternative below matches
   // the camelCase substring `timedOut`, so a `timedOut=false` death — a mid-turn gateway

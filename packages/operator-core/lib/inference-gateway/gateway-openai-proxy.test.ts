@@ -14,7 +14,7 @@
  *   - route isolation: /v1/responses → the OpenAI upstream + codex creds, while
  *     /v1/messages → the Claude upstream + claude creds, on the same gateway.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import {
   createInferenceGateway,
@@ -74,6 +74,7 @@ let claudeUpstream: Upstream | undefined;
 let port = 0;
 
 afterEach(async () => {
+  vi.useRealTimers();
   await gw?.close();
   await openaiUpstream?.close();
   await claudeUpstream?.close();
@@ -391,19 +392,15 @@ describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', (
         downstreamIdleMs: 3000, // the OLD-path backstop — high, so only a real body-idle guard is fast
       },
     );
-    const start = Date.now();
+    vi.useFakeTimers();
     const res = await postResponses({ model: 'gpt-x', input: 'hi', stream: true });
     expect(res.status).toBe(200); // headers forwarded, then upstream stalls
-    let settled = 0;
-    try {
-      await res.text(); // the body read terminates when the gateway tears the stalled stream down
-    } catch {
-      /* a destroyed mid-stream connection rejects the body read — expected */
-    } finally {
-      settled = Date.now() - start;
-    }
-    // body-idle (200ms) must fire FAR before the 3000ms downstream-idle backstop.
-    expect(settled).toBeLessThan(1500);
+    const body = res.text().catch(() => 'destroyed');
+    // Drive the gateway's body-idle timer deterministically. The downstream-idle
+    // backstop is 3000ms, so advancing only the 200ms body-idle window proves the
+    // upstream-body guard, not the slow client backstop, tears the stream down.
+    await vi.advanceTimersByTimeAsync(201);
+    await expect(body).resolves.toBeDefined();
   });
 
   it('aborts the upstream OpenAI request when the downstream client disconnects before headers', async () => {
