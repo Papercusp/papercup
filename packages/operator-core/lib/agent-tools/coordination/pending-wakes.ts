@@ -269,3 +269,33 @@ export async function sweepDeadOwnerPendingWakes(opts: { liveGraceMin?: number }
   if ((rows as unknown[]).length > 0) pushWakeBoard();
   return (rows as unknown[]).length;
 }
+
+/**
+ * GC staged wakes past a plain AGE cap, regardless of owner liveness (WI-3097,
+ * root-cause follow-up to EI-7765). {@link sweepDeadOwnerPendingWakes} only reaps a
+ * DEAD owner's orphaned wakes — a LIVE owner who simply never reviews their wake
+ * board (releasePendingWake / clearPendingWakes, the P-008/P-009 agent-pane review
+ * flow) can let a staged wake sit indefinitely, silently aging until the
+ * coord-invariant watchdog's wakeQueueAgeHours ALERT threshold (default 6h) fires —
+ * by which point it's already a filed violation, not a prevented one.
+ *
+ * This is the auto-EXPIRY counterpart: unconditionally drop any wake older than
+ * `staleHours` (default well above the alert threshold — a genuine grace window for
+ * a busy-but-live owner to review it, not a race with the alert), independent of
+ * presence/heartbeat. A live owner who wants to act on an expired wake still has the
+ * underlying coordination event in coord:feed/coord:thread; this only bounds how long
+ * an UNREVIEWED staged copy can accumulate as debris.
+ *
+ * Returns the number of rows swept. Best-effort: callers swallow errors so a sweep
+ * failure never aborts the invariant pass it runs alongside.
+ */
+export async function sweepStalePendingWakes(opts: { staleHours?: number } = {}): Promise<number> {
+  const hours = Math.max(1, opts.staleHours ?? 24);
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    DELETE FROM harness_shared.pending_wakes pw
+     WHERE pw.created_at < now() - make_interval(hours => ${hours})
+    RETURNING id`;
+  if ((rows as unknown[]).length > 0) pushWakeBoard();
+  return (rows as unknown[]).length;
+}

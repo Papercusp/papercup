@@ -100,7 +100,10 @@ export const ESCALATION_RECONCILE_GRACE_MS = (() => {
   const env = Number(process.env.PAPERCUSP_ESCALATION_RECONCILE_GRACE_MS);
   return Number.isFinite(env) && env > 0 ? env : 60 * 60 * 1000;
 })();
-import { sweepDeadOwnerPendingWakes } from '../../agent-tools/coordination/pending-wakes';
+import {
+  sweepDeadOwnerPendingWakes,
+  sweepStalePendingWakes,
+} from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   ensureBootstrap,
@@ -479,6 +482,11 @@ export interface InvariantThresholds {
   presenceGhostHours: number;
   wakeQueueDepthMax: number;
   wakeQueueAgeHours: number;
+  /** WI-3097: auto-EXPIRE any staged wake (live owner or dead) past this age, separate
+   *  from wakeQueueAgeHours (the ALERT threshold). Deliberately well above the alert
+   *  window — a grace period for a busy-but-live owner to review it before it's swept,
+   *  not a race with the invariant firing. */
+  pendingWakeStaleHours: number;
 }
 
 export const DEFAULT_THRESHOLDS: InvariantThresholds = {
@@ -487,6 +495,7 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   presenceGhostHours: 72,
   wakeQueueDepthMax: 50,
   wakeQueueAgeHours: 6,
+  pendingWakeStaleHours: 24,
 };
 
 /** One open escalation, reduced to what the substrate-drain invariant needs to tell a
