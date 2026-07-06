@@ -307,6 +307,7 @@ import desktopOnboardingLaunchContext from './desktop/onboarding-launch-context'
 import desktopOnboardingStatus from './desktop/onboarding-status';
 import desktopTutorialScript from './desktop/tutorial-script';
 import desktopDocsQa from './desktop/docs-qa';
+import desktopDocsAgentAsk from './desktop/docs-agent-ask';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
 import desktopSetupWizardState from './desktop/setup-wizard-state';
@@ -748,6 +749,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopOnboardingStatus as AnyRoute),
   ...flatten(desktopTutorialScript as AnyRoute),
   ...flatten(desktopDocsQa as AnyRoute),
+  ...flatten(desktopDocsAgentAsk as AnyRoute),
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),
   ...flatten(desktopSetupWizardState as AnyRoute[]),

@@ -191,7 +191,7 @@ function fmtAgo(ms) {
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -281,6 +281,18 @@ export function parseArgs(argv) {
     }
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
+    // Free-form KICKOFF first user turn — the general form of the EI-5503 plan
+    // auto-kickoff, decoupled from plans. A caller (e.g. the desktop tutorial's
+    // "ask an agent" launcher) that wants the session to START by working a
+    // specific prompt passes `--kickoff='<text>'`; it becomes the trailing
+    // positional first turn (kickoffPositionalArgs), taking precedence over the
+    // server's plan-derived kickoff. Same --no-picker + --no-kickoff gating.
+    else if (a.startsWith('--kickoff=')) out.kickoffPromptText = a.slice('--kickoff='.length);
+    // Opaque LABEL stamped on this session's adv_sessions row (bootstrap-su reads
+    // body.label). Lets the launcher later CORRELATE the booted session back to
+    // its coord owner id (adv_sessions.coord_owner_id) — e.g. the tutorial's
+    // docs-agent reuse: find the live `docs-tutor`-labelled session for a workspace.
+    else if (a.startsWith('--label=')) out.label = a.slice('--label='.length);
     // solo-launch-provenance: the ownerId of the agent that launched this session
     // (capability:terminal auto-injects it into psu commands). Forwarded to
     // bootstrap-su, which bakes it into the system prompt + env + a standing fact.
@@ -654,7 +666,10 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
  * not passed (`args.kickoff !== false`). Pure — exported for tests.
  */
 export function kickoffPositionalArgs(res, args) {
-  const text = res?.kickoffPrompt;
+  // A client-supplied free-form `--kickoff='<text>'` wins over the server's
+  // plan-derived kickoff (res.kickoffPrompt) — it's the general "start by working
+  // THIS prompt" seam (no plan required), used by the tutorial docs-agent launcher.
+  const text = args?.kickoffPromptText || res?.kickoffPrompt;
   if (!text) return [];
   if (args?.picker !== false) return []; // interactive picker launch → empty prompt
   if (args?.kickoff === false) return []; // explicit --no-kickoff opt-out
@@ -3115,6 +3130,10 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // and refuses the boot with seats_exhausted when the fleet's cap is reached.
     ...(args.seat ? { seat: args.seat } : {}),
     ...(args.launchContext ? { launch_context: args.launchContext } : {}),
+    // Opaque session label → adv_sessions.label (bootstrap-su reads body.label),
+    // so the launcher can later correlate the booted session to its coord owner id
+    // (the tutorial docs-agent reuse path). No behavioural effect beyond the stamp.
+    ...(args.label ? { label: args.label } : {}),
     // solo-launch-provenance: who launched this session — bootstrap-su bakes it
     // into the system prompt + PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact.
     ...(args.launchedBy ? { launched_by: args.launchedBy } : {}),

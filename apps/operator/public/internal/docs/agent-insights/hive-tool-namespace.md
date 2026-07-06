@@ -41,4 +41,4 @@ It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` inte
 
 ## Tests
 
-`agent-tools/hive/{_resolve,_create,dissolve,guard}.test.ts`: descriptor shaping, `harness_kind` stamping, create rollback-on-failure, dissolve unwind (incl. the membership / learning-loop / desktop teardown legs), and the root-only + owner-tier refusals — all PG-free (deps mocked). The live create→wake→dissolve path (a real Queen spawn on shared infra) is a manual smoke, not auto-run.
+`agent-tools/hive/{_resolve,_create,dissolve}.test.ts` + `guard.integration.test.ts`: descriptor shaping, `harness_kind` stamping, create rollback-on-failure, dissolve unwind (incl. the membership / learning-loop / desktop teardown legs), and the root-only + owner-tier refusals — all PG-free (deps mocked). The live create→wake→dissolve path (a real Queen spawn on shared infra) is a manual smoke, not auto-run.

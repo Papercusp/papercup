@@ -32,24 +32,21 @@ annotation, the full `turn:interrupt` dual, and both EI-151 owner-scoping rungs
 all still verify — only the `coord:send` wake API drifted.
 
 - **No more `wake.warning` / `woken:0` warning.** The "woken:0 warning" section
-  below quotes a `wake.warning` string for the fired-but-woke-nobody case. That
-  field was **renamed and redesigned**: a `required` wake (or an `optimistic` one
-  with no declared `backstop`) that reached wakeable targets but woke nobody (and
-  staged nobody) now sets `wake.recipient_absent: true` plus a `wake.note` — see
-  the `missed` / `loud` branch (`wake.recipient_absent = true`) in
-  `packages/operator-core/lib/agent-tools/coordination/tools/send.ts`. There is no
-  `wake.warning` field anywhere in `send.ts`. (Citations here are symbol-anchored,
-  not line-numbered, so they survive `send.ts` edits.)
+  below used to quote a `wake.warning` string for the fired-but-woke-nobody
+  case. That field is gone. A `required` wake, or an `optimistic` wake without a
+  declared backstop, now reports the miss via `wake.recipient_absent: true`
+  plus a `wake.note` — see the loud-miss branch in
+  `packages/operator-core/lib/agent-tools/coordination/tools/send.ts`. The
+  miss is still auditable, but the surface is now `recipient_absent`, not a
+  `warning` field.
 
-- **`wake` is no longer a boolean.** The body writes the API as
-  `coord:send {wake:true}`. `wake` is now a tri-value intent union
-  `boolean | 'required' | 'optimistic'` (the `wake?:` field on the `send` schema
-  in `send.ts`), coerced to the internal `wakeMode` (`true → 'required'`,
-  `false`/omit → no wake). Legacy `{wake:true}` examples still **function**, but
-  the documented intent surface and the warning text they reference are stale —
-  prefer `wake:'required'` (loud miss → `recipient_absent`) or `wake:'optimistic'`
-  (best-effort over a *named* durable `backstop`; an optimistic miss with no
-  backstop is now reported as loudly as a required miss).
+- **`wake` is a union, not a boolean.** The body used to write the API as
+  `coord:send {wake:true}`. `wake` is now `boolean | 'required' | 'optimistic'`
+  on the `send` schema, coerced to the internal wake mode (`true → 'required'`,
+  `false`/omit → no wake). Legacy `{wake:true}` still functions, but the
+  documented intent surface is `wake:'required'` for a loud required wake or
+  `wake:'optimistic'` when a durable `backstop:` will re-dispatch a miss.
+  Without a declared backstop, an optimistic miss is reported loudly too.
 
 See plan `directed-wake-honesty-and-spawn-handoff-2026-06-14`. The original
 narrative below is preserved.
@@ -62,8 +59,8 @@ You no longer have to *remember* to make yourself wakeable. The operator now
 lifecycle endpoint that `~/.papercusp/hooks/cc/lifecycle-report.sh` already POSTs to
 (`activity:report`, `kind:lifecycle`). It is client-agnostic (claude / omp / codex)
 and armed for the whole session, not just between turns. So every psu/Queen-launched
-agent is re-invokable on a `coord:send {wake:true}` **even when it has no idea it
-will ever be woken**.
+agent is re-invokable on a `coord:send {wake:'required'}` (legacy `wake:true`)
+**even when it has no idea it will ever be woken**.
 
 Plan: `turn-lifecycle-control-2026-06-08` (Phase 1, D-001). The old rule — "call
 `coord:await-inbox` when you go idle or you won't be wakeable" — is dead. Forgetting
@@ -78,7 +75,8 @@ Your watch is a single row in `harness_shared.event_awaits`, keyed
   `ON CONFLICT … DO UPDATE`): re-arming refreshes the captured wake-handle + idle
   note + floor on the one row — it never inserts a duplicate. A partial unique index
   (migration 183) enforces exactly one live standing inbox-wake await per agent.
-- **The rendezvous.** `coord:send {wake:true, to:[you]}` (and `coord:message-agent`)
+- **The rendezvous.** `coord:send {wake:'required', to:[you]}` (legacy `wake:true`)
+  and `coord:message-agent`
   fires exactly `coord:inbox-wake:<you>` — a key only you watch. It is targeted,
   never a broadcast; `*`/`human` are not wakeable (no thunder-herd).
 - **SessionEnd cancels it (D-003).** A clean session end cancels your standing
@@ -97,27 +95,28 @@ to no longer makes you unwakeable, which was the whole point.
 
 Always-arm makes you *reliably wakeable*; it does not make polling OK. When you have
 no queued work: **end your turn.** You are re-invoked when someone `coord:send`s you
-with `{wake:true}` (bursts inside your floor coalesce into one wake). For a specific
+with `{wake:'required'}` (legacy `wake:true`; bursts inside your floor coalesce
+into one wake). For a specific
 one-shot readiness (a lock grant, a peer's artifact, a plan-run finishing) use
 `events:await` on that exact key and end the turn. A wake costs a whole turn — await
 only what genuinely blocks you; ambient interest stays a `topics:subscribe`.
 
 ## The woken:0 warning — don't trust a silent ok (D-010)
 
-`coord:send {wake:true}` now returns a `wake.warning` when it fired but woke **nobody**
-(`woken: 0` while it had concrete targets):
+`coord:send {wake:'required'}` now reports a loud miss when it fired but woke
+**nobody**:
 
 ```
-wake fired but no live wake-watch was registered for the addressee(s) — the message
-was injected to their inbox (seen on their next natural turn) but no session was
-re-invoked now.
+required wake reached no awake/watching session for the addressee(s) — the
+message was injected to their inbox (seen on their next natural turn) but the
+recipient was not re-invoked now.
 ```
 
 This is the exact gap that once made a wake *look* successful when nothing was
-listening. Always-arm makes `woken: 0` rare for fleet agents, but the warning still
-catches a not-yet-armed / non-fleet / dead-handle target. If you see it, your "wake"
-degraded to a plain inbox inject — the addressee sees it on their next natural turn,
-not now.
+listening. Always-arm makes a required miss rare for fleet agents, but the
+`recipient_absent` surface still catches a not-yet-armed / non-fleet / dead-handle
+target. If you see it, the wake degraded to a plain inbox inject — the addressee
+sees it on their next natural turn, not now.
 
 ## The one deploy-time hazard: migration 183 rides the deploy (D-012)
 

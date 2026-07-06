@@ -306,11 +306,15 @@ store-of-record vs sync authority).
   `@papercusp/test-config` exports `defineVitestConfig`, `getTestPg` /
   `withTestSchema` (testcontainers-node Postgres), and `setupMsw` / `msw`.
 * Integration tests get a per-file Postgres schema (`t_<hex>`) on a reused
-  (`.withReuse()`) `pgvector/pgvector:pg16` testcontainer — the squashed
-  `000-baseline.sql` schema has `vector(N)` columns a plain `postgres:16-alpine`
-  can't build (`postgres:16-alpine` is the *old* image it replaced, referenced
-  now only in the explanatory comment). **Docker must be running locally** for
-  integration tests. Run `npm run test:doctor` to verify your environment.
+  (`.withReuse()`) `pgvector/pgvector:pg18` testcontainer — the squashed
+  `000-baseline.sql` schema has `vector(N)` columns a plain `postgres:18-alpine`
+  can't build. Bumped from pg16 → pg18 (WI-2942, 2026-07-05) to match the
+  shipped/embedded operator (PostgreSQL 18.3): PG16 silently allowed behavior
+  PG18 rejects (e.g. a `DELETE` against a `REPLICA IDENTITY FULL` table with a
+  generated column in a delete-publishing publication — WI-2914), so testing
+  against PG16 let a PG18-only bug ship to the packaged desktop uncaught.
+  **Docker must be running locally** for integration tests. Run `npm run
+  test:doctor` to verify your environment.
 * CI: per-PR `.github/workflows/test.yml` runs the affected unit + integration
   suites (results as a PR comment via JUnit); nightly
   `.github/workflows/test-nightly.yml` runs everything.
@@ -370,9 +374,22 @@ the text an agent receives is a rendered artifact, regenerated on the next launc
   an edit reaches new psu launches only after the staging→green deploy carries
   it.
 * **Autonomous harness spawn prompts** (scoper → worker → validator → reviewer
-  …) — sources at `libs/papercusp/packages/harness/prompts/<role>.md`, layered
-  with `base/<role>.md` + kind/department overrides per the resolution rules in
-  that directory's `README.md`.
+  …) — sources live under
+  `libs/papercusp/packages/harness/blueprints/<blueprintId>/prompts/<role>.md`,
+  resolved by walking the blueprint's `extends`-chain (its own override, then
+  each ancestor, then the universal `blueprints/base/prompts/<role>.md`
+  library — always consulted, even with no blueprint) via
+  `resolvePromptFiles`/`promptCandidates` in
+  `libs/papercusp/packages/orchestrator/src/prompt-resolve.ts`. A handful of
+  roles (worker/validator/documenter/orchestrator/summarizer) also compose a
+  generic `<role>.base.md` prefix from `blueprints/base/prompts/`. The legacy
+  global `prompts/$phase/…` / `prompts/department/…` override axis (and its
+  README) was **deleted** (`blueprint-role-bundling-2026-06-15` Phase 5) — the
+  `staging` phase-variant collapsed into `base` as canonical, so `ctx.phase` /
+  `ctx.dept` are no longer consulted. PROMPT files (not code/templates)
+  resolve from the staging/integration tree via `promptHarnessRoot()`, so a
+  prompt edit goes live without a code-release
+  (`decouple-agent-prompts-from-release-gate-2026-06-20`).
 * **Never edit rendered outputs:** `~/.papercusp/*-collaborator*.md` (vestigial
   installer dumps, not read at launch), anything under the `papercup-release`
   checkout, or an assembled prompt captured from a live session.

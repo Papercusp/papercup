@@ -49,6 +49,7 @@ edge that cost an hour:
    script>'` arrives re-tokenized and executes garbage. `--exec` preserves
    the argument vector. (Bit the wizard's Install Agent Runtime button via
    pty.rs, found live.)
+
 2. **No Windows console signal crosses the WSL boundary.** The serve child
    on Windows is only the wsl.exe *relay*; `CTRL_BREAK_EVENT` from a
    console-less GUI app reaches nobody, so the old shutdown hard-killed the
@@ -56,30 +57,38 @@ edge that cost an hour:
    must SIGTERM the **Linux pid** (from the distro-side `operator.json`)
    through `wsl.exe --exec kill -TERM <pid>` (`kill_sidecar` in main.rs does
    this now).
+
 3. **WSLENV `HOME/p` does not survive WSL session init** — passwd re-sets
    HOME after the merge. Serve state lands under `/home/papercup`; the
    Windows side discovers it via `\\wsl.localhost\papercup-runtime\home\papercup`.
+
 4. **Embedded PG cannot live on DrvFs** (`/mnt/c/...`) — a 0700 data dir is
    impossible without the metadata mount option; PG data goes on ext4 inside
    the distro (D-007). Consequence: `wsl --unregister` deletes the database.
+
 5. **NSIS datablock caps at \~2 GiB** — the full payload dies in makensis
    with "error mmapping datablock". Windows v1 ships without
    `sidecar/code-server` and `sidecar/bin/omp` (D-006), compression zlib via
    `tauri.windows.conf.json`.
+
 6. **Job objects kill `app.restart()`** — an installer-spawned app (NSIS
    "run after install") lives in a job; the relaunched child dies with the
    parent. Post-onboarding restart spawns with
    `CREATE_BREAKAWAY_FROM_JOB` (D-010).
+
 7. **WebView2 maps custom protocols onto `http://<scheme>.localhost`** — the
    raw `papercusp://localhost` form silently no-ops on navigate (D-008).
+
 8. **Stale serve lockfile + Linux pid-reuse** — after `wsl --shutdown` or a
    host reboot, low Linux pids recycle and can defeat a naive pid-alive
    check; serve's lock liveness check matches the owner's cmdline too.
+
 9. **`schtasks` tasks are session-bound**: `Logon Mode: Interactive only` —
    the auto-logged-in console session must exist (it does on this VM).
    `taskkill` without `/F` often cannot close the app (WM\_CLOSE refused);
    use `taskkill /PID <pid>` first to exercise the graceful path, `/T /F`
    for teardown.
+
 10. **Never forward PATH through WSLENV** (`PATH/l`) — the translated
     Windows PATH *replaces* the distro PATH inside the spawned process, so
     `/usr/bin` et al vanish and every distro-binary spawn from serve
@@ -87,6 +96,7 @@ edge that cost an hour:
     fresh `wsl --exec` session, which is what makes it maddening to
     diagnose. Forward specific dirs as their own `/p` vars
     (`PAPERCUSP_SIDECAR_BIN`) and compose PATH on the Linux side.
+
 11. **Hard-killing the app orphans the entire WSL backend** — `taskkill
     /T /F` kills the Windows tree (app + wsl.exe relay) but the Linux-side
     node/PG keep running (and keep the redirected log handle open, so the
@@ -95,12 +105,14 @@ edge that cost an hour:
     reuses it), but tear down test sessions with a WSL-side
     `kill -TERM <serve-pid>` (clean pg\_ctl stop, removes operator.json),
     not a Windows-side kill.
+
 12. **Watch for peer churn on the shared tree mid-build** — the sidecar
     SPA build snapshots whatever the canonical tree holds; an in-flight
     peer refactor (mid-edit import/export mismatch) fails your build with
     a MISSING\_EXPORT that has nothing to do with your change. Check
     `coord:presence` for the file's owner and just retry once they're
     consistent.
+
 13. **The rootfs bake script re-runs at first boot — every step must be
     idempotent AND prompt-free.** `build-rootfs.sh` ships *itself* as
     `/opt/papercup/bootstrap`; files it created at image-build time
@@ -109,6 +121,7 @@ edge that cost an hour:
     Windows first-run live — use `gpg --batch --yes`). Symptom: gate
     stuck at "Configuring runtime…", `ps -ef` in the distro shows
     `bash /opt/papercup/bootstrap` + a stuck child.
+
 14. **You can get full DevTools into the packaged app's webview**:
     launch with `set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS= --remote-debugging-port=9222`, then drive CDP from the VM's own
     node (v24 has global WebSocket/fetch): `/json` lists targets;
@@ -116,11 +129,13 @@ edge that cost an hour:
     This separates "app broken" from "paint broken" instantly. Do NOT
     add `--disable-gpu`/`--disable-gpu-compositing` — WebView2 creation
     fails outright and the app exits.
+
 15. **Transient white window with a healthy DOM** — observed twice on
     schtasks-launched windows: CDP shows the full DOM but the window
     paints white (WebView2 GPU/compositor init flake under QEMU qxl).
     It self-resolved after the onboarding-finalize restart. If you see
     white, check the DOM via CDP (§14) before assuming the app is dead.
+
 16. **Inbox (pre-Store) WSL's `wsl.exe` wedges FOREVER under a
     pseudoconsole** — the wizard's pty-routed installs/logins sit silent
     with zero output, zero exit, and no distro-side process; the same
@@ -130,12 +145,14 @@ edge that cost an hour:
     [wsl-inbox-conpty-pty-hang](/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang).
     pty.rs now carries a 20s no-output watchdog that kills the wedge and
     prints a `wsl --update` hint into the pane.
+
 17. **NEVER run `wsl --update` on this VM** — Store WSL (2.7.8) cannot
     create its utility VM under the nested-QEMU profile ("Nested
     virtualization is not supported", `CreateVm/0x800705b4`); every
     distro boot fails until you `wsl --uninstall` to revert to the
     inbox engine (state survives the round trip; verified live
     2026-06-12). The §16 watchdog hint is for real hardware, not here.
+
 18. **Window/tray observation MUST run inside Session 1 — via an interactive
     scheduled task that writes a result FILE the Session-0 ssh reads.** A
     powershell spawned from the WSL operator (or a plain ssh) runs in Session 0
@@ -149,6 +166,7 @@ edge that cost an hour:
     window (no user window) — the notification-area icon is not a top-level
     window, so it never appears in `EnumWindows`; verify the tray by
     Server-is-windowless + owns-the-sidecar, not by enumerating the icon.
+
 19. **A `schtasks`-relaunched GUI does not reliably persist a debuggable
     WebView2** — so the CDP path (§14) only works on the *first-boot* GUI or a
     `Start-Process`-launched one. On a *relaunch* via the `papercusp-e2e` task
@@ -158,6 +176,7 @@ edge that cost an hour:
     product second-launch bug (Start-Process launches persist; single-instance
     PASS\_ALL). For a CDP/button-click E2E, launch the GUI with `Start-Process`
     (or keep the first-boot GUI alive), don't relaunch through the task.
+
 20. **Catch `cfg(windows)` Rust errors LOCALLY in \~40 s — don't spend a
     15-25 min VM build to find a typo (WI-2215).** The desktop's \~68
     `#[cfg(windows)]` / `#[cfg(target_os = "windows")]` regions (main.rs,
@@ -182,6 +201,25 @@ edge that cost an hour:
     a compile error; it skips gracefully when the toolchain is absent. It is a
     COMPILE check, not a build — a runnable `.exe` is still the VM's job, and
     this is deliberately not in the green-checkpoint suite (needs the SDK).
+
+21. **`papercup-runtime` periodically wedges: `wsl --exec` silently returns
+    empty output + exit 1 (sometimes 0), no stderr, no diagnostic** — hit
+    live during WI-3080 verification and reproduced again on 2026-07-06
+    (EI-8163): even a trivial probe (`wsl -d papercup-runtime --user
+    papercup --exec whoami`) came back with zero stdout, empty stderr, exit
+    1. **Recovery, verified live**: `wsl --terminate papercup-runtime`
+       (exits 0) then immediately retry the same `--exec` call — it succeeds
+       on the very next attempt (no boot delay observed). Root cause not
+       pinned down (stale `wslhost.exe` session / hung distro init / a WSL2
+       utility-VM hiccup are all plausible); treat it as a transient utility-VM
+       fault, not a broken distro state — `wsl --terminate` does not lose
+       anything persistent inside the distro. **Practical rule**: if your
+       first `--exec` probe in a session comes back empty with a nonzero
+       exit and no stderr, don't debug the command — `wsl --terminate
+       papercup-runtime` and retry once before looking any further.
+       `papercusp-desktop/bin/wsl-exec-retry.sh` wraps this pattern (detect
+       empty+nonzero on the first attempt, terminate, retry once, surface the
+       second attempt's real exit code) for scripted/agent use over ssh.
 
 ## Where the artifacts live
 

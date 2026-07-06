@@ -27,9 +27,10 @@
  *   - It checkpoints progress, narrates the finale GUI tour, and graduates — all
  *     deterministically.
  *   - An LLM is invoked ONLY when the user asks a free-form QUESTION, and even
- *     then NOT here: the runner POSTs to the operator's /api/desktop/docs-qa,
- *     which retrieves real /internal/docs snippets and answers on the operator's
- *     CONFIGURED backend (WI-2844). No CLI is spawned by this script.
+ *     then NOT here: the runner POSTs to the operator's /api/desktop/docs-agent-ask,
+ *     which LAUNCHES a visible agent terminal (or injects a follow-up into the
+ *     already-open one via coord) so the user watches the answer being worked
+ *     (owner redesign 2026-07-06). No CLI is spawned by this script.
  *
  * Rendering uses chalk (truecolor, auto-degrades to plain when the terminal has no
  * color / isn't a TTY) plus hand-rolled gradient/typewriter/progress touches and an
@@ -257,8 +258,8 @@ export function renderProgressBar(current, total, width = 12) {
   return `${'▓'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))} ${Math.round(frac * 100)}%`;
 }
 
-// Q&A prompt-building + backend selection now live SERVER-SIDE in the operator's
-// /api/desktop/docs-qa endpoint (WI-2844) — the runner no longer probes for a
+// Q&A launch + tracking + coord inject now live SERVER-SIDE in the operator's
+// /api/desktop/docs-agent-ask endpoint — the runner no longer probes for a
 // user-installed CLI or builds the prompt. See answerQuestion below.
 
 /** First section index of a chapter number (or -1). Pure. */
@@ -514,150 +515,72 @@ function runSpec(spec) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Q&A — answered SERVER-SIDE by the operator's docs-qa endpoint. WI-2844: the
-// old path shelled out to a user-installed claude/codex/omp CLI (absent in a
-// clean build; no docs tools even when present). Now the operator retrieves
-// real /internal/docs snippets and answers on its CONFIGURED backend — the
-// runner just POSTs the question and streams the answer. No LLM spawned here.
+// Q&A — the operator LAUNCHES a visible agent terminal (or injects a follow-up
+// into the already-open one via coord) so the user watches the answer being
+// worked (owner redesign 2026-07-06). The runner just POSTs the question to
+// /api/desktop/docs-agent-ask; no LLM/CLI is spawned by this script.
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal SSE frame reader over a fetch() Response body. Invokes
- * onEvent(eventName, dataObject) per `event:`/`data:` frame. Pure transport;
- * exported for tests. (Node global fetch → undici ReadableStream.)
- */
-export async function consumeSse(body, onEvent) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const frame = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let event = 'message';
-      let dataStr = '';
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
-      }
-      if (!dataStr) continue;
-      let data;
-      try { data = JSON.parse(dataStr); } catch { data = { raw: dataStr }; }
-      onEvent(event, data);
-    }
-  }
-}
-
-/**
- * Ask the docs a question. POSTs to /api/desktop/docs-qa and streams the
- * grounded answer. Returns 'needs_backend' (caller routes to Setup), 'answered',
- * or 'fallback'. The tutorial NEVER stalls on a failed Q&A.
+ * Ask an agent a question. Owner redesign (2026-07-06): instead of streaming a
+ * hidden background answer, this LAUNCHES a full, VISIBLE agent session in a real
+ * terminal (or, if one is already open, injects the follow-up into that SAME live
+ * agent via the coordination system). POSTs to /api/desktop/docs-agent-ask; the
+ * server owns the launch + tracking + coord inject. Returns 'needs_backend'
+ * (caller routes to Setup), 'launched' (a new agent terminal opened), 'reused'
+ * (sent to the open agent), or 'fallback'. The tutorial NEVER stalls on a failed ask.
  */
 async function answerQuestion(base, section, question) {
-  let spinner = null;
-  if (animOn()) {
-    try {
-      const ora = (await import('ora')).default;
-      spinner = ora({ text: accent('Searching the docs…'), color: 'cyan' }).start();
-    } catch {
-      spinner = null;
-    }
-  }
-  if (!spinner) say(dim('Searching the docs…'));
-
-  let answer = '';
-  let streamed = false; // first delta flips the UI from spinner → live text
-  let needsBackend = false;
-  let errored = false;
-  const citations = [];
-  // Client-side deadline so a stalled backend can NEVER leave the spinner
-  // running forever (the server has its own 90s cap; this is the backstop for a
-  // hung/half-open connection). owner-reported "searching the docs forever",
-  // 2026-07-05.
+  // section is unused now (the agent finds its own docs via docs:search) — kept
+  // in the signature for the caller + tests.
+  void section;
+  let resp = null;
   const ac = new AbortController();
-  const deadline = setTimeout(() => ac.abort(), 100_000);
+  const deadline = setTimeout(() => ac.abort(), 30_000);
   try {
-    // WI-3141: retry a transient connection blip (operator mid-recycle) for a few
-    // seconds before falling to "I couldn't get a live answer" — the ac.signal (100s
-    // stream deadline) still owns the overall lifetime; a small connectBudget just
-    // rides through a brief unavailability at connect time.
-    const r = await fetchResilient(`${base}/api/desktop/docs-qa`, {
+    // A brief connect budget rides through an operator mid-recycle blip. This is a
+    // quick JSON POST (the server spawns the terminal / sends the coord message and
+    // returns) — no streaming, so no long client deadline is needed.
+    const r = await fetchResilient(`${base}/api/desktop/docs-agent-ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        question,
-        sectionTitle: section?.title,
-        docSlugs: section?.docSlugs ?? [],
-      }),
+      body: JSON.stringify({ question }),
       signal: ac.signal,
     }, { connectBudgetMs: 8_000 });
-    if (!r.ok || !r.body) {
-      errored = true;
-    } else {
-      // STREAM the answer as it arrives (owner repro 2026-07-05: "stalls on
-      // 'searching docs…'"). Buffering the whole answer behind a static spinner
-      // reads as a hang whenever the LLM leg is slow (a queued gateway = tens of
-      // seconds) — so: citations advance the spinner text, and the FIRST delta
-      // retires the spinner and switches to live typed-out text.
-      await consumeSse(r.body, (event, data) => {
-        if (event === 'delta' && typeof data.text === 'string') {
-          if (!streamed) {
-            streamed = true;
-            if (spinner) {
-              spinner.succeed(accent('Answer'));
-              spinner = null;
-            } else {
-              process.stdout.write('\n');
-            }
-          }
-          answer += data.text;
-          process.stdout.write(data.text);
-        } else if (event === 'citation' && data.slug) {
-          citations.push(data);
-          if (spinner) {
-            spinner.text = accent(
-              `Found ${citations.length} source${citations.length > 1 ? 's' : ''} — asking the agent…`,
-            );
-          }
-        } else if (event === 'needs_backend') { needsBackend = true; }
-        else if (event === 'error') errored = true;
-      });
-    }
+    if (r.ok) resp = await r.json().catch(() => null);
   } catch {
-    errored = true;
+    resp = null;
   } finally {
     clearTimeout(deadline);
   }
-  if (spinner) spinner.stop(); // nothing streamed (error / needs_backend path)
 
-  if (needsBackend) {
-    // The caller (tutorialSectionAction) owns the no-agent UX: a clear message +
-    // "press ⏎ → Setup" handoff (owner spec 2026-07-05). Don't double-print
-    // the generic server message here.
+  const status = resp && typeof resp.status === 'string' ? resp.status : null;
+
+  if (status === 'needs_backend') {
+    // The caller owns the no-agent UX: a clear message + "press ⏎ → Setup" handoff.
     return 'needs_backend';
   }
-  if (answer.trim() && !errored) {
-    if (streamed) {
-      process.stdout.write('\n'); // close the streamed answer's last line
-    } else {
-      say(answer.trim()); // non-stream path (kept as a safety net)
-    }
-    if (citations.length) {
-      say(dim(`Sources: ${citations.map((c) => `/internal/docs/${c.slug}`).join(' · ')}`));
-    }
-    return 'answered';
+  if (status === 'launched') {
+    say(
+      ok('🚀 Opened an agent in a new terminal — ') +
+        'your question is being answered there. ' +
+        dim('Ask again here and the follow-up goes to that same agent (keep its window open).'),
+    );
+    return 'launched';
   }
-  if (streamed) process.stdout.write('\n'); // partial stream then error — keep the tty clean
-  // Graceful fallback — the tutorial NEVER stalls on a failed Q&A.
+  if (status === 'reused') {
+    // woken:0 = the agent is mid-answer/busy; it still sees the follow-up when it's free.
+    const note = resp.woken > 0 ? '' : dim(' (it will pick this up as soon as it finishes the current answer)');
+    say(ok('→ Sent to your open agent terminal.') + note);
+    return 'reused';
+  }
+  // Graceful fallback — the tutorial NEVER stalls on a failed ask.
   const docs = section?.docSlugs?.length
-    ? ` For the fuller answer, see ${section.docSlugs.map((d) => `/internal/docs/${d}`).join(' or ')}.`
+    ? ` In the meantime, see ${section.docSlugs.map((d) => `/internal/docs/${d}`).join(' or ')}.`
     : '';
+  const why = resp && typeof resp.error === 'string' ? ` (${resp.error})` : '';
   say(
-    `I couldn't get a live answer just now.${docs} ` +
+    `I couldn't open an agent for that just now.${why}${docs} ` +
       dim('Pick “More details”, or Continue.'),
   );
   return 'fallback';
@@ -1208,8 +1131,8 @@ async function main() {
     say('No tutorial content is installed on this build. ' + dim('Nothing to run.'));
     return 0;
   }
-  // Q&A is answered server-side (POST /api/desktop/docs-qa) on the operator's
-  // configured backend — no per-session CLI backend to choose here (WI-2844).
+  // Q&A launches/reuses a visible agent terminal server-side (POST
+  // /api/desktop/docs-agent-ask) — no per-session CLI backend to choose here.
 
   // ── Unified Tutorial | Setup shell (#4) ──
   // Shared, MUTABLE state so a Tab-switch preserves tutorial position + progress

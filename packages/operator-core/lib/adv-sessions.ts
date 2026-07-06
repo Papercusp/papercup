@@ -773,6 +773,45 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
 }
 
 /**
+ * The newest STILL-LIVE adv_sessions row carrying `label` in `workspaceId` that
+ * has a booted coord owner id — the correlation key for a labelled session
+ * launch (the tutorial docs-agent: launch `psu --label='docs-tutor'`, then find
+ * the resulting session here to route follow-up questions to its coord owner).
+ *
+ * "Live" = `ended_at IS NULL` AND started within RECORDED_LIVE_MAX_AGE_MS (so a
+ * terminal whose exit was never recorded — the operator-restart caveat — ages
+ * out instead of masquerading as live forever). `coord_owner_id IS NOT NULL`
+ * because a row without one is mid-boot (bootstrap-su sets it) and not yet
+ * addressable. Most-recent first. Returns null on no match / a missing table.
+ */
+export async function latestLiveAdvSessionByLabel(
+  label: string,
+  workspaceId: string,
+): Promise<AdvSessionRow | null> {
+  try {
+    const { sql } = getOrgPg();
+    const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE label = ${label}
+         AND workspace_id = ${workspaceId}
+         AND ended_at IS NULL
+         AND coord_owner_id IS NOT NULL
+         AND started_at >= ${cutoffIso}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const r = rows[0];
+    return r ? mapAdvSessionRow(r) : null;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'latestLiveAdvSessionByLabel');
+    return null;
+  }
+}
+
+/**
  * Recently-ended adv_sessions — the durable history half of the live-roster
  * view (the active half is the presence-driven mergeRoster). Scoped to a
  * workspace when given, else cross-workspace. Most-recently-ended first.
