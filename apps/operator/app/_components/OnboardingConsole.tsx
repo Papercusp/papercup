@@ -63,6 +63,25 @@ export function shouldRouteExternalConsole(isTauri: boolean, ua: string): boolea
   return isTauri && (ua.includes('Windows NT') || ua.includes('Linux'));
 }
 
+/**
+ * WI-3092: one poll of setup-wizard-state, returning whether the tutor has
+ * graduated (`finished_at` stamped). Pure + exported so the external-console
+ * auto-nav condition is unit-testable without mounting the full component
+ * (which needs a live Tauri webview/pty — see OnboardingConsole.test.tsx).
+ */
+export async function pollGraduationOnce(
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  try {
+    const r = await fetchImpl('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+    if (!r.ok) return false;
+    const j = (await r.json()) as { finished_at?: string };
+    return Boolean(j.finished_at);
+  } catch {
+    return false; // transient network hiccup — the next poll retries
+  }
+}
+
 type ExternalState = 'idle' | 'launching' | 'running' | 'error';
 
 interface WindowWithTauriInvoke extends Window {
@@ -159,14 +178,8 @@ export function OnboardingConsole() {
     if (!routeExternal || external !== 'running') return;
     let cancelled = false;
     const checkGraduated = async () => {
-      try {
-        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
-        if (!r.ok) return;
-        const j = (await r.json()) as { finished_at?: string };
-        if (!cancelled && j.finished_at) window.location.href = '/';
-      } catch {
-        // transient network hiccup — the next poll retries
-      }
+      const graduated = await pollGraduationOnce();
+      if (!cancelled && graduated) window.location.href = '/';
     };
     void checkGraduated(); // don't wait a full interval if already graduated
     const id = setInterval(() => void checkGraduated(), 2000);

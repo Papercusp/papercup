@@ -73,13 +73,22 @@ export interface DocsContextBlock {
  * any section-linked docSlugs the caller passed. In-process, no MCP. Bounded so
  * the composed prompt stays small.
  */
+// Foundational docs seeded into EVERY tutorial/palette retrieval so core-vocabulary
+// questions are always grounded, even when keyword search ranks them out. The
+// owner-reported "what is a pot" failure (2026-07-05): keyword search returned
+// agent-policies/plans-index/etc. and NOT branding.mdx — the one page that holds the
+// whole lexicon table (Pot=project, Papercup=operator, Mug=brain, …) — so the model
+// had to guess and confidently hallucinated. `branding` grounds every lexicon term.
+export const FOUNDATIONAL_DOC_SLUGS = ['branding'] as const;
+
 export async function retrieveDocsContext(
   question: string,
-  opts: { docSlugs?: string[]; limit?: number; deepen?: number; bodyChars?: number; signal?: AbortSignal } = {},
+  opts: { docSlugs?: string[]; limit?: number; deepen?: number; bodyChars?: number; foundationalSlugs?: readonly string[]; signal?: AbortSignal } = {},
 ): Promise<DocsContextBlock[]> {
   const limit = opts.limit ?? 8;
   const deepen = opts.deepen ?? 3;
   const bodyChars = opts.bodyChars ?? 2200;
+  const foundational = opts.foundationalSlugs ?? FOUNDATIONAL_DOC_SLUGS;
   const adapter = engineeringAdapter;
 
   let hits: Array<{ slug: string; url?: string; title?: string; excerpt?: string }> = [];
@@ -89,10 +98,14 @@ export async function retrieveDocsContext(
   } catch { hits = []; }
 
   // Seed with section-linked slugs (deduped, first) so the current section is
-  // always represented even if it didn't rank for the raw query tokens.
+  // always represented even if it didn't rank for the raw query tokens, then the
+  // foundational lexicon doc(s), then the ranked search hits.
   const orderedSlugs: string[] = [];
   const seen = new Set<string>();
   for (const s of opts.docSlugs ?? []) {
+    if (s && !seen.has(s)) { seen.add(s); orderedSlugs.push(s); }
+  }
+  for (const s of foundational) {
     if (s && !seen.has(s)) { seen.add(s); orderedSlugs.push(s); }
   }
   for (const h of hits) {
