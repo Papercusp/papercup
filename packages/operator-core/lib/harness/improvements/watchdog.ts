@@ -516,11 +516,14 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
  * `papercupai-workspace/<tree>/`) checkout record prefixed paths — the same test
  * the canonical tree records as `packages/...` — which used to file DUPLICATE
  * improvements (EI-36/EI-143, EI-157/EI-163). Returns null for paths to drop
- * entirely: synthetic fixture tests (`__synthetic__`) are loop probes, not bugs.
+ * entirely: synthetic fixture tests (`__synthetic__`) are loop probes, not bugs;
+ * retired trees (`_retired/`) are preserved history, not active test suites.
  */
 export function normalizeRedTestPath(filePath: string): string | null {
-  if (filePath.includes('__synthetic__')) return null;
-  return filePath.replace(/^.*papercupai-workspace\/[^/]+\//, '');
+  const normalized = filePath.replace(/^.*papercupai-workspace\/[^/]+\//, '');
+  if (normalized.includes('__synthetic__')) return null;
+  if (normalized.startsWith('_retired/') || normalized.includes('/_retired/')) return null;
+  return normalized;
 }
 
 interface RedTestRow { file_path: string; framework: string; fails: number; sample: string | null; latest_fail_at?: string | Date | null }

@@ -12,13 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import {
-  materializeLoop,
-  getLoopStatus,
-  deactivateLoop,
-  loopRoutineName,
-  LOOP_WAKE_ACTION,
-} from './loop';
+import { materializeLoop, getLoopStatus, deactivateLoop, loopRoutineName, LOOP_WAKE_ACTION } from './loop';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -225,8 +219,22 @@ describe('loop surface round-trip (real PG)', () => {
   });
 
   it('re-arming the same owner upserts the ONE row (new interval + kickoff)', async () => {
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'first', sql });
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 600, kickoff: 'second', sql });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'first',
+      sql,
+    });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 600,
+      kickoff: 'second',
+      sql,
+    });
 
     const rows = await sql<Array<{ n: string }>>`
       SELECT name AS n FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}
@@ -236,5 +244,90 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.intervalSec).toBe(600);
     const r = await rawRow(OWNER);
     expect(r!.payload_template).toMatchObject({ kickoff: 'second' });
+  });
+
+  it('WI-3179: re-arming the same owner under a different harness updates the one logical loop row', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'first',
+      sql,
+    });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: '*',
+      ownerId: OWNER,
+      intervalSec: 600,
+      kickoff: 'second',
+      sql,
+    });
+
+    const rows = await sql<Array<{ install_slug: string; active: boolean }>>`
+      SELECT install_slug, active
+        FROM harness_shared.routines
+       WHERE name = ${loopRoutineName(OWNER)}
+       ORDER BY updated_at DESC
+    `;
+    expect(rows).toEqual([{ install_slug: '*', active: true }]);
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status).toMatchObject({ harnessSlug: '*', intervalSec: 600, active: true });
+    const r = await rawRow(OWNER);
+    expect(r!.payload_template).toMatchObject({ kickoff: 'second' });
+  });
+
+  it('WI-3179: re-arm coalesces pre-existing active shadow rows for the same owner loop', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'first',
+      sql,
+    });
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, name, trigger_kind, trigger_config, target_role,
+         payload_template, concurrency, catchup, active, next_fire_at, workspace_id,
+         reschedule_interval_sec, target_owner_id)
+      VALUES (
+        'rt_shadow_loop',
+        '*',
+        ${loopRoutineName(OWNER)},
+        'cron',
+        '{}'::jsonb,
+        ${LOOP_WAKE_ACTION},
+        '{"kickoff":"shadow"}'::jsonb,
+        'skip',
+        'skip-old',
+        true,
+        now(),
+        ${WS},
+        120,
+        ${OWNER}
+      )
+    `;
+
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: '*',
+      ownerId: OWNER,
+      intervalSec: 600,
+      kickoff: 'second',
+      sql,
+    });
+
+    const rows = await sql<Array<{ install_slug: string; active: boolean; payload_template: Record<string, unknown> }>>`
+      SELECT install_slug, active, payload_template
+        FROM harness_shared.routines
+       WHERE name = ${loopRoutineName(OWNER)}
+       ORDER BY active DESC, install_slug
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ install_slug: '*', active: true, payload_template: { kickoff: 'second' } });
+    expect(rows[1]).toMatchObject({ install_slug: HARNESS, active: false });
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ harnessSlug: '*', intervalSec: 600, active: true });
   });
 });

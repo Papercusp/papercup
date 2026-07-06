@@ -35,7 +35,7 @@
  * workflow.ts (the B-LOOP-2/3 lane), so it composes without collision.
  */
 import type { Sql } from 'postgres';
-import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
+import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
@@ -60,12 +60,15 @@ export const LOOP_WAKE_ACTION = 'system:loop-wake';
  */
 export const LOOP_INTERVAL_FLOOR_SEC = 60;
 
-/** Stable per-session loop routine name — one loop per pinned owner; re-arming
- *  upserts the single row (ON CONFLICT (install_slug, name)). */
+/** Stable per-session loop routine name — one loop per pinned owner. */
 export function loopRoutineName(ownerId: string): string {
   // Routine ids are normalized to [a-z0-9_] by upsertRoutine; the name is the
   // upsert key, so keep it deterministic from the ownerId.
   return `loop-${ownerId}`;
+}
+
+function loopRoutineId(harnessSlug: string, ownerId: string): string {
+  return `rt_${harnessSlug}_${loopRoutineName(ownerId)}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
 /**
@@ -101,7 +104,7 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   'Each wake:',
   "1. Decide the next concrete unit(s) of work. If the goal is DONE or there's nothing left to do, call `loop:end` and stop — do not spin on empty wakes.",
   '2. Create + SELF-ASSIGN each unit as a work_item in ONE atomic call, picking `kind` by what the unit IS —',
-  "   `change` for a code edit/fix (the default for most coding work), `bug` for broken code, `task` ONLY for",
+  '   `change` for a code edit/fix (the default for most coding work), `bug` for broken code, `task` ONLY for',
   '   non-code work (research / a decision / manual verification — NEVER for anything that edits code):',
   "     work_items:create { kind:'change', title:'…', harness:'{harness}', assign_to:'{ownerId}' }",
   '   (creates AND claims it for you in one write — your work then shows in fleet:assignments, owned, with no create→claim race). Omit `topics` — a self-owned loop item needs no topic fanout.',
@@ -135,7 +138,7 @@ export const COLD_LOOP_WAKE_ADDENDUM = [
   '  • reached a DURABLE conclusion this wake (a confirmed root cause / repro, a decision, a system bug)? You MUST',
   '    facts:assert it. ⚠ A work-item COMMENT (or a checkpoint) does NOT satisfy this and is the exact trap to',
   '    avoid: a comment is NEVER folded into orient, so the next cold wake and every peer start BLIND to your',
-  "    conclusion. The reflex \"I already wrote it up in a comment\" is precisely why conclusions get lost — a fact",
+  '    conclusion. The reflex "I already wrote it up in a comment" is precisely why conclusions get lost — a fact',
   '    is the ONLY write folded VERBATIM into every future orient/brief. Comment too if you want an audit trail,',
   '    but the facts:assert is the non-negotiable one; a conclusion left only in a comment/carry-note dies with the loop.',
 ].join('\n');
@@ -273,8 +276,9 @@ export interface MaterializeLoopInput {
 
 /**
  * Upsert the loop routine for an owner (the row B-LOOP-2's rebase + B-LOOP-3's
- * fire consume). Idempotent on (install_slug, name=`loop-<ownerId>`): re-arming
- * the same session updates the one row (new interval / kickoff / cost-cap).
+ * fire consume). Idempotent on (workspace_id, target_owner_id, name): re-arming
+ * the same session updates the one logical row even if the resolved harness
+ * namespace changes between a concrete slug and the operator wildcard fallback.
  */
 export async function materializeLoop(
   input: MaterializeLoopInput,
@@ -300,24 +304,85 @@ export async function materializeLoop(
   // leaves payload_template unchanged.
   if (input.continuation === 'gated') payloadTemplate.continuation = 'gated';
 
-  const row = await upsertRoutine(
-    sql,
-    {
-      workspaceId,
-      installSlug: input.harnessSlug,
-      name: loopRoutineName(input.ownerId),
-      triggerKind: 'cron', // next_fire_at-driven; rides listDueCronRoutines + the 30s tick
-      triggerConfig: {}, // PURE loop — no cron/rrule ⇒ claim.ts parks at 'infinity' in-flight
-      targetRole: LOOP_WAKE_ACTION,
-      payloadTemplate,
-      concurrency: 'skip', // belt-and-suspenders; the 'infinity' park is the real skip-if-in-flight guard
-      active: input.active ?? true,
-      nextFireAt, // explicit override — upsertRoutine only auto-derives next_fire_at from a cron string
-      rescheduleIntervalSec: input.intervalSec,
-      targetOwnerId: input.ownerId,
-    },
-    computeNextFireAt,
-  );
+  const name = loopRoutineName(input.ownerId);
+  const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
+  const triggerConfigStr = JSON.stringify({});
+  const payloadTemplateStr = JSON.stringify(payloadTemplate);
+  const nextFireAtStr = nextFireAt.toISOString();
+  const existing = await sql<Array<{ id: string; install_slug: string; active: boolean }>>`
+    SELECT id, install_slug, active
+      FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId}
+       AND name = ${name}
+       AND target_owner_id = ${input.ownerId}
+       AND reschedule_interval_sec IS NOT NULL
+     ORDER BY (install_slug = ${input.harnessSlug}) DESC, active DESC, updated_at DESC
+     FOR UPDATE
+  `;
+
+  let row: { id: string; name: string; nextFireAt: Date | null; targetRole: string };
+  if (existing.length > 0) {
+    const canonical = existing[0]!;
+    const rows = await sql<Array<{ id: string; name: string; next_fire_at: Date | null; target_role: string }>>`
+      UPDATE harness_shared.routines
+         SET id = ${desiredId},
+             install_slug = ${input.harnessSlug},
+             trigger_kind = 'cron',
+             trigger_config = ${triggerConfigStr}::text::jsonb,
+             target_role = ${LOOP_WAKE_ACTION},
+             payload_template = ${payloadTemplateStr}::text::jsonb,
+             concurrency = 'skip',
+             catchup = 'skip-old',
+             active = ${input.active ?? true},
+             next_fire_at = CASE WHEN next_fire_at = 'infinity'::timestamptz
+                                 THEN next_fire_at
+                                 ELSE ${nextFireAtStr}::timestamptz END,
+             reschedule_interval_sec = ${input.intervalSec},
+             target_owner_id = ${input.ownerId},
+             updated_at = now()
+       WHERE id = ${canonical.id}
+      RETURNING id, name, next_fire_at, target_role
+    `;
+    await sql`
+      UPDATE harness_shared.routines
+         SET active = FALSE, updated_at = now(),
+             metadata = COALESCE(metadata, '{}'::jsonb) ||
+               jsonb_build_object('loop_shadow_deactivated_at', now()::text, 'loop_shadow_deactivated_by', ${desiredId}::text)
+       WHERE workspace_id = ${workspaceId}
+         AND name = ${name}
+         AND target_owner_id = ${input.ownerId}
+         AND reschedule_interval_sec IS NOT NULL
+         AND id <> ${desiredId}
+         AND active = TRUE
+    `;
+    const updated = rows[0]!;
+    row = {
+      id: updated.id,
+      name: updated.name,
+      nextFireAt: normalizeNextFireAt(updated.next_fire_at),
+      targetRole: updated.target_role,
+    };
+  } else {
+    const inserted = await upsertRoutine(
+      sql,
+      {
+        workspaceId,
+        installSlug: input.harnessSlug,
+        name,
+        triggerKind: 'cron', // next_fire_at-driven; rides listDueCronRoutines + the 30s tick
+        triggerConfig: {}, // PURE loop — no cron/rrule ⇒ claim.ts parks at 'infinity' in-flight
+        targetRole: LOOP_WAKE_ACTION,
+        payloadTemplate,
+        concurrency: 'skip', // belt-and-suspenders; the 'infinity' park is the real skip-if-in-flight guard
+        active: input.active ?? true,
+        nextFireAt, // explicit override — upsertRoutine only auto-derives next_fire_at from a cron string
+        rescheduleIntervalSec: input.intervalSec,
+        targetOwnerId: input.ownerId,
+      },
+      computeNextFireAt,
+    );
+    row = { id: inserted.id, name: inserted.name, nextFireAt: inserted.nextFireAt, targetRole: inserted.targetRole };
+  }
   // EI-7613 — refresh the dead-man clock's arm instant on EVERY materialize (a fresh arm
   // AND a re-arm alike): the upsert above never touches `created_at` on its ON CONFLICT DO
   // UPDATE path, so without this a re-armed loop's maxDurationSec bound kept measuring from
@@ -326,7 +391,9 @@ export async function materializeLoop(
   try {
     await stampLoopArmedAt(sql, row.id, now.getTime());
   } catch (e) {
-    console.warn(`[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,
+    );
   }
   return { id: row.id, name: row.name, nextFireAt: row.nextFireAt, targetRole: row.targetRole };
 }
@@ -428,10 +495,7 @@ export function computeLoopStall(input: {
  * `next_fire_at='infinity'::timestamptz` to an invalid Date, so we detect parked
  * in SQL and never hand a NaN-Date out.
  */
-export async function getLoopStatus(
-  ownerId: string,
-  opts: { sql?: Sql } = {},
-): Promise<LoopStatus | null> {
+export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
   const sql = opts.sql ?? getOrgPg().sql;
   const name = loopRoutineName(ownerId);
   const rows = await sql<any[]>`

@@ -793,6 +793,13 @@ describe('red-test path normalization — one identity per broken test', () => {
     expect(normalizeRedTestPath('lib/__synthetic__/close-loop-watchdog-probe.test.ts')).toBeNull();
   });
 
+  it('drops retired-tree tests (preserved history, not active suites)', () => {
+    expect(normalizeRedTestPath('libs/papercusp/_retired/orchestrator-run-loop/src/dispatches-pg.test.ts'))
+      .toBeNull();
+    expect(normalizeRedTestPath('/home/dev/papercupai-workspace/papercup/_retired/papercup/app/page.test.tsx'))
+      .toBeNull();
+  });
+
   it('MERGES the canonical + checkpoint rows of the SAME test into ONE signal (the EI-36/EI-143 dup)', () => {
     const signals = redTestSignalsFromRows(
       [
