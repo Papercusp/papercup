@@ -16,7 +16,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import type { OrgTestDb } from '../../test/_org-test-db';
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as any, ws: 'ws-default' }));
 
@@ -30,7 +30,7 @@ vi.mock('./workspace-registry', async () => {
 
 const { loadUserPreferences, saveUserPreferences, clearUserPreferenceKey } =
   await import('./user-preferences');
-const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 /** Seed a real users row (FK target of user_preferences.user_id) and return its id. */
 async function seedUser(): Promise<string> {

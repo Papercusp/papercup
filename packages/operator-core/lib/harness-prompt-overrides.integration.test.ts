@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import type { OrgTestDb } from '../../test/_org-test-db';
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -26,7 +26,7 @@ const {
   clearAllPromptOverrides,
   listPromptOverrides,
 } = await import('./harness-prompt-overrides');
-const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let wsCounter = 0;
 const freshWs = () => `pov_${++wsCounter}_${randomBytes(2).toString('hex')}`;
