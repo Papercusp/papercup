@@ -217,12 +217,13 @@ export interface SampleReplicationLivenessOpts {
   onStallEpisode?: (episode: ReplicationStallEpisode) => void;
   /**
    * EI-7110: recovery sink override — fires when a log transitions OUT of an
-   * alarmed no_replicator state (a live replicator peer is seen again after
-   * having stalled past grace). Omit for the module default (auto-resolves the
-   * durable EI `fileReplicationStallEi` filed for the stall). Pass explicitly
-   * in unit tests. Scoped to the no_replicator axis only for now — `frozen` /
-   * `connected_never_replicated` recovery-reporting is a follow-up (those EIs
-   * still require manual verification + close until then).
+   * alarmed stall state (a live replicator peer / ingest progress is seen again
+   * after having stalled past grace). Omit for the module default (auto-resolves
+   * the durable EI `fileReplicationStallEi` filed for the stall). Pass explicitly
+   * in unit tests. Wired for ALL THREE axes — no_replicator, frozen, AND
+   * connected_never_replicated (EI-4643 class: a zombie-connection EI previously
+   * sat open forever because only the no_replicator axis reported recovery; now
+   * each axis auto-resolves its own EI when the underlying replication recovers).
    */
   onRecovery?: (recovery: ReplicationStallEpisode) => void;
 }
@@ -477,25 +478,65 @@ export function sampleReplicationLiveness(
     }
   } else if (st.lastNonZeroPeersMs !== null && st.connectedNeverReplSinceMs !== null) {
     // Replication established — recovered; a future zombie window re-fires.
+    // EI-4643: report the recovery so the durable EI a zombie episode filed
+    // auto-closes. Previously only the no_replicator axis was wired, so a
+    // connected_never_replicated EI (this exact class) sat open forever — it
+    // could not auto-clear even once the log attached a replicator.
+    const wasAlarmedConnectedNever = st.alarmedConnectedNever;
+    const zombieStallMs = now - st.connectedNeverReplSinceMs;
     st.connectedNeverReplSinceMs = null;
     st.alarmedConnectedNever = false;
+    if (wasAlarmedConnectedNever) {
+      onRecovery({
+        workspaceId,
+        harnessSlug,
+        logKeyHex: sample.keyHex,
+        kind: 'connected_never_replicated',
+        stalledForMs: zombieStallMs,
+        detail:
+          `log=${sample.keyHex.slice(0, 12)}… attached a live replicator after ` +
+          `${Math.round(zombieStallMs / 1000)}s swarm-connected-but-dead`,
+      });
+    }
   }
 
   // ── ingest-progress axis (frozen) ──
   if (sample.mergedPosition !== undefined) {
     const prev = st.mergedPosition;
     st.mergedPosition = sample.mergedPosition;
-    if (prev === null || sample.mergedPosition > prev) {
+    // EI-4643 follow-up: when a FROZEN alarm clears (ingest resumes or the log
+    // catches up) report the recovery so the durable EI auto-closes — previously
+    // the frozen axis reset its latch silently and left the EI open forever.
+    const wasAlarmedFrozen = st.alarmedFrozen;
+    const frozenStallMs =
+      st.lastIngestProgressMs !== null ? now - st.lastIngestProgressMs : 0;
+    const clearFrozen = (): void => {
       st.lastIngestProgressMs = now;
-      st.alarmedFrozen = false; // ingesting — recovered
+      st.alarmedFrozen = false;
+      if (wasAlarmedFrozen) {
+        onRecovery({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'frozen',
+          stalledForMs: frozenStallMs,
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… ingest resumed after ` +
+            `${Math.round(frozenStallMs / 1000)}s frozen ` +
+            `(merged to ${sample.mergedPosition} of ${st.knownLength})`,
+        });
+      }
+    };
+    if (prev === null || sample.mergedPosition > prev) {
+      clearFrozen(); // ingesting — recovered
     } else if (st.knownLength <= sample.mergedPosition) {
       // Caught up: nothing to ingest. Healthy idle — keep the clock fresh so a
       // later backlog gets a full grace window.
-      st.lastIngestProgressMs = now;
-      st.alarmedFrozen = false;
+      clearFrozen();
     } else if (!wasBehind) {
       // Just BECAME behind (caught-up → behind between samples): the freeze
-      // window starts at this observation, not at the last idle refresh.
+      // window starts at this observation, not at the last idle refresh. Never a
+      // recovery (a prior not-behind sample cannot have alarmed frozen).
       st.lastIngestProgressMs = now;
       st.alarmedFrozen = false;
     } else if (

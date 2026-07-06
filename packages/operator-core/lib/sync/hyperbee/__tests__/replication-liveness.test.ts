@@ -244,6 +244,49 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     );
     expect(episodes.filter((e) => e.kind === 'frozen')).toHaveLength(0);
   });
+
+  // EI-4643: the frozen axis must REPORT recovery (not just reset its latch) so
+  // the durable EI a frozen episode filed auto-closes — previously only the
+  // no_replicator axis was wired for onRecovery.
+  it('reports recovery with kind=frozen once ingest resumes after a freeze alarm', () => {
+    const episodes: ReplicationStallEpisode[] = [];
+    const recoveries: ReplicationStallEpisode[] = [];
+    let now = 1_000_000;
+    const sample = (len: number, pos: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: len, mergedPosition: pos, peersCount: 1 },
+        {
+          graceMs: GRACE,
+          nowMs: now,
+          onStallEpisode: (e) => episodes.push(e),
+          onRecovery: (e) => recoveries.push(e),
+        },
+      );
+
+    sample(10, 4); // behind — seeds the progress clock
+    now += GRACE;
+    sample(10, 4); // zero progress for a whole grace window → frozen alarm
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('frozen');
+    expect(recoveries).toHaveLength(0);
+
+    now += 3_000;
+    sample(10, 9); // ingest resumes → recovery reported (auto-closes the EI)
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]!.kind).toBe('frozen');
+    expect(recoveries[0]!.stalledForMs).toBeGreaterThanOrEqual(GRACE);
+    expect(recoveries[0]!.detail).toContain('ingest resumed');
+
+    // No spurious recovery for a freeze that never crossed the alarm grace.
+    recoveries.length = 0;
+    now += 1_000;
+    sample(12, 9); // becomes behind — fresh window, no alarm
+    now += 1_000;
+    sample(12, 12); // catches up before ever alarming
+    expect(recoveries).toHaveLength(0);
+  });
 });
 
 describe('read-time verdicts + registry lifecycle', () => {
@@ -536,5 +579,64 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
     sampleWith(on, now, { peers: 0, swarm: 1, pos: 5 });
     expect(episodes).toHaveLength(2);
     expect(episodes[1]!.kind).toBe('no_replicator');
+  });
+
+  // EI-4643: a zombie-connection EI must AUTO-CLOSE once the log attaches a live
+  // replicator. Previously the connected_never_replicated axis reset its latch
+  // silently (no onRecovery), so its durable EI sat open forever — this pins the
+  // recovery-reporting wiring for the exact class EI-4643 belongs to.
+  it('EI-4643: reports recovery with kind=connected_never_replicated once a live replicator attaches', () => {
+    const { episodes, on } = collect();
+    const recoveries: ReplicationStallEpisode[] = [];
+    let now = 1_000_000;
+    const sample = (peers: number | undefined, swarm: number, pos = 0) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: pos, peersCount: peers, swarmConnections: swarm },
+        {
+          graceMs: GRACE,
+          nowMs: now,
+          onStallEpisode: on,
+          onRecovery: (e) => recoveries.push(e),
+        },
+      );
+
+    sample(0, 2); // swarm-connected but never replicated — zombie window opens
+    now += GRACE;
+    sample(0, 2); // held past grace → alarm
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('connected_never_replicated');
+    expect(recoveries).toHaveLength(0);
+
+    now += 5_000;
+    sample(1, 1, 5); // a live replicator finally attaches → recovery reported
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]!.kind).toBe('connected_never_replicated');
+    expect(recoveries[0]!.stalledForMs).toBeGreaterThanOrEqual(GRACE);
+    expect(recoveries[0]!.detail).toContain('replicator');
+  });
+
+  it('never reports recovery for a zombie window that never crossed the alarm grace', () => {
+    const { on } = collect();
+    const recoveries: ReplicationStallEpisode[] = [];
+    let now = 1_000_000;
+    const sample = (peers: number | undefined, swarm: number, pos = 0) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: pos, peersCount: peers, swarmConnections: swarm },
+        {
+          graceMs: GRACE,
+          nowMs: now,
+          onStallEpisode: on,
+          onRecovery: (e) => recoveries.push(e),
+        },
+      );
+
+    sample(0, 1); // window opens
+    now += 2_000; // well within grace
+    sample(1, 1, 5); // replicator attaches before ever alarming
+    expect(recoveries).toHaveLength(0);
   });
 });
