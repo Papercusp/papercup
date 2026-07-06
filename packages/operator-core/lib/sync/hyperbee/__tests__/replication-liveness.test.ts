@@ -184,7 +184,7 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
         WS,
         HS,
         { keyHex: KEY, knownLength: len, mergedPosition: pos, peersCount: 1 },
-        { graceMs: GRACE, nowMs: now, onStallEpisode: on },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
       );
 
     sample(10, 4); // behind — first sight seeds the progress clock (no instant alarm)
@@ -488,7 +488,7 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
         peersCount: opts.peers,
         swarmConnections: opts.swarm,
       },
-      { graceMs: GRACE, nowMs: now, onStallEpisode: on },
+      { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
     );
 
   it('fires ONCE after grace when the swarm is connected but the log never attached a replicator; verdict reads no_replicator', () => {
