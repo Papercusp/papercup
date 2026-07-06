@@ -28,7 +28,7 @@ export default defineTool({
   description:
     'Spawn one background agent into a harness and return its spawn_id immediately. This is for autonomous-loop workers, not visible desktop terminals; use fleet:launch-on-plan for a desktop fleet on a plan. The run is tracked durably in the nursery, visible in fleet:tree, and stoppable with fleet:cancel. role="worker" requires chunk.',
   guidance: {
-    when: 'Use to place a background autonomous worker on new work: a bee, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
+    when: 'Use to place a background autonomous worker on new work: a cup, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
     notWhen: 'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
@@ -60,9 +60,9 @@ export default defineTool({
     feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
     brief: softText(LIMITS.BRIEF).optional()
-      .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.'),
+      .describe('Mug brief: situational overlay the cup is missing (cross-cup context, watch-fors, why-this-priority). P-060. Auto-truncated to 16000 chars if longer.'),
     fleet: z.string().min(1).max(120).optional()
-      .describe('Place this bee in a NAMED fleet (the durable, color-coded group). Pass the fleet NAME or slug — it is created if absent (you become its leader) and the bee joins as a member at launch: grouped under that fleet in the roster + its terminal recolored to the fleet scheme, with NO brief directive needed. Use ONE fleet per plan/initiative, reused across waves. Omit for an ungrouped bee.'),
+      .describe('Place this cup in a NAMED fleet (the durable, color-coded group). Pass the fleet NAME or slug — it is created if absent (you become its leader) and the cup joins as a member at launch: grouped under that fleet in the roster + its terminal recolored to the fleet scheme, with NO brief directive needed. Use ONE fleet per plan/initiative, reused across waves. Omit for an ungrouped cup.'),
     tier: z.string().max(40).optional()
       .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
     model: z.string().max(80).optional()

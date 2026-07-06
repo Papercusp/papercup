@@ -86,7 +86,7 @@ export default defineTool({
         .string()
         .max(120)
         .optional()
-        .describe('Harness the loop is scoped under (default: your session harness / home hive).'),
+        .describe('Harness the loop is scoped under (default: your session harness / home pot).'),
     })
     .refine(
       (a) =>

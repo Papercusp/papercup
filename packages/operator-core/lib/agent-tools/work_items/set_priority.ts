@@ -87,7 +87,7 @@ export default defineTool({
   description:
     "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal returns ok:true but writes nothing (issue-family items too). ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
   guidance: {
-    when: "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
+    when: "The Mug steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
     notWhen:
       "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order (incl. issue-family). To DEPRIORITIZE, don't use this — see the EI-6835 warning above.",
     chaining:

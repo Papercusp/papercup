@@ -36,7 +36,7 @@ export default defineTool({
   description:
     "Move one OR many work-items to a position (`rank`, 0-based, 0 = head-of-line) within their assignee's ordered work-list — peers shift down. Single: { id, rank }. Many: items:[{ id, rank, writer?, harness? }]. `writer`='cup' (default, a cup resequencing its own list) | 'mug' (Mug overlay). Returns { ok, results:[{ ok, id, … | error }], counts }.",
   guidance: {
-    when: "You are a bee resequencing your own work-list, or the Queen injecting/rebalancing — for one item or several at once. Claim items first; rank is per-assignee.",
+    when: "You are a cup resequencing your own work-list, or the Mug injecting/rebalancing — for one item or several at once. Claim items first; rank is per-assignee.",
     notWhen:
       'You only want to START an item (work_items:claim) or change its lifecycle state (work_items:set_state). Reorder changes ORDER, not ownership or state.',
     chaining:

@@ -26,9 +26,9 @@ export default defineTool({
   description:
     'Read live inference-pool capacity for placement decisions (the gateway /stats oracle): the bee-tier dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
   guidance: {
-    when: 'Before a placement round, to size how many FRESH bees to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
+    when: 'Before a placement round, to size how many FRESH cups to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',
-    chaining: 'fleet:capacity { headroom: <bees you want to place> } → fleet:place_batch (which ALSO clamps automatically under QUEEN_CAPACITY_DISPATCH; this tool lets you reason about it first).',
+    chaining: 'fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under QUEEN_CAPACITY_DISPATCH; this tool lets you reason about it first).',
   },
   capability: 'harness:read',
   requirePrincipal: false,

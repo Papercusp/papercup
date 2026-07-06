@@ -31,7 +31,7 @@ export default defineTool({
     "Log the Queen's disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
   capability: 'coord:write',
   guidance: {
-    when: "You are the Queen and you've DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",
+    when: "You are the Mug and you've DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",
     notWhen:
       "Just QUERYING whether you may auto-handle something (no commitment yet) → autonomy:decide. Changing a category ceiling → autonomy:policy_set.",
     chaining:
@@ -50,7 +50,7 @@ export default defineTool({
       .describe('The MCP tool/verb the item would use (group:verb) — keys the category + the gate.'),
     disposition: z
       .enum([...DISPOSITIONS] as [string, ...string[]])
-      .describe('What the Queen chose: act | defer | reject | route-to-research | no-op.'),
+      .describe('What the Mug chose: act | defer | reject | route-to-research | no-op.'),
     capability: z.string().optional().describe('Coarse RBAC capability — last-resort category fallback only.'),
     riskTier: z
       .enum([...RISK_TIERS] as [string, ...string[]])

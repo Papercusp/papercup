@@ -181,6 +181,13 @@
  *     — the frontier D-001 arming gate), governor-preflighted (loop
  *     `graduation-tracker`), AND seeded INACTIVE
  *     (lib/graduation/seed-graduation-routine.ts).
+ *   - `system:cargo-test` — production-test-readiness-2026-07-06 P-009 (WI-3206).
+ *     Hourly (:45) native Rust/cargo suite run for the desktop shell
+ *     (papercusp-desktop/src-tauri), recorded into harness_shared.test_runs as
+ *     framework='cargo' via scripts/report-cargo-tests.mjs — the same signal path
+ *     vitest/playwright already feed on their own routine cadence. Self-gates to
+ *     the operator-home installSlug (the desktop shell only exists there). Seeded
+ *     ACTIVE (seed-cargo-test-routine.ts) — read-only w.r.t. the repo, safe live.
  */
 import '../git-sync/git-sync-action';
 // `system:foreign-git-sync` — the P-109 foreign-workspace commit lane (a
@@ -262,3 +269,4 @@ import './human-queue-digest-action';
 // sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).
 import './autonomy-trust-scan-action';
+import './cargo-test-action';

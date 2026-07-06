@@ -48,7 +48,7 @@ export default defineTool({
   description:
     "Fire a slash-exposed tool command AT another running agent: renders the same instruction a typed slash command yields and delivers it as the target's next turn via deliver-and-wake. The target executes the tool over its OWN session with its own gates; a manual-wake-mode target stages the command for owner review instead. For tip [Apply] buttons, wake-board actions, and agent-to-agent command dispatch.",
   guidance: {
-    when: "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the queen, a UI 'run this on that agent' action, a queen placing a precise command (not prose) onto a bee.",
+    when: "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the mug, a UI 'run this on that agent' action, a mug placing a precise command (not prose) onto a cup.",
     notWhen:
       'Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue.',
     seeAlso: [

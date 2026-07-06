@@ -27,7 +27,7 @@ export default defineTool({
   description:
     'The live-execution view of BEE RUNS: every live bee run (a bee executing a claimed work-item) with its bee, current item, claimed-since, lease, heartbeat, last progress, the derived idle/blocked reason, and the claim-spec specId@revision it runs under (null = DEFAULT ordering / no spec). Read off the live fleet state — "what is the fleet executing now, under which scheduling spec". A bee run, not a workflow (D-007).',
   guidance: {
-    when: 'You (Queen / Overwatch / a human) want to see what the fleet is actively executing RIGHT NOW and under which scheduling spec — the live-execution view of the scheduler. Filter by { harness } or { bee }.',
+    when: 'You (Mug / Kettle / a human) want to see what the fleet is actively executing RIGHT NOW and under which scheduling spec — the live-execution view of the scheduler. Filter by { harness } or { bee }.',
     notWhen:
       'Full fleet roster / bee load / orphaned-claim detection across ALL claim kinds (plan-item leases, assignments, presence) — use fleet:assignments. Claiming work — scheduler:get_next. Steering a bee — scheduler:set_claim_spec.',
     chaining:
@@ -42,8 +42,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().min(1).optional().describe('Filter to one harness (the bee runs executing there).'),
-    bee: z.string().max(120).optional().describe('Filter to one bee (its ownerId).'),
+    harness: z.string().min(1).optional().describe('Filter to one harness (the cup runs executing there).'),
+    bee: z.string().max(120).optional().describe('Filter to one cup (its ownerId).'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {

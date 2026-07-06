@@ -18,9 +18,13 @@ vi.mock('../../workspace-registry', () => ({
   // omitting it broke this suite at import time after the @papercusp/backup seam landed.
   workspacesRoot: vi.fn(() => '/tmp/papercusp-test-ws'),
 }));
-vi.mock('../../operator-budget', () => ({
-  checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
-}));
+vi.mock('../../operator-budget', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
+  };
+});
 // P-012: the text route falls back to the `humanFacingRole` voice pref when the
 // caller didn't set an explicit body.role. Mutated per-test.
 let humanFacingRole: 'operator' | 'papercup' = 'operator';

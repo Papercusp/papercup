@@ -46,14 +46,14 @@ export function resolveCreateHiveMembership(
     return {
       ok: false,
       error: 'hive_not_found',
-      message: `no hive '${hiveHomeSlug}' in this workspace`,
+      message: `no pot '${hiveHomeSlug}' in this workspace`,
     };
   }
   if (!isHiveProject(target)) {
     return {
       ok: false,
       error: 'not_a_hive',
-      message: `'${hiveHomeSlug}' is not a Hive home (harness_kind:'hive') — only a Hive home can own members`,
+      message: `'${hiveHomeSlug}' is not a pot (harness_kind:'hive') — only a pot can own members`,
     };
   }
   return { ok: true, hive_slug: hiveHomeSlug };

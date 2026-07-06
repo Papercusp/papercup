@@ -27,7 +27,10 @@ vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual, getOrgPg: () => ({ db: h.db }) };
 });
-vi.mock('node:fs/promises', () => ({ mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, mkdir: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) };
+});
 vi.mock('./harness-registry', () => ({ loadHarnessRegistry: async () => ({ projects: [] }) }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('./workspace-registry', async () => {

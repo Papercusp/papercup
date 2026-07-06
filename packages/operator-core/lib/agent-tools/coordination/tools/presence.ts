@@ -66,7 +66,7 @@ export default defineTool({
     scope: z
       .enum(['hive', 'workspace', 'all'])
       .optional()
-      .describe('hive (DEFAULT) = your Hive\'s agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Queen). A caller with no Hive (SU/operator) falls back to workspace.'),
+      .describe('hive (DEFAULT) = your Hive\'s agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.'),
     hive: z
       .string()
       .optional()

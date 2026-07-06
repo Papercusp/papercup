@@ -35,7 +35,7 @@ export default defineTool({
     when:
       "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
     notWhen:
-      "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (pot:set-steering / the hive policy) instead of a one-off per-SHA ratify.",
+      "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (pot:set-steering / the pot policy) instead of a one-off per-SHA ratify.",
     chaining:
       "{action:'list', state:'pending'} → review the head → {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it.",
     seeAlso: ['trust:comms (comms-reach tiers — separable)', 'pot:set-steering (policy authoring)'],
@@ -49,7 +49,7 @@ export default defineTool({
         .string()
         .optional()
         .describe('Workspace id. Defaults to the active workspace when omitted.'),
-      hiveSlug: z.string().optional().describe("The Hive's home slug. Required for action:'ratify'."),
+      hiveSlug: z.string().optional().describe("The Pot's home slug. Required for action:'ratify'."),
       repoKey: z
         .string()
         .optional()

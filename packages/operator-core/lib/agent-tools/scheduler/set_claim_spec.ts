@@ -142,7 +142,7 @@ export default defineTool({
         .string()
         .min(1)
         .optional()
-        .describe('the bee to steer (its session/owner id) — exactly one of beeId | fleet'),
+        .describe('the cup to steer (its session/owner id) — exactly one of beeId | fleet'),
       fleet: z
         .string()
         .min(1)
@@ -165,7 +165,7 @@ export default defineTool({
         ),
     })
     .refine((a) => Boolean(a.beeId) !== Boolean(a.fleet), {
-      message: 'pass exactly ONE of beeId (steer one bee) or fleet (steer the whole fleet via inheritance)',
+      message: 'pass exactly ONE of beeId (steer one cup) or fleet (steer the whole fleet via inheritance)',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);

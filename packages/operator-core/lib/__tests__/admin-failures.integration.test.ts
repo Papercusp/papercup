@@ -89,11 +89,15 @@ describe('GET /api/admin/spawn-signing/failures', () => {
   });
 
   itLive('tamper row appears and is ordered DESC', async () => {
-    const before = await get('?limit=1000&reason=invalid_signature');
-    const beforeCount = before.json.rows.length;
+    // NOTE: this hits the LIVE shared operator table, which — on a heavily
+    // concurrent fleet — can already hold >= `limit` invalid_signature rows
+    // (from other agents' spawns), so a plain "row count grew" assertion is
+    // flaky by construction once the table exceeds the cap. Identify OUR row
+    // by a unique claimed_spawn tag instead of relying on count growth.
+    const marker = `s_audit_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
     await fetch(
-      `${baseUrl}/api/mcp?harness=h&workspace=w&role=worker&run=r&spawn=s_audit_${Date.now()}&exp=9999999999&sig=BADSIG`,
+      `${baseUrl}/api/mcp?harness=h&workspace=w&role=worker&run=r&spawn=${marker}&exp=9999999999&sig=BADSIG`,
       {
         method: 'POST',
         headers: { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' },
@@ -103,9 +107,13 @@ describe('GET /api/admin/spawn-signing/failures', () => {
     await new Promise((r) => setTimeout(r, 200));
 
     const after = await get('?limit=1000&reason=invalid_signature');
-    expect(after.json.rows.length).toBeGreaterThan(beforeCount);
-    expect(after.json.rows[0]?.reason).toBe('invalid_signature');
-    expect(typeof after.json.rows[0]?.id).toBe('number');
+    const ourRow = after.json.rows.find((r: any) => r.claimed_spawn === marker);
+    expect(ourRow).toBeTruthy();
+    expect(ourRow?.reason).toBe('invalid_signature');
+    expect(typeof ourRow?.id).toBe('number');
+    // Our row is the freshest tamper event — it must sort at (or before) the
+    // top of the DESC-ordered window, and the whole page must stay DESC.
+    expect(after.json.rows[0]?.claimed_spawn).toBe(marker);
     const ordered = after.json.rows.every((r: any, i: number, a: any[]) =>
       i === 0 || new Date(a[i - 1].ts).getTime() >= new Date(r.ts).getTime(),
     );

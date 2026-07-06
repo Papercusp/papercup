@@ -86,7 +86,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'fork_gc_root_only',
-        message: 'platform:fork_gc cannot be called from a bee — collecting forks is an owner/operator action.',
+        message: 'platform:fork_gc cannot be called from a cup — collecting forks is an owner/operator action.',
       });
     }
 

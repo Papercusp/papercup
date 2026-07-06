@@ -26,7 +26,7 @@ export default defineTool({
   description:
     "Read or set an agent's wake mode — auto (wakes fire immediately) or manual (wakes are staged for the owner to release/edit/skip). Omit `mode` to read; omit `agent` to read/set the global default. The pause/edit gate (hive-agent-tabs D-005).",
   guidance: {
-    when: 'Switching an agent (or the default) between auto and manual wake delivery — e.g. pausing a bee\'s auto-injected turns to review them first, or switching back.',
+    when: 'Switching an agent (or the default) between auto and manual wake delivery — e.g. pausing a cup\'s auto-injected turns to review them first, or switching back.',
     notWhen: "Reading who's online or what an agent is doing — that's coord:presence / fleet:assignments. Reviewing the staged wakes themselves — that's coord:wake-queue.",
   },
   capability: 'coord:write',

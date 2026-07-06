@@ -23,7 +23,7 @@ export default defineTool({
   description:
     "Read one bee's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat.",
   guidance: {
-    when: 'Rendering the bee-dossier pane, or inspecting what a specific bee has received/sent without being that bee.',
+    when: 'Rendering the cup-dossier pane, or inspecting what a specific cup has received/sent without being that cup.',
     notWhen:
       'Reading YOUR own inbox (use coord:inbox — it also heartbeats your presence). Deriving fleet state / who is on what (use fleet:assignments).',
     chaining:
@@ -37,7 +37,7 @@ export default defineTool({
       .string()
       .min(1)
       .max(200)
-      .describe("The bee's ownerId (from fleet:assignments / the swarm roster)."),
+      .describe("The cup's ownerId (from fleet:assignments / the swarm roster)."),
     since_ts: z
       .string()
       .optional()

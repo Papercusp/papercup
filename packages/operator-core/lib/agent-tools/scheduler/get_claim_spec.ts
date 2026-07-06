@@ -35,12 +35,12 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      beeId: z.string().min(1).optional().describe('the bee to read (its session/owner id) — exactly one of beeId | fleet'),
+      beeId: z.string().min(1).optional().describe('the cup to read (its session/owner id) — exactly one of beeId | fleet'),
       fleet: z.string().min(1).optional().describe('a fleet slug — reads the fleet-level sentinel spec directly (not a member\'s inherited view)'),
       workspace: z.string().max(120).optional().describe('override the workspace partition (default: resolved from your identity)'),
     })
     .refine((a) => Boolean(a.beeId) !== Boolean(a.fleet), {
-      message: 'pass exactly ONE of beeId (read one bee, with fleet inheritance) or fleet (read a fleet\'s own sentinel spec)',
+      message: 'pass exactly ONE of beeId (read one cup, with fleet inheritance) or fleet (read a fleet\'s own sentinel spec)',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);

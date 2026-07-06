@@ -94,7 +94,7 @@ const argsSchema = z.object({
       reversibility: z.enum(['reversible', 'irreversible', 'unknown']).optional(),
     })
     .optional()
-    .describe('Decision-context for the autonomy gate (B-17/P-040) — only the bee self-answer path uses it; omit for ordinary human-facing questions.'),
+    .describe('Decision-context for the autonomy gate (B-17/P-040) — only the cup self-answer path uses it; omit for ordinary human-facing questions.'),
 });
 
 export default defineTool({

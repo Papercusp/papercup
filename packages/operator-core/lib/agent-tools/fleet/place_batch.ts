@@ -90,7 +90,7 @@ export default defineTool({
   description:
     'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Queen\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
   guidance: {
-    when: 'You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping cup:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.',
+    when: 'You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping cup:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.',
     notWhen:
       'Placing a SINGLE task (just cup:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
     chaining:
@@ -115,13 +115,13 @@ export default defineTool({
       .string()
       .max(80)
       .optional()
-      .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh bees.'),
+      .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh cups.'),
     max: z.number().int().min(1).max(64).optional().describe('Hard cap on total placements this batch (default 32 / frontier size).'),
-    brief: softText(LIMITS.BRIEF).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item. Auto-truncated to 16000 chars if longer.'),
-    tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the bee role default.'),
-    inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A bee whose projected load reaches this is no longer a warm-inject target (default 3).'),
+    brief: softText(LIMITS.BRIEF).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the cups are MISSING, not a restatement of the work-item. Auto-truncated to 16000 chars if longer.'),
+    tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the cup role default.'),
+    inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A cup whose projected load reaches this is no longer a warm-inject target (default 3).'),
     min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),
-    max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one bee in this batch (default 2).'),
+    max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one cup in this batch (default 2).'),
     affinity_kind: z
       .enum(['file-overlap', 'topic-overlap', 'entity-overlap'])
       .optional()

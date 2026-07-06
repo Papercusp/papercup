@@ -27,7 +27,7 @@ export default defineTool({
   description:
     'Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The Queen/operator disposes; a bee proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.',
   guidance: {
-    when: 'You are making (or, as a bee, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.',
+    when: 'You are making (or, as a cup, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.',
     notWhen:
       'A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.',
     chaining:

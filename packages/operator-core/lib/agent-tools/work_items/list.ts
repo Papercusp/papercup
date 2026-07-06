@@ -153,7 +153,7 @@ export default defineTool({
   description:
     "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
-    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Mug can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:

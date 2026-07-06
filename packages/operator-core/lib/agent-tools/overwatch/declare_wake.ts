@@ -39,11 +39,11 @@ export default defineTool({
   name: "kettle:declare-wake",
   profile: "engineer",
   description:
-    "Declare the overwatch's next wake (REPLACE semantics): a time (`at` ISO / `inSeconds`), the configured cadence (no time given), or nothing (`mode:'none'` — sleep until the owner). Clamped to a wake floor. The overwatch's OWN channel — distinct from the Queen's pot:declare-wake; ALWAYS call this before ending a turn.",
+    "Declare the Kettle's next wake (REPLACE semantics): a time (`at` ISO / `inSeconds`), the configured cadence (no time given), or nothing (`mode:'none'` — sleep until the owner). Clamped to a wake floor. The Kettle's OWN channel — distinct from the Mug's pot:declare-wake; ALWAYS call this before ending a turn.",
   guidance: {
-    when: "You are the overwatch ending a turn — ALWAYS declare your next wake. Use a SHORT inSeconds (60–180) while a drift is unresolved (verify the nudge landed), a LONGER one (600–1800) when the system is calm. Omit the time to use the configured cadence.",
+    when: "You are the Kettle ending a turn — ALWAYS declare your next wake. Use a SHORT inSeconds (60–180) while a drift is unresolved (verify the nudge landed), a LONGER one (600–1800) when the system is calm. Omit the time to use the configured cadence.",
     notWhen:
-      "To schedule the Queen / colony — that is pot:declare-wake (a different channel you cannot and must not touch). To wake right now — the owner's kettle:start does that.",
+      "To schedule the Mug / pot — that is pot:declare-wake (a different channel you cannot and must not touch). To wake right now — the owner's kettle:start does that.",
     chaining:
       "Follows your nudges/observations for the turn; this is the last loop step before your end-of-turn verb.",
   },
@@ -76,7 +76,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Hive home-harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).",
+          "Pot home-harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).",
         ),
       kickoff: softText(LIMITS.BRIEF)
         .optional()

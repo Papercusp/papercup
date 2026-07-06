@@ -29,6 +29,7 @@ import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { _resetVerifiedSpawns } from '../../spawn-signing';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -130,6 +131,12 @@ vi.mock('../../spawn-signing', async (importOriginal) => {
     logVerificationFailure: h.logVerificationFailure,
   };
 });
+// classifyAndConsumeFailure/recordVerifiedSpawn stay REAL (part of the matrix
+// under test) and track state in a process-global Map keyed by spawn id —
+// every case here reuses the SAME 'spawn-1' id (see signedUrl()), so a case
+// that mocks verifySpawnParams to succeed marks 'spawn-1' verified for the
+// rest of the file unless reset; a later failing case then gets misclassified
+// as a 'rotation_strand' (console.error incident log) instead of 'unverified'.
 vi.mock('../../power-user-token', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, verifyAccessToken: h.verifyAccessToken };
@@ -351,6 +358,7 @@ beforeEach(() => {
   h.withWorkspaceCalls.length = 0;
   h.scopedClampFlag.value = false;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+  _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
 });
 
 /* ─── caller backend/model stamping (fleet-launch-agent-inheritance-2026-07-03) ─── */

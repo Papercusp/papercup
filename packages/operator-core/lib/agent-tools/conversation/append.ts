@@ -20,7 +20,7 @@ export default defineTool({
     "Append a turn to the SHARED operator conversation thread the app's webview chat displays. Mirror your voice/TUI turns here so the local user sees the conversation in the app.",
   capability: 'operator:converse',
   guidance: {
-    when: `You (the voice-first Sentinel) just heard the user or spoke a reply — append BOTH sides so the webview chat reflects the live conversation: the user's words as role:'user' (source 'voice_stt'), your spoken reply as role:'assistant' (source 'voice_tts').`,
+    when: `You (the voice-first Papercup) just heard the user or spoke a reply — append BOTH sides so the webview chat reflects the live conversation: the user's words as role:'user' (source 'voice_stt'), your spoken reply as role:'assistant' (source 'voice_tts').`,
     notWhen: `Don't append internal tool noise, code, or unspoken scratch — only the user-visible conversation turns.`,
     seeAlso: [
       'conversation:recent (read the shared thread first)',

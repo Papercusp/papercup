@@ -28,15 +28,15 @@ export default defineTool({
   name: 'kettle:pause',
   profile: 'engineer',
   description:
-    'PAUSE the overwatch (the autonomous system-health supervisor): persist overwatch_started=false (disarms the loop + liveness watchdog), clear its pending wake, and optionally send the live overwatch session a graceful stop cue. Resume with kettle:start.',
+    'PAUSE the Kettle (the autonomous system-health supervisor): persist overwatch_started=false (disarms the loop + liveness watchdog), clear its pending wake, and optionally send the live Kettle session a graceful stop cue. Resume with kettle:start.',
   guidance: {
-    when: 'The user clicks Pause Overwatch / asks to freeze the system-health supervisor (incident, review, cost control), or the overwatch is misbehaving and must be quieted.',
+    when: 'The user clicks Pause Kettle / asks to freeze the system-health supervisor (incident, review, cost control), or the Kettle is misbehaving and must be quieted.',
     notWhen:
-      'To pause the Queen / colony — pot:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running overwatch turn; it finishes and nothing re-arms.',
+      'To pause the Mug / pot — pot:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running Kettle turn; it finishes and nothing re-arms.',
     chaining: 'kettle:pause { drain:true } for the harder stop → kettle:start to resume.',
     seeAlso: [
-      'kettle:start (resume the overwatch)',
-      'pot:pause (pause the Queen / colony — distinct loop)',
+      'kettle:start (resume the Kettle)',
+      'pot:pause (pause the Mug / pot — distinct loop)',
       'plans:pause (pause one plan)',
     ],
   },
@@ -53,7 +53,7 @@ export default defineTool({
     drain: z
       .boolean()
       .default(false)
-      .describe('Also send the live overwatch session a graceful stop cue (checkpoint, release locks, exit).'),
+      .describe('Also send the live Kettle session a graceful stop cue (checkpoint, release locks, exit).'),
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -66,7 +66,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the overwatch state is per-hive.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the Kettle state is per-pot.',
             }),
           },
         ],
@@ -97,11 +97,11 @@ export default defineTool({
       if (drained.length > 0) {
         await sendMessage(identity, {
           to: drained,
-          summary: 'Graceful stop cue: the overwatch is being paused',
+          summary: 'Graceful stop cue: the Kettle is being paused',
           body:
-            'The overwatch is being PAUSED. Checkpoint your state, release your locks ' +
+            'The Kettle is being PAUSED. Checkpoint your state, release your locks ' +
             '(locks:release { all_mine: true }), and end your turn cleanly. You will not be ' +
-            're-woken until the overwatch is started again.',
+            're-woken until the Kettle is started again.',
           // P-003: an intrinsically HIVE-WIDE Queen-sibling control — stamp it so the
           // stop cue reads as a real hive-level pause, not a peer's fleet drain.
           extra: { [CUE_AUTHORITY_FIELD]: hiveWideCueAuthority(installSlug) },

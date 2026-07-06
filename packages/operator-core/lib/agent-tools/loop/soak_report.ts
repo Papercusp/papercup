@@ -10,7 +10,7 @@ export default defineTool({
   description:
     'Read the machine-checkable production-readiness gate for one hive over a rolling 12–24h window: bg-host stability, infra-curse rate, bee/queen/overwatch turn success, escalation backlog, green-checkpoint ratio, deploy latency, plus a READY/NOT-READY verdict with reasons.',
   guidance: {
-    when: 'You need one deterministic "is this hive production-ready yet?" verdict backed by concrete operational metrics instead of a judgment call.',
+    when: 'You need one deterministic "is this pot production-ready yet?" verdict backed by concrete operational metrics instead of a judgment call.',
     notWhen: 'You only need the next wake / subscriptions / placements summary — that is pot:status. Per-session loop state is loop:status.',
     chaining: 'Use with pot:status for the live wake/placements view, or the Learning tab panel for the same verdict in the UI.',
     seeAlso: [

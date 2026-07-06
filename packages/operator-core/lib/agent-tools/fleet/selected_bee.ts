@@ -23,7 +23,7 @@ export default defineTool({
   description:
     'Get or set the ephemeral "selected bee" for the bee-dossier dock pane. With no args, RETURNS the currently selected bee (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.',
   guidance: {
-    when: 'Driving the desktop chat dock\'s bee-dossier pane: the swarm pane sets the selection on cursor move; the bee pane reads it to know which bee to render.',
+    when: 'Driving the desktop chat dock\'s cup-dossier pane: the swarm pane sets the selection on cursor move; the cup pane reads it to know which cup to render.',
     notWhen:
       'You want durable assignment state or "who is on what" — use fleet:assignments. This holds only the transient UI selection.',
     chaining:
@@ -39,12 +39,12 @@ export default defineTool({
           .string()
           .max(200)
           .nullable()
-          .describe('The bee\'s ownerId to select; null/empty clears the selection.'),
+          .describe('The cup\'s ownerId to select; null/empty clears the selection.'),
         name: z
           .string()
           .max(120)
           .optional()
-          .describe('The bee\'s adopted agent-name, when known (display only).'),
+          .describe('The cup\'s adopted agent-name, when known (display only).'),
       })
       .optional()
       .describe('Present → PUBLISH this selection. Absent → READ the current selection.'),

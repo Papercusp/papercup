@@ -35,7 +35,7 @@ export default defineTool({
   description:
     'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
   guidance: {
-    when: 'You (the Queen) want to reclaim bee slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each bee a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
+    when: 'You (the Mug) want to reclaim cup slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
       'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the Hive Queen ≠ drain your fleet-leader peers).',
     chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → cup:spawn fresh.',
@@ -46,13 +46,13 @@ export default defineTool({
   args: z
     .object({
       bee_id: z.string().min(1).optional()
-        .describe('Owner ID of one bee to drain (spawn_id or session id; n=1 shorthand for bee_ids:[id]).'),
+        .describe('Owner ID of one cup to drain (spawn_id or session id; n=1 shorthand for bee_ids:[id]).'),
       bee_ids: z.array(z.string().min(1)).min(1).max(100).optional()
-        .describe('Owner IDs of the bees to drain (1–100).'),
+        .describe('Owner IDs of the cups to drain (1–100).'),
       timeout_sec: z.number().int().positive().default(120)
-        .describe('How long to wait for each bee to comply before escalation (seconds; default 120; batch-level).'),
+        .describe('How long to wait for each cup to comply before escalation (seconds; default 120; batch-level).'),
       reason: z.string().optional()
-        .describe('Why the slot is being reclaimed (for the audit log + the bee\'s acknowledgment; batch-level).'),
+        .describe('Why the slot is being reclaimed (for the audit log + the cup\'s acknowledgment; batch-level).'),
     })
     .refine((a) => Boolean(a.bee_id) || (a.bee_ids?.length ?? 0) > 0, {
       message: 'pass `bee_id` (one) or `bee_ids` (many)',

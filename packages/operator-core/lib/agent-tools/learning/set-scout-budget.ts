@@ -37,7 +37,7 @@ export default defineTool({
     "Read/set/clear the runtime Scout WORKSPACE spend-ceiling override (USD), consulted before the PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD env. Tighten the aggregate scout cap mid-incident or raise it for a planned exploration burst — live, no deploy. set/clear audited + one-call-revertible; empty override ⇒ env/default (byte-identical).",
   capability: 'operator:write',
   guidance: {
-    when: 'Scout spend across armed hives is summing too high (tighten the workspace ceiling live) or you want to raise it for a planned exploration burst, without a host restart. op:get to read the active override + effective ceiling.',
+    when: 'Blender spend across armed pots is summing too high (tighten the workspace ceiling live) or you want to raise it for a planned exploration burst, without a host restart. op:get to read the active override + effective ceiling.',
     notWhen: 'To tune regret-mining replay knobs (minScore/maxSessions/maxReplaysPerTick) use the regret routine payload via routines:set. To set a per-cycle learning SPEND budget use the learning-governor arming surface. This dial is the workspace-wide ceiling only.',
     chaining: 'config:list-overrides shows the active scout-workspace-budget override; config:reset-overrides reverts it to env/default.',
   },
@@ -53,7 +53,7 @@ export default defineTool({
         .finite()
         .min(0)
         .max(100_000)
-        .describe('Workspace-wide Scout spend ceiling in USD (0 = no scout spend allowed).'),
+        .describe('Workspace-wide Blender spend ceiling in USD (0 = no Blender spend allowed).'),
       dryRun: z.boolean().optional(),
     }),
     z.object({ op: z.literal('clear'), dryRun: z.boolean().optional() }),

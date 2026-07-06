@@ -48,7 +48,7 @@ export default defineTool({
   agentRoles: ['operator', 'debugger', 'architect'],
   args: z
     .object({
-      workspaceId: z.string().min(1).describe('The workspace ID the harness/Hive belongs to.'),
+      workspaceId: z.string().min(1).describe('The workspace ID the harness/Pot belongs to.'),
       harnessSlug: z
         .string()
         .min(1)

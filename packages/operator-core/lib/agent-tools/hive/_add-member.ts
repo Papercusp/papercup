@@ -79,14 +79,14 @@ export async function addHarnessToHive(
   const ws = opts.workspaceId;
 
   if (opts.memberHarnessSlug === opts.hiveHomeSlug) {
-    return { ok: false, error: 'self', message: 'a Hive home cannot be a member of itself' };
+    return { ok: false, error: 'self', message: 'a Pot home cannot be a member of itself' };
   }
 
   const reg = await loadRegistry(ws);
 
   const hive = reg.projects.find((p) => p.slug === opts.hiveHomeSlug && p.harness_kind === HIVE_KIND);
   if (!hive) {
-    return { ok: false, error: 'hive_not_found', message: `no hive '${opts.hiveHomeSlug}' in this workspace` };
+    return { ok: false, error: 'hive_not_found', message: `no pot '${opts.hiveHomeSlug}' in this workspace` };
   }
 
   const member = reg.projects.find((p) => p.slug === opts.memberHarnessSlug);
@@ -97,7 +97,7 @@ export async function addHarnessToHive(
     return {
       ok: false,
       error: 'is_hive_home',
-      message: `'${opts.memberHarnessSlug}' is itself a Hive home — a Hive cannot be nested as another Hive's member`,
+      message: `'${opts.memberHarnessSlug}' is itself a Pot home — a Pot cannot be nested as another Pot's member`,
     };
   }
   if (member.hive_slug && member.hive_slug !== opts.hiveHomeSlug) {

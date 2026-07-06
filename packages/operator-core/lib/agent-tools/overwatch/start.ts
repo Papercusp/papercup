@@ -33,16 +33,16 @@ export default defineTool({
   name: 'kettle:start',
   profile: 'engineer',
   description:
-    'START the overwatch (the autonomous system-health supervisor, a sibling to the Queen): persist overwatch_started=true, set its wake cadence, and wake it now. The loop (B-04) + liveness watchdog (B-09) hold "a wake is always armed" from here until kettle:pause. Gated by the papercusp-overwatch flag — while the flag is OFF the bit/cadence are persisted (pre-armed) but no live wake fires.',
+    'START the Kettle (the autonomous system-health supervisor, a sibling to the Mug): persist overwatch_started=true, set its wake cadence, and wake it now. The loop (B-04) + liveness watchdog (B-09) hold "a wake is always armed" from here until kettle:pause. Gated by the papercusp-overwatch flag — while the flag is OFF the bit/cadence are persisted (pre-armed) but no live wake fires.',
   guidance: {
-    when: 'The user clicks Start Overwatch / asks to boot the system-health supervisor, or you are bringing a paused overwatch back to autonomous operation.',
+    when: 'The user clicks Start Kettle / asks to boot the system-health supervisor, or you are bringing a paused Kettle back to autonomous operation.',
     notWhen:
-      'To start the Queen / colony — pot:start (distinct loop). To start one plan — plans:start. The overwatch nudges + observes; it never places work.',
+      'To start the Mug / pot — pot:start (distinct loop). To start one plan — plans:start. The Kettle nudges + observes; it never places work.',
     chaining:
       'kettle:pause to suspend. The papercusp-overwatch flag (/admin/features) must be ON for the loop to actually run (B-04 gate).',
     seeAlso: [
-      'kettle:pause (suspend the overwatch)',
-      'pot:start (start the Queen / colony — distinct loop)',
+      'kettle:pause (suspend the Kettle)',
+      'pot:start (start the Mug / pot — distinct loop)',
     ],
   },
   capability: 'harness:write',

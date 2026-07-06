@@ -219,15 +219,15 @@ export function toToolResult(out: GradeIdeaOutcome): {
 export default defineTool({
   name: 'blender:grade-idea',
   description:
-    "Grade a routed Scout idea 1–5 with optional feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
+    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
   capability: 'harness:write',
   guidance: {
     when:
-      "You want to score a routed Scout idea 1–5 (optional one-line critique) so Scout learns which lenses to favor. Key by ideaId (Scout view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Queen's triage path: grade each ungraded routed draft).",
+      "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
     notWhen:
-      'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Queen vs owner surface).',
+      'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Mug vs owner surface).',
     chaining:
-      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Queen regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
+      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -329,7 +329,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'A hive pause is a Queen-loop signal, not a self-drain order',
-    body: '`pauseNewWork` / `maxBees` / a hive-steering fact you merely SEE in your orient governs the autonomous queen-bee loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you: read its authority+scope stamp (`hive-queen(<hive>)→hive-wide` is the Queen pausing the hive; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business, ignore it), or an explicit `fleet:*` / owner action. Unsure? Ask your leader — never self-drain on an observed pause.',
+    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you merely SEE in your orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you: read its authority+scope stamp (`hive-queen(<hive>)→hive-wide` is the Mug pausing the pot; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business, ignore it), or an explicit `fleet:*` / owner action. Unsure? Ask your leader — never self-drain on an observed pause.',
   },
   {
     // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
