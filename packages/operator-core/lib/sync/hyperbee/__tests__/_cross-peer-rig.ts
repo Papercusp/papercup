@@ -60,7 +60,7 @@ export const SHARED_PRESENCE_DDL = `
     current_view   text,
     last_seen_at   timestamptz DEFAULT now() NOT NULL,
     schema_version bigint DEFAULT 1 NOT NULL,
-    hive_slug      text,
+    pot_slug       text,
     fed_ts         bigint,
     fed_hlc        text,
     author_pubkey  text,
@@ -79,7 +79,7 @@ export const COORD_EVENT_LOG_DDL = `
 export const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
-    hive_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    pot_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
     owner text NOT NULL, owner_label text, holder_pubkey text,
     intent text DEFAULT ''::text NOT NULL, ttl_sec integer DEFAULT 1800 NOT NULL,
     acquired_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
