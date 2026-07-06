@@ -558,6 +558,134 @@ export async function reclaimOrphanedSpawns(
 }
 
 /**
+ * CEILING-JAM min-age / stream-silence thresholds (EI-7204/EI-7197) — mirror the
+ * watchdog's `collectCeilingJamSignals` detection window (15/15 min,
+ * `packages/operator-core/lib/harness/improvements/watchdog.ts`) so the ALERT
+ * and this RECLAIM ACTION agree on what "no stream activity" means. Exported so
+ * the periodic sweep + tests share one knob.
+ */
+export const CEILING_JAM_MIN_AGE_MS = 15 * 60_000;
+export const CEILING_JAM_SILENT_MS = 15 * 60_000;
+
+/**
+ * Is this nursery row a supervised (invoke-once) BEE/queen spawn — as opposed to
+ * an in-process loopback launch (a durable-spawn worker, a `launch-*` blueprint,
+ * a Queen/overwatch wake)? Duplicates watchdog.ts's `isInProcessLaunchRow`
+ * DELIBERATELY (that module's own doc comment: "mirrors spawn-reclaim.ts's
+ * `kind` classifier — the single source of truth for this distinction") so this
+ * file stays the dependency-light pure-sql unit it already is; this is the
+ * canonical definition the other module mirrors.
+ */
+function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null }): boolean {
+  return !((row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:'));
+}
+
+/**
+ * Reclaim spawn-ADMISSION debits stuck by the spawn-ceiling-jam class
+ * (EI-2186/EI-7204/EI-7197) — the periodic (not just boot-time) half of the
+ * recurrence guard. {@link reclaimOrphanedSpawns}'s pid-liveness check can be
+ * defeated on a long-lived (never-restarted) operator process: a same-boot-id
+ * row whose recorded pid happens to be reused by an UNRELATED
+ * 'invoke-once'-cmdline process on a busy, high-pid-churn host reads as ALIVE
+ * forever, so its heartbeat gets bumped every sweep (`heartbeatSpawns`) and it
+ * NEVER satisfies that sweep's own `heartbeat_at < stale` precondition to even
+ * become a candidate — the "reused-pid false-alive" class the watchdog's
+ * spawn-ceiling-jam signal (`collectCeilingJamSignals`) already DETECTS via a
+ * different, unfakeable proxy: stream output. A dead/wedged process cannot
+ * advance `last_output_at` (stamped only by the real child-process stdout
+ * supervisor), so a row old enough (`started_at` beyond {@link
+ * CEILING_JAM_MIN_AGE_MS}) that has not streamed in {@link
+ * CEILING_JAM_SILENT_MS} is provably stuck REGARDLESS of what its heartbeat
+ * says — exactly the population this reclaims, closing the gap that
+ * previously required a full operator restart (`reconcileSpawnAdmissionOnBoot`)
+ * to self-heal.
+ *
+ * SCOPE — ceiling-DEBIT release ONLY (settles the spawned_agents row so it
+ * stops counting against `maxSimultaneousAgents`), never the agent's WORK-ITEM
+ * claim or its OS process: those are {@link reclaimWedgedSpawns} /
+ * {@link reclaimFirstOutputStalledSpawns}'s job, gated behind the
+ * RECLAIM_STALLED owner-authority dark flag (killing a live claim-holder is a
+ * hot-path placement change, D-003). Settling just the ceiling row is
+ * comparatively low-risk (worst case: one extra concurrent admission until the
+ * real process's own `finishSpawn` — an unconditional UPDATE, so it just
+ * overwrites this row again — or a later sweep catches up) and therefore
+ * UNCONDITIONAL, matching `reclaimOrphanedSpawns`'s own no-flag safety-floor
+ * precedent. Once this row is terminal, the EXISTING stale-claim sweep
+ * (`sweepStaleSpawnClaims`, same 60s cadence) frees any claim it still held on
+ * its own — no duplicate claims-release logic is needed here.
+ *
+ * EXCLUDES in-process loopback launches (`isSupervisedBeeRow` false, e.g.
+ * durable-spawn / `launch-*` rows) — `last_output_at` is structurally NEVER
+ * populated for them (EI-7215: their liveness proxy is process existence, not
+ * stream recency), so this stream-recency signal cannot judge them; reclaiming
+ * one on a false read (e.g. a genuinely-alive Queen singleton or long-running
+ * durable-spawn worker) would be a correctness hazard this function must never
+ * risk. That class's reclaim stays the boot-id-aware sweep's job.
+ */
+export async function reclaimCeilingJamDebits(
+  sql: Db,
+  opts: { minAgeMs?: number; silentMs?: number; now?: number } = {},
+): Promise<ReclaimResult> {
+  const minAgeMs = opts.minAgeMs ?? CEILING_JAM_MIN_AGE_MS;
+  const silentMs = opts.silentMs ?? CEILING_JAM_SILENT_MS;
+  const now = opts.now ?? Date.now();
+
+  const candidates = await sql<
+    {
+      spawn_id: string;
+      workspace_id: string;
+      run_id: string | null;
+      started_at: string;
+      last_output_at: string | null;
+    }[]
+  >`
+    SELECT spawn_id, workspace_id, run_id, started_at, last_output_at
+      FROM harness_shared.spawned_agents
+     WHERE status IN ('running', 'restarting')
+     ORDER BY started_at ASC
+     LIMIT 500`;
+  if (candidates.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
+
+  const jammed: string[] = [];
+  for (const c of candidates) {
+    if (!isSupervisedBeeRow({ spawn_id: c.spawn_id, run_id: c.run_id })) continue;
+    const startedMs = new Date(c.started_at).getTime();
+    if (isNaN(startedMs) || now - startedMs <= minAgeMs) continue; // not old enough to judge
+    const outAt = c.last_output_at ? new Date(c.last_output_at).getTime() : null;
+    const streamedRecently = outAt != null && !isNaN(outAt) && now - outAt <= silentMs;
+    if (streamedRecently) continue; // genuinely live — proved by real stream output
+    jammed.push(c.spawn_id);
+  }
+  if (jammed.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
+
+  const reason =
+    `reclaimed: spawn-ceiling-jam — no stream activity for > ${Math.round(silentMs / 60_000)}min despite ` +
+    'an apparently-fresh heartbeat (reused-pid false-alive, EI-7204/EI-7197) — periodic admission-debit ' +
+    'reconcile freed the concurrency-ceiling slot; any held work-item claim is released by the next stale-claim sweep';
+  const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
+    UPDATE harness_shared.spawned_agents
+       SET status = 'failed',
+           finished_at = now(),
+           duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
+           error_message = COALESCE(error_message, ${reason})
+     WHERE status IN ('running', 'restarting')
+       AND spawn_id = ANY(${jammed}::text[])
+    RETURNING spawn_id, workspace_id`;
+
+  for (const row of rows) {
+    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(() => {
+      /* best-effort — logged inside wakeParentOnChildDeath */
+    });
+  }
+
+  return {
+    reclaimed: rows.length,
+    spawnIds: rows.map((r) => r.spawn_id),
+    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+  };
+}
+
+/**
  * One WEDGED spawn the durable reaper may reclaim (RECLAIM_STALLED). Carries the
  * row's identity + the observed silence so the injected reap seam can frame the
  * cancellation reason without re-reading the row.

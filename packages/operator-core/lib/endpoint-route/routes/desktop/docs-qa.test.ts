@@ -11,6 +11,7 @@ import {
   backendAvailable,
   retrieveDocsContext,
   buildDocsMcpConfig,
+  createAgenticAnswerBuffer,
 } from './docs-qa';
 
 describe('composeDocsQaPrompt', () => {
@@ -189,5 +190,52 @@ describe('slugsFromDocsToolCall (agentic citations)', () => {
     expect(slugsFromDocsToolCall('docs:search', { query: 'pot' })).toEqual([]);
     expect(slugsFromDocsToolCall('docs:get', null)).toEqual([]);
     expect(slugsFromDocsToolCall('docs:get', { slug: '' })).toEqual([]);
+  });
+});
+
+describe('createAgenticAnswerBuffer (WI-3218: mechanical narration suppression)', () => {
+  it('flushes clean delta text with no tool calls in between', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.delta('A pot is a project.');
+    expect(buf.flush()).toBe('A pot is a project.');
+  });
+
+  it('discards narration text that precedes a tool call (owner-reported "let me search..." leak)', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.delta('Let me search for definitions related to core Papercusp concepts...');
+    buf.toolCall(); // docs:search fires — the narration above must never reach the client
+    buf.delta('A pot is a project — the top-level container you build and run agents in.');
+    expect(buf.flush()).toBe('A pot is a project — the top-level container you build and run agents in.');
+  });
+
+  it('discards narration between MULTIPLE tool calls, keeping only the segment after the last one', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.delta('Let me try a different approach...');
+    buf.toolCall();
+    buf.delta('Let me search more specifically...');
+    buf.toolCall();
+    buf.delta('A harness is a role-based agent crew that builds a feature.');
+    expect(buf.flush()).toBe('A harness is a role-based agent crew that builds a feature.');
+  });
+
+  it('accumulates delta text arriving in multiple chunks after the last tool call', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.toolCall();
+    buf.delta('A bee is ');
+    buf.delta('the Papercusp term for an autonomous worker agent.');
+    expect(buf.flush()).toBe('A bee is the Papercusp term for an autonomous worker agent.');
+  });
+
+  it('flush clears the buffer so a second flush is empty (no double-send)', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.delta('answer');
+    expect(buf.flush()).toBe('answer');
+    expect(buf.flush()).toBe('');
+  });
+
+  it('a tool call with nothing buffered is a no-op', () => {
+    const buf = createAgenticAnswerBuffer();
+    buf.toolCall();
+    expect(buf.flush()).toBe('');
   });
 });

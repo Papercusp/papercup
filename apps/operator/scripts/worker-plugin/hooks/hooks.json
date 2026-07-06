@@ -8,7 +8,10 @@
       },
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-bash-resource-gate.sh" }]
+        "hooks": [
+          { "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-bash-resource-gate.sh" },
+          { "type": "command", "command": "command -v rtk >/dev/null 2>&1 && rtk hook claude || exit 0" }
+        ]
       }
     ],
     "PostToolUse": [

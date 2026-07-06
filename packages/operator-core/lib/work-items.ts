@@ -993,6 +993,48 @@ export function isSettledWorkItemState(state: string | null | undefined): boolea
 }
 
 /**
+ * Cross-dialect + drift-variant aliases → canonical issue-family state (mirrors
+ * `FEATURE_STATE_ALIASES` in work-item-dispatch-states.ts, the feature-family twin).
+ * Hoisted to module scope (was inline in `normalizeWorkItemState`) + exported so
+ * the positional-write misalignment guard (EI-7927) can derive the FULL known
+ * `state`-column vocabulary — union of this + `ISSUE_FAMILY_STATES` +
+ * `FEATURE_FAMILY_STATES` + `FEATURE_STATE_ALIASES` — without hand-duplicating
+ * the literal list (which would silently drift out of sync with this one).
+ */
+export const ISSUE_STATE_ALIASES: Record<string, string> = {
+  done: 'resolved',
+  passed: 'resolved',
+  todo: 'open',
+  dropped: 'closed',
+  deprecated: 'closed',
+  // The "active / in-flight" canonical lifecycle dialect (CLAUDE.md + the
+  // coord-lifecycle docs tell agents to set work-items in_progress/blocked/
+  // needs-human) collapses to the issue family's single not-yet-settled state
+  // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
+  // so these would otherwise throw the structural refusal (EI-450).
+  in_progress: 'open',
+  'in-progress': 'open',
+  inprogress: 'open',
+  'in progress': 'open',
+  wip: 'open',
+  blocked: 'open',
+  'needs-human': 'open',
+  needs_human: 'open',
+  needshuman: 'open',
+  'needs human': 'open',
+  'need-human': 'open',
+};
+
+/**
+ * The work-item id shape (D-008): every NEW work-item mints a kind-independent
+ * `WI-NNN` id; pre-D-008 rows keep their legacy `F-NNN` (feature) / `EI-NNN`
+ * (issue) ids. This is the ONE valid id shape project-wide — used by the
+ * positional-write misalignment guard (EI-7927) to catch a swapped-row id
+ * column carrying an obviously-wrong value (e.g. a state string in id's slot).
+ */
+export const WORK_ITEM_ID_PATTERN = '^(WI|F|EI)-\\d+$';
+
+/**
  * Normalize a requested lifecycle state onto a family's NATIVE vocabulary
  * (EI-24): the families speak different dialects (feature: todo/validating/
  * passed/failing/deprecated; issue: open/resolved/closed) while callers + the
@@ -1014,30 +1056,7 @@ export function normalizeWorkItemState(
     // restores bypass via setWorkItemState's allowNonCanonical.
     return normalizeFeatureStateInput(state);
   }
-  const aliases: Record<string, string> = {
-    done: 'resolved',
-    passed: 'resolved',
-    todo: 'open',
-    dropped: 'closed',
-    deprecated: 'closed',
-    // The "active / in-flight" canonical lifecycle dialect (CLAUDE.md + the
-    // coord-lifecycle docs tell agents to set work-items in_progress/blocked/
-    // needs-human) collapses to the issue family's single not-yet-settled state
-    // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
-    // so these would otherwise throw the structural refusal (EI-450).
-    in_progress: 'open',
-    'in-progress': 'open',
-    inprogress: 'open',
-    'in progress': 'open',
-    wip: 'open',
-    blocked: 'open',
-    'needs-human': 'open',
-    needs_human: 'open',
-    needshuman: 'open',
-    'needs human': 'open',
-    'need-human': 'open',
-  };
-  const mapped = aliases[state] ?? state;
+  const mapped = ISSUE_STATE_ALIASES[state] ?? state;
   if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
   return {
     ok: false,

@@ -72,7 +72,7 @@ export const FEATURE_FAMILY_STATES: readonly string[] = [
  * lands in the RIGHT state instead of a non-dispatchable limbo (the GAP-5 harm).
  * Inputs are lower-cased before lookup, so case typos normalize too.
  */
-const FEATURE_STATE_ALIASES: Record<string, string> = {
+export const FEATURE_STATE_ALIASES: Record<string, string> = {
   // canonical lifecycle dialect → native feature vocabulary
   done: 'passed', resolved: 'passed', dropped: 'deprecated', closed: 'deprecated', open: 'todo',
   // known separator/case drift variants → canonical

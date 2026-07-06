@@ -167,6 +167,41 @@ test('renderQueenBrief — pauseNewWork renders a HARD "PAUSED — start NO new 
   assert.match(out, /drive existing placements to terminal/i);
 });
 
+test('renderQueenBrief — EI-8277: a resume-sounding directive with pauseNewWork still true renders the inconsistency nudge', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      ownerSteering: {
+        directive: 'Gate hold lifted at 2026-07-05T21:36Z; resume normal autonomous placement',
+        eligiblePlans: [],
+        eligibleHives: [],
+        includeUnplannedWork: true,
+        pauseNewWork: true,
+        pausedUntil: null,
+      },
+    },
+  });
+  assert.match(out, /Steering looks inconsistent \(EI-8277\)/);
+  assert.match(out, /pot:set-steering \{ pauseNewWork:false \}/);
+});
+
+test('renderQueenBrief — EI-8277: no nudge when pauseNewWork already matches the resume directive', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      ownerSteering: {
+        directive: 'Gate hold lifted; resume normal autonomous placement',
+        eligiblePlans: [],
+        eligibleHives: [],
+        includeUnplannedWork: true,
+        pauseNewWork: false,
+        pausedUntil: null,
+      },
+    },
+  });
+  assert.doesNotMatch(out, /Steering looks inconsistent/);
+});
+
 test('renderQueenBrief — a pausedUntil renders the deadline (deterministic from the floor value, not the clock)', () => {
   const until = Date.parse('2026-06-15T12:00:00.000Z');
   const out = renderQueenBrief({

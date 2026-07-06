@@ -46,6 +46,46 @@ export interface ColumnSpec {
   pattern?: string;
 }
 
+/**
+ * A per-column sanity override the registry (not the tool's own Zod schema) can
+ * declare for the write misalignment guard (D-007 residual — EI-7927). Some
+ * columns can't carry the constraint in their own schema — e.g. a `state` arg
+ * is typed as a loose string so it can accept every cross-family alias, or an
+ * `id` arg accepts several id-family prefixes so it can't hold one `.regex()`
+ * — but the guard can still catch an obviously-misaligned value in that
+ * position if the registry supplies the pattern/vocabulary out of band.
+ */
+export interface ColumnOverride {
+  /** Sanity regex (source string) applied like a schema-derived `pattern`. */
+  pattern?: string;
+  /** Known-vocabulary membership check, applied even to non-`enum`-typed columns. */
+  enumValues?: readonly string[];
+}
+
+/**
+ * Merge registry-declared `ColumnOverride`s onto schema-projected columns, by
+ * name. NEVER applied to the trailing free-text column (deliberately
+ * unconstrained) and NEVER overwrites a constraint the schema itself already
+ * derived — an override only FILLS a gap the schema can't express; it can't
+ * loosen or fight a real schema-derived check. Pure (returns a new array).
+ */
+export function applyColumnOverrides(
+  cols: ColumnSpec[],
+  overrides?: Record<string, ColumnOverride>,
+): ColumnSpec[] {
+  if (!overrides) return cols;
+  return cols.map((col) => {
+    if (col.type === 'text') return col; // free-text stays unconstrained
+    const ov = overrides[col.name];
+    if (!ov) return col;
+    return {
+      ...col,
+      pattern: col.pattern ?? ov.pattern,
+      enumValues: col.enumValues ?? (ov.enumValues ? [...ov.enumValues] : undefined),
+    };
+  });
+}
+
 /** Names that, as the LAST arg of a write-tool, mark the single trailing free-text column (D-006). */
 const FREE_TEXT_NAMES = new Set([
   'summary',
@@ -195,9 +235,11 @@ export function projectReadColumns(dataJsonSchema: Record<string, unknown> | und
  */
 export function projectWriteColumns(
   argsJsonSchema: Record<string, unknown> | undefined | null,
-  opts: { freeTextName?: string } = {},
+  opts: { freeTextName?: string; columnOverrides?: Record<string, ColumnOverride> } = {},
 ): ColumnSpec[] | undefined {
-  return projectFromObjectSchema(asObject(argsJsonSchema), { freeTextLast: true, freeTextName: opts.freeTextName });
+  const cols = projectFromObjectSchema(asObject(argsJsonSchema), { freeTextLast: true, freeTextName: opts.freeTextName });
+  if (!cols) return undefined;
+  return applyColumnOverrides(cols, opts.columnOverrides);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,9 +327,13 @@ function coerceScalar(raw: string, col: ColumnSpec): { ok: true; value: unknown 
       }
       return { ok: true, value: raw };
     }
+    case 'text':
+      // Free-text trailing column: deliberately unconstrained (D-006) — never
+      // pattern/enum-checked even when the registry declared a columnOverride
+      // (applyColumnOverrides already refuses to attach one to `text`).
+      return { ok: true, value: raw };
     case 'id':
     case 'string':
-    case 'text':
     default: {
       if (col.pattern) {
         try {
@@ -297,6 +343,14 @@ function coerceScalar(raw: string, col: ColumnSpec): { ok: true; value: unknown 
         } catch {
           /* an unparseable pattern never blocks — guard is best-effort */
         }
+      }
+      // D-007 residual (EI-7927): a column whose OWN schema is a loose string
+      // (so it can't carry a Zod `.enum()`) may still have a registry-declared
+      // known-vocabulary check (ColumnOverride.enumValues) — catches a
+      // misaligned row (e.g. a state-shaped value landing in an id column, or
+      // vice versa) that arity + an id-shape regex alone would miss.
+      if (col.enumValues && col.enumValues.length > 0 && !col.enumValues.includes(raw)) {
+        return { ok: false, reason: `column "${col.name}" must be one of ${col.enumValues.join('|')}, got "${raw}"` };
       }
       return { ok: true, value: raw };
     }

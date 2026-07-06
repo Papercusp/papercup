@@ -21,7 +21,11 @@ export function advertisedArgsSchema(
   argsJsonSchema: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!isWritePositional(toolName)) return argsJsonSchema;
-  const cols = projectWriteColumns(argsJsonSchema, { freeTextName: getPrePromptEntry(toolName)?.freeTextArg });
+  const entry = getPrePromptEntry(toolName);
+  const cols = projectWriteColumns(argsJsonSchema, {
+    freeTextName: entry?.freeTextArg,
+    columnOverrides: entry?.columnOverrides,
+  });
   if (!cols) return argsJsonSchema;
   return positionalRowSchema(cols);
 }

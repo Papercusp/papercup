@@ -39,9 +39,11 @@ export { encodeDelimited, decodeDelimited, encodeMarkdownTable, cellToString, qu
 export {
   type ColumnType,
   type ColumnSpec,
+  type ColumnOverride,
   type ReconstructResult,
   projectReadColumns,
   projectWriteColumns,
+  applyColumnOverrides,
   encodePositionalRows,
   positionalRowSchema,
   reconstructArgs,

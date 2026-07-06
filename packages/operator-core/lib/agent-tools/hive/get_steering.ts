@@ -12,7 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveHiveHomeSlug } from '../../hive/wake';
-import { getOwnerSteering } from '../../owner-steering';
+import { getOwnerSteering, steeringLooksInconsistent } from '../../owner-steering';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -20,7 +20,7 @@ export default defineTool({
   name: 'pot:get-steering',
   profile: 'engineer',
   description:
-    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). The READ twin of pot:set-steering.',
+    'Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the Mug may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. The READ twin of pot:set-steering.',
   guidance: {
     when: 'Checking what the Mug is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.',
     notWhen: 'Changing steering — pot:set-steering. Reading the whole pot status — pot:status.',
@@ -50,6 +50,14 @@ export default defineTool({
         message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
       });
     }
-    return json({ ok: true, hive: installSlug, steering: await getOwnerSteering(workspaceId, installSlug) });
+    const steering = await getOwnerSteering(workspaceId, installSlug);
+    return json({
+      ok: true,
+      hive: installSlug,
+      steering,
+      // EI-8277: flag when the directive text reads like "resumed" but pauseNewWork
+      // is still the hard gate ON — advisory only, never auto-clears the pause.
+      inconsistent: steeringLooksInconsistent(steering),
+    });
   },
 });

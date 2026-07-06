@@ -412,6 +412,38 @@ export function isPausedNow(s: OwnerSteering, nowMs: number): boolean {
   return s.pausedUntil != null && nowMs < s.pausedUntil;
 }
 
+// ─── Directive/pause consistency nudge (EI-8277) ────────────────────────────
+// `directive` (free text) and `pauseNewWork` (the hard gate) are deliberately
+// INDEPENDENT fields (C-1) — a caller may legitimately update one without the
+// other. But that independence lets them drift silently: an owner (or an agent
+// writing on the owner's behalf) can edit the directive text to say "resume" /
+// "hold lifted" while never actually flipping `pauseNewWork` back to false, and
+// nothing previously caught it — the Mug had to notice the contradiction by eye,
+// every wake, and it recurred after being fixed once (EI-8277). This is advisory
+// ONLY: it never auto-clears the pause (only the owner / an explicit
+// pot:set-steering write should do that) — it just makes the drift visible
+// wherever steering is read, instead of requiring a human/Mug to notice it.
+
+/** Loose keyword match for directive text that reads like "the pause is over" —
+ *  a heuristic (false positives just add a harmless nudge to double-check; false
+ *  negatives just mean no nudge). Kept intentionally simple/lexical rather than
+ *  an LLM call — this only gates a wake-brief nudge, not an autonomous action. */
+const RESUME_LANGUAGE =
+  /\b(resum(?:e|ing|ed)|(?:hold|pause|gate)\b.{0,20}\b(?:lifted|released|cleared|over)|un-?paus(?:e|ed|ing)|no longer paused|back to (?:normal|autonomous)|go[\s-]?ahead)\b/i;
+
+/** Does this directive's free text read like the owner wants new work resumed? */
+export function directiveSuggestsResume(directive: string | null): boolean {
+  return !!directive && RESUME_LANGUAGE.test(directive);
+}
+
+/** True when the stored steering looks INTERNALLY inconsistent: the directive
+ *  text reads like the pause was lifted, but `pauseNewWork` is still the hard
+ *  gate ON. Callers (the wake brief, `pot:get-steering`, the 👑 tab) surface this
+ *  as a reconcile-nudge — see the section banner above for why it's advisory-only. */
+export function steeringLooksInconsistent(s: OwnerSteering): boolean {
+  return s.pauseNewWork === true && directiveSuggestsResume(s.directive);
+}
+
 // ─── Throttle-knob accessors (P-006) ────────────────────────────────────────
 // Shared so every live seam + the wake-brief + the tests apply the SAME
 // resolution. Each is pure; all default to "no override" (today's behaviour).

@@ -440,7 +440,10 @@ export function renderWireSchemasSection(entryFilter?: (name: string) => boolean
         : undefined;
     const write =
       entry.write === 'positional'
-        ? projectWriteColumns(tool.inputSchema as Record<string, unknown>, { freeTextName: entry.freeTextArg })
+        ? projectWriteColumns(tool.inputSchema as Record<string, unknown>, {
+            freeTextName: entry.freeTextArg,
+            columnOverrides: entry.columnOverrides,
+          })
         : undefined;
     return { read, write };
   });

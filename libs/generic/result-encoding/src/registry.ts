@@ -17,6 +17,7 @@
  */
 
 import type { ResultFormat } from './formats';
+import type { ColumnOverride } from './positional';
 
 /** Read-side compact format for a registry tool, or `'off'` to leave it on the default (TOON-auto) path. */
 export type ReadEncoding = Extract<ResultFormat, 'csv' | 'tsv' | 'toon'> | 'off';
@@ -36,6 +37,15 @@ export interface PrePromptEntry {
   write?: WriteEncoding;
   /** Pins which arg is the trailing free-text column for the positional shim (overrides the name heuristic). */
   freeTextArg?: string;
+  /**
+   * Per-column sanity overrides the tool's own Zod schema can't express — e.g.
+   * an `id` arg that accepts several id-family prefixes, or a `state` arg typed
+   * as a loose string so it can carry cross-family aliases. Merged onto the
+   * schema-projected columns by `projectWriteColumns` (D-007 residual —
+   * EI-7927); only tightens the misalignment guard, never loosens a
+   * schema-derived check. Keyed by arg/column name.
+   */
+  columnOverrides?: Record<string, ColumnOverride>;
   /** One-line note (why it's here / its call-frequency) — surfaced in audits, not on the wire. */
   note?: string;
 }

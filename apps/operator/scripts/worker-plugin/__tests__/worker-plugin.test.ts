@@ -57,8 +57,32 @@ describe('papercusp-worker hooks.json', () => {
     expect(activityEntry?.matcher).toBe('*');
   });
 
-  it('references the stable installed hook location (operator-dependent, fails open without it)', () => {
+  it('references the stable installed hook location (operator-dependent, fails open without it), except the rtk hook (a system binary, host-guarded on its own)', () => {
     const all = [...commands(hooks.hooks.PreToolUse), ...commands(hooks.hooks.PostToolUse)];
-    expect(all.every((c) => c.includes('/.papercusp/hooks/cc/'))).toBe(true);
+    expect(all.every((c) => c.includes('/.papercusp/hooks/cc/') || c.includes('rtk hook claude'))).toBe(true);
+  });
+
+  // WI-3164: surface-B rtk fleet rollout — the rtk PreToolUse rewrite hook.
+  it('wires the rtk hook AFTER the bash-resource-gate in the SAME Bash matcher entry (deny wins)', () => {
+    const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
+      (e) => e.matcher === 'Bash',
+    );
+    expect(bashEntry).toBeDefined();
+    const cmds = bashEntry!.hooks.map((h) => h.command);
+    const gateIdx = cmds.findIndex((c) => c.includes('pretooluse-bash-resource-gate.sh'));
+    const rtkIdx = cmds.findIndex((c) => c.includes('rtk hook claude'));
+    expect(gateIdx).toBeGreaterThanOrEqual(0);
+    expect(rtkIdx).toBeGreaterThan(gateIdx);
+  });
+
+  it('host-guards the rtk hook so a host without rtk installed degrades silently (no hard failure)', () => {
+    const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
+      (e) => e.matcher === 'Bash',
+    );
+    const rtkCmd = bashEntry!.hooks.map((h) => h.command).find((c) => c.includes('rtk hook claude'));
+    expect(rtkCmd).toBeDefined();
+    // Must probe for the binary before invoking it, and exit clean (0) when absent.
+    expect(rtkCmd).toMatch(/command -v rtk/);
+    expect(rtkCmd).toMatch(/\|\|\s*exit 0/);
   });
 });

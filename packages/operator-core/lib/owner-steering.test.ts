@@ -29,6 +29,8 @@ import {
   isAutoScaleOutEnabled,
   hasActiveThrottle,
   IDLE_ACTIVITY_KINDS,
+  directiveSuggestsResume,
+  steeringLooksInconsistent,
   type OwnerSteering,
 } from './owner-steering';
 
@@ -390,5 +392,41 @@ describe('throttle accessors (P-006)', () => {
     expect(hasActiveThrottle({ ...base, idleActivities: { gym: true } })).toBe(false); // ON is default
     expect(hasActiveThrottle({ ...base, decomposition: 'parallel' })).toBe(true);
     expect(hasActiveThrottle({ ...base, tierCeilings: { bee: 'opus:xhigh' } })).toBe(true);
+  });
+});
+
+describe('directiveSuggestsResume / steeringLooksInconsistent (EI-8277 drift nudge)', () => {
+  const base = DEFAULT_OWNER_STEERING;
+
+  it('null / blank / unrelated directive text never suggests resume', () => {
+    expect(directiveSuggestsResume(null)).toBe(false);
+    expect(directiveSuggestsResume('')).toBe(false);
+    expect(directiveSuggestsResume('Focus only on the billing plan this week.')).toBe(false);
+  });
+
+  it('resume-language directive text is detected (the exact EI-8277 repro string included)', () => {
+    expect(directiveSuggestsResume('Gate hold lifted at 2026-07-05T21:36Z; resume normal autonomous placement')).toBe(
+      true,
+    );
+    expect(directiveSuggestsResume('Pause is over, go ahead.')).toBe(true);
+    expect(directiveSuggestsResume('The hold has been released.')).toBe(true);
+    expect(directiveSuggestsResume('Unpausing now.')).toBe(true);
+  });
+
+  it('steeringLooksInconsistent is true ONLY when pauseNewWork is still true alongside resume language', () => {
+    // Resume language but the gate already reflects it (pauseNewWork false) — consistent, no nudge.
+    expect(
+      steeringLooksInconsistent({ ...base, pauseNewWork: false, directive: 'Gate hold lifted; resume normal placement' }),
+    ).toBe(false);
+    // Resume language while the hard gate is STILL true — the drift EI-8277 flags.
+    expect(
+      steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: 'Gate hold lifted; resume normal placement' }),
+    ).toBe(true);
+    // Paused with a directive that doesn't imply resume — not a contradiction, no nudge.
+    expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: 'Investigating an incident.' })).toBe(
+      false,
+    );
+    // Paused with no directive at all — nothing to contradict.
+    expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: null })).toBe(false);
   });
 });

@@ -11,14 +11,36 @@ import {
   bootstrapPapercuspHive,
   startBootstrapPapercuspHive,
   __resetBootstrapInFlight,
+  seedTargetDirs,
   PAPERCUP_DOGFOOD_REPO_URL,
   GIT_SEED_RETRY_DELAYS_MS,
   type BootstrapPapercuspHiveDeps,
 } from './bootstrap-papercusp-hive';
 
 beforeEach(() => __resetBootstrapInFlight());
+import { join } from 'node:path';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
+import { workspacesRoot } from '../workspace-registry';
+
+// WI-3232: the seed CORESTORE must restore to the SAME dir boot opens it, else the
+// OFFLINE self-admit pot appears with EMPTY content (boot reads an empty corestore).
+// Regression guard for the clones/-vs-papercusp-workspace/ mismatch (env-name confusion:
+// seedTargetDirs used PAPERCUSP_WORKSPACE_ROOT, boot's workspacesRoot() reads the PLURAL).
+describe('seedTargetDirs (WI-3232 corestore-dir parity)', () => {
+  it('restores the corestore to boot\'s dir: <workspacesRoot>/<ws>/.papercusp/<slug>/hyperbee', () => {
+    const { targetStoreDir } = seedTargetDirs();
+    expect(targetStoreDir).toBe(
+      join(workspacesRoot(), PAPERCUSP_WORKSPACE_ID, '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee'),
+    );
+    // Never the old clones/ dir boot never reads — that made the offline pot content-empty.
+    expect(targetStoreDir).not.toContain(`${join(workspacesRoot(), 'clones')}`);
+  });
+
+  it('keeps the git checkout (targetRepoDir) under clones — a real code checkout', () => {
+    expect(seedTargetDirs().targetRepoDir).toContain(join('clones', PAPERCUSP_HIVE_SLUG));
+  });
+});
 
 /** Build a deps object whose seams are all spies, overridable per-case. */
 function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {

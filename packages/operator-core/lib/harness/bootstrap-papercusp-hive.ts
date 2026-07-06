@@ -30,7 +30,7 @@ import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hiv
 import { detectPapercupRoot } from './register-papercusp';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { loadHarnessRegistry } from '../harness-registry';
-import { readRegistry, writeRegistry } from '../workspace-registry';
+import { readRegistry, writeRegistry, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
 import {
   adoptSharedHiveIdentity,
@@ -321,11 +321,20 @@ async function defaultRestoreHiveSeed(
 }
 
 /** The seed's canonical restore target dirs (shared by the pre-join restore and the
- *  post-admission deferred-git restore so both point at the SAME checkout / store). */
-function seedTargetDirs(): { targetStoreDir: string; targetRepoDir: string } {
-  const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
+ *  post-admission deferred-git restore so both point at the SAME checkout / store).
+ *
+ *  WI-3232 corestore-dir fix: `targetStoreDir` MUST equal the dir boot opens the corestore
+ *  at — `join(workspaceRootForId(PAPERCUSP_WORKSPACE_ID), '.papercusp', slug, 'hyperbee')`
+ *  (corestore.ts:32 with boot-all's `workspaceRootForId = join(workspacesRoot(), ws)`).
+ *  It previously used `PAPERCUSP_WORKSPACE_ROOT ?? defaultClonesDir()` → `<root>/clones/…`,
+ *  a dir boot NEVER reads (note the env NAME: boot's `workspacesRoot()` reads
+ *  PAPERCUSP_WORKSPACE**S**_ROOT, plural). Online the join's network replication cold-filled
+ *  boot's REAL dir, masking the dead restore; but the OFFLINE self-admit pot has no network,
+ *  so its content (plans/work-items/code) only materializes when the restored corestore lands
+ *  where boot reads it. `targetRepoDir` stays under clones — it is a real git checkout. */
+export function seedTargetDirs(): { targetStoreDir: string; targetRepoDir: string } {
   return {
-    targetStoreDir: join(workspaceRoot ?? defaultClonesDir(), '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee'),
+    targetStoreDir: join(workspacesRoot(), PAPERCUSP_WORKSPACE_ID, '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee'),
     targetRepoDir: join(defaultClonesDir(), PAPERCUSP_HIVE_SLUG),
   };
 }

@@ -382,6 +382,32 @@ export function slugsFromDocsToolCall(name: string, input: unknown): string[] {
   return out;
 }
 
+/**
+ * Buffers agentic-path answer text and discards it whenever a tool call
+ * lands — the model can still narrate ("let me search…") between tool calls
+ * despite composeAgenticDocsSystemPrompt's no-preamble instruction, since a
+ * system prompt is a request, not an enforcement mechanism. Mechanically
+ * suppresses that narration: only the text segment that survives to
+ * `flush()` with no further tool call after it is ever forwarded to the
+ * client (WI-3218).
+ */
+export function createAgenticAnswerBuffer() {
+  let buf = '';
+  return {
+    delta(text: string): void {
+      buf += text;
+    },
+    toolCall(): void {
+      buf = '';
+    },
+    flush(): string {
+      const out = buf;
+      buf = '';
+      return out;
+    },
+  };
+}
+
 const docsQa = defineTool({
   method: 'POST',
   path: '/desktop/docs-qa',
@@ -500,6 +526,11 @@ const docsQa = defineTool({
             sink.event('citation', { slug: clean, title: clean, url: `/internal/docs/${clean}` });
           }
         };
+        // Agentic path only: buffer + discard-on-tool_call so narration text
+        // the model emits between tool calls never reaches the client (see
+        // createAgenticAnswerBuffer). The RAG fallback path never emits
+        // tool_call events, so it is unaffected and keeps streaming live.
+        const agenticBuffer = createAgenticAnswerBuffer();
         try {
           for await (const ev of runAgentChat(runOpts)) {
             if (ev.type === 'delta') {
@@ -507,16 +538,28 @@ const docsQa = defineTool({
                 sawDelta = true;
                 clearFirstToken();
               }
-              answerText += ev.text;
-              sink.event('delta', { text: ev.text });
+              if (agentic) {
+                agenticBuffer.delta(ev.text);
+              } else {
+                answerText += ev.text;
+                sink.event('delta', { text: ev.text });
+              }
             } else if (ev.type === 'tool_call') {
               // The agent is searching/reading — progress. Re-arm the first-token
               // deadline so a multi-search turn is never killed early, and surface
               // the pages it actually reads (docs:get) as citations.
               if (!sawDelta) armFirstToken();
+              if (agentic) agenticBuffer.toolCall();
               for (const slug of slugsFromDocsToolCall(ev.name, ev.input)) citeSlug(slug);
             } else if (ev.type === 'error') {
               sink.event('error', { message: ev.message });
+            }
+          }
+          if (agentic) {
+            const flushed = agenticBuffer.flush();
+            if (flushed) {
+              answerText += flushed;
+              sink.event('delta', { text: flushed });
             }
           }
         } catch (err) {

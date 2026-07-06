@@ -29,7 +29,7 @@ import type { Ranked } from '../queue-ranker';
 import type { PlacementCandidate } from './placement-ranker';
 import type { HiveSurvey } from './survey';
 import type { OpenPlacementSummary } from './placement-watchdog';
-import { IDLE_ACTIVITY_KINDS, type OwnerSteering } from '../owner-steering';
+import { IDLE_ACTIVITY_KINDS, steeringLooksInconsistent, type OwnerSteering } from '../owner-steering';
 
 /** A live bee's load + liveness, from `fleet:assignments`. */
 export interface BriefBee {
@@ -406,6 +406,14 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     }
     if (os.directive && os.directive.trim()) {
       out.push(os.directive.trim());
+    }
+    if (steeringLooksInconsistent(os)) {
+      out.push(
+        '⚠️ **Steering looks inconsistent (EI-8277):** the directive text above reads ' +
+          'like the pause was lifted, but `pauseNewWork` is still TRUE. If the owner meant ' +
+          'to resume, reconcile now via `pot:set-steering { pauseNewWork:false }` — do not ' +
+          'silently keep re-reading this contradiction every wake.',
+      );
     }
 
     // Throttle + self-governance knobs (queen-steering-panel P-006/P-009). Most are

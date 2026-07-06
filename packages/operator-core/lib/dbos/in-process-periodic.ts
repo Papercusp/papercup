@@ -200,6 +200,7 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
       WEDGE_REAP_SILENT_MS,
       reclaimFirstOutputStalledSpawns,
       FIRST_OUTPUT_STALL_MS,
+      reclaimCeilingJamDebits,
     } = await import('../fleet/spawn-reclaim');
     const sql = getOrgPg().sql;
     const { emitAwaitedEvent } = await import('../events/await/engine');
@@ -223,6 +224,29 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
       } catch {
         /* best-effort — waiters fall back to their await timeout */
       }
+    }
+
+    // EI-7204/EI-7197: the spawn-ceiling-jam class — a stale admission debit
+    // whose heartbeat is being kept artificially fresh (reused-pid false-alive
+    // on a long-lived, never-restarted operator), which the orphan sweep above
+    // can never see (its own `heartbeat_at < stale` precondition never fires).
+    // Reclaims the CEILING DEBIT ONLY, using the same no-stream-activity proxy
+    // the watchdog's spawn-ceiling-jam signal already computes — unconditional
+    // (no RECLAIM_STALLED gate: this never kills a process or a claim, see the
+    // function doc), so the ceiling self-heals without an operator restart.
+    try {
+      const jr = await reclaimCeilingJamDebits(sql);
+      if (jr.reclaimed > 0) {
+        console.warn(
+          `[spawn-reclaim] freed ${jr.reclaimed} spawn-ceiling-jam debit(s) (no stream activity, EI-7204): ${jr.spawnIds.join(', ')}`,
+        );
+        await announceFreed(
+          jr.workspaces,
+          `${jr.reclaimed} spawn-ceiling-jam admission debit(s) reclaimed by the periodic sweep (EI-7204)`,
+        );
+      }
+    } catch (err) {
+      console.warn('[spawn-reclaim] ceiling-jam debit sweep failed (non-fatal — retries next tick):', err);
     }
 
     // RECLAIM_STALLED: the "stalled, not just dead" half — durably reclaim WEDGED

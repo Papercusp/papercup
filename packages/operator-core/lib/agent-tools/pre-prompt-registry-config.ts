@@ -42,7 +42,32 @@
  * (output tokens cost ~4-5× input).
  */
 
-import { configurePrePromptRegistry, type PrePromptEntry } from '@papercusp/result-encoding';
+import { configurePrePromptRegistry, type ColumnOverride, type PrePromptEntry } from '@papercusp/result-encoding';
+import { ISSUE_FAMILY_STATES, ISSUE_STATE_ALIASES, WORK_ITEM_ID_PATTERN } from '../work-items';
+import { FEATURE_FAMILY_STATES, FEATURE_STATE_ALIASES } from '../work-item-dispatch-states';
+
+/**
+ * EI-7927 (D-007 residual): the misalignment guard's per-column checks (id
+ * pattern / enum membership) only fire when the tool's OWN Zod schema carries
+ * them — but `id` and `state` on these two tools are both loose strings (id
+ * accepts several id-family prefixes; state accepts every cross-family alias),
+ * so the schema alone can't express the constraint. `columnOverrides` supplies
+ * it out of band. The `state` vocabulary is the UNION of every dialect + alias
+ * the real `normalizeWorkItemState`/`normalizeFeatureStateInput` accept —
+ * derived from the same exported constants those functions use (never
+ * hand-duplicated), so this can't silently drift out of sync with a future
+ * added state/alias.
+ */
+const WORK_ITEM_ID_OVERRIDE: ColumnOverride = { pattern: WORK_ITEM_ID_PATTERN };
+const KNOWN_WORK_ITEM_STATE_TOKENS: readonly string[] = Array.from(
+  new Set([
+    ...ISSUE_FAMILY_STATES,
+    ...FEATURE_FAMILY_STATES,
+    ...Object.keys(ISSUE_STATE_ALIASES),
+    ...Object.keys(FEATURE_STATE_ALIASES),
+  ]),
+);
+const WORK_ITEM_STATE_OVERRIDE: ColumnOverride = { enumValues: KNOWN_WORK_ITEM_STATE_TOKENS };
 
 export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // ── Read (Tier-3 headerless CSV) ──────────────────────────────────────────
@@ -59,12 +84,42 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // sonnet-4-6 per Plan §6.3 — the earlier red verdict was SUT==judge
   // self-grade bias on orthogonal behavioral dims); the load-bearing positional
   // assert (row === "WI-42,passed") passed 6/6 across both runs; su-S08
-  // compact-read passed 3/3. Residual (D-007): the misalignment guard is still
-  // ARITY-ONLY — an id-shape/enum column check would further harden the
-  // swapped-row case (EI follow-up filed), but the empirical gate this default
-  // waited on is met.
-  { name: 'work_items:set_state', read: 'off', write: 'positional', note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?)' },
-  { name: 'work_items:claim', read: 'off', write: 'positional', note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?)' },
+  // compact-read passed 3/3.
+  //
+  // D-007 residual CLOSED (EI-7927, 2026-07-06): the guard was arity-only — id/
+  // state carry no schema-level pattern/enum (id spans several id-family
+  // prefixes; state spans every cross-family alias) — so a swapped row with
+  // matching arity could still write wrong-but-valid data. `columnOverrides`
+  // below closes that gap without touching either tool's real args schema
+  // (which stays a loose string for legitimate cross-family use).
+  //
+  // Separately found while verifying this (do NOT attempt inside EI-7927):
+  // as of the 2026-06-21 bulk-endpoint-standardization refactor, both tools'
+  // real args schema carries bulk fields (ids/items/decision) alongside the
+  // single-item shape, and projectWriteColumns rejects the WHOLE schema the
+  // moment ANY property is an array/nested-object — so it returns undefined
+  // for both today, advertisedArgsSchema falls back to full keyed args (which
+  // is what keeps bulk ids[]/items[] callable), and positional-row is in
+  // practice not exercised in production despite this entry's write:
+  // 'positional' (confirmed by feeding the real Zod-derived JSON Schema
+  // through projectWriteColumns directly). A real fix needs a UNION schema
+  // (row-string OR full keyed args); filed as WI-3258. The columnOverrides
+  // hardening below is unit-tested directly and activates the moment WI-3258
+  // (or any narrower future schema) makes either tool columns-eligible again.
+  {
+    name: 'work_items:set_state',
+    read: 'off',
+    write: 'positional',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; see WI-3258 for the bulk-schema eligibility gap',
+    columnOverrides: { id: WORK_ITEM_ID_OVERRIDE, state: WORK_ITEM_STATE_OVERRIDE },
+  },
+  {
+    name: 'work_items:claim',
+    read: 'off',
+    write: 'positional',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?); columnOverrides hardened EI-7927; see WI-3258 for the bulk-schema eligibility gap',
+    columnOverrides: { id: WORK_ITEM_ID_OVERRIDE },
+  },
 ];
 
 configurePrePromptRegistry(PRE_PROMPT_REGISTRY);
