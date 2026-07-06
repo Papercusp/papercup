@@ -35,7 +35,7 @@ async function insertTick(
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.hive_throughput_ticks
-      (workspace_id, hive_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
+      (workspace_id, pot_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
        stuck_count, completed, mttc_ms, question_rungs, detail)
     VALUES
       (${WS}, ${row.hiveSlug}, ${row.tickAt}, ${row.frontierDepth}, ${row.placements},
@@ -117,7 +117,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
   it('scopes by workspace — another workspace\'s ticks are invisible', async () => {
     await sql`
       INSERT INTO harness_shared.hive_throughput_ticks
-        (workspace_id, hive_slug, frontier_depth, bees_busy, bees_cap)
+        (workspace_id, pot_slug, frontier_depth, bees_busy, bees_cap)
       VALUES ('ws-other', 'papercup', 1, 1, 16)`;
     const snap = await readHiveThroughputSnapshot(sql, WS);
     // Only WS hives — 'papercup' + 'busyhive', never ws-other's row.

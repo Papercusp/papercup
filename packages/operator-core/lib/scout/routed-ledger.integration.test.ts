@@ -219,13 +219,13 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
   describe('K1 workspace-coordination scope (FLAGS.WORKSPACE_COORDINATION)', () => {
     afterAll(() => setFlagOverridesForTest(null));
 
-    it('flag ON: persists lens weights under the workspace sentinel (hive_slug = workspaceId)', async () => {
+    it('flag ON: persists lens weights under the workspace sentinel (pot_slug = workspaceId)', async () => {
       setFlagOverridesForTest({ [FLAGS.WORKSPACE_COORDINATION]: true });
       await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
-      const rows = await db.adminSql<{ hive_slug: string }[]>`
-        SELECT DISTINCT hive_slug FROM harness_shared.scout_lens_weights
+      const rows = await db.adminSql<{ pot_slug: string }[]>`
+        SELECT DISTINCT pot_slug FROM harness_shared.scout_lens_weights
          WHERE workspace_id = ${WS}`;
-      const hives = rows.map((r) => r.hive_slug);
+      const hives = rows.map((r) => r.pot_slug);
       expect(hives).toContain(WS); // the workspace-sentinel row was written
       // the ideator read-path resolves them back via the sentinel (read-fallback)
       const { lensWeights } = await getScoutLensWeights({ workspaceId: WS, harnessSlug: HARNESS });
@@ -239,12 +239,12 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     it('flag OFF: persists + reads under the per-hive slug (byte-identical to today)', async () => {
       setFlagOverridesForTest({ [FLAGS.WORKSPACE_COORDINATION]: false });
       await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
-      const rows = await db.adminSql<{ hive_slug: string }[]>`
-        SELECT DISTINCT hive_slug FROM harness_shared.scout_lens_weights
+      const rows = await db.adminSql<{ pot_slug: string }[]>`
+        SELECT DISTINCT pot_slug FROM harness_shared.scout_lens_weights
          WHERE workspace_id = ${WS}`;
       // the per-hive row (resolved hive-home of HARNESS, which falls back to the slug
       // itself in this test workspace) is present — the legacy keying is untouched.
-      expect(rows.map((r) => r.hive_slug)).toContain(HARNESS);
+      expect(rows.map((r) => r.pot_slug)).toContain(HARNESS);
     });
   });
 
