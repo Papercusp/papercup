@@ -85,8 +85,10 @@ describe('migration 159 — the work_items UNION view', () => {
       taken_by: 'sess-A', // assignee → taken_by
       summary: 'bug body', // body → summary
     });
-    // operator scope → '' sentinel harness_slug (D-U1; excluded by per-harness '= slug' filters).
-    expect(rows.find((r) => r.feature_id === 'WI-201')!.harness_slug).toBe('');
+    // operator scope → 'operator:<workspace_id>' harness_slug (migration 382 superseded the
+    // old '' sentinel — see claimNextIssueWorkItem's operatorScopeSlug comment; excluded by
+    // per-harness '= slug' filters same as before, just a different excluded value now).
+    expect(rows.find((r) => r.feature_id === 'WI-201')!.harness_slug).toBe('operator:default');
   });
 
   it('the DBOS-frontier-shaped read sees ONLY feature rows — unchanged contract', async () => {

@@ -28,11 +28,11 @@ export default defineTool({
   name: 'pot:pause',
   profile: 'engineer',
   description:
-    'PAUSE the hive: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Queen\'s pending time wake. Optionally drain live bees gracefully. Resume with pot:start.',
+    'PAUSE the pot: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Mug\'s pending time wake. Optionally drain live cups gracefully. Resume with pot:start.',
   guidance: {
-    when: 'The user clicks Pause Hive / asks to freeze autonomous operation, or you need the colony quiet (incident, review, cost control).',
+    when: 'The user clicks Pause Pot / asks to freeze autonomous operation, or you need the fleet quiet (incident, review, cost control).',
     notWhen:
-      'To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.',
+      'To stop ONE cup — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.',
     chaining:
       'pot:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → pot:start to resume.',
     seeAlso: [
@@ -49,12 +49,12 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     drainBees: z
       .boolean()
       .default(false)
-      .describe('Also send every live bee the graceful drain cue (checkpoint, release locks/claims, exit).'),
+      .describe('Also send every live cup the graceful drain cue (checkpoint, release locks/claims, exit).'),
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -67,7 +67,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the started state is per-hive.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the started state is per-pot.',
             }),
           },
         ],
@@ -107,11 +107,11 @@ export default defineTool({
       if (drained.length > 0) {
         await sendMessage(identity, {
           to: drained,
-          summary: 'Graceful drain cue: the hive is being paused',
+          summary: 'Graceful drain cue: the pot is being paused',
           body:
-            'The hive is being PAUSED. Checkpoint your state (commit pending edits), release your locks ' +
+            'The pot is being PAUSED. Checkpoint your state (commit pending edits), release your locks ' +
             '(locks:release { all_mine: true }), return claimed work-items to the pool (work_items:release), ' +
-            'and end your turn cleanly. You will not be re-woken until the hive is started again.',
+            'and end your turn cleanly. You will not be re-woken until the pot is started again.',
           // P-003: an intrinsically HIVE-WIDE Queen control — stamp it so a recipient
           // reads it as a real hive pause, not a fleet-leader draining its members.
           extra: { [CUE_AUTHORITY_FIELD]: hiveWideCueAuthority(installSlug) },

@@ -75,10 +75,19 @@ async function blockByIssue(blockedId: string, issueId: string) {
     VALUES (${WS}, 'feature', ${`${H}#${blockedId}`}, 'issue', ${issueId}, 'blocks')`;
 }
 
-async function seedIssue(id: string, state: string) {
+// `assignee` (mapped to work_items.taken_by by the engineer_issues view's INSTEAD OF
+// trigger) defaults to a placeholder "someone already has it" owner: P-007
+// (SCHEDULER_ISSUES_CLAIMABLE, default-ON) additively falls through to self-select an
+// unblocked, UNCLAIMED open issue as a work-item in its own right (tier 3 of
+// claimNextWorkItem) — an unassigned open blocker seeded here would otherwise be
+// claimed BY THIS SAME wi.claimNextWorkItem() call the test is using to probe purely
+// the blocking behavior, producing a false "blocks" read. Pass assignee: null explicitly
+// for a test that specifically wants an unclaimed issue.
+async function seedIssue(id: string, state: string, opts: { assignee?: string | null } = {}) {
+  const assignee = opts.assignee === undefined ? 'other-owner' : opts.assignee;
   await db.sql`
-    INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, state)
-    VALUES (${WS}, ${id}, ${`issue ${id}`}, ${state})`;
+    INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, state, assignee)
+    VALUES (${WS}, ${id}, ${`issue ${id}`}, ${state}, ${assignee})`;
 }
 
 beforeAll(async () => {

@@ -75,7 +75,7 @@ describe('hive_settings (real PG, migration 186)', () => {
     // list returns role -> markdown, filtered to the prompt-override prefix (ignores other settings)
     await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
     expect(await listHiveInstancePromptOverrides('ws', 'myhive', sql)).toEqual({
-      bee: 'You are a Papercusp bee.',
+      cup: 'You are a Papercusp bee.',
       su: 'You are a Papercusp engineer.',
     });
 

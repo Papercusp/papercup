@@ -90,6 +90,11 @@ export interface InstallResult extends InstallPaths {
   onboardLauncherSource: string;
   /** Shell-profile files updated to put ~/.papercusp/bin on PATH (empty if none). */
   pathProfilesUpdated: string[];
+  /** The CC hook scripts copied to ~/.papercusp/hooks/cc/ this call (empty when the
+   *  sources weren't shipped — the pre-EI-8191 Mac/Windows gap). */
+  claudeHooksInstalled: string[];
+  /** True when the CC hooks + fleet statusline were merged into ~/.claude/settings.json. */
+  claudeSettingsMerged: boolean;
 }
 
 export interface InstallOpts {
@@ -438,6 +443,38 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
     ...fromRoot,
     path.join(sidecarRoot, 'apps', 'operator', 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
   ];
+}
+
+/**
+ * The Claude/Codex CC hook scripts installed to `~/.papercusp/hooks/cc/`. Kept in
+ * sync with install-standalone-mcp.sh's `CC_HOOK_*` set (the dev/Linux installer)
+ * AND build-desktop-sidecar.sh (which ships these sources into the packaged bundle).
+ * `pretooluse-locks-acquire.sh` MUST stay first — it is the presence gate for the
+ * whole set (mirrors the bash `[ -f … ]` guard). `posttooluse-objective-title.sh` is
+ * copied for parity but, like the bash installer, is not registered in settings.json.
+ */
+const CC_HOOK_FILES = [
+  'pretooluse-locks-acquire.sh',
+  'posttooluse-locks-release.sh',
+  'posttooluse-coord-inbox.sh',
+  'posttooluse-activity-report.sh',
+  'lifecycle-report.sh',
+  'statusline-fleet.sh',
+  'posttooluse-objective-title.sh',
+  'pretooluse-bash-resource-gate.sh',
+  'workitem-verify-nudge.sh',
+] as const;
+
+/**
+ * Candidate DIRS for the CC hook sources — the bundled sidecar layout first
+ * (`<operatorAppRoot>/scripts/hooks/cc`), then the dev-repo fallback. Mirrors
+ * `extensionCandidates` (the omp coord-hook resolver); esbuild can't trace these
+ * fs-read scripts, so build-desktop-sidecar.sh copies the dir verbatim.
+ */
+function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'cc')];
+  if (explicitRoot) return fromRoot;
+  return [...fromRoot, path.join(process.cwd(), 'apps', 'operator', 'scripts', 'hooks', 'cc')];
 }
 
 /**

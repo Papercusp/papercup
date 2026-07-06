@@ -85,6 +85,11 @@ describe('writeRoleCodexHome', () => {
     expect(toml).not.toContain('memory_tool');
     // tui-status-parity 2026-07-05: hook owns the title (see the su-home test).
     expect(toml).toContain('[tui]\nterminal_title = []');
+    // tui-status-parity D 2026-07-06: codex also gets a native bottom status pane
+    // (codex-own items; canonical rust-v0.142.5 StatusLineItem IDs).
+    expect(toml).toContain(
+      'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
+    );
   });
 
   it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh role CODEX_HOME never blocks at the boot trust prompt', async () => {
@@ -239,6 +244,10 @@ describe('writeSuCodexHome', () => {
     // title — an EMPTY terminal_title item list stops codex's own OSC-0 writes
     // (default ["activity","project"]) clobbering display.title every turn.
     expect(toml).toContain('[tui]\nterminal_title = []');
+    // tui-status-parity D 2026-07-06: codex gets a native bottom status pane.
+    expect(toml).toContain(
+      'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
+    );
   });
 
   it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {

@@ -1,14 +1,14 @@
 /**
- * pot:set-steering — the owner's steering write surface for the Queen
+ * pot:set-steering — the owner's steering write surface for the Mug
  * (queen-steering-panel-2026-06-15, brief B-01; CONTRACT C-1).
  *
  * Writes the `owner-steering:*` hive_settings (via owner-steering.ts) — a focus
- * directive, the plans the Queen may pick up NOW (eligibility, DISTINCT from
+ * directive, the plans the Mug may pick up NOW (eligibility, DISTINCT from
  * lifecycle status, D-002), and a new-work pause (immediate or until a timestamp).
- * Then it (1) refreshes the 👑 Queen tab (`notifySyncInvalidate('hive.steering')`)
- * and (2) WAKES the Queen, so a steering change is honoured on her next survey
- * immediately rather than at the next cadence tick. The 👑 Queen tab (B-04) writes
- * through this; the Queen wake-brief (B-02) reads the same keys via getOwnerSteering.
+ * Then it (1) refreshes the 👑 Mug tab (`notifySyncInvalidate('hive.steering')`)
+ * and (2) WAKES the Mug, so a steering change is honoured on its next survey
+ * immediately rather than at the next cadence tick. The 👑 Mug tab (B-04) writes
+ * through this; the Mug wake-brief (B-02) reads the same keys via getOwnerSteering.
  *
  * Sibling of `pot:pause` (the other harness:write Hive-control verb). Read twin:
  * `pot:get-steering`.
@@ -28,16 +28,16 @@ export default defineTool({
   name: 'pot:set-steering',
   profile: 'engineer',
   description:
-    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what she may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Scout priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Queen so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
+    'Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
   guidance: {
-    when: 'Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.',
+    when: 'Steering the Mug from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Mug tab is the UI for this.',
     notWhen:
-      'Freezing the WHOLE hive (all autonomous wakes) — pot:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE bee — fleet:drain / fleet:cancel.',
+      'Freezing the WHOLE pot (all autonomous wakes) — pot:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE cup — fleet:drain / fleet:cancel.',
     chaining:
-      'pot:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Queen wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → she drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets.',
+      'pot:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Mug wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → it drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets.',
     seeAlso: [
       'pot:get-steering (read the current steering before changing it)',
-      'pot:pause (freeze the whole hive instead of steering the Queen)',
+      'pot:pause (freeze the whole pot instead of steering the Mug)',
     ],
   },
   capability: 'harness:write',
@@ -48,28 +48,28 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Hive home-harness slug (default: ctx harness / PAPERCUSP_HIVE_HOME_SLUG) — steering is per-hive.'),
+      .describe('Pot home-harness slug (default: ctx harness / PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     directive: z
       .string()
       .max(LIMITS.BRIEF)
       .nullable()
       .optional()
-      .describe(`Free-text directive surfaced in the Queen wake brief. null or "" clears it. Max ${LIMITS.BRIEF} chars.`),
+      .describe(`Free-text directive surfaced in the Mug wake brief. null or "" clears it. Max ${LIMITS.BRIEF} chars.`),
     eligiblePlans: z
       .array(z.string().min(1).max(200))
       .max(200)
       .optional()
-      .describe('Plan slugs the Queen may pick up NOW (eligibility ≠ lifecycle status). [] = no restriction (default).'),
+      .describe('Plan slugs the Mug may pick up NOW (eligibility ≠ lifecycle status). [] = no restriction (default).'),
     eligibleHives: z
       .array(z.string().min(1).max(200))
       .max(500)
       .optional()
-      .describe('The placement SCOPE — hive/harness slugs the home Queen may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
+      .describe('The placement SCOPE — pot/harness slugs the home Mug may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
     includeUnplannedWork: z
       .boolean()
       .optional()
-      .describe('Whether plan-LESS ("loose") work-items — those with no source plan — are placed. Default true; false ⇒ the Queen works ONLY plan-tied items. Independent of eligiblePlans (the "Non-plan work items" toggle).'),
+      .describe('Whether plan-LESS ("loose") work-items — those with no source plan — are placed. Default true; false ⇒ the Mug works ONLY plan-tied items. Independent of eligiblePlans (the "Non-plan work items" toggle).'),
     modelTiers: z
       .array(
         z.object({
@@ -86,19 +86,19 @@ export default defineTool({
       .record(z.string(), z.string().max(60))
       .nullable()
       .optional()
-      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"cup":"opus:xhigh"} pins every bee.'),
+      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"cup":"opus:xhigh"} pins every cup.'),
     cadenceFloorSec: z
       .number()
       .nonnegative()
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): min seconds between Queen wakes — effective floor = MAX(system 60s, this). Raises the interval to slow the loop. null / 0 clears it.'),
+      .describe('THROTTLE (P-006): min seconds between Mug wakes — effective floor = MAX(system 60s, this). Raises the interval to slow the loop. null / 0 clears it.'),
     maxBees: z
       .number()
       .int()
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): concurrency ceiling — max concurrently-running agents/bees. Effective = MIN(system ceiling, this). null / <1 clears it.'),
+      .describe('THROTTLE (P-006): concurrency ceiling — max concurrently-running agents/cups. Effective = MIN(system ceiling, this). null / <1 clears it.'),
     idleActivities: z
       .object({
         gym: z.boolean().optional(),
@@ -108,7 +108,7 @@ export default defineTool({
       })
       .nullable()
       .optional()
-      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Scout ideation / doc-curation / Queen review-iteration of Scout drafts). null / {} clears it.'),
+      .describe('THROTTLE (P-006): gate idle background activities. Each defaults ON; false suppresses that activity (gym cycles / Blender ideation / doc-curation / Mug review-iteration of Blender drafts). null / {} clears it.'),
     autoScaleOut: z
       .boolean()
       .nullable()
@@ -118,7 +118,7 @@ export default defineTool({
       .enum(['serial', 'balanced', 'parallel'])
       .nullable()
       .optional()
-      .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Queen reads in her wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Queen\'s own judgement).'),
+      .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Mug reads in its wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Mug\'s own judgement).'),
     modelOverrides: z
       .record(z.string(), z.string().max(120))
       .nullable()
@@ -132,11 +132,11 @@ export default defineTool({
       })
       .nullable()
       .optional()
-      .describe('SESSION Scout federated-priming override: nearby foreign-elites surfaced per ideation cycle plus crowded/empty niche counts for the repulsion map. 0 disables each subsection; null / {} clears it back to the blueprint default.'),
+      .describe('SESSION Blender federated-priming override: nearby foreign-elites surfaced per ideation cycle plus crowded/empty niche counts for the repulsion map. 0 disables each subsection; null / {} clears it back to the blueprint default.'),
     pauseNewWork: z
       .boolean()
       .optional()
-      .describe('Pause starting NEW work — the Queen drives existing placements to terminal then idles.'),
+      .describe('Pause starting NEW work — the Mug drives existing placements to terminal then idles.'),
     pausedUntil: z
       .number()
       .int()
@@ -153,7 +153,7 @@ export default defineTool({
       return json({
         ok: false,
         error: 'no_home_harness',
-        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-hive.',
+        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
       });
     }
     const patch: OwnerSteeringPatch = {};
@@ -193,12 +193,12 @@ export default defineTool({
       )
       .catch(() => {});
 
-    // Refresh the 👑 Queen tab (hive.steering resolver) — best-effort.
+    // Refresh the 👑 Mug tab (hive.steering resolver) — best-effort.
     void import('../../sync-sse')
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.steering', {}))
       .catch(() => {});
 
-    // Wake the Queen so the new steering is honoured on her next survey now, not at
+    // Wake the Mug so the new steering is honoured on its next survey now, not at
     // the next cadence tick. Fire-and-forget (the wake reports, never throws).
     const wake = await requestUrgentHiveWake({
       reason: 'owner steering updated',

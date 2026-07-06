@@ -205,11 +205,28 @@ function inheritUserCodexHome(codexHome: string): void {
  * (verified: a pre-set sentinel title survived boot + a full turn), so the
  * hook owns the title — same single-source display.title as claude/omp.
  */
-const CODEX_HOOK_OWNS_TITLE_TOML = [
+// codex `[tui]` table. Two knobs, one emission point (TOML forbids duplicate
+// table headers):
+//  - terminal_title = [] — the objective-title hook owns the title
+//    (single-source display.title); an empty item list stops codex writing its
+//    OWN OSC-0 title each turn (see the doc comment above).
+//  - status_line — gives codex a native BOTTOM status pane (tui-status-parity
+//    stopgap D, 2026-07-06). codex 0.142.5 has NO command-backed status item
+//    (openai/codex#17827 is unmerged) so we can't render the papercusp fleet
+//    chips here — these are codex's OWN native items instead: run-state
+//    (Ready/Working/Thinking) · model+reasoning · context% remaining · git
+//    branch. All are canonical rust-v0.142.5 StatusLineItem IDs; an unknown id
+//    only warns-once + is ignored (codex `doctor` validates TOML structure, not
+//    item membership), so a bad id can never break boot. NOT true fleet parity
+//    — that needs the upstream command-item PR (B).
+const CODEX_TUI_TOML = [
   '# The papercusp objective-title hook owns the terminal title (coord:glance',
   '# display.title); an empty item list stops codex clobbering it each turn.',
+  '# status_line: a native bottom status pane (codex-own items — codex 0.142 has',
+  '# no command-backed status item, openai/codex#17827; stopgap, not fleet chips).',
   '[tui]',
   'terminal_title = []',
+  'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
   '',
 ] as const;
 
@@ -479,7 +496,7 @@ export function writeRoleCodexHome(opts: {
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
-    ...CODEX_HOOK_OWNS_TITLE_TOML,
+    ...CODEX_TUI_TOML,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
@@ -717,7 +734,7 @@ export function writeSuCodexHome(opts: {
     CODEX_ISOLATION_PREAMBLE,
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
-    ...CODEX_HOOK_OWNS_TITLE_TOML,
+    ...CODEX_TUI_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
