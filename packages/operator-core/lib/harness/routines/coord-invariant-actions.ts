@@ -860,6 +860,12 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
   // Sweeping first means the violation only fires for a LIVE agent's genuinely-
   // stuck review queue. Best-effort — a sweep failure never aborts the pass.
   await sweepDeadOwnerPendingWakes().catch(() => 0);
+  // WI-3097: GC staged wakes past a plain age cap regardless of owner liveness — the
+  // dead-owner sweep above only reaps orphaned wakes for a GONE owner; a LIVE owner who
+  // never reviews their wake board can otherwise let one sit indefinitely until the
+  // wakeQueueAgeHours invariant below files it as a violation. Best-effort, same as the
+  // sweep above — a failure never aborts the pass.
+  await sweepStalePendingWakes({ staleHours: t.pendingWakeStaleHours }).catch(() => 0);
   // F-FIX-037: Auto-accept handoffs older than the stuck-handoff threshold. This
   // prevents them from persisting as open violations; handoffs waiting >12h for
   // acceptance are auto-accepted by the monitor before the invariant check runs.

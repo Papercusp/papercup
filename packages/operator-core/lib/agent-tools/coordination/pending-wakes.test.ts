@@ -17,6 +17,7 @@ import {
   releasePendingWake,
   clearPendingWakes,
   hasPendingWakeFromSource,
+  sweepStalePendingWakes,
   BOARD_READ_LIMIT,
 } from './pending-wakes';
 
