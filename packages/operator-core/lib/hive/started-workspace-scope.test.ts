@@ -85,6 +85,7 @@ const HIVE = 'papercusp';
 beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
+  h.registeredHives = [];
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
 });
