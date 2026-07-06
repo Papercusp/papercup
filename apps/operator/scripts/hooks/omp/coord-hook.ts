@@ -550,11 +550,43 @@ export async function linkAdvSessionFromContext(ctx: unknown): Promise<boolean> 
   return linked;
 }
 
+/** Overall wall-clock budget for onSessionStart. pi's extension framework HARD-KILLS a
+ *  session_start handler that runs past 30s ("Extension error: handler timed out after
+ *  30000ms"), turning a slow-operator launch into a framework error instead of a graceful
+ *  degrade. Each coord call is already AbortController-bounded (6s, above), but the handler
+ *  used to run them SEQUENTIALLY (refreshMode → link → declare-intent), whose worst-case sum
+ *  rode past 30s once machine load (WI-3147: load ~68) slipped the fetch/abort timers. We now
+ *  (a) run the two independent attached-mode coord calls CONCURRENTLY (critical path becomes
+ *  max(link, declare), not link + declare) and (b) cap the whole handler under this deadline,
+ *  so it ALWAYS returns well under pi's 30s cap. A deadline hit degrades to the normal
+ *  "coordination unavailable, will retry" path — the first onTurnStart re-probes, re-links,
+ *  and re-declares presence, so nothing is permanently lost. */
+const SESSION_START_DEADLINE_MS = 20_000;
+
+/** Await `p`, but never longer than `ms`. Resolves (never rejects) when `p` settles OR the
+ *  deadline elapses, whichever is first. The losing promise keeps running — its own
+ *  AbortController guards bound it — we simply stop awaiting it. Used to hard-cap a hook
+ *  handler's wall-clock time so it returns under pi's framework timeout. */
+export async function withDeadline(p: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    // Swallow a rejection from `p` so a losing (deadline-won) promise never surfaces an
+    // unhandled rejection after we've stopped awaiting it.
+    await Promise.race([p.then(() => undefined, () => undefined), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Fired once per OMP session start. Probes the operator to choose
  *  attached/detached mode, then links the ADV sessions row to the OMP
  *  session id when the launcher passed PAPERCUSP_ADV_SESSION_ID. It then
  *  declares presence (attached only — presence is PG-backed and unavailable
- *  detached). */
+ *  detached). Bounded by SESSION_START_DEADLINE_MS so a slow operator can never
+ *  drive the handler past pi's 30s framework cap (WI-3147). */
 export async function onSessionStart(ctx?: unknown): Promise<void> {
   // Mint the per-process coordination owner id up front (file-locking
   // #2). Every subsequent callMcpTool carries it via `?client=`, so a
@@ -562,13 +594,24 @@ export async function onSessionStart(ctx?: unknown): Promise<void> {
   // attributed to THIS process — never collapsed with a sibling OMP
   // shell that happens to share a bundle token.
   hookOwnerId();
+  await withDeadline(sessionStartInner(ctx), SESSION_START_DEADLINE_MS);
+}
+
+/** The actual session-start work, wrapped by onSessionStart's deadline. */
+async function sessionStartInner(ctx?: unknown): Promise<void> {
   await refreshMode();
-  if (_mode === 'attached') {
-    await linkAdvSessionFromContext(ctx);
-    await callMcpTool('coord:declare-intent', { intent: 'OMP session started' });
-    // Activity bridge: a "worker appeared" lifecycle marker for the fleet view.
-    void reportLifecycle('start');
-  }
+  if (_mode !== 'attached') return;
+  // The ADV-session link and the presence declare-intent share no ordering
+  // dependency, so run them CONCURRENTLY — the attached critical path becomes
+  // max(link, declare) instead of link + declare (WI-3147). Both callees catch
+  // their own errors (callMcpTool returns null on failure), so Promise.all never
+  // rejects. reportLifecycle stays fire-and-forget.
+  await Promise.all([
+    linkAdvSessionFromContext(ctx),
+    callMcpTool('coord:declare-intent', { intent: 'OMP session started' }),
+  ]);
+  // Activity bridge: a "worker appeared" lifecycle marker for the fleet view.
+  void reportLifecycle('start');
 }
 
 /**

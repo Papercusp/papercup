@@ -450,6 +450,40 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals.map((s) => s.key)).toEqual(['routine:stuck-cron']);
   });
 
+  it('routine-failure (WI-3098/EI-7771): a NON-loop routine with a reaper-sourced error IS suppressed when last_fired_at is RECENT even though next_fire_at reads as already-past (the collection-instant race)', () => {
+    // Caught mid-cadence: fired 2min ago on a healthy ~5min cadence, but the
+    // scheduler hasn't advanced next_fire_at past now() yet at query time.
+    const justFired = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const nextFireBarelyPast = new Date(Date.now() - 30 * 1000).toISOString();
+    const signals = routineFailureSignalsFromRows([
+      {
+        name: 'cross-hive-outbox-drain',
+        last_error: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+        is_loop: false,
+        last_error_source: 'dbos-executor-reaper',
+        next_fire_at: nextFireBarelyPast,
+        last_fired_at: justFired,
+      },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('routine-failure (WI-3098): a NON-loop routine with a reaper-sourced error still fires when last_fired_at is STALE (beyond the recent-fire proof window) and next_fire_at is past', () => {
+    const staleFire = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago — well past the 30min proof window
+    const past = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    const signals = routineFailureSignalsFromRows([
+      {
+        name: 'genuinely-wedged',
+        last_error: 'produced no DBOS operation output',
+        is_loop: false,
+        last_error_source: 'dbos-executor-reaper',
+        next_fire_at: past,
+        last_fired_at: staleFire,
+      },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['routine:genuinely-wedged']);
+  });
+
   it('routine-failure (EI-5302): the body no longer names git-sync as a false example (was mis-triggering the git-sync human-gate keyword)', () => {
     const signals = routineFailureSignalsFromRows([{ name: 'loop-su-xyz', last_error: 'crash' }]);
     expect(signals[0].body).not.toContain('git-sync');

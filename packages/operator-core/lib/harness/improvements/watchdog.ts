@@ -1123,7 +1123,8 @@ export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSi
     SELECT name, metadata->>'last_error' AS last_error,
            (reschedule_interval_sec IS NOT NULL) AS is_loop,
            metadata->>'last_error_source' AS last_error_source,
-           next_fire_at
+           next_fire_at,
+           last_fired_at
       FROM harness_shared.routines
      WHERE active = true AND COALESCE(metadata->>'last_error', '') <> ''
      LIMIT 20`;
