@@ -148,10 +148,6 @@ async function dumpPg(opts: {
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
-    // Belt-and-suspenders: the -n harness_shared dump includes CREATE SCHEMA;
-    // keep an idempotent preamble so older selected-table snapshots are still
-    // psql-restorable if this helper is partially reused.
-    gz.stdin.write('CREATE SCHEMA IF NOT EXISTS harness_shared;\n\n');
     dump.stdout.pipe(gz.stdin);
     gz.stdout.pipe(out);
     let stderr = '';

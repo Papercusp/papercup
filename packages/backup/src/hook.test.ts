@@ -138,9 +138,9 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(pgDumpCall()!.env?.PGCONNECT_TIMEOUT).toBe('5');
   });
 
-  it('prefixes a schema preamble so selected-table dumps restore into a clean DB', async () => {
+  it('does not prefix a schema preamble because pg_dump -n emits schema DDL', async () => {
     await runPreSnapshotHook(ctx);
-    expect(h.stdinWrites.join('')).toContain('CREATE SCHEMA IF NOT EXISTS harness_shared;');
+    expect(h.stdinWrites.join('')).not.toContain('CREATE SCHEMA IF NOT EXISTS harness_shared;');
   });
 });
 
