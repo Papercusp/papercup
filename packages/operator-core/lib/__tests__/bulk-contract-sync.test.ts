@@ -29,7 +29,7 @@
  * Instead it asserts the four invariants that hold UNIFORMLY across every shape
  * (import _bulk · call runBulk · return bulkContent · expose a scalar+array seam
  * via mergeIds/toList/scalarOrArray OR an `items:` array arg). The carve-outs
- * that are deliberately NOT bulk-of-single (fleet:place_batch, deploy:hive —
+ * that are deliberately NOT bulk-of-single (fleet:place_batch, deploy:pot —
  * composites per D-002) never import `_bulk`, so they are invisible to the
  * discovery walk and correctly un-flagged.
  */
@@ -171,12 +171,12 @@ describe('bulk-contract-sync (P-007 guard)', () => {
 
   it('the carve-out composites do NOT import _bulk (they are not bulk-of-single)', () => {
     // D-002: fleet:place_batch (affinity ranking + warm-inject + overflow) and
-    // deploy:hive (queen/swarm topology) are composites, intentionally NOT the
+    // deploy:pot (queen/swarm topology) are composites, intentionally NOT the
     // keyed-array contract. Guard the carve-out so a future edit can't quietly
     // pull them under the contract (or vice-versa, leaving them half-converted).
     const carveOuts = [
       'packages/operator-core/lib/agent-tools/fleet/place_batch.ts',
-      'packages/operator-core/lib/agent-tools/deploy/hive.ts',
+      'packages/operator-core/lib/agent-tools/deploy/pot.ts',
     ];
     const violations: string[] = [];
     for (const rel of carveOuts) {

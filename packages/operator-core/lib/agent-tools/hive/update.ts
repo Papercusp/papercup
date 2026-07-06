@@ -28,11 +28,11 @@ export default defineTool({
   guidance: {
     when: "Changing a pot's deployment target or its per-instance config overrides (budget/parallelism knobs).",
     notWhen:
-      'Waking/pausing the Mug — pot:wake / pot:declare-wake. Placing/removing cups — fleet:*. Deploying to a cloud frame — deploy:hive.',
-    chaining: 'pot:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
+      'Waking/pausing the Mug — pot:wake / pot:declare-wake. Placing/removing cups — fleet:*. Deploying to a cloud frame — deploy:pot.',
+    chaining: 'pot:get { slug } to see the current config; deploy:pot to act on a changed deployment target.',
     seeAlso: [
       'pot:get (see the current config before updating)',
-      'deploy:hive (act on a changed deployment target)',
+      'deploy:pot (act on a changed deployment target)',
     ],
   },
   capability: 'harness:write',

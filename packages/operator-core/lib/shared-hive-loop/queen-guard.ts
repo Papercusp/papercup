@@ -3,7 +3,7 @@
  * (shared-hive-loop-e2e-testing-2026-06-10 P-005; semantics recorded as that
  * plan's D-008).
  *
- * Queen-ness today is placement-by-convention (`deploy:hive
+ * Queen-ness today is placement-by-convention (`deploy:pot
  * { queen: { placement } }` decides where the Queen RUNS, but nothing records
  * a durable "home swarm" any runtime check could assert) — so two swarms of
  * one Hive can BOTH wake a Queen and steer the shared backlog against each

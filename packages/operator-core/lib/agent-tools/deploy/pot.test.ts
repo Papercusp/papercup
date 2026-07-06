@@ -1,5 +1,5 @@
 /**
- * hive.test.ts — the deploy:hive + deploy:teardown_hive HANDLERS (deployHive/
+ * hive.test.ts — the deploy:pot + deploy:teardown_pot HANDLERS (deployHive/
  * teardownHive, the cloud-frame orchestration, are mocked). These tools END BILLING /
  * spin cloud frames, so the handler discipline that matters is: it resolves the
  * workspace (arg overrides active), delegates, and — crucially — NEVER throws out of the
@@ -8,7 +8,7 @@
  * this catches.
  *
  * In-tree (operator-core, tab-visible).
- * Run: cd packages/operator-core && npx vitest run lib/agent-tools/deploy/hive.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/deploy/pot.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,7 +22,7 @@ vi.mock('../../deployment/hive-deploy', () => ({
 import { deployHive, teardownHive } from '../../deployment/hive-deploy';
 const deployM = vi.mocked(deployHive);
 const teardownM = vi.mocked(teardownHive);
-const mod = await import('./hive');
+const mod = await import('./pot');
 const deployTool = mod.default;
 const teardownTool = mod.deployTeardownHiveTool;
 
@@ -36,7 +36,7 @@ const callTeardown = (extra: Record<string, unknown> = {}) =>
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('deploy:hive', () => {
+describe('deploy:pot', () => {
   it('deploys with the active workspace and returns the result', async () => {
     deployM.mockResolvedValue({ frames: 3 } as never);
     const b = body(await callDeploy());
@@ -58,7 +58,7 @@ describe('deploy:hive', () => {
   });
 });
 
-describe('deploy:teardown_hive', () => {
+describe('deploy:teardown_pot', () => {
   it('tears down and spreads the destroyed/failed counts', async () => {
     teardownM.mockResolvedValue({ destroyed: 2, failed: 0 } as never);
     const b = body(await callTeardown());

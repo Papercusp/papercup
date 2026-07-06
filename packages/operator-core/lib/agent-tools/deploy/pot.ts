@@ -1,5 +1,5 @@
 /**
- * deploy:hive / deploy:teardown_hive — deploy a Hive (a grouping of harnesses) to
+ * deploy:pot / deploy:teardown_pot — deploy a Hive (a grouping of harnesses) to
  * a Swarm (cloud fleet) and tear it down (`cloud-deployment-layer-2026-06-06`
  * P-016/P-017). Thin MCP surface over `lib/deployment/hive-deploy.ts`. Queen
  * placement is a parameter (local|dedicated|colocated — decision-agnostic, D-008).
@@ -32,15 +32,15 @@ const hiveSpecArgs = z.object({
 });
 
 export default defineTool({
-  name: 'deploy:hive',
+  name: 'deploy:pot',
   description:
     "Deploy a pot (grouping of harnesses) to a Swarm (cloud fleet): place the Mug (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
   guidance: {
     when: 'Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.',
-    notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_hive.',
-    chaining: 'deploy:hive { hiveId, members, swarm } → deploy:teardown_hive when done.',
+    notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_pot.',
+    chaining: 'deploy:pot { hiveId, members, swarm } → deploy:teardown_pot when done.',
     seeAlso: [
-      'deploy:teardown_hive (tear down the deployed pot when done)',
+      'deploy:teardown_pot (tear down the deployed pot when done)',
       'deploy:status (check deployment state)',
       'pot:get (the pot being deployed)',
     ],
@@ -62,13 +62,13 @@ export default defineTool({
 });
 
 export const deployTeardownHiveTool = defineTool({
-  name: 'deploy:teardown_hive',
+  name: 'deploy:teardown_pot',
   description:
     'Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
   guidance: {
     when: 'Done with a deployed pot (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
     seeAlso: [
-      'deploy:hive (re-deploy the pot)',
+      'deploy:pot (re-deploy the pot)',
       'pot:dissolve (permanently tear down the pot itself, not just its deployment)',
       'deploy:status (confirm what is deployed)',
     ],

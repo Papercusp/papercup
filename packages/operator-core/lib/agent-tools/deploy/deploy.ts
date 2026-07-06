@@ -29,7 +29,7 @@ export default defineTool({
     seeAlso: [
       'deploy:status (check where the harness runs after deploying)',
       'deploy:teardown (tear down the deployed harness)',
-      'deploy:hive (deploy a hive to a Swarm instead)',
+      'deploy:pot (deploy a hive to a Swarm instead)',
     ],
   },
   capability: 'harness:write',
@@ -58,7 +58,7 @@ export const deployTeardownTool = defineTool({
     seeAlso: [
       'deploy:status (confirm what is deployed before tearing down)',
       'deploy:harness (re-deploy)',
-      'deploy:teardown_hive (tear down a deployed HIVE, not a harness)',
+      'deploy:teardown_pot (tear down a deployed HIVE, not a harness)',
     ],
   },
   capability: 'harness:write',
@@ -110,7 +110,7 @@ export const deployStatusTool = defineTool({
     when: 'Checking where a harness runs (local vs which cloud frame) and the frame\'s reachable host.',
     seeAlso: [
       'deploy:harness (deploy a harness to a frame)',
-      'deploy:hive (deploy a hive to a Swarm)',
+      'deploy:pot (deploy a hive to a Swarm)',
       'deploy:teardown (tear down a deployment)',
     ],
   },

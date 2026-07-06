@@ -1,6 +1,6 @@
 /**
  * deploy-hive.ts — deploy a Hive (grouping of harnesses) to a Swarm (cloud fleet of frames).
- * Mirrors the deploy:hive MCP tool, with the swarm config carrying our chosen account's deploy token
+ * Mirrors the deploy:pot MCP tool, with the swarm config carrying our chosen account's deploy token
  * so every member frame runs on THAT account's rate budget. Queen placement = local (no extra frame).
  */
 import '../packages/operator-core/lib/deployment/configure'; // registers latitude+hetzner drivers

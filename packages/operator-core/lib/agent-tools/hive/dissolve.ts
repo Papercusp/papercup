@@ -21,7 +21,7 @@
  *   4. OPTIONALLY drop the harness PG schema (default keep — deregister only).
  *
  * ROOT-ONLY (D-002) + confirm-gated (destructive). Does NOT call
- * deploy:teardown_hive — destroying a deployed cloud frame is a separate step.
+ * deploy:teardown_pot — destroying a deployed cloud frame is a separate step.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -48,16 +48,16 @@ export default defineTool({
   name: 'pot:dissolve',
   profile: 'engineer',
   description:
-    "Tear down a local pot (root-only, destructive — pass confirm:true): clear the Mug's wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_hive.",
+    "Tear down a local pot (root-only, destructive — pass confirm:true): clear the Mug's wake so it won't re-wake, cancel every live cup + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_pot.",
   guidance: {
     when: 'Permanently tearing down a local pot — stop the Mug, cancel its cups, deregister it. Operator/user only.',
     notWhen:
-      'Destroying a deployed cloud frame (the Mug/member execution planes) — deploy:teardown_hive. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.',
-    chaining: 'pot:get { slug } to inspect before; deploy:teardown_hive first if the pot is deployed to a Swarm.',
+      'Destroying a deployed cloud frame (the Mug/member execution planes) — deploy:teardown_pot. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.',
+    chaining: 'pot:get { slug } to inspect before; deploy:teardown_pot first if the pot is deployed to a Swarm.',
     seeAlso: [
       'pot:pause (freeze instead of permanently tearing down)',
       'pot:get (inspect the pot before dissolving)',
-      'deploy:teardown_hive (run first if the pot is deployed to a Swarm)',
+      'deploy:teardown_pot (run first if the pot is deployed to a Swarm)',
     ],
   },
   capability: 'harness:write',

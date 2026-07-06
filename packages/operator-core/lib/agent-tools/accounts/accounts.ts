@@ -4,7 +4,7 @@
  * Phase 7, P-019/P-020/P-021). Thin MCP surface over `lib/deployment/account-pool*`.
  *
  * A Claude account = one Claude subscription (its own rate limits). Deploy-time selection
- * (deploy:harness / deploy:hive) binds the most-available account per Swarm; sustained
+ * (deploy:harness / deploy:pot) binds the most-available account per Swarm; sustained
  * limiting on a bound account auto-scales out onto a fresh one. These tools register
  * the pool, read its state, and give the owner a manual scale-out lever.
  */
@@ -30,7 +30,7 @@ export default defineTool({
   guidance: {
     when: 'Adding a Claude Max subscription the Mug can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
-    chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → cups route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member.',
+    chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → cups route by cache-affinity + 5h-budget drain; deploy:pot binds an account per member.',
     seeAlso: [
       'accounts:link-start (register via one-click OAuth instead of a setup-token)',
       'accounts:list (verify the pool after registering)',
@@ -111,7 +111,7 @@ export const accountsRemoveTool = defineTool({
     "Remove one OR many Claude accounts from the pool. Pass `id` for one or `ids` for several. Does NOT tear down anything already deployed on them. Returns { ok, results:[{ ok, id, removed }], counts } — correlate each result by its id, not by position.",
   guidance: {
     when: 'Retiring account(s) from the pool (e.g. subscriptions you no longer use). Retiring several at once? Pass them all via `ids`.',
-    notWhen: 'Tearing down a deployed frame — deploy:teardown / deploy:teardown_hive.',
+    notWhen: 'Tearing down a deployed frame — deploy:teardown / deploy:teardown_pot.',
     seeAlso: [
       'accounts:set-session-override (temporarily exclude without removing from the pool)',
       'accounts:list (confirm the pool after removal)',

@@ -45,7 +45,7 @@ const NON_SUFFIX_MUTATORS = [
 const SUFFIX_MUTATORS = [
   'cup:spawn', 'fleet:cancel', 'fleet:place_batch', 'fleet:drain',
   'pot:wake', 'pot:declare-wake', 'pot:create', 'pot:dissolve', 'pot:set-steering',
-  'deploy:harness', 'deploy:hive',
+  'deploy:harness', 'deploy:pot',
   'accounts:register', 'instance:boot', 'experiment:run', 'harness:create',
   'plans:new', 'plans:set-now', 'plans:set-status', 'plans:promote', 'plans:launch', 'plans:set-content',
   'work_items:create', 'work_items:set_state', 'work_items:claim', 'work_items:complete',

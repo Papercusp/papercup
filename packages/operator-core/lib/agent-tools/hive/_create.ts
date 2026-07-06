@@ -472,7 +472,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     //     node the owner actually deployed the Queen on. Best-effort + undo (a later
     //     step failure rolls it back); a resolution failure WARNS and leaves the home
     //     unset (the lease then falls back to the lock-authority election — unchanged).
-    //     NOTE: a cloud deploy:hive that places the Queen on a DIFFERENT node should
+    //     NOTE: a cloud deploy:pot that places the Queen on a DIFFERENT node should
     //     override this at placement time (the cloud-placement follow-on; the local
     //     create flow — the only one exercisable today — is correct here).
     try {

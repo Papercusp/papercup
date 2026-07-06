@@ -244,7 +244,7 @@ import './harness/list_features';
 import './harness/membership';
 // Cloud deployment (cloud-deployment-layer-2026-06-06 P-012/P-016)
 import './deploy/deploy';
-import './deploy/hive';
+import './deploy/pot';
 // Queen account pool + auto-scale-out (cloud-deployment-layer-2026-06-06 Phase 7 P-019/P-020/P-021)
 import './accounts/accounts';
 // accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account-link tools.

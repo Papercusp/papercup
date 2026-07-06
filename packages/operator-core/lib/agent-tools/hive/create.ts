@@ -6,7 +6,7 @@
  * caller up front (resolveAgentIdentity → source 'fleet-spawn'); the
  * `assertNotNestedHive` guard inside fireLaunchBlueprint is the runtime backstop.
  * The provisioning + initial wake live in `createHiveHarness` (transactional);
- * this is the guard + arg surface. Cloud placement is a separate step (deploy:hive).
+ * this is the guard + arg surface. Cloud placement is a separate step (deploy:pot).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -24,13 +24,13 @@ export default defineTool({
   name: 'pot:create',
   profile: 'engineer',
   description:
-    "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+    "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
   guidance: {
     when: 'Standing up a NEW local pot (its home harness + Mug) in one call. Operator/user only.',
     notWhen:
-      'Deploying an EXISTING pot to a cloud frame — deploy:hive. A plain non-pot harness — harness:create. From a cup — not allowed (spin a kind:harness subharness instead).',
+      'Deploying an EXISTING pot to a cloud frame — deploy:pot. A plain non-pot harness — harness:create. From a cup — not allowed (spin a kind:harness subharness instead).',
     chaining:
-      'pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; pot:dissolve to tear it down.',
+      'pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:pot to place it on a Swarm; pot:dissolve to tear it down.',
     seeAlso: [
       'pot:create_from_repo (onboard a GitHub repo as a pot instead)',
       'pot:start (boot the new pot into autonomous operation)',
@@ -49,7 +49,7 @@ export default defineTool({
       .describe('Unique pot home-harness slug.'),
     parentDir: z.string().min(1).optional().describe('Parent dir for the home harness (default ~/.papercusp/hives).'),
     deployment: DeploymentConfigSchema.optional().describe(
-      'Execution plane (default local). Cloud placement is usually a later deploy:hive step.',
+      'Execution plane (default local). Cloud placement is usually a later deploy:pot step.',
     ),
     wakeInSeconds: z
       .number()

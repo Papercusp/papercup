@@ -44,7 +44,7 @@ export type CoLocationAction = 'co-locate' | 'spread' | 'local';
 export interface CoLocationDecision {
   /**
    * The chosen Swarm to affine the work to. `null` ⇒ "spread wanted but there is no
-   * distinct Swarm to spread to — deploy a new one (deploy:hive)".
+   * distinct Swarm to spread to — deploy a new one (deploy:pot)".
    */
   swarm: string | null;
   action: CoLocationAction;
@@ -147,7 +147,7 @@ export function decideCoLocation(input: CoLocationInput): CoLocationDecision {
     return {
       swarm: null,
       action: 'spread',
-      reason: 'loose work — every Swarm already hosts a collaborator; deploy a new Swarm (deploy:hive) to spread',
+      reason: 'loose work — every Swarm already hosts a collaborator; deploy a new Swarm (deploy:pot) to spread',
     };
   }
   return {

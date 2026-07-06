@@ -1,7 +1,7 @@
 /**
  * teardown-hive.ts — tear down a Hive's Swarm through the PRODUCT path
  * (`teardownHive` → per-member `teardownHarness` → driver confirm-destroy →
- * registry handle cleared). Mirrors the deploy:teardown_hive MCP tool, and is
+ * registry handle cleared). Mirrors the deploy:teardown_pot MCP tool, and is
  * the counterpart of scripts/deploy-hive.ts.
  *
  * Usage: tsx scripts/teardown-hive.ts [account=aviynw10] [workspace=papercusp-workspace] [members=frame-work-smoke]
