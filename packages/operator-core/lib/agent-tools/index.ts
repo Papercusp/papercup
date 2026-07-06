@@ -950,6 +950,12 @@ import './blueprint/publish';
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';
 import './harness/create';
+// app-templates-2026-07-04 (WI-3198) — the `templates:*` group exposes the Cupboard
+// app-template storefront to MCP agents (the whole surface was HTTP-only, so a
+// shell-less webapp/claude agent could not reach it): browse listings, read a
+// template's GUIDE, and materialize one into a fresh harness + start a builder.
+import './templates/list';
+import './templates/get-guide';
 // P-009 (B3) — kind #1 harness creation: deterministically generate an
 // `extends: coding` blueprint from an existing repo, then compose harness:create.
 import './harness/generate_from_repo';

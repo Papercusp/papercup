@@ -197,6 +197,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__blueprint:extend',
   'mcp__agentmcp__harness:create',
 
+  // app-templates-2026-07-04 (WI-3198) — the Cupboard app-template flow, now
+  // reachable from chat (it was HTTP-only): browse templates + read a template's
+  // GUIDE. templates:new-app (materialize + start a builder) is added when it lands.
+  'mcp__agentmcp__templates:list',
+  'mcp__agentmcp__templates:get-guide',
+
   // hive-tool-namespace-2026-06-08 — local hive lifecycle. The operator manages
   // its hives: list/get to inspect; create/update/dissolve to manage. create/
   // dissolve/update are root-only (the operator is root; bees are refused). Wake
