@@ -161,11 +161,14 @@ async function writeToPg(
   const fedHlc = provenance?.fedHlc ?? null;
   // P-010 unification: apply the issue op to the work_items BASE table (engineer_issues is
   // now a compat view → no ON CONFLICT). Map issue→work_items: issue_id→feature_id,
-  // scope→sentinel harness_slug ('' for operator) + issue-only cols into payload->'_ei',
-  // body→summary, state→status, assignee→taken_by, kind→item_kind. payload binds via
-  // ::text::jsonb (postgres-js-jsonb-binding gotcha).
+  // scope→canonical issue harness_slug (migration 382: 'operator:<workspace>' for
+  // operator-scope rows; '<harness>' for harness-scoped rows) + issue-only cols into
+  // payload->'_ei', body→summary, state→status, assignee→taken_by, kind→item_kind.
+  // payload binds via ::text::jsonb (postgres-js-jsonb-binding gotcha).
   const vSlug =
-    typeof row.scope === 'string' && row.scope.startsWith('harness:') ? row.scope.slice(8) : '';
+    typeof row.scope === 'string' && row.scope.startsWith('harness:')
+      ? row.scope.slice(8)
+      : `operator:${opts.workspaceId || 'default'}`;
   const basePayload =
     row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
   const payloadText = JSON.stringify({

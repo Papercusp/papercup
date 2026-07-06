@@ -22,6 +22,7 @@ import {
   destructiveGitCommandOp,
   destructiveGitDenyReason,
   detectSymlinkedPaths,
+  reportActivity,
   reportLifecycle,
   extractPathsFromToolInput,
   formatBusyRefusal,
@@ -110,6 +111,7 @@ import {
   _resetMidTurnCursorForTests,
   _resetToolCallCacheForTests,
   _resetDegradedNotifiedForTests,
+  _resetActivityReportDedupeForTests,
   type InboxEntry,
 } from '../coord-hook';
 
@@ -3815,7 +3817,10 @@ describe('formatTurnStartReminder — digest notify coalescing', () => {
 
 // ── activity bridge — the OMP in-process port (papercusp-worker-integration) ──
 describe('buildActivityArgs (OMP activity port)', () => {
-  beforeEach(() => _resetHookOwnerIdForTests());
+  beforeEach(() => {
+    _resetHookOwnerIdForTests();
+    _resetActivityReportDedupeForTests();
+  });
 
   it('forwards a raw tool call (server derives the summary) with agent=omp + phase=pre', () => {
     const args = buildActivityArgs({ type: 'tool_call', toolName: 'edit', toolCallId: 'tc1', input: { path: '/repo/a.ts' } });
@@ -3856,6 +3861,30 @@ describe('buildActivityArgs (OMP activity port)', () => {
     const args = buildActivityArgs({ type: 'tool_call', toolName: 'bash', toolCallId: 'tc5', input: {} });
     expect(args.tool_input).toEqual({});
     expect(args.tool_name).toBe('bash');
+  });
+
+  it('suppresses burst-duplicate reports for the same OMP tool call', async () => {
+    const originalFetch = global.fetch;
+    const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+    const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+    const posts: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      posts.push((JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } }).params);
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } }) };
+    }) as unknown as typeof fetch;
+    try {
+      const event = { type: 'tool_call' as const, toolName: 'ask', toolCallId: 'a', input: { questions: [] } };
+      await reportActivity(event);
+      await reportActivity(event);
+      await reportActivity({ ...event, toolCallId: 'b' });
+      expect(posts.map((p) => p.arguments.tool_use_id)).toEqual(['a', 'b']);
+    } finally {
+      global.fetch = originalFetch;
+      if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL; else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+      if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN; else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
+    }
   });
 });
 

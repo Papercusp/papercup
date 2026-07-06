@@ -477,11 +477,21 @@ export async function getIssue(id: string): Promise<EngineerIssue | null> {
  * spurious "ready but a peer raced you (retry)" miss. Re-reading in the SAME captured
  * workspace the row was claimed in removes that drift entirely.
  */
-export async function getIssueInWorkspace(workspaceId: string, id: string): Promise<EngineerIssue | null> {
+export async function getIssueInWorkspace(
+  workspaceId: string,
+  id: string,
+  opts: { baseHarnessSlug?: string | null } = {},
+): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
+  // EI-7808: legacy/federated bugs left duplicate issue-family base rows with the
+  // same (workspace_id, issue_id) but different physical harness_slug values (most
+  // visibly '' beside operator:<workspace>). A caller that just claimed a specific
+  // physical row must be able to re-read THAT row; otherwise this SELECT can return
+  // a stale resolved twin and make a successful claim look terminal/no-op.
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${workspaceId} AND issue_id = ${id}`;
+     WHERE workspace_id = ${workspaceId} AND issue_id = ${id}
+       AND ${opts.baseHarnessSlug != null ? sql`base_harness_slug = ${opts.baseHarnessSlug}` : sql`TRUE`}`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
 

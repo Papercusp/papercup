@@ -2398,7 +2398,7 @@ export async function claimNextIssueWorkItem(
   // saw a spurious "ready but a peer raced you (retry)" miss even though the claim succeeded —
   // the reported EI-6480 symptom (a self-consistent miss with readyUnclaimed>0). Reading in the
   // exact claimed workspace makes that null impossible for a live claim.
-  const issue = await getIssueInWorkspace(issueWs, rows[0].feature_id);
+  const issue = await getIssueInWorkspace(issueWs, rows[0].feature_id, { baseHarnessSlug: rows[0].harness_slug });
   if (issue) return issueToWorkItem(issue);
   // Defense in depth: the row we just claimed is, by construction, present in `issueWs` (the
   // UPDATE filtered on it and committed the mutation), so a null here is a genuine anomaly, NOT

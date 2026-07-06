@@ -55,12 +55,19 @@ let db: FreshPgDb;
  *  seeded as a realistic 'change' (the scorecard kind) while a real item stays 'bug'. */
 async function seedIssue(
   id: string,
-  opts: { kind?: string; status?: string; takenBy?: string | null; createdTs?: number; payload?: Record<string, unknown> | null } = {},
+  opts: {
+    kind?: string;
+    status?: string;
+    takenBy?: string | null;
+    createdTs?: number;
+    payload?: Record<string, unknown> | null;
+    harness?: string;
+  } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
+    VALUES (${opts.harness ?? H}, ${id}, ${opts.kind ?? 'bug'}, ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
        ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.payload ? db.sql.json(opts.payload) : null})`;
 }
 
@@ -114,6 +121,26 @@ describe('claimNextWorkItem SKIPS a lane:observation issue (D-005)', () => {
     await seedIssue('WI-improvement', { kind: 'change', createdTs: 100, payload: { lane: 'improvement' } });
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
     expect(got?.id).toBe('WI-improvement');
+  });
+
+  it('re-reads the exact claimed operator-scope issue when a stale empty-slug twin exists (EI-7808)', async () => {
+    await seedIssue('EI-dup', {
+      harness: '',
+      status: 'resolved',
+      createdTs: 100,
+      payload: { _ei: { scope: 'operator', severity: 'minor', source: 'engineer', signal_origin: 'organic' } },
+    });
+    await seedIssue('EI-dup', {
+      harness: `operator:${WS}`,
+      status: 'open',
+      createdTs: 200,
+      payload: { _ei: { scope: 'operator', severity: 'minor', source: 'engineer', signal_origin: 'organic' } },
+    });
+
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
+    expect(got?.id).toBe('EI-dup');
+    expect(got?.state).toBe('open');
+    expect(got?.assignee).toBe('bee-1');
   });
 });
 

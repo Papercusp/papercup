@@ -130,7 +130,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     SELECT
       workspace_id,
       feature_id AS issue_id,
-      COALESCE(payload->'_ei'->>'scope', CASE WHEN harness_slug = '' THEN 'operator' ELSE 'harness:' || harness_slug END) AS scope,
+      CASE WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' THEN 'operator' ELSE 'harness:' || harness_slug END AS scope,
       title,
       COALESCE(summary, '') AS body,
       COALESCE(payload->'_ei'->>'severity', 'minor') AS severity,
@@ -148,22 +148,39 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       payload->'_ei'->>'assigned_by' AS assigned_by,
       taken_at AS assigned_at,
       assignee_rank, rank_writer, rank_updated_at, fed_ts,
-      COALESCE(payload->'_ei'->>'signal_origin', 'local') AS signal_origin,
+      COALESCE(payload->'_ei'->>'signal_origin', 'organic') AS signal_origin,
       fed_hlc,
       terminal_owner,
       terminal_completion_ref,
       -- WI-2990/WI-3006 (migration 509): the real item-scoped progress signal,
       -- mirroring the feature-family's last_progress_at.
-      last_progress_at
+      last_progress_at,
+      harness_slug AS base_harness_slug,
+      origin AS base_origin
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb;
   BEGIN
+    IF TG_OP IN ('UPDATE', 'DELETE') AND EXISTS (
+      SELECT 1
+        FROM harness_shared.work_items cur
+       WHERE cur.workspace_id = OLD.workspace_id
+         AND cur.harness_slug = OLD.base_harness_slug
+         AND cur.feature_id = OLD.issue_id
+         AND cur.item_kind = OLD.kind
+         AND cur.origin = 'remote'
+    ) THEN
+      RETURN NULL;
+    END IF;
     IF TG_OP = 'DELETE' THEN
-      DELETE FROM harness_shared.work_items WHERE workspace_id = OLD.workspace_id AND feature_id = OLD.issue_id AND item_kind IN ('bug','change','task');
+      DELETE FROM harness_shared.work_items WHERE workspace_id = OLD.workspace_id AND harness_slug = OLD.base_harness_slug AND feature_id = OLD.issue_id AND item_kind = OLD.kind;
       RETURN OLD;
     END IF;
-    v_slug := CASE WHEN COALESCE(NEW.scope,'operator') LIKE 'harness:%' THEN substr(NEW.scope,9) ELSE '' END;
+    IF TG_OP = 'UPDATE' AND NEW.scope IS NOT DISTINCT FROM OLD.scope THEN
+      v_slug := OLD.base_harness_slug;
+    ELSE
+      v_slug := CASE WHEN COALESCE(NEW.scope,'operator') LIKE 'harness:%' THEN substr(NEW.scope,9) ELSE 'operator:' || COALESCE(NULLIF(NEW.workspace_id,''),'default') END;
+    END IF;
     v_ei := jsonb_strip_nulls(jsonb_build_object('scope',NEW.scope,'severity',NEW.severity,'source',NEW.source,'found_during',NEW.found_during,'linked_feature_id',NEW.linked_feature_id,'created_by',NEW.created_by,'assigned_by',NEW.assigned_by,'signal_origin',NEW.signal_origin));
     IF TG_OP = 'INSERT' THEN
       INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at)
@@ -178,7 +195,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
         -- WI-2990/WI-3006 (migration 509): thread last_progress_at through the view's
         -- UPDATE path (parity with the app-side markIssueProgress direct base-table write).
         last_progress_at = NEW.last_progress_at,
-        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(COALESCE(NEW.payload,'{}'::jsonb) - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref WHERE workspace_id=OLD.workspace_id AND feature_id=OLD.issue_id AND item_kind IN ('bug','change','task');
+        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(COALESCE(NEW.payload,'{}'::jsonb) - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref WHERE workspace_id=OLD.workspace_id AND harness_slug=OLD.base_harness_slug AND feature_id=OLD.issue_id AND item_kind=OLD.kind;
       RETURN NEW;
     END IF;
   END;

@@ -120,7 +120,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.engineer_issues`;
+  await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
   await db.sql`DELETE FROM harness_shared.substrate_outbox`;
 });
 
@@ -131,6 +131,14 @@ async function getIssue(id: string) {
     SELECT issue_id, scope, state, title, origin, fed_ts FROM harness_shared.engineer_issues
      WHERE workspace_id = ${WS} AND issue_id = ${id}`;
   return rows[0] ?? null;
+}
+
+async function getIssueBaseRows(id: string) {
+  return db.sql<{ feature_id: string; harness_slug: string; status: string; origin: string }[]>`
+    SELECT feature_id, harness_slug, status, origin
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${WS} AND feature_id = ${id} AND item_kind IN ('bug', 'change', 'task')
+     ORDER BY harness_slug`;
 }
 
 describe('engineer-issues projection — pure helpers', () => {
@@ -161,6 +169,26 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(r?.scope).toBe(`harness:${SLUG}`);
     expect(r?.origin).toBe('remote'); // so a local re-edit re-stamps origin=local to refederate
     expect(r?.fed_ts).toBe(100);
+  });
+
+  it('stores operator-scope remote issues under operator:<workspace>, never empty harness_slug', async () => {
+    await proj().writeToPg(
+      issueRow({
+        harness_slug: SLUG,
+        issue_id: 'EI-operator',
+        scope: 'operator',
+        state: 'open',
+        title: 'operator-scoped remote bug',
+      }),
+      { ts: 120, origin: 'remote', authorPubkey: 'peer' },
+    );
+
+    const r = await getIssue('EI-operator');
+    expect(r?.scope).toBe('operator');
+    expect(r?.title).toBe('operator-scoped remote bug');
+    expect(await getIssueBaseRows('EI-operator')).toEqual([
+      { feature_id: 'EI-operator', harness_slug: `operator:${WS}`, status: 'open', origin: 'remote' },
+    ]);
   });
 
   it('drops an op for a different harness (demuxed by harness_slug)', async () => {

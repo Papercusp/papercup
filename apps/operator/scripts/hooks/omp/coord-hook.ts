@@ -1290,6 +1290,8 @@ function capActivityInput(input: Record<string, unknown> | undefined): Record<st
 }
 
 const ACTIVITY_TODO_TOOLS = new Set(['todo', 'todo_write', 'todowrite', 'taskcreate', 'taskupdate']);
+const ACTIVITY_REPORT_DEDUPE_MS = 10_000;
+const activityReportDedupe = new Map<string, number>();
 
 /**
  * Build the `activity:report` args from an OMP tool_call event. A todo tool forwards
@@ -1314,13 +1316,44 @@ export function buildActivityArgs(event: ToolCallEvent): Record<string, unknown>
   return args;
 }
 
+function activityReportKey(args: Record<string, unknown>): string | null {
+  if (typeof args.tool_use_id !== 'string' || args.tool_use_id.length === 0) return null;
+  return JSON.stringify([
+    args.owner ?? '',
+    args.agent ?? '',
+    args.phase ?? '',
+    args.tool_name ?? '',
+    args.tool_use_id,
+    args.tool_input ?? null,
+    args.todos ?? null,
+  ]);
+}
+
+function shouldSendActivityReport(args: Record<string, unknown>, now = Date.now()): boolean {
+  const key = activityReportKey(args);
+  if (!key) return true;
+  for (const [k, ts] of activityReportDedupe) {
+    if (now - ts > ACTIVITY_REPORT_DEDUPE_MS) activityReportDedupe.delete(k);
+  }
+  const prev = activityReportDedupe.get(key);
+  if (prev !== undefined && now - prev <= ACTIVITY_REPORT_DEDUPE_MS) return false;
+  activityReportDedupe.set(key, now);
+  return true;
+}
+
+export function _resetActivityReportDedupeForTests(): void {
+  activityReportDedupe.clear();
+}
+
 /**
  * Fire-and-forget activity report. Never blocks or throws — callMcpTool swallows all
  * errors + returns null, so a `void reportActivity(event)` is safe (no unhandled
  * rejection) and adds no latency to the tool call.
  */
 export async function reportActivity(event: ToolCallEvent): Promise<void> {
-  await callMcpTool('activity:report', buildActivityArgs(event));
+  const args = buildActivityArgs(event);
+  if (!shouldSendActivityReport(args)) return;
+  await callMcpTool('activity:report', args);
 }
 
 /**
