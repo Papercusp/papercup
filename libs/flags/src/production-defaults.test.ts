@@ -123,6 +123,20 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // idle peer. Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
   // Count 14 → 15.
   'papercusp-reclaim-stalled',
+  // 2026-07-05 (WI-3093) — NOT a new post-inversion darkening: the FOURTH instance of the
+  // same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-sidecar /
+  // papercusp-reclaim-stalled above. papercusp-psu-end-user's OWN code comment
+  // (libs/flags/src/types.ts, psu-in-desktop-builds-2026-06-23 C1) has ALWAYS said "DEFAULT
+  // OFF — this is the legitimate owner-authority/SECURITY dark case... the owner must
+  // personally ratify the end-user exposure before it defaults on... KNOWN_DARK_FLAGS" but it
+  // was never actually added to DARK_FLAGS, so it silently derived default-ON both before AND
+  // after the P-011 inversion. Confirmed LIVE via flags:get(papercusp-psu-end-user) = true —
+  // and made ACTIVELY EXPLOITABLE (not just theoretically live) the moment WI-3093's own fix
+  // rendered ConsoleLauncherButton in ChromeShell: an end user of the shipped desktop app
+  // could see + click a button opening a full unauthenticated superuser agent shell, with
+  // zero owner ratification. Adding it here + to DARK_FLAGS restores its always-intended
+  // default-OFF. Count 15 → 16.
+  'papercusp-psu-end-user',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -247,7 +261,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-05 (EI-7685) — papercusp-reclaim-stalled: same BUG-FIX correction class (own
     // comment always said dark, never actually added — see PRE_INVERSION_DEFAULT_OFF above),
     // not a new darkening. Count 14 → 15.
-    expect(offCount).toBe(15);
+    // 2026-07-05 (WI-3093) — papercusp-psu-end-user: same BUG-FIX correction class, FOURTH
+    // instance (own comment always said dark — legitimate owner-authority/SECURITY case, the
+    // owner must ratify end-user psu shell exposure — never actually added — see
+    // PRE_INVERSION_DEFAULT_OFF above), not a new darkening. Count 15 → 16.
+    expect(offCount).toBe(16);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

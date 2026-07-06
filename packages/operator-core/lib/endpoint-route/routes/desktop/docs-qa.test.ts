@@ -23,12 +23,28 @@ describe('composeDocsQaPrompt', () => {
     expect(p).toContain('Plans live in Postgres'); // retrieved doc body
     expect(p).toContain('/internal/docs/system/plans'); // slug path (grounding + citation target)
     expect(p).toContain('"Plans" section'); // section context
-    expect(p).toMatch(/cite pages by their `\/internal\/docs\/<slug>` path/);
+    expect(p).toMatch(/cite it inline by its `\/internal\/docs\/<slug>` path/);
   });
 
-  it('degrades to an explicit "no docs found" note (never invents grounding)', () => {
+  it('never leaks the retrieval mechanism or deflects (owner-reported "reads like a static search")', () => {
+    // The 2026-07-05 fix: the model must answer like a knowledgeable teammate, not
+    // parrot/deflect. These guards pin the anti-deflection behavior in the prompt so
+    // a future edit can't reintroduce "the documentation excerpt doesn't cover this".
+    const p = composeDocsQaPrompt('how do plans work?', {
+      sectionTitle: 'Plans',
+      blocks: [{ slug: 'system/plans', title: 'Plans', url: '/internal/docs/system/plans', text: 'Plans live in Postgres.' }],
+    });
+    expect(p).toMatch(/NEVER mention/); // forbids leaking that anything was retrieved
+    expect(p).toMatch(/never reply that "the docs don't cover this"/); // no dead-ends
+    expect(p).toMatch(/knowledge of Papercusp/); // may answer from general knowledge
+    // It must NOT carry the old strict "only the excerpts / say so if not covered" framing.
+    expect(p).not.toContain('the real documentation excerpts below');
+  });
+
+  it('when nothing is retrieved, tells the model to answer from general knowledge (never dead-ends)', () => {
     const p = composeDocsQaPrompt('totally unknown thing', { blocks: [] });
-    expect(p).toContain('no matching documentation was found');
+    expect(p).toContain('answer from your general knowledge of Papercusp');
+    expect(p).not.toContain('no matching documentation was found'); // the old deflecting note is gone
     expect(p).toContain('## Question');
     expect(p).toContain('totally unknown thing');
   });

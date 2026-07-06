@@ -134,24 +134,40 @@ export function composeDocsQaPrompt(
     ? ctx.blocks
         .map((b) => `### ${b.title} (/internal/docs/${b.slug})\n${b.text}`)
         .join('\n\n')
-    : '(no matching documentation was found for this question)';
+    : '(no closely-matching pages were retrieved — answer from your general knowledge of Papercusp instead)';
   const section = ctx.sectionTitle
     ? `The user is currently reading the "${ctx.sectionTitle}" section of the onboarding tutorial.\n`
     : ctx.currentPath
       ? `The user is currently on: ${ctx.currentPath}\n`
       : '';
+  // Prompt intent (owner-reported 2026-07-05: answers read like a canned "static
+  // search" that deflects with "the documentation excerpt provided doesn't cover
+  // this"). The fixes: (1) frame the model as a knowledgeable Papercusp teammate,
+  // not a doc-lookup that can only parrot excerpts; (2) let it answer from general
+  // Papercusp knowledge when retrieval is thin instead of dead-ending; (3) FORBID
+  // leaking the retrieval mechanism ("the excerpt/provided documentation") — the
+  // user can't see it, and that phrasing is exactly what made it feel like search.
   return (
-    'You are the Papercusp documentation assistant. Answer the user\'s ONE ' +
-    'question using the real documentation excerpts below (retrieved from ' +
-    '/internal/docs for this question).\n\n' +
+    'You are a knowledgeable Papercusp teammate helping a user during onboarding. ' +
+    'Answer their ONE question directly, helpfully, and in a natural voice — the way ' +
+    'a colleague who knows the product well would explain it out loud.\n\n' +
     section +
-    '\n## Documentation (retrieved for this question)\n\n' +
+    '\n## Reference material (your primary source of truth)\n\n' +
     `${docBlock}\n\n` +
-    '## Instructions\n\n' +
-    'Answer concisely (3–6 sentences), plainly, with no preamble. Ground the ' +
-    'answer in the excerpts above and cite pages by their `/internal/docs/<slug>` ' +
-    'path. If the documentation above does not cover the question, say so ' +
-    'briefly and point to the closest page rather than inventing an answer.\n\n' +
+    '## How to answer\n\n' +
+    '- Answer the question directly, in 3–6 plain sentences, with no preamble.\n' +
+    '- You have NO tools and cannot look anything up — do not narrate a process or say ' +
+    '"let me check" / "let me confirm"; just state the answer immediately.\n' +
+    '- Lead with the reference material above; where it is thin or missing, still give ' +
+    'the best genuinely useful answer you can from it plus your own knowledge of ' +
+    'Papercusp — do NOT refuse, stall, or dead-end.\n' +
+    '- NEVER mention "the excerpts", "the provided documentation", "the retrieved ' +
+    'docs", or that anything was looked up — the user cannot see any of that. Just ' +
+    'answer as if you simply know it.\n' +
+    '- When a specific page backs your answer, cite it inline by its ' +
+    '`/internal/docs/<slug>` path so the user can read more.\n' +
+    '- Only if the question is genuinely outside Papercusp entirely, say what you do ' +
+    'know and point to the nearest area — never reply that "the docs don\'t cover this".\n\n' +
     `## Question\n\n${question}`
   );
 }
