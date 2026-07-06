@@ -49,6 +49,7 @@ const FIXED_NAVS: Array<{ id: string; path: string; title: string; icon: string;
   { id: 'nav.settings-api-keys', path: '/settings/api-keys', title: 'Go to API keys', icon: '⌖', keywords: 'api keys openai anthropic' },
   { id: 'nav.settings-shortcuts', path: '/settings/shortcuts', title: 'Go to Keyboard shortcuts', icon: '⌖', keywords: 'shortcuts keyboard' },
   { id: 'nav.docs', path: '/docs', title: 'Go to Docs', icon: '⌖', keywords: 'docs documentation' },
+  { id: 'nav.notes', path: '/notes', title: 'Go to Notes', icon: '⌖', keywords: 'notes jot search' },
 ];
 
 for (const f of FIXED_NAVS) {

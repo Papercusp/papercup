@@ -125,16 +125,23 @@ export function startSidecarObservability(): LagMonitorHandle | null {
       profileOnSaturation:
         (process.env.PAPERCUSP_SIDECAR_LOOP_PROFILER ?? process.env.PAPERCUSP_LOOP_PROFILER) !==
         '0',
-      // heap-snapshot-on-high-RSS: the authoritative leak-pinpoint.
-      // PAPERCUSP_SIDECAR_HEAP_SNAPSHOT / PAPERCUSP_HEAP_SNAPSHOT = '0' disables.
+      // heap-snapshot-on-high-RSS: the authoritative leak-pinpoint, but it PAUSES the
+      // loop for its whole serialization (WI-3255: ~30% loop-time on a large heap) — a
+      // real cost that's only worth paying while actively hunting a genuine leak. The
+      // 2026-07-01 leak this was enabled for is fixed; default OFF now (opt in per-site
+      // with PAPERCUSP_SIDECAR_HEAP_SNAPSHOT=1 / PAPERCUSP_HEAP_SNAPSHOT=1 for a new hunt).
       heapSnapshotOnHighRss:
-        (process.env.PAPERCUSP_SIDECAR_HEAP_SNAPSHOT ?? process.env.PAPERCUSP_HEAP_SNAPSHOT) !==
-        '0',
+        (process.env.PAPERCUSP_SIDECAR_HEAP_SNAPSHOT ?? process.env.PAPERCUSP_HEAP_SNAPSHOT) ===
+        '1',
       heapSnapshotRssMb:
         Number(
           process.env.PAPERCUSP_SIDECAR_HEAP_SNAPSHOT_RSS_MB ??
             process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB,
         ) || 4096,
+      // The sampling profiler is the safe alternative (O(1), no loop pause, dumps a
+      // few-KB .heapprofile instantly) — keep it on regardless of the full-snapshot
+      // default above (it previously silently inherited heapSnapshotOnHighRss's value).
+      heapSamplingOnHighRss: true,
     });
   } catch {
     // Observability must NEVER wedge the sidecar it observes.

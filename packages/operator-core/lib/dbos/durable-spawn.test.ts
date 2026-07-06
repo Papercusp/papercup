@@ -35,6 +35,10 @@ const h = vi.hoisted(() => ({
   // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
   // flip to true to exercise the capacity_shed path.
   gatewayThrottled: { value: false },
+  // EI-8177: the target-harness-still-registered probe. Defaults to "exists" (a
+  // truthy project) so every pre-existing test keeps firing unchanged; tests for
+  // the new skip flip this to null.
+  resolveProject: vi.fn(async (_slug: string, _ws?: string): Promise<{ slug: string } | null> => ({ slug: 'h' })),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -85,6 +89,7 @@ vi.mock('../agent-config', () => ({ readAgentConfig: vi.fn(async () => h.agentCo
 vi.mock('../inference-gateway/observability', () => ({
   gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
 }));
+vi.mock('../harness-core', () => ({ resolveProject: h.resolveProject }));
 
 import {
   durableSpawnFire,
@@ -138,6 +143,8 @@ beforeEach(() => {
   h.loopbackFetch.mockReset();
   h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
   h.gatewayThrottled.value = false; // default: gateway healthy ⇒ a no-turn death is infra_loss
+  h.resolveProject.mockReset();
+  h.resolveProject.mockResolvedValue({ slug: 'h' }); // default: target harness still exists
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -323,6 +330,28 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
       spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
     });
     expect(h.recordSpawn).toHaveBeenCalledTimes(1);
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-8177: skips before recording or invoking when the target harness no longer exists', async () => {
+    h.resolveProject.mockResolvedValue(null); // torn down before this queued fire executed
+    await durableSpawnFireImpl({
+      ...IMPL,
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
+    expect(h.recordSpawn).not.toHaveBeenCalled();
+    expect(h.loopbackFetch).not.toHaveBeenCalled();
+    expect(h.finishSpawn).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('no longer exists'));
+  });
+
+  it('EI-8177: fires normally (fail-open) when the gone-target probe itself errors', async () => {
+    h.resolveProject.mockRejectedValue(new Error('registry unreadable'));
+    await durableSpawnFireImpl({
+      ...IMPL,
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
     expect(h.finishSpawn).toHaveBeenCalledTimes(1);
   });

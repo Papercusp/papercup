@@ -94,13 +94,22 @@ describe('setHiveStarted — K1 workspace-sentinel write key (P-003)', () => {
   it('flag OFF → writes the legacy per-(ws,install) row (byte-identical to today)', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(false);
     await setHiveStarted(WS, HIVE, true);
-    expect(h.upserts).toEqual([{ key: `hive_started:${WS}:${HIVE}`, value: 'true' }]);
+    // WI-3261: every setHiveStarted call also writes the pause-provenance bit
+    // (started:true always clears `deliberate`, regardless of caller).
+    expect(h.upserts).toEqual([
+      { key: `hive_started:${WS}:${HIVE}`, value: 'true' },
+      { key: `hive_paused_deliberate:${WS}:${HIVE}`, value: 'false' },
+    ]);
   });
 
   it('flag ON → writes the workspace-sentinel row (install dimension = workspaceId)', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
     await setHiveStarted(WS, HIVE, true);
-    expect(h.upserts).toEqual([{ key: `hive_started:${WS}:${WS}`, value: 'true' }]);
+    // WI-3261: pause-provenance bit is scoped identically (workspace sentinel).
+    expect(h.upserts).toEqual([
+      { key: `hive_started:${WS}:${WS}`, value: 'true' },
+      { key: `hive_paused_deliberate:${WS}:${WS}`, value: 'false' },
+    ]);
   });
 });
 

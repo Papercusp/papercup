@@ -297,6 +297,48 @@ async function shouldSkipForGatewayDispatchGate(
   }
 }
 
+/**
+ * EI-8177: skip a durable-spawn fire whose TARGET HARNESS no longer exists.
+ * `durableSpawnFireImpl` runs at DEQUEUE time — the WorkflowQueue's concurrency cap
+ * (`queueConcurrency(8)`) can delay actual execution well past when the fire was
+ * originally requested (hive boot / a scheduled blueprint-run). A short-lived
+ * EPHEMERAL harness (a benchmark run: `xbench-su-*`, `xbq*`, …) can finish its whole
+ * scenario and get torn down (its registry entry removed) BEFORE this queued fire
+ * ever executes, so the `/invoke` POST 404s "unknown project" forever —
+ * `isPermanentSpawnStatus` correctly never retries it, but it still burns a
+ * `spawned_agents` row + feeds the failed-spawn watchdog as pure noise for an
+ * already-gone target (observed recurring across 30+ distinct `xbench-su-*`
+ * harnesses, 2026-06-25..07-06 — the dominant "other"-class contributor).
+ * Mirrors `blueprint-run-action.ts`'s EI-1575 routine-side self-heal (which only
+ * guards a RECURRING routine's own `install_slug`), but at the FIRE seam itself —
+ * so it also catches a one-shot (non-routine) kickoff durable-spawn queued at
+ * hive-boot, which EI-1575 never sees. Fail-open (never blocks a legitimate fire)
+ * on an unreadable registry or an unparseable target — an uncertain check must
+ * never silently swallow a real launch.
+ */
+async function shouldSkipForGoneTarget(input: DurableSpawnFireInput): Promise<{ skip: boolean; detail?: string }> {
+  const target = parseInvokeTarget(input);
+  if (!target || target.harnessSlug.startsWith('@')) return { skip: false };
+  try {
+    const { resolveProject } = await import('../harness-core');
+    const project = await resolveProject(target.harnessSlug, target.workspaceId);
+    if (project) return { skip: false };
+    return {
+      skip: true,
+      detail:
+        `target harness '${target.harnessSlug}' no longer exists in workspace ${target.workspaceId} ` +
+        `(torn down before this queued fire executed)`,
+    };
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gone-target probe failed (${input.label ?? ''}); dispatching anyway: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return { skip: false };
+  }
+}
+
 async function recordDurableSpawnAdmission(
   input: DurableSpawnFireInput,
   rec: SpawnRecordInput,
@@ -384,6 +426,16 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     typeof initialFireBody.spawnModel === 'string' && initialFireBody.spawnModel.trim()
       ? initialFireBody.spawnModel.trim()
       : null;
+
+  // EI-8177: skip cleanly (no spawned_agents row, no /invoke 404, no watchdog
+  // noise) when the target harness was torn down before this queued fire got to
+  // execute — see shouldSkipForGoneTarget's docstring. Checked BEFORE the
+  // spawned_agents row is recorded, same as the gateway-dispatch-gate skip below.
+  const goneCheck = await shouldSkipForGoneTarget(input);
+  if (goneCheck.skip) {
+    console.warn(`[durable-spawn] skipped ${input.label ?? input.idempotencyKey}: ${goneCheck.detail}`);
+    return;
+  }
 
   // WI-2376: avoid launching autonomous agents into a known all-account gateway
   // storm. This runs BEFORE the spawned_agents row is recorded, so the skip does

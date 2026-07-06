@@ -106,7 +106,9 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     expect(out.ok).toBe(true);
     expect(out.started).toBe(false);
     expect(out.wakeMode).toBe('manual');
-    expect(setHiveStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false);
+    // WI-3261: pot:pause marks the pause DELIBERATE so the paused-hive recovery
+    // watchdog never mistakes an owner-initiated pause for a silent outage.
+    expect(setHiveStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false, { deliberate: true });
     expect(setDefaultWakeMode).toHaveBeenCalledWith('manual');
     expect(clearHiveTimeWake).toHaveBeenCalled();
     // Order (P-013): started=false before the wake clear, so no watchdog seam

@@ -61,6 +61,7 @@ const setTelemetry = (await import('./set_telemetry')).default;
 const setChannel = (await import('./set_update_channel')).default;
 const complete = (await import('./complete')).default;
 const saveKey = (await import('./save_key')).default;
+const saveIntegrationKey = (await import('./save_integration_key')).default;
 const status = (await import('./status')).default;
 const setProgress = (await import('./set_tutorial_progress')).default;
 
@@ -129,6 +130,30 @@ describe('setup:save_key', () => {
     expect(h.creds.current).toMatchObject({
       github_pat: 'ghp_existing',
       anthropic_api_key: 'sk-ant-abcdef',
+    });
+  });
+});
+
+describe('setup:save_integration_key', () => {
+  it('stores a third-party integration key and returns it MASKED, never raw', async () => {
+    const raw = ['fake', 'weather', 'testtoken', '99'].join('-');
+    const b = body(await call(saveIntegrationKey, { name: 'WEATHERAPI_API_KEY', value: raw }));
+    expect(b).toEqual({ ok: true, name: 'WEATHERAPI_API_KEY', masked: `${raw.slice(0, 3)}...${raw.slice(-4)}` });
+    expect(JSON.stringify(b)).not.toContain(raw);
+    expect((h.store.get('operator_integration_credentials') as Record<string, string>).WEATHERAPI_API_KEY).toBe(raw);
+  });
+
+  it('rejects a non-SCREAMING_SNAKE_CASE name (schema validation)', () => {
+    expect(() => saveIntegrationKey.args.parse({ name: 'weatherApiKey', value: 'placeholder1' })).toThrow();
+    expect(() => saveIntegrationKey.args.parse({ name: 'WEATHERAPI_API_KEY', value: 'placeholder1' })).not.toThrow();
+  });
+
+  it('merges instead of clobbering other integration keys', async () => {
+    await call(saveIntegrationKey, { name: 'FOO_API_KEY', value: 'foo-placeholder-1' });
+    await call(saveIntegrationKey, { name: 'BAR_API_KEY', value: 'bar-placeholder-2' });
+    expect(h.store.get('operator_integration_credentials')).toMatchObject({
+      FOO_API_KEY: 'foo-placeholder-1',
+      BAR_API_KEY: 'bar-placeholder-2',
     });
   });
 });

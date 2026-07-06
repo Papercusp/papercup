@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../client-navigation', () => ({ navigateClient: vi.fn() }));
 
 import { navigateClient } from '../../client-navigation';
-import './nav'; // side-effect: register(navigate) + the 8 FIXED_NAVS
+import './nav'; // side-effect: register(navigate) + the 9 FIXED_NAVS
 import { get } from '../registry';
 
 const navClient = vi.mocked(navigateClient);
@@ -72,10 +72,11 @@ describe('navTo — workspace (ws) preservation', () => {
 });
 
 describe('fixed nav.* palette commands', () => {
-  it('registers all eight fixed navs with a Navigate palette entry', () => {
+  it('registers all nine fixed navs with a Navigate palette entry', () => {
     const ids = [
       'nav.papercusp', 'nav.cupboard', 'nav.installed-harnesses', 'nav.settings',
       'nav.settings-voice', 'nav.settings-api-keys', 'nav.settings-shortcuts', 'nav.docs',
+      'nav.notes',
     ];
     for (const id of ids) {
       const def = get(id);

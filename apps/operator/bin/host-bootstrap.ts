@@ -663,11 +663,25 @@ export function runBootstrap(): void {
     try {
       startEventLoopLagMonitor({
         profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER !== '0',
-        // P-002 (bg-host-freeze-eventloop-stall-2026-06-30): heap-snapshot-on-high-RSS.
-        // ON by default on background-workers hosts so the 3.3→46 GB RSS leak self-captures
-        // a .heapsnapshot at 8 GB on the live host, without needing manual operator access.
-        // Set PAPERCUSP_HEAP_SNAPSHOT=0 to disable; PAPERCUSP_HEAP_SNAPSHOT_RSS_MB to tune.
-        heapSnapshotOnHighRss: process.env.PAPERCUSP_HEAP_SNAPSHOT !== '0',
+        // P-002 (bg-host-freeze-eventloop-stall-2026-06-30) was ON by default so the
+        // 3.3->46 GB RSS leak self-captured a .heapsnapshot at high RSS without manual
+        // operator access. That leak was ROOT-CAUSED + FIXED 2026-07-01 (claude-sessions.ts
+        // fs-sweep churn; ~52x allocation-rate drop, RSS now sawtooths 2-9GB instead of
+        // climbing unbounded) — so a FULL heap snapshot now fires routinely on ordinary
+        // steady-state RSS, not just a genuine leak event. WI-3255 (event-loop stalls):
+        // a full snapshot PAUSES the loop for its whole serialization (~30% loop-time on a
+        // 9GB heap observed live) — on a healthy host this diagnostic is now COSTING more
+        // loop time than it's worth, and it was itself inflating the very stalls under
+        // investigation (feeding the red-queen MTTSH regression, EI-7947). Default OFF;
+        // opt back in with PAPERCUSP_HEAP_SNAPSHOT=1 if a genuine new leak needs hunting.
+        heapSnapshotOnHighRss: process.env.PAPERCUSP_HEAP_SNAPSHOT === '1',
+        // The SAMPLING profiler (heapSamplingOnHighRss) is the safe alternative: O(1)
+        // overhead, arms once at boot, dumps a few-KB .heapprofile INSTANTLY on the same
+        // RSS trigger with top allocation sites — no loop pause. Keep it always on
+        // regardless of the full-snapshot default above (previously it silently inherited
+        // heapSnapshotOnHighRss's value, so disabling the snapshot would have also blinded
+        // this free, non-blocking signal).
+        heapSamplingOnHighRss: true,
       });
     } catch (e) {
       console.warn('[event-loop-lag] bg-primary monitor start failed (non-fatal):', e instanceof Error ? e.message : e);

@@ -19,13 +19,22 @@ vi.mock('./started', () => ({
   listPausedHives: vi.fn(),
   setHiveStarted: vi.fn(),
 }));
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({
+    projects: [{ slug: 'live-hive', harness_kind: 'hive' }],
+  })),
+}));
 
 import {
+  pausedHiveRecoverySweep,
   shouldActOnPausedHive,
   pausedRecoveryStaleSec,
   pausedRecoveryAutoResume,
   effectiveAutoResumeForPause,
 } from './watchdog';
+import { declareHiveTimeWake } from './wake';
+import { listPausedHives, setHiveStarted } from './started';
+import { loadHarnessRegistry } from '../harness-registry';
 
 const HOUR = 3_600_000;
 
@@ -66,6 +75,37 @@ describe('effectiveAutoResumeForPause (WI-3261 — owner-reported: "I keep pausi
   });
   it('a non-deliberate pause respects the global knob being off', () => {
     expect(effectiveAutoResumeForPause(false, false)).toBe(false);
+  });
+});
+
+describe('pausedHiveRecoverySweep — stale registry residue (EI-8177)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC;
+  });
+
+  it('skips a paused row whose hive slug is no longer registered', async () => {
+    process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC = '3600';
+    (listPausedHives as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { workspaceId: 'ws-1', installSlug: 'dead-hive', pausedAtMs: 0, deliberate: false },
+    ]);
+    (loadHarnessRegistry as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      projects: [{ slug: 'live-hive', harness_kind: 'hive' }],
+    });
+
+    const res = await pausedHiveRecoverySweep({ now: 2 * HOUR });
+
+    expect(res).toEqual([
+      {
+        workspaceId: 'ws-1',
+        installSlug: 'dead-hive',
+        outcome: 'skipped',
+        reason: 'hive is no longer registered',
+        pausedForMs: 2 * HOUR,
+      },
+    ]);
+    expect(setHiveStarted).not.toHaveBeenCalled();
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
   });
 });
 

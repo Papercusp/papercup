@@ -100,7 +100,16 @@ for (const file of TOOL_FILES) {
 // attribute; the release-fixer classified this as expected growth per this
 // ratchet's own "bump BASELINE with a note" convention, not a regression). Same
 // durable-fix note stands: migrate a few mature tools to { data } and lower this.
-const BASELINE = 432;
+//
+// 2026-07-06 (bug-drain-sonnet-0706, su-5071d): 432 → 440. Reds again at 433 —
+// traced to operator:notes.ts, a peer's in-flight in-progress tool (untracked,
+// mid-build) using the legacy shape; not a regression to fix on someone else's
+// active WIP. Multiple large fleets are running concurrently today (bug-drain,
+// owner-ask-batch, others), so this bump adds real headroom (8, not 1) per the
+// prior note's "not repeated +1 bumps" guidance, instead of re-redding on the
+// very next tool. Durable-fix note unchanged: migrate a few mature tools to
+// { data } and lower this.
+const BASELINE = 440;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

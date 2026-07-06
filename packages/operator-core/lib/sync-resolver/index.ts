@@ -2067,6 +2067,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // notes.list — the minimal notes app's row set (owner-ask-batch-2026-07-06
+  // P-004, WI-3265), newest-updated-first, optionally filtered by a search
+  // term (ILIKE over title+body — see notes.ts). Writes fire
+  // notifySyncInvalidate('notes.list') from the /api/notes REST routes so
+  // the page updates live with no manual refresh.
+  'notes.list': {
+    argsSchema: z.object({ query: z.string().optional() }),
+    resolve: async (args) => {
+      const { query } = args as { query?: string };
+      const { listNotes } = await import('../notes');
+      return (await listNotes(query)) as unknown[];
+    },
+  },
+
   // plansDrafts.bySlug — draft plans for a harness, newest-first.
   // Used by ProposalsPanel (plan-feature-pipeline-unification P-022).
   // Reads from PG (plans went PG-canonical — plans-pg-canonical-migration-2026-06-03)

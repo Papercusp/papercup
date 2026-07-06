@@ -418,6 +418,7 @@ import designRegressionFile from './design/regression-file';
 import designSketches from './design/sketches';
 import userPreferences from './user/preferences';
 import userSearch from './user/search';
+import notesRoutes from './notes/notes';
 import userMemory from './user/memory';
 import userMemoryFeedback from './user/memory-feedback';
 import userMemoryReembed from './user/memory-reembed';
@@ -856,6 +857,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(designSketches as AnyRoute[]),
   ...flatten(userPreferences as AnyRoute[]),
   ...flatten(userSearch as AnyRoute),
+  ...flatten(notesRoutes as AnyRoute[]),
   ...flatten(userMemory as AnyRoute[]),
   ...flatten(userMemoryFeedback as AnyRoute),
   ...flatten(userMemoryReembed as AnyRoute),

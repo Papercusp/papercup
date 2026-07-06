@@ -592,6 +592,20 @@ export interface PausedRecoveryResult {
   pausedForMs: number | null;
 }
 
+async function isRecoverablePausedHive(workspaceId: string, installSlug: string): Promise<boolean> {
+  // Workspace-scoped coordination stores the loop bit under the workspace
+  // sentinel, not a real project slug. That row is valid and must remain
+  // recoverable even though it is absent from the project registry.
+  if (installSlug === workspaceId) return true;
+  try {
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    return reg.projects.some((p) => p.slug === installSlug && p.harness_kind === 'hive');
+  } catch {
+    return true;
+  }
+}
+
 /**
  * The paused-hive recovery sweep (P-003). For each currently-paused hive with a
  * known pause time, past the stale threshold, WITH standing demand, and not already
@@ -612,6 +626,17 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
     const globalAutoResume = pausedRecoveryAutoResume();
     for (const { workspaceId, installSlug, pausedAtMs, deliberate } of paused) {
+      const pausedForMs = pausedAtMs == null ? null : Math.max(0, now - pausedAtMs);
+      if (!(await isRecoverablePausedHive(workspaceId, installSlug))) {
+        results.push({
+          workspaceId,
+          installSlug,
+          outcome: 'skipped',
+          reason: 'hive is no longer registered',
+          pausedForMs,
+        });
+        continue;
+      }
       const demand = await hiveDemandCheck(workspaceId).catch(() => ({
         demand: false,
         todoItems: 0,
@@ -627,7 +652,6 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
       // WI-3261: still fires the debounced alert so the owner is reminded work
       // is piling up behind a hold they set — it just never auto-resumes it.
       const autoResume = effectiveAutoResumeForPause(globalAutoResume, deliberate);
-      const pausedForMs = pausedAtMs == null ? null : Math.max(0, now - pausedAtMs);
       const reason =
         `paused ${pausedForMs == null ? '?' : Math.round(pausedForMs / 3_600_000)}h with demand queued ` +
         `(${demand.todoItems} todo item(s), ${demand.startedPlans} started plan(s)) — ` +
