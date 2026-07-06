@@ -92,11 +92,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
   if (rows.length > 0) {
     const rotatedAt = new Date(rows[0].rotated_at as never).getTime();
     const cached = __g.__papercuspSpawnSigningKey;
-    if (
-      cached &&
-      cached.rotatedAt === rotatedAt &&
-      Date.now() - cached.loadedAt < 5 * 60 * 1000
-    ) {
+    if (cached && cached.rotatedAt === rotatedAt && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
       return cached.buf;
     }
     const buf = Buffer.from(rows[0].value_b64, 'base64');
@@ -161,9 +157,7 @@ export async function signSpawnParams(
   return { exp, sig };
 }
 
-export type VerifyResult =
-  | { ok: true }
-  | { ok: false; reason: string };
+export type VerifyResult = { ok: true } | { ok: false; reason: string };
 
 /**
  * Verify a per-spawn URL's signature. Pass the whole URL (string or
@@ -237,7 +231,7 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
     });
   } catch (err) {
     // Never fail the request because of audit-write failure; but log loud.
-     
+
     console.warn('[spawn-signing] audit write failed', err);
   }
 }
@@ -252,6 +246,23 @@ export interface RotationBlastRadius {
   invalidatedSpawnCount: number;
   /** Up to 200 of the just-invalidated spawns, most-recently-active first. */
   invalidatedSpawns: Array<{ spawn: string; role: string | null; harness: string | null }>;
+  /** Optional WI-3194 active recovery result when the caller opts into remediation. */
+  remediation?: RotationRemediationSummary;
+}
+
+export interface RotationRemediationSkipped {
+  spawn: string;
+  reason: 'remediation_cap' | 'spawn_record_unavailable' | 'not_relaunchable' | 'cancel_failed' | 'relaunch_declined';
+  detail?: string;
+}
+
+export interface RotationRemediationSummary {
+  attemptedSpawnCount: number;
+  cancelledSpawnCount: number;
+  abortedLocalSpawnCount: number;
+  relaunchedSpawnCount: number;
+  relaunchedSpawns: string[];
+  skipped: RotationRemediationSkipped[];
 }
 
 /**
@@ -265,7 +276,193 @@ export interface RotationBlastRadius {
  * is exactly what lets each stranded spawn's NEXT (failing) call be recognised
  * as a rotation-strand rather than an attack (see classifyAndConsumeFailure).
  */
-export async function rotateSpawnSigningKey(): Promise<RotationBlastRadius> {
+export interface RotateSpawnSigningKeyOptions {
+  /**
+   * WI-3194: actively stop/relaunch eligible nursery spawns whose currently
+   * verified signed URL was just invalidated. The admin route opts in; direct
+   * unit callers keep the historical rotate-only behavior.
+   */
+  remediate?: boolean;
+  /** Safety cap for one rotate-triggered sweep. Default 25. */
+  maxRemediationSpawns?: number;
+}
+
+const ROTATION_REMEDIATION_CAP = 25;
+
+interface RotationRemediationRow {
+  spawn_id: string;
+  workspace_id: string;
+  harness_slug: string;
+  child_role: string;
+  parent_spawn_id: string | null;
+  parent_role: string | null;
+  work_item_id: string | null;
+  work_item_status: string | null;
+  plan_slug: string | null;
+  model_spec: string | null;
+  model_tier: string | null;
+  brief: string | null;
+}
+
+async function remediateRotatedSpawns(
+  report: Pick<RotationBlastRadius, 'invalidatedSpawns'>,
+  opts: { maxRemediationSpawns?: number } = {},
+): Promise<RotationRemediationSummary> {
+  const cap = Math.max(0, Math.min(opts.maxRemediationSpawns ?? ROTATION_REMEDIATION_CAP, ROTATION_REMEDIATION_CAP));
+  const selected = report.invalidatedSpawns.slice(0, cap);
+  const skipped: RotationRemediationSkipped[] = report.invalidatedSpawns.slice(cap).map((s) => ({
+    spawn: s.spawn,
+    reason: 'remediation_cap',
+    detail: `rotation remediation is capped at ${cap} spawn(s) per rotate`,
+  }));
+  if (selected.length === 0) {
+    return {
+      attemptedSpawnCount: 0,
+      cancelledSpawnCount: 0,
+      abortedLocalSpawnCount: 0,
+      relaunchedSpawnCount: 0,
+      relaunchedSpawns: [],
+      skipped,
+    };
+  }
+
+  const ids = selected.map((s) => s.spawn);
+  let rows: RotationRemediationRow[];
+  let sql: unknown;
+  let runSql: (<T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>) | null = null;
+  try {
+    const pg = getOrgPg() as unknown as { sql?: unknown };
+    sql = pg.sql;
+    if (typeof sql !== 'function') throw new Error('org PG sql handle unavailable');
+    runSql = sql as <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
+    rows = (await runSql<RotationRemediationRow[]>`
+      SELECT a.spawn_id, a.workspace_id, a.harness_slug, a.child_role,
+             a.parent_spawn_id, a.parent_role,
+             COALESCE(a.item_id, a.feature_id) AS work_item_id,
+             f.status AS work_item_status,
+             a.plan_slug, a.model_spec, a.model_tier, a.brief
+        FROM harness_shared.spawned_agents AS a
+        LEFT JOIN harness_shared.harness_features_consolidated AS f
+          ON f.workspace_id = a.workspace_id
+         AND f.harness_slug = a.harness_slug
+         AND f.feature_id = COALESCE(a.item_id, a.feature_id)
+       WHERE a.spawn_id = ANY(${ids}::text[])
+         AND a.status IN ('running', 'restarting')`) as RotationRemediationRow[];
+  } catch (err) {
+    return {
+      attemptedSpawnCount: 0,
+      cancelledSpawnCount: 0,
+      abortedLocalSpawnCount: 0,
+      relaunchedSpawnCount: 0,
+      relaunchedSpawns: [],
+      skipped: [
+        ...skipped,
+        ...selected.map((s) => ({
+          spawn: s.spawn,
+          reason: 'spawn_record_unavailable' as const,
+          detail: err instanceof Error ? err.message : String(err),
+        })),
+      ],
+    };
+  }
+
+  const bySpawn = new Map(rows.map((r) => [r.spawn_id, r]));
+  const [{ shouldRelaunchReclaimedSpawn }, { cancelSubtree }, { abortLocalSpawn }, { relaunchReclaimedSpawn }] =
+    await Promise.all([
+      import('./fleet/spawn-reclaim'),
+      import('./fleet/nursery'),
+      import('./fleet/operator-spawn'),
+      import('./fleet/spawn-relaunch'),
+    ]);
+
+  let cancelledSpawnCount = 0;
+  let abortedLocalSpawnCount = 0;
+  let relaunchedSpawnCount = 0;
+  const relaunchedSpawns: string[] = [];
+
+  for (const inv of selected) {
+    const row = bySpawn.get(inv.spawn);
+    if (!row) {
+      skipped.push({
+        spawn: inv.spawn,
+        reason: 'spawn_record_unavailable',
+        detail: 'no active spawned_agents row matched this verified spawn',
+      });
+      continue;
+    }
+    const relaunchable = shouldRelaunchReclaimedSpawn({
+      childRole: row.child_role,
+      workItemId: row.work_item_id,
+      workItemStatus: row.work_item_status,
+    });
+    if (!relaunchable) {
+      skipped.push({
+        spawn: inv.spawn,
+        reason: 'not_relaunchable',
+        detail: `${row.child_role}${row.work_item_status ? `/${row.work_item_status}` : ''}`,
+      });
+      continue;
+    }
+
+    try {
+      const cancel = await cancelSubtree(sql as never, {
+        workspaceId: row.workspace_id,
+        rootSpawnId: row.spawn_id,
+        reason:
+          'spawn-signing key rotated; cancelling stranded old signed MCP credential before active remediation relaunch',
+      });
+      cancelledSpawnCount += cancel.cancelled.length;
+    } catch (err) {
+      skipped.push({
+        spawn: inv.spawn,
+        reason: 'cancel_failed',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+
+    if (abortLocalSpawn(row.spawn_id)) abortedLocalSpawnCount += 1;
+    const ok = await relaunchReclaimedSpawn(
+      {
+        spawnId: row.spawn_id,
+        workspaceId: row.workspace_id,
+        harnessSlug: row.harness_slug,
+        childRole: row.child_role,
+        parentSpawnId: row.parent_spawn_id,
+        parentRole: row.parent_role,
+        workItemId: row.work_item_id,
+        workItemStatus: row.work_item_status,
+        planSlug: row.plan_slug,
+        modelSpec: row.model_spec,
+        modelTier: row.model_tier,
+        brief: row.brief,
+      },
+      {
+        idempotencyKeyPrefix: 'spawn-signing-rotation-relaunch',
+        kickoff:
+          `Re-launched after spawn-signing key rotation invalidated the prior signed MCP URL ` +
+          `(${row.spawn_id}); resume '${row.harness_slug}'.`,
+      },
+    );
+    if (ok) {
+      relaunchedSpawnCount += 1;
+      relaunchedSpawns.push(row.spawn_id);
+    } else {
+      skipped.push({ spawn: inv.spawn, reason: 'relaunch_declined' });
+    }
+  }
+
+  return {
+    attemptedSpawnCount: selected.length,
+    cancelledSpawnCount,
+    abortedLocalSpawnCount,
+    relaunchedSpawnCount,
+    relaunchedSpawns,
+    skipped,
+  };
+}
+
+export async function rotateSpawnSigningKey(opts: RotateSpawnSigningKeyOptions = {}): Promise<RotationBlastRadius> {
   const { db } = getOrgPg();
   const fresh_b64 = randomBytes(32).toString('base64');
   await db
@@ -288,15 +485,24 @@ export async function rotateSpawnSigningKey(): Promise<RotationBlastRadius> {
     invalidatedSpawns,
   };
   if (report.invalidatedSpawnCount > 0) {
-
     console.warn(
       `[spawn-signing][ROTATE] key rotated — ${report.invalidatedSpawnCount} live spawn(s) this ` +
         `operator was serving are now INVALIDATED and must be re-spawned (each fails its next MCP ` +
         `call with spawn_sig_invalid_signature): ` +
-        invalidatedSpawns
-          .map((s) => `${s.spawn}(${s.role ?? '?'}/${s.harness ?? '?'})`)
-          .join(', '),
+        invalidatedSpawns.map((s) => `${s.spawn}(${s.role ?? '?'}/${s.harness ?? '?'})`).join(', '),
     );
+  }
+  if (opts.remediate) {
+    report.remediation = await remediateRotatedSpawns(report, {
+      maxRemediationSpawns: opts.maxRemediationSpawns,
+    });
+    if (report.remediation.relaunchedSpawnCount > 0 || report.remediation.skipped.length > 0) {
+      console.warn(
+        `[spawn-signing][ROTATE] active remediation: relaunched ` +
+          `${report.remediation.relaunchedSpawnCount}/${report.remediation.attemptedSpawnCount}; ` +
+          `skipped=${report.remediation.skipped.length}`,
+      );
+    }
   }
   return report;
 }
@@ -373,10 +579,7 @@ export type FailureClassification = 'rotation_strand' | 'unverified';
  * a `rotation_strand`; we then drop it from the tracker so subsequent failures
  * for the same dead spawn don't re-alert. Single sync call → atomic within a tick.
  */
-export function classifyAndConsumeFailure(
-  reason: string,
-  spawn: string | null | undefined,
-): FailureClassification {
+export function classifyAndConsumeFailure(reason: string, spawn: string | null | undefined): FailureClassification {
   const revocationReason = reason === 'invalid_signature' || reason === 'expired';
   if (revocationReason && spawn && verifiedSpawns().has(spawn)) {
     verifiedSpawns().delete(spawn);

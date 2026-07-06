@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const H = vi.hoisted(() => {
   const KEY_B64 = Buffer.from('ab'.repeat(32), 'hex').toString('base64'); // fixed 32-byte key
   const rows = [{ value_b64: KEY_B64, rotated_at: '2026-01-01T00:00:00.000Z' }];
+  let sqlRows: unknown[] = [];
+  const sql = vi.fn(async () => sqlRows);
   const db: Record<string, unknown> = {};
   Object.assign(db, {
     select: () => db,
@@ -21,12 +23,41 @@ const H = vi.hoisted(() => {
     onConflictDoNothing: async () => undefined,
     onConflictDoUpdate: async () => undefined,
   });
-  return { db };
+  return {
+    db,
+    sql,
+    setSqlRows: (next: unknown[]) => {
+      sqlRows = next;
+    },
+  };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
-  return { ...actual, getOrgPg: () => ({ db: H.db }) };
+  return { ...actual, getOrgPg: () => ({ db: H.db, sql: H.sql }) };
 });
+vi.mock('./fleet/nursery', () => ({
+  cancelSubtree: vi.fn(async () => ({
+    cancelled: [{ spawnId: 's-new' }],
+    alreadyTerminal: [],
+    resourcesReleased: { claims: 1, planClaims: 0 },
+  })),
+}));
+vi.mock('./fleet/operator-spawn', () => ({
+  abortLocalSpawn: vi.fn(() => true),
+}));
+vi.mock('./fleet/spawn-reclaim', () => ({
+  shouldRelaunchReclaimedSpawn: vi.fn(
+    (spawn: { childRole: string; workItemId: string | null; workItemStatus: string | null }) =>
+      spawn.childRole === 'mug' ||
+      (spawn.childRole === 'cup' &&
+        Boolean(spawn.workItemId) &&
+        Boolean(spawn.workItemStatus) &&
+        !['passed', 'deprecated'].includes(spawn.workItemStatus!)),
+  ),
+}));
+vi.mock('./fleet/spawn-relaunch', () => ({
+  relaunchReclaimedSpawn: vi.fn(async () => true),
+}));
 
 import {
   signSpawnParams,
@@ -38,11 +69,21 @@ import {
   spawnSigFailureGuidance,
   rotateSpawnSigningKey,
 } from './spawn-signing';
+import { cancelSubtree } from './fleet/nursery';
+import { abortLocalSpawn } from './fleet/operator-spawn';
+import { relaunchReclaimedSpawn } from './fleet/spawn-relaunch';
 
 const FUTURE_MS = 4_000_000_000_000; // year ~2096, well past any real `now`
 const urlFrom = (p: URLSearchParams) => `https://x/api/spawn?${p.toString()}`;
 
-beforeEach(() => _resetSpawnSigningKeyCache());
+beforeEach(() => {
+  _resetSpawnSigningKeyCache();
+  H.setSqlRows([]);
+  H.sql.mockClear();
+  vi.mocked(cancelSubtree).mockClear();
+  vi.mocked(abortLocalSpawn).mockClear();
+  vi.mocked(relaunchReclaimedSpawn).mockClear();
+});
 
 describe('sign → verify round-trip', () => {
   it('a freshly signed URL verifies ok', async () => {
@@ -222,6 +263,65 @@ describe('rotateSpawnSigningKey blast-radius report (WI-3190)', () => {
       // rotate must NOT clear the set — each stranded spawn's next failing call
       // is still recognisable as a strand rather than an attack.
       expect(classifyAndConsumeFailure('invalid_signature', 's-new')).toBe('rotation_strand');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('rotateSpawnSigningKey active remediation (WI-3194)', () => {
+  beforeEach(() => {
+    _resetVerifiedSpawns();
+    _resetSpawnSigningKeyCache();
+  });
+
+  it('cancels, aborts, and relaunches eligible running nursery spawns', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    H.setSqlRows([
+      {
+        spawn_id: 's-new',
+        workspace_id: 'ws',
+        harness_slug: 'papercusp',
+        child_role: 'cup',
+        parent_spawn_id: 's-parent',
+        parent_role: 'mug',
+        work_item_id: 'WI-1',
+        work_item_status: 'open',
+        plan_slug: 'p',
+        model_spec: 'sonnet:high',
+        model_tier: null,
+        brief: 'resume this item',
+      },
+    ]);
+    try {
+      recordVerifiedSpawn({ spawn: 's-new', role: 'cup', harness: 'papercusp', nowMs: 5000 });
+      const r = await rotateSpawnSigningKey({ remediate: true });
+      expect(r.remediation).toMatchObject({
+        attemptedSpawnCount: 1,
+        cancelledSpawnCount: 1,
+        abortedLocalSpawnCount: 1,
+        relaunchedSpawnCount: 1,
+        relaunchedSpawns: ['s-new'],
+        skipped: [],
+      });
+      expect(cancelSubtree).toHaveBeenCalledWith(expect.anything(), {
+        workspaceId: 'ws',
+        rootSpawnId: 's-new',
+        reason: expect.stringContaining('spawn-signing key rotated'),
+      });
+      expect(abortLocalSpawn).toHaveBeenCalledWith('s-new');
+      expect(relaunchReclaimedSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          spawnId: 's-new',
+          workspaceId: 'ws',
+          harnessSlug: 'papercusp',
+          childRole: 'cup',
+          workItemId: 'WI-1',
+        }),
+        expect.objectContaining({
+          idempotencyKeyPrefix: 'spawn-signing-rotation-relaunch',
+        }),
+      );
     } finally {
       warn.mockRestore();
     }

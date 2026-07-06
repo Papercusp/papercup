@@ -194,6 +194,25 @@ edge that cost an hour:
     COMPILE check, not a build — a runnable `.exe` is still the VM's job, and
     this is deliberately not in the green-checkpoint suite (needs the SDK).
 
+21. **`papercup-runtime` periodically wedges: `wsl --exec` silently returns
+    empty output + exit 1 (sometimes 0), no stderr, no diagnostic** — hit
+    live during WI-3080 verification and reproduced again on 2026-07-06
+    (EI-8163): even a trivial probe (`wsl -d papercup-runtime --user
+    papercup --exec whoami`) came back with zero stdout, empty stderr, exit
+    1. **Recovery, verified live**: `wsl --terminate papercup-runtime`
+    (exits 0) then immediately retry the same `--exec` call — it succeeds
+    on the very next attempt (no boot delay observed). Root cause not
+    pinned down (stale `wslhost.exe` session / hung distro init / a WSL2
+    utility-VM hiccup are all plausible); treat it as a transient utility-VM
+    fault, not a broken distro state — `wsl --terminate` does not lose
+    anything persistent inside the distro. **Practical rule**: if your
+    first `--exec` probe in a session comes back empty with a nonzero
+    exit and no stderr, don't debug the command — `wsl --terminate
+    papercup-runtime` and retry once before looking any further.
+    `papercusp-desktop/bin/wsl-exec-retry.sh` wraps this pattern (detect
+    empty+nonzero on the first attempt, terminate, retry once, surface the
+    second attempt's real exit code) for scripted/agent use over ssh.
+
 ## Where the artifacts live
 
 - VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration

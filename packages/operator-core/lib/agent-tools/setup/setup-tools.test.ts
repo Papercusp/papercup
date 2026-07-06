@@ -39,6 +39,20 @@ vi.mock('../../credentials', () => ({
   }),
   maskSecret: (v?: string | null) => (v ? `${v.slice(0, 3)}…` : null),
 }));
+vi.mock('../../integration-credentials', () => ({
+  readIntegrationCredentials: vi.fn(async () => (h.store.get('operator_integration_credentials') as Record<string, string>) ?? {}),
+  writeIntegrationCredentials: vi.fn(async (partial: Record<string, string | null>) => {
+    const current = (h.store.get('operator_integration_credentials') as Record<string, string>) ?? {};
+    const next = { ...current };
+    for (const [k, v] of Object.entries(partial)) {
+      if (v === null || v === '') delete next[k];
+      else next[k] = v;
+    }
+    h.store.set('operator_integration_credentials', next);
+    return next;
+  }),
+  maskIntegrationKey: (v?: string | null) => (v && v.length >= 8 ? `${v.slice(0, 3)}...${v.slice(-4)}` : null),
+}));
 vi.mock('../../endpoint-route/routes/desktop/setup-status', () => ({
   collectSetupStatus: h.collect,
 }));

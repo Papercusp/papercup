@@ -55,7 +55,15 @@ async function releaseReclaimedSpawnClaim(spawn: RelaunchableSpawn & { workItemI
  * next cadence tick / Queen wake re-places it). Best-effort by contract — never
  * throws past the reconcile's own try/catch, but the reconcile also guards.
  */
-export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<boolean> {
+export interface RelaunchReclaimedSpawnOptions {
+  kickoff?: string;
+  idempotencyKeyPrefix?: string;
+}
+
+export async function relaunchReclaimedSpawn(
+  spawn: RelaunchableSpawn,
+  opts: RelaunchReclaimedSpawnOptions = {},
+): Promise<boolean> {
   // Resolve under the spawn's workspace so the queen-brief / agent-config / tier
   // reads (which read the workspace ALS) target the right hive.
   return runWithWorkspace(spawn.workspaceId, async () => {
@@ -65,8 +73,9 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
         installSlug: spawn.harnessSlug,
         workspaceId: spawn.workspaceId,
         kickoff:
+          opts.kickoff ??
           `Re-launched by the boot spawn-reclaim reconcile after a host restart killed the prior Queen ` +
-          `(EI-85) — resume hive orchestration for '${spawn.harnessSlug}'.`,
+            `(EI-85) — resume hive orchestration for '${spawn.harnessSlug}'.`,
       });
       // A root Queen launch returns a spawn correlation (durable workflow id or a
       // fire-and-forget spawnId); a null spawn means the fire seam surfaced nothing
@@ -99,7 +108,7 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
         // Idempotency: a re-run of the boot reconcile (it is safe to re-run) must
         // not place a SECOND bee on the same item — key the placement on the dead
         // spawn id so a duplicate re-fire dedups to the first relaunch.
-        idempotencyKey: `boot-relaunch:${spawn.spawnId}`,
+        idempotencyKey: `${opts.idempotencyKeyPrefix ?? 'boot-relaunch'}:${spawn.spawnId}`,
       });
       if (!res.ok) {
         await releaseWorkItem(spawn.workItemId, { harness: spawn.harnessSlug }).catch(() => {});

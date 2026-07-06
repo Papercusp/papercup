@@ -133,7 +133,7 @@ The realtime path (ElevenLabs Conv-AI shell + the `operator:converse` brain) run
 
 ## Tests
 
-- `voice-mode.test.ts` — 6 tests: init, support detection, voice listing, persistence, wake word config, voice assignment.
+- `voice-mode.test.ts` — 7 tests: init (off state), voice listing, voice-assignment persistence across calls, per-role voice distinction, wake-word-config persistence, explicit voice assignment, and TTS-mute default+round-trip.
 - `voice-consumers.test.ts` — 5 tests across two describe blocks: register returns a deregister fn, multiple consumers concurrently, deregister idempotency, back-compat name-only defaults to panel-open, and accepts explicit priority + `onUtterance` handler.
 
 ## Out of scope (deferred)
