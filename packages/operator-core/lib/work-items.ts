@@ -331,9 +331,10 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     terminalOwner: i.terminalOwner,
     terminalCompletionRef: i.terminalCompletionRef,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(i.payload),
-    // Issue-family isn't auditor-gated (bug/change run inline, not autonomous remote
-    // dispatch) — report 'local' so isAutoPickable treats them as pickable (unchanged).
-    origin: 'local',
+    // Federated issue-family rows are replicated facts owned by the authoring peer.
+    // Surface the physical-row provenance so mutators can fail loud instead of
+    // reporting "not found" after the engineer_issues view deliberately no-ops.
+    origin: i.origin ?? 'local',
     auditVerdict: null,
     verifiedAuthorGithubUserId: null, // local-origin ⇒ never verified-stamped (P-008)
     createdAt: i.createdAt,
@@ -1156,6 +1157,13 @@ export async function setWorkItemState(
   }
   let result: WorkItem | null;
   if (wi.family === 'issue') {
+    if (wi.origin === 'remote') {
+      throw new Error(
+        `work_item '${id}' is remote-authored and cannot be mutated locally; ` +
+          `its authoring peer must claim/resolve it, and this node will receive the ` +
+          `terminal state through federation.`,
+      );
+    }
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
       skipCompletionGate: opts.skipCompletionGate,

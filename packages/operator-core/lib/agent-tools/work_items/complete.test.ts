@@ -115,6 +115,29 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('refuses terminal completion of a remote-authored issue before emitting a false completion', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-remote',
+      kind: 'bug',
+      family: 'issue',
+      state: 'todo',
+      harness: 'papercup',
+      origin: 'remote',
+    });
+    const r = await one({
+      id: 'WI-remote',
+      state: 'resolved',
+      completion: { summary: 'verified elsewhere', tests: 'n/a' },
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      id: 'WI-remote',
+      error: expect.stringMatching(/remote-authored.*cannot be completed locally/),
+    });
+    expect(r).not.toHaveProperty('completion');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('surfaces aliasNote when the requested state aliases instead of silently leaving the item open', async () => {
     const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
     getWorkItem.mockResolvedValue(issue);

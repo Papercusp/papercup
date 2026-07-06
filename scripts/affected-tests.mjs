@@ -56,8 +56,20 @@ if (existsSync(quarantineFile)) {
   }
 }
 
+// WI-3094: Node's execSync defaults maxBuffer to 1MB — comfortably exceeded by
+// `git diff --name-only` output once `base` (origin/main) has drifted far enough
+// behind HEAD (a live monorepo case: main only fast-forwards on a green
+// checkpoint, so it can sit hundreds of commits behind staging for hours under
+// fleet load). Observed live: a 460-commit-behind origin/main produced a 5.2MB
+// `--name-only` diff, which overflowed the 1MB default and threw `spawnSync
+// /bin/sh ENOBUFS` — caught by affectedWorkspaces()'s try/catch (which prints the
+// loud EI-1989 banner) but still silently degrading every run to `--all` (every
+// workspace), the exact slow-and-masked failure mode that banner exists to call
+// out, not fix. 256MB (matching the vitest spawnSync maxBuffer just below) is
+// ample headroom — even a full-repo `--name-only` diff is only a few MB — so the
+// fast, correct affected-set path succeeds instead of falling back.
 function sh(cmd) {
-  return execSync(cmd, { cwd: ROOT, encoding: 'utf8' }).trim();
+  return execSync(cmd, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim();
 }
 
 // Collect every file changed vs `base` — committed (base...HEAD), uncommitted

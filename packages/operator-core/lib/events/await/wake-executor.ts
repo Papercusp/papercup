@@ -842,6 +842,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // An autonomous wake turn IS an agent session, whoever the recipient:
       // arm the hook-level scheduler guard (native-scheduler-lockout P-010).
       PAPERCUSP_AGENT_SESSION: '1',
+      // WI-3082: this whole codepath (Channel 2: "process gone → resume") is a
+      // genuinely FRESH child process spawned specifically to deliver a
+      // coord/events:await wake — invoke.ts reads this as PAPERCUSP_TURN_TRIGGER
+      // and stamps it onto the run's agent_usage_samples row (source='jsonl').
+      // Before this, only a bee/queen's FIRST spawn (bee/spawn.ts, place_batch.ts)
+      // was labeled 'coord-wake'; every persistent long-running agent (queen,
+      // overwatch, doc-steward, and a bee resumed after its process exited
+      // rather than freshly spawned) resumes through exactly this path and had
+      // NO PAPERCUSP_TURN_TRIGGER set at all — the single largest unattributed
+      // jsonl-source slice the token-usage audit (P-002) found. `resumeCommandFor`
+      // always fires FOR a wake (there is no other caller of this env block), so
+      // 'coord-wake' is unconditionally correct here — no branching needed.
+      PAPERCUSP_TURN_TRIGGER: 'coord-wake',
     };
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at

@@ -467,6 +467,10 @@ describe('executeWake — the liveness ladder', () => {
     expect(args).toContain('-p'); // headless one-turn
     expect(o.cwd).toBe('/repo');
     expect(o.env.PAPERCUSP_SID).toBe('su-abc');
+    // WI-3082: a resume IS a coord/events:await-wake-triggered fresh spawn —
+    // stamp the turn-trigger so agent_usage_samples.turn_trigger isn't NULL for
+    // every persistent-agent (queen/overwatch/doc-steward) resume.
+    expect(o.env.PAPERCUSP_TURN_TRIGGER).toBe('coord-wake');
   });
 
   it('exited codex → DETACHED `exec resume <uuid>` with CODEX_HOME, uuid recovered from the rollout (P-009)', async () => {

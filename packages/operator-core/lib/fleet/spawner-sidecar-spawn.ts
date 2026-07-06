@@ -17,6 +17,11 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from './spawner-socket-path';
+import {
+  resolveSidecarSpawnPlan,
+  gracefulStopChild,
+  registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
+} from '../process-supervision/sidecar-spawn-shared';
 
 // This package is ESM (type:module), where `__dirname` is undefined. Derive the
 // module dir from import.meta (the substrate EI-1612 fix) so the sidecar script
@@ -67,25 +72,22 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
   // runSpawnerSidecarServer). In DEV (tsx, real source tree) run the .ts entry via
   // tsx.
   const selfPath = fileURLToPath(import.meta.url);
-  const isBundled = !selfPath.endsWith('.ts') && !selfPath.endsWith('.tsx');
+  const plan = resolveSidecarSpawnPlan({
+    selfPath,
+    devScriptPath: sidecarScript,
+    bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+    execPath: process.execPath,
+  });
 
   return new Promise<void>((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...plan.env,
       [SPAWNER_SOCKET_ENV]: resolvedSocket,
     };
 
-    let cmd: string;
-    let args: string[];
-    if (isBundled) {
-      cmd = process.execPath; // the bundled node (e.g. ./bin/node)
-      args = [selfPath]; // re-exec serve.mjs itself in sidecar mode
-      env.PAPERCUSP_SPAWNER_SIDECAR_MODE = '1';
-    } else {
-      const isTs = sidecarScript.endsWith('.ts');
-      cmd = isTs ? 'npx' : process.execPath;
-      args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
-    }
+    const cmd = plan.cmd;
+    const args = plan.args;
 
     // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel,
     // mirroring the substrate sidecar's spawn shape (harmless here — the spawner
@@ -176,45 +178,18 @@ export function _setSpawnerSidecarProcessForTests(proc: ChildProcess | null): vo
  */
 export async function stopSpawnerSidecar(): Promise<void> {
   if (!sidecarProcess || sidecarProcess.killed) return;
-
-  return new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      if (sidecarProcess && !sidecarProcess.killed) {
-        sidecarProcess.kill('SIGKILL');
-      }
-      sidecarProcess = null;
-      sidecarReady = false;
-      resolve();
-    }, 5000);
-
-    sidecarProcess!.once('exit', () => {
-      clearTimeout(timeout);
-      sidecarProcess = null;
-      sidecarReady = false;
-      resolve();
-    });
-
-    sidecarProcess!.kill('SIGTERM');
-  });
+  const proc = sidecarProcess;
+  await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => proc.kill(sig) });
+  sidecarProcess = null;
+  sidecarReady = false;
 }
 
 /**
  * Register graceful shutdown hooks.
  */
 export function registerSpawnerSidecarShutdownHooks(): void {
-  process.on('SIGTERM', async () => {
-    console.log('[spawner-sidecar-spawn] SIGTERM received, shutting down sidecar');
-    await stopSpawnerSidecar();
-  });
-
-  process.on('SIGINT', async () => {
-    console.log('[spawner-sidecar-spawn] SIGINT received, shutting down sidecar');
-    await stopSpawnerSidecar();
-  });
-
-  // Unhandled exception
-  process.on('uncaughtException', async () => {
-    console.log('[spawner-sidecar-spawn] uncaught exception, shutting down sidecar');
-    await stopSpawnerSidecar();
+  registerSharedSidecarShutdownHooks({
+    label: 'spawner-sidecar-spawn',
+    stop: () => stopSpawnerSidecar(),
   });
 }

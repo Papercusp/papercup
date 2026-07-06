@@ -102,6 +102,8 @@ export interface EngineerIssue {
   lastProgressAt: string | null;
   /** Kind-specific data (collapse-delegate D-001): a task's {agentSessionId,origin,backend}. */
   payload: unknown | null;
+  /** Federation provenance from the physical work_items row. */
+  origin: string | null;
   foundDuring: string | null;
   linkedFeatureId: string | null;
   createdBy: string | null;
@@ -224,6 +226,7 @@ interface IssueRowDb {
   assigned_at: unknown;
   last_progress_at: unknown;
   payload: unknown;
+  origin: string | null;
   found_during: string | null;
   linked_feature_id: string | null;
   created_by: string | null;
@@ -258,6 +261,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     assignedAt: tsIsoOrNull(r.assigned_at),
     lastProgressAt: tsIsoOrNull(r.last_progress_at),
     payload: r.payload ?? null,
+    origin: r.origin ?? 'local',
     foundDuring: r.found_during,
     linkedFeatureId: r.linked_feature_id,
     createdBy: r.created_by,
@@ -276,7 +280,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
-  signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
+  origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, created_at, updated_at`;
 
 const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';

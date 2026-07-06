@@ -106,6 +106,15 @@ function completionEvidenceFromRecord(
 async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabel?: string }): Promise<BulkItemResult> {
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
+  if (it.state && existing.family === 'issue' && existing.origin === 'remote') {
+    return {
+      ok: false,
+      id: it.id,
+      error:
+        `work_item '${it.id}' is remote-authored and cannot be completed locally; ` +
+        `its authoring peer must claim/resolve it, and this node will receive the terminal state through federation.`,
+    };
+  }
 
   // EI-7264: a fast multi-wake self-sustaining loop creates+completes its own tracking
   // task each wake, while PEER fleet members' work-item ids flow through the exact same

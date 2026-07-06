@@ -19,6 +19,14 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveSubstrateSocketPath, SUBSTRATE_SOCKET_ENV } from './substrate-socket-path';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
+import {
+  resolveSidecarSpawnPlan,
+  respawnBackoffMs,
+  pruneRespawnWindow,
+  respawnBudgetExhausted,
+  gracefulStopChild,
+  registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
+} from '../../process-supervision/sidecar-spawn-shared';
 
 // EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
 // is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
@@ -143,8 +151,8 @@ function scheduleRespawn(socketPath: string): void {
   if (deliberateStop) return;
   if (respawnTimer) return; // a respawn is already pending
   const now = Date.now();
-  respawnAttempts = respawnAttempts.filter((t) => now - t < RESPAWN_WINDOW_MS);
-  if (respawnAttempts.length >= MAX_RESPAWN_ATTEMPTS) {
+  respawnAttempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
+  if (respawnBudgetExhausted(respawnAttempts, MAX_RESPAWN_ATTEMPTS)) {
     console.error(
       `[substrate-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
         'Substrate stays on its in-process fallback (see substrate-boot-wrapper) until an explicit spawnSubstrateSidecar() call.',
@@ -152,7 +160,7 @@ function scheduleRespawn(socketPath: string): void {
     return;
   }
   respawnAttempts.push(now);
-  const backoffMs = Math.min(1000 * 2 ** (respawnAttempts.length - 1), 30_000);
+  const backoffMs = respawnBackoffMs(respawnAttempts.length);
   console.warn(
     `[substrate-sidecar] auto-respawning in ${backoffMs}ms (attempt ${respawnAttempts.length}/${MAX_RESPAWN_ATTEMPTS} in window)`,
   );
@@ -224,25 +232,22 @@ export async function spawnSubstrateSidecar(
   // via tsx. The old unconditional `npx tsx <.ts>` could not work off a bundle
   // (no tsx, no .ts on disk) — the other half of the P-006 finding.
   const selfPath = fileURLToPath(import.meta.url);
-  const isBundled = !selfPath.endsWith('.ts') && !selfPath.endsWith('.tsx');
+  const plan = resolveSidecarSpawnPlan({
+    selfPath,
+    devScriptPath: sidecarScript,
+    bundledModeEnvVar: 'PAPERCUSP_SUBSTRATE_SIDECAR_MODE',
+    execPath: process.execPath,
+  });
 
   return new Promise<void>((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...plan.env,
       [SUBSTRATE_SOCKET_ENV]: resolvedSocket,
     };
 
-    let cmd: string;
-    let args: string[];
-    if (isBundled) {
-      cmd = process.execPath; // the bundled node (e.g. ./bin/node)
-      args = [selfPath]; // re-exec serve.mjs itself in sidecar mode
-      env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE = '1';
-    } else {
-      const isTs = sidecarScript.endsWith('.ts');
-      cmd = isTs ? 'npx' : process.execPath;
-      args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
-    }
+    const cmd = plan.cmd;
+    const args = plan.args;
     const launchedAt = Date.now();
     const [spawnCommand, ...spawnArgs] = useScope
       ? buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG())
@@ -421,45 +426,18 @@ export async function stopSubstrateSidecar(): Promise<void> {
     clearTimeout(respawnTimer);
     respawnTimer = null;
   }
-
-  return new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      if (sidecarProcess && !sidecarProcess.killed) {
-        killSidecarTree('SIGKILL');
-      }
-      sidecarProcess = null;
-      sidecarReady = false;
-      resolve();
-    }, 5000);
-
-    sidecarProcess!.once('exit', () => {
-      clearTimeout(timeout);
-      sidecarProcess = null;
-      sidecarReady = false;
-      resolve();
-    });
-
-    killSidecarTree('SIGTERM');
-  });
+  const proc = sidecarProcess;
+  await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => killSidecarTree(sig) });
+  sidecarProcess = null;
+  sidecarReady = false;
 }
 
 /**
  * Register graceful shutdown hooks.
  */
 export function registerSidecarShutdownHooks(): void {
-  process.on('SIGTERM', async () => {
-    console.log('[substrate-sidecar-spawn] SIGTERM received, shutting down sidecar');
-    await stopSubstrateSidecar();
-  });
-
-  process.on('SIGINT', async () => {
-    console.log('[substrate-sidecar-spawn] SIGINT received, shutting down sidecar');
-    await stopSubstrateSidecar();
-  });
-
-  // Unhandled exception
-  process.on('uncaughtException', async () => {
-    console.log('[substrate-sidecar-spawn] uncaught exception, shutting down sidecar');
-    await stopSubstrateSidecar();
+  registerSharedSidecarShutdownHooks({
+    label: 'substrate-sidecar-spawn',
+    stop: () => stopSubstrateSidecar(),
   });
 }

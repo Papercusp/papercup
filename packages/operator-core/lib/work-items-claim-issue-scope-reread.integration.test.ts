@@ -110,6 +110,32 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(exact?.kind).toBe('bug');
   });
 
+  it('remote-origin issue rows surface provenance and refuse local set_state with a truthful error', async () => {
+    await seedIssueInWorkspace('WI-remote', 'default', { status: 'todo' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote'
+       WHERE workspace_id = 'default' AND feature_id = 'WI-remote'`;
+
+    const item = await wi.getWorkItem('WI-remote', H);
+    expect(item?.family).toBe('issue');
+    expect(item?.origin).toBe('remote');
+
+    await expect(
+      wi.setWorkItemState('WI-remote', 'resolved', {
+        harness: H,
+        by: 'w1',
+        completionRef: 'verified elsewhere',
+      }),
+    ).rejects.toThrow(/remote-authored.*cannot be mutated locally/);
+
+    const rows = await db.sql<{ status: string; terminal_owner: string | null }[]>`
+      SELECT status, terminal_owner
+        FROM harness_shared.work_items
+       WHERE workspace_id = 'default' AND feature_id = 'WI-remote'`;
+    expect(rows[0]).toEqual({ status: 'todo', terminal_owner: null });
+  });
+
   it('claim_next SERVES an open issue even when the captured claim scope has drifted from getIssue’s re-derived scope (no leaked claim, no false miss)', async () => {
     // Row is in CLAIM_WS — the scope claimNextIssueWorkItem captures (issuesScopeWorkspace mock).
     // getIssue's own re-derivation would be 'default' (drift) and would MISS it → the pre-fix

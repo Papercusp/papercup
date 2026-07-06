@@ -230,46 +230,24 @@ export async function stopGatewaySidecar(): Promise<void> {
   }
   const child = gatewayProcess;
   if (!child) return;
-  await new Promise<void>((resolve) => {
-    const killTimer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* gone */
-      }
-      resolve();
-    }, 15_000);
-    killTimer.unref?.();
-    child.once('exit', () => {
-      clearTimeout(killTimer);
-      resolve();
-    });
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      clearTimeout(killTimer);
-      resolve();
-    }
-  });
+  await gracefulStopChild(child, { timeoutMs: 15_000, kill: (sig) => child.kill(sig) });
   gatewayProcess = null;
 }
 
-let hooksRegistered = false;
 /** Best-effort drain of the child when the OPERATOR exits (mirrors the sibling spawners). */
 export function registerGatewaySidecarShutdownHooks(): void {
-  if (hooksRegistered) return;
-  hooksRegistered = true;
-  const sync = () => {
-    deliberateStop = true;
-    try {
-      gatewayProcess?.kill('SIGTERM');
-    } catch {
-      /* gone */
-    }
-  };
-  process.on('exit', sync);
-  process.on('SIGTERM', sync);
-  process.on('SIGINT', sync);
+  registerSidecarShutdownHooks({
+    label: 'gateway-sidecar-spawn',
+    mode: 'sync-with-exit',
+    stop: () => {
+      deliberateStop = true;
+      try {
+        gatewayProcess?.kill('SIGTERM');
+      } catch {
+        /* gone */
+      }
+    },
+  });
 }
 
 // ── test seams ────────────────────────────────────────────────────────────────
