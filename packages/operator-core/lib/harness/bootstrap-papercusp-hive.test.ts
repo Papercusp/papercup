@@ -466,6 +466,50 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     warn.mockRestore();
   });
 
+  it('WI-3232 regression: NEVER self-admits over an owner self_repo checkout (git-sync-freeze guard)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The exact fleet-wide-freeze race (2026-07-06): step-1's CACHED registry read misses the
+    // papercusp entry (so we fall through to the offline self-admit branch), but the branch's
+    // FRESH read sees the owner's self_repo checkout. Self-admitting here would merge
+    // remote_hive:true onto that entry → git-sync marks it "ineligible (remote_hive_view)" and
+    // STOPS committing the whole shared tree. The guard must bail and home the checkout instead.
+    const loadRegistry = vi.fn(async (_ws: string, opts?: { fresh?: boolean }) =>
+      opts?.fresh
+        ? { projects: [{ slug: PAPERCUSP_HIVE_SLUG, path: '/home/dev/papercusp', self_repo: true }] }
+        : { projects: [] as Array<{ slug: string }> },
+    );
+    const joinCanonical = vi.fn(async () => ({
+      state: 'skipped' as const,
+      slug: null,
+      reason: 'canonical hive not announcing yet (owner offline)',
+    }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ restored: ['git'], stillDeferred: [] }));
+    const selfAdmitCanonical = vi.fn(async () => ({ state: 'admitted' as const, slug: PAPERCUSP_HIVE_SLUG }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      loadRegistry,
+      joinCanonical,
+      restoreSeed,
+      restoreDeferredGitSeed,
+      selfAdmitCanonical,
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    expect(res).toMatchObject({ state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: '/home/dev/papercusp' });
+    expect(loadRegistry).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID, { fresh: true });
+    expect(selfAdmitCanonical).not.toHaveBeenCalled(); // never clobbers the self_repo owner entry
+    expect(restoreDeferredGitSeed).not.toHaveBeenCalled(); // guard returns before the git restore
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    warn.mockRestore();
+  });
+
   it('no-ops on auth_required (gh not signed in) — leaves home untouched so the next boot retries', async () => {
     const deps = spyDeps({
       clone: vi.fn(async () => ({ code: 'auth_required' as const, message: 'Authentication failed' })),

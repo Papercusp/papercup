@@ -29,7 +29,7 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbidsInTurn, assertTextRequiresInTurn } from './_asserts';
+import { assertTextForbidsFromTurn, assertTextRequiresFromTurn } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
@@ -57,33 +57,40 @@ export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
   asserts: [
     // The full current list is only reproducible via a re-fetch — the kept rows
     // were compacted out, so a delta-only merge cannot name them.
-    assertTextRequiresInTurn(/EROFS/i, 1, {
+    //
+    // EI-7923/WI-3229: checked from turn 1 ONWARD (not hardcoded to turn 1) —
+    // live runs show the model may legitimately spend turn 1 asking a
+    // clarifying question after compaction wiped disambiguating context (e.g.
+    // which harness/workspace), landing the actual re-fetched answer in turn 2
+    // instead. A rigid `assertTextRequiresInTurn(pattern, 1, ...)` false-failed
+    // on an otherwise-correct answer that arrived one turn later.
+    assertTextRequiresFromTurn(/EROFS/i, 1, {
       name: 'fallback-surfaces-added',
       claim: 'Expected the current list to include the added row (EROFS) — present in the re-fetched full list.',
       suggestion: 'Re-fetch full when the base is gone; the fresh snapshot carries the added row.',
     }),
-    assertTextRequiresInTurn(/circuit-breaker/i, 1, {
+    assertTextRequiresFromTurn(/circuit-breaker/i, 1, {
       name: 'fallback-surfaces-updated',
       claim: "Expected WI-7004's current title ('circuit-breaker') — present in the re-fetched full list.",
       suggestion: 'A re-fetched full list already reflects the update; do not reconstruct it from a delta against a missing base.',
     }),
-    assertTextRequiresInTurn(/NUL bytes/i, 1, {
+    assertTextRequiresFromTurn(/NUL bytes/i, 1, {
       name: 'fallback-surfaces-kept',
       claim:
         'Expected the kept row WI-7003 ("NUL bytes") — it was compacted out of context, so only a full RE-FETCH can surface it. Its absence means the model merged a delta against a base it no longer held.',
       suggestion: 'When the base snapshot is no longer in context, re-call work_items:list for mode:full instead of guessing.',
     }),
-    assertTextRequiresInTurn(/CSV backend/i, 1, {
+    assertTextRequiresFromTurn(/CSV backend/i, 1, {
       name: 'fallback-surfaces-kept-2',
       claim: 'Expected the kept row WI-7001 ("CSV backend") — only the re-fetched full list carries it after compaction.',
       suggestion: 'Re-fetch full; do not drop base rows the model can no longer see.',
     }),
-    assertTextForbidsInTurn(/debounce/i, 1, {
+    assertTextForbidsFromTurn(/debounce/i, 1, {
       name: 'fallback-no-removed',
       claim: 'The reply named the REMOVED row (debounce) — the re-fetched full list does not contain it.',
       suggestion: 'Report the re-fetched full list, which already omits removed rows.',
     }),
-    assertTextForbidsInTurn(/naive-retry/i, 1, {
+    assertTextForbidsFromTurn(/naive-retry/i, 1, {
       name: 'fallback-no-stale-value',
       claim: "The reply showed WI-7004's STALE pre-update title ('naive-retry') — a re-fetched full list shows only the current title.",
       suggestion: 'Use the re-fetched current value, not a remembered/stale one.',

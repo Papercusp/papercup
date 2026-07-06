@@ -33,6 +33,33 @@ import {
 const PREFIX = 'hive_started:';
 const key = (workspaceId: string, installSlug: string): string => `${PREFIX}${workspaceId}:${installSlug}`;
 
+// Pause PROVENANCE (WI-3261, owner-reported: "I keep pausing the Mug and it keeps
+// mysteriously getting unpaused"). The started bit alone can't tell a DELIBERATE
+// owner pause (pot:pause) from a plain paused/idle state — so the paused-hive
+// recovery watchdog (./watchdog.ts pausedHiveRecoverySweep) treated "paused past
+// the stale threshold + demand queued" as a silent outage and auto-resumed it,
+// which is EXACTLY what an intentional pause with queued work looks like. This
+// parallel bit records "was the CURRENT pause deliberate" so the sweep can alert
+// without ever auto-resuming an owner-initiated pause. Cleared on every resume
+// (started:true), regardless of caller, so it never lingers stale.
+const DELIBERATE_PREFIX = 'hive_paused_deliberate:';
+const deliberateKey = (workspaceId: string, scope: string): string => `${DELIBERATE_PREFIX}${workspaceId}:${scope}`;
+
+async function setHivePausedDeliberate(workspaceId: string, scope: string, deliberate: boolean): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+    VALUES (
+      ${deliberateKey(workspaceId, scope)},
+      ${deliberate ? 'true' : 'false'},
+      ${'Pause provenance (WI-3261). true = the CURRENT pause was owner-initiated (pot:pause) — the paused-hive recovery watchdog must never auto-resume it, only alert. Cleared on every resume.'},
+      ${Date.now()},
+      ${workspaceId}
+    )
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+  `;
+}
+
 /** Whether the hive is started (default false — a hive is born paused/idle).
  *  K1: ON ⇒ read the workspace-sentinel row first, then fall back to the legacy
  *  per-hive row (zero regression pre-backfill). OFF ⇒ the per-hive row only,
@@ -52,11 +79,15 @@ export async function getHiveStarted(workspaceId: string, installSlug: string): 
 }
 
 /** K1: ON ⇒ write the workspace-sentinel row (the install dimension collapses);
- *  OFF ⇒ the per-hive row, byte-identical to today. */
+ *  OFF ⇒ the per-hive row, byte-identical to today. `deliberate` (WI-3261) marks
+ *  a `started:false` write as an OWNER-INITIATED pause (pot:pause passes true);
+ *  any `started:true` write (a resume, from ANY caller including the watchdog's
+ *  own auto-resume) always CLEARS it. Ignored when `started` is true. */
 export async function setHiveStarted(
   workspaceId: string,
   installSlug: string,
   started: boolean,
+  opts: { deliberate?: boolean } = {},
 ): Promise<void> {
   const { sql } = getOrgPg();
   const scope = workspaceBrainScopeKey(workspaceId, installSlug, await isWorkspaceCoordinationOn());
@@ -71,6 +102,7 @@ export async function setHiveStarted(
     )
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;
+  await setHivePausedDeliberate(workspaceId, scope, started ? false : (opts.deliberate ?? false));
 }
 
 /**
@@ -222,21 +254,32 @@ function toEpochMs(v: unknown): number | null {
 
 /** Every (workspace, install) currently marked PAUSED (value='false'), with the
  *  ms-epoch it was last paused (updated_at — for a row whose current value is
- *  'false' that is the pause time). The paused-hive recovery watchdog
- *  (autonomous-loop-canary-reliability P-003) iterates this set: a hive paused
- *  with standing demand is a SILENT OUTAGE the started-only seams cannot see
- *  (they skip !started). pausedAtMs is null when the timestamp is unreadable —
- *  the sweep then declines to act blind. */
+ *  'false' that is the pause time), and whether the CURRENT pause is deliberate
+ *  (WI-3261 provenance — owner-initiated via pot:pause, vs a plain paused/idle
+ *  state). The paused-hive recovery watchdog (autonomous-loop-canary-reliability
+ *  P-003) iterates this set: a hive paused with standing demand is a SILENT
+ *  OUTAGE the started-only seams cannot see (they skip !started) — but it must
+ *  never auto-resume a `deliberate` pause (only alert). pausedAtMs is null when
+ *  the timestamp is unreadable — the sweep then declines to act blind. */
 export async function listPausedHives(): Promise<
-  Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null }>
+  Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null; deliberate: boolean }>
 > {
   const { sql } = getOrgPg();
-  const rows = await sql`
-    SELECT key, updated_at FROM harness_shared.operator_settings
-    WHERE key LIKE ${PREFIX + '%'} AND value = 'false'
-  `;
-  const out: Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null }> = [];
-  for (const r of rows as unknown as Array<{ key: string; updated_at: unknown }>) {
+  const [pausedRows, deliberateRows] = await Promise.all([
+    sql`
+      SELECT key, updated_at FROM harness_shared.operator_settings
+      WHERE key LIKE ${PREFIX + '%'} AND value = 'false'
+    `,
+    sql`
+      SELECT key FROM harness_shared.operator_settings
+      WHERE key LIKE ${DELIBERATE_PREFIX + '%'} AND value = 'true'
+    `,
+  ]);
+  const deliberateSet = new Set(
+    (deliberateRows as unknown as Array<{ key: string }>).map((r) => r.key.slice(DELIBERATE_PREFIX.length)),
+  );
+  const out: Array<{ workspaceId: string; installSlug: string; pausedAtMs: number | null; deliberate: boolean }> = [];
+  for (const r of pausedRows as unknown as Array<{ key: string; updated_at: unknown }>) {
     const rest = r.key.slice(PREFIX.length);
     const i = rest.indexOf(':');
     if (i <= 0) continue;
@@ -244,6 +287,7 @@ export async function listPausedHives(): Promise<
       workspaceId: rest.slice(0, i),
       installSlug: rest.slice(i + 1),
       pausedAtMs: toEpochMs(r.updated_at),
+      deliberate: deliberateSet.has(rest),
     });
   }
   return out;

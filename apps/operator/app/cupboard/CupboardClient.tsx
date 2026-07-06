@@ -205,11 +205,14 @@ export default function CupboardClient() {
         // the rollup can present all facets grouped. The kind tabs are hidden
         // in this mode, so `kind` is intentionally not forwarded.
         params.set('project', hive);
-      } else if (!hive && kindFilter !== 'all' && kindFilter !== 'tools') {
-        // P-018: 'hive-blueprint' is a CLIENT facet over blueprint listings (split on
-        // blueprint_kind below); the worker only knows server kind='blueprint'.
-        params.set('kind', kindFilter === 'hive-blueprint' ? 'blueprint' : kindFilter);
       }
+      // WI-3259: `kind` is INTENTIONALLY never forwarded here (even outside the
+      // hive rollup). Every kind tab (all/harness/blueprint/hive-blueprint/
+      // plugin/tool-pack/learning-pack) is a CLIENT-SIDE facet over ONE full
+      // fetch — see `viewListings` below — so switching tabs is a pure
+      // re-filter with ZERO network round-trip. Only q / claimFilter / hive
+      // (all real server-side params) trigger a refetch to the external
+      // Cupboard worker (the multi-second-latency hop the bug was about).
       // Hive-pubkey rollup (comb-hive-native-sharing P-001): the worker has no
       // hive filter, so fetch unfiltered and narrow client-side by hive_pubkey
       // below — page-scoped, like the flat-browse grouping (P-002).
@@ -226,12 +229,14 @@ export default function CupboardClient() {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [q, claimFilter, kindFilter, hive]);
+  }, [q, claimFilter, hive]);
 
   useEffect(() => {
     // The Tools view has its own fetch (ToolsSection); skip the listings read.
     if (toolsView && !hive) return;
     void fetchListings();
+    // NOTE: `kindFilter` is deliberately NOT a dependency — see fetchListings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchListings, toolsView, hive]);
 
   // Hive rollup: narrow to the one hive. A pubkey ref matches the member rows'
@@ -244,16 +249,23 @@ export default function CupboardClient() {
       )
     : [];
   const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
-  // P-018: the 'blueprint' tab shows harness-blueprints; the 'hive-blueprint' tab
-  // ("Hive Templates") shows hive-blueprint listings (blueprint_kind='hive'). Both
-  // queried the server with kind='blueprint'; this splits them. Other tabs unaffected
-  // (viewListings === listings). The hive ROLLUP (hiveListings) keeps the raw set.
+  // WI-3259: EVERY kind tab is now a pure client-side facet over the one full
+  // (unfiltered) fetch (fetchListings no longer sends `kind` to the server —
+  // see above), so ALL tabs — not just blueprint/hive-blueprint (P-018) — are
+  // re-filtered here with zero network cost. 'all' shows everything; the
+  // 'blueprint'/'hive-blueprint' split stays as before (both server kind
+  // 'blueprint', disambiguated client-side by blueprint_kind); every other
+  // kind now gets its own explicit client-side filter (previously relied on
+  // the server having already scoped it, since that request always fetched
+  // that one kind). The hive ROLLUP (hiveListings) keeps the raw set.
   const viewListings =
-    kindFilter === 'hive-blueprint'
-      ? listings.filter(isHiveBlueprintListing)
-      : kindFilter === 'blueprint'
-        ? listings.filter((l) => listingKindOf(l) === 'blueprint' && !isHiveBlueprintListing(l))
-        : listings;
+    kindFilter === 'all'
+      ? listings
+      : kindFilter === 'hive-blueprint'
+        ? listings.filter(isHiveBlueprintListing)
+        : kindFilter === 'blueprint'
+          ? listings.filter((l) => listingKindOf(l) === 'blueprint' && !isHiveBlueprintListing(l))
+          : listings.filter((l) => listingKindOf(l) === kindFilter);
   const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
   // Flat hive-first browse (P-002): harness member rows fold into ONE card per
@@ -503,6 +515,23 @@ export default function CupboardClient() {
         >
           <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
         </button></Tooltip>}
+
+        {/* WI-3259: an explicit, unmissable loading affordance — the spinning
+            refresh icon alone was too subtle (owner report: "no indication
+            that anything is being loaded"). Shown for any in-flight fetch
+            (initial load AND refetch), listing view only (Tools has its own). */}
+        {!toolsView && loading && (
+          <span
+            data-testid="cupboard-loading-indicator"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted,
+            }}
+          >
+            <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+            Loading…
+          </span>
+        )}
       </div>
 
       {/* Tools discovery view (?kind=tools) — tool-level discovery with its own
@@ -544,6 +573,22 @@ export default function CupboardClient() {
         </div>
       )}
 
+      {/* WI-3259: a refetch (q/claim/hive change — kind-tab switches no longer
+          refetch at all) used to leave the PREVIOUS tab's cards frozen with no
+          affordance until the new data swapped in. Dim + suspend interaction
+          on the stale grid while a fetch with existing data is in flight, so
+          the freeze reads as "loading" instead of "broken". Never applies to
+          the true first load (nothing to dim yet — the empty/error states
+          above own that path). */}
+      <div
+        data-testid="cupboard-results"
+        aria-busy={loading}
+        style={
+          loading && (hive ? hiveGroups.length > 0 : listings.length > 0)
+            ? { opacity: 0.45, pointerEvents: 'none', transition: 'opacity 120ms ease' }
+            : { transition: 'opacity 120ms ease' }
+        }
+      >
       {hive ? (
         /* Hive rollup — the Hive's facets grouped by kind (D-005) */
         <div data-testid="cupboard-hive-rollup">
@@ -646,6 +691,7 @@ export default function CupboardClient() {
           ))}
         </div>
       )}
+      </div>
         </>
       )}
       </div>

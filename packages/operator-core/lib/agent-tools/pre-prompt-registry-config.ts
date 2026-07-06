@@ -103,21 +103,21 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // practice not exercised in production despite this entry's write:
   // 'positional' (confirmed by feeding the real Zod-derived JSON Schema
   // through projectWriteColumns directly). A real fix needs a UNION schema
-  // (row-string OR full keyed args); filed as WI-3258. The columnOverrides
-  // hardening below is unit-tested directly and activates the moment WI-3258
+  // (row-string OR full keyed args); filed as WI-3260. The columnOverrides
+  // hardening below is unit-tested directly and activates the moment WI-3260
   // (or any narrower future schema) makes either tool columns-eligible again.
   {
     name: 'work_items:set_state',
     read: 'off',
     write: 'positional',
-    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; see WI-3258 for the bulk-schema eligibility gap',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; see WI-3260 for the bulk-schema eligibility gap',
     columnOverrides: { id: WORK_ITEM_ID_OVERRIDE, state: WORK_ITEM_STATE_OVERRIDE },
   },
   {
     name: 'work_items:claim',
     read: 'off',
     write: 'positional',
-    note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?); columnOverrides hardened EI-7927; see WI-3258 for the bulk-schema eligibility gap',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?); columnOverrides hardened EI-7927; see WI-3260 for the bulk-schema eligibility gap',
     columnOverrides: { id: WORK_ITEM_ID_OVERRIDE },
   },
 ];

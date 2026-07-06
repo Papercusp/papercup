@@ -36,4 +36,20 @@ describe('PRE_PROMPT_REGISTRY', () => {
   it('activates the audit:list read path (the one clean flat-row read)', () => {
     expect(PRE_PROMPT_REGISTRY.find((e) => e.name === 'audit:list')?.read).toBe('csv');
   });
+
+  it('hardens the work_items:* misalignment guard with columnOverrides (D-007 residual, EI-7927)', () => {
+    const setState = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:set_state');
+    expect(setState?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
+    // The state vocabulary must be non-trivial (covers both families' native
+    // states + every cross-dialect alias) and include a representative token
+    // from each source it's unioned from, so a future alias added upstream is
+    // still covered without anyone having to remember to touch this file.
+    const stateVocab = setState?.columnOverrides?.state?.enumValues ?? [];
+    for (const token of ['open', 'resolved', 'closed', 'todo', 'passed', 'deprecated', 'done', 'wip', 'needs-human']) {
+      expect(stateVocab, `expected "${token}" in the derived state vocabulary`).toContain(token);
+    }
+
+    const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
+    expect(claim?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
+  });
 });

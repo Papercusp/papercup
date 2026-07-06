@@ -239,3 +239,49 @@ export function assertTextRequiresWithin(
         : [violation(meta)],
   };
 }
+
+/** ERROR unless SOME turn from `fromTurnIdx` onward matches `pattern`.
+ *
+ * (EI-7923/WI-3229) A hardcoded `assertTextRequiresInTurn(pattern, 1, ...)`
+ * false-positives whenever the model legitimately needs an extra turn before
+ * its substantive answer (e.g. a clarifying question after a compaction wiped
+ * disambiguating context) — the correct content lands one turn later than the
+ * scenario's fixed index assumed, and the assert fails even though the final
+ * delivered answer is right. Use this instead of `assertTextRequiresInTurn`
+ * whenever the model may legitimately take an extra turn to get there. */
+export function assertTextRequiresFromTurn(
+  pattern: RegExp,
+  fromTurnIdx: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turns = run.turns.slice(fromTurnIdx);
+      const hitIdx = turns.findIndex((t) => pattern.test(t.assistantText));
+      return hitIdx >= 0 ? [] : [violation(meta)];
+    },
+  };
+}
+
+/** ERROR if ANY turn from `fromTurnIdx` onward matches `pattern` — the
+ *  range-checked sibling of `assertTextForbidsInTurn`, for the same
+ *  turn-index-rigidity reason as `assertTextRequiresFromTurn` above: a banned
+ *  value can land in whichever turn ends up carrying the final answer, not
+ *  necessarily the scenario's originally-assumed fixed index. */
+export function assertTextForbidsFromTurn(
+  pattern: RegExp,
+  fromTurnIdx: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turns = run.turns.slice(fromTurnIdx);
+      const hitIdx = turns.findIndex((t) => pattern.test(t.assistantText));
+      return hitIdx >= 0 ? [violation(meta, fromTurnIdx + hitIdx)] : [];
+    },
+  };
+}

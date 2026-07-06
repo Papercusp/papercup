@@ -126,7 +126,10 @@ export interface SelfAdmitCanonicalResult {
 /** Injectable seams (lib/ DI-for-tests pattern). Production defaults to real impls. */
 export interface BootstrapPapercuspHiveDeps {
   detectRoot?: () => string | null;
-  loadRegistry?: (ws: string) => Promise<{ projects: Array<{ slug: string; path?: string }> }>;
+  loadRegistry?: (
+    ws: string,
+    opts?: { fresh?: boolean },
+  ) => Promise<{ projects: Array<{ slug: string; path?: string; self_repo?: boolean }> }>;
   clone?: typeof cloneGithubRepo;
   ensureHive?: typeof ensurePapercuspHive;
   /** Make `ws` the active/home workspace (so the hive is visible). */
@@ -730,6 +733,22 @@ export async function bootstrapPapercuspHive(
     const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
     const joinRes = await joinCanonical(canonicalInvite, { record });
     if (joinRes.state !== 'joined' && seedRan && (await seedSelfAdmitEnabled())) {
+      // GUARD (WI-3232 regression 2026-07-06): a box that already owns the papercusp checkout
+      // (self_repo) must NEVER self-admit as a remote_hive VIEW. Doing so clobbers the
+      // git-sync-eligible source-of-truth registry entry into "ineligible (remote_hive_view)"
+      // (git-sync-eligibility.ts) and FREEZES git-sync FLEET-WIDE — the whole shared tree stops
+      // committing. Step-1 above normally short-circuits an existing entry, but a 2s
+      // registry-cache-miss race can still reach here; a FRESH read closes that window and homes
+      // the owner checkout instead of self-admitting a remote view over it.
+      const ownEntry = (
+        await loadRegistry(PAPERCUSP_WORKSPACE_ID, { fresh: true }).catch(() => null)
+      )?.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);
+      if (ownEntry?.self_repo) {
+        setHome(PAPERCUSP_WORKSPACE_ID);
+        record('clone', 'done', { detail: 'self-admit skipped: owner self_repo checkout present' });
+        record('submodules', 'done');
+        return { state: 'already-present', slug: PAPERCUSP_HIVE_SLUG, path: ownEntry.path };
+      }
       try {
         if (gitDeferred) {
           const restoreDeferred = deps.restoreDeferredGitSeed ?? defaultRestoreDeferredGitSeed;

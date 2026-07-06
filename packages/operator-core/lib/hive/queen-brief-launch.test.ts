@@ -43,11 +43,15 @@ const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
   pauseNewWork: false,
   pausedUntil: null as number | null,
 }));
-vi.mock('../owner-steering', () => ({
-  getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...a),
-  isPausedNow: (s: { pauseNewWork: boolean; pausedUntil: number | null }, now: number) =>
-    s.pauseNewWork ? true : s.pausedUntil != null && now < s.pausedUntil,
-}));
+vi.mock('../owner-steering', async (importOriginal) => {
+  // Only getOwnerSteering is PG-backed and needs mocking; keep every pure
+  // helper (isPausedNow, steeringLooksInconsistent, hasActiveThrottle, …) REAL
+  // so this partial mock can't silently drop a newly-added export (EI-8277 —
+  // a hand-duplicated subset previously broke when steeringLooksInconsistent
+  // was added and renderQueenBrief started calling it for real).
+  const actual = await importOriginal<typeof import('../owner-steering')>();
+  return { ...actual, getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...a) };
+});
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 

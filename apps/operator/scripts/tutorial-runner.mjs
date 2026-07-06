@@ -72,12 +72,14 @@ export function parseArgs(argv) {
 // These are PURE (no chalk) so the tab/keymap/checklist logic is unit-tested.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The two always-visible tabs, in bar order. */
-export const SHELL_TABS = ['tutorial', 'setup'];
+/** The two always-visible tabs, in bar order — Setup first, Tutorial second
+ *  (owner 2026-07-06). renderTabBar + nextTab both derive their order from this. */
+export const SHELL_TABS = ['setup', 'tutorial'];
 
-/** Toggle to the other tab (Tab key). Pure. */
+/** Toggle to the other tab (Tab key), order-driven off SHELL_TABS. Pure. */
 export function nextTab(active) {
-  return active === 'tutorial' ? 'setup' : 'tutorial';
+  const i = SHELL_TABS.indexOf(active);
+  return SHELL_TABS[(i + 1) % SHELL_TABS.length];
 }
 
 /**
@@ -289,16 +291,28 @@ function animOn() {
 
 /**
  * The always-visible tab bar + shortcut hints (owner batch #4 + B2-#1). The active tab
- * is bracketed `[ Tutorial ]` (the owner-chosen mockup) so it reads even without color.
- * Uses chalk (auto-degrades to plain). The `[ … ]` marker is what tests key off.
+ * is bracketed `[ Setup ]` (the owner-chosen mockup) so it reads even without color; the
+ * bar order follows SHELL_TABS (Setup first, Tutorial second — owner 2026-07-06).
+ *
+ * The Tab-to-switch affordance is deliberately LOUD (owner 2026-07-06: "make the tab
+ * switch … impossible for the user to miss"): a non-dim, accent-bold call-to-action on
+ * its OWN line that NAMES the tab you'd land on ("Press Tab ⇄ switch to Setup"), instead
+ * of the old dim inline "Tab ⇄ switch" that blended into the other shortcut hints. Uses
+ * chalk (auto-degrades to plain). The `[ … ]` marker + the CTA text are what tests key off.
  */
 export function renderTabBar(activeTab, { setupComplete = false } = {}) {
-  const label = (name, key) => {
-    const text = key === 'setup' && setupComplete ? `${name} ✓` : name;
-    return activeTab === key ? accent(bold(`[ ${text} ]`)) : dim(`  ${text}  `);
+  const labelFor = (key) => {
+    const base = key === 'setup' ? 'Setup' : 'Tutorial';
+    return key === 'setup' && setupComplete ? `${base} ✓` : base;
   };
-  const hints = dim('Tab ⇄ switch · ^S 🔍 search · # 📖 chapters · ? 💬 ask');
-  return `${label('Tutorial', 'tutorial')} ${label('Setup', 'setup')}    ${hints}`;
+  const tab = (key) =>
+    activeTab === key ? accent(bold(`[ ${labelFor(key)} ]`)) : dim(`  ${labelFor(key)}  `);
+  const bar = SHELL_TABS.map(tab).join(' ');
+  // Name the DESTINATION tab in a loud, non-dim CTA so the switch is unmissable.
+  const dest = labelFor(nextTab(activeTab));
+  const switchCta = accent(bold(`↹  Press Tab ⇄ switch to ${dest}`));
+  const hints = dim('· ^S 🔍 search · # 📖 chapters · ? 💬 ask');
+  return `${bar}\n${switchCta}  ${hints}`;
 }
 
 /** Render the Setup-tab checklist grouped into Required / Optional, a status glyph

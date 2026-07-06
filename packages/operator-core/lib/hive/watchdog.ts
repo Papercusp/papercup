@@ -543,6 +543,17 @@ export function shouldActOnPausedHive(args: {
   return true;
 }
 
+/** Whether a paused hive should actually be AUTO-RESUMED this sweep (vs
+ *  alert-only) — the global knob AND-ed with "this pause wasn't deliberate"
+ *  (WI-3261: an owner-initiated pause, e.g. via pot:pause, is never
+ *  auto-resumed regardless of the global PAPERCUSP_HIVE_PAUSED_AUTO_RESUME
+ *  knob — "paused past threshold + demand queued" is exactly what an
+ *  intentional pause with queued work looks like, so demand can't be the
+ *  resume signal for it). Pure so it's testable without the DB. */
+export function effectiveAutoResumeForPause(globalAutoResume: boolean, deliberate: boolean): boolean {
+  return globalAutoResume && !deliberate;
+}
+
 /** Surface a silent paused-outage to the pinned brain owner (best-effort, never
  *  throws) — the alert the old started-only watchdog never sent. */
 async function alertOwnerPausedOutage(opts: {
@@ -599,8 +610,8 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
-    const autoResume = pausedRecoveryAutoResume();
-    for (const { workspaceId, installSlug, pausedAtMs } of paused) {
+    const globalAutoResume = pausedRecoveryAutoResume();
+    for (const { workspaceId, installSlug, pausedAtMs, deliberate } of paused) {
       const demand = await hiveDemandCheck(workspaceId).catch(() => ({
         demand: false,
         todoItems: 0,
@@ -613,10 +624,14 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
       ) {
         continue;
       }
+      // WI-3261: still fires the debounced alert so the owner is reminded work
+      // is piling up behind a hold they set — it just never auto-resumes it.
+      const autoResume = effectiveAutoResumeForPause(globalAutoResume, deliberate);
       const pausedForMs = pausedAtMs == null ? null : Math.max(0, now - pausedAtMs);
       const reason =
         `paused ${pausedForMs == null ? '?' : Math.round(pausedForMs / 3_600_000)}h with demand queued ` +
-        `(${demand.todoItems} todo item(s), ${demand.startedPlans} started plan(s)) — silent outage`;
+        `(${demand.todoItems} todo item(s), ${demand.startedPlans} started plan(s)) — ` +
+        (deliberate ? 'deliberate owner pause, work queued behind it' : 'silent outage');
       // EI-6777: the cheap `alreadyFiredRecently` read above only tells us
       // whether the OTHER (non-debounce) conditions warrant firing at all —
       // it is racy against a concurrent tick/process doing the same read.

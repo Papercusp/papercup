@@ -84,7 +84,9 @@ export default defineTool({
     // workspace Queen keeps running for the other started hives.
     const loopIdle = !(await anyHivePlacementStarted(workspaceId, installSlug));
     if (loopIdle) {
-      await setHiveStarted(workspaceId, installSlug, false);
+      // WI-3261: mark this pause DELIBERATE (owner-initiated) so the paused-hive
+      // recovery watchdog never mistakes it for a silent outage and auto-resumes it.
+      await setHiveStarted(workspaceId, installSlug, false, { deliberate: true });
       await setDefaultWakeMode('manual');
       await clearHiveTimeWake(sql, installSlug, { workspaceId });
     }

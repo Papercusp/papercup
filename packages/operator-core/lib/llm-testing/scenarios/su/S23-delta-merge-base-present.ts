@@ -71,12 +71,26 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
         'Expected the merged list to still include the UNCHANGED row WI-7003 ("Audit log drops NUL bytes") — a delta carries only changes, so unchanged base rows must be retained.',
       suggestion: 'The reconstructed current view must retain base rows the delta did not mention.',
     }),
-    assertTextForbidsInTurnAfter(/debounce/i, 1, /updated full list|current list/i, {
-      name: 'delta-remove-applied',
-      claim:
-        'The merged list still named the REMOVED row (WI-7002 "Flaky harness-fs-watcher debounce") — a silent failure to apply change=removed.',
-      suggestion: 'The reconstructed current view must drop change=removed ids.',
-    }),
+    // EI-7923/WI-3229: the anchor regex must match how models ACTUALLY phrase the
+    // current-list header ("Here's the updated list." / "Current open work items
+    // (5 total):" observed live) — the old `/updated full list|current list/i`
+    // matched neither, so `assertTextForbidsInTurnAfter`'s anchor-not-found
+    // fallback scanned the WHOLE turn and false-positived on the model's own
+    // CORRECT "Removed: WI-7002 (debounce)" narration preceding the (correct)
+    // table. Widened to the observed phrasings; still anchor-based so a
+    // legitimate "what changed" preamble mentioning the removed title is not
+    // itself a failure.
+    assertTextForbidsInTurnAfter(
+      /debounce/i,
+      1,
+      /current (open work items|full list|list)|updated (full )?list/i,
+      {
+        name: 'delta-remove-applied',
+        claim:
+          'The merged list still named the REMOVED row (WI-7002 "Flaky harness-fs-watcher debounce") — a silent failure to apply change=removed.',
+        suggestion: 'The reconstructed current view must drop change=removed ids.',
+      },
+    ),
   ],
   rubric: SU_RUBRIC,
 };

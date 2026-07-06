@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   projectReadColumns,
   projectWriteColumns,
+  applyColumnOverrides,
   encodePositionalRows,
   positionalRowSchema,
   reconstructArgs,
@@ -264,5 +265,88 @@ describe('reconstructArgs — quoted scalar with an embedded comma (no trailing 
     const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), label: z.string(), n: z.number() })))!;
     const r = reconstructArgs('WI-1,"x, y",42', cols);
     expect(r).toEqual({ ok: true, args: { id: 'WI-1', label: 'x, y', n: 42 } });
+  });
+});
+
+// ── columnOverrides — D-007 residual (EI-7927): id-shape/enum checks beyond arity ──
+
+describe('applyColumnOverrides', () => {
+  const base = (): ColumnSpec[] => [
+    { name: 'id', type: 'id', optional: false, nullable: false },
+    { name: 'state', type: 'string', optional: false, nullable: false },
+    { name: 'note', type: 'text', optional: true, nullable: false },
+  ];
+
+  it('fills a gap the schema left empty (no pattern/enumValues derived)', () => {
+    const cols = applyColumnOverrides(base(), {
+      id: { pattern: '^WI-\\d+$' },
+      state: { enumValues: ['open', 'closed'] },
+    });
+    expect(cols.find((c) => c.name === 'id')?.pattern).toBe('^WI-\\d+$');
+    expect(cols.find((c) => c.name === 'state')?.enumValues).toEqual(['open', 'closed']);
+  });
+
+  it('never attaches an override to the trailing free-text column', () => {
+    const cols = applyColumnOverrides(base(), { note: { pattern: '^x$', enumValues: ['a'] } });
+    const note = cols.find((c) => c.name === 'note')!;
+    expect(note.pattern).toBeUndefined();
+    expect(note.enumValues).toBeUndefined();
+  });
+
+  it('never overwrites a constraint the schema itself already derived', () => {
+    const withSchemaEnum: ColumnSpec[] = [
+      { name: 'state', type: 'enum', optional: false, nullable: false, enumValues: ['todo', 'done'] },
+    ];
+    const cols = applyColumnOverrides(withSchemaEnum, { state: { enumValues: ['zzz'] } });
+    expect(cols[0].enumValues).toEqual(['todo', 'done']); // schema's own enum wins
+  });
+
+  it('is a no-op when no overrides are declared for this tool', () => {
+    expect(applyColumnOverrides(base())).toEqual(base());
+  });
+});
+
+describe('reconstructArgs — columnOverrides catch a swapped row arity alone would miss', () => {
+  // The {id, state, harness?} shape S07 gates against — both id and state are
+  // plain strings in the real tool's schema (id spans WI-/F-/EI- prefixes;
+  // state spans every cross-family alias), so neither carries a schema-derived
+  // pattern/enum. columnOverrides supplies the id-shape + known-vocabulary
+  // checks out of band (mirrors pre-prompt-registry-config.ts's real config).
+  const cols = () =>
+    applyColumnOverrides(
+      projectWriteColumns(jsonSchema(z.object({ id: z.string(), state: z.string(), harness: z.string().optional() })))!,
+      { id: { pattern: '^(WI|F|EI)-\\d+$' }, state: { enumValues: ['open', 'resolved', 'closed', 'passed'] } },
+    );
+
+  it('a correctly-ordered row still passes', () => {
+    expect(reconstructArgs('WI-42,passed', cols())).toEqual({ ok: true, args: { id: 'WI-42', state: 'passed' } });
+  });
+
+  it('rejects a row with the state value shifted into the id column', () => {
+    // Arity is fine (2 fields for 2 required columns) — only the id-shape check catches this.
+    const r = reconstructArgs('passed,WI-42', cols());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/column "id" failed sanity check/);
+  });
+
+  it('rejects a row with an out-of-vocabulary state (arity-only would have accepted it)', () => {
+    const r = reconstructArgs('WI-42,zzz-not-a-state', cols());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/column "state" must be one of/);
+  });
+
+  it('never applies the enum/pattern check to the trailing free-text column', () => {
+    const withNote = applyColumnOverrides(
+      projectWriteColumns(
+        jsonSchema(z.object({ id: z.string(), state: z.string(), note: z.string() })),
+        { freeTextName: 'note' },
+      )!,
+      { id: { pattern: '^(WI|F|EI)-\\d+$' } },
+    );
+    // Free text can say anything, including something id-shaped-looking.
+    expect(reconstructArgs('WI-42,open,anything at all incl. WI-99 EI-1', withNote)).toEqual({
+      ok: true,
+      args: { id: 'WI-42', state: 'open', note: 'anything at all incl. WI-99 EI-1' },
+    });
   });
 });
