@@ -138,6 +138,10 @@ async function dumpPg(opts: {
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
+    // pg_dump with explicit -t entries emits CREATE TABLE statements, but it
+    // does not emit CREATE SCHEMA for the table namespace. Keep the clone dump
+    // psql-restorable into a completely clean database.
+    gz.stdin.write('CREATE SCHEMA IF NOT EXISTS harness_shared;\n\n');
     dump.stdout.pipe(gz.stdin);
     gz.stdout.pipe(out);
     let stderr = '';

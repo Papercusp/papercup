@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   // Size returned by the mocked stat() of the temp dump — >100 ⇒ success path.
   dumpSize: 5000,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
+  stdinWrites: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
   logLines: [] as string[],
 }));
@@ -31,7 +32,7 @@ function fakeChild() {
   const mkStream = () => ({ pipe: vi.fn(), on: vi.fn() });
   child.stdout = mkStream();
   child.stderr = mkStream();
-  child.stdin = {};
+  child.stdin = { write: vi.fn((chunk: string) => { h.stdinWrites.push(String(chunk)); }) };
   child.kill = vi.fn();
   return child as unknown as import('node:child_process').ChildProcess & EventEmitter;
 }
@@ -78,6 +79,7 @@ beforeEach(() => {
   h.spawnCalls = [];
   h.dumpSize = 5000;
   h.closeCodes = { pg_dump: 0, gzip: 0 };
+  h.stdinWrites = [];
   h.renameCalls = [];
   h.logLines = [];
 });
@@ -132,6 +134,11 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
   it('sets a connect timeout in the spawn env', async () => {
     await runPreSnapshotHook(ctx);
     expect(pgDumpCall()!.env?.PGCONNECT_TIMEOUT).toBe('5');
+  });
+
+  it('prefixes a schema preamble so selected-table dumps restore into a clean DB', async () => {
+    await runPreSnapshotHook(ctx);
+    expect(h.stdinWrites.join('')).toContain('CREATE SCHEMA IF NOT EXISTS harness_shared;');
   });
 });
 

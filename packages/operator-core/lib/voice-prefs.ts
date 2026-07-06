@@ -294,7 +294,7 @@ export interface VoicePrefs {
    * DECOUPLED from the Sentinel sidebar flag (that flag shows the settings
    * tab; this pref switches the live brain). A deliberate, reversible toggle.
    */
-  humanFacingRole: 'operator' | 'sentinel' | 'papercup';
+  humanFacingRole: 'operator' | 'papercup';
 
   /**
    * Do-not-disturb for the Sentinel herald (sentinel-as-herald-2026-06-21).
@@ -451,6 +451,11 @@ function mergePrefs(base: VoicePrefs, patch: Partial<VoicePrefs>): VoicePrefs {
   if (out.operatorContextMode !== 'compaction' && out.operatorContextMode !== 'window') {
     out.operatorContextMode = base.operatorContextMode ?? 'compaction';
   }
+  // pot-rename SLICE-2 contract: canonicalize a persisted pre-rename humanFacingRole
+  // ('sentinel' → 'papercup') at the load boundary, so every downstream read sees only
+  // the canonical id and the role checks stay pure (no dual-accept). A raw row that
+  // pre-dates the rename maps transparently; new writes are 'papercup' (type-guarded).
+  if ((out.humanFacingRole as string) === 'sentinel') out.humanFacingRole = 'papercup';
   // Deep-merge nudgeDedup so partial patches don't drop unwritten kinds.
   if (patch.nudgeDedup) {
     out.nudgeDedup = {
