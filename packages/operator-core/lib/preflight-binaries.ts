@@ -40,6 +40,8 @@ export async function detectOmp(): Promise<boolean> {
   // GUI app launches on macOS often miss the user's login-shell PATH;
   // also covers Tauri sidecar/bin and common manual install locations.
   const bundledOmp = process.cwd() ? `${process.cwd()}/bin/omp` : '';
+  // Windows has no $HOME; the omp installer targets %USERPROFILE%\.papercusp\bin.
+  const winHome = process.env.USERPROFILE ?? '';
   const candidates = [
     bundledOmp,
     `${bundledOmp}.exe`,
@@ -49,6 +51,9 @@ export async function detectOmp(): Promise<boolean> {
     `${process.env.HOME ?? ''}/.local/bin/omp`,
     `${process.env.HOME ?? ''}/.bun/bin/omp`,
     `${process.env.HOME ?? ''}/.papercusp/runtime/node_modules/.bin/omp`,
+    // Where the cross-platform installer (setup-pty-commands buildFrameworkInstallSpec) lands omp.
+    `${process.env.HOME ?? ''}/.papercusp/bin/omp`,
+    winHome ? `${winHome}\\.papercusp\\bin\\omp.exe` : '',
   ].filter(Boolean);
   for (const path of candidates) {
     if (existsSync(path) && (await tryProbe(path))) return true;

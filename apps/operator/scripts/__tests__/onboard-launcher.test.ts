@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain .mjs module (same pattern as the other script tests)
 import {
   FRAMEWORKS,
+  FRAMEWORK_DESCRIPTIONS,
   INTRO_BANNER,
   buildHandoffArgs,
   mapFrameworkToAgent,
@@ -9,9 +10,10 @@ import {
 } from '../onboard-launcher.mjs';
 
 describe('mapFrameworkToAgent', () => {
-  it('maps a framework id to its psu agent id (identity: claude/codex)', () => {
+  it('maps a framework id to its psu agent id (identity: claude/codex/omp)', () => {
     expect(mapFrameworkToAgent('claude')).toBe('claude');
     expect(mapFrameworkToAgent('codex')).toBe('codex');
+    expect(mapFrameworkToAgent('omp')).toBe('omp');
   });
 });
 
@@ -47,12 +49,17 @@ describe('parseArgs', () => {
     });
   });
 
+  it('accepts omp as a framework', () => {
+    expect(parseArgs(['--framework=omp']).framework).toBe('omp');
+  });
+
   it('throws on an unknown framework', () => {
     expect(() => parseArgs(['--framework=gpt'])).toThrow(/unknown --framework/);
   });
 
-  it('exports the frameworks and the owner-verbatim banner', () => {
-    expect(FRAMEWORKS).toEqual(['claude', 'codex']);
+  it('exports claude/codex/omp frameworks (each with a picker description) and the owner-verbatim banner', () => {
+    expect(FRAMEWORKS).toEqual(['claude', 'codex', 'omp']);
+    for (const f of FRAMEWORKS) expect(typeof FRAMEWORK_DESCRIPTIONS[f]).toBe('string');
     expect(INTRO_BANNER).toContain('Welcome to papercusp');
     expect(INTRO_BANNER).toContain('brief 10 minute setup procedure and tutorial');
   });

@@ -112,11 +112,17 @@ export function resolveShellKey(key) {
 
 /**
  * The Setup-tab checklist derived from the onboarding-status `snapshot` (#4). Pure —
- * returns ordered steps { key, label, status: 'done'|'todo'|'optional', detail }. The
- * Setup tab renders these + offers the incomplete ones as actions. Drives the SAME
- * stage machine the first-run concierge uses (stage-resolver), so the two never drift.
+ * returns ordered steps { key, label, status: 'done'|'todo'|'optional', required, detail }.
+ * The Setup tab renders these (grouped Required vs Optional) + offers the incomplete ones
+ * as actions. Drives the SAME stage machine the first-run concierge uses (stage-resolver),
+ * so the two never drift.
+ *
+ * REQUIRED = an agent backend (claude / codex / oh-my-pi), signed in, and the mem0
+ * embeddings key (owner 2026-07-06 — memory is a required step, skippable-with-a-warning
+ * but the setup reads INCOMPLETE until it's added). OPTIONAL = the `optionalItems`
+ * (git identity, GitHub, backups, more keys) — surfaced so the user sees they exist.
  */
-export function setupChecklist(snapshot, labels = {}) {
+export function setupChecklist(snapshot, labels = {}, optionalItems = []) {
   const s = snapshot ?? {};
   const installed =
     Boolean(s.claudeInstalled) || Boolean(s.codexInstalled) || Boolean(s.ompInstalled);
@@ -129,28 +135,41 @@ export function setupChecklist(snapshot, labels = {}) {
     : s.codexInstalled
       ? labels.codex ?? 'Codex'
       : s.ompInstalled
-        ? 'oh-my-pi'
+        ? labels.omp ?? 'oh-my-pi'
         : null;
-  return [
+  const required = [
     {
       key: 'framework',
       label: 'Agent framework',
       status: installed ? 'done' : 'todo',
-      detail: which ? `${which} installed` : 'none installed yet',
+      required: true,
+      detail: which ? `${which} installed` : 'none installed yet (Claude, Codex, or oh-my-pi)',
     },
     {
       key: 'signin',
       label: 'Sign in',
-      status: signedIn ? 'done' : installed ? 'todo' : 'todo',
+      status: signedIn ? 'done' : 'todo',
+      required: true,
       detail: signedIn ? 'signed in' : 'not signed in',
     },
     {
       key: 'embeddings',
-      label: 'Embeddings key',
-      status: s.embeddingsKeyPresent ? 'done' : 'optional',
-      detail: s.embeddingsKeyPresent ? 'saved' : 'recommended — better search & memory',
+      label: 'Memory (mem0) — embeddings key',
+      status: s.embeddingsKeyPresent ? 'done' : 'todo',
+      required: true,
+      detail: s.embeddingsKeyPresent
+        ? 'OpenAI key saved — memory enabled'
+        : 'required — OpenAI key powers agent memory & search',
     },
   ];
+  const optional = (optionalItems ?? []).map((item) => ({
+    key: `opt-${item.key}`,
+    label: item.label,
+    status: 'optional',
+    required: false,
+    detail: item.why,
+  }));
+  return [...required, ...optional];
 }
 
 /**
@@ -282,12 +301,16 @@ export function renderTabBar(activeTab, { setupComplete = false } = {}) {
   return `${label('Tutorial', 'tutorial')} ${label('Setup', 'setup')}    ${hints}`;
 }
 
-/** Render the Setup-tab checklist (a status glyph per step). Uses chalk. */
+/** Render the Setup-tab checklist grouped into Required / Optional, a status glyph
+ *  per step so it's clear which parts are mandatory. Uses chalk. */
 function renderChecklist(steps) {
   const glyph = { done: ok('✓'), todo: accent('○'), optional: dim('◍') };
-  return steps
-    .map((st) => `  ${glyph[st.status] ?? '·'} ${bold(st.label)} ${dim(`— ${st.detail}`)}`)
-    .join('\n');
+  const row = (st) => `  ${glyph[st.status] ?? '·'} ${bold(st.label)} ${dim(`— ${st.detail}`)}`;
+  const req = steps.filter((s) => s.required !== false);
+  const opt = steps.filter((s) => s.required === false);
+  const lines = [dim('Required'), ...req.map(row)];
+  if (opt.length) lines.push('', dim('Optional'), ...opt.map(row));
+  return lines.join('\n');
 }
 
 /**
@@ -758,7 +781,7 @@ const SETUP_STEP_LABEL = {
   pick: 'choose & install a framework',
   install: 'install your framework',
   login: 'sign in',
-  embeddings: 'add an embeddings key',
+  embeddings: 'add your required memory (mem0) embeddings key',
 };
 
 /** One onboarding-status poll, threading the session's picked framework so the
@@ -813,23 +836,28 @@ async function runSetupStep(base, status, prompts, session) {
     case 'login': {
       say(`${bold(labels[stage.framework] ?? stage.framework)} is installed — let's sign you in.`);
       const cmds = await api(base, '/desktop/setup-pty-commands');
-      const specKey = { claude: 'loginClaude', codex: 'loginCodex' }[stage.framework];
+      const specKey = { claude: 'loginClaude', codex: 'loginCodex', omp: 'loginOmp' }[stage.framework];
       if (cmds[specKey]) await runSpec(cmds[specKey]);
       return;
     }
     case 'embeddings': {
+      say(
+        bold('Required — Memory (mem0): an OpenAI embeddings key.') +
+          dim(' Powers agent memory & semantic search. Skippable, but memory stays OFF and setup is incomplete until you add one.'),
+      );
       const wants = await confirm({
-        message: 'Add an OpenAI embeddings key now? (recommended — better search & memory)',
+        message: 'Add your OpenAI embeddings key now? (recommended)',
         default: true,
       });
       if (!wants) {
         session.embeddingsSkipped = true;
-        say(dim('Skipped — add it later in Settings or here any time.'));
+        say(dim('⚠ Skipped — ') + bold('memory is DISABLED and setup is INCOMPLETE.') + dim(' Add a key here any time.'));
         return;
       }
       const key = await password({ message: 'Paste your OpenAI API key (hidden):', mask: '*' });
       if (!key?.trim()) {
         session.embeddingsSkipped = true;
+        say(dim('⚠ No key entered — ') + bold('memory stays DISABLED and setup is INCOMPLETE.'));
         return;
       }
       try {
@@ -838,7 +866,7 @@ async function runSetupStep(base, status, prompts, session) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ openai_api_key: key.trim() }),
         });
-        say(ok('Saved. ✓'));
+        say(ok('Saved. ✓ ') + dim('Memory (mem0) is now enabled.'));
       } catch (e) {
         say(dim(`(couldn't save the key: ${e?.message ?? e})`));
       }
@@ -869,8 +897,11 @@ async function runSetupTab(shell) {
       say(dim(`(can't reach the server for setup status: ${e?.message ?? e})`));
       return { switchTo: 'tutorial' };
     }
-    const steps = setupChecklist(status.snapshot, status.labels);
-    shell.setupComplete = steps.filter((s) => s.key !== 'embeddings').every((s) => s.status === 'done');
+    const optionalItems = shell.script?.optionalSetup ?? [];
+    const steps = setupChecklist(status.snapshot, status.labels, optionalItems);
+    // Required setup is complete only when EVERY required step (incl. the mem0
+    // embeddings key) is done — the key being skipped keeps setup INCOMPLETE.
+    shell.setupComplete = steps.filter((s) => s.required).every((s) => s.status === 'done');
     const stageName = status.stage?.stage;
     const actionable = ['pick', 'install', 'login', 'embeddings'].includes(stageName);
 
@@ -884,11 +915,18 @@ async function runSetupTab(shell) {
     const choices = [];
     if (actionable) {
       choices.push({ value: 'step', name: accent(`▶ Continue setup — ${SETUP_STEP_LABEL[stageName]}`) });
-    } else {
+    } else if (shell.setupComplete) {
       choices.push({ value: 'tutorial', name: ok('✓ Required setup complete — go to the Tutorial') });
+    } else {
+      // A required step remains (the mem0 key was skipped this session), but the
+      // stage machine isn't surfacing it right now — offer to re-open it.
+      choices.push({
+        value: 'embeddings',
+        name: accent('▶ Add your required memory (mem0) key to finish setup'),
+      });
     }
-    if (status.optionalSetup?.length) {
-      choices.push({ value: 'optional', name: '⚙️  Optional items (git identity, GitHub, …)' });
+    if (optionalItems.length) {
+      choices.push({ value: 'optional', name: '⚙️  Optional items (git identity, GitHub, backups, …)' });
     }
     choices.push({ value: 'tutorial', name: '📘 Go to the Tutorial tab' });
     choices.push({ value: 'finish', name: '🏁 Finish' });
@@ -910,8 +948,13 @@ async function runSetupTab(shell) {
       await runSetupStep(base, status, prompts, st.session);
       continue;
     }
+    if (action === 'embeddings') {
+      // Re-open the required mem0 key step the user skipped earlier this session.
+      st.session.embeddingsSkipped = false;
+      continue;
+    }
     if (action === 'optional') {
-      await runOptionalSetup(base, status.optionalSetup, prompts);
+      await runOptionalSetup(base, optionalItems, prompts);
       continue;
     }
     if (action === 'tutorial') return { switchTo: 'tutorial' };

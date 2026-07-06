@@ -126,10 +126,29 @@ export interface ResolveOpts {
  * concierge surfaces that as "Found Claude Code installed and signed in — use
  * it?" and passes `forcePick: true` if the user declines.
  */
+/**
+ * Are all REQUIRED setup steps satisfied? A backend installed + signed in, and
+ * the embeddings key present. Pure — the single source of truth for "setup is
+ * complete" across the concierge, the `papercusp setup` checklist, and the psu
+ * launch nudge. (`setupFinished` is graduation — the app boots normally — which
+ * is a WEAKER bar than this: a user can graduate having skipped the key.)
+ */
+export function requiredSetupComplete(s: OnboardingSnapshot): boolean {
+  const anyReady =
+    (s.claudeInstalled && s.claudeSignedIn) ||
+    (s.codexInstalled && s.codexSignedIn) ||
+    (s.ompInstalled && s.ompSignedIn);
+  return Boolean(anyReady && s.embeddingsKeyPresent);
+}
+
 export function resolveStage(s: OnboardingSnapshot, opts: ResolveOpts = {}): OnboardingStage {
   const os = opts.os ?? 'linux';
   const frameworks = allowedFrameworks(os);
-  if (s.setupFinished && !opts.tutorial) return { stage: 'done' };
+  // `done` requires BOTH graduation AND the required embeddings key — a machine
+  // that graduated with the key skipped falls through here and re-resolves to the
+  // `embeddings` stage, so the concierge re-offers it and psu keeps nagging until
+  // a key is present. Tutorial re-entry (opts.tutorial) never gates on the key.
+  if (s.setupFinished && s.embeddingsKeyPresent && !opts.tutorial) return { stage: 'done' };
 
   const chosen = opts.chosen && frameworks.includes(opts.chosen) ? opts.chosen : null;
   if (!chosen) {

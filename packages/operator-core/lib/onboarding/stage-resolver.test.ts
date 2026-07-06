@@ -3,6 +3,7 @@ import {
   allowedFrameworks,
   frameworkInstalled,
   frameworkSignedIn,
+  requiredSetupComplete,
   resolveStage,
   type OnboardingSnapshot,
 } from './stage-resolver';
@@ -22,10 +23,10 @@ function snap(overrides: Partial<OnboardingSnapshot> = {}): OnboardingSnapshot {
 }
 
 describe('allowedFrameworks', () => {
-  it('offers claude + codex on every OS (meridian decommissioned)', () => {
-    expect(allowedFrameworks('win32')).toEqual(['claude', 'codex']);
-    expect(allowedFrameworks('linux')).toEqual(['claude', 'codex']);
-    expect(allowedFrameworks('darwin')).toEqual(['claude', 'codex']);
+  it('offers claude + codex + omp on every OS (meridian decommissioned; omp now installable cross-platform)', () => {
+    expect(allowedFrameworks('win32')).toEqual(['claude', 'codex', 'omp']);
+    expect(allowedFrameworks('linux')).toEqual(['claude', 'codex', 'omp']);
+    expect(allowedFrameworks('darwin')).toEqual(['claude', 'codex', 'omp']);
   });
 });
 
@@ -34,17 +35,47 @@ describe('frameworkInstalled / frameworkSignedIn', () => {
     expect(frameworkInstalled('claude', snap({ claudeInstalled: true }))).toBe(true);
     expect(frameworkInstalled('codex', snap({ claudeInstalled: true }))).toBe(false);
     expect(frameworkInstalled('codex', snap({ codexInstalled: true }))).toBe(true);
+    expect(frameworkInstalled('omp', snap({ ompInstalled: true }))).toBe(true);
+    expect(frameworkInstalled('omp', snap({ codexInstalled: true }))).toBe(false);
   });
   it('maps per-framework sign-in flags', () => {
     expect(frameworkSignedIn('claude', snap({ claudeSignedIn: true }))).toBe(true);
     expect(frameworkSignedIn('codex', snap({ claudeSignedIn: true }))).toBe(false);
     expect(frameworkSignedIn('codex', snap({ codexSignedIn: true }))).toBe(true);
+    expect(frameworkSignedIn('omp', snap({ ompSignedIn: true }))).toBe(true);
+  });
+});
+
+describe('requiredSetupComplete', () => {
+  it('needs a ready backend AND the embeddings key', () => {
+    expect(requiredSetupComplete(snap())).toBe(false);
+    // ready backend but no key → still incomplete (mem0 is required)
+    expect(
+      requiredSetupComplete(snap({ claudeInstalled: true, claudeSignedIn: true })),
+    ).toBe(false);
+    // key but no ready backend → incomplete
+    expect(requiredSetupComplete(snap({ embeddingsKeyPresent: true }))).toBe(false);
+    // both → complete (omp counts as a ready backend)
+    expect(
+      requiredSetupComplete(
+        snap({ ompInstalled: true, ompSignedIn: true, embeddingsKeyPresent: true }),
+      ),
+    ).toBe(true);
   });
 });
 
 describe('resolveStage', () => {
-  it('done when setup already graduated (finished_at set)', () => {
-    expect(resolveStage(snap({ setupFinished: true }))).toEqual({ stage: 'done' });
+  it('done requires BOTH graduation AND the embeddings key', () => {
+    // graduated but no key → NOT done (mem0 required); falls through to pick here
+    expect(resolveStage(snap({ setupFinished: true }))).toMatchObject({ stage: 'pick' });
+    expect(resolveStage(snap({ setupFinished: true, embeddingsKeyPresent: true }))).toEqual({
+      stage: 'done',
+    });
+  });
+
+  it('graduated + ready backend but key skipped → re-offers embeddings (nag), not done', () => {
+    const s = snap({ setupFinished: true, claudeInstalled: true, claudeSignedIn: true });
+    expect(resolveStage(s)).toEqual({ stage: 'embeddings', framework: 'claude' });
   });
 
   it('tutorial re-entry: a FINISHED machine resolves to handoff, not done (P-014)', () => {
@@ -77,9 +108,27 @@ describe('resolveStage', () => {
   it('pick when nothing installed and nothing chosen', () => {
     expect(resolveStage(snap())).toEqual({
       stage: 'pick',
-      frameworks: ['claude', 'codex'],
+      frameworks: ['claude', 'codex', 'omp'],
       detected: [],
     });
+  });
+
+  it('omp is a first-class framework: install → login → embeddings → handoff', () => {
+    expect(resolveStage(snap(), { chosen: 'omp' })).toEqual({ stage: 'install', framework: 'omp' });
+    expect(resolveStage(snap({ ompInstalled: true }), { chosen: 'omp' })).toEqual({
+      stage: 'login',
+      framework: 'omp',
+    });
+    expect(resolveStage(snap({ ompInstalled: true, ompSignedIn: true }), { chosen: 'omp' })).toEqual({
+      stage: 'embeddings',
+      framework: 'omp',
+    });
+    expect(
+      resolveStage(
+        snap({ ompInstalled: true, ompSignedIn: true, embeddingsKeyPresent: true }),
+        { chosen: 'omp' },
+      ),
+    ).toEqual({ stage: 'handoff', framework: 'omp' });
   });
 
   it('pick lists partially-detected frameworks (installed but not signed in)', () => {

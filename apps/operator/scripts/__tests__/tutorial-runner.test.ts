@@ -266,14 +266,26 @@ describe('resolveShellKey — global hotkeys live on every screen (B2-#1)', () =
 });
 
 describe('setupChecklist — the Setup-tab status model (#4)', () => {
-  it('a signed-in framework marks framework + signin done; embeddings stays optional until saved', () => {
+  it('a signed-in framework marks framework + signin done; embeddings is REQUIRED + TODO until saved', () => {
     const steps = setupChecklist(
       { claudeInstalled: true, claudeSignedIn: true, embeddingsKeyPresent: false },
       { claude: 'Claude Code' },
     );
     const byKey = Object.fromEntries(steps.map((s) => [s.key, s.status]));
-    expect(byKey).toEqual({ framework: 'done', signin: 'done', embeddings: 'optional' });
+    expect(byKey).toEqual({ framework: 'done', signin: 'done', embeddings: 'todo' });
+    // all three are REQUIRED (mem0 embeddings key is now a required step)
+    expect(steps.every((s) => s.required === true)).toBe(true);
     expect(steps.find((s) => s.key === 'framework')!.detail).toContain('Claude Code');
+  });
+  it('omp counts as an installed framework (label honored)', () => {
+    const steps = setupChecklist(
+      { ompInstalled: true, ompSignedIn: true },
+      { omp: 'oh-my-pi (omp)' },
+    );
+    const byKey = Object.fromEntries(steps.map((s) => [s.key, s.status]));
+    expect(byKey.framework).toBe('done');
+    expect(byKey.signin).toBe('done');
+    expect(steps.find((s) => s.key === 'framework')!.detail).toContain('oh-my-pi (omp)');
   });
   it('installed-but-not-signed-in → signin is a TODO', () => {
     const steps = setupChecklist({ codexInstalled: true, codexSignedIn: false }, { codex: 'Codex' });
@@ -281,13 +293,29 @@ describe('setupChecklist — the Setup-tab status model (#4)', () => {
     expect(byKey.framework).toBe('done');
     expect(byKey.signin).toBe('todo');
   });
-  it('a fresh machine → framework + signin TODO; embeddings saved → done', () => {
-    expect(setupChecklist({}, {}).map((s) => s.status)).toEqual(['todo', 'todo', 'optional']);
+  it('a fresh machine → all three required steps TODO; embeddings saved → done', () => {
+    expect(setupChecklist({}, {}).map((s) => s.status)).toEqual(['todo', 'todo', 'todo']);
     const withKey = setupChecklist(
       { claudeInstalled: true, claudeSignedIn: true, embeddingsKeyPresent: true },
       {},
     );
     expect(withKey.find((s) => s.key === 'embeddings')!.status).toBe('done');
+  });
+  it('appends optional items (required:false, status optional) after the required steps', () => {
+    const steps = setupChecklist({}, {}, [
+      { key: 'git-identity', label: 'Git identity', why: 'stamped on commits' },
+      { key: 'github', label: 'GitHub sign-in', why: 'clone/push private repos' },
+    ]);
+    expect(steps.map((s) => s.key)).toEqual([
+      'framework',
+      'signin',
+      'embeddings',
+      'opt-git-identity',
+      'opt-github',
+    ]);
+    const opts = steps.filter((s) => s.required === false);
+    expect(opts.every((s) => s.status === 'optional')).toBe(true);
+    expect(opts.map((s) => s.label)).toEqual(['Git identity', 'GitHub sign-in']);
   });
   it('degrades gracefully with no snapshot', () => {
     expect(setupChecklist(undefined).map((s) => s.key)).toEqual(['framework', 'signin', 'embeddings']);

@@ -88,7 +88,7 @@ async function checkPi(): Promise<Check> {
     name: 'pi',
     status: 'missing',
     detail: 'omp not on PATH or known install paths',
-    hint: 'Install via: `npm install -g @oh-my-pi/cli` (or see https://github.com/can1357/oh-my-pi). Required — omp is the default agent backend.',
+    hint: 'Install it from Setup (`papercusp setup`) or run `psu --agent=omp` and accept the install prompt — both download the omp binary from https://github.com/can1357/oh-my-pi releases. (`@oh-my-pi/cli` on npm is a dead ref; do not use it.)',
   };
 }
 

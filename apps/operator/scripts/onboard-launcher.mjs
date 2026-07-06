@@ -29,7 +29,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
-export const FRAMEWORKS = ['claude', 'codex'];
+export const FRAMEWORKS = ['claude', 'codex', 'omp'];
+
+/** One-line picker description per framework. Pure; exported for tests. */
+export const FRAMEWORK_DESCRIPTIONS = {
+  claude: 'Just the claude CLI signed into your Claude subscription.',
+  codex: 'The codex CLI (OpenAI), driven the same way.',
+  omp: 'oh-my-pi (omp) — a multi-provider CLI agent; downloaded from GitHub releases.',
+};
 
 /** Owner-specified intro banner — verbatim (plan D: intro message). */
 export const INTRO_BANNER =
@@ -213,10 +220,7 @@ async function main() {
             name:
               `${labels[f]}${detected.has(f) ? dim('  (already installed)') : ''}` +
               (f === 'claude' ? dim('  — recommended, simplest') : ''),
-            description:
-              f === 'claude'
-                ? 'Just the claude CLI signed into your Claude subscription.'
-                : 'The codex CLI (OpenAI), driven the same way.',
+            description: FRAMEWORK_DESCRIPTIONS[f] ?? `Install and use ${labels[f] ?? f}.`,
           })),
         });
         session.forcePick = false;
@@ -254,6 +258,7 @@ async function main() {
         const specKey = {
           claude: 'loginClaude',
           codex: 'loginCodex',
+          omp: 'loginOmp',
         }[stage.framework];
         await runSpec(cmds[specKey]);
         // Not signed in yet (user aborted / flow needs a browser round-trip)?
@@ -268,19 +273,34 @@ async function main() {
 
       case 'embeddings': {
         say(
-          'One more (optional but recommended): an OpenAI API key for ' +
-            bold('embeddings') +
-            ' — it makes search and agent memory dramatically better.',
+          bold('Required — Memory (mem0): an OpenAI embeddings key.') +
+            '\nPapercusp uses it to power agent memory and semantic search. This is a ' +
+            'required setup step; you can skip it for now, but memory stays OFF and your ' +
+            'setup is marked incomplete until you add one.',
         );
-        const wants = await confirm({ message: 'Add an OpenAI embeddings key now?', default: true });
+        const wants = await confirm({
+          message: 'Add your OpenAI embeddings key now? (recommended)',
+          default: true,
+        });
         if (!wants) {
           session.embeddingsSkipped = true;
-          say(dim('Skipped — you can add it later in Settings or by re-running onboarding.'));
+          say(
+            dim('⚠ Skipped — ') +
+              bold('memory (mem0) is DISABLED and your setup is INCOMPLETE.') +
+              dim(
+                ' Add a key any time with `papercusp setup`; psu will remind you on each launch until you do.',
+              ),
+          );
           break;
         }
         const key = await password({ message: 'Paste your OpenAI API key (input hidden):', mask: '*' });
         if (!key?.trim()) {
           session.embeddingsSkipped = true;
+          say(
+            dim('⚠ No key entered — ') +
+              bold('memory stays DISABLED and setup is INCOMPLETE.') +
+              dim(' Add one later with `papercusp setup`.'),
+          );
           break;
         }
         await api(base, '/credentials', {
@@ -288,7 +308,7 @@ async function main() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ openai_api_key: key.trim() }),
         });
-        say('Saved. ✓');
+        say(bold('Saved. ✓') + dim(' Memory (mem0) is now enabled.'));
         break; // re-resolve → handoff
       }
 

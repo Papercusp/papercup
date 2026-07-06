@@ -4,18 +4,41 @@
  *
  * Ported from app/api/desktop/setup-pty-commands/route.ts. `auth: {}`.
  */
-import { platform, homedir } from 'node:os';
+import { platform, homedir, arch as osArch } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { allowedFrameworks, type OnboardingFramework } from '../../../onboarding/stage-resolver';
 
-// oh-my-pi has NO live npm package (`oh-my-pi` was unpublished 2026-05-21;
-// `@oh-my-pi/cli` never existed — a dead ref here 404s and aborts the whole
-// npm step, taking the codex install down with it; found live on the Windows
-// VM 2026-06-12). The omp binary ships bundled in the desktop sidecar on the
-// platforms that support it (D-006 @ windows-desktop-release-readiness:
-// Windows v1 has no omp) — it is not installable from here.
 const CODEX_PACKAGE = '@openai/codex';
+
+// oh-my-pi (binary `omp`) has NO live npm package (`oh-my-pi` was unpublished
+// 2026-05-21; `@oh-my-pi/cli` never existed — a dead ref there 404s). It ships
+// as a prebuilt binary on github.com/can1357/oh-my-pi releases (the SAME asset
+// the desktop sidecar bundles), so we install it by downloading that binary
+// directly into a PATH+detected location — no Homebrew/npm needed, uniform on
+// every OS. ⚠ KEEP OMP_VERSION in sync with the sidecar bundle pin in
+// papercusp-desktop/bin/build-desktop-sidecar.sh (OMP_VERSION).
+const OMP_VERSION = 'v14.5.14';
+const OMP_RELEASE_BASE = `https://github.com/can1357/oh-my-pi/releases/download/${OMP_VERSION}`;
+
+/**
+ * The oh-my-pi release asset filename for an OS+arch, or null when upstream ships
+ * no build for it. Upstream publishes omp-{darwin,linux}-{x64,arm64} and a single
+ * omp-windows-x64.exe. `os` is `process.platform`, `arch` is `os.arch()`. Pure.
+ */
+export function ompReleaseAsset(os: string, arch: string): string | null {
+  const a = arch === 'arm64' ? 'arm64' : 'x64';
+  if (os === 'darwin') return `omp-darwin-${a}`;
+  if (os === 'linux') return `omp-linux-${a}`;
+  if (os === 'win32') return 'omp-windows-x64.exe'; // upstream ships x64 only on Windows
+  return null;
+}
+
+/** Full download URL for the current host's omp asset (null when unsupported). Pure. */
+export function ompDownloadUrl(os: string, arch: string): string | null {
+  const asset = ompReleaseAsset(os, arch);
+  return asset ? `${OMP_RELEASE_BASE}/${asset}` : null;
+}
 
 export interface SpawnSpec {
   command: string;
@@ -87,17 +110,18 @@ export function buildFrameworkInstallSpec(
   framework: OnboardingFramework,
   os: string,
   home: string,
+  arch: string = osArch(),
 ): SpawnSpec {
+  const ompUrl = ompDownloadUrl(os, arch);
   if (os === 'win32') {
-    const script =
-      framework === 'claude'
-        ? `
+    const scripts: Record<OnboardingFramework, string> = {
+      claude: `
 $ErrorActionPreference = 'Stop'
 Write-Host '==> installing Claude Code'
 Invoke-WebRequest -UseBasicParsing -Uri https://claude.ai/install.ps1 | Select-Object -ExpandProperty Content | Invoke-Expression
 Write-Host '==> done'
-`
-        : `
+`,
+      codex: `
 $ErrorActionPreference = 'Stop'
 $runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
@@ -107,10 +131,32 @@ if (-not (Test-Path (Join-Path $runtime 'package.json'))) {
 Write-Host '==> installing codex'
 npm install --prefix $runtime --no-audit --no-fund ${CODEX_PACKAGE}@latest
 Write-Host '==> done'
-`;
+`,
+      // omp: download the prebuilt binary into %USERPROFILE%\.papercusp\bin and
+      // add that dir to the PERSISTENT user PATH (non-destructively) so a future
+      // shell resolves a bare `omp`. detectOmp also probes this path directly so
+      // the wizard sees it as installed without a shell restart.
+      omp: ompUrl
+        ? `
+$ErrorActionPreference = 'Stop'
+Write-Host '==> installing oh-my-pi (omp)'
+$dir = Join-Path $env:USERPROFILE '.papercusp\\bin'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$dst = Join-Path $dir 'omp.exe'
+Invoke-WebRequest -UseBasicParsing -Uri '${ompUrl}' -OutFile $dst
+$userPath = [Environment]::GetEnvironmentVariable('Path','User')
+if (-not (($userPath -split ';') -contains $dir)) {
+  [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $dir), 'User')
+  Write-Host '==> added omp to your user PATH (restart your terminal to pick it up)'
+}
+Write-Host "==> installed omp -> $dst"
+Write-Host '==> done'
+`
+        : `Write-Host 'No oh-my-pi build is published for this platform; see https://github.com/can1357/oh-my-pi'`,
+    };
     return {
       command: 'powershell.exe',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', scripts[framework]],
       cwd: home,
       env: {},
     };
@@ -131,6 +177,22 @@ echo '==> installing codex'
 npm install --prefix ~/.papercusp/runtime --no-audit --no-fund ${CODEX_PACKAGE}@latest
 echo '==> done'
 `,
+    // omp: download the prebuilt binary into ~/.local/bin (where the official
+    // claude installer also lands, and which detectOmp probes) + chmod +x. If it
+    // isn't on PATH, print an actionable hint rather than silently failing later.
+    omp: ompUrl
+      ? `set -e
+echo '==> installing oh-my-pi (omp)'
+mkdir -p ~/.local/bin
+curl -fsSL '${ompUrl}' -o ~/.local/bin/omp
+chmod +x ~/.local/bin/omp
+echo '==> installed omp -> ~/.local/bin/omp'
+if ! command -v omp >/dev/null 2>&1; then
+  echo 'NOTE: ~/.local/bin is not on your PATH — add this to your shell profile so \`omp\` is found: export PATH="$HOME/.local/bin:$PATH"'
+fi
+echo '==> done'
+`
+      : `echo 'No oh-my-pi build is published for this platform; see https://github.com/can1357/oh-my-pi'`,
   };
   return { command: 'bash', args: ['-c', scripts[framework]], cwd: home, env: {} };
 }
@@ -285,8 +347,8 @@ export default defineTool({
   handler(req: Request) {
     const os = platform();
     const home = homedir();
-    // Per-framework specs for the onboarding concierge (P-001): only the
-    // frameworks this OS supports (win32 has no omp path).
+    // Per-framework specs for the onboarding concierge (P-001) — claude, codex,
+    // AND omp, installable on every OS (omp via a direct GitHub-release download).
     const installFramework = Object.fromEntries(
       allowedFrameworks(os).map((f) => [f, buildFrameworkInstallSpec(f, os, home)]),
     ) as Partial<Record<OnboardingFramework, SpawnSpec>>;

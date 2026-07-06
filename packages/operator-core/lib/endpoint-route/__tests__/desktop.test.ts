@@ -46,8 +46,11 @@ import desktopGitIdentity from '../routes/desktop/git-identity';
 import desktopPreflight from '../routes/desktop/preflight';
 import desktopSetupPtyCommands, {
   buildInstallSpec,
+  buildFrameworkInstallSpec,
   buildLoginSpec,
   buildGithubLoginSpec,
+  ompReleaseAsset,
+  ompDownloadUrl,
 } from '../routes/desktop/setup-pty-commands';
 import desktopSetupWizardState from '../routes/desktop/setup-wizard-state';
 import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
@@ -104,6 +107,54 @@ describe('buildInstallSpec', () => {
 
   it('env is empty (inherits the parent process env)', () => {
     expect(buildInstallSpec('linux', '/home/u').env).toEqual({});
+  });
+});
+
+describe('ompReleaseAsset / ompDownloadUrl', () => {
+  it('maps each OS+arch to the upstream release asset', () => {
+    expect(ompReleaseAsset('darwin', 'arm64')).toBe('omp-darwin-arm64');
+    expect(ompReleaseAsset('darwin', 'x64')).toBe('omp-darwin-x64');
+    expect(ompReleaseAsset('linux', 'arm64')).toBe('omp-linux-arm64');
+    expect(ompReleaseAsset('linux', 'x64')).toBe('omp-linux-x64');
+    // upstream ships x64 only on Windows
+    expect(ompReleaseAsset('win32', 'arm64')).toBe('omp-windows-x64.exe');
+    expect(ompReleaseAsset('freebsd', 'x64')).toBeNull();
+  });
+  it('builds a can1357/oh-my-pi releases download URL', () => {
+    const url = ompDownloadUrl('linux', 'x64');
+    expect(url).toContain('https://github.com/can1357/oh-my-pi/releases/download/');
+    expect(url).toContain('/omp-linux-x64');
+    expect(ompDownloadUrl('freebsd', 'x64')).toBeNull();
+  });
+});
+
+describe('buildFrameworkInstallSpec (per-framework onboarding installs)', () => {
+  it('omp unix: downloads the release binary into ~/.local/bin + chmod +x (no npm, no brew)', () => {
+    const script = buildFrameworkInstallSpec('omp', 'linux', '/home/u', 'x64').args[1];
+    expect(script).toContain('github.com/can1357/oh-my-pi/releases/download');
+    expect(script).toContain('omp-linux-x64');
+    expect(script).toContain('~/.local/bin/omp');
+    expect(script).toContain('chmod +x');
+    expect(script).not.toContain('@oh-my-pi/cli'); // never the dead npm ref
+    expect(script).not.toContain('npm install');
+  });
+  it('omp macOS arm64: picks the darwin-arm64 asset', () => {
+    const script = buildFrameworkInstallSpec('omp', 'darwin', '/Users/u', 'arm64').args[1];
+    expect(script).toContain('omp-darwin-arm64');
+  });
+  it('omp windows: powershell downloads to %USERPROFILE%\\.papercusp\\bin + persists PATH', () => {
+    const spec = buildFrameworkInstallSpec('omp', 'win32', 'C:\\Users\\u', 'x64');
+    expect(spec.command).toBe('powershell.exe');
+    const script = spec.args[spec.args.indexOf('-Command') + 1];
+    expect(script).toContain('omp-windows-x64.exe');
+    expect(script).toContain('.papercusp\\bin');
+    expect(script).toContain("SetEnvironmentVariable('Path'");
+  });
+  it('claude / codex per-framework specs are unchanged (claude installer / codex npm)', () => {
+    expect(buildFrameworkInstallSpec('claude', 'linux', '/home/u').args[1]).toContain(
+      'claude.ai/install.sh',
+    );
+    expect(buildFrameworkInstallSpec('codex', 'linux', '/home/u').args[1]).toContain('@openai/codex');
   });
 });
 
@@ -211,6 +262,11 @@ describe('desktop route ports', () => {
     expect(endsWithOrBash(body.loginClaude.command, 'claude')).toBe(true);
     expect(endsWithOrBash(body.loginOmp.command, 'omp')).toBe(true);
     expect(endsWithOrBash(body.loginGithub.command, 'gh')).toBe(true);
+    // Per-framework installers for ALL three backends, incl. omp (installable
+    // cross-platform now via a GitHub-release download).
+    expect(body.installFramework.claude?.command).toBeTruthy();
+    expect(body.installFramework.codex?.command).toBeTruthy();
+    expect(body.installFramework.omp?.command).toBeTruthy();
   });
 
   it('OPTIONS /desktop/preflight answers the CORS preflight with 204', async () => {
