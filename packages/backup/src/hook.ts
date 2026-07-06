@@ -37,25 +37,34 @@ import { backupHost } from './config';
 
 // Keep the hot-state dump bounded and restorable. A full database dump on the
 // standing dev box includes multi-GB telemetry/audit streams and plugin schemas
-// the harness_admin role cannot read; that made the hook produce only a tiny
-// pg_dumpall header while logging success. The release-critical state we need to
-// prove in restore drills lives in these durable tables: harness registry,
-// plans, work items, backup metadata, and operator/hive settings.
-const CRITICAL_TABLES = [
-  'harness_shared.harness_registry',
-  'harness_shared.hive_settings',
-  'harness_shared.operator_settings',
-  'harness_shared.orchestrator_settings',
-  'harness_shared.pr_reviewer_settings',
-  'harness_shared.workspace_backup_settings',
-  'harness_shared.backup_snapshots',
-  'harness_shared.harness_plans',
-  'harness_shared.harness_plan_parts',
-  'harness_shared.harness_plan_status',
-  'harness_shared.plan_revisions',
-  'harness_shared.plan_item_assignments',
-  'harness_shared.plan_item_claims',
-  'harness_shared.work_items',
+// the harness_admin role cannot read; pg_dumpall also needs pg_authid privileges
+// harness_admin deliberately lacks. Dump the complete harness_shared SCHEMA so a
+// clean restore gets functions/triggers/indexes, but omit DATA for high-volume,
+// derived telemetry tables. Release-critical state (plans, work items, backup
+// metadata, settings, etc.) remains included with data.
+const EXCLUDED_TABLE_DATA = [
+  'harness_shared.route_invocations',
+  'harness_shared.tool_invocations',
+  'harness_shared.harness_run_output',
+  'harness_shared.test_runs',
+  'harness_shared.session_turns',
+  'harness_shared.decision_ledger',
+  'harness_shared.agent_activity',
+  'harness_shared.coord_event_log',
+  'harness_shared.operator_turns',
+  'harness_shared.hive_throughput_ticks',
+  'harness_shared.substrate_outbox',
+  'harness_shared.pipeline_events',
+  'harness_shared.operator_curation_log',
+  'harness_shared.backup_events',
+  'harness_shared.memory_vec_openai',
+  'harness_shared.event_wake_deliveries',
+  'harness_shared.shared_presence',
+  'harness_shared.benchmark_rollout',
+  'harness_shared.spawned_agents',
+  'harness_shared.agent_usage_samples',
+  'harness_shared.telemetry_reports_archive',
+  'harness_shared.audit_log',
 ] as const;
 
 /**
@@ -133,14 +142,15 @@ async function dumpPg(opts: {
       '-d', opts.database,
       '--no-owner',
       '--no-privileges',
-      ...CRITICAL_TABLES.flatMap((table) => ['-t', table]),
+      '-n', 'harness_shared',
+      ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
-    // pg_dump with explicit -t entries emits CREATE TABLE statements, but it
-    // does not emit CREATE SCHEMA for the table namespace. Keep the clone dump
-    // psql-restorable into a completely clean database.
+    // Belt-and-suspenders: the -n harness_shared dump includes CREATE SCHEMA;
+    // keep an idempotent preamble so older selected-table snapshots are still
+    // psql-restorable if this helper is partially reused.
     gz.stdin.write('CREATE SCHEMA IF NOT EXISTS harness_shared;\n\n');
     dump.stdout.pipe(gz.stdin);
     gz.stdout.pipe(out);

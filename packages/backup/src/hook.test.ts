@@ -93,8 +93,10 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     await runPreSnapshotHook(ctx);
     const c = pgDumpCall()!;
     expect(c).toBeDefined();
-    expect(c.args).toEqual(expect.arrayContaining(['-h', 'db.local', '-p', '6789', '-U', 'alice', '-w', '-d', 'x', '--no-owner', '--no-privileges']));
-    expect(c.args).toEqual(expect.arrayContaining(['-t', 'harness_shared.work_items', '-t', 'harness_shared.workspace_backup_settings']));
+    expect(c.args).toEqual(expect.arrayContaining(['-h', 'db.local', '-p', '6789', '-U', 'alice', '-w', '-d', 'x', '--no-owner', '--no-privileges', '-n', 'harness_shared']));
+    expect(c.args).toContain('--exclude-table-data=harness_shared.route_invocations');
+    expect(c.args).toContain('--exclude-table-data=harness_shared.tool_invocations');
+    expect(c.args).not.toContain('-t');
   });
 
   it('falls back to port 5432 when the URL omits a port', async () => {
