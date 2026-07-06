@@ -288,6 +288,85 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     sample(12, 12); // catches up before ever alarming
     expect(recoveries).toHaveLength(0);
   });
+
+  // EI-7834: a FROZEN log whose replicator DETACHES (peers → 0) must report a
+  // frozen recovery so its durable EI auto-closes. The frozen-recovery path only
+  // fires on ingest-progress / caught-up, neither of which can happen with 0
+  // peers, so before this the frozen latch stayed set and the frozen EI orphaned
+  // open forever (observed pile-up: log 298a676c froze, then lost its replicator —
+  // the no_replicator/zombie EIs cycled but the frozen EI never resolved).
+  it('reports recovery with kind=frozen when the replicator detaches (peers→0) after a freeze alarm', () => {
+    const episodes: ReplicationStallEpisode[] = [];
+    const recoveries: ReplicationStallEpisode[] = [];
+    let now = 1_000_000;
+    const sample = (len: number, pos: number, peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: len, mergedPosition: pos, peersCount: peers },
+        {
+          graceMs: GRACE,
+          nowMs: now,
+          onStallEpisode: (e) => episodes.push(e),
+          onRecovery: (e) => recoveries.push(e),
+        },
+      );
+
+    sample(10, 4, 1); // behind, replicator attached — seeds the progress clock
+    now += GRACE;
+    sample(10, 4, 1); // zero ingest for a whole grace window → frozen alarm
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('frozen');
+    expect(recoveries).toHaveLength(0);
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
+      'frozen',
+    );
+
+    // The replicator detaches while still frozen. The frozen premise (attached)
+    // is gone → exactly ONE frozen recovery fires (so the EI auto-closes), and the
+    // frozen latch clears (the verdict no longer reads 'frozen').
+    now += 2_000;
+    sample(10, 4, 0);
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]!.kind).toBe('frozen');
+    expect(recoveries[0]!.logKeyHex).toBe(KEY);
+    expect(recoveries[0]!.stalledForMs).toBeGreaterThanOrEqual(GRACE);
+    expect(recoveries[0]!.detail).toContain('replicator detached');
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).not.toBe(
+      'frozen',
+    );
+
+    // No double-report: staying detached does not re-fire the frozen recovery,
+    // and the now-detached log settles into the no_replicator axis past grace.
+    now += GRACE;
+    sample(10, 4, 0);
+    expect(recoveries.filter((r) => r.kind === 'frozen')).toHaveLength(1);
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
+      'no_replicator',
+    );
+  });
+
+  it('a behind log that never crossed the freeze grace fires NO frozen recovery when its replicator detaches', () => {
+    const recoveries: ReplicationStallEpisode[] = [];
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 10, mergedPosition: 4, peersCount: peers },
+        {
+          graceMs: GRACE,
+          nowMs: now,
+          onStallEpisode: () => {},
+          onRecovery: (e) => recoveries.push(e),
+        },
+      );
+
+    sample(1); // behind, attached — but never held past grace
+    now += 2_000; // well within grace
+    sample(0); // replicator detaches before ever freeze-alarming
+    expect(recoveries.filter((r) => r.kind === 'frozen')).toHaveLength(0);
+  });
 });
 
 describe('read-time verdicts + registry lifecycle', () => {

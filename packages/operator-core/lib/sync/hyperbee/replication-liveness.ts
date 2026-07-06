@@ -420,22 +420,61 @@ export function sampleReplicationLiveness(
             `${Math.round(priorStallMs / 1000)}s with none`,
         });
       }
-    } else if (
-      st.lastNonZeroPeersMs !== null &&
-      !st.alarmedNoReplicator &&
-      now - st.lastNonZeroPeersMs >= graceMs
-    ) {
-      st.alarmedNoReplicator = true;
-      onEpisode({
-        workspaceId,
-        harnessSlug,
-        logKeyHex: sample.keyHex,
-        kind: 'no_replicator',
-        stalledForMs: now - st.lastNonZeroPeersMs,
-        detail:
-          `log=${sample.keyHex.slice(0, 12)}… has had 0 live replicator peers for ` +
-          `${Math.round((now - st.lastNonZeroPeersMs) / 1000)}s (was previously replicating)`,
-      });
+    } else {
+      // peersCount === 0: the replicator has DETACHED.
+      //
+      // EI-7834: a prior FROZEN alarm's premise ("replicator ATTACHED but
+      // ingesting nothing") no longer holds once no replicator is attached — the
+      // log is now a no_replicator stall (fired just below), NOT frozen. Clear the
+      // frozen latch and REPORT its recovery so the durable frozen EI auto-closes
+      // instead of stranding open forever. Without this, a log that froze and then
+      // lost its replicator kept `alarmedFrozen` latched (deriveVerdict keeps
+      // reading 'frozen') and the per-log frozen-recovery path — which only fires
+      // on ingest-progress / caught-up — can NEVER run with 0 peers, so the frozen
+      // EI sat open permanently (the observed orphaned-frozen-EI pile-up: log
+      // 298a676c froze → EI filed → replicator detached → no_replicator/zombie EIs
+      // fired but the frozen EI never resolved). Mirrors the drop-path recovery
+      // (EI-7788) and the ingest-resume recovery (EI-4643): a frozen condition that
+      // ENDS — however it ends — must report so its EI does not orphan.
+      if (st.alarmedFrozen) {
+        const frozenStallMs =
+          st.lastIngestProgressMs !== null ? now - st.lastIngestProgressMs : 0;
+        st.alarmedFrozen = false;
+        // Fresh freeze-clock: if the replicator later re-attaches while still
+        // behind, it earns a full grace window from the re-attach, not an instant
+        // re-alarm carried over the detached stretch.
+        st.lastIngestProgressMs = now;
+        onRecovery({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'frozen',
+          stalledForMs: frozenStallMs,
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… frozen condition ended after ` +
+            `${Math.round(frozenStallMs / 1000)}s — replicator detached ` +
+            `(now tracked as no_replicator; the frozen-ingest concern no longer applies)`,
+        });
+      }
+      // no_replicator alarm — a log that WAS replicating has held 0 peers past
+      // grace (unchanged behavior).
+      if (
+        st.lastNonZeroPeersMs !== null &&
+        !st.alarmedNoReplicator &&
+        now - st.lastNonZeroPeersMs >= graceMs
+      ) {
+        st.alarmedNoReplicator = true;
+        onEpisode({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'no_replicator',
+          stalledForMs: now - st.lastNonZeroPeersMs,
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… has had 0 live replicator peers for ` +
+            `${Math.round((now - st.lastNonZeroPeersMs) / 1000)}s (was previously replicating)`,
+        });
+      }
     }
   }
 
