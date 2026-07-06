@@ -211,6 +211,13 @@ export interface VerificationFailureRecord {
   expClaim?: number | null;
   remoteAddr?: string | null;
   userAgent?: string | null;
+  /**
+   * WI-3190: 'rotation_strand' (a previously-authenticated spawn whose key was
+   * rotated out from under it — must be re-spawned) vs 'unverified' (first-seen /
+   * malformed / escalation attempt). Lets the on-call dashboard filter the
+   * actionable re-spawn queue instead of conflating strands with attacks.
+   */
+  classification?: FailureClassification | null;
 }
 
 /** Persist a verification failure for the dashboard / on-call review. */
@@ -226,6 +233,7 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
       expClaim: rec.expClaim ?? null,
       remoteAddr: rec.remoteAddr ?? null,
       userAgent: rec.userAgent ?? null,
+      classification: rec.classification ?? null,
     });
   } catch (err) {
     // Never fail the request because of audit-write failure; but log loud.
@@ -234,12 +242,30 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
   }
 }
 
+export interface RotationBlastRadius {
+  rotatedAt: string;
+  /**
+   * How many distinct spawns THIS operator process had actively authenticated
+   * (and therefore just invalidated). A cross-process rotate strands more than
+   * this — this is the lower-bound this process can speak to authoritatively.
+   */
+  invalidatedSpawnCount: number;
+  /** Up to 200 of the just-invalidated spawns, most-recently-active first. */
+  invalidatedSpawns: Array<{ spawn: string; role: string | null; harness: string | null }>;
+}
+
 /**
- * Rotate the signing key. Every in-flight signed URL fails its next
- * call after this returns; the orchestrator will need to re-spawn.
+ * Rotate the signing key. Every in-flight signed URL fails its next call after
+ * this returns; the orchestrator will need to re-spawn anything affected.
  * Loopback + superuser-bearer gated at the route level.
+ *
+ * WI-3190: returns a BLAST-RADIUS report (and logs it loudly) so a rotate is an
+ * ACCOUNTED-FOR revocation, not a silent one — the admin route surfaces it to
+ * whoever triggered the rotate. We do NOT clear the verified-spawn set here: it
+ * is exactly what lets each stranded spawn's NEXT (failing) call be recognised
+ * as a rotation-strand rather than an attack (see classifyAndConsumeFailure).
  */
-export async function rotateSpawnSigningKey(): Promise<void> {
+export async function rotateSpawnSigningKey(): Promise<RotationBlastRadius> {
   const { db } = getOrgPg();
   const fresh_b64 = randomBytes(32).toString('base64');
   await db
@@ -250,4 +276,146 @@ export async function rotateSpawnSigningKey(): Promise<void> {
       set: { valueB64: dsql`EXCLUDED.value_b64`, rotatedAt: dsql`now()` },
     });
   _resetSpawnSigningKeyCache();
+
+  const m = verifiedSpawns();
+  const invalidatedSpawns = Array.from(m.entries())
+    .sort((a, b) => b[1].lastVerifiedMs - a[1].lastVerifiedMs)
+    .slice(0, 200)
+    .map(([spawn, meta]) => ({ spawn, role: meta.role, harness: meta.harness }));
+  const report: RotationBlastRadius = {
+    rotatedAt: new Date().toISOString(),
+    invalidatedSpawnCount: m.size,
+    invalidatedSpawns,
+  };
+  if (report.invalidatedSpawnCount > 0) {
+
+    console.warn(
+      `[spawn-signing][ROTATE] key rotated — ${report.invalidatedSpawnCount} live spawn(s) this ` +
+        `operator was serving are now INVALIDATED and must be re-spawned (each fails its next MCP ` +
+        `call with spawn_sig_invalid_signature): ` +
+        invalidatedSpawns
+          .map((s) => `${s.spawn}(${s.role ?? '?'}/${s.harness ?? '?'})`)
+          .join(', '),
+    );
+  }
+  return report;
+}
+
+// ── Rotation-strand detection + self-recovery guidance (WI-3190) ─────────────
+//
+// A key rotation is a COARSE revocation: every in-flight signed spawn URL fails
+// its next verify with `invalid_signature` — byte-identical to a role-escalation
+// ATTEMPT. To tell an operational strand (a previously-authenticated agent whose
+// key was rotated out from under it) from an attack, we remember the spawns THIS
+// process has successfully verified. A later signature failure for one of them is
+// definitively a strand (an attacker's forged URL was never verified), so we can
+// classify it, alert on it (once), and account for a rotate's blast radius.
+
+export interface VerifiedSpawnMeta {
+  role: string | null;
+  harness: string | null;
+  workspace: string | null;
+  lastVerifiedMs: number;
+}
+
+/** Cap on distinct tracked spawns (LRU-evicted); bounds memory on a long-lived host. */
+const VERIFIED_SPAWNS_CAP = 4000;
+
+const __gv = globalThis as unknown as {
+  __papercuspVerifiedSpawns?: Map<string, VerifiedSpawnMeta>;
+};
+function verifiedSpawns(): Map<string, VerifiedSpawnMeta> {
+  return (__gv.__papercuspVerifiedSpawns ??= new Map());
+}
+
+/** Test-only: reset the in-process verified-spawn tracker. */
+export function _resetVerifiedSpawns(): void {
+  __gv.__papercuspVerifiedSpawns = new Map();
+}
+
+/**
+ * Record a spawn whose signed URL just verified OK — called from the MCP handler
+ * on every successful verification. Insertion-order = recency (re-inserted on
+ * refresh); evicts the oldest past the cap.
+ */
+export function recordVerifiedSpawn(meta: {
+  spawn: string | null | undefined;
+  role?: string | null;
+  harness?: string | null;
+  workspace?: string | null;
+  nowMs?: number;
+}): void {
+  const spawn = meta.spawn;
+  if (!spawn) return;
+  const m = verifiedSpawns();
+  m.delete(spawn);
+  m.set(spawn, {
+    role: meta.role ?? null,
+    harness: meta.harness ?? null,
+    workspace: meta.workspace ?? null,
+    lastVerifiedMs: meta.nowMs ?? Date.now(),
+  });
+  if (m.size > VERIFIED_SPAWNS_CAP) {
+    const overflow = m.size - VERIFIED_SPAWNS_CAP;
+    let i = 0;
+    for (const k of m.keys()) {
+      m.delete(k);
+      if (++i >= overflow) break;
+    }
+  }
+}
+
+export type FailureClassification = 'rotation_strand' | 'unverified';
+
+/**
+ * Classify a verification failure AND consume the strand signal (dedupe): the
+ * FIRST signature/expiry failure for a spawn this process previously verified is
+ * a `rotation_strand`; we then drop it from the tracker so subsequent failures
+ * for the same dead spawn don't re-alert. Single sync call → atomic within a tick.
+ */
+export function classifyAndConsumeFailure(
+  reason: string,
+  spawn: string | null | undefined,
+): FailureClassification {
+  const revocationReason = reason === 'invalid_signature' || reason === 'expired';
+  if (revocationReason && spawn && verifiedSpawns().has(spawn)) {
+    verifiedSpawns().delete(spawn);
+    return 'rotation_strand';
+  }
+  return 'unverified';
+}
+
+/**
+ * Actionable self-recovery guidance for a spawn-signing rejection, appended to
+ * the agent-visible error (WI-3190). A rotation-strand session CANNOT self-heal
+ * by retrying — every native mcp__papercusp__* call keeps failing identically —
+ * so it must switch transports or be re-spawned. Runbook: EI-1740/EI-1750.
+ */
+export function spawnSigFailureGuidance(reason: string): string {
+  switch (reason) {
+    case 'invalid_signature':
+    case 'expired':
+      return (
+        'Your per-spawn signing credential is no longer valid — the spawn-signing key was rotated ' +
+        '(coarse revocation), so EVERY native mcp__papercusp__* call from this session will keep ' +
+        'failing identically. This session cannot self-heal by retrying. Recover NOW: route tool ' +
+        'calls through scripts/mcp-call.mjs (superuser bearer — bypasses spawn-URL signing) and/or ' +
+        'ask your leader/orchestrator to RE-SPAWN this session. Runbook: docs:search "mcp-call.mjs ' +
+        'recovery" (EI-1740/EI-1750).'
+      );
+    case 'missing_sig':
+    case 'missing_exp':
+    case 'missing_sig_required_mode':
+      return (
+        "This session's spawn URL is missing its signature. If tool access was working and this " +
+        'appeared abruptly, the signing key was likely rotated — recover via scripts/mcp-call.mjs ' +
+        '(superuser bearer) or request a re-spawn. Otherwise the MCP URL is malformed.'
+      );
+    default:
+      return (
+        'Spawn-signature verification failed. If tool access was working and stopped abruptly, the ' +
+        'signing key was likely rotated — recover via scripts/mcp-call.mjs (superuser bearer) or ' +
+        'request a re-spawn (runbook EI-1740/EI-1750).'
+      );
+  }
 }

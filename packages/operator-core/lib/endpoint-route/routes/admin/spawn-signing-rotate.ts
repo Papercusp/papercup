@@ -14,8 +14,11 @@ export default defineTool({
   auth: { trust: ['trusted'] },
   async handler() {
     try {
-      await rotateSpawnSigningKey();
-      return Response.json({ ok: true, rotatedAt: new Date().toISOString() });
+      // WI-3190: the report enumerates the spawns THIS operator just invalidated,
+      // so whoever triggers a rotate SEES the blast radius (who must be re-spawned)
+      // instead of the rotate being a silent revocation.
+      const blastRadius = await rotateSpawnSigningKey();
+      return Response.json({ ok: true, rotatedAt: blastRadius.rotatedAt, blastRadius });
     } catch (err) {
       return Response.json(
         { error: 'rotate_failed', detail: err instanceof Error ? err.message : String(err) },

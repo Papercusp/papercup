@@ -78,7 +78,13 @@ import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
+import {
+  classifyAndConsumeFailure,
+  logVerificationFailure,
+  recordVerifiedSpawn,
+  spawnSigFailureGuidance,
+  verifySpawnParams,
+} from '../../../spawn-signing';
 import { verifyAccessToken } from '../../../power-user-token';
 import {
   parseToolsAllowlist,
@@ -677,24 +683,54 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   if (hasSig || hasExp) {
     const v = await verifySpawnParams(url);
     if (!v.ok) {
+      const spawn = url.searchParams.get('spawn');
+      const role = url.searchParams.get('role');
+      const harness = url.searchParams.get('harness');
+      // WI-3190: classify a strand (a spawn this process previously authenticated,
+      // now rejected because its key was rotated) apart from an attack, and dedupe
+      // the alert. This is the single mutating consume — do it once.
+      const classification = classifyAndConsumeFailure(v.reason, spawn);
       await logVerificationFailure({
         reason: v.reason,
-        claimedRole: url.searchParams.get('role'),
-        claimedHarness: url.searchParams.get('harness'),
+        claimedRole: role,
+        claimedHarness: harness,
         claimedWorkspace: url.searchParams.get('workspace'),
-        claimedSpawn: url.searchParams.get('spawn'),
+        claimedSpawn: spawn,
         expClaim: hasExp ? Number(url.searchParams.get('exp')) : null,
         remoteAddr,
         userAgent,
+        classification,
       });
-       
-      console.warn(
-        `[spawn-signing] rejected MCP request: ${v.reason} (role=${url.searchParams.get('role')}, ` +
-          `harness=${url.searchParams.get('harness')}, spawn=${url.searchParams.get('spawn')})`,
-      );
-      return { kind: 'failed', reason: `spawn_sig_${v.reason}` };
+      if (classification === 'rotation_strand') {
+        // A previously-working session just lost all tool access to a key rotation.
+        // Loud + structured (console.error, not warn) so it stands out in the
+        // operator journal as an actionable re-spawn, not routine escalation noise.
+
+        console.error(
+          `[spawn-signing][INCIDENT] rotation_strand — a previously-authenticated spawn was just ` +
+            `rejected (signing key rotated out from under it). spawn=${spawn} role=${role} ` +
+            `harness=${harness}. It will ZOMBIE unless re-spawned or switched to scripts/mcp-call.mjs.`,
+        );
+      } else {
+
+        console.warn(
+          `[spawn-signing] rejected MCP request: ${v.reason} (role=${role}, ` +
+            `harness=${harness}, spawn=${spawn})`,
+        );
+      }
+      // Enrich the agent-visible reason with actionable self-recovery guidance
+      // (WI-3190 ask c) while keeping the stable `spawn_sig_<reason>` token prefix
+      // that surfaces at both tools/call and tools/list.
+      return { kind: 'failed', reason: `spawn_sig_${v.reason} — ${spawnSigFailureGuidance(v.reason)}` };
     }
     sigVerified = true;
+    // WI-3190: remember this spawn so a later rotation-strand is recognisable.
+    recordVerifiedSpawn({
+      spawn: url.searchParams.get('spawn'),
+      role: url.searchParams.get('role'),
+      harness: url.searchParams.get('harness'),
+      workspace: url.searchParams.get('workspace'),
+    });
   } else if (requireSig && claimsSpawn) {
     await logVerificationFailure({
       reason: 'missing_sig_required_mode',
@@ -705,7 +741,10 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       remoteAddr,
       userAgent,
     });
-    return { kind: 'failed', reason: 'spawn_sig_missing_sig_required_mode' };
+    return {
+      kind: 'failed',
+      reason: `spawn_sig_missing_sig_required_mode — ${spawnSigFailureGuidance('missing_sig_required_mode')}`,
+    };
   } else {
     // Soft-warn period: allow unsigned URLs but log so we can see the
     // transition progress.

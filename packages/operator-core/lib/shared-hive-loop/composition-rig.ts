@@ -433,6 +433,9 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'bug',
       ADD COLUMN IF NOT EXISTS assigned_by text,
       ADD COLUMN IF NOT EXISTS assigned_at timestamptz,
+      -- issue-family progress signal (mig 509, mirrors the feature-family's) —
+      -- getIssueInWorkspace's ISSUE_COLS selects it, so it must EXIST or 42703.
+      ADD COLUMN IF NOT EXISTS last_progress_at timestamptz,
       ADD COLUMN IF NOT EXISTS payload jsonb,
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
