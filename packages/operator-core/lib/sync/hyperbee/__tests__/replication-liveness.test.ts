@@ -439,11 +439,11 @@ describe('durable EI escalation (replication-stall-ei)', () => {
     it('resolves the matching open EI with a recovery note', async () => {
       const title = replicationStallEiTitle(episode);
       const { deps, resolved } = fakeDeps([{ id: 'EI-7110', title }]);
-      const id = await resolveReplicationStallEi(
+      const ids = await resolveReplicationStallEi(
         { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'regained a peer after 300s' },
         deps,
       );
-      expect(id).toBe('EI-7110');
+      expect(ids).toEqual(['EI-7110']);
       expect(resolved).toHaveLength(1);
       expect(resolved[0]!.id).toBe('EI-7110');
       expect(resolved[0]!.note).toContain('auto-resolved');
@@ -452,22 +452,62 @@ describe('durable EI escalation (replication-stall-ei)', () => {
 
     it('no-ops when no open EI matches the title (already resolved, or never crossed the escalation grace)', async () => {
       const { deps, resolved } = fakeDeps([]);
-      const id = await resolveReplicationStallEi(
+      const ids = await resolveReplicationStallEi(
         { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'recovered' },
         deps,
       );
-      expect(id).toBeNull();
+      expect(ids).toEqual([]);
       expect(resolved).toHaveLength(0);
     });
 
     it('a DIFFERENT kind for the same log does not resolve an unrelated open EI (title is kind-scoped)', async () => {
       const { deps, resolved } = fakeDeps([{ id: 'EI-1', title: replicationStallEiTitle({ ...episode, kind: 'frozen' }) }]);
-      const id = await resolveReplicationStallEi(
+      const ids = await resolveReplicationStallEi(
         { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'recovered' },
         deps,
       );
-      expect(id).toBeNull();
+      expect(ids).toEqual([]);
       expect(resolved).toHaveLength(0);
+    });
+
+    it('EI-6772: resolves ALL duplicate open EIs for one (harness, log, kind), not just the first', async () => {
+      // Duplicate opens arise legitimately across the federated multi-machine
+      // ledger: two machines each file an origin:remote EI for one stall before
+      // the other replicates in (exactly EI-6772 + its sibling EI-7764 — same
+      // harness/log/kind). A .find recovery closed EI-7764 and stranded EI-6772
+      // open forever; the .filter fix sweeps up every duplicate on recovery.
+      const title = replicationStallEiTitle(episode);
+      const { deps, resolved } = fakeDeps([
+        { id: 'EI-7764', title },
+        { id: 'EI-6772', title },
+      ]);
+      const ids = await resolveReplicationStallEi(
+        { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'regained a peer after 180s' },
+        deps,
+      );
+      expect(ids).toEqual(['EI-7764', 'EI-6772']);
+      expect(resolved.map((r) => r.id)).toEqual(['EI-7764', 'EI-6772']);
+      for (const r of resolved) expect(r.note).toContain('auto-resolved');
+    });
+
+    it('resolves the healthy siblings even when one resolve() call throws (per-EI best-effort)', async () => {
+      const title = replicationStallEiTitle(episode);
+      const { deps, resolved } = fakeDeps([
+        { id: 'EI-A', title },
+        { id: 'EI-B', title },
+      ]);
+      const inner = deps.resolve;
+      deps.resolve = async (id, note) => {
+        if (id === 'EI-A') throw new Error('transient PG failure');
+        await inner(id, note);
+      };
+      const ids = await resolveReplicationStallEi(
+        { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'recovered' },
+        deps,
+      );
+      // EI-A's resolve threw, but EI-B is still closed (siblings never stranded).
+      expect(ids).toEqual(['EI-B']);
+      expect(resolved.map((r) => r.id)).toEqual(['EI-B']);
     });
   });
 });

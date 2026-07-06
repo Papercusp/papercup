@@ -209,29 +209,49 @@ export type RecoveredStallEpisode = Pick<StallEiEpisode, 'harnessSlug' | 'logKey
  * surfaced EI-7110 itself: a fleet member 20h downstream of the stall, unable to
  * cheaply confirm whether it had already self-healed).
  *
- * No-ops (returns null) when no open EI matches the stable dedup title — that is
+ * Resolves EVERY open EI matching the stable (harness, log, kind) title — not
+ * just the first (EI-6772 class). Duplicate open EIs for the SAME condition arise
+ * legitimately across the FEDERATED, multi-machine issue ledger: two machines can
+ * each file an `origin:remote` EI for one stall before the other's row replicates
+ * in, and neither the per-process `inFlight` guard nor a racing `listOpenByTopic`
+ * dedup can see the other machine's not-yet-replicated row. A `.find` recovery
+ * then closes ONLY one and strands every duplicate open forever — exactly what
+ * left EI-6772 open while its sibling EI-7764 (same harness/log/kind, both
+ * `origin:remote`) auto-resolved on the same recovery. Returns the ids actually
+ * resolved.
+ *
+ * No-ops (returns `[]`) when no open EI matches the stable dedup title — that is
  * the NORMAL case (recovered before ever crossing the escalation's OWN grace, or
  * already resolved by an earlier recovery). Best-effort: a resolve failure never
  * throws back into the merge pass that calls it (the registry verdict already
- * reads 'live' regardless of whether the durable EI closes).
+ * reads 'live' regardless of whether the durable EI closes) — each EI is resolved
+ * independently so one failure never strands its siblings.
  */
 export async function resolveReplicationStallEi(
   recovery: RecoveredStallEpisode,
   deps?: ReplicationStallEiDeps,
-): Promise<string | null> {
+): Promise<string[]> {
   const title = replicationStallEiTitle(recovery);
   // Same VITEST safety gate as fileReplicationStallEi (EI-6987): a unit test
   // exercising the DETECTION logic with a real reporter (no deps override) must
   // never touch production PG.
-  if (process.env.VITEST && !deps) return null;
+  if (process.env.VITEST && !deps) return [];
   try {
     const d = deps ?? (await defaultDeps());
     const open = await d.listOpenByTopic(REPLICATION_LIVENESS_TOPIC);
-    const match = open.find((i) => i.title === title);
-    if (!match) return null;
-    await d.resolve(match.id, `auto-resolved: replication recovered — ${recovery.detail}`);
-    return match.id;
+    const matches = open.filter((i) => i.title === title);
+    if (matches.length === 0) return [];
+    const resolvedIds: string[] = [];
+    for (const match of matches) {
+      try {
+        await d.resolve(match.id, `auto-resolved: replication recovered — ${recovery.detail}`);
+        resolvedIds.push(match.id);
+      } catch {
+        /* per-EI best-effort: one resolve failure must not strand its siblings */
+      }
+    }
+    return resolvedIds;
   } catch {
-    return null; // best-effort: the registry verdict already reads 'live'
+    return []; // best-effort: the registry verdict already reads 'live'
   }
 }
