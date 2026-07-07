@@ -256,7 +256,27 @@ export function EnvSwitcherBar() {
     };
   }, [barVisible]);
 
-  if (!barVisible) return null;
+  // TEMP-DIAGNOSTIC (WI-3287, REVERT AFTER): the packaged Linux build has no
+  // devtools/inspector, so surface WHY the bar hides in a screenshot-readable
+  // badge. Shows list_envs (tauri) vs dev-operators (http) counts.
+  if (!barVisible)
+    return (
+      <div
+        data-testid="env-dbg"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          zIndex: 2147483647,
+          background: 'crimson',
+          color: 'white',
+          font: '11px monospace',
+          padding: '2px 6px',
+        }}
+      >
+        {`ENVDBG tauri=${tauriEnvs === null ? 'null' : tauriEnvs.length} http=${httpOps.length} envOps=${envOps.length} dataOk=${data ? String(data.ok) : 'no-data'}`}
+      </div>
+    );
 
   const currentPort =
     typeof window !== 'undefined' && window.location.port ? Number(window.location.port) : NaN;
