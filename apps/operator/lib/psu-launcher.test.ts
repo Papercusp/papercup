@@ -2499,6 +2499,102 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
     }).catch(() => {});
     expect(notices.filter((m) => /Papercusp app's server .* isn't answering .* checking for 5s/.test(m))).toHaveLength(1);
   });
+
+  // ── stale-shell heal (mac VM owner repro 2026-07-07): a dead env-pinned
+  //    target fails over to a health-checked live operator instead of burning
+  //    the whole budget on a port the terminal window outlived. ──
+
+  const envTarget = { url: 'http://127.0.0.1:59999', source: 'env', startedAt: null };
+
+  it('dead env pin + healthy discovery fallback → switches, adopts, and succeeds on the live operator', async () => {
+    const clock = fakeClock();
+    const seen: string[] = [];
+    const fetchImpl = async (u: string) => {
+      seen.push(u);
+      if (u.startsWith('http://127.0.0.1:59999')) connFail();
+      return { ok: true, id: 'live' } as unknown as Response;
+    };
+    const notices: string[] = [];
+    const adopted: Array<{ url: string }> = [];
+    const res = await fetchWithResilience('http://127.0.0.1:59999/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m),
+      connectBudgetMs: 30_000, target: envTarget,
+      resolveFallback: () => [{ url: 'http://127.0.0.1:21960', source: 'discovery', startedAt: null }],
+      onFailover: (t: { url: string }) => adopted.push(t),
+    });
+    expect((res as unknown as { id: string }).id).toBe('live');
+    expect(seen).toContain('http://127.0.0.1:21960/api/health'); // health-gated, not a blind switch
+    expect(seen).toContain('http://127.0.0.1:21960/x'); // request rebased onto the live origin
+    expect(adopted.map((t) => t.url)).toEqual(['http://127.0.0.1:21960']); // adopted session-wide
+    expect(notices.some((m) => /switching/.test(m) && /PAPERCUSP_OPERATOR_URL/.test(m))).toBe(true);
+  });
+
+  it('an UNHEALTHY fallback candidate is skipped — no switch, original budget-exhausted failure', async () => {
+    const clock = fakeClock();
+    const adopted: string[] = [];
+    const fetchImpl = async (u: string) => {
+      if (u.endsWith('/api/health')) return { ok: false } as unknown as Response; // candidate up but unhealthy
+      connFail();
+      return undefined as unknown as Response;
+    };
+    await expect(
+      fetchWithResilience('http://127.0.0.1:59999/x', {}, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
+        connectBudgetMs: 5_000, target: envTarget,
+        resolveFallback: () => [{ url: 'http://127.0.0.1:21960', source: 'discovery', startedAt: null }],
+        onFailover: (t: { url: string }) => adopted.push(t.url),
+      }),
+    ).rejects.toThrow(/PAPERCUSP_OPERATOR_URL .* refused connections .* unset PAPERCUSP_OPERATOR_URL/s);
+    expect(adopted).toEqual([]); // never adopted an unhealthy target
+  });
+
+  it('failover is attempted exactly ONCE per call, and never for a caller-custom URL outside the target base', async () => {
+    const clock = fakeClock();
+    let resolves = 0;
+    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    await fetchWithResilience('http://127.0.0.1:59999/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
+      connectBudgetMs: 10_000, target: envTarget,
+      resolveFallback: () => { resolves += 1; return []; },
+    }).catch(() => {});
+    expect(resolves).toBe(1);
+
+    resolves = 0;
+    await fetchWithResilience('http://other-host:1234/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
+      connectBudgetMs: 5_000, target: envTarget,
+      resolveFallback: () => { resolves += 1; return []; },
+    }).catch(() => {});
+    expect(resolves).toBe(0); // custom URL not under target.url — never rebased
+  });
+});
+
+describe('resolveFallbackOperatorTargets (stale-shell heal candidate ladder)', () => {
+  it('lists proxy then discovery (from operator.json) then dev default, excluding the dead URL', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-fallback-'));
+    try {
+      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      writeFileSync(
+        join(home, '.papercusp', 'operator.json'),
+        JSON.stringify({ httpUrl: 'http://127.0.0.1:21960', startedAt: Date.now() }),
+      );
+      const out = resolveFallbackOperatorTargets({ env: {}, home, excludeUrls: ['http://127.0.0.1:59999'] });
+      expect(out.map((c) => c.source)).toEqual(['proxy', 'discovery', 'dev-default']);
+      expect(out[1]!.url).toBe('http://127.0.0.1:21960');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('respects PAPERCUSP_MCP_PROXY=0 (no proxy candidate) and a missing operator.json', () => {
+    const home = mkdtempSync(join(tmpdir(), 'psu-fallback-'));
+    try {
+      const out = resolveFallbackOperatorTargets({ env: { PAPERCUSP_MCP_PROXY: '0' }, home });
+      expect(out.map((c) => c.source)).toEqual(['dev-default']);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('operator endpoint resolution (desktop vs dev box)', () => {
