@@ -75,6 +75,10 @@ export interface ClaudeKeychainOAuthBundle {
 export interface KeychainAccess {
   read(service: string): string | null;
   write(service: string, account: string, secret: string): boolean;
+  /** Enumerate generic-password items (service + account) — METADATA only (`dump-keychain`
+   *  without `-d`), so no secret is read and no unlock/ACL prompt is raised. Optional so
+   *  existing test fakes keep compiling; callers treat absent/erroring as an empty list. */
+  list?(): { service: string; account: string | null }[];
 }
 
 const defaultKeychainAccess: KeychainAccess = {
@@ -90,6 +94,35 @@ const defaultKeychainAccess: KeychainAccess = {
          session) / errored → treated as not-found */
     }
     return null;
+  },
+  list() {
+    try {
+      const r = spawnSync('security', ['dump-keychain'], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      if (r.status !== 0 || typeof r.stdout !== 'string') return [];
+      // Each item block prints its `"acct"<blob>="…"` attribute before its `"svce"<blob>="…"`,
+      // so pair the last-seen account with the next service line.
+      const items: { service: string; account: string | null }[] = [];
+      let account: string | null = null;
+      for (const line of r.stdout.split('\n')) {
+        const a = /"acct"<blob>="([^"]*)"/.exec(line);
+        if (a) {
+          account = a[1];
+          continue;
+        }
+        const s = /"svce"<blob>="([^"]*)"/.exec(line);
+        if (s) {
+          items.push({ service: s[1], account });
+          account = null;
+        }
+      }
+      return items;
+    } catch {
+      return [];
+    }
   },
   write(service, account, secret) {
     try {
@@ -137,6 +170,29 @@ export function readClaudeKeychainOAuthBundle(
     }
   }
   return null;
+}
+
+/**
+ * Every Claude Code credential Keychain item on this Mac: the base `Claude Code-credentials`
+ * item PLUS the per-`CLAUDE_CONFIG_DIR` siblings (`Claude Code-credentials-<sha256(configDir)
+ * first-8-hex>`) — Claude Code keeps ONE rotating OAuth bundle PER config dir, refreshed by
+ * whichever CLI session runs in it, so on a fleet box the base item is typically a STALE
+ * snapshot while a hashed sibling holds the live token family member (the 2026-07-06
+ * fleet-member-login root cause). Metadata only — enumerating raises no unlock/ACL prompt.
+ * Empty off macOS or on any `security` error.
+ */
+export function listClaudeKeychainCredentialItems(
+  platform: NodeJS.Platform = process.platform,
+): { service: string; account: string | null }[] {
+  if (platform !== 'darwin') return [];
+  const base = CLAUDE_KEYCHAIN_SERVICES[0];
+  const all = keychainAccess.list?.() ?? [];
+  return all.filter(
+    (m) =>
+      m.service === base ||
+      m.service.startsWith(`${base}-`) ||
+      m.service === CLAUDE_KEYCHAIN_SERVICES[1],
+  );
 }
 
 /**

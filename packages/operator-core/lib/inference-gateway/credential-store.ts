@@ -20,8 +20,11 @@
  */
 import { promises as fs } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { getOAuthToken, type TokenStorage } from '../oauth/token';
 import { getProvider, registerProvider, makeClaudeProvider } from '../oauth/providers';
+import { listClaudeKeychainCredentialItems, writeClaudeKeychainOAuthBundle } from '../agent-auth-detect';
 
 /** The OAuth beta flag a subscription (non-API-key) request must carry. */
 export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
@@ -109,21 +112,28 @@ export interface CredentialResolver {
   /** Force the next `current()` to re-read/refresh (call after an upstream 401). */
   invalidate(): void;
   /** The credential channel: `token` (a setup-token, never refreshes), `file` (a bundle the
-   *  gateway refreshes near expiry), or `keychain` (the macOS login-Keychain bundle — READ-ONLY:
-   *  Claude Code owns the item + its refresh; the gateway re-READS near expiry instead of
-   *  refreshing). All are subscription OAuth → Bearer + the oauth beta. */
+   *  gateway refreshes near expiry), or `keychain` (the macOS local-credential FRESHEST-SCAN —
+   *  serves the newest live bundle across the base Keychain item, every per-config-dir sibling
+   *  and the disk bundle, self-refreshing only when all of them are hard-expired; see the
+   *  channel comment above). All are subscription OAuth → Bearer + the oauth beta. */
   readonly kind: 'token' | 'file' | 'keychain';
 }
 
-// ── macOS Keychain channel (P-006, cross-platform-hardening) ───────────────────
-// Claude Code on macOS stores the SAME `.credentials.json` bundle JSON as a login-Keychain
-// generic-password (service label: agent-auth-detect's CLAUDE_KEYCHAIN_SERVICES). Reading the
-// SECRET (`-w`) is deliberate here — unlike the metadata-only sign-in probe — because the gateway
-// needs the token itself. ⚠ Keychain ACL: the item was created by Claude Code, so the FIRST
-// `security` read on a Mac may raise an "allow access" GUI prompt (click "Always Allow" once).
-// READ-ONLY by design: writing the item back (refresh) from a non-creating binary risks both a
-// second ACL wall and corrupting Claude Code's own entry — Claude Code refreshes it as it runs, so
-// the resolver re-reads near expiry and fails with actionable guidance if the bundle went stale.
+// ── macOS local-credential channel (`keychain:`) — the FRESHEST-SCAN resolver ──────────────────
+// Claude Code on macOS stores the SAME `.credentials.json` bundle JSON as login-Keychain
+// generic-passwords — but NOT as one item: the base 'Claude Code-credentials' item belongs to the
+// default `~/.claude` config, and every CLAUDE_CONFIG_DIR session owns a hashed sibling
+// ('Claude Code-credentials-<sha256(configDir) first-8-hex>') that it refreshes AS IT RUNS.
+// Anthropic OAuth refresh tokens are single-use and ROTATE on every refresh, so any one snapshot
+// (the base item, or a ~/.claude/.credentials.json file) is dead the first time a rotation happens
+// elsewhere in the family. Serving one fixed item is exactly how the gateway spent weeks 401ing
+// every fleet member while a live CLI kept a fresh bundle two Keychain items away (the recurring
+// "fleet member not logged in", root-caused 2026-07-06). The channel therefore SCANS every local
+// source — the named base item, every enumerated Claude Code Keychain sibling, and the disk
+// bundle — and serves the freshest live token; only when EVERYTHING is hard-expired does it
+// refresh the freshest refreshable bundle itself, persisting the rotated result back (Keychain
+// write-back, disk fallback). Reading a SECRET (`-w`) may raise a one-time "allow access" GUI
+// prompt on some Macs (click "Always Allow"); enumeration is metadata-only and never prompts.
 
 /** Read the Keychain item's secret payload, or null when absent/unreadable. Injectable for tests
  *  (there is no `security` off macOS). */
@@ -162,6 +172,152 @@ export function readClaudeKeychainBundle(service: string): ClaudeCredentialBundl
     throw new Error(`inference-gateway: Keychain item '${service}' is not a credentials-bundle JSON`);
   }
 }
+
+/** One readable local Claude credential bundle found by the freshest-scan. */
+export interface LocalCredentialCandidate {
+  /** Log identity + write-back routing: `keychain:<service>` or `file:<path>`. */
+  ref: string;
+  kind: 'keychain' | 'file';
+  service?: string;
+  account?: string | null;
+  path?: string;
+  bundle: ClaudeCredentialBundle;
+}
+
+/** The global disk bundle — a scan candidate, and the persist fallback when a Keychain
+ *  write-back is refused. Honors $HOME (like every other path in this module) so tests
+ *  can redirect it off the real box credential. */
+export function localCredentialsFilePath(): string {
+  return join(process.env.HOME ?? homedir(), '.claude', '.credentials.json');
+}
+
+/**
+ * Every readable local Claude credential bundle: the named base Keychain item, every enumerated
+ * Claude Code Keychain sibling (per-CLAUDE_CONFIG_DIR items — see the channel comment above), and
+ * the `~/.claude/.credentials.json` disk bundle. Unreadable / non-bundle / token-less sources are
+ * skipped silently — the scan's job is to find SOMETHING live, not to validate every snapshot.
+ */
+export async function scanLocalCredentialCandidates(baseService: string): Promise<LocalCredentialCandidate[]> {
+  const out: LocalCredentialCandidate[] = [];
+  const metas = new Map<string, string | null>([[baseService, null]]);
+  for (const m of listClaudeKeychainCredentialItems()) {
+    if (!metas.has(m.service) || m.account) metas.set(m.service, m.account);
+  }
+  for (const [service, account] of metas) {
+    const raw = keychainReader(service);
+    if (!raw) continue;
+    try {
+      const bundle = JSON.parse(raw.trim()) as ClaudeCredentialBundle;
+      if (bundle?.claudeAiOauth?.accessToken) {
+        out.push({ ref: `keychain:${service}`, kind: 'keychain', service, account, bundle });
+      }
+    } catch {
+      /* not a credential bundle — skip */
+    }
+  }
+  const filePath = localCredentialsFilePath();
+  try {
+    const bundle = JSON.parse(await fs.readFile(filePath, 'utf8')) as ClaudeCredentialBundle;
+    if (bundle?.claudeAiOauth?.accessToken) {
+      out.push({ ref: `file:${filePath}`, kind: 'file', path: filePath, bundle });
+    }
+  } catch {
+    /* absent / unreadable — fine */
+  }
+  return out;
+}
+
+/**
+ * Pick what the freshest-scan serves. `live` = the candidate with the LATEST known-future expiry
+ * (a known-future expiry beats no-expiry — fleet boxes accumulate stale no-expiry junk bundles),
+ * else any unknown-expiry one. `refreshables` = the all-expired refresh order: every candidate
+ * carrying a refreshToken, freshest first — rotation invalidates older refresh tokens, so the
+ * newest bundle holds the family's most-likely-valid one. Pure; exported for tests.
+ */
+export function selectLocalCredential(
+  candidates: LocalCredentialCandidate[],
+  now: number,
+): { live?: LocalCredentialCandidate; refreshables: LocalCredentialCandidate[] } {
+  const expOf = (c: LocalCredentialCandidate) => c.bundle.claudeAiOauth?.expiresAt ?? 0;
+  const future = candidates.filter((c) => expOf(c) > now).sort((a, b) => expOf(b) - expOf(a));
+  const unknown = candidates.filter((c) => !expOf(c));
+  const refreshables = candidates
+    .filter((c) => c.bundle.claudeAiOauth?.refreshToken)
+    .sort((a, b) => expOf(b) - expOf(a));
+  return { live: future[0] ?? unknown[0], refreshables };
+}
+
+/**
+ * Persist a rotated bundle. The refresh CONSUMED the old refresh token (single-use), so losing the
+ * rotated result strands every holder of the old one — persist tries the source Keychain item
+ * first (same service+account), then the global disk bundle (atomic, 0600). A total persist
+ * failure still leaves the fresh token serving from memory — better a live gateway plus one lost
+ * rotation than a dead gateway — but it warns loudly, because the NEXT all-expired refresh on that
+ * source will fail.
+ */
+async function persistLocalCandidate(c: LocalCredentialCandidate): Promise<void> {
+  if (c.kind === 'keychain') {
+    const account = c.account ?? process.env.USER ?? '';
+    if (account && writeClaudeKeychainOAuthBundle(c.service!, account, JSON.stringify(c.bundle))) return;
+  }
+  const filePath = c.kind === 'file' ? c.path! : localCredentialsFilePath();
+  try {
+    await fs.mkdir(dirname(filePath), { recursive: true });
+    const tmp = `${filePath}.tmp-${process.pid}`;
+    await fs.writeFile(tmp, JSON.stringify(c.bundle, null, 2), { mode: 0o600 });
+    await fs.rename(tmp, filePath);
+  } catch (e) {
+    console.warn(
+      `[inference-gateway:warn] rotated credential bundle could not be persisted anywhere (${c.ref} → ${filePath}): ` +
+        `${scrubSecrets((e as Error).message)} — serving it from memory; the next all-expired refresh on this source will fail`,
+    );
+  }
+}
+
+/** OAuth-refresh one scanned candidate via the claude provider and persist the rotated bundle
+ *  back to its source. Returns the fresh token + its expiry for the resolver cache. */
+async function refreshLocalCandidate(
+  c: LocalCredentialCandidate,
+  dedupKey: string,
+): Promise<{ token: string; expiresAt: number }> {
+  ensureClaudeProvider();
+  const FIELD = 'access';
+  let persistedExpiresAt = c.bundle.claudeAiOauth?.expiresAt ?? 0;
+  const storage: TokenStorage = {
+    async read() {
+      const o = c.bundle.claudeAiOauth;
+      return { [FIELD]: o?.accessToken, [`${FIELD}_refresh`]: o?.refreshToken, [`${FIELD}_expires_at`]: o?.expiresAt ?? null };
+    },
+    async update(_plugin, _harness, patch) {
+      const o = c.bundle.claudeAiOauth ?? ({} as NonNullable<ClaudeCredentialBundle['claudeAiOauth']>);
+      if (typeof patch[FIELD] === 'string') o.accessToken = patch[FIELD] as string;
+      if (typeof patch[`${FIELD}_refresh`] === 'string') o.refreshToken = patch[`${FIELD}_refresh`] as string;
+      if (`${FIELD}_expires_at` in patch) {
+        const v = patch[`${FIELD}_expires_at`];
+        o.expiresAt = typeof v === 'number' ? v : undefined;
+      }
+      c.bundle.claudeAiOauth = o;
+      persistedExpiresAt = o.expiresAt ?? 0;
+      await persistLocalCandidate(c);
+    },
+  };
+  const token = await getOAuthToken(
+    { plugin: 'inference-gateway', harness: `${dedupKey}:${c.ref}`, storage, resolveProvider: () => ({ provider: 'claude' }) },
+    FIELD,
+  );
+  if (!token) throw new Error('refresh yielded no access token');
+  return { token: normalizeBearerToken(token), expiresAt: persistedExpiresAt };
+}
+
+/** Bound the freshest-scan frequency: a near-expiry token re-scans at most this often (the scan
+ *  shells out to `security` dozens of times — never per-request), and an UNAUTHENTICATED verdict
+ *  is re-derived at most this often (keeps a signed-out box from hammering the OAuth endpoint
+ *  with a consumed refresh token on every member request). */
+const LOCAL_SCAN_MIN_INTERVAL_MS = 15_000;
+
+/** Cap the all-expired refresh attempts per scan (distinct refresh tokens, freshest first) —
+ *  a fleet box carries dozens of stale snapshots and each attempt is a network call. */
+const LOCAL_REFRESH_MAX_ATTEMPTS = 5;
 
 /**
  * Collapse a raw credential string to the single header-safe token it is meant to be. A bearer is
