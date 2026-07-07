@@ -83,7 +83,6 @@ import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry 
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
-import { loadEpochKeyIfPresent } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-crypto-impl';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -239,7 +238,12 @@ export async function collectSeedEpochKeys(inp: {
   readonly warn?: (msg: string) => void;
 }): Promise<Map<number, Uint8Array>> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
-  const loadKey = inp.loadKey ?? loadEpochKeyIfPresent;
+  // Lazy like hive-epoch-serving's crypto resolve: crypto-impl sits next to the
+  // native sodium loader, and only the real keychain path needs it.
+  const loadKey =
+    inp.loadKey ??
+    (async (h: string, e: number) =>
+      (await import('@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-crypto-impl')).loadEpochKeyIfPresent(h, e));
   const keys = new Map<number, Uint8Array>();
   for (let epoch = 0; epoch < inp.cutAtEpoch; epoch++) {
     const key = await loadKey(inp.hive, epoch);
