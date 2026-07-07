@@ -81,9 +81,9 @@ describe('reflectedStatus — work_item state → plan-item status', () => {
 });
 
 describe('plan-item-reflect:complete', () => {
-  it('fires plans:set-status → done with the stamp scope on a stamped completion', () => {
+  it('fires plans:set-status → done with the stamp scope on a completion that lands a terminal-success state', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
-    const e = evt('work_items:complete', stamped('open', { completion: { summary: 's' } }));
+    const e = evt('work_items:complete', stamped('resolved', { completion: { summary: 's' } }));
     expect(fires(rule, e)).toBe(true);
     expect(renderArgs(rule, e)).toMatchObject({
       harness: 'papercup',
@@ -93,12 +93,28 @@ describe('plan-item-reflect:complete', () => {
     });
   });
 
-  it('does NOT fire without a completion record or without a stamp', () => {
+  it('EI-8353: a completion that CLOSES/deprecates the item reflects → dropped, never done', () => {
+    const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
+    const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
+    expect(fires(rule, closed)).toBe(true);
+    expect(renderArgs(rule, closed)).toMatchObject({ itemId: 'P-007', status: 'dropped' });
+
+    const deprecated = evt('work_items:complete', stamped('deprecated', { completion: { summary: 's' } }));
+    expect(fires(rule, deprecated)).toBe(true);
+    expect(renderArgs(rule, deprecated)).toMatchObject({ itemId: 'P-007', status: 'dropped' });
+  });
+
+  it('does NOT fire without a completion record, without a stamp, or when the resulting state is non-terminal', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     expect(fires(rule, evt('work_items:complete', stamped('open')))).toBe(false); // no completion
     expect(
       fires(rule, evt('work_items:complete', { ok: true, workItem: { id: 'WI-9' }, completion: {} })),
     ).toBe(false); // unconverted work_item — no stamp
+    // EI-8353: a completion recorded WITHOUT a terminal `state` transition (item stays
+    // 'open'/claimable) must never flip the plan item to done.
+    expect(
+      fires(rule, evt('work_items:complete', stamped('open', { completion: { summary: 's' } }))),
+    ).toBe(false);
   });
 });
 

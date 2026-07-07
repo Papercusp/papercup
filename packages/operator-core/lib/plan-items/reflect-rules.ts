@@ -83,14 +83,28 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
   };
 }
 
-/** COMPLETE → done. A structured completion record on a converted item finishes the plan item. */
+/** COMPLETE → the MAPPED terminal status (done or dropped), same mapping as set_state —
+ *  NEVER a hardcoded 'done'. EI-8353: work_items:complete { state: 'closed', ... } (an
+ *  owner-gated/deferred close) was previously always reflected as plan-item `done`,
+ *  because this rule ignored the resulting work-item state entirely. A completion that
+ *  closes/deprecates/drops the item must reflect `dropped` (still terminal — held by no
+ *  one — but distinct from a genuinely finished `done`); a completion that leaves the
+ *  item non-terminal (no `state` passed, or a state reflectedStatus doesn't map to a
+ *  terminal outcome) must NOT flip the plan item at all. */
+const COMPLETE_REFLECTABLE = new Set(['done', 'dropped']);
+
 registerReactionRule({
   id: 'plan-item-reflect:complete',
   on: 'work_items:complete',
   when: (e) =>
-    Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion) && stampOf(e) !== null,
+    Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion) &&
+    stampOf(e) !== null &&
+    COMPLETE_REFLECTABLE.has(reflectedStatus(workItemOf(e).state) ?? ''),
   fire: 'plans:set-status',
-  args: (e) => setStatusArgs(e, 'done', 'completed'),
+  args: (e) => {
+    const wi = workItemOf(e);
+    return setStatusArgs(e, reflectedStatus(wi.state)!, wi.state ? `completed (${wi.state})` : 'completed');
+  },
   onlyOnSuccess: true,
   source: 'plan-item-reflect',
 });
