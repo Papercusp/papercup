@@ -31,6 +31,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { spawn } from 'node:child_process';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
 
@@ -56,6 +57,51 @@ interface InvokeOnceParams {
   timeoutMs?: number;
   resultPath?: string;
   forceSessionId?: string;
+}
+
+interface ExecParams {
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+function execProcess(params: ExecParams): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(params.command, params.args ?? [], {
+      cwd: params.cwd,
+      env: { ...process.env, ...(params.env ?? {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    };
+    const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} timed out after ${timeoutMs}ms — killed by the spawner sidecar guard`;
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
+            setTimeout(() => finish(-1), 20_000).unref?.();
+          }, timeoutMs)
+        : null;
+    timer?.unref?.();
+    child.stdout?.on('data', (d) => (stdout += String(d)));
+    child.stderr?.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => {
+      stderr += String(e);
+      finish(-1);
+    });
+    child.on('close', (code) => finish(code ?? -1));
+  });
 }
 
 /**
@@ -122,6 +168,21 @@ export function runSpawnerSidecarServer(): void {
           write(rpcError(-32603, err.message ?? 'Internal error', id));
         } finally {
           controllers.delete(id);
+        }
+        return;
+      }
+
+      if (req.method === 'process:exec') {
+        if (id === null) {
+          write(rpcError(-32600, 'process:exec requires an id', null));
+          return;
+        }
+        try {
+          const result = await execProcess((req.params ?? {}) as ExecParams);
+          write(rpcResult(result, id));
+        } catch (e) {
+          const err = e as { message?: string };
+          write(rpcError(-32603, err.message ?? 'Internal error', id));
         }
         return;
       }

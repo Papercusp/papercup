@@ -79,7 +79,39 @@ export const gitTimeoutMsFor = (args: string[]): number =>
 
 /** Spawn `git <args>` in `cwd`, capturing exit code + output, bounded by `timeoutMs`
  *  (never throws, never hangs). Exported so the hang guard is directly testable. */
-export const runGitBounded = (
+export function gitSyncSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') return false;
+  const explicit = env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR;
+  if (explicit != null) return explicit === '1' || explicit === 'true';
+  return env.PAPERCUSP_SPAWNER_SIDECAR === '1';
+}
+
+async function runGitViaSpawnerSidecar(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { spawnSpawnerSidecar } = await import('../../fleet/spawner-sidecar-spawn');
+  const { getSpawnerIpcClient } = await import('../../fleet/spawner-ipc-client');
+  await spawnSpawnerSidecar();
+  const client = getSpawnerIpcClient();
+  return client.call<{ code: number; stdout: string; stderr: string }>(
+    'process:exec',
+    {
+      command: 'git',
+      args,
+      cwd,
+      env,
+      timeoutMs,
+    },
+    // The sidecar process owns the actual timeout. Keep the client timeout longer
+    // so it does not race a legitimate timeout response.
+    { timeoutMs: timeoutMs + 35_000 },
+  );
+}
+
+const runGitLocalBounded = (
   args: string[],
   cwd: string,
   timeoutMs: number,
@@ -131,6 +163,34 @@ export const runGitBounded = (
       finish(code ?? -1);
     });
   });
+
+export const runGitBounded = async (
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ code: number; stdout: string; stderr: string }> => {
+  // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
+  // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
+  // is DETERMINISTIC regardless of the host's LANG — the non-FF detection + other output
+  // parsing is then reliable at the root, rather than depending on the operator's locale.
+  //
+  // PAPERCUSP_GIT_SYNC_PUSH=1: mark EVERY git invocation from the git-sync runner so the
+  // local pre-push hook (bin/git-hooks/pre-push) recognizes the automated git-sync push and
+  // SKIPS its `test:affected` author-warning gate. git-sync must stay fast + non-blocking
+  // (it commits with `--no-verify`, but `push` is NOT exempted from pre-push), so without
+  // this marker the hook would run the affected suite on the scheduled push and wedge
+  // git-sync. Mirrors green-checkpoint's PAPERCUSP_MAIN_PUSH_OK=1 push-marker pattern. The
+  // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
+  const env = { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' };
+  if (gitSyncSidecarEnabled()) {
+    try {
+      return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, env);
+    } catch (e) {
+      console.warn(`[git-sync] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return runGitLocalBounded(args, cwd, timeoutMs);
+};
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
 const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));

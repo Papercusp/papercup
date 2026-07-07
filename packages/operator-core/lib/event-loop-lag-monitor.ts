@@ -52,9 +52,11 @@ export interface LagMonitorOpts {
   /**
    * bg-host-freeze-eventloop-stall-2026-06-30 P-002: heap-snapshot-on-high-RSS.
    * When true, capture a V8 heap snapshot (.heapsnapshot) whenever process RSS
-   * crosses `heapSnapshotRssMb`. Default OFF; env PAPERCUSP_HEAP_SNAPSHOT=1 enables.
-   * The production bg-host turns this ON so a growing memory leak self-captures on
-   * the live host where a sandboxed session can't reach heap-dump tools.
+   * crosses `heapSnapshotRssMb`. Default OFF and no longer enabled by
+   * PAPERCUSP_HEAP_SNAPSHOT; only an explicit option or
+   * PAPERCUSP_FULL_HEAP_SNAPSHOT=1 turns on the blocking full snapshot path.
+   * The production bg-host should normally use heap sampling instead so a growing
+   * memory leak self-captures without freezing the live event loop.
    * All inspector use is best-effort: any failure degrades silently.
    */
   heapSnapshotOnHighRss?: boolean;
@@ -236,10 +238,13 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let lastProfileAt = 0;
   let stopped = false;
 
-  // P-002: heap-snapshot-on-high-RSS state.
+  // P-002: heap-snapshot-on-high-RSS state. WI-3255: full V8 heap snapshots
+  // pause the live loop while V8 serializes the heap, and on multi-GB bg-hosts
+  // that pause is itself a production incident. Keep full snapshots explicit-only;
+  // the sampling heap profiler below remains the default diagnostic artifact.
   const heapSnapshotOnHighRss =
     opts.heapSnapshotOnHighRss ??
-    (process.env.PAPERCUSP_HEAP_SNAPSHOT === '1' || process.env.PAPERCUSP_HEAP_SNAPSHOT === 'true');
+    (process.env.PAPERCUSP_FULL_HEAP_SNAPSHOT === '1' || process.env.PAPERCUSP_FULL_HEAP_SNAPSHOT === 'true');
   const heapSnapshotRssMb =
     opts.heapSnapshotRssMb ??
     Math.max(1, Number(process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB) || 8192);
@@ -250,7 +255,11 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let lastSnapshotAt = 0;
   // WI-1088 round 2: sampling heap profiler — armed lazily on the first tick so
   // startup cost is off the boot path; dumped at the same RSS trigger.
-  const heapSamplingOnHighRss = opts.heapSamplingOnHighRss ?? heapSnapshotOnHighRss;
+  const heapSamplingOnHighRss =
+    opts.heapSamplingOnHighRss ??
+    (heapSnapshotOnHighRss ||
+      process.env.PAPERCUSP_HEAP_SNAPSHOT === '1' ||
+      process.env.PAPERCUSP_HEAP_SNAPSHOT === 'true');
   const minHeapSamplingDumpGapMs = opts.minHeapSamplingDumpGapMs ?? minProfileGapMs;
   let samplingArmed = false;
   let samplingDumping = false;

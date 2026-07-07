@@ -29,6 +29,7 @@ import {
   runGitSync,
   runGitBounded,
   gitTimeoutMsFor,
+  gitSyncSidecarEnabled,
   type GitSyncStepRunner,
   type RunGit,
 } from './run-git-sync';
@@ -251,5 +252,22 @@ describe('WI-1416 git subprocess hang guard', () => {
     expect(local).toBe(6 * 60_000);
     expect(gitTimeoutMsFor(['-c', 'x=y', 'fetch', 'origin'])).toBe(network);
     expect(gitTimeoutMsFor(['submodule', 'status', '--recursive'])).toBe(local);
+  });
+
+  it('routes git through the sidecar only on the bg-host opt-in, never inside the sidecar itself', () => {
+    expect(gitSyncSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(
+      gitSyncSidecarEnabled({
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(
+      gitSyncSidecarEnabled({
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(gitSyncSidecarEnabled({ PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' } as NodeJS.ProcessEnv)).toBe(true);
   });
 });

@@ -44,6 +44,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 interface Recorder {
   patches: Array<Record<string, unknown>>;
   scriptRequests: URL[];
+  askBodies: Array<Record<string, unknown>>;
 }
 
 /** A stub operator serving the tutorial-script + setup-wizard-state contract. */
@@ -53,7 +54,7 @@ function startOperator(sections: unknown[]): Promise<{
   rec: Recorder;
 }> {
   return new Promise((resolve) => {
-    const rec: Recorder = { patches: [], scriptRequests: [] };
+    const rec: Recorder = { patches: [], scriptRequests: [], askBodies: [] };
     let wizardState: Record<string, unknown> = {};
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -90,16 +91,14 @@ function startOperator(sections: unknown[]): Promise<{
           res.end(JSON.stringify(wizardState));
           return;
         }
-        if (url.pathname === '/api/desktop/docs-qa') {
-          // WI-2844: Q&A is answered SERVER-SIDE now — the runner POSTs the
-          // question here and streams the answer. Emit an SSE citation + delta so
-          // the test proves the ask flow round-trips to the operator (no CLI spawn).
-          res.setHeader('content-type', 'text/event-stream');
-          res.end(
-            'event: citation\ndata: {"slug":"system/harness","title":"Harness","url":"/internal/docs/system/harness"}\n\n' +
-              'event: delta\ndata: {"text":"FAKE_DOCS_QA_ANSWER: a harness is a project crew."}\n\n' +
-              'event: done\ndata: {}\n\n',
-          );
+        if (url.pathname === '/api/desktop/docs-agent-ask') {
+          // Owner redesign (2026-07-06): Q&A no longer streams an inline answer — the
+          // runner POSTs the question here and the SERVER launches a visible agent
+          // terminal (or injects a follow-up into the open one via coord). Record the
+          // body + return the {launched} envelope so the test proves the ask round-trips
+          // and the runner surfaces the "opened a terminal" message (no CLI spawned here).
+          rec.askBodies.push(raw ? JSON.parse(raw) : {});
+          res.end(JSON.stringify({ status: 'launched', terminal: 'gnome-terminal', pid: 4242 }));
           return;
         }
         res.statusCode = 404;
@@ -210,9 +209,9 @@ describe('deterministic tutorial runner — end to end', () => {
   );
 
   it(
-    '[2] shows Details verbatim; a free-form question hits the docs-qa endpoint, then [1] continues',
+    '[2] shows Details verbatim; a free-form question launches a visible agent terminal, then [1] continues',
     async () => {
-      const { server, port } = await startOperator(TWO_SECTIONS);
+      const { server, port, rec } = await startOperator(TWO_SECTIONS);
       try {
         // section1: [2] details → ask a question → [1] continue → section2: [1] → end.
         const r = await runRunner(
@@ -222,10 +221,11 @@ describe('deterministic tutorial runner — end to end', () => {
         expect(r.code, r.stderr).toBe(0);
         // [2] rendered the section's Details verbatim.
         expect(r.stdout).toContain('DETAILS_ONE_VERBATIM.');
-        // The free-form question was routed to POST /api/desktop/docs-qa and the
-        // streamed answer + its doc citation surfaced (WI-2844).
-        expect(r.stdout).toContain('FAKE_DOCS_QA_ANSWER');
-        expect(r.stdout).toContain('/internal/docs/system/harness');
+        // Owner redesign (2026-07-06): the free-form question is POSTed to
+        // /api/desktop/docs-agent-ask, which LAUNCHES a visible agent terminal — the
+        // runner surfaces that instead of streaming an inline answer.
+        expect(rec.askBodies.map((b) => b.question)).toContain('what is a harness?');
+        expect(r.stdout).toContain('Opened an agent in a new terminal');
       } finally {
         server.close();
       }
