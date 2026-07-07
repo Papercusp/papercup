@@ -79,7 +79,8 @@ import {
   buildHarnessProjectionApply,
 } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
-import { recordBootEvent } from './boot-history';
+import { recordBootEvent, type BootHistoryKind } from './boot-history';
+import { resolveSeedLogKeys } from './seed-log-admission';
 import type Corestore from 'corestore';
 import {
   bindingResolvesHiveHomeProjection,
@@ -1109,6 +1110,42 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
   const admitted = new Map<string, AdmittedLog>();
   admitted.set(ownLog.keyHex, ownLog);
+
+  // ── WI-3288 (offline pot): admit the SEED's author logs ── The admitted-set
+  // otherwise grows ONLY via swarm announce frames (4b below), so a packaged
+  // install that cannot join the swarm (offline / gh-unauthenticated fresh box)
+  // merges NOTHING: the WI-3232 seed restore replicated the hive's cores into
+  // `store`, but no admission ever names them — pot visible, content empty.
+  // The installer-shipped manifest (hash-verified, hive-matched, and already
+  // trusted with the bundled epoch key) is the offline admission authority.
+  // Ops from these logs apply with origin='remote' (log-source provenance —
+  // never re-captured as this device's local writes), and hive-home content
+  // takes the member-guard own-slug fast path, so no announce identity is
+  // required. Best-effort: any throw degrades to today's swarm-only admission.
+  try {
+    const seedHiveHome = hiveHomeProjectionSlug ?? resolvedHiveHomeSlug;
+    if (seedHiveHome) {
+      const seedLogKeys = await resolveSeedLogKeys({ hiveHomeSlug: seedHiveHome });
+      for (const keyHex of seedLogKeys) {
+        if (keyHex === ownLog.keyHex || admitted.has(keyHex)) continue;
+        const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
+        admitted.set(keyHex, remote);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'seed_log_admitted' as BootHistoryKind,
+          `seed ${keyHex.slice(0, 8)}…`,
+        );
+      }
+    }
+  } catch (e) {
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'merge_error',
+      `seed-log admission failed (swarm-only admission continues): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 
   // WI-183: replication-stall detector state, keyed by admitted remote
   // log_core_key. See `checkReplicationStall` (called from mergeOnePass, right
