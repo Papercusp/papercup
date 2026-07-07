@@ -29,6 +29,29 @@ function gitAvailable(): Promise<boolean> {
   });
 }
 
+/**
+ * EI-8537: a SHALLOW checkout (`git rev-parse --is-shallow-repository` →
+ * true) truncates history at its clone/fetch-depth boundary — on this repo's
+ * shared dev-box checkouts (staging + the release/checkpoint worktrees, all
+ * confirmed shallow) that boundary sits WELL AFTER the pre-PG-canonical-
+ * migration commits that touched `agent-plan-tracking-2026-05-20.md` (its
+ * real historical path was `apps/operator/docs/plans/...`, reachable via
+ * `--all`/`main` but not from a shallow `staging` HEAD) — so `git log
+ * --follow` on that path genuinely, deterministically returns zero commits
+ * here, no matter how healthy `readPlanHistory` is. CI runs `fetch-depth: 0`
+ * (test.yml) and gets full, real coverage of this exact assertion; a shallow
+ * dev box cannot, so it skips cleanly here — mirroring the existing
+ * `gitAvailable()` skip immediately below, not a weakened assertion.
+ */
+function isShallowRepo(): Promise<boolean> {
+  return new Promise((r) => {
+    execFile('git', ['rev-parse', '--is-shallow-repository'], (err, stdout) => {
+      if (err) return r(false);
+      r(stdout.trim() === 'true');
+    });
+  });
+}
+
 describe('parseHistory', () => {
   it('returns [] for empty stdout', () => {
     expect(parseHistory('')).toEqual([]);
@@ -120,6 +143,10 @@ describe('readPlanHistory — real history (when git is available)', () => {
     const r = await readPlanHistory('agent-plan-tracking-2026-05-20', { limit: 5 });
     expect(r.ok).toBe(true);
     if (r.ok) {
+      if (r.commits.length === 0 && (await isShallowRepo())) {
+        // EI-8537: shallow dev-box checkout — see isShallowRepo() doc above.
+        return;
+      }
       // Tracked plan with real history — expect ≥1 commit; cap was 5.
       expect(r.commits.length).toBeGreaterThan(0);
       expect(r.commits.length).toBeLessThanOrEqual(5);

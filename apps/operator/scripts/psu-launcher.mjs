@@ -147,8 +147,57 @@ export function resolveOperatorUrl(opts = {}) {
   return resolveOperatorTarget(opts).url;
 }
 
-const OPERATOR_TARGET = resolveOperatorTarget();
-const OPERATOR_URL = OPERATOR_TARGET.url;
+// `let` (not const): fetchWithResilience fails over to a live alternative when
+// the resolved target is dead (stale-shell heal below) — every later api()
+// call / child-session URL derivation picks up the adopted target because the
+// defaults at those call sites read these bindings per call.
+let OPERATOR_TARGET = resolveOperatorTarget();
+let OPERATOR_URL = OPERATOR_TARGET.url;
+
+/**
+ * The candidate ladder for HEALING a dead operator target mid-session — the
+ * same ladder as resolveOperatorTarget MINUS the env pin (the env pin is
+ * exactly what's being healed). Candidates are NOT liveness-checked here;
+ * fetchWithResilience health-checks each in order. Exported for tests.
+ *
+ * Why this exists (owner repro, mac VM 2026-07-07): every console/fleet
+ * terminal exports PAPERCUSP_OPERATOR_URL for the operator instance that
+ * spawned it, but a desktop operator's port is per-boot dynamic — a window
+ * that outlives its operator pins a DEAD port, and psu burned the whole
+ * connect budget on it and failed ("operator unreachable") while a healthy
+ * operator sat one operator.json read away.
+ */
+export function resolveFallbackOperatorTargets({ env = process.env, home = homedir(), excludeUrls = [] } = {}) {
+  const out = [];
+  const push = (url, source, startedAt = null) => {
+    if (url && !excludeUrls.includes(url) && !out.some((c) => c.url === url)) out.push({ url, source, startedAt });
+  };
+  const proxyOptedOut = env.PAPERCUSP_MCP_PROXY === '0';
+  const proxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
+  if (!proxyOptedOut) push(`http://127.0.0.1:${proxyPort}`, 'proxy');
+  try {
+    const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
+    const startedAt = Number(d?.startedAt) > 0 ? Number(d.startedAt) : null;
+    if (d && typeof d.httpUrl === 'string' && d.httpUrl) push(d.httpUrl, 'discovery', startedAt);
+    else if (d && d.port) push(`http://127.0.0.1:${d.port}`, 'discovery', startedAt);
+  } catch {
+    /* no/!readable operator.json (the dev box) */
+  }
+  push('http://localhost:3070', 'dev-default');
+  return out;
+}
+
+/**
+ * Adopt a healed operator target session-wide: later api() calls and child
+ * sessions derive their URL from these bindings, and the env export means any
+ * child that inherits raw process.env gets the WORKING address instead of the
+ * dead pin this process was started with. Exported for tests.
+ */
+export function adoptOperatorTarget(t) {
+  OPERATOR_TARGET = t;
+  OPERATOR_URL = t.url;
+  process.env.PAPERCUSP_OPERATOR_URL = t.url;
+}
 
 /**
  * Per-request timeout (ms). `fetch` has no default timeout, so a wedged or
@@ -1764,6 +1813,12 @@ export function storeClaudeOAuthToken(token, { home = homedir() } = {}) {
  * the request lifetime and disables retry. Returns the Response (caller reads
  * the body); throws a descriptive Error when every attempt fails.
  *
+ * On repeated connection failure it additionally attempts ONE health-gated
+ * FAILOVER to a different live operator (resolveFallbackOperatorTargets:
+ * proxy → fresh operator.json → dev default) and adopts it session-wide
+ * (adoptOperatorTarget) — the stale-shell heal for terminals whose
+ * PAPERCUSP_OPERATOR_URL outlived the per-boot desktop operator port.
+ *
  * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
  * make the retry timing deterministic without real timers or sockets.
  */
@@ -1780,6 +1835,14 @@ export async function fetchWithResilience(
     timeoutRetries = TIMEOUT_RETRIES,
     label = url,
     target = OPERATOR_TARGET,
+    // Stale-shell heal (mac VM owner repro 2026-07-07): when the target keeps
+    // refusing, look ONCE for a DIFFERENT live operator (proxy → fresh
+    // operator.json → dev default), health-check it, and switch — instead of
+    // burning the whole budget on a dead per-boot port a long-lived terminal
+    // window pinned via PAPERCUSP_OPERATOR_URL.
+    resolveFallback = resolveFallbackOperatorTargets,
+    onFailover = adoptOperatorTarget,
+    healthProbeTimeoutMs = 2_000,
   } = {},
 ) {
   // A caller-supplied AbortSignal owns the request lifetime — never retry it.
@@ -1797,6 +1860,7 @@ export async function fetchWithResilience(
   const connectDeadline = now() + effectiveConnectBudgetMs;
   let timeoutRetriesLeft = timeoutRetries;
   let announcedConnRetry = false;
+  let failoverAttempted = false;
   let lastErr;
   for (;;) {
     try {
@@ -1835,6 +1899,41 @@ export async function fetchWithResilience(
         );
         announcedConnRetry = true;
       }
+      // Stale-shell heal: ONE failover attempt per call. Only when this
+      // request actually targets the failing session target (a caller-custom
+      // operatorUrl is never rebased), and only to a candidate that answers
+      // /api/health right now — a mid-restart operator's candidates all fail
+      // the health probe, so the normal ride-through behavior is unchanged.
+      if (!failoverAttempted) {
+        failoverAttempted = true;
+        const base = target?.url ?? null;
+        if (base && url.startsWith(base)) {
+          let switched = false;
+          for (const cand of resolveFallback({ excludeUrls: [base] })) {
+            try {
+              const h = await fetchImpl(`${cand.url}/api/health`, {
+                signal: AbortSignal.timeout(healthProbeTimeoutMs),
+              });
+              if (!h?.ok) continue;
+            } catch {
+              continue;
+            }
+            onNotice(
+              `psu: ${base} is not answering but a live operator is at ${cand.url} (${cand.source}) — switching. ` +
+                (target?.source === 'env'
+                  ? `This shell's PAPERCUSP_OPERATOR_URL pins a dead address (desktop operator ports change per boot); ` +
+                    `sessions launched from here now inherit the working one.\n`
+                  : `Its recorded address was stale; continuing on the live one.\n`),
+            );
+            url = cand.url + url.slice(base.length);
+            target = cand;
+            onFailover(cand);
+            switched = true;
+            break;
+          }
+          if (switched) continue; // retry immediately on the healed target
+        }
+      }
       await sleep(Math.min(2_000, remaining));
     }
   }
@@ -1851,6 +1950,14 @@ export async function fetchWithResilience(
           ? `It may be wedged — restart the Papercusp desktop app, `
           : `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), `) +
         `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
+    );
+  }
+  if (target?.source === 'env') {
+    throw new Error(
+      `the operator URL this shell pins via PAPERCUSP_OPERATOR_URL (${shownUrl}) refused connections for ` +
+        `${Math.ceil(effectiveConnectBudgetMs / 1000)}s and no live fallback operator answered either. ` +
+        `Desktop operator ports change per boot, so a terminal window can outlive its operator — open a fresh ` +
+        `terminal from the Papercusp app, or \`unset PAPERCUSP_OPERATOR_URL\` to use discovery (~/.papercusp/operator.json).`,
     );
   }
   if (isDesktop) {
