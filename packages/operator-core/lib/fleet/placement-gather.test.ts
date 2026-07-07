@@ -10,6 +10,7 @@ import {
   workItemToTask,
   partitionTasksByReadiness,
   isPlacementHardBlocked,
+  isNonPlaceableWorkItemState,
   deriveBeeAliveFromPresence,
   NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS,
 } from './placement-gather';
@@ -88,6 +89,34 @@ describe('isPlacementHardBlocked — WI-677 cursed-filter keys on genuine pathol
   it('honors a custom (lower) breaker threshold', () => {
     expect(isPlacementHardBlocked(1, 1)).toBe(true); // threshold 1 → first genuine failure blocks
     expect(isPlacementHardBlocked(0, 1)).toBe(false); // a fail_count-0 infra-curse is still re-placeable
+  });
+});
+
+describe('isNonPlaceableWorkItemState — EI-8438: the blocked-state placement floor', () => {
+  it('excludes a deliberately-parked `blocked` item (the reported WI-3265 case)', () => {
+    expect(isNonPlaceableWorkItemState('blocked')).toBe(true);
+  });
+
+  it('excludes a deliberately-parked `needs-human` item', () => {
+    expect(isNonPlaceableWorkItemState('needs-human')).toBe(true);
+  });
+
+  it('still excludes every settled/terminal state', () => {
+    for (const s of ['passed', 'deprecated', 'resolved', 'closed', 'cancelled', 'done', 'dropped', 'merged']) {
+      expect(isNonPlaceableWorkItemState(s)).toBe(true);
+    }
+  });
+
+  it('allows genuinely placeable states through', () => {
+    for (const s of ['todo', 'in_progress', 'validating', 'failing', 'wip', 'open']) {
+      expect(isNonPlaceableWorkItemState(s)).toBe(false);
+    }
+  });
+
+  it('treats a missing/empty state as placeable (back-compat — never a false exclusion)', () => {
+    expect(isNonPlaceableWorkItemState(null)).toBe(false);
+    expect(isNonPlaceableWorkItemState(undefined)).toBe(false);
+    expect(isNonPlaceableWorkItemState('')).toBe(false);
   });
 });
 

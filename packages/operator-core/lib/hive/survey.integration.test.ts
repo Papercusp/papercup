@@ -24,13 +24,22 @@ let db: FreshPgDb;
 async function seed(
   harness: string,
   id: string,
-  opts: { kind?: string; status?: string; takenBy?: string | null; createdTs?: number; planSlug?: string | null } = {},
+  opts: {
+    kind?: string;
+    status?: string;
+    takenBy?: string | null;
+    createdTs?: number;
+    planSlug?: string | null;
+    origin?: string | null;
+    auditVerdict?: string | null;
+  } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug, origin, audit_verdict)
     VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
-            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null})`;
+            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null},
+            ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
 
 beforeAll(async () => {

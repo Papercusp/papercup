@@ -35,6 +35,28 @@ const TERMINAL_STATES = new Set([
 ]);
 
 /**
+ * EI-8438: deliberate-PARK states — not settled, but also never an automatic
+ * placement candidate. `blocked` and `needs-human` are native, literal
+ * feature-family states (work-item-dispatch-states.ts FEATURE_FAMILY_STATES) —
+ * distinct from `todo` and NOT in TERMINAL_STATES — that mean "a human/owner
+ * deliberately paused this," the same floor work_items:claim_next /
+ * scheduler:get_next already enforce (both only ever request
+ * states:['todo','open','failing']; 'blocked'/'cursed' are resolver-owned
+ * floors, never requestable — D-002/WI-1912). place_batch's OWN frontier-pull
+ * was missing this floor: a dry-run proposed warm-injecting an owner-paused
+ * `blocked` work-item (WI-3265) onto a live bee. (Issue-family items collapse
+ * 'blocked'/'needs-human' to 'open' at write time — ISSUE_STATE_ALIASES — so
+ * this only ever matches a literal feature-family park; harmless no-op for
+ * issue-family rows either way.)
+ */
+const NON_PLACEABLE_PARK_STATES = new Set(['blocked', 'needs-human']);
+
+/** Is `state` ineligible for AUTOMATIC placement — settled OR a deliberate park? */
+export function isNonPlaceableWorkItemState(state: string | null | undefined): boolean {
+  return !!state && (TERMINAL_STATES.has(state) || NON_PLACEABLE_PARK_STATES.has(state));
+}
+
+/**
  * WI-677 — does a `cursed` placement HARD-BLOCK re-placement? Only a GENUINELY
  * PATHOLOGY-cursed item does — one the 3-strike breaker tripped on real task
  * failures (`fail_count >= breakerThreshold`). A `cursed` row with `fail_count`
@@ -369,8 +391,11 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: `already claimed by ${wi.assignee}` });
         continue;
       }
-      if (TERMINAL_STATES.has(wi.state)) {
-        skipped.push({ id, reason: `settled (${wi.state})` });
+      if (isNonPlaceableWorkItemState(wi.state)) {
+        skipped.push({
+          id,
+          reason: TERMINAL_STATES.has(wi.state) ? `settled (${wi.state})` : `deliberately parked (${wi.state}) — not an automatic placement candidate`,
+        });
         continue;
       }
       // G2 admission (shared-hive-trust-admission P-005): the Queen must not place a remote,
@@ -401,10 +426,13 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
     candidates = items
       // G2 admission (P-005): exclude remote, un-admitted work from placement candidates.
       // EI-865: also exclude any item the breaker has latched `cursed`.
+      // EI-8438: also exclude a deliberately-parked item (blocked/needs-human) —
+      // the same claimable-state floor work_items:claim_next / scheduler:get_next
+      // already enforce (they only ever request states:['todo','open','failing']).
       .filter(
         (wi) =>
           !wi.assignee &&
-          !TERMINAL_STATES.has(wi.state) &&
+          !isNonPlaceableWorkItemState(wi.state) &&
           !cursedIds.has(wi.id) &&
           isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
       )

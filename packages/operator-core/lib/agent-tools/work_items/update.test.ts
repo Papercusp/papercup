@@ -63,6 +63,41 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });
   });
 
+  // EI-8497: a body edit the underlying updateWorkItem rejected as a fat-finger
+  // shrink maps to a clear, actionable error (not a bare "not found").
+  describe('body-shrink guard mapping (EI-8497)', () => {
+    it('a body_shrink_guard reason maps to an actionable error naming confirmShrink', async () => {
+      updM.mockResolvedValue({ ok: false, reason: 'body_shrink_guard', existingLength: 200, newLength: 11 } as never);
+      const b = await body({ id: 'EI-1', body: 'placeholder' });
+      expect(b.counts).toEqual({ ok: 0, failed: 1 });
+      expect(b.results[0]).toMatchObject({
+        ok: false,
+        id: 'EI-1',
+        error: expect.stringContaining('confirmShrink:true'),
+      });
+      expect(b.results[0].error).toContain('200');
+      expect(b.results[0].error).toContain('11');
+    });
+
+    it('passes confirmShrink through to updateWorkItem for the single-id form', async () => {
+      updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+      await body({ id: 'EI-1', body: 'placeholder', confirmShrink: true });
+      expect(updM).toHaveBeenCalledWith(
+        'EI-1',
+        expect.objectContaining({ body: 'placeholder', confirmShrink: true }),
+        'me',
+        expect.any(Object),
+      );
+    });
+
+    it('a top-level confirmShrink applies as the default for items:[] that omit their own (mirrors EI-7639)', async () => {
+      updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+      await body({ confirmShrink: true, items: [{ id: 'EI-1', body: 'a' }, { id: 'EI-2', body: 'b' }] });
+      expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ confirmShrink: true }), 'me', expect.any(Object));
+      expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ confirmShrink: true }), 'me', expect.any(Object));
+    });
+  });
+
   // EI-7639: a top-level field-edit was previously SILENTLY DROPPED in the
   // items:[] batch form — `{ kind:'change', items:[{id},{id}] }` returned
   // ok:true for every item (updated_ts bumped) while applying NO kind change,

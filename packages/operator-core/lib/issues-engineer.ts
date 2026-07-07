@@ -572,7 +572,8 @@ export interface ShrinkGuardTripped {
   newLength: number;
 }
 
-function bodyShrinkTripped(existingBody: string | undefined | null, newBody: string): ShrinkGuardTripped | null {
+/** Exported for a fast pure-function unit test (no DB) — see issues-engineer.body-shrink-guard.test.ts. */
+export function bodyShrinkTripped(existingBody: string | undefined | null, newBody: string): ShrinkGuardTripped | null {
   if (!existingBody || existingBody.length < BODY_SHRINK_GUARD_MIN_LENGTH) return null;
   if (newBody.length >= existingBody.length * BODY_SHRINK_GUARD_RETAIN_RATIO) return null;
   return { shrinkGuardTripped: true, field: 'body', existingLength: existingBody.length, newLength: newBody.length };

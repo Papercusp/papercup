@@ -30,6 +30,7 @@ import { IMPORTANCE_LEVELS, type Importance } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from '../workspace-registry';
 import { withPgRetry } from '../pg-transient-retry';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
+import { autoPickableWhereSql } from '../work-items-admission';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
@@ -380,6 +381,19 @@ const EPHEMERAL_BENCHMARK_SLUG_SQL_RE =
  * drain / zombie with no task failure) stays re-placeable, matching
  * place_batch's loadCursedWorkItemIds gate; otherwise Queen sees an empty
  * survey frontier while place_batch would have accepted the work.
+ *
+ * EI-8498 — G2-ADMISSION excluded. `fleet:place_batch`'s gatherFrontier
+ * (placement-gather.ts) has applied the G2 admission predicate
+ * (`isAutoPickable`/`autoPickableWhereSql`) since shared-hive-trust-admission
+ * P-001: a remote, un-admitted item is quarantined and never placed. This
+ * survey frontier grew up alongside that path and never inherited the
+ * predicate, so a quarantined item (e.g. WI-2601) showed up here as "ready"
+ * even though place_batch would refuse it — indistinguishable from a
+ * genuinely-stuck placeable item, and the watchdog/escalation surfaces built
+ * on this survey kept re-raising "frontier stuck, Queen/Mug nudge not
+ * landing" false alarms for it wake after wake. Applying the SAME predicate
+ * here (ws-scoped, includes the P-010 trust fast-path) closes that gap so the
+ * survey's "ready" frontier matches what placement can actually pick up.
  */
 export async function fetchFrontierRows(
   sql: postgres.Sql,
@@ -396,6 +410,7 @@ export async function fetchFrontierRows(
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
+       AND ${autoPickableWhereSql(sql, workspaceId)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.hive_placements p
           WHERE p.workspace_id = f.workspace_id
@@ -447,6 +462,7 @@ export async function countPlaceableFrontier(
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
+       AND ${autoPickableWhereSql(sql, workspaceId)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.hive_placements p
           WHERE p.workspace_id = f.workspace_id
