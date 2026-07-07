@@ -87,16 +87,26 @@ describe('projected tool inputSchemas (invalid_args class — structural)', () =
     // inputSchema. (The pre-prompt registry is configured by the
     // ../agent-tools/index side-effect import above, so the positional rewrite
     // is LIVE here exactly as in production.)
-    const bad = projected.filter((t) => {
-      const name = (t as { name?: string }).name;
-      if (!name) return false;
-      const advertised = advertisedArgsSchema(name, t.inputSchema as Record<string, unknown>);
-      return (advertised as { type?: string }).type !== 'object';
-    });
+    const named = projected
+      .map((t) => ({ name: t.expose?.mcp?.name, inputSchema: t.inputSchema }))
+      .filter((t): t is { name: string; inputSchema: Record<string, unknown> } => !!t.name);
+    // Anti-vacuity: the MCP surface must actually be here, INCLUDING the two
+    // write-positional tools whose advertised oneOf shipped the regression.
+    expect(named.length).toBeGreaterThan(150);
+    for (const mustCover of ['work_items:set_state', 'work_items:claim']) {
+      expect(
+        named.some((t) => t.name === mustCover),
+        `${mustCover} missing from the projected MCP surface — this guard would no longer cover the WI-3290 class`,
+      ).toBe(true);
+    }
+    const bad = named.filter(
+      (t) =>
+        (advertisedArgsSchema(t.name, t.inputSchema) as { type?: string }).type !== 'object',
+    );
     expect(
       bad.length,
       `${bad.length} tools advertise a non-object inputSchema (MCP spec requires type:"object"): ` +
-        bad.map((t) => (t as { name?: string }).name).join(', '),
+        bad.map((t) => t.name).join(', '),
     ).toBe(0);
   });
 
