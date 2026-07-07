@@ -391,6 +391,51 @@ describe('claim-spec vocabulary exports', () => {
   });
 });
 
+describe('claim-spec vocabulary — `title` keyword exclusion (WI-3268)', () => {
+  it('`title` is FILTERABLE but NOT rankable (same shape as `id`)', () => {
+    expect(ITEM_FIELDS).toContain('title');
+    expect(FILTERABLE_ITEM_FIELDS).toContain('title');
+    expect(RANKABLE_ITEM_FIELDS).not.toContain('title');
+  });
+
+  it('accepts a NOT+glob title exclusion (the p2p-exclusion shape)', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'exclude-p2p',
+      revision: 1,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+            {
+              not: {
+                any: [
+                  { field: 'title', op: 'glob', value: '*p2p*' },
+                  { field: 'title', op: 'glob', value: '*hyperswarm*' },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+  });
+
+  it('rejects ranking by `title` (ordering by title text is meaningless)', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'bad-rank',
+      revision: 0,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'title', dir: 'asc' }] },
+    });
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe('isIdOnlySelector — the id-pin tripwire', () => {
   const spec = (filter: unknown) => ({ view: filter === undefined ? {} : { filter } });
   it('true when the filter selects on `id` ALONE', () => {

@@ -37,11 +37,27 @@ export default defineTool({
       .enum(['durable', 'ephemeral'])
       .optional()
       .describe('Filter to one execution tier (durable = DBOS-backed; ephemeral = in-process).'),
+    name: z
+      .string()
+      .optional()
+      .describe('Case-insensitive substring filter on `name` — bound a single-routine lookup instead of pulling every row (e.g. every harness_shared.routines row) into context.'),
+    installSlug: z
+      .string()
+      .optional()
+      .describe('Case-insensitive substring filter on `installSlug` (routines only; other sources have installSlug=null and never match).'),
   }),
   async handler(args) {
     let rows = await collectScheduleInventory();
     if (args.source) rows = rows.filter((r) => r.source === args.source);
     if (args.tier) rows = rows.filter((r) => r.tier === args.tier);
+    if (args.name) {
+      const needle = args.name.toLowerCase();
+      rows = rows.filter((r) => r.name.toLowerCase().includes(needle));
+    }
+    if (args.installSlug) {
+      const needle = args.installSlug.toLowerCase();
+      rows = rows.filter((r) => (r.installSlug ?? '').toLowerCase().includes(needle));
+    }
     const summary = summarizeInventory(rows);
     return { content: [{ type: 'text', text: JSON.stringify({ summary, rows }) }] };
   },

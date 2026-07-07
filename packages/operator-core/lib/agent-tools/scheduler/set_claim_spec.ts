@@ -157,7 +157,8 @@ export default defineTool({
             'CONCRETE SHAPES (EI-4832 — get these wrong and the write is rejected): ' +
             'specVersion is the STRING "1.0" (not "1" or a number). ' +
             'view.filter is a FILTER NODE: either one LEAF predicate { field, op, value } OR a combinator { all:[nodes...] } / { any:[nodes...] } / { not:node }; ' +
-            'field is an item field (priority|tags|kind|risk_tier|paths|plan|plan_item|age|redundancy|est_cost|assignee|id — NOT blocked/cursed, those are floors the resolver always ANDs in); ' +
+            'field is an item field (priority|tags|kind|risk_tier|paths|plan|plan_item|age|redundancy|est_cost|assignee|id|title — NOT blocked/cursed, those are floors the resolver always ANDs in); ' +
+            '`title` (WI-3268) is for durable keyword EXCLUSION when `tags` is unpopulated — e.g. `{ not:{ field:"title", op:"glob", value:"*p2p*" } }` to stop a fleet re-encountering excluded work; not rankable. ' +
             'op is one of = | != | < | <= | > | >= | in | contains | glob. ' +
             'rank.mode is "lexicographic" (each term breaks ties in order) or "weighted" (a single weighted sum — every term then needs a numeric `weight`). ' +
             'rank.terms is an ARRAY of { expr, dir } — NOT { field, order }; expr is a bare item field (e.g. "priority") or a function term (affinity(bee.held_paths,item.paths) | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need); dir is "asc" or "desc". ' +

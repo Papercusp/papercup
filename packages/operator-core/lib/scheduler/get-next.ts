@@ -142,6 +142,9 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // the `in` op compiles to `feature_id::text = ANY(...)`). A STATIC pin (no auto-inflow),
   // the exception for a fixed wave; the floors (ready/lease/dedup) still apply on top.
   id: { col: (sql) => sql`feature_id`, kind: 'scalar-text' },
+  // `title` — WI-3268: keyword exclusion (glob/contains/!=) so a constrained fleet can
+  // durably filter out a class of work (e.g. `*p2p*`) that carries no `tags` data.
+  title: { col: (sql) => sql`title`, kind: 'scalar-text' },
   plan: { col: (sql) => sql`source_plan_slug`, kind: 'scalar-text' },
   plan_item: { col: (sql) => sql`source_plan_item_ids`, kind: 'text-array' },
   // Not first-class columns — projected out of payload jsonb (no schema change).

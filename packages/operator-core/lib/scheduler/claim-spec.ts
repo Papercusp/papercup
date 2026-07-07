@@ -64,6 +64,14 @@ export const ITEM_FIELDS = [
   // property filter for that). NOT rankable (ordering by id is meaningless) and the
   // observability tripwire `isIdOnlySelector` flags specs that select on id ALONE.
   'id',
+  // `title` — the work-item title text. Filterable (WI-3268) so a constrained fleet can
+  // durably EXCLUDE a class of work the `tags`/`redundancy` columns don't classify — e.g.
+  // `{ not: { field:'title', op:'glob', value:'*p2p*' } }` to stop re-encountering p2p work
+  // whose items carry no `tags` at all (the pre-existing tag-based exclusion path is a
+  // no-op when tags are unpopulated, which is the common case today). Composes with `not`/
+  // `any`/`all` like every other leaf. NOT rankable (ordering by title text is meaningless,
+  // same rationale as `id`) — excluded from `RANKABLE_ITEM_FIELDS` below.
+  'title',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -106,8 +114,11 @@ export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 
 /** Item fields that may be used as a bare rank term (everything sortable). `id` is
  *  filterable (pin a set) but NOT rankable — ordering by id is meaningless, and an
- *  id-pin is about WHICH items, never their order (use priority/age for that). */
-export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter((f) => f !== 'id');
+ *  id-pin is about WHICH items, never their order (use priority/age for that). `title`
+ *  is the same shape: filterable for keyword exclusion (WI-3268), not a sort key. */
+export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
+  (f) => f !== 'id' && f !== 'title',
+);
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
 /** Schema versions this validator understands. Bump + branch when the shape changes. */
