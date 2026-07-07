@@ -1229,11 +1229,19 @@ export function hostThroughPty(o) {
         // visible window — so a fleet:join recolors the LIVE window. Every other
         // mode targets the agent's stdin (a wake turn / a force-interrupt byte).
         const sink = msg.mode === 'osc' ? stdout : child;
+        // P-001a: claim the coalesce slot at delivery — later same-key arrivals
+        // start a fresh cycle (they'll gate on the turn this write starts). The
+        // claimed newest text replaces this waiter's own, annotated with the count.
+        let deliver = msg;
+        if (coalesceKey != null) {
+          const claimed = turnCoalescer.claim(coalesceKey);
+          if (claimed) deliver = { ...msg, data: renderCoalescedTurn(claimed.data, claimed.folded) };
+        }
         // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
-        for (const step of controlWritesForAgent(msg, env.PAPERCUSP_AGENT, env)) {
+        for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env)) {
           if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
           sink.write(step.data);
         }
@@ -1244,6 +1252,9 @@ export function hostThroughPty(o) {
           await verifySubmitted(`${msg.mode} inject`);
         }
       } catch {
+        // P-001a: an error path must clear the coalesce slot too (claim is
+        // idempotent — a no-op when the delivery already claimed it above).
+        if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
         /* child may have exited mid-inject */
       }
     });

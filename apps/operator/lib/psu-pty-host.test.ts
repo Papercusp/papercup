@@ -29,6 +29,9 @@ import {
   makeActivityTracker,
   makeAgentBusyGate,
   makeSubmitVerifier,
+  turnCoalesceKey,
+  renderCoalescedTurn,
+  makeTurnCoalescer,
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
@@ -749,5 +752,83 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       },
     });
     await expect(v.verify()).resolves.toMatchObject({ aborted: null });
+  });
+});
+
+describe('same-source turn coalescing (compaction-continuity-hardening P-001a)', () => {
+  const wake = (n: number) =>
+    `🔁 Loop wake (every ~120s after each turn settles). You are continuing toward: goal G\n\ndetails for wake #${n}`;
+
+  describe('turnCoalesceKey', () => {
+    it('keys on the first non-empty line — stable across wakes of the same loop', () => {
+      expect(turnCoalesceKey(wake(1))).toBe(turnCoalesceKey(wake(9)));
+      expect(turnCoalesceKey('\n\n  first real line\nrest')).toBe('first real line');
+    });
+    it('distinct sources get distinct keys', () => {
+      expect(turnCoalesceKey(wake(1))).not.toBe(turnCoalesceKey('owner: please check the deploy'));
+    });
+    it('caps the key and tolerates empty/undefined', () => {
+      expect(turnCoalesceKey('x'.repeat(1000)).length).toBe(300);
+      expect(turnCoalesceKey('')).toBe('');
+      expect(turnCoalesceKey(undefined)).toBe('');
+    });
+  });
+
+  describe('renderCoalescedTurn', () => {
+    it('folded=0 → the text verbatim (the common single-wake path is byte-identical)', () => {
+      expect(renderCoalescedTurn('text', 0)).toBe('text');
+    });
+    it('folded>0 → ONE annotated delivery telling the agent not to treat them as separate wakes', () => {
+      const out = renderCoalescedTurn('text', 8);
+      expect(out).toContain('text');
+      expect(out).toContain('8 duplicate queued wakes were coalesced');
+      expect(out).toContain('treat this as a single wake');
+    });
+  });
+
+  describe('makeTurnCoalescer', () => {
+    it('first arrival becomes the waiter; later same-key arrivals FOLD (newest text wins)', () => {
+      const c = makeTurnCoalescer();
+      expect(c.admit('k', wake(1))).toBe(false); // waiter
+      expect(c.admit('k', wake(2))).toBe(true); // folded
+      expect(c.admit('k', wake(3))).toBe(true); // folded
+      const claimed = c.claim('k');
+      expect(claimed).toEqual({ data: wake(3), folded: 2 });
+      expect(c.size()).toBe(0);
+    });
+
+    it('different keys wait independently (no cross-source folding)', () => {
+      const c = makeTurnCoalescer();
+      expect(c.admit('a', 'A1')).toBe(false);
+      expect(c.admit('b', 'B1')).toBe(false);
+      expect(c.claim('a')).toEqual({ data: 'A1', folded: 0 });
+      expect(c.claim('b')).toEqual({ data: 'B1', folded: 0 });
+    });
+
+    it('claim clears the slot: a later arrival starts a FRESH cycle (no folding into a dead waiter)', () => {
+      const c = makeTurnCoalescer();
+      c.admit('k', wake(1));
+      c.claim('k'); // delivery (or defer/error) cleared it
+      expect(c.admit('k', wake(2))).toBe(false); // new waiter, not folded
+    });
+
+    it('claim is idempotent — the error-path double-claim is a safe no-op', () => {
+      const c = makeTurnCoalescer();
+      c.admit('k', wake(1));
+      expect(c.claim('k')).not.toBeNull();
+      expect(c.claim('k')).toBeNull();
+    });
+
+    it('the measured 9× scenario: 9 stacked wakes → ONE delivery annotated with 8 folds', () => {
+      const c = makeTurnCoalescer();
+      const key = turnCoalesceKey(wake(1));
+      expect(c.admit(key, wake(1))).toBe(false);
+      for (let n = 2; n <= 9; n++) expect(c.admit(key, wake(n))).toBe(true);
+      const claimed = c.claim(key)!;
+      const delivered = renderCoalescedTurn(claimed.data, claimed.folded);
+      expect(claimed.folded).toBe(8);
+      expect(delivered).toContain('details for wake #9'); // newest wins
+      expect(delivered).toContain('8 duplicate queued wakes were coalesced');
+    });
   });
 });
