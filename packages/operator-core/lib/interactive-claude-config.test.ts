@@ -25,7 +25,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
@@ -345,5 +347,158 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec7', home });
     expect(existsSync(join(configDir, RECOVER_PLAYBOOK))).toBe(false);
     expect(runHook(configDir, DROPPED_CHAIN)).toBe('');
+  });
+});
+
+/**
+ * compaction-continuity-hardening-2026-07-07 P-004 (implements WI-2537) — the
+ * post-compaction continuity anchor. On SessionStart[source=compact] the SAME
+ * generated hook injects the orient-afterCompaction mandate + the
+ * volatile-claims checklist (static, operator-down-proof) and appends the carry
+ * brief fetched live from /api/agent-mcp/session-recovery-brief (fail-soft).
+ */
+describe('P-004: SessionStart[source=compact] continuity anchor', () => {
+  const INTACT_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    [
+      '/home/papercup/.local/bin/claude',
+      '--system-prompt-file',
+      '/home/papercup/.papercusp/launch-context/session-2.md',
+    ],
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+  const DROPPED_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    ['/home/papercup/.local/bin/claude'],
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+  /** A refused-connection operator URL — port 1 is never listening. */
+  const DEAD_OPERATOR = 'http://127.0.0.1:1';
+
+  function seedWithPlaybook(sid: string): string {
+    seedHome(home);
+    const playbookSrc = join(home, 'playbook.md');
+    writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
+    return writeInteractiveClaudeConfig({
+      sid,
+      home,
+      recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
+    }).configDir;
+  }
+
+  /** Async runner — the stub-server test must keep the parent event loop free
+   *  (execFileSync would block it and deadlock the child's fetch). Overrides
+   *  PAPERCUSP_SID to '' so the hook resolves the owner from the parked intent
+   *  file, not this test process's own psu identity. */
+  function runHookAsync(
+    configDir: string,
+    chain: string[][],
+    input: string,
+    env: Record<string, string>,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        process.execPath,
+        [join(configDir, RECOVER_HOOK)],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain),
+            PAPERCUSP_SID: '',
+            ...env,
+          },
+        },
+        (err, stdout) => (err ? reject(err) : resolve(stdout)),
+      );
+      child.stdin!.end(input);
+    });
+  }
+
+  it('compact source: injects the static anchor + the fetched carry brief (owner from intent)', async () => {
+    const configDir = seedWithPlaybook('su-cmp1');
+    const hits: string[] = [];
+    const server: Server = createServer((req, res) => {
+      hits.push(req.url ?? '');
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          ok: true,
+          text: 'Armed loop @papercusp (active, every 120s). Its carry-note (written 5m ago):\n## Next action\nship P-004',
+        }),
+      );
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const out = JSON.parse(
+        await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"compact"}', {
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+        }),
+      );
+      const ctx = out.hookSpecificOutput.additionalContext as string;
+      expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
+      expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+      expect(ctx).toContain('coord:orient { afterCompaction: true }');
+      expect(ctx).toContain('HYPOTHESES to re-verify');
+      expect(ctx).toContain('Armed loop @papercusp (active, every 120s)');
+      expect(ctx).toContain('ship P-004');
+      // argv intact ⇒ NO playbook-recovery part alongside the anchor.
+      expect(ctx).not.toContain('SESSION RECOVERED');
+      // The fetch carried the intent-file owner.
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toContain('/api/agent-mcp/session-recovery-brief?owner=su-cmp1');
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('compact source with the operator DOWN: static anchor alone, exit 0 (fail-soft)', async () => {
+    const configDir = seedWithPlaybook('su-cmp2');
+    const out = JSON.parse(
+      await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"compact"}', {
+        PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+      }),
+    );
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+    expect(ctx).toContain('coord:orient { afterCompaction: true }');
+    expect(ctx).not.toContain('carry brief (read live');
+  });
+
+  it('compact source + dropped argv: BOTH the playbook recovery and the anchor land, in that order', async () => {
+    const configDir = seedWithPlaybook('su-cmp3');
+    const out = JSON.parse(
+      await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
+        PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+      }),
+    );
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('SESSION RECOVERED');
+    expect(ctx).toContain('A pot is the offline-first data substrate');
+    expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+    expect(ctx.indexOf('SESSION RECOVERED')).toBeLessThan(ctx.indexOf('POST-COMPACTION CONTINUITY ANCHOR'));
+  });
+
+  it('compact source with NO parked playbook (raw dir): the anchor still lands', async () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-cmp4', home });
+    const out = JSON.parse(
+      await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
+        PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+        PAPERCUSP_SID: 'su-cmp4',
+      }),
+    );
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+    expect(ctx).not.toContain('SESSION RECOVERED');
+  });
+
+  it('startup source stays SILENT on the compact path (anchor is compact-gated)', async () => {
+    const configDir = seedWithPlaybook('su-cmp5');
+    const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
+      PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+    });
+    expect(out).toBe('');
   });
 });
