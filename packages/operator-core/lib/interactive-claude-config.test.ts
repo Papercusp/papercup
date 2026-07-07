@@ -502,3 +502,160 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
     expect(out).toBe('');
   });
 });
+
+/**
+ * compaction-continuity-hardening-2026-07-07 P-007 — identity durability across
+ * relaunch. On EVERY SessionStart the generated hook compares the live
+ * PAPERCUSP_SID against the sid recorded in the parked intent file; a mismatch
+ * means every ownerId-keyed surface (armed loop, carry-note, claims, awaits,
+ * fleet, held items) is stranded under a dead predecessor id. The hook
+ * auto-rebinds via POST /api/agent-mcp/rebind-identity (then retires the old
+ * sid in the intent file so later starts stay silent) and falls back to the
+ * one-call coord:rebind-identity instruction when the operator refuses or is
+ * unreachable. All fail-soft — a session start is never blocked.
+ */
+describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_SID)', () => {
+  const INTACT_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    [
+      '/home/papercup/.local/bin/claude',
+      '--system-prompt-file',
+      '/home/papercup/.papercusp/launch-context/session-2.md',
+    ],
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+  const DEAD_OPERATOR = 'http://127.0.0.1:1';
+
+  function seedWithPlaybook(sid: string): string {
+    seedHome(home);
+    const playbookSrc = join(home, 'playbook.md');
+    writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
+    return writeInteractiveClaudeConfig({
+      sid,
+      home,
+      recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
+    }).configDir;
+  }
+
+  function runHookAsync(
+    configDir: string,
+    chain: string[][],
+    input: string,
+    env: Record<string, string>,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = execFile(
+        process.execPath,
+        [join(configDir, RECOVER_HOOK)],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain), PAPERCUSP_SID: '', ...env },
+        },
+        (err, stdout) => (err ? reject(err) : resolve(stdout)),
+      );
+      child.stdin!.end(input);
+    });
+  }
+
+  /** Stub operator that records rebind POSTs and answers with `response`. */
+  function rebindServer(response: unknown) {
+    const posts: Array<{ url: string; body: string }> = [];
+    const server: Server = createServer((req, res) => {
+      let data = '';
+      req.on('data', (c) => (data += c));
+      req.on('end', () => {
+        posts.push({ url: req.url ?? '', body: data });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(response));
+      });
+    });
+    return { posts, server };
+  }
+
+  it('auto-rebinds on mismatch, reports per-surface counts, and retires the old sid in the intent file', async () => {
+    const configDir = seedWithPlaybook('su-old-p7a');
+    const { posts, server } = rebindServer({
+      ok: true,
+      from: 'su-old-p7a',
+      to: 'su-new-p7a',
+      surfaces: [
+        { surface: 'loop-routine', moved: 1 },
+        { surface: 'carry-note', moved: 2 },
+        { surface: 'presence', moved: 0, dropped: 1 },
+        { surface: 'awaits', moved: 0 },
+      ],
+      totalMoved: 4,
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const env = { PAPERCUSP_SID: 'su-new-p7a', PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}` };
+      const out = JSON.parse(await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', env));
+      const ctx = out.hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain('IDENTITY CHANGED ACROSS RELAUNCH');
+      expect(ctx).toContain('su-old-p7a → live su-new-p7a');
+      expect(ctx).toContain('AUTO-REBOUND');
+      expect(ctx).toContain('loop-routine:1');
+      expect(ctx).toContain('carry-note:2');
+      expect(ctx).toContain('presence:1'); // dropped counts as handled
+      expect(ctx).not.toContain('awaits:'); // zero-count surfaces stay out of the banner
+      expect(posts).toHaveLength(1);
+      expect(posts[0].url).toBe('/api/agent-mcp/rebind-identity');
+      expect(JSON.parse(posts[0].body)).toEqual({ from: 'su-old-p7a', to: 'su-new-p7a' });
+      // The old sid is retired: the intent file now records the live id …
+      const intent = JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8'));
+      expect(intent.sid).toBe('su-new-p7a');
+      expect(intent.nativeSessionId).toBe('22fa0398-0e51-48b1-93cb-e7c8426064d1');
+      // … so the NEXT start is silent (no re-fire, no second POST).
+      expect(await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', env)).toBe('');
+      expect(posts).toHaveLength(1);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('a REFUSED rebind (from appears live) surfaces the manual instruction and keeps the recorded sid', async () => {
+    const configDir = seedWithPlaybook('su-old-p7b');
+    const { server } = rebindServer({ ok: false, refused: 'from_appears_live', surfaces: [], totalMoved: 0 });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const out = JSON.parse(
+        await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
+          PAPERCUSP_SID: 'su-new-p7b',
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+        }),
+      );
+      const ctx = out.hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain('AUTO-REBIND REFUSED');
+      expect(ctx).toContain("coord:rebind-identity { from: 'su-old-p7b', to: 'su-new-p7b' }");
+      expect(ctx).toContain('force:true');
+      expect(JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8')).sid).toBe('su-old-p7b');
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('operator DOWN: the one-call instruction still lands (fail-soft, exit 0), sid stays recorded', async () => {
+    const configDir = seedWithPlaybook('su-old-p7c');
+    const out = JSON.parse(
+      await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
+        PAPERCUSP_SID: 'su-new-p7c',
+        PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+      }),
+    );
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('unreachable for auto-rebind');
+    expect(ctx).toContain("coord:rebind-identity { from: 'su-old-p7c', to: 'su-new-p7c' }");
+    expect(JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8')).sid).toBe('su-old-p7c');
+  });
+
+  it('matching live + recorded sid stays SILENT (the common start)', async () => {
+    const configDir = seedWithPlaybook('su-same-p7d');
+    const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
+      PAPERCUSP_SID: 'su-same-p7d',
+      PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+    });
+    expect(out).toBe('');
+  });
+});
