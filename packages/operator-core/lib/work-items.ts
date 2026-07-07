@@ -773,6 +773,15 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
   void import('./work-items-events').then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)).catch(() => {});
 }
 
+/**
+ * Fire `work-item:created[:<severity>]` for EVERY new work item (EI-8296) —
+ * lazy import (work-items-events imports this module statically) +
+ * fire-and-forget: an emit-path failure must never break the create.
+ */
+function maybeFireCreatedEvent(wi: WorkItem): void {
+  void import('./work-items-events').then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
+}
+
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
   // P-001 generic-kind: accept a built-in kind OR a workspace-registered generic-kind
@@ -813,6 +822,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     const created = issueToWorkItem(issue);
     maybeFireUrgentWake(input, created);
     maybeFireClaimedEvent(assignTo, created);
+    maybeFireCreatedEvent(created);
     return created;
   }
 
@@ -971,6 +981,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   }
   maybeFireUrgentWake(input, wi);
   maybeFireClaimedEvent(assignTo, wi);
+  maybeFireCreatedEvent(wi);
   return wi;
 }
 

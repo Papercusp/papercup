@@ -225,6 +225,41 @@ describe('emitWorkItemBlockedEvent', () => {
   });
 });
 
+describe('emitWorkItemCreatedEvent (EI-8296)', () => {
+  it('fires the GLOBAL work-item:created key with id/kind/severity/harness/title in payload', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemCreatedEvent } = await import('./work-items-events');
+    emitWorkItemCreatedEvent(wi({ id: 'WI-20', kind: 'bug', severity: null, harness: 'papercusp', title: 'new bug' }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:created',
+      source: 'work-items',
+      payload: expect.objectContaining({ id: 'WI-20', kind: 'bug', severity: null, harness: 'papercusp', title: 'new bug' }),
+    });
+  });
+
+  it('ALSO fires the severity-scoped key when the item carries a severity (dual-emit, mirrors release:deployed)', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemCreatedEvent } = await import('./work-items-events');
+    emitWorkItemCreatedEvent(wi({ id: 'WI-21', kind: 'bug', severity: 'critical', title: 'a critical bug' }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledTimes(2);
+    const keys = emit.mock.calls.map((c) => c[0].key).sort();
+    expect(keys).toEqual(['work-item:created', 'work-item:created:critical']);
+  });
+
+  it('never rejects on an emit failure (warns instead)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemCreatedEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    expect(() => emitWorkItemCreatedEvent(wi(), { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('created-event'));
+    warn.mockRestore();
+  });
+});
+
 describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', () => {
   it('fires work-item:status:<id> carrying prevState → state on the payload', async () => {
     const emit = typedEmit();

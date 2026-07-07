@@ -70,6 +70,7 @@ interface SeedOpts {
   riskTier?: string;
   estCost?: number;
   kind?: string;
+  title?: string;
 }
 async function seedFeature(id: string, opts: SeedOpts = {}) {
   const payload =
@@ -79,12 +80,12 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
-       created_ts, updated_ts, feature_order, tags, payload, expected_cost_cents)
+       created_ts, updated_ts, feature_order, tags, payload, expected_cost_cents, title)
     VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.featureOrder ?? null},
        ${opts.tags ? db.sql.json(opts.tags) : null},
        ${payload ? db.sql.json(JSON.parse(payload)) : null},
-       ${opts.estCost ?? null})`;
+       ${opts.estCost ?? null}, ${opts.title ?? ''})`;
 }
 
 /** An ISSUE-family row (bug|change|task) — NOT visible through harness_features_consolidated
@@ -246,6 +247,48 @@ describe('get_next — spec filter + rank selects the correct item', () => {
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-sync-lib');
+  });
+
+  it('WI-3268: a NOT+glob title filter durably EXCLUDES a keyword class (e.g. p2p) with no tags data', async () => {
+    // These items carry NO tags — the pre-existing tag-based exclusion path is a no-op for
+    // them (mirrors real papercusp p2p work-items, which are untagged). Title-keyword
+    // exclusion is the only lever that can filter them out.
+    await seedFeature('F-p2p-1', { title: '[p2p-wiring] offer-store publish leg', createdTs: 5, featureOrder: 1 });
+    await seedFeature('F-p2p-2', { title: 'Hyperswarm sidecar isolation', createdTs: 6, featureOrder: 1 });
+    await seedFeature('F-normal', { title: 'Fix dashboard pagination bug', createdTs: 100, featureOrder: 9 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'exclude-p2p',
+      revision: 1,
+      view: {
+        filter: {
+          not: {
+            any: [
+              { field: 'title', op: 'glob', value: '*p2p*' },
+              { field: 'title', op: 'glob', value: '*hyperswarm*' },
+            ],
+          },
+        },
+      },
+      // priority desc would otherwise favor the p2p items (featureOrder 1 < 9), proving the
+      // exclusion — not merely rank ordering — is what keeps them out.
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('F-normal');
+  });
+
+  it('WI-3268: title exclusion is case-insensitive-agnostic-safe — an exact non-matching glob claims nothing excluded', async () => {
+    await seedFeature('F-p2p-only', { title: 'p2p federation rig', createdTs: 1, featureOrder: 1 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'exclude-p2p-empty',
+      revision: 1,
+      view: { filter: { not: { field: 'title', op: 'glob', value: '*p2p*' } } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    // The only seeded item matches the excluded pattern ⇒ nothing eligible.
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
 });
 

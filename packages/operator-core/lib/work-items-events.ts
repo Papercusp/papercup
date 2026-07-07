@@ -92,6 +92,35 @@ export function emitWorkItemClaimedEvent(
 }
 
 /**
+ * `work-item:created[:<severity>]` — fired when a NEW work item is minted
+ * (EI-8296: no creation event existed, so "alert me when a new critical-severity
+ * item is filed" was inexpressible as `watch:create` and had to fall back to a
+ * 15-min poll+diff plan — critical-severity-alert-2026-07-06).
+ *
+ * Dual-emits the GLOBAL key `work-item:created` (every new item, any severity/
+ * kind/harness — payload-filtered, mirroring the `release:deployed` /
+ * `release:green` global+scoped precedent, P-102/EI-7646) AND, when the item
+ * carries an issue-family severity, the severity-scoped key
+ * `work-item:created:<severity>` — so "wake me on a new critical item" is
+ * `events:await({ event: 'work-item:created:critical' })` instead of a poll.
+ * `payload` carries `{id, kind, severity, harness, title}` so a waiter on the
+ * global key can filter by kind/harness itself. Fire-and-forget; never throws.
+ */
+export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const payload = { id: wi.id, kind: wi.kind, severity: wi.severity, harness: wi.harness, title: wi.title };
+  const summary = `${wi.id} created (${wi.kind}${wi.severity ? `, ${wi.severity}` : ''}): ${wi.title}`;
+  void Promise.resolve()
+    .then(() => emit({ key: 'work-item:created', summary, payload, source: 'work-items' }))
+    .catch((e: unknown) => failSoft(`created-event for ${wi.id}`, e));
+  if (wi.severity) {
+    void Promise.resolve()
+      .then(() => emit({ key: `work-item:created:${wi.severity}`, summary, payload, source: 'work-items' }))
+      .catch((e: unknown) => failSoft(`created-event(severity) for ${wi.id}`, e));
+  }
+}
+
+/**
  * `claim:released:<id>` — fired when a work-item's claim is RELEASED and it returns
  * to the claimable pool (event-await-discoverability-and-coverage-2026-07-03 P-105).
  * The counterpart of `work-item:claimed:<id>`: an agent waiting to pick up a specific

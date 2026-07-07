@@ -963,6 +963,11 @@ else
   echo "· Claude lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
 fi
 
+# Codex status line — independent of the Claude-hooks gate above (targets ~/.codex, not settings.json).
+# A plain `codex` renders NO status line by default (status_line=None); merge our native [tui].status_line
+# into an EXISTING ~/.codex/config.toml (never creates one). Sibling of the papercusp-files.ts TS merge.
+merge_codex_statusline "${HOME}/.codex/config.toml"
+
 # 4g. Install the `psu` command — THE launcher (the *-su wrappers are gone).
 # `psu` prompts for agent + harness + plan, records a tracked /adv session
 # via the operator's bootstrap-su endpoint, then execs the RAW CLI with the

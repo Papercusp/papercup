@@ -177,6 +177,28 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     emitter: 'work-items-events',
     exists: true,
   },
+  {
+    family: 'work-item-created',
+    keyTemplate: 'work-item:created:<severity>',
+    // EI-8296: "alert me when a new critical-severity item is filed" was inexpressible
+    // (no creation event existed) — a 15-min poll+diff plan was built as a stopgap
+    // (critical-severity-alert-2026-07-06). This family replaces it: omit `severity` to
+    // wake on ANY new item (global key, payload_filtered — check payload.kind/harness/
+    // severity yourself), or scope to e.g. 'critical' for the precise per-severity key.
+    params: [
+      {
+        name: 'severity',
+        required: false,
+        describe: "issue-family severity (minor/major/critical) to scope to; omit to wake on ANY new work item (global key)",
+      },
+    ],
+    describe:
+      'A work item was CREATED (issue or feature). payload carries {id, kind, severity, harness, title} for filtering kind/harness after waking.',
+    emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — fired from createWorkItem',
+    exists: true,
+    replacesPoll: 'a scheduled poll+diff plan for "alert on new WI matching <severity>" (e.g. critical-severity-alert-2026-07-06)',
+    payloadFiltered: true,
+  },
   // ── git-sync / session / services (Phase 2 additions) ─────────────────────
   {
     family: 'git-sync',

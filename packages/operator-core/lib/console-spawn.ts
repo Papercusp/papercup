@@ -23,7 +23,7 @@
  *
  * Server-only.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -212,7 +212,7 @@ export function buildConsoleOneliner(
 // then SUCCEEDS at the fork/exec layer (the binary exists → a pid is assigned),
 // the client immediately dies off-screen with "Cannot open display", and the
 // tool reported `ok + pid` with ZERO windows — the 2026-07-03 backlog-clearance
-// launch lost all 10 member windows exactly this way. Two-part durable fix:
+// launch lost all 10 member windows exactly this way. Durable fix, now three parts:
 //   (a) resolveLinuxDesktopEnv(): when the operator itself has no DISPLAY,
 //       resolve the interactive graphical session's env (X socket → DISPLAY,
 //       /run/user/<uid>/bus → DBUS, gdm/~ Xauthority) and INJECT it; when no
@@ -220,6 +220,24 @@ export function buildConsoleOneliner(
 //   (b) an early-exit probe: after spawning, watch the child briefly — a
 //       desktop-terminal client that dies within the probe window (nonzero, or
 //       zero under gnome-terminal --wait, whose client lives as long as the
+//   (c) EI-8289: prefer the OWNER's REAL logged-in seat (resolved via `who`,
+//       socket-file-independent) over a raw `/tmp/.X11-unix` socket scan. A
+//       GNOME/XWayland real seat frequently has NO `/tmp/.X11-unix/X<N>` file
+//       for its DISPLAY (`-nolisten local`-style setups only expose an abstract
+//       socket), while a sandbox/frame Xvfb (leased per-hive/bee, or the
+//       hive-frame-desktops pool) ALWAYS creates one. Blind socket-scanning
+//       therefore (i) wrongly treats the real seat's already-correct DISPLAY as
+//       "stale" (WI-2840's own liveness check) and (ii) then picks a virtual
+//       Xvfb display instead — the launch reports "terminals opened" while the
+//       owner's real desktop never sees them (EI-8289: 2026-07-06 fleet
+//       behavior-probe, `fleet:launch-on-plan` windows landed on Xvfb `:93`
+//       instead of the owner's real `:1`). `who`'s TTY column reports the
+//       DISPLAY value directly for an X session and needs no socket file, so it
+//       is checked FIRST — both before discarding an already-set DISPLAY as
+//       stale, and before falling back to the socket scan. The socket scan is
+//       now a last resort (no real seat found at all — a genuinely headless
+//       box), and a virtual fallback is disclosed via `warnings` /
+//       `resolvedVia`, never silent.
 //       window) never opened a window → FAIL LOUD with its captured stderr.
 
 /** How long to watch a just-spawned terminal for an early death. A real
@@ -241,9 +259,24 @@ export interface DesktopEnvResolution {
    * blindly. Empty when nothing needed healing. Callers should log these
    * loudly: a long-lived process silently carrying a poisoned value is
    * exactly what wedged desktop-terminal spawns until an operator restart
-   * (the staging-operator incident this ticket was filed from).
+   * (the staging-operator incident this ticket was filed from). Also carries
+   * an EI-8289 disclosure note when DISPLAY was resolved via the last-resort
+   * socket scan (no real logged-in seat was found) — that display MAY be a
+   * virtual/sandbox one rather than the owner's real desktop.
    */
   warnings: string[];
+  /**
+   * EI-8289: how the resolved DISPLAY was determined — `'operator-env'` (the
+   * caller's own env was already correct, whether or not its socket file
+   * exists), `'active-seat'` (no usable env DISPLAY; resolved from a REAL
+   * logged-in seat via `who`), or `'socket-scan'` (last resort: no real seat
+   * detected at all, so a virtual/sandbox display's socket file won by
+   * default). `'active-seat'` is preferred over `'socket-scan'` precisely
+   * because a sandbox/frame Xvfb always creates a socket file while a real
+   * XWayland seat often does not — blind socket-scanning silently favors the
+   * wrong one otherwise. `null` when `resolved` is false.
+   */
+  resolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
 }
 
 /** Extract the `/tmp/.X11-unix/X<N>` socket path a DISPLAY value points at.
@@ -259,6 +292,37 @@ export interface DesktopEnvProbes {
   readdirSync: (p: string) => string[];
   uid: number;
   home: string;
+  /**
+   * EI-8289: the OWNER's currently logged-in X seat display(s), socket-file
+   * INDEPENDENT (resolved via `who`, not `/tmp/.X11-unix`). Optional + defaults
+   * to `[]` when omitted (existing callers/tests that predate this probe fall
+   * through to the socket scan exactly as before — fully backward compatible).
+   * Ascending-sorted; production implementation is best-effort (never throws).
+   */
+  activeSeatDisplays?: () => string[];
+}
+
+/**
+ * EI-8289: parse `who`'s TTY column for real X-session displays. An X login
+ * reports its DISPLAY value directly there (e.g. `marsh-office :1  2026-07-04
+ * … (:1)`), independent of whether `/tmp/.X11-unix/X<N>` exists for it — which
+ * it frequently does NOT for a GNOME/XWayland real seat. Plain `who` (not
+ * `who -a`) already excludes exited/dead sessions. Best-effort: any failure
+ * (no `who` binary, non-Linux, timeout) returns `[]` so callers degrade to the
+ * pre-existing socket-scan behavior, never throwing.
+ */
+function realActiveSeatDisplays(): string[] {
+  try {
+    const out = execFileSync('who', [], { encoding: 'utf8', timeout: 2000 });
+    const displays: string[] = [];
+    for (const line of out.split('\n')) {
+      const tty = line.trim().split(/\s+/)[1];
+      if (tty && /^:\d+$/.test(tty) && !displays.includes(tty)) displays.push(tty);
+    }
+    return displays.sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  } catch {
+    return [];
+  }
 }
 
 const realProbes = (): DesktopEnvProbes => ({
@@ -266,6 +330,7 @@ const realProbes = (): DesktopEnvProbes => ({
   readdirSync: (p: string) => readdirSync(p),
   uid: process.getuid?.() ?? 1000,
   home: process.env.HOME ?? '/root',
+  activeSeatDisplays: realActiveSeatDisplays,
 });
 
 /**
@@ -278,6 +343,7 @@ export function resolveLinuxDesktopEnv(
 ): DesktopEnvResolution {
   const env: Record<string, string> = {};
   const warnings: string[] = [];
+  let resolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' = 'operator-env';
 
   // DISPLAY: trust the operator's own value — but ONLY after checking its X
   // socket still exists (WI-2840). A long-lived process (e.g. a systemd-
@@ -286,41 +352,70 @@ export function resolveLinuxDesktopEnv(
   // renumbered) — the value being SET is not evidence it is still LIVE.
   // Trusting it blindly is exactly what silently poisoned spawns until the
   // operator was restarted. If the socket is gone, treat it as unset and
-  // re-resolve via the same socket scan the no-DISPLAY branch already uses.
+  // re-resolve — EI-8289: but a missing socket file is ALSO what a real
+  // GNOME/XWayland seat looks like (it's socket-file-less, not dead), so
+  // before discarding an already-set DISPLAY, check whether `who` still
+  // reports it as a currently logged-in seat and trust it if so.
   let haveDisplay = Boolean(baseEnv.DISPLAY);
   if (haveDisplay) {
     const socketPath = socketPathForDisplay(baseEnv.DISPLAY!);
     if (socketPath && !probes.existsSync(socketPath)) {
-      warnings.push(
-        `stale DISPLAY=${baseEnv.DISPLAY} — no X socket at ${socketPath}; ` +
-          're-resolving instead of trusting the inherited value (WI-2840)',
-      );
-      haveDisplay = false;
+      const activeSeats = probes.activeSeatDisplays?.() ?? [];
+      if (activeSeats.includes(baseEnv.DISPLAY!)) {
+        // Genuinely live real seat, just socket-file-less (EI-8289) — trust it.
+      } else {
+        warnings.push(
+          `stale DISPLAY=${baseEnv.DISPLAY} — no X socket at ${socketPath} and it is not a ` +
+            'currently logged-in seat (who); re-resolving instead of trusting the inherited ' +
+            'value (WI-2840/EI-8289)',
+        );
+        haveDisplay = false;
+      }
     }
   }
   if (!haveDisplay) {
-    let sockets: string[] = [];
-    try {
-      sockets = probes
-        .readdirSync('/tmp/.X11-unix')
-        .filter((n) => /^X\d+$/.test(n))
-        .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
-    } catch {
-      sockets = [];
+    // EI-8289: prefer the OWNER's real active login seat (who) over a blind
+    // /tmp/.X11-unix socket scan. A sandbox/frame Xvfb (leased per hive/bee, or
+    // the hive-frame-desktops pool) ALWAYS creates a socket file; a real
+    // XWayland seat frequently does NOT — so scanning sockets alone silently
+    // prefers the virtual display over the owner's real one. Only fall back to
+    // the socket scan when no real seat is detected at all.
+    const activeSeats = probes.activeSeatDisplays?.() ?? [];
+    if (activeSeats.length > 0) {
+      env.DISPLAY = activeSeats[0]!;
+      resolvedVia = 'active-seat';
+    } else {
+      let sockets: string[] = [];
+      try {
+        sockets = probes
+          .readdirSync('/tmp/.X11-unix')
+          .filter((n) => /^X\d+$/.test(n))
+          .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+      } catch {
+        sockets = [];
+      }
+      if (sockets.length === 0) {
+        return {
+          env: {},
+          resolved: false,
+          error:
+            (warnings.length ? `${warnings.join('; ')}; and ` : '') +
+            'no X display: the operator has no DISPLAY and no X socket exists under /tmp/.X11-unix — ' +
+            'a desktop terminal cannot open on this host (headless?). Launch from a desktop session, ' +
+            'or run the command yourself in a terminal on the machine with the display. (WI-1886)',
+          warnings,
+          resolvedVia: null,
+        };
+      }
+      env.DISPLAY = `:${sockets[0]!.slice(1)}`;
+      resolvedVia = 'socket-scan';
+      warnings.push(
+        `no active login seat detected (who) — falling back to a raw X11 socket scan, which ` +
+          `found DISPLAY=${env.DISPLAY}; this MAY be a virtual/sandbox display rather than the ` +
+          'owner\'s real desktop (EI-8289). Verify who is actually watching if terminals opened ' +
+          'this way are reported invisible.',
+      );
     }
-    if (sockets.length === 0) {
-      return {
-        env: {},
-        resolved: false,
-        error:
-          (warnings.length ? `${warnings.join('; ')}; and ` : '') +
-          'no X display: the operator has no DISPLAY and no X socket exists under /tmp/.X11-unix — ' +
-          'a desktop terminal cannot open on this host (headless?). Launch from a desktop session, ' +
-          'or run the command yourself in a terminal on the machine with the display. (WI-1886)',
-        warnings,
-      };
-    }
-    env.DISPLAY = `:${sockets[0]!.slice(1)}`;
   }
 
   const runtimeDir = `/run/user/${probes.uid}`;
