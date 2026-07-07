@@ -191,13 +191,28 @@ async function escalateBootConfig(
   }
 }
 
-/** P-012 force-compact `/compact` FOCUS — the summarizer preserve-hint (mirrors
- *  session:request-compaction's DEFAULT_FOCUS; the watchdog can't know the unit of
- *  work, so it names the standing preserve set). */
+/** P-012 force-compact `/compact` FOCUS floor — the static preserve-hint used when
+ *  the carry-brief read fails (mirrors session:request-compaction's DEFAULT_FOCUS).
+ *  The primary focus is the session's carry brief (compaction-continuity-hardening
+ *  P-003): the watchdog can't know the unit of work, but the brief names the
+ *  session's REAL anchors (held item ids, armed loop, standing facts) as pointers. */
 const FORCE_COMPACT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner ' +
   'confirmation, owner-gated walls, and any in-flight work-item checkpoint; drop resolved tool output ' +
   'and superseded state.';
+
+/** P-003: resolve the force-compact focus from the owner's carry brief; static floor
+ *  on any failure. Dynamic import mirrors the sweep's other lazy deps. */
+async function resolveForceCompactFocus(ownerId: string): Promise<string> {
+  try {
+    const { buildCarryBrief, renderCarryBriefFocus } = await import('../carry-brief');
+    const focus = renderCarryBriefFocus(await buildCarryBrief(ownerId)).trim();
+    if (focus.length > 0) return focus;
+  } catch {
+    /* static floor */
+  }
+  return FORCE_COMPACT_FOCUS;
+}
 /** Which arm of `min(limit × 1.3, window − margin | limit × 1.2)` produced forceAt —
  *  the note must name the bound that actually bound (a fixed "≈ 1.3 × soft limit"
  *  gloss renders false math whenever the window cap wins, e.g. "~190k ≈ 1.3 × 400k";
@@ -282,13 +297,14 @@ async function maybeForceCompact(
     );
     const host = findLiveHost(ownerId);
     if (!host) return false;
+    const focus = await resolveForceCompactFocus(ownerId);
     const ok = hostSupports(host, 'compact')
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
           data: forceCompactContinueNote(est, limit, forceAt, bound),
-          focus: FORCE_COMPACT_FOCUS,
+          focus,
         })
-      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${FORCE_COMPACT_FOCUS}` });
+      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
     if (ok) {
       console.warn(
         `[compaction-watchdog] FORCE-COMPACTED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +

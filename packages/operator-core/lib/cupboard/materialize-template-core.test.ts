@@ -13,10 +13,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   materializeTemplateCore,
+  cloneSourceAcquire,
+  localSourceAcquire,
   locateTemplateDir,
   overlayTemplateFiles,
   MaterializeTemplateError,
-  type MaterializeTemplateDeps,
+  type CloneSourceDeps,
 } from './materialize-template-core';
 
 const REF = 'papercusp-webapp';
