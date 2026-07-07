@@ -123,6 +123,27 @@ const COVERAGE_IGNORE_DIRS = new Set([
 // path-anchored to the top-level store alone.
 const COVERAGE_IGNORE_REL = new Set([
   'templates',
+  // The Tauri desktop SUBMODULE's build-artifact + own-test trees. The walk starts
+  // at the superproject root and descends into papercusp-desktop/ (a SEPARATE
+  // project — Rust cargo + node:test, covered by its OWN registry entries), so these
+  // leak as phantom operator-test orphans:
+  //   • src-tauri/sidecar      — gitignored sidecar BUNDLE (build-desktop-sidecar.sh
+  //                              copies harness/ + templates/ in; their *.test.ts are
+  //                              bundle COPIES, not operator tests). Exists only after
+  //                              a local build; test:affected never runs it (not an
+  //                              npm workspace).
+  //   • src-tauri/env-sidecars — the WI-3287 STAGED staging-env sidecar: a committed
+  //                              snapshot of that same bundle (harness/ + templates/).
+  //   • test                   — the submodule's own node:test dir (no test runner in
+  //                              its package.json); not an operator test.
+  // Nothing is lost: the ORIGINALS are covered elsewhere —
+  // libs/papercusp/packages/harness/paths.test.ts runs in the harness workspace, and
+  // templates/*/checks/*.test.ts are the downstream-APP's tests (top-level `templates`
+  // above). Path-anchored (not a basename skip) so the real operator test at
+  // packages/operator-core/lib/agent-tools/templates/new-app.test.ts stays visible.
+  'papercusp-desktop/src-tauri/sidecar',
+  'papercusp-desktop/src-tauri/env-sidecars',
+  'papercusp-desktop/test',
 ]);
 
 const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;
