@@ -27,7 +27,7 @@
  * switcher self-hides until install-time provisioning (P-017) brings the others up.
  */
 
-import { detectPapercupRoot } from './register-papercusp';
+import { defaultDetectSourceRoot } from './env-operator-launcher';
 
 export interface DevOperatorDescriptor {
   /** Stable id (persisted/selected). */
@@ -123,7 +123,9 @@ export interface ResolveDevOperatorsDeps {
   disabledIds?: readonly string[];
   /**
    * Whether a papercup source checkout exists on this machine (tests). Default:
-   * `detectPapercupRoot() != null`. When false, `requiresSourceTree` envs
+   * `defaultDetectSourceRoot() != null` — the SAME detection launchEnvOperators
+   * uses, so it also counts a packaged install's first-boot extracted tree
+   * (PAPERCUSP_DEV_SOURCE_ROOT). When false, `requiresSourceTree` envs
    * (dev/local) are omitted from the result entirely — see the descriptor doc.
    */
   hasSourceTree?: boolean;
@@ -211,11 +213,15 @@ export async function resolveDevOperators(
   const timeoutMs = deps.timeoutMs ?? 700;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : detectSelfPort();
   const disabled = new Set(deps.disabledIds ?? []);
-  // Omit source-tree-only envs (dev/local) where no papercup checkout exists —
-  // on a packaged install they CANNOT run, and rendering them as permanently
-  // grey buttons is the WI-3284 owner-reported wall. prod/staging remain (the
-  // per-branch bundled sidecars serve them; owner directive 2026-07-06).
-  const hasSourceTree = deps.hasSourceTree ?? detectPapercupRoot() != null;
+  // Omit source-tree-only envs (dev/local) where no runnable source tree exists —
+  // without one they CANNOT run, and rendering them as permanently grey buttons
+  // is the WI-3284 owner-reported wall. prod/staging remain (the per-branch
+  // bundled sidecars serve them; owner directive 2026-07-06). Uses the launcher's
+  // own detection so a packaged install's first-boot extracted tree
+  // (PAPERCUSP_DEV_SOURCE_ROOT, WI-3308) counts — a raw detectPapercupRoot()
+  // here omitted dev/local from the list while local was literally running
+  // (WI-3307 mac verify, 2026-07-07).
+  const hasSourceTree = deps.hasSourceTree ?? defaultDetectSourceRoot() != null;
   const candidates = (deps.candidates ?? DEV_OPERATORS).filter(
     (d) => hasSourceTree || !d.requiresSourceTree,
   );

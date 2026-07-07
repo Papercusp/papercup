@@ -116,6 +116,34 @@ describe('source-tree-only env omission (WI-3284 / env-switcher-packaged-all-pla
     const ids = operators.map((o) => o.id);
     for (const id of ['dev', 'prod', 'staging', 'local', 'release']) expect(ids).toContain(id);
   });
+
+  it('DEFAULT detection counts a packaged install’s extracted tree (PAPERCUSP_DEV_SOURCE_ROOT) — WI-3307: local spawned but was omitted from the list', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { join, resolve } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const saved = process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+    const root = mkdtempSync(join(tmpdir(), 'pc-devops-extract-'));
+    try {
+      mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
+      mkdirSync(join(root, 'libs', 'papercusp'), { recursive: true });
+      writeFileSync(join(root, 'apps', 'operator', 'package.json'), '{}');
+      writeFileSync(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+      process.env.PAPERCUSP_DEV_SOURCE_ROOT = resolve(root);
+      const fetchMock = vi.fn(async () => versionResponse('ffffffff'));
+      // No hasSourceTree passed — exercises the default (launcher-shared) detection.
+      const { operators } = await resolveDevOperators({
+        fetch: fetchMock as unknown as typeof fetch,
+        selfPort: null,
+      });
+      const ids = operators.map((o) => o.id);
+      expect(ids).toContain('dev');
+      expect(ids).toContain('local');
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+      else process.env.PAPERCUSP_DEV_SOURCE_ROOT = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveReleaseOrigin (WI-3284: dead release button on packaged installs)', () => {
