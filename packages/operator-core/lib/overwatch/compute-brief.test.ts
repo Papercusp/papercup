@@ -71,6 +71,7 @@ test('detectAnomalies — healthy brief trips nothing', () => {
 test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-11)', () => {
   const b = base();
   b.queen = {
+    started: true,
     lastWakeAt: '2026-06-15T01:00:00Z',
     stalled: true,
     cadenceOk: false,
@@ -236,6 +237,40 @@ test('detectAnomalies — dead work-feed routines still escalate during owner pa
     pausedUntil: null,
     eligiblePlans: [],
   };
+  b.workFeed = {
+    frontier: 8,
+    autoEligibleStuck: 0,
+    deadRoutines: 1,
+    blockedStranded: 0,
+  };
+  const a = only(detectAnomalies(b), 'work-feed-stuck');
+  assert.equal(a.severity, 'critical');
+  assert.equal(a.suggestedAction.type, 'escalate');
+});
+
+test('detectAnomalies — a never-started hive suppresses frontier/stranded nudges (EI-8524)', () => {
+  // A test/canary/never-started hive has a ready-but-unplaced frontier by DESIGN
+  // (nobody placing) — this is not a drift and must not nudge/escalate the Queen.
+  const b = base();
+  b.queen.started = false;
+  b.workFeed = {
+    frontier: 2,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 3,
+  };
+  b.plans = { active: 1, stalledItems: 0, agingEscalations: 2 };
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(!kinds.includes('work-feed-stuck'), 'a never-started hive is intentionally idle, not stuck');
+  assert.ok(!kinds.includes('queen-placement-stalled'), 'a never-started hive has no placement to stall');
+  assert.ok(!kinds.includes('escalation-aging'), 'a never-started hive suppresses escalation triage nudges too');
+});
+
+test('detectAnomalies — dead work-feed routines still escalate on a never-started hive (EI-8524)', () => {
+  // The structural dead-routine alarm is independent of whether the hive is
+  // started — a dead routine is dead regardless of who would place the work.
+  const b = base();
+  b.queen.started = false;
   b.workFeed = {
     frontier: 8,
     autoEligibleStuck: 0,

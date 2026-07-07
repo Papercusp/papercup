@@ -34,6 +34,12 @@
 
 /** The Queen's liveness + cadence, as overwatch sees it. */
 export interface OverwatchQueenHealth {
+  /** Is the colony meant to be running (getHiveStarted)? false = paused/never-started
+   *  — an unplaced frontier isn't "stuck" when nobody is placing by design (EI-8524:
+   *  a never-started test/canary hive's ready-but-unplaced work was false-flagged as
+   *  a work-feed-stuck drift). Fail-soft default `true` (unreadable ⇒ conservatively
+   *  started, never silently suppress a real alarm — mirrors deriveQueenAlive). */
+  started: boolean;
   /** When the Queen last woke (ISO-8601), or null if unknown / never. */
   lastWakeAt: string | null;
   /** True when she has stalled — last wake older than her cadence threshold (the 2026-06-15 opus-pacing case). */
@@ -250,6 +256,7 @@ export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
   return {
     hiveSlug,
     queen: {
+      started: true,
       lastWakeAt: null,
       stalled: false,
       cadenceOk: true,

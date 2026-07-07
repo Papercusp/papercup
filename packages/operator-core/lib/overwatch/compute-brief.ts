@@ -35,6 +35,19 @@ function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
 }
 
 /**
+ * EI-8524: a hive that was never started (or is deliberately paused —
+ * `queen.started === false`, "paused ⇒ intentional" per deriveQueenAlive) has no
+ * one placing work by design — its ready-but-unplaced frontier is NOT a drift, it's
+ * the expected resting state of an idle/test/canary hive. Fold this into the same
+ * "new work is intentionally not flowing" gate as the owner-steering pause so the
+ * Queen-facing "place them" nudges (frontier-stuck, stranded-work) and the
+ * zero-token placement-stall detector all stay quiet for a colony nobody started.
+ */
+function newWorkIntentionallyIdle(brief: OverwatchBrief): boolean {
+  return newWorkPausedByOwnerSteering(brief) || brief.queen.started === false;
+}
+
+/**
  * Detect the system-health drifts in a populated brief and attach a suggested
  * action to each. Pure + deterministic — same brief in, same anomalies out (no
  * clock / random; order is the fixed detector order below, and the renderer
@@ -53,7 +66,7 @@ function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
 export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
   const out: Anomaly[] = [];
   const { queen, bees, workFeed, tokens, plans, observations, crossMonitor } = brief;
-  const newWorkPaused = newWorkPausedByOwnerSteering(brief);
+  const newWorkPaused = newWorkIntentionallyIdle(brief);
 
   // ── Queen liveness + cadence ───────────────────────────────────────────────
   // Cross-monitor "dark" (no heartbeat) is the harder signal and takes precedence
@@ -365,6 +378,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
   const queen = panels.queen.data;
   if (queen) {
     brief.queen = {
+      started: queen.started,
       lastWakeAt: msToIso(queen.lastWakeAt),
       stalled: queen.stalled,
       cadenceOk: queen.cadenceOk,
