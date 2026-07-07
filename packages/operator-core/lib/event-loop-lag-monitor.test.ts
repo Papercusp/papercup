@@ -341,33 +341,33 @@ describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-0
     expect(snaps.length).toBeLessThanOrEqual(2);
   }, 90_000);
 
-  it('heapSnapshotOnHighRss: INERT by default (opt-in)', async () => {
+  it('heapSnapshotOnHighRss: full snapshots are INERT by default even when legacy sampling env is on', async () => {
     // The monitor must NOT capture unless heapSnapshotOnHighRss is explicitly enabled,
     // even when RSS comfortably exceeds a 1 MB threshold.
     const dir = tmp('inert');
     const log = vi.fn();
+    const prev = process.env.PAPERCUSP_HEAP_SNAPSHOT;
+    process.env.PAPERCUSP_HEAP_SNAPSHOT = '1';
     handle = startEventLoopLagMonitor({
       intervalMs: 60,
       warnP95Ms: 999_999,
-      // heapSnapshotOnHighRss not set → defaults to env PAPERCUSP_HEAP_SNAPSHOT,
-      // which is not '1' in this test environment → stays OFF.
+      // heapSnapshotOnHighRss not set: legacy PAPERCUSP_HEAP_SNAPSHOT enables the
+      // non-blocking sampling profiler, NOT full V8 heap snapshots (WI-3255).
       heapSnapshotDir: dir,
       heapSnapshotRssMb: 1, // 1 MB — guaranteed to be exceeded
       minHeapSnapshotGapMs: 0,
       log,
     });
     await new Promise((r) => setTimeout(r, 200));
+    if (prev === undefined) delete process.env.PAPERCUSP_HEAP_SNAPSHOT;
+    else process.env.PAPERCUSP_HEAP_SNAPSHOT = prev;
     let snaps: string[] = [];
     try {
       snaps = (await fs.readdir(dir)).filter((f) => f.endsWith('.heapsnapshot'));
     } catch {
       /* dir not created = inert, which is the point */
     }
-    // INERT: env is not set to '1' so no snapshot should have been taken.
-    // (If PAPERCUSP_HEAP_SNAPSHOT=1 is set in the test env, this check gracefully no-ops.)
-    if (process.env.PAPERCUSP_HEAP_SNAPSHOT !== '1') {
-      expect(snaps).toHaveLength(0);
-    }
+    expect(snaps).toHaveLength(0);
   });
 
   it('heapSnapshotOnHighRss ON: captures when RSS crosses threshold, rate-limited', async () => {

@@ -30,6 +30,7 @@ function socketPath(): string {
  *                                force out-of-order completion).
  *   invoke { pid }            → push spawn:pid{requestId,pid} + 2× spawn:outputActivity{requestId},
  *                                then reply result:{ output:'ok', exitCode:0, stderr:'' }.
+ *   process:exec { code }     → reply result:{ code, stdout:'out', stderr:'' }.
  *   boom                      → reply error{ code:-32001, message:'kaboom' }.
  */
 function startServer(sock: string): Promise<net.Server> {
@@ -53,6 +54,8 @@ function startServer(sock: string): Promise<net.Server> {
           send({ jsonrpc: '2.0', method: 'spawn:outputActivity', params: { requestId: req.id } });
           send({ jsonrpc: '2.0', method: 'spawn:outputActivity', params: { requestId: req.id } });
           send({ jsonrpc: '2.0', result: { output: 'ok', exitCode: 0, stderr: '' }, id: req.id });
+        } else if (req.method === 'process:exec') {
+          send({ jsonrpc: '2.0', result: { code: req.params?.code ?? 0, stdout: 'out', stderr: '' }, id: req.id });
         } else if (req.method === 'boom') {
           send({ jsonrpc: '2.0', error: { code: -32001, message: 'kaboom' }, id: req.id });
         }
@@ -123,5 +126,14 @@ describe('SpawnerIpcClient — server→client PUSH (notification) routing', () 
     await client.call('echo', { value: 'x' }, { onRequestId: (id) => { captured = id; } });
     expect(typeof captured).toBe('number');
     expect(captured).toBeGreaterThan(0);
+  });
+
+  it('supports generic process:exec responses used by git-sync sidecar routing', async () => {
+    const result = await client.call<{ code: number; stdout: string; stderr: string }>(
+      'process:exec',
+      { code: 7 },
+      { timeoutMs: 1000 },
+    );
+    expect(result).toEqual({ code: 7, stdout: 'out', stderr: '' });
   });
 });
