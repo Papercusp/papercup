@@ -46,8 +46,8 @@ export default defineTool({
     '(reset / recycle) reconstructs its working state from (your transcript does NOT carry across a cold wake). ' +
     'Pass the structured fields { did, left, insight, next } (rendered to the canonical template) OR a raw { note }. ' +
     "Keyed by the loop's ownerId — stable across reset/recycle, so a cold successor reads the SAME note. " +
-    'Replace-on-write; blank/null clears — EXCEPT open { walls } rows (owner-gated commitments), which carry ' +
-    'forward until you pass walls:[] and render into every wake/brief. Returns { ok, harness, ownerId, cleared, length, walls }.',
+    'Replace-on-write; blank/null clears — except { walls } rows (owner-gated commitments): they render into ' +
+    'every wake until you pass walls:[]. Returns { ok, harness, ownerId, cleared, length, walls }.',
   guidance: {
     when:
       "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs to continue — " +
@@ -60,8 +60,7 @@ export default defineTool({
     chaining:
       "loop:checkpoint { did, left, insight, next } as the last step before ending a cold-loop turn — but it is " +
       'the WEAKEST continuity write: the carry-note is LOST if your session dies. So also refresh ' +
-      'work_items:checkpoint { id, checkpoint } (a successor INHERITS it) and facts:assert any durable conclusion ' +
-      "(folded into every future orient). Pass { note:'' } to clear a stale note.",
+      'work_items:checkpoint { id, checkpoint } (a successor INHERITS it) and facts:assert any durable conclusion.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',

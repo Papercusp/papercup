@@ -40,9 +40,16 @@ The enforcement is **risk-tier classification by file path**, in
   graduation. That orthogonality is the whole safety property.
 
 Already covered by broad globs (don't re-add): `dbos/**` (the durable executor +
-`spawnInvokeOnce`), `harness/routines/**` (the cadence layer), `release/**`,
-`learning-governor/**`, `change-ledger/**`, `**/auth/**`, `**/credentials/**`,
-`libs/papercusp/libs/db/sql/**`, `libs/flags/**`.
+`spawnInvokeOnce`), `harness/routines/**` (the cadence layer), `release/**` (the
+deploy machinery), `git-sync/**` + `libs/papercusp/packages/locks/**` (the
+commit/push routine + the lock authority), `learning-governor/**`,
+`change-ledger/**`, `**/auth/**`, `**/credentials/**`,
+`libs/papercusp/libs/db/sql/**`, `libs/flags/**`, and the loop's **own** code —
+`harness/improvements/**` + `agent-tools/improvements/**` (so a pin can't be
+un-made by auto-editing the policy that enforces it). Two co-located TCB
+constant modules are also spread in wholesale — `DETERMINISTIC_EXECUTOR_TCB_PATTERNS`
+(the spine executor) and `CAPABILITY_DISPATCH_TCB_PATTERNS` (the capability
+dispatch gate); see the worked examples below.
 
 ## How to pin a component
 

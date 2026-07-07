@@ -511,7 +511,7 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     const walls = [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: Date.now() - 3_600_000 }];
     const short = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 5, checkpoint: '## Next action\ngo', walls });
     expect(short).toContain('⛔ OPEN WALLS');
-    expect(short).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902 (standing 1h)');
+    expect(short).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902 (standing 60m)');
     const full = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: '## Next action\ngo', walls });
     expect(full).toContain('⛔ OPEN WALLS');
     expect(full).toContain('line 2 of the contract.'); // still the full kickoff
