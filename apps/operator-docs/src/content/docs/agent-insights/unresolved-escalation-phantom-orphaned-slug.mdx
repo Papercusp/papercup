@@ -1,0 +1,75 @@
+---
+title: "\"Unresolved escalation in harness X\" phantoms: a stale/orphaned harness_escalations row, not a live problem"
+description: "The recurring auto-implement EI 'Unresolved escalation in harness X' is almost always a PHANTOM — a harness_shared.harness_escalations row whose escalation is set + supervisor_notes empty, while the underlying condition is long since resolved. The green-checkpoint-stall variant self-clears via trackGateStall only when the row's harness_slug equals the LIVE install-slug; a row keyed under a DEAD/renamed slug (e.g. legacy 'papercup' after the papercup→papercusp rename, which has no system:green-checkpoint routine) can NEVER be matched by the clear and re-fires the unresolved-escalation watchdog forever. The drill: confirm the real condition is resolved via routines.gate_health, then clear the stale row (escalation=NULL + supervisor_notes) — do NOT try to 'fix' a green gate."
+discovered: 2026-07-07
+tags: [watchdog, escalation, unresolved-escalation, green-checkpoint-stall, phantom, orphaned-row, install-slug-rename, auto-implement, EI-7690, EI-8396, WI-2825]
+status: active
+documents:
+  - packages/operator-core/lib/harness/improvements/watchdog.ts
+  - packages/operator-core/lib/harness/routines/release-actions.ts
+  - packages/operator-core/lib/release/green-stall-watchdog.ts
+---
+
+## The signal
+
+The self-improvement loop dispatches an auto-implement worker on an EI titled
+**"Unresolved escalation in harness `X`"** (watchdog source `unresolved-escalation`,
+key `escalation:<harness>:<phase>`). It has recurred many times for the
+`green-checkpoint-stall` phase: EI-7335 / 7447 / 7557 / 7569 / 7575 / 7690 (and the
+`quartermaster*` siblings).
+
+## What it actually means
+
+`collectEscalationSignals` (watchdog.ts) fires for **every** row in
+`harness_shared.harness_escalations` where `escalation <> '' AND supervisor_notes = ''`.
+It is a **presence** check on a durable row — it says nothing about whether the
+underlying condition is still live. So a stale row that never got cleared re-fires the
+signal **every tick**, re-dispatching a worker indefinitely on a problem that is already gone.
+
+For `green-checkpoint-stall`, the row is written by `trackGateStall`
+(release-actions.ts) when `main` is held red too long, and **cleared on the first green
+tick** by:
+
+```sql
+UPDATE harness_shared.harness_escalations SET escalation = NULL
+ WHERE harness_slug = ctx.installSlug AND phase = 'green-checkpoint-stall' AND escalation IS NOT NULL
+```
+
+The clear keys on `ctx.installSlug` — the **live** install running the green-checkpoint
+routine.
+
+## The orphaned-slug trap (EI-7690)
+
+If the row's `harness_slug` is **not** the live install-slug, the clear can never match
+it. This happens after an **install-slug rename**: legacy `papercup` (4 routines, **no**
+`system:green-checkpoint`) vs the live `papercusp` (186 routines, has it). A
+`green-checkpoint-stall` row keyed under `papercup` — whose escalation **body** correctly
+says `harness_slug: papercusp` — is permanently orphaned: no routine runs as `papercup`, so
+nothing ever clears it, and the watchdog re-fires forever.
+
+`WI-2825` hardened the **same-slug** 0-row clear-miss (a loud `console.warn` when
+`gate_health.stallAlerted` is true but the clear matched 0 rows). It does **not** cover the
+different-slug/dead-install orphan — that residual gap is tracked as **EI-8396**.
+
+## The drill (how to resolve one of these EIs)
+
+1. **Don't try to "fix" the release gate.** Read the LIVE condition first:
+   ```sql
+   SELECT metadata->'gate_health', last_fired_at
+     FROM harness_shared.routines
+    WHERE install_slug = '<live-slug>' AND target_role = 'system:green-checkpoint';
+   ```
+   `consecutiveReds = 0`, `stallAlerted = false`, a recent `lastGreenAt` + `last_fired_at`
+   ⇒ the stall is **resolved**; the escalation is a phantom.
+2. **Check for a slug mismatch.** Compare the row's `harness_slug` column against the live
+   install-slug and the escalation body's `harness_slug`. A dead/renamed slug (no matching
+   `system:green-checkpoint` routine) is the orphan case.
+3. **Clear the stale row** (the sanctioned remediation — same as every sibling EI): set
+   `escalation = NULL` **and** write `supervisor_notes` documenting why. Either clause
+   alone stops `collectEscalationSignals` from re-firing.
+4. **Resolve the EI `fixed`** with the gate_health evidence. This is a **state-only**
+   cleanup — zero code lines change — so the contract's "evidence says it no longer
+   exists = verified fix" path applies; there is no unit diff to test.
+5. **The durable fix lives on a protected surface** (release-actions.ts clear step, or the
+   watchdog collector filtering out dead-install slugs). File/track it (EI-8396); don't
+   auto-fix it inline.
