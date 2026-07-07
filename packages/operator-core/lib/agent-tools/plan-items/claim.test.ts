@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'sess-A', ownerLabel: 'A' }),
+  isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
 }));
 vi.mock('../plans/source', () => ({
   resolvePlanScope: vi.fn(async (opts?: { harnessSlug?: string }) => ({
@@ -90,5 +91,57 @@ describe('plan_items:claim handler (bulk keyed-array, flag OFF)', () => {
     await body({ harness: 'papercup', items: [{ plan: 'p1', item: 'P-001' }, { plan: 'p2', item: 'P-009', harness: 'web' }] });
     expect(resolvePlanScope).toHaveBeenNthCalledWith(1, { harnessSlug: 'papercup' });
     expect(resolvePlanScope).toHaveBeenNthCalledWith(2, { harnessSlug: 'web' });
+  });
+});
+
+// EI-8509: this tool always claims for the CALLER's own identity (no explicit
+// assignee param exists here) — refuse the whole batch when the caller is
+// scripts/mcp-call.mjs's auto-generated fallback (`mcp-call-<pid>`), a
+// one-shot process with no liveness/heartbeat and no fleet cup behind it.
+describe('plan_items:claim refuses the mcp-call.mjs auto-generated fallback identity (EI-8509)', () => {
+  it('refuses every item in the batch without ever calling claimPlanItem', async () => {
+    vi.resetModules();
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: () => ({ ownerId: 'mcp-call-777', ownerLabel: 'su · mcp-call-777' }),
+      isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
+    }));
+    vi.doMock('../plans/source', () => ({
+      resolvePlanScope: vi.fn(async (opts?: { harnessSlug?: string }) => ({
+        workspaceId: 'default',
+        harnessSlug: opts?.harnessSlug ?? 'papercup',
+      })),
+    }));
+    vi.doMock('../../plan-items/agent-names', () => ({
+      bestEffortOwnerUser: () => 'user-A',
+      resolveAdoptedName: vi.fn(async () => 'builder-1'),
+    }));
+    const freshClaimM = vi.fn();
+    vi.doMock('../../plan-items/liveness', () => ({ claimPlanItem: freshClaimM }));
+    vi.doMock('../../plan-items/convert', () => ({ convertPlanItem: vi.fn() }));
+    vi.doMock('@papercusp/flags/server', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+      getFlag: vi.fn(async () => false),
+    }));
+
+    const freshTool = (await import('./claim')).default;
+    const out = (await freshTool.handler(
+      { plan: 'p1', itemIds: ['P-001', 'P-002'] } as never,
+      {} as never,
+    )) as { data: any };
+    const b = out.data;
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 2 } });
+    expect(b.results[0]).toMatchObject({ ok: false, plan: 'p1', item: 'P-001' });
+    expect(b.results[0].result).toMatchObject({ status: 'refused', reason: 'ephemeral_mcp_call_identity' });
+    expect(b.results[0].result.hint).toMatch(/mcp-call\.mjs/);
+    expect(freshClaimM).not.toHaveBeenCalled();
+
+    vi.doUnmock('../coordination/identity');
+    vi.doUnmock('../plans/source');
+    vi.doUnmock('../../plan-items/agent-names');
+    vi.doUnmock('../../plan-items/liveness');
+    vi.doUnmock('../../plan-items/convert');
+    vi.doUnmock('@papercusp/flags/server');
+    vi.resetModules();
   });
 });
