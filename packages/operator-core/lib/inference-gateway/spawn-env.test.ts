@@ -7,6 +7,7 @@ import {
   gatewayPort,
   GATEWAY_BASE_URL_ENV,
   GATEWAY_SDK_URL_ENV,
+  GATEWAY_CLIENT_AUTH_TOKEN,
 } from './spawn-env';
 
 const orig = process.env.PAPERCUSP_GATEWAY_PORT;
@@ -21,13 +22,32 @@ test('gatewaySpawnEnv — disabled returns no patch', () => {
 
 test('gatewaySpawnEnv — enabled points ANTHROPIC_BASE_URL at the localhost gateway', () => {
   delete process.env.PAPERCUSP_GATEWAY_PORT;
-  assert.deepEqual(gatewaySpawnEnv(true), { [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788' });
+  assert.deepEqual(gatewaySpawnEnv(true), {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788',
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+  });
+});
+
+test('gatewaySpawnEnv — enabled ALWAYS hands the CLI the gateway bearer, so a fresh config dir with no local login still sends (mac fleet-member "Not logged in", 2026-07-06)', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  // The claude CLI gates on ITS OWN auth state before making any request: with no auth-token env
+  // and no live local credential (the fresh-config-dir mac member), it boots "Not logged in ·
+  // Please run /login" and never reaches the gateway at all. The bearer is a placeholder — the
+  // gateway strips + reinjects the routed account's real OAuth — but it must be present on EVERY
+  // enabled variant (plain, pinned, owner-attributed), and never when the gateway is off.
+  assert.equal(gatewaySpawnEnv(true).ANTHROPIC_AUTH_TOKEN, GATEWAY_CLIENT_AUTH_TOKEN);
+  assert.equal(gatewaySpawnEnv(true, { accountId: 'acct-x', hardPin: true }).ANTHROPIC_AUTH_TOKEN, GATEWAY_CLIENT_AUTH_TOKEN);
+  assert.equal(gatewaySpawnEnv(true, { ownerId: 'spawn-7', priority: 'su' }).ANTHROPIC_AUTH_TOKEN, GATEWAY_CLIENT_AUTH_TOKEN);
+  assert.equal(gatewaySpawnEnv(false).ANTHROPIC_AUTH_TOKEN, undefined);
 });
 
 test('gatewayPort — honors PAPERCUSP_GATEWAY_PORT, falls back to 8788', () => {
   process.env.PAPERCUSP_GATEWAY_PORT = '9999';
   assert.equal(gatewayPort(), 9999);
-  assert.deepEqual(gatewaySpawnEnv(true), { [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:9999' });
+  assert.deepEqual(gatewaySpawnEnv(true), {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:9999',
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+  });
   process.env.PAPERCUSP_GATEWAY_PORT = 'not-a-number';
   assert.equal(gatewayPort(), 8788);
 });
@@ -50,6 +70,7 @@ test('gatewaySpawnEnv — with an accountId emits the x-papercusp-account routin
   delete process.env.PAPERCUSP_GATEWAY_PORT;
   assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-x' }), {
     [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788',
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
     ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: acct-x',
   });
 });
@@ -58,6 +79,7 @@ test('gatewaySpawnEnv — hardPin adds the x-papercusp-account-pin: hard marker 
   delete process.env.PAPERCUSP_GATEWAY_PORT;
   assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-x', hardPin: true }), {
     [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788',
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
     ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: acct-x\nx-papercusp-account-pin: hard',
   });
   // hardPin without an accountId is meaningless → no pin marker (nothing to pin to)
