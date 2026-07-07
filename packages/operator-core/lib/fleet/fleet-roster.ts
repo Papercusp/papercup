@@ -26,6 +26,7 @@ import {
 import {
   fetchWakeability,
   deriveSessionState,
+  isHardStale,
   type SessionState,
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
@@ -157,8 +158,13 @@ export function foldFleetRoster(
     // heartbeat-derived `alive` and a null sessionState (state unknown).
     const w = wakeability.get(id);
     const stale = p ? p.stale : !base.alive;
+    // fleet-liveness-zombie-await-2026-07-07: a reboot-killed member leaves an
+    // un-cancelled wake-await, so `wakeable` alone would pin it to `parked`
+    // (counted a live member) forever. Feed the DEAD-ceiling check so an
+    // hour-cold heartbeat is authoritatively `ended` regardless of that zombie await.
+    const hbMs = (p?.heartbeatAt ?? base.heartbeatAt) ? Date.parse((p?.heartbeatAt ?? base.heartbeatAt)!) : null;
     const sessionState: SessionState | null = w
-      ? deriveSessionState({ stale, wakeable: w.wakeable, liveTurn: w.liveTurn })
+      ? deriveSessionState({ stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale: isHardStale(hbMs, nowMs) })
       : null;
     const alive = sessionState === 'ended' ? false : base.alive;
     out.push({

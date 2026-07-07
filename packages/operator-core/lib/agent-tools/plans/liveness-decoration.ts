@@ -24,7 +24,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from '../coordination/presence';
-import { fetchWakeability, deriveSessionState } from '../coordination/presence-wakeability';
+import { fetchWakeability, deriveSessionState, isHardStale } from '../coordination/presence-wakeability';
 
 /** Prose commonly carries an abbreviated id (the 4-8 hex-char `ownerLabel`
  *  prefix, e.g. "su-2c799") rather than the full UUID-suffixed ownerId — match
@@ -86,7 +86,14 @@ export async function decorateAgentLiveness(text: string | null | undefined): Pr
         const w = wakeability.get(row.owner_id) ?? { wakeable: false, liveTurn: false };
         const heartbeatMs = Date.parse(row.heartbeat_at);
         const stale = !Number.isFinite(heartbeatMs) || now - heartbeatMs > PRESENCE_STALE_MS;
-        const state = deriveSessionState({ stale, wakeable: w.wakeable, liveTurn: w.liveTurn });
+        // fleet-liveness-zombie-await-2026-07-07: an hour-cold heartbeat is dead
+        // even if a reboot left its wake-await live (else it decorates as parked).
+        const state = deriveSessionState({
+          stale,
+          wakeable: w.wakeable,
+          liveTurn: w.liveTurn,
+          hardStale: isHardStale(Number.isFinite(heartbeatMs) ? heartbeatMs : null, now),
+        });
         const lastActiveMs = row.last_active_at ? Date.parse(row.last_active_at) : heartbeatMs;
         tagByToken.set(token, formatLivenessTag(state, Number.isFinite(lastActiveMs) ? lastActiveMs : null));
       }

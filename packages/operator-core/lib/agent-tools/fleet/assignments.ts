@@ -18,6 +18,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
   deriveSessionState,
+  isHardStale,
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
@@ -72,13 +73,18 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   if (agents.length === 0) return agents;
   const ownerIds = agents.map((a) => a.agentId);
   const [wakeability, recordedLive] = await Promise.all([fetchWakeabilityFn(ownerIds), fetchRecordedLiveFn(ownerIds)]);
+  const nowMs = Date.now();
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
+    // fleet-liveness-zombie-await-2026-07-07: force an hour-cold holder to `ended`
+    // even if its wake-await outlived an abrupt death (reboot/SIGKILL skips
+    // cancelInboxWakeAwaits) — else it stays `parked` and reads as a live member.
+    const hardStale = isHardStale(a.heartbeatAt ? Date.parse(a.heartbeatAt) : null, nowMs);
     const sessionState =
       !w.wakeable && recordedLive.has(a.agentId)
         ? 'recorded'
-        : deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
+        : deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale });
     a.sessionState = sessionState;
     if (sessionState === 'recorded') a.alive = true;
     if (sessionState === 'ended') a.alive = false;

@@ -26,7 +26,7 @@ import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './prese
 import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
-import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
+import { fetchWakeability, deriveSessionState, isHardStale, type WakeabilitySignals } from './presence-wakeability';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
@@ -290,6 +290,7 @@ export async function assemblePresenceSnapshot(
 
   /** Attach the P-001 wakeability signals. A federated/unknown row has no local
    *  entry → sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
+  const nowMs = Date.now();
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
@@ -299,12 +300,16 @@ export async function assemblePresenceSnapshot(
     // `ended` (which means dead/relaunch). A recorded session that HAS begun
     // registering (a live await exists → wakeable) derives normally below.
     const recordedLiveOnly = r.source === RECORDED_SESSION_SOURCE && !w.wakeable;
+    // fleet-liveness-zombie-await-2026-07-07: a reboot/SIGKILL leaves a live
+    // wake-await, so a dead row would otherwise stay `parked`; the DEAD-ceiling
+    // check forces an hour-cold heartbeat to `ended` even while wakeable.
+    const hardStale = isHardStale(r.heartbeatAt ? Date.parse(r.heartbeatAt) : null, nowMs);
     return {
       ...r,
       wakeable: w.wakeable,
       sessionState: recordedLiveOnly
         ? 'recorded'
-        : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn }),
+        : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale }),
     };
   };
 

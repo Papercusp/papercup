@@ -67,17 +67,59 @@ export interface WakeabilitySignals {
 export const LIVE_TURN_WINDOW_MS = PRESENCE_STALE_MS;
 
 /**
- * PURE: the coordinator-facing session state from the three raw signals. Order
- * matters — wakeability is the authoritative gate (not wakeable ⇒ `ended`
+ * The DEAD ceiling (fleet-liveness-zombie-await-2026-07-07). A heartbeat cold
+ * beyond this is authoritative-dead REGARDLESS of a lingering wake-await.
+ *
+ * Why this is needed: `wakeable` (a live `coord:inbox-wake:<id>` await) is the
+ * gate for `ended`, on the assumption that a session cancels its await when it
+ * stops (cancelInboxWakeAwaits). But an ABRUPT death — a host reboot, an OOM
+ * kill, a SIGKILL — skips that cleanup, so the await OUTLIVES the process. Such
+ * a dead session then reads `wakeable:true` forever and `deriveSessionState`
+ * pins it to `parked` ("the ideal dispatch target") with an hour-cold heartbeat
+ * — the invisible-dead-fleet bug (a whole fleet, killed by a reboot, still
+ * counted as live members). The 3-state model had NO time-based backstop: the
+ * `stale` flag only downgraded `live`→`parked`, never forced `ended`.
+ *
+ * 3× PRESENCE_STALE_MS = 30m, matching the parked-claim reclaim grace
+ * (STALE_CLAIM_PARKED_GRACE_MS / reclaimParkedGraceMs): past 30m a parked
+ * holder's CLAIMS are already reclaimed, so treating its SESSION as ended at the
+ * same threshold is consistent policy, not a new one. A genuinely parked+idle
+ * member in an active fleet is dispatched well inside 30m; if it has been cold
+ * 30m it is done or dead, and `ended` (→ relaunch) is the safe read — the
+ * asymmetry favours it (a needless relaunch costs one spawn; a mis-`parked`
+ * zombie costs an invisible dead fleet). A `recorded` (session-log-authoritative)
+ * row is classified before this path, so it is never force-ended by heartbeat.
+ */
+export const PRESENCE_DEAD_MS = 3 * PRESENCE_STALE_MS;
+
+/**
+ * PURE: is a heartbeat cold beyond the DEAD ceiling? Conservative on missing
+ * data — a null/unparseable timestamp returns FALSE (only force-end when we
+ * AFFIRMATIVELY know a heartbeat has been cold > PRESENCE_DEAD_MS), so a
+ * transiently-absent heartbeat on a fresh row is never mistaken for death.
+ */
+export function isHardStale(heartbeatAtMs: number | null | undefined, nowMs: number): boolean {
+  if (heartbeatAtMs == null || !Number.isFinite(heartbeatAtMs)) return false;
+  return nowMs - heartbeatAtMs > PRESENCE_DEAD_MS;
+}
+
+/**
+ * PURE: the coordinator-facing session state from the raw signals. Order
+ * matters — a `hardStale` heartbeat is authoritative-dead FIRST (a zombie await
+ * from an abrupt death can't outvote an hour-cold heartbeat, see
+ * PRESENCE_DEAD_MS), then wakeability is the gate (not wakeable ⇒ `ended`
  * regardless of a still-warm heartbeat), then a running turn ⇒ `live`, else
  * `parked` (wakeable but idle — the dispatch target). Injected inputs so the
- * boundary unit-tests without PG.
+ * boundary unit-tests without PG. `hardStale` defaults to false, so a caller
+ * that doesn't compute it keeps the pre-2026-07-07 behavior.
  */
 export function deriveSessionState(input: {
   stale: boolean;
   wakeable: boolean;
   liveTurn: boolean;
+  hardStale?: boolean;
 }): SessionState {
+  if (input.hardStale) return 'ended';
   if (!input.wakeable) return 'ended';
   if (input.liveTurn && !input.stale) return 'live';
   return 'parked';
