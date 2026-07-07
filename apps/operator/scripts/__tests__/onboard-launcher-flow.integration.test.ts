@@ -221,15 +221,10 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
   );
 
   it(
-    'tutorial re-entry (--tutorial): launches the deterministic runner in tutorial mode',
+    'tutorial re-entry (--tutorial): routes straight to the unified shell in tutorial mode',
     async () => {
       const argvFile = path.join(tmp, 'psu-argv-tutorial.txt');
       const { server, port, requests } = await startFakeOperator((url) => {
-        if (url.pathname === '/api/desktop/onboarding-status') {
-          // A finished machine in tutorial mode resolves to handoff (P-014),
-          // with the detected framework — NO pick, NO confirm.
-          return { stage: { stage: 'handoff', framework: 'claude' }, labels: LABELS };
-        }
         if (url.pathname === '/api/desktop/tutorial-script') {
           return {
             mode: 'tutorial',
@@ -247,13 +242,18 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
           PSU_ARGV_FILE: argvFile,
         });
         expect(r.code).toBe(0);
-        expect(r.stdout).toContain('Re-opening the Papercusp tutorial'); // concierge banner
-        expect(r.stdout).toContain('No tutorial content'); // the runner launched (empty pack)
-        // The re-entry flag reached BOTH the status poll and the tutorial-script fetch.
-        const poll = requests.find((u) => u.pathname === '/api/desktop/onboarding-status');
-        expect(poll?.searchParams.get('tutorial')).toBe('1');
+        // `papercusp tutorial` now BYPASSES the linear concierge and opens the unified
+        // Tutorial|Setup shell directly (owner 2026-07-06: setup is the first thing). The
+        // runner launched (empty pack → "No tutorial content"); the old concierge
+        // "Re-opening the Papercusp tutorial" banner + its handoff poll are gone.
+        expect(r.stdout).toContain('No tutorial content');
+        expect(r.stdout).not.toContain('Re-opening the Papercusp tutorial');
+        // The tutorial flag still reaches the tutorial-script fetch.
         const scriptReq = requests.find((u) => u.pathname === '/api/desktop/tutorial-script');
         expect(scriptReq?.searchParams.get('tutorial')).toBe('1');
+        // The concierge no longer polls onboarding-status for a plain tutorial re-entry
+        // (and the non-TTY runner never reaches the interactive setup-completeness fetch).
+        expect(requests.find((u) => u.pathname === '/api/desktop/onboarding-status')).toBeUndefined();
         // The agentic psu tutor was never exec'd.
         expect(existsSync(argvFile)).toBe(false);
       } finally {
