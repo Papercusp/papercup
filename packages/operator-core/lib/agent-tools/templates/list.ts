@@ -1,16 +1,20 @@
 /**
- * templates:list — browse the Cupboard's app-template storefront (WI-3198).
+ * templates:list — browse the first-party app-template storefront.
  *
- * The `templates:*` group closes the gap an agent hit live: the entire Cupboard
- * surface was HTTP-only, so an MCP agent with no shell could not discover the
- * published app-templates (plan app-templates-2026-07-04) even though the guidance
- * tells it to "reach for an app template". This is the read half — it wraps
- * GET {cupboard}/listings?kind=template. Read-only, no side effects.
+ * v1 (local-first-party-template-bundling-2026-07-07): the official "Papercusp
+ * Official: …" templates ship BUNDLED in the app and are enumerated from the LOCAL
+ * store (offline — no Cupboard/GitHub round-trip). The Cupboard MARKETPLACE (user-
+ * published, runtime-fetched templates) is a wired-but-dormant v2 seam gated by
+ * FLAGS.TEMPLATES_MARKETPLACE; when ON, remote listings merge on top of the local
+ * set (a local ref shadows a remote one). Read-only, no side effects.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
-import { fetchCupboardTemplates } from '../../cupboard/templates';
+import { fetchCupboardTemplates, type TemplateListing } from '../../cupboard/templates';
+import { listLocalTemplates, toTemplateListing } from '../../cupboard/template-store';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -19,7 +23,7 @@ const ok = (payload: Record<string, unknown>) => ({
 export default defineTool({
   name: 'templates:list',
   description:
-    'Browse the Cupboard app-template storefront — the official "Papercusp Official: …" templates a NEW app is composed from (whole-app: papercusp-webapp, desktop-app, agentic-desktop-app; aspect: data-sync, search, ui, release-pipeline, data-layer, …). Wraps GET {cupboard}/listings?kind=template. Returns { ok, reachable, count, templates:[{ id, ref, title, description, category?, scope?, githubUrl }] }. `ref` (e.g. "papercusp-webapp") is the handle you pass to templates:get-guide / templates:new-app.',
+    'Browse the app-template storefront — the official "Papercusp Official: …" templates a NEW app is composed from (whole-app: papercusp-webapp, desktop-app, agentic-desktop-app; aspect: data-sync, search, ui, release-pipeline, data-layer, …). V1: these ship BUNDLED and are listed from the local store (works offline). Returns { ok, reachable, count, source, templates:[{ id, ref, title, description, category?, scope?, githubUrl }] }. `ref` (e.g. "papercusp-webapp") is the handle you pass to templates:get-guide / templates:new-app.',
   guidance: {
     when: 'A user asks to build/scaffold an app (or "use the papercusp-webapp template") and you need to discover which official templates exist before building. The entry point to the app-template flow.',
     notWhen:
@@ -39,7 +43,7 @@ export default defineTool({
       .string()
       .max(200)
       .optional()
-      .describe('Optional search query forwarded to the Cupboard (matches title/description).'),
+      .describe('Optional search query (matches ref/title/description).'),
     limit: z
       .number()
       .int()
@@ -49,14 +53,43 @@ export default defineTool({
       .describe('Max templates to return (default 50).'),
   }),
   async handler(args) {
-    const { reachable, templates } = await fetchCupboardTemplates({ q: args.q, limit: args.limit });
+    // v1: the first-party templates are bundled + resolved from the local store.
+    const q = args.q?.trim().toLowerCase();
+    const localAll = listLocalTemplates().map(toTemplateListing);
+    const local = q
+      ? localAll.filter(
+          (t) =>
+            t.ref.toLowerCase().includes(q) ||
+            t.title.toLowerCase().includes(q) ||
+            t.description.toLowerCase().includes(q),
+        )
+      : localAll;
+
+    const byRef = new Map<string, TemplateListing>(local.map((t) => [t.ref, t])); // local wins
+    let reachable = true; // the local store is always available
+    let marketplace = false;
+
+    // v2 (FLAGS.TEMPLATES_MARKETPLACE): merge the Cupboard marketplace on top; a local
+    // ref shadows a remote one so first-party stays authoritative.
+    if (await getFlag(FLAGS.TEMPLATES_MARKETPLACE, 'system')) {
+      marketplace = true;
+      const remote = await fetchCupboardTemplates({ q: args.q, limit: args.limit });
+      reachable = remote.reachable;
+      for (const t of remote.templates) if (!byRef.has(t.ref)) byRef.set(t.ref, t);
+    }
+
+    let templates = [...byRef.values()];
+    const limit = args.limit ?? 50;
+    if (templates.length > limit) templates = templates.slice(0, limit);
+
     return ok({
       reachable,
       count: templates.length,
+      source: marketplace ? 'local+marketplace' : 'local',
       templates,
-      ...(reachable
-        ? {}
-        : { note: 'Cupboard unreachable — no templates could be listed (this is NOT "none exist").' }),
+      ...(marketplace && !reachable
+        ? { note: 'Marketplace unreachable — showing the bundled first-party templates only.' }
+        : {}),
     });
   },
 });

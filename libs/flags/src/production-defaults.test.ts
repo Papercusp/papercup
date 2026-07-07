@@ -137,6 +137,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // zero owner ratification. Adding it here + to DARK_FLAGS restores its always-intended
   // default-OFF. Count 15 → 16.
   'papercusp-psu-end-user',
+  // 2026-07-07 — papercusp-templates-marketplace (local-first-party-template-bundling,
+  // owner-directed): a DELIBERATE new dark flag (case: parked), not inversion drift.
+  // V1 ships the first-party templates bundled + resolved from the local store; the
+  // Cupboard MARKETPLACE merge (user-published, runtime-fetched templates) is deferred
+  // to v2. The remote-fetch code is wired but dormant. OFF is the intended v1 production
+  // state (ON = v2). Count 16 → 17; well under DARK_FLAGS_HIGH_WATERMARK (22).
+  'papercusp-templates-marketplace',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -265,7 +272,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // instance (own comment always said dark — legitimate owner-authority/SECURITY case, the
     // owner must ratify end-user psu shell exposure — never actually added — see
     // PRE_INVERSION_DEFAULT_OFF above), not a new darkening. Count 15 → 16.
-    expect(offCount).toBe(16);
+    // 2026-07-07 — papercusp-templates-marketplace: DELIBERATE new dark flag (case:
+    // parked, owner-directed v1/v2 split — local-first-party-template-bundling). The
+    // v2 Cupboard marketplace merge is wired but dormant in v1. Count 16 → 17.
+    expect(offCount).toBe(17);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

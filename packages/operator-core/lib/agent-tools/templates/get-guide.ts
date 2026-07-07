@@ -10,8 +10,11 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
+import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -42,6 +45,33 @@ export default defineTool({
       .describe('Template listing ref (e.g. "papercusp-webapp") or listing id (uuid).'),
   }),
   async handler(args) {
+    // v1: first-party templates ship bundled — read the GUIDE from the local store.
+    const local = resolveLocalTemplate(args.template);
+    if (local) {
+      const guide = readLocalGuide(local);
+      if ('error' in guide) return fail(guide.status, guide.error);
+      return ok({
+        template: {
+          id: local.id,
+          ref: local.ref,
+          title: local.title,
+          category: local.category ?? undefined,
+          scope: local.scope ?? undefined,
+          githubUrl: '',
+        },
+        branch: guide.branch,
+        guide: guide.guide,
+        guideTruncated: guide.guideTruncated,
+        componentCatalog: guide.componentCatalog,
+        manifest: guide.manifest,
+        fetchedFiles: guide.fetchedFiles,
+      });
+    }
+
+    // Not a bundled template — the Cupboard MARKETPLACE is a dormant v2 seam.
+    if (!(await getFlag(FLAGS.TEMPLATES_MARKETPLACE, 'system'))) {
+      return fail(404, `template not found in the local store: ${args.template}`);
+    }
     const listing = await resolveTemplateListing(args.template);
     if ('error' in listing) return fail(listing.status, listing.error);
     if (!listing.githubUrl) return fail(422, `template "${listing.ref}" has no github_url`);
