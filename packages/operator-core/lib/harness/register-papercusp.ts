@@ -40,8 +40,10 @@ import { readRegistry } from '../workspace-registry';
  */
 export const LEGACY_STANDALONE_HARNESS_SLUG = 'papercup' as const;
 
-/** True iff `dir` carries both papercup repo markers. */
-function hasPapercupMarkers(dir: string): boolean {
+/** True iff `dir` carries both papercup repo markers. Exported for callers that must
+ *  validate an EXACT directory (no walk-up) — e.g. the env-operator launcher checking a
+ *  PAPERCUSP_DEV_SOURCE_ROOT extracted tree (WI-3306/WI-3308). */
+export function hasPapercupMarkers(dir: string): boolean {
   return (
     existsSync(join(dir, 'apps', 'operator', 'package.json')) &&
     existsSync(join(dir, 'libs', 'papercusp', 'package.json'))

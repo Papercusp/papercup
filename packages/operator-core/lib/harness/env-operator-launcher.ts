@@ -65,9 +65,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { detectPapercupRoot } from './register-papercusp';
+import { detectPapercupRoot, hasPapercupMarkers } from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
 
 /** One provisionable env operator: which fixed local port it serves and which git
