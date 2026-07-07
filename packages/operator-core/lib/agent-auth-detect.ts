@@ -179,12 +179,10 @@ export function readClaudeKeychainOAuthBundle(
  * whichever CLI session runs in it, so on a fleet box the base item is typically a STALE
  * snapshot while a hashed sibling holds the live token family member (the 2026-07-06
  * fleet-member-login root cause). Metadata only — enumerating raises no unlock/ACL prompt.
- * Empty off macOS or on any `security` error.
+ * Empty off macOS (`security` absent → the shim returns []) or on any `security` error — no
+ * platform gate here, so tests can fake the shim without faking process.platform.
  */
-export function listClaudeKeychainCredentialItems(
-  platform: NodeJS.Platform = process.platform,
-): { service: string; account: string | null }[] {
-  if (platform !== 'darwin') return [];
+export function listClaudeKeychainCredentialItems(): { service: string; account: string | null }[] {
   const base = CLAUDE_KEYCHAIN_SERVICES[0];
   const all = keychainAccess.list?.() ?? [];
   return all.filter(

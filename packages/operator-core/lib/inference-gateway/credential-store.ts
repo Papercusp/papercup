@@ -393,9 +393,11 @@ export async function credentialRefSupportsOpenAiBearer(credentialRef: string): 
  * Build a resolver for one account's credentialRef. `token:` returns the staged setup-token
  * verbatim (cached; no expiry). `file:` returns the bundle's access token, refreshing via the
  * claude provider when within REFRESH_SKEW_MS of expiry; an in-memory {token, expiresAt} cache
- * keeps the per-request path off disk between refreshes. `keychain:` returns the macOS Keychain
- * bundle's access token, RE-READING (not refreshing — Claude Code owns the item) near expiry.
- * `harnessKey` scopes the concurrent-refresh dedup so distinct accounts never share a refresh.
+ * keeps the per-request path off disk between refreshes. `keychain:` runs the local-credential
+ * FRESHEST-SCAN (see the channel comment above): newest live bundle across the base item, every
+ * per-config-dir Keychain sibling and the disk bundle; self-refresh (+ persist-back) only when
+ * every source is hard-expired. `harnessKey` scopes the concurrent-refresh dedup so distinct
+ * accounts never share a refresh.
  */
 export function makeCredentialResolver(credentialRef: string, harnessKey?: string): CredentialResolver {
   ensureClaudeProvider();
@@ -407,12 +409,19 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
 
   let cachedToken: string | undefined;
   let cachedExpiresAt = 0; // epoch ms; 0 = unknown/no-expiry
+  let lastScanAt = 0; // last freshest-scan (keychain kind) — bounds the near-expiry re-scan rate
+  // Negative cache (keychain kind): a signed-out box re-derives its UNAUTHENTICATED verdict at
+  // most every LOCAL_SCAN_MIN_INTERVAL_MS instead of paying a full scan + refresh attempts on
+  // every member request.
+  let lastScanFailure: { at: number; err: Error } | undefined;
 
   return {
     kind,
     invalidate() {
       cachedToken = undefined;
       cachedExpiresAt = 0;
+      lastScanAt = 0; // a 401 means the served token is bad NOW — the next current() must re-scan
+      lastScanFailure = undefined; // the reload/refresh ticks invalidate() first — let them retry immediately
     },
     async current() {
       if (kind === 'token') {
@@ -422,27 +431,64 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
         return cachedToken;
       }
       if (kind === 'keychain') {
-        // Serve the cache until near expiry, then RE-READ the Keychain (Claude Code refreshes the
-        // item as it runs). Within the skew window but not yet expired → serve the just-read token
-        // and keep re-reading each call until a fresher one appears; hard-expired → fail with the
-        // action that fixes it (never inject a known-dead bearer upstream).
+        // FRESHEST-SCAN. Serve the cache until near expiry; then re-scan every local source —
+        // whichever live CLI refreshed most recently wins. Within the skew window the scan
+        // repeats (rate-bounded — it shells out to `security` per item) until a fresher bundle
+        // appears; once EVERYTHING is hard-expired, refresh the freshest refreshable bundle
+        // ourselves and persist the rotated result back. An upstream 401 invalidate()s the
+        // cache, so recovery from a newly-signed-in CLI needs no gateway restart.
         const now = Date.now();
-        if (cachedToken && (cachedExpiresAt === 0 || cachedExpiresAt - now > REFRESH_SKEW_MS)) {
+        const cachedStillValid = cachedExpiresAt === 0 || cachedExpiresAt > now;
+        if (
+          cachedToken &&
+          cachedStillValid &&
+          (cachedExpiresAt === 0 || cachedExpiresAt - now > REFRESH_SKEW_MS || now - lastScanAt < LOCAL_SCAN_MIN_INTERVAL_MS)
+        ) {
           return cachedToken;
         }
-        const o = readClaudeKeychainBundle(path).claudeAiOauth;
-        const token = normalizeBearerToken(o?.accessToken ?? '');
-        if (!token) throw new Error(`inference-gateway: Keychain bundle '${path}' has no accessToken`);
-        const expiresAt = o?.expiresAt ?? 0;
-        if (expiresAt && expiresAt <= now) {
-          throw new Error(
-            `inference-gateway: Keychain credential '${path}' expired at ${new Date(expiresAt).toISOString()} ` +
-              '— run Claude Code on this Mac so it refreshes its own Keychain entry, or register a pool account',
-          );
+        if (lastScanFailure && now - lastScanFailure.at < LOCAL_SCAN_MIN_INTERVAL_MS) {
+          throw lastScanFailure.err;
         }
-        cachedToken = token;
-        cachedExpiresAt = expiresAt;
-        return token;
+        lastScanAt = now;
+        const candidates = await scanLocalCredentialCandidates(path);
+        const { live, refreshables } = selectLocalCredential(candidates, now);
+        if (live) {
+          const o = live.bundle.claudeAiOauth!;
+          cachedToken = normalizeBearerToken(o.accessToken ?? '');
+          cachedExpiresAt = o.expiresAt ?? 0;
+          lastScanFailure = undefined;
+          return cachedToken;
+        }
+        const failures: string[] = [];
+        const attemptedRefreshTokens = new Set<string>(); // stale snapshots share bundles — refresh each family branch once
+        for (const c of refreshables) {
+          const rt = c.bundle.claudeAiOauth!.refreshToken!;
+          if (attemptedRefreshTokens.has(rt)) continue;
+          if (attemptedRefreshTokens.size >= LOCAL_REFRESH_MAX_ATTEMPTS) break;
+          attemptedRefreshTokens.add(rt);
+          try {
+            const r = await refreshLocalCandidate(c, dedupKey);
+            cachedToken = r.token;
+            cachedExpiresAt = r.expiresAt;
+            lastScanFailure = undefined;
+            return r.token;
+          } catch (e) {
+            failures.push(`${c.ref}: ${(e as Error).message}`);
+          }
+        }
+        const err = new Error(
+          `inference-gateway: UNAUTHENTICATED — no live Claude credential on this machine. Scanned ` +
+            `${candidates.length} bundle(s) (Keychain '${path}' + per-config-dir siblings + ` +
+            `${localCredentialsFilePath()}): ${candidates.length ? 'all hard-expired' : 'none readable'}` +
+            (failures.length
+              ? `; refresh attempts failed: ${scrubSecrets(failures.join(' | '))}`
+              : candidates.length
+                ? '; none carries a refreshToken'
+                : '') +
+            `. Sign in with \`claude\` on this machine (any session) — the gateway picks it up on its next request, no restart needed.`,
+        );
+        lastScanFailure = { at: now, err };
+        throw err;
       }
       // file: bundle — serve the cache until near expiry, else refresh-on-read via getOAuthToken.
       const now = Date.now();

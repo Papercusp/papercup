@@ -13,7 +13,6 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
 import { CLAUDE_KEYCHAIN_SERVICES } from '../agent-auth-detect';
 import { loadAccountPool } from '../deployment/account-pool-store';
 import {
@@ -79,23 +78,21 @@ function accountsFor(pool: AccountPool, provider: AccountProvider) {
 
 /**
  * The credentialRef for the box's own Claude login (the `local` fallback account) — pure +
- * injectable for tests. Linux/WSL: the `~/.claude/.credentials.json` bundle. macOS: Claude Code
- * keeps that bundle in the login KEYCHAIN, not on disk (P-006, cross-platform-hardening) — so
- * when the file is absent on darwin, fall back to the Keychain item (credential-store.ts's
- * read-only `keychain:` channel). A darwin box that DOES have the file (hand-provisioned) keeps
- * using it, which also preserves refresh-capable behavior there.
+ * injectable for tests. Linux/WSL: the `~/.claude/.credentials.json` bundle. macOS: ALWAYS the
+ * `keychain:` channel — credential-store's freshest-scan across the base Keychain item, every
+ * per-CLAUDE_CONFIG_DIR sibling AND the disk bundle. A `~/.claude/.credentials.json` on a Mac is
+ * typically a stale one-time snapshot whose refresh token a later rotation consumed — letting it
+ * SHADOW the live Keychain bundles is the 2026-07-06 fleet-member "not logged in" root cause, so
+ * it participates in the scan instead of preempting it.
  */
 export function localLoginCredentialRef(opts?: {
   platform?: NodeJS.Platform;
-  exists?: (p: string) => boolean;
   home?: string;
 }): string {
   const platform = opts?.platform ?? process.platform;
-  const exists = opts?.exists ?? existsSync;
+  if (platform === 'darwin') return `keychain:${CLAUDE_KEYCHAIN_SERVICES[0]}`;
   const home = opts?.home ?? homedir();
-  const bundle = join(home, '.claude', '.credentials.json');
-  if (platform === 'darwin' && !exists(bundle)) return `keychain:${CLAUDE_KEYCHAIN_SERVICES[0]}`;
-  return `file:${bundle}`;
+  return `file:${join(home, '.claude', '.credentials.json')}`;
 }
 
 export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount> {

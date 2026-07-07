@@ -580,14 +580,23 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // every file-kind resolver, so an idle gateway never serves the first post-idle request — on ANY pool
   // account — with an expired token. The timer reads the CURRENT resolvers each tick, so a hot-reloaded
   // account's token is proactively refreshed too.
-  await resolvers[0].resolver.current().catch((e) => log('warn', `initial token resolve failed: ${(e as Error).message}`));
+  await resolvers[0]
+    .resolver.current()
+    .catch((e) =>
+      log(
+        'error',
+        `GATEWAY UNAUTHENTICATED at boot — initial token resolve failed: ${(e as Error).message} ` +
+          `(members routed through this gateway will 401 until a live credential appears; the resolver ` +
+          `re-scans on every 401 and on each proactive refresh tick, so recovery needs no restart)`,
+      ),
+    );
   const refreshMs = opts.refreshIntervalMs ?? 45 * 60 * 1000;
   let timer: ReturnType<typeof setInterval> | undefined;
   if (refreshMs > 0) {
     timer = setInterval(() => {
       for (const { resolver } of resolvers) {
         // `token` setup-tokens never expire — skip; `file` refreshes via OAuth; `keychain`
-        // (macOS local fallback, P-006) re-reads the Claude-Code-owned Keychain item.
+        // (macOS local fallback) re-runs the freshest-scan across every local credential source.
         if (resolver.kind === 'token') continue;
         resolver.invalidate();
         void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));

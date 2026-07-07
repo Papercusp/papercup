@@ -23,7 +23,13 @@ vi.hoisted(() => {
 
 // --- mocks (hoisted) ---------------------------------------------------------
 const spawnMock = vi.fn();
-vi.mock('node:child_process', () => ({ spawn: (...a: unknown[]) => spawnMock(...a) }));
+// Partial mock: only spawn is intercepted. A full replacement broke at import
+// time once a transitive import (seed-provider-git.ts) started promisify()ing
+// execFile — keep the real surface for everything this test doesn't stub.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  spawn: (...a: unknown[]) => spawnMock(...a),
+}));
 
 const H = vi.hoisted(() => ({
   cmd: null as null | { command: string; args: string[]; env: NodeJS.ProcessEnv },
