@@ -37,21 +37,22 @@ exports.AGENT_ROLES = [
     // Chat-surface roles.
     'operator',
     'oracle',
-    // The generic operator-world worker — the Hive's bee (local-hive-orchestration
-    // D-003 / P-011). The plain "do this task" role the Queen places ranked work +
-    // a brief onto. DECOUPLED from the pipeline guards: unlike `worker` (which
-    // operator-spawn rejects without a `chunkId`), a `bee` carries NO pipeline spine
-    // and NO chunk requirement. Pipeline roles (scoper/worker/validator/…) apply
-    // ONLY when a bee explicitly spins up a coding harness (kind:'harness'); the bee
-    // itself is the generic agent of the kind:'hive' blueprint.
-    'bee',
-    // The QUEEN — the hive blueprint's placement-specialist decider
-    // (spine.deciderAlternatives; local-hive-orchestration P-030). The operator role
+    // The generic operator-world worker — the Pot's cup (local-hive-orchestration
+    // D-003 / P-011; pot-rename SLICE-2 CONTRACT: canonical id, was `bee`). The plain
+    // "do this task" role the Mug places ranked work + a brief onto. DECOUPLED from
+    // the pipeline guards: unlike `worker` (which operator-spawn rejects without a
+    // `chunkId`), a `cup` carries NO pipeline spine and NO chunk requirement.
+    // Pipeline roles (scoper/worker/validator/…) apply ONLY when a cup explicitly
+    // spins up a coding harness (kind:'harness'); the cup itself is the generic
+    // agent of the pot blueprint.
+    'cup',
+    // The MUG — the pot blueprint's placement-specialist decider (was `queen`;
+    // spine.deciderAlternatives; local-hive-orchestration P-030). The operator role
     // specialized for placement (D-001): same judgment layer, dial turned toward
-    // fleet:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
-    // blueprint declared the role but the registry never knew it, so a role=queen
+    // cup:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
+    // blueprint declared the role but the registry never knew it, so a role=mug
     // launch got an almost-empty role-scoped MCP catalog and could not place work.
-    'queen',
+    'mug',
     // The PLANNER (hive-agent-tabs-psu-tui-2026-06-09 P-006): an interactive,
     // RESPONSIVE plan-authoring session launched into the dock as a Planner-kind pane
     // (no auto-injected wakes — the owner drives). It drafts/refines ONE plan via the
@@ -107,32 +108,47 @@ exports.AGENT_ROLES = [
     // does NOT push. Registered late (mirrors merge-resolver): the `release-fix` blueprint
     // declared the role, but the registry never knew it.
     'release-fixer',
-    // The SENTINEL — the fleet watcher split out of the overloaded "operator"
-    // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
-    // (steer: schedule + place + prioritize) AND a watcher; they are now separate.
-    // The Queen STEERS; the sentinel WATCHES — fleet health (stuck/orphaned spawns,
-    // crash-loops), misbehaving agents (lock hogs, retry storms, mute bees), and the
+    // The DOC-STEWARD — the automated documentation-freshness fixer (docs-corpus-audit
+    // WS2 / P-008; the `doc-steward` launch blueprint). Fired by the post-git-sync
+    // freshness sweep when a doc's anchored code drifts: it re-syncs the prose to the
+    // current code and `harness_docs:verify`s it. Registered late, same class as the
+    // launch-fixer family above (queen/sentinel/content-fixer/release-fixer): the role
+    // existed ONLY in the blueprint, so every role-gated allowlist filtered it out — a
+    // doc-steward spawn got a near-empty MCP catalog with NONE of harness_docs:* /
+    // work_items:* / coord:* and no ToolSearch to load them, forcing a blind fallback to
+    // scripts/mcp-call.mjs (EI-6643). The fix wires it into COORD_ROLES (work_items:get,
+    // coord:escalate) + the harness_docs:* allowlists (verify clears the drift flag). It is
+    // deliberately NOT in SU_ROLES — that would pull it into the fleet capability-cutover
+    // (SU_ROLES ∪ {bee}) and STRIP the native file-read/edit/git it uses to fix docs; its
+    // persona reads the file / harness_docs:list, not the SU-gated docs:get. Persona ships
+    // at blueprints/base/prompts/doc-steward.md.
+    'doc-steward',
+    // The PAPERCUP — the fleet watcher split out of the overloaded "operator"
+    // (was `sentinel`; unify-launch-mechanics-2026-06-09 D-004). "operator" meant both
+    // the Mug (steer: schedule + place + prioritize) AND a watcher; they are now separate.
+    // The Mug STEERS; the papercup WATCHES — fleet health (stuck/orphaned spawns,
+    // crash-loops), misbehaving agents (lock hogs, retry storms, mute cups), and the
     // coord substrate (presence staleness, undelivered escalations). It is READ-MOSTLY
     // (its only writes are raising alarms: coord:escalate / coord:send), launched
-    // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
-    // or the `sentinel` launch blueprint). No execution/mutation capability.
-    'sentinel',
-    // The OVERWATCH — the autonomous system-health SUPERVISOR, a sibling to the Queen
-    // (overwatch-role-2026-06-15 C-2 / B-01). Where the Queen SCHEDULES (places work)
-    // and the sentinel WATCHES the fleet, the overwatch runs the short-term
-    // sense→decide→act control loop over the WHOLE running system (the Queen, the bees,
+    // through the SAME unified primitive as a cup and PLACED BY THE MUG (cup:spawn
+    // or the watcher launch blueprint). No execution/mutation capability.
+    'papercup',
+    // The KETTLE — the autonomous system-health SUPERVISOR, a sibling to the Mug
+    // (was `overwatch`; overwatch-role-2026-06-15 C-2 / B-01). Where the Mug SCHEDULES
+    // (places work) and the papercup WATCHES the fleet, the kettle runs the short-term
+    // sense→decide→act control loop over the WHOLE running system (the Mug, the cups,
     // the work-feed, tokens, plans, escalations): it detects drift and makes LIVE
     // course-corrections by NUDGING the running agents (coord:send) + recording
     // OBSERVATIONS (improvements:capture lane:observation), never re-placing work itself
-    // (D-001 — the hard Queen-boundary). READ-EVERYTHING + nudge/observe/escalate ONLY:
+    // (D-001 — the hard Mug-boundary). READ-EVERYTHING + nudge/observe/escalate ONLY:
     // its write-to-the-world verbs are coord:send / coord:escalate / improvements:capture
     // / messages:send, and its ROLE_ENVELOPES entry DENIES capability:fs-write +
     // capability:bash — it nudges, it never edits code. Registered statically + UNGATED
     // here (the `papercusp-overwatch` flag gates the LOOP/spawn/UI in B-04/B-08/B-10, not
-    // this type-level role id). Canonical persona ships at the coding (hive) blueprint
+    // this type-level role id). Canonical persona ships at the coding (pot) blueprint
     // (blueprints/coding/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
     // thin STUB so the two cannot drift (D-007 / the EI-611 lesson).
-    'overwatch',
+    'kettle',
     // ── Blueprint-shipped specialist roles (blueprint-role-bundling-2026-06-15 Phase 0 /
     // EI-621). These ship a persona under the harness `prompts/` dir (moving to the owning
     // blueprint in Phase 2) and are dispatched by their blueprint's spine — but predated this
@@ -177,6 +193,12 @@ exports.AGENT_ROLES = [
     'tester',
     'test-writer',
     'monitor',
+    // ── pot-rename SLICE-2 CONTRACT: the old ids (bee/queen/sentinel/overwatch) are
+    //    REMOVED — cup/mug/papercup/kettle above are the canonical entries, and the
+    //    orchestrator ROLE_ALIASES bridge is gone (persona files resolve natively).
+    //    `blender` is the negative-space scanner successor (was `scout` — never in
+    //    this array; its coord identity + loop_id prefixes flipped with SLICE-2).
+    'blender',
 ];
 /**
  * Roles that exist in AGENT_ROLES but must NEVER be applied as a gym variant
@@ -212,9 +234,9 @@ exports.SU_ROLES = [
     'reviewer',
     'debugger',
     'operator',
-    // The queen is the operator specialized (local-hive D-001) — operator-equivalent
-    // grants so her placement loop (events:emit, hive wake declarations) resolves.
-    'queen',
+    // The mug is the operator specialized (local-hive D-001) — operator-equivalent
+    // grants so her placement loop (events:emit, pot wake declarations) resolves.
+    'mug',
     'documenter',
     'curator',
 ];
@@ -229,7 +251,7 @@ exports.SU_WRITE_ROLES = [
     'worker',
     'debugger',
     'operator',
-    'queen',
+    'mug',
     'documenter',
     'curator',
 ];
@@ -254,7 +276,7 @@ exports.SU_WRITE_ROLES = [
 exports.OPERATOR_CONFIG_WRITE_ROLES = [
     'operator',
     'architect',
-    'queen',
+    'mug',
 ];
 /**
  * Does `role` carry operator-config write authority (one of

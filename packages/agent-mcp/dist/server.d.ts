@@ -28,6 +28,25 @@ export interface DispatchResult {
     };
 }
 /**
+ * EI-7068: some MCP clients double-encode tool arguments — instead of sending
+ * the real arguments object, they JSON.stringify the WHOLE thing and wrap it
+ * under a single top-level `args` key: `{ args: '{"content":"...","kind":"x"}' }`.
+ * Every tool's Zod schema then sees its real fields as undefined at the top
+ * level and rejects with invalid_args — indistinguishable, from a single
+ * tool's schema, from the caller simply omitting required fields. This is a
+ * TRANSPORT-layer client bug, not any one tool's problem (patching per-tool
+ * schemas to accept it would just spread the workaround), so it's detected +
+ * unwrapped ONCE here, before per-tool validation.
+ *
+ * Guarded narrowly so it can never misfire on a tool that legitimately has its
+ * own `args` field: only unwraps when the incoming object's ONLY own key is
+ * literally "args" AND that value is a string which JSON.parses to a plain
+ * (non-null, non-array) object. Anything else (a real args:{...} object field,
+ * extra sibling keys, non-JSON string, array/primitive) passes through
+ * untouched and hits normal per-tool validation as before.
+ */
+export declare function unwrapDoubleEncodedArgs(input: unknown): unknown;
+/**
  * Run a tool by name with bearer-derived principal. The single entry
  * point used by both the MCP transport handler and in-process callers
  * (Operator/Oracle).

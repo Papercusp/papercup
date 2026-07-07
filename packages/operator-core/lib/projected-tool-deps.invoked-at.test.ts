@@ -44,20 +44,21 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 import { PROJECTED_DEPS } from './projected-tool-deps';
 import { flushPendingTelemetry } from './projected-tool-deps';
 
-const ctx = () =>
+const ctx = (over: Record<string, unknown> = {}) =>
   ({
     workspaceId: 'ws-test',
     harnessSlug: 'papercusp',
     role: 'worker',
     spawnId: 's-test',
     log: vi.fn(),
+    ...over,
   }) as never;
 
-function record(toolName: string): Promise<void> | void {
+function record(toolName: string, over: Record<string, unknown> = {}): Promise<void> | void {
   return PROJECTED_DEPS.recordInvocation!({
     toolName,
     pluginName: 'agent-mcp',
-    ctx: ctx(),
+    ctx: ctx(over),
     windowKey: 'w1',
     durationMs: 3,
     status: 'ok',
@@ -97,5 +98,40 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
     expect(t2).toBeLessThanOrEqual(after + 5);
     // …and they DIFFER (per-row stamping) even though both rows share one flush.
     expect(t2).toBeGreaterThan(t1);
+  });
+
+  it('persists sanitized requestOrigin metadata alongside reaction metadata', async () => {
+    await record('pot:set-steering', {
+      requestOrigin: {
+        transport: 'mcp',
+        path: '/api/mcp',
+        query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
+        headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
+      },
+      reactionCause: {
+        depth: 1,
+        chain: ['rule-a'],
+        ruleId: 'rule-a',
+        rootRunId: 'run-root',
+      },
+    });
+    await flushPendingTelemetry();
+
+    const insert = captured.find((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    const metadata = JSON.parse(String(insert.params[19]));
+    expect(metadata).toMatchObject({
+      requestOrigin: {
+        transport: 'mcp',
+        path: '/api/mcp',
+        query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
+        headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
+      },
+      reaction: {
+        depth: 1,
+        chain: ['rule-a'],
+        ruleId: 'rule-a',
+        rootRunId: 'run-root',
+      },
+    });
   });
 });

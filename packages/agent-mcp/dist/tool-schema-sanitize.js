@@ -17,7 +17,10 @@
  * turn). This rewrites those booleans to the SEMANTICALLY IDENTICAL object
  * form — `true` → `{}` (accept anything), `false` → `{ not: {} }` (accept
  * nothing) — so strict parsers accept them while permissive ones are
- * unaffected.
+ * unaffected. It ALSO rewrites the OBJECT spellings of "accept anything"
+ * (`{}` / annotation-only schemas) to the same typed form, because OMP's
+ * outbound serialization collapses those BACK to bare `true` client-side
+ * (see boolToSchema notes; live-verified 2026-07-02, P-031).
  *
  * Deliberately scoped to `properties[*]` and `items` (the positions Ollama
  * types as an object). `additionalProperties` is left UNTOUCHED: Ollama's
@@ -27,6 +30,42 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sanitizeToolSchema = sanitizeToolSchema;
+/** JSON-Schema keywords that ANNOTATE but do not CONSTRAIN. A sub-schema whose
+ *  every key is in this set is semantically "matches anything" — exactly the
+ *  shape OMP's outbound serialization collapses back to the bare boolean `true`
+ *  (both collapse passes: literal `{}` and the type-less description-only form).
+ *  Verified live 2026-07-02 (context-trimming-tiers P-031): the server emitted
+ *  `detail: {}` for operator:voice_debug (z.unknown() under Zod 4 can serialize
+ *  to `{}`, not only `true`), OMP's cache held it verbatim, and the request OMP
+ *  built for Ollama carried `detail: true` → the Go parser 400-killed the turn. */
+const ANNOTATION_ONLY_KEYS = new Set([
+    'description',
+    'title',
+    'default',
+    'examples',
+    'deprecated',
+    'readOnly',
+    'writeOnly',
+    '$comment',
+]);
+/** True for a sub-schema that accepts anything (no `type`, no structural or
+ *  combinator keyword) — the object-form twins of the boolean schema `true`. */
+function isUnconstrainedSchema(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v))
+        return false;
+    return Object.keys(v).every((k) => ANNOTATION_ONLY_KEYS.has(k));
+}
+/** Rewrite an unconstrained object schema to the same OMP-collapse-proof shape
+ *  as `boolToSchema(true)`, preserving its annotations (description wins over
+ *  the generic placeholder). */
+function unconstrainedToSchema(s) {
+    return {
+        ...boolToSchema(true),
+        ...s, // keep the original description/default/etc.
+        type: 'object',
+        additionalProperties: true,
+    };
+}
 function boolToSchema(b) {
     // `{}` (the literal empty-object spelling of "matches anything") gets a NON-EMPTY
     // representation here. Root-caused 2026-06-30 (omp-ollama-tool-schema-investigation):
@@ -36,11 +75,20 @@ function boolToSchema(b) {
     // independent of which tool/field it came from. That re-introduces the exact
     // construct Ollama's tool-schema parser rejects (the whole reason this file exists),
     // even though `{}` itself is fully valid JSON Schema and is what THIS function used
-    // to emit. A `description`-only object is semantically identical ("matches anything"
-    // — description carries no constraint) but is no longer literally empty, so OMP has
-    // nothing to "optimize" back into a boolean. Verified directly: replaying a captured
-    // OMP request against Ollama 400s with the bare `{}` form and succeeds with this one.
-    return b ? { description: 'matches any value' } : { not: {} };
+    // to emit.
+    //
+    // A `description`-only object defeats the literal-`{}` case, but 2026-07-01 found a
+    // SECOND OMP collapse: any `properties[*]` sub-schema that carries no `type` keyword
+    // — description-only included — gets re-collapsed to bare `true` when OMP flattens a
+    // tool whose args are a Zod discriminated union (multiple `anyOf` branches merged into
+    // one object for Ollama, which the raw MCP request capture showed OMP doing client-side;
+    // papercusp itself never flattens unions). Giving the "matches anything" schema a real
+    // `type: 'object'` (the one JSON-Schema type every field in this catalog already uses
+    // successfully against Ollama) survives BOTH collapses: it is never empty and it always
+    // carries `type`. Narrows z.unknown()/z.any() from "any JSON value" to "any object" —
+    // an acceptable trade for every current caller (all pass object payloads here) against
+    // "the whole catalog 400s on every turn".
+    return b ? { type: 'object', additionalProperties: true, description: 'matches any object value' } : { not: {} };
 }
 /**
  * Recursively objectify boolean sub-schemas in `properties[*]` and `items`
@@ -60,12 +108,21 @@ function sanitizeToolSchema(node) {
             const props = {};
             for (const [propName, propSchema] of Object.entries(value)) {
                 props[propName] =
-                    typeof propSchema === 'boolean' ? boolToSchema(propSchema) : sanitizeToolSchema(propSchema);
+                    typeof propSchema === 'boolean'
+                        ? boolToSchema(propSchema)
+                        : isUnconstrainedSchema(propSchema)
+                            ? unconstrainedToSchema(propSchema)
+                            : sanitizeToolSchema(propSchema);
             }
             out[key] = props;
         }
         else if (key === 'items') {
-            out[key] = typeof value === 'boolean' ? boolToSchema(value) : sanitizeToolSchema(value);
+            out[key] =
+                typeof value === 'boolean'
+                    ? boolToSchema(value)
+                    : isUnconstrainedSchema(value)
+                        ? unconstrainedToSchema(value)
+                        : sanitizeToolSchema(value);
         }
         else {
             // Recurse (so nested properties/items are reached) but do NOT

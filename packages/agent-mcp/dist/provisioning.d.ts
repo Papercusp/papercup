@@ -45,6 +45,7 @@ export declare function reconcileCapabilities(stored: readonly string[], code: r
     missing: string[];
     merged: string[];
 };
+export declare function normalizeCapabilities(raw: unknown): string[];
 export declare function provisionSystemPrincipal(args: ProvisionSystemPrincipalArgs): Promise<ProvisionResult | null>;
 export interface StartPiSessionArgs {
     workspaceId: string;

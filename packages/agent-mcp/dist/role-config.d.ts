@@ -20,7 +20,7 @@
  * open — plugins contribute additional roles at runtime (namespaced
  * `<plugin>:<role>`), which stay typed as bare `string`.
  */
-export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "bee", "queen", "planner", "orchestrator", "promote", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor", "merge-resolver", "content-fixer", "release-manager", "release-fixer", "sentinel", "overwatch", "researcher", "research-director", "searcher", "discoverer", "finding-verifier", "findings-synthesizer", "synthesizer", "review-director", "dimension-reviewer", "verifier", "migration-director", "migration-verifier", "transformer", "gym-director", "judge", "task-generator", "variant-runner", "proposer", "scanner", "director", "committer", "tester", "test-writer", "monitor"];
+export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "cup", "mug", "planner", "orchestrator", "promote", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor", "merge-resolver", "content-fixer", "release-manager", "release-fixer", "doc-steward", "papercup", "kettle", "researcher", "research-director", "searcher", "discoverer", "finding-verifier", "findings-synthesizer", "synthesizer", "review-director", "dimension-reviewer", "verifier", "migration-director", "migration-verifier", "transformer", "gym-director", "judge", "task-generator", "variant-runner", "proposer", "scanner", "director", "committer", "tester", "test-writer", "monitor", "blender"];
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
 /**
@@ -49,13 +49,13 @@ export declare const FROZEN_OVERLAY_ROLES: readonly ["judge"];
  * `satisfies` pins every member to AGENT_ROLES, so renaming a role there
  * breaks compilation here instead of silently orphaning an allowlist.
  */
-export declare const SU_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "operator", "queen", "documenter", "curator"];
+export declare const SU_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "operator", "mug", "documenter", "curator"];
 /**
  * The write-side subset of SU_ROLES: validator + reviewer are judgment
  * roles — they read artifacts/state but never author it (the artifacts
  * tools' allowlist; audit P-072 "shared READ/WRITE role consts").
  */
-export declare const SU_WRITE_ROLES: readonly ["scoper", "architect", "worker", "debugger", "operator", "queen", "documenter", "curator"];
+export declare const SU_WRITE_ROLES: readonly ["scoper", "architect", "worker", "debugger", "operator", "mug", "documenter", "curator"];
 /**
  * The OPERATOR-CONFIG write-authority roles — the in-handler gate for tools that
  * MUTATE fleet-wide operator config (the rate-limit knobs, operator preferences,
@@ -74,7 +74,7 @@ export declare const SU_WRITE_ROLES: readonly ["scoper", "architect", "worker", 
  * back out of sync across those tools (and the `isOperatorConfigWriteRole` guard
  * fails CI if the literal is re-introduced).
  */
-export declare const OPERATOR_CONFIG_WRITE_ROLES: readonly ["operator", "architect", "queen"];
+export declare const OPERATOR_CONFIG_WRITE_ROLES: readonly ["operator", "architect", "mug"];
 /**
  * Does `role` carry operator-config write authority (one of
  * OPERATOR_CONFIG_WRITE_ROLES)? The single predicate the operator-config-write

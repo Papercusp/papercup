@@ -51,11 +51,11 @@ exports.papercuspGateBypass = papercuspGateBypass;
  */
 exports.TESTING_FULL_ACCESS_ROLES = new Set([
     'operator',
-    'queen',
-    'bee',
-    'overwatch',
-    'sentinel',
-    'scout',
+    'mug',
+    'cup',
+    'kettle',
+    'papercup',
+    'blender',
 ]);
 let testingFullAccessResolver;
 /** Install (or clear, with `undefined`) the host resolver. Called once by operator-core at boot. */

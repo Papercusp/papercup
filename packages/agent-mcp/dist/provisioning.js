@@ -15,6 +15,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.reconcileCapabilities = reconcileCapabilities;
+exports.normalizeCapabilities = normalizeCapabilities;
 exports.provisionSystemPrincipal = provisionSystemPrincipal;
 exports.startPiSession = startPiSession;
 exports.endPiSession = endPiSession;
@@ -42,6 +43,21 @@ function reconcileCapabilities(stored, code) {
     const missing = code.filter((c) => !have.has(c));
     return { missing, merged: missing.length ? [...stored, ...missing] : [...stored] };
 }
+function normalizeCapabilities(raw) {
+    if (Array.isArray(raw))
+        return raw.filter((x) => typeof x === 'string');
+    if (typeof raw !== 'string')
+        return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed)
+            ? parsed.filter((x) => typeof x === 'string')
+            : [];
+    }
+    catch {
+        return [];
+    }
+}
 function genBearer() {
     return (0, node_crypto_1.randomBytes)(32).toString('base64url');
 }
@@ -68,9 +84,7 @@ async function provisionSystemPrincipal(args) {
             // reprovision — auto-revoking under a live session is the dangerous direction). The
             // bearer is untouched (zero token churn / no broken connections); NOTIFY makes
             // auth.ts's cache reload. A normal (forceless) deploy now self-heals cap drift.
-            const storedCaps = Array.isArray(existing[0].capabilities)
-                ? existing[0].capabilities
-                : [];
+            const storedCaps = normalizeCapabilities(existing[0].capabilities);
             const { missing, merged } = reconcileCapabilities(storedCaps, capabilities);
             if (missing.length === 0)
                 return null; // already current — a true no-op

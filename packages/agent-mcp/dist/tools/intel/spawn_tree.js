@@ -2,10 +2,16 @@
 /**
  * intel:spawn_tree — read tool_invocations as a parent→child tree.
  *
- * Backs the harness Intel panel's Spawns sub-tab. Reads from the
- * harness_shared.tool_invocations_spawn_tree view (Migration 048) which
- * exposes every row plus a `depth` column and a `root_spawn_id` so the
- * UI can group by root spawn.
+ * Backs the harness Intel panel's Spawns sub-tab. Reads via
+ * harness_shared.tool_invocations_spawn_tree_filtered (Migration 460), a
+ * parameterized SQL function that exposes every matching row plus a `depth`
+ * column and a `root_spawn_id` so the UI can group by root spawn. WI-1671:
+ * replaced the bare tool_invocations_spawn_tree VIEW, whose unfiltered
+ * `WITH RECURSIVE` base term scanned the whole tool_invocations table
+ * (7.4M rows) on every call regardless of this tool's harness/invoked_at/
+ * status filter (EI-6801 — a 27-min fleet-wide lock stampede). The function
+ * selects the filtered candidates first (indexed), then walks UP (bounded 16
+ * hops) to compute depth/root_spawn_id.
  *
  * Today every row is depth=0 (Phase 9 spawn-of-spawn not yet shipped).
  * The shape is forward-compatible: when Phase 9 lands, depth>0 rows
@@ -34,18 +40,22 @@ exports.default = (0, tooldef_1.defineTool)({
     }),
     async handler(args, ctx) {
         const sinceMs = args.sinceMs ?? Date.now() - 24 * 60 * 60 * 1000;
+        // p_workspace_id omitted (NULL) — ctx.tx runs inside the RLS-scoped app
+        // role's transaction, so the underlying tool_invocations reads are
+        // already restricted to this workspace; no explicit scope needed here
+        // (contrast the HTTP route, which uses the admin role and must pass it).
         const rows = await ctx.tx `
       SELECT id, tool_name, plugin_name, role,
              feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
              window_key, invoked_at, duration_ms, status,
              output_ref, output_size, error_message,
              depth, root_spawn_id
-        FROM harness_shared.tool_invocations_spawn_tree
-       WHERE harness_slug = ${args.harness}
-         AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
-         AND (${args.status ?? null}::text IS NULL OR status = ${args.status ?? null})
-       ORDER BY invoked_at DESC
-       LIMIT ${args.limit}
+        FROM harness_shared.tool_invocations_spawn_tree_filtered(
+               p_harness_slug => ${args.harness},
+               p_since => to_timestamp(${sinceMs}::double precision / 1000.0),
+               p_status => ${args.status ?? null},
+               p_limit => ${args.limit}
+             )
     `;
         return {
             data: rows.map((r) => ({

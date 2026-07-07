@@ -40,7 +40,7 @@
  * agent waits for the owner. It is the DEFAULT for the kind — the per-agent wake
  * mode (D-005) can still flip an `auto` agent to manual at runtime.
  */
-export declare const AGENT_PANE_KINDS: readonly ["queen", "overwatch", "bee", "sentinel", "planner", "su"];
+export declare const AGENT_PANE_KINDS: readonly ["mug", "kettle", "cup", "papercup", "planner", "su"];
 export type AgentPaneKind = (typeof AGENT_PANE_KINDS)[number];
 export declare const DRIVE_MODES: readonly ["auto", "responsive"];
 export type DriveMode = (typeof DRIVE_MODES)[number];

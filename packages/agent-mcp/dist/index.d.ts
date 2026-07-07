@@ -13,8 +13,10 @@
  */
 import './capability-tiers-papercusp';
 export { defineTool } from '@papercusp/tooldef';
+export { applyPayloadTier, extractPayloadTier, parsePayloadTier, resolvePayloadTier, resetPayloadTierRatchet, PAYLOAD_TIERS, } from '@papercusp/tooldef';
+export type { PayloadTier, PayloadShapers, PayloadShaperCtx } from '@papercusp/tooldef';
 export { runToolOrchestration } from '@papercusp/tooldef';
-export type { OrchestrateOptions, OrchestrateResult, PlannedMutation } from '@papercusp/tooldef';
+export type { OrchestrateOptions, OrchestrateResult, PlannedMutation, WrapDispatch, DispatchNext, } from '@papercusp/tooldef';
 export { roleScopedToolNames } from '@papercusp/tooldef';
 export { generateToolFacadeTypes, listFacadeNamespaces, toolArgsType } from '@papercusp/tooldef';
 export type { GenerateFacadeTypesOptions, FacadeNamespaceIndexEntry, ToolArgsType, } from '@papercusp/tooldef';
@@ -39,6 +41,7 @@ export { SLASH_PROMPT_PREFIX, resolveSlashExposure, slashPromptNameFor, isSlashP
 export type { SlashPromptListing } from '@papercusp/tooldef';
 export { resolveBearer } from './auth';
 export { sanitizeToolSchema } from './tool-schema-sanitize';
+export { fuzzyEnum, nearestByLevenshtein, type FuzzyEnumOpts } from './fuzzy-enum';
 export { onWorkspaceSwitch, dispatchWorkspaceSwitch, } from '@papercusp/tooldef';
 export type { WorkspaceSwitchCallback } from '@papercusp/tooldef';
 export { openRun, closeRun, setOpenCards, setToolState, getSnapshot, subscribeStateChannel, subscribeWorkspace, snapshotWorkspace, dropStateSnapshotsForWorkspaceSwitch, } from '@papercusp/tooldef';
@@ -47,13 +50,17 @@ export { diffSnapshot, applySnapshotDelta, chooseSnapshotEmission } from '@paper
 export type { SnapshotDelta, SnapshotEmission } from '@papercusp/tooldef';
 export { DeltaToolClient, dispatchWithDelta, dispatchWithConveyedDelta } from '@papercusp/tooldef';
 export type { DeltaResponse, DeltaIngestResult, DeltaDispatch, DeltaDispatchResult } from '@papercusp/tooldef';
+export { applySeeAlso, resolveSeeAlso, renderSeeAlsoText, readJsonResult } from '@papercusp/tooldef';
+export type { SeeAlso, SeeAlsoEntry, SeeAlsoPointer } from '@papercusp/tooldef';
+export { setResultAnnotator, resetResultAnnotator, applyResultAnnotator } from '@papercusp/tooldef';
+export type { ResultAnnotator } from '@papercusp/tooldef';
 export { setSemanticDeltaEnabledResolver, resetSemanticDeltaEnabledResolver, isSemanticDeltaEnabled, } from '@papercusp/tooldef';
 export { registerCard, resolveCardResponse, cancelPendingCardsForRun, cancelPendingCardsForWorkspaceSwitch, _resetCardCorrelatorForTests, } from '@papercusp/tooldef';
 export { _resetStateChannelForTests } from '@papercusp/tooldef';
 export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
 export { papercuspTierFor, setCapabilityTierOverride, type CapabilityTierOverride } from './capability-tiers-papercusp';
 export { parseRequestContext, InvalidRequestContextError, type PluginRequestContext, } from './spawn-context';
-export { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, lookupByHttpPath, listAllProjectedTools, listMcpProjections, ToolRegistrationError, emitToSseSink, isPapercuspBinaryEnvelope, _resetProjectionRegistryForTests, type ProjectedTool, type ToolFn, type ToolExposure, type ToolExposureHttp, type ToolExposureMcp, type ToolExposureSlash, type UnifiedToolContext, type MinimalEventSink, type PapercuspBinaryEnvelope, } from '@papercusp/tooldef';
+export { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, lookupByHttpPath, listAllProjectedTools, listMcpProjections, ToolRegistrationError, emitToSseSink, isPapercuspBinaryEnvelope, _resetProjectionRegistryForTests, type ProjectedTool, type ToolFn, type ToolExposure, type ToolExposureHttp, type ToolExposureMcp, type ToolExposureSlash, type UnifiedToolContext, type RequestOriginMetadata, type MinimalEventSink, type PapercuspBinaryEnvelope, } from '@papercusp/tooldef';
 export { dispatchProjectedTool, dispatchProjectedToolStream, defaultComputeQuotaWindow, UnauthorizedToolError, HarnessRequiredError, PASS_THROUGH, type QuotaWindow, type DispatchProjectedDeps, type DispatchProjectedResult, type DispatchProjectedErrorCode, type DispatchStreamEvent, type PostInvokeEvent, type CapabilityEnvelopeVerdict, type ToolDispatchOverrideFn, } from '@papercusp/tooldef';
 export type { ToolRequireSpec, ToolPreInvokeEvent, PreconditionFireRequest, } from '@papercusp/tooldef';
 export { papercuspComputeQuotaWindow } from './quota-policy';
