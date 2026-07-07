@@ -11,6 +11,7 @@ import {
   evaluateStalePlacementEscalation,
   evaluateTerminalPlacementReconcile,
   buildOpenPlacementSummary,
+  DEFAULT_STALE_RECOVERING_MS,
   isReaperReclaim,
   isUnitTerminal,
   isStuckBlockerState,
@@ -109,6 +110,76 @@ describe('buildOpenPlacementSummary', () => {
     // recovering item entirely; now it's guaranteed to be in any prefix slice.
     const rendered = summary.items.slice(0, 12);
     expect(rendered.some((it) => it.status === 'recovering')).toBe(true);
+  });
+
+  // EI-8437 — a `recovering` placement that has sat untouched for days (observed
+  // live on WI-329, 2026-07-03 through 2026-07-07) kept getting re-noted as
+  // "stale, needs reconciliation" by successive triage passes without anyone
+  // ever actually verifying whether the underlying work had already landed. The
+  // brief now flags this directly instead of relying on a human/agent to
+  // re-derive the staleness by hand each time.
+  it('EI-8437: flags a `recovering` item whose placement row is older than the stale threshold', () => {
+    const nowMs = NOW;
+    const staleUpdatedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [{ work_item_id: 'WI-329', status: 'recovering', fail_count: 0, harness_slug: 'papercusp', updated_at: staleUpdatedAt }],
+      nowMs,
+    );
+    expect(summary.items[0]).toMatchObject({ workItemId: 'WI-329', stale: true });
+    expect(summary.items[0].ageHours).toBeGreaterThanOrEqual(DEFAULT_STALE_RECOVERING_MS / 3_600_000);
+  });
+
+  it('EI-8437: does NOT flag a `recovering` item still inside the stale threshold', () => {
+    const nowMs = NOW;
+    const freshUpdatedAt = new Date(nowMs - 60 * 60_000).toISOString(); // 1h ago
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [{ work_item_id: 'WI-FRESH', status: 'recovering', fail_count: 0, harness_slug: 'papercusp', updated_at: freshUpdatedAt }],
+      nowMs,
+    );
+    expect(summary.items[0].stale).toBeUndefined();
+    expect(summary.items[0].ageHours).toBeCloseTo(1, 1);
+  });
+
+  it('EI-8437: never flags `stale` for cursed/stranded/working — only `recovering` gets the VERIFY nudge', () => {
+    const nowMs = NOW;
+    const staleUpdatedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'cursed', count: 1 }],
+      [{ work_item_id: 'WI-CURSED-OLD', status: 'cursed', fail_count: 3, harness_slug: 'papercusp', updated_at: staleUpdatedAt }],
+      nowMs,
+    );
+    expect(summary.items[0].stale).toBeUndefined();
+  });
+
+  it('EI-8437: joins the plan-item link (`<slug>#<itemId>`) so a triaging agent need not re-derive it', () => {
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [
+        {
+          work_item_id: 'WI-329',
+          status: 'recovering',
+          fail_count: 0,
+          harness_slug: 'papercusp',
+          source_plan_slug: 'papercup-physical-rename-phase5-2026-06-20',
+          source_plan_item_ids: ['P-009'],
+        },
+      ],
+      NOW,
+    );
+    expect(summary.items[0].planItem).toBe('papercup-physical-rename-phase5-2026-06-20#P-009');
+  });
+
+  it('EI-8437: omits ageHours/stale/planItem entirely when the caller does not supply them (back-compat)', () => {
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [{ work_item_id: 'WI-OLD-CALLER', status: 'recovering', fail_count: 0, harness_slug: 'papercusp' }],
+      NOW,
+    );
+    expect(summary.items[0].ageHours).toBeUndefined();
+    expect(summary.items[0].stale).toBeUndefined();
+    expect(summary.items[0].planItem).toBeUndefined();
   });
 });
 
