@@ -29,9 +29,12 @@ macOS/Windows/Linux); `env_switch.rs` is its Rust-side plumbing (the authoritati
 probe, `/api` retargeting, persisted-target restore, and the native menu/shortcut backstop) —
 not a second visible bar.
 
-It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx`, but **self-hides
-unless ≥2 ENV operators are reachable** — so a plain single-operator install shows nothing
-until install-time provisioning brings the other envs up.
+It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx` and shows **whenever
+there is ANY env to switch to** (`barVisible = envOps.length > 0`). On the desktop the Tauri
+`list_envs` floor always supplies all four envs, so the bar **never self-hides there** — even
+if `/api` is misrouted or the HTTP enrichment 404s; unreachable envs just render greyed. Off
+the desktop (a plain browser, or a build without the endpoint) there are no envs from either
+source, so it stays hidden where the feature doesn't apply.
 
 **Source-tree-only envs are OMITTED on a packaged install (WI-3284).** `dev` (:3270, the
 working tree) and `local` (:3055, the Vite HMR frontend) carry `requiresSourceTree` in
@@ -100,11 +103,19 @@ package) is excluded and never spawned here.
 
 **Two spawn modes (WI-3285, owner directive 2026-07-06 — "all installs are dogfood installs"):**
 - **Bundled** (`spawnMode:'bundled'`) — the packaged-install path. Each env spawns from a
-  bundled **per-branch `serve.mjs`** (discovery contract: `<env-sidecars-dir>/<branch>/serve.mjs`,
-  dir from `PAPERCUSP_ENV_SIDECARS_DIR` or `env-sidecars/` next to the running `serve.mjs`),
-  run with the SAME node that runs the primary (`process.execPath` — always present,
-  PATH-independent). Needs **NO source tree and NO toolchain** — verified on the real packaged
+  bundled **per-env `serve.mjs`** at the PINNED packaging contract (`resolveBundledSidecar`;
+  owner directive 2026-07-06, plan `env-switcher-packaged-all-platforms-2026-07-06`):
+  `<sidecarDir>/env-sidecars/<envId>/serve.mjs`, where `<sidecarDir> = dirname(PAPERCUSP_SIDECAR_BIN)`
+  (`PAPERCUSP_ENV_SIDECARS_DIR` overrides explicitly; the running `serve.mjs`'s own dir,
+  `process.argv[1]`, is the last-resort fallback). It is keyed on **`envId`**, not the branch,
+  and each env dir is a full SIDECAR-SHAPED bundle (`serve.mjs` + `spa/` + `db-sql/` …). Run with
+  the SAME node that runs the primary (`process.execPath` — always present, PATH-independent; no
+  per-env node). Needs **NO source tree and NO toolchain** — verified on the real packaged
   Linux deb (WI-3287), whose bundle ships a bare node (no npm/npx/tsx) and an empty clone stub.
+  **V1 packaging ships exactly one extra bundle (`env-sidecars/staging/`).** PROD special case:
+  when `env-sidecars/prod/` is absent (the V1 default), `prod` resolves to the primary's own
+  `<sidecarDir>/serve.mjs` — the installed release IS green `main`, so the prod button serves the
+  same code on its fixed :3070 port.
 - **Source** (`spawnMode:'source'`) — the dev box: `node` + the tree's own `tsx` against
   `bin/hono-host.ts` (mirroring `bin/dev-operator-ifneeded.sh`), only where the cloned source +
   installed deps exist. `run:'vite'` envs are **source-only** (the SPA dev server transforms the
