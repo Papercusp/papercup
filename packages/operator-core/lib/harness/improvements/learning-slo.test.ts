@@ -19,6 +19,7 @@ import {
   mttshRegressionCollector,
   mttshSignalsFromWindows,
   normalizedTriageEntropy,
+  trimStatisticalOutliers,
   triageEntropyCollector,
   triageEntropySignalsFromRows,
 } from './learning-slo';
@@ -136,6 +137,28 @@ describe('mttshSignalsFromWindows (MTTSH regression)', () => {
   it('medianOf handles odd and even lengths', () => {
     expect(medianOf([3, 1, 2])).toBe(2);
     expect(medianOf([4, 1, 2, 3])).toBe(2.5);
+  });
+
+  it('EI-8387: a handful of incident-correlated extreme-outlier drills does NOT manufacture a regression', () => {
+    // Recent window: a normal population of fast-to-moderate drills (1-90s)
+    // PLUS a batch of multi-MINUTE outliers from one real, independently-
+    // confirmed infra incident (modeled directly in ms, not via the `ms()`
+    // seconds helper, to keep the minute-scale values unambiguous).
+    const normalPopulationSec = [1, 1, 2, 2, 3, 36, 36, 42, 52, 77, 88];
+    const incidentOutliersMs = [741_000, 794_000, 887_000, 939_000, 953_000, 1_119_000];
+    const recentMs = [...ms(...normalPopulationSec), ...incidentOutliersMs];
+    const baselineMs = ms(1, 1, 1, 2, 2, 3, 8, 13);
+    expect(mttshSignalsFromWindows({ recentMs, baselineMs })).toEqual([]);
+  });
+
+  it('trimStatisticalOutliers: Tukey-fences the top tail, never empties the set, no-ops under 4 samples', () => {
+    expect(trimStatisticalOutliers([1, 2, 3])).toEqual([1, 2, 3]); // too few — no-op
+    const withOutlier = [1, 2, 3, 4, 5, 6, 7, 8, 9, 100_000];
+    const trimmed = trimStatisticalOutliers(withOutlier);
+    expect(trimmed).not.toContain(100_000);
+    expect(trimmed).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // An all-outlier-shaped input never degrades to an empty array.
+    expect(trimStatisticalOutliers([1, 1, 1, 1]).length).toBeGreaterThan(0);
   });
 });
 

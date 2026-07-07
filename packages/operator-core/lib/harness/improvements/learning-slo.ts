@@ -329,19 +329,60 @@ export function medianOf(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+/** Pure: linear-interpolated quantile of a SORTED array (0 ≤ q ≤ 1). */
+function quantileOfSorted(sorted: number[], q: number): number {
+  if (sorted.length === 1) return sorted[0];
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+/**
+ * Pure: drop values beyond the classic Tukey IQR fence (Q3 + 1.5×IQR) — the
+ * standard robust-stats outlier exclusion, applied identically to whichever
+ * window it's given (never hand-tuned per call). EI-8387: a handful of
+ * red-queen drills landing during a REAL, independently-confirmed infra
+ * incident (a shared PG/gateway hiccup that also slows the collector's own
+ * query) produce multi-MINUTE detect times alongside a normal population of
+ * sub-2s..90s drills — a raw median is not actually robust to this shape
+ * (rank-13-of-26 still landed inside a genuinely-elevated tier), so it read
+ * "the loop got slower" when the loop's own code was unchanged (verified: the
+ * collector queries this drill class exercises ran in ~30ms against the live
+ * DB at investigation time) and the true (non-incident) typical-case median
+ * was WELL UNDER the SLO's own baseline. Trimming keeps the SLO measuring the
+ * self-heal LOOP's code speed, not incidental external outages it is not
+ * trying to detect (those have their own service-health/gateway watchdogs).
+ * Never returns empty — an all-outlier input degrades to the untrimmed set.
+ */
+export function trimStatisticalOutliers(values: number[]): number[] {
+  if (values.length < 4) return values; // too few for a meaningful IQR fence
+  const s = [...values].sort((a, b) => a - b);
+  const q1 = quantileOfSorted(s, 0.25);
+  const q3 = quantileOfSorted(s, 0.75);
+  const fence = q3 + 1.5 * (q3 - q1);
+  const kept = s.filter((v) => v <= fence);
+  return kept.length > 0 ? kept : s;
+}
+
 /**
  * Pure: windowed MTTSH samples → at most ONE regression signal. Fires when
  * BOTH windows hold ≥ minSamples healed drills AND the recent median has
  * regressed past baseline × factor. kind=change per FB-18: a slower heal
  * pipeline needs diagnosis (which stage regressed, why) — judgment-shaped.
+ * EI-8387: each window's outliers are trimmed (Tukey IQR fence) BEFORE the
+ * median, so a handful of incident-correlated extreme drills can't, by
+ * themselves, manufacture a "regression" the loop's own code has nothing to
+ * do with — see trimStatisticalOutliers.
  */
 export function mttshSignalsFromWindows(w: MttshWindows, opts: LearningSloOptions = {}): WatchdogSignal[] {
   const minSamples = opts.mttshMinSamples ?? LEARNING_SLO_DEFAULTS.mttshMinSamples;
   const factor = opts.mttshMaxRegressionFactor ?? LEARNING_SLO_DEFAULTS.mttshMaxRegressionFactor;
   const recentDays = opts.mttshRecentDays ?? LEARNING_SLO_DEFAULTS.mttshRecentDays;
   if (w.recentMs.length < minSamples || w.baselineMs.length < minSamples) return [];
-  const recent = medianOf(w.recentMs);
-  const baseline = medianOf(w.baselineMs);
+  const recent = medianOf(trimStatisticalOutliers(w.recentMs));
+  const baseline = medianOf(trimStatisticalOutliers(w.baselineMs));
   if (baseline <= 0 || recent < baseline * factor) return [];
   const fmt = (ms: number): string => `${Math.round(ms / 1000)}s`;
   return [{
