@@ -9,12 +9,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = { lazyOn: false, sidecarOn: false };
+const h = { lazyOn: false, sidecarOn: false, mergeCursorPgOn: false };
 
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: async (key: string) => {
     if (key.includes('lazy-substrate-boot')) return h.lazyOn;
     if (key.includes('substrate-sidecar')) return h.sidecarOn;
+    if (key.includes('substrate-merge-cursor-pg')) return h.mergeCursorPgOn;
     return false;
   },
   onFlagChange: () => {},
@@ -106,10 +107,12 @@ import {
   stopSubstrateEvictionReaper,
   _resetSidecarRespawnReconcileRegistrationForTests,
 } from './substrate-boot-wrapper';
+import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 
 beforeEach(() => {
   h.lazyOn = false;
   h.sidecarOn = false;
+  h.mergeCursorPgOn = false;
   enableTracking.mockClear();
   bootAll.mockClear();
   spawnSidecar.mockClear();
@@ -161,13 +164,36 @@ describe('bootSubstrateWithFallback', () => {
     expect(bootAll).toHaveBeenCalledOnce();
     // The process-global boot defaults are CLEARED so standalone bootSingleHarness/
     // rekeyHarness boot in-process + wire the drain in-process (the default path).
-    expect(setBootDefaults).toHaveBeenCalledWith({ bootHarness: null, skipSendSideWiring: false });
+    expect(setBootDefaults).toHaveBeenCalledWith({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory: null });
     expect(r.usedSidecar).toBe(false);
     expect(r.evictionReaperStarted).toBe(false);
     expect(startReaper).not.toHaveBeenCalled();
     // Keepalive rides the same flag gate — OFF ⇒ never started (byte-identical).
     expect(r.outboxKeepaliveStarted).toBe(false);
     expect(startKeepalive).not.toHaveBeenCalled();
+  });
+
+  // WI-3297: the in-process path must install the PG merge-cursor factory when
+  // its flag is ON — without it a packaged install (no sidecar) never persists
+  // fold positions and re-folds the whole seed log from 0 on every boot.
+  it('WI-3297 in-process + merge-cursor flag ON: installs createPgMergeCursorStore as the factory', async () => {
+    h.mergeCursorPgOn = true;
+    const r = await bootSubstrateWithFallback();
+    expect(r.usedSidecar).toBe(false);
+    expect(setBootDefaults).toHaveBeenCalledWith({
+      bootHarness: null,
+      skipSendSideWiring: false,
+      mergeCursorStoreFactory: createPgMergeCursorStore,
+    });
+  });
+
+  it('WI-3297 sidecar ON: clears the merge-cursor factory (sidecar host builds its own)', async () => {
+    h.sidecarOn = true;
+    h.mergeCursorPgOn = true;
+    await bootSubstrateWithFallback();
+    expect(setBootDefaults).toHaveBeenCalledWith(
+      expect.objectContaining({ bootHarness: expect.any(Function), mergeCursorStoreFactory: null }),
+    );
   });
 
   it('lazy ON: boots in-process AND starts the reaper + outbox keepalive', async () => {
@@ -238,7 +264,7 @@ describe('bootSubstrateWithFallback', () => {
       const r = await bootSubstrateWithFallback();
       expect(r.usedSidecar).toBe(false);
       // Sidecar unavailable → defaults cleared so standalone boots stay in-process.
-      expect(setBootDefaults).toHaveBeenLastCalledWith({ bootHarness: null, skipSendSideWiring: false });
+      expect(setBootDefaults).toHaveBeenLastCalledWith({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory: null });
       expect(bootAll).toHaveBeenCalledWith(undefined);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('sidecar spawn failed'),

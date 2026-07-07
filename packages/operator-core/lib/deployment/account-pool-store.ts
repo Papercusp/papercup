@@ -34,7 +34,9 @@ import {
   accountsForProvider,
   bindAccount,
   clearSoftPin,
+  DRAIN_FULL_UTIL,
   decideScaleOut,
+  effectiveDrainUtil,
   getAccount,
   isAvailable,
   isClassExhausted,
@@ -47,6 +49,7 @@ import {
   setSoftPin,
   softPinnedAccount,
   unbindAccount,
+  usageWalledUntil,
 } from './account-pool';
 import {
   getAccountOverride,
@@ -550,7 +553,18 @@ export interface AccountStatusRow {
   label?: string;
   credentialRef: string;
   boundTo: string[];
+  /** Can this account ACTUALLY serve right now — not rate-paused AND not usage-walled
+   *  (`!accountFull`). WI-3310: this used to be the pause-only `isAvailable`, which read
+   *  `true` on a weekly-usage-exhausted account whose (deliberately bounded) pause had
+   *  lapsed — the stall-waker then woke agents onto a wall with "rate limit recovered". */
   available: boolean;
+  /** The account is walled by an EXHAUSTED usage window (5h/7d utilization at/over cap) — a
+   *  DIFFERENT meter than the bounded rate-limit pause. While true, retrying the account is
+   *  futile until the window resets, no matter what `rate.pausedUntil` says. */
+  usageWalled: boolean;
+  /** When the binding exhausted usage window resets (epoch ms) — set when `usageWalled` and the
+   *  provider supplied the window reset; absent otherwise. */
+  usageResetAt?: number;
   sustainedlyLimited: boolean;
   rate: AccountRateState;
   /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
@@ -572,7 +586,13 @@ export async function accountStatus(ws?: string, now = Date.now()): Promise<Acco
     label: a.label,
     credentialRef: a.credentialRef,
     boundTo: a.boundTo,
-    available: isAvailable(a, now),
+    // WI-3310: `available` = "can actually serve" — pause-clear AND usage headroom. The old
+    // pause-only read (`isAvailable`) told every consumer (stall-waker capacityBack, why-chain,
+    // Accounts tab, fleet preflights) that a usage-exhausted account had recovered every time
+    // its bounded pause lapsed (≤6h), while the weekly window stayed at 100% for days.
+    available: !accountFull(a, now),
+    usageWalled: effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL,
+    usageResetAt: usageWalledUntil(a, now) || undefined,
     sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
     rate: a.rate,
     egress: a.egress,

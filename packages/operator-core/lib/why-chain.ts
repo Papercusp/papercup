@@ -159,10 +159,13 @@ function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
   const available = accounts.filter((a) => a.available);
   const sustained = accounts.filter((a) => a.sustainedlyLimited);
   if (available.length === 0) {
+    // WI-3310: name the usage wall distinctly — "rate-limited/paused" clears in minutes, a
+    // usage-walled account cannot serve until its (possibly days-away) window reset.
+    const walled = accounts.filter((a) => a.usageWalled).length;
     return {
       stage: 'pool',
       status: 'blocked',
-      reason: `all ${accounts.length} account(s) in the pool are currently unavailable (rate-limited/paused) — no spawn capacity`,
+      reason: `all ${accounts.length} account(s) in the pool are currently unavailable (${walled} usage-walled until their window resets, ${accounts.length - walled} rate-limited/paused) — no spawn capacity`,
     };
   }
   if (sustained.length > 0) {

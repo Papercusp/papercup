@@ -211,7 +211,11 @@ export class StallWaker {
 
       // 2e. Wake.
       try {
-        const r = await this.deps.wake(ownerId, `rate limit recovered on ${info.accountId} — resume your turn`);
+        // "capacity recovered", NOT "rate limit recovered" (WI-3310): capacityBack passing means the
+        // account can serve again — which is only sometimes a rate-limit reset. Claiming a rate limit
+        // recovered on an account that was (or still could be) usage-walled misled owners into thinking
+        // the gateway conflates the two meters.
+        const r = await this.deps.wake(ownerId, `capacity recovered on ${info.accountId} — resume your turn`);
         this.lastWokeAt.set(ownerId, now);
         this.wakeCount.set(ownerId, (this.wakeCount.get(ownerId) ?? 0) + 1);
         if (r.woken > 0) {

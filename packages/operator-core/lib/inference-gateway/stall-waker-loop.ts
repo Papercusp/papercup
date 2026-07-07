@@ -22,6 +22,10 @@ const IDLE_SILENCE_MS = Number(process.env.PAPERCUSP_STALL_WAKER_IDLE_MS) || 30_
  *  dead turn + re-arm its inbox-wake watch before the wake fires. */
 const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
 
+/** Per-account dedupe for the usage-wall hold log (WI-3310): capacityBack runs every poll tick for
+ *  every pending stall, and a weekly wall lasts DAYS — log once per (account, wall-reset), not per 20s. */
+const usageWallLoggedUntil = new Map<string, number>();
+
 /** Build the real deps: gateway HTTP (stalls), spawned_agents (idle), account-pool (capacity), coord (wake). */
 export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
   const base = () => `http://127.0.0.1:${gatewayPort()}`;
@@ -63,9 +67,25 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       //     back to the per-account verdict (never strand a wake on a missing signal).
       const gw = await fetchGatewayHeadroom({ timeoutMs: 1000 }).catch(() => null);
       if (gw?.reachable && (gw.paused || gw.rejected)) return false; // whole pool throttled → keep waiting
-      // (3) ...and the account's OWN pause must be clear.
+      // (3) ...and the account itself must be able to SERVE: pause clear AND usage headroom.
+      //     `available` is usage-aware as of WI-3310 (`!accountFull`): a weekly-usage-exhausted
+      //     account whose bounded (≤6h) rate pause lapsed used to read available:true here, so the
+      //     waker fired "rate limit recovered on avistorewolf.com" wakes for DAYS while the 7d
+      //     window sat at 100% — the rate limit and the usage limit are different meters, and pause
+      //     expiry is not usage recovery. When the account is usage-walled we log the REAL reset
+      //     (once per account per wall, not per 20s tick) so the multi-day hold is visible, and hold.
       const rows = await accountStatus(workspaceId).catch(() => [] as Awaited<ReturnType<typeof accountStatus>>);
       const a = rows.find((x) => x.id === accountId);
+      if (a?.usageWalled) {
+        const until = a.usageResetAt;
+        if ((usageWallLoggedUntil.get(accountId) ?? 0) !== (until ?? -1)) {
+          usageWallLoggedUntil.set(accountId, until ?? -1);
+          console.log(
+            `[stall-waker] '${accountId}' is USAGE-walled (window exhausted${until ? `, resets ${new Date(until).toISOString()}` : ''}) — holding wakes until the usage window resets (a lapsed rate-limit pause is NOT usage recovery)`,
+          );
+        }
+        return false;
+      }
       return a ? a.available === true : true; // unknown account → trust the reset time we already waited out
     },
     unwedge: async (ownerId) => {

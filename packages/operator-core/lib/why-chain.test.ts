@@ -53,6 +53,7 @@ const accounts = (rows: Partial<AccountStatusRow>[] = []): AccountStatusRow[] =>
     credentialRef: 'ref',
     boundTo: [],
     available: true,
+    usageWalled: false,
     sustainedlyLimited: false,
     rate: {} as AccountStatusRow['rate'],
     liveBuckets: [],

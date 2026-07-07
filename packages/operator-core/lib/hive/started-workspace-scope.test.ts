@@ -226,8 +226,13 @@ describe('getHivePlacementStarted / setHivePlacementStarted — raw per-hive bit
   it('writes the per-(ws,install) row REGARDLESS of the flag (harness never discarded)', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true); // even with the collapse flag ON...
     await setHivePlacementStarted(WS, 'forms', true);
-    // ...the write targets the REAL hive slug, not the sentinel row.
-    expect(h.upserts).toEqual([{ key: `hive_started:${WS}:forms`, value: 'true' }]);
+    // ...the write targets the REAL hive slug, not the sentinel row. The
+    // provenance write-through (WI-3309: cleared on a start) is keyed by the
+    // REAL hive slug too — the collapse never applies to placement rows.
+    expect(h.upserts).toEqual([
+      { key: `hive_started:${WS}:forms`, value: 'true' },
+      { key: `hive_paused_deliberate:${WS}:forms`, value: 'false' },
+    ]);
     expect(await getHivePlacementStarted(WS, 'forms')).toBe(true);
     expect(await getHivePlacementStarted(WS, 'sheets')).toBe(false); // a sibling stays untouched
   });
