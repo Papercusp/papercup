@@ -1081,9 +1081,17 @@ export function runBootstrap(): void {
       try {
         const { readRegistry } = await import('@papercusp/operator-core/lib/workspace-registry');
         const { ensureStallWakerLoop } = await import('@papercusp/operator-core/lib/inference-gateway/stall-waker-loop');
+        // ONE process-global loop, NOT one per workspace (WI-3310 layer 2): ensureStallWakerLoop is a
+        // module singleton, so the old `for (ws of wss) ensureStallWakerLoop(ws.id)` silently bound the
+        // ONLY loop to the registry's first entry ('default') and no-op'd the other 16 — and a
+        // 'default'-bound capacityBack couldn't find any real account (they live in other workspaces'
+        // pools), so its unknown-account fallback waived the availability check and woke agents onto
+        // usage-walled accounts. The loop's deps now resolve accounts across ALL registry workspaces
+        // (findAccountRow), so one global loop is the CORRECT shape — /admin/stalls is global anyway.
         const wss = readRegistry().workspaces;
-        for (const ws of wss) ensureStallWakerLoop(ws.id);
-        console.log(`[stall-waker] boot-start: ${wss.length} workspace(s)`);
+        const primary = wss[0]?.id ?? 'default';
+        ensureStallWakerLoop(primary);
+        console.log(`[stall-waker] boot-start: 1 global loop (home ws '${primary}'; account lookup spans all ${wss.length} workspace(s))`);
       } catch (e) {
         console.warn(`[stall-waker] boot-start failed (non-fatal): ${e instanceof Error ? e.message : e}`);
       }

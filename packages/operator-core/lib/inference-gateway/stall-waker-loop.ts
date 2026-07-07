@@ -9,7 +9,8 @@ import { gatewayPort } from './spawn-env';
 import { fetchGatewayHeadroom } from './observability';
 import { getOrgPg } from '@papercusp/db-org';
 import { getSpawnPg } from '../fleet/pg-stores';
-import { accountStatus } from '../deployment/account-pool-store';
+import { accountStatus, type AccountStatusRow } from '../deployment/account-pool-store';
+import { readRegistry } from '../workspace-registry';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { forceEndTurn } from '../agent-tools/turn/interrupt';
 import { isOwnerFocusedOnDesktop } from '../desktop-window-liveness';
@@ -25,6 +26,63 @@ const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 150
 /** Per-account dedupe for the usage-wall hold log (WI-3310): capacityBack runs every poll tick for
  *  every pending stall, and a weekly wall lasts DAYS — log once per (account, wall-reset), not per 20s. */
 const usageWallLoggedUntil = new Map<string, number>();
+
+/** accountId → the workspace whose pool actually contains it (learned by findAccountRow so repeat
+ *  ticks don't re-scan the whole registry). */
+const accountWorkspaceCache = new Map<string, string>();
+
+/**
+ * Resolve an account's status row ACROSS workspaces (WI-3310 layer 2). The gateway's /admin/stalls
+ * feed is GLOBAL (one gateway process, stalls from every workspace's bees), but this loop is a
+ * module singleton bound to ONE workspaceId — whichever `ensureStallWakerLoop` call ran first, which
+ * on boot-start is the registry's first entry ('default'). `accountStatus('default')` does not
+ * contain another workspace's accounts, so the lookup MISSED for every real stall on this box and
+ * fell into the unknown-account fallback (`return true`) — waking bees onto usage-walled accounts
+ * no matter what the pool knew (the avistorewolf.com false "rate limit recovered" wakes, 2026-07-07).
+ * Own workspace first, then every other registry workspace; deps injectable for unit tests.
+ */
+export async function findAccountRow(
+  preferredWs: string,
+  accountId: string,
+  deps: {
+    status?: (ws: string) => Promise<AccountStatusRow[]>;
+    listWorkspaces?: () => string[];
+    cache?: Map<string, string>;
+  } = {},
+): Promise<AccountStatusRow | undefined> {
+  const status = deps.status ?? ((ws: string) => accountStatus(ws));
+  const listWorkspaces = deps.listWorkspaces ?? (() => readRegistry().workspaces.map((w) => w.id));
+  const cache = deps.cache ?? accountWorkspaceCache;
+  const tryWs = async (ws: string): Promise<AccountStatusRow | undefined> =>
+    (await status(ws).catch(() => [] as AccountStatusRow[])).find((x) => x.id === accountId);
+
+  const cached = cache.get(accountId);
+  if (cached) {
+    const hit = await tryWs(cached);
+    if (hit) return hit;
+    cache.delete(accountId); // pool changed under us — fall through to the full resolution
+  }
+  const own = await tryWs(preferredWs);
+  if (own) {
+    cache.set(accountId, preferredWs);
+    return own;
+  }
+  let workspaces: string[] = [];
+  try {
+    workspaces = listWorkspaces();
+  } catch {
+    /* registry unreadable → only the preferred workspace was checked */
+  }
+  for (const ws of workspaces) {
+    if (ws === preferredWs) continue;
+    const hit = await tryWs(ws);
+    if (hit) {
+      cache.set(accountId, ws);
+      return hit;
+    }
+  }
+  return undefined;
+}
 
 /** Build the real deps: gateway HTTP (stalls), spawned_agents (idle), account-pool (capacity), coord (wake). */
 export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
@@ -74,8 +132,10 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       //     window sat at 100% — the rate limit and the usage limit are different meters, and pause
       //     expiry is not usage recovery. When the account is usage-walled we log the REAL reset
       //     (once per account per wall, not per 20s tick) so the multi-day hold is visible, and hold.
-      const rows = await accountStatus(workspaceId).catch(() => [] as Awaited<ReturnType<typeof accountStatus>>);
-      const a = rows.find((x) => x.id === accountId);
+      //     The lookup is CROSS-WORKSPACE (findAccountRow): /admin/stalls is global while this loop
+      //     is pinned to one workspaceId, so a same-workspace-only read used to miss the account
+      //     entirely and the unknown-account fallback waived the whole check (WI-3310 layer 2).
+      const a = await findAccountRow(workspaceId, accountId);
       if (a?.usageWalled) {
         const until = a.usageResetAt;
         if ((usageWallLoggedUntil.get(accountId) ?? 0) !== (until ?? -1)) {
