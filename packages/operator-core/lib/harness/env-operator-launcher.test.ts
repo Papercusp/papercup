@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join, resolve } from 'node:path';
 import {
   planEnvOperatorLaunch,
   launchEnvOperators,
@@ -6,6 +9,8 @@ import {
   type EnvOperatorPlanEntry,
   type EnvOperatorSpec,
   type LaunchEnvOperatorsDeps,
+  defaultDetectSourceRoot,
+  sourceChildEnv,
 } from './env-operator-launcher';
 
 const SPECS: readonly EnvOperatorSpec[] = [
@@ -306,5 +311,61 @@ describe('launchEnvOperators (effectful, fully faked)', () => {
     // first spawn-action attempt is prod (prepare-fail, no stagger consumed before it);
     // dev is the first *successful* spawn (no stagger), staging staggers once.
     expect(staggerWaits).toEqual([100]);
+  });
+});
+
+describe('defaultDetectSourceRoot (WI-3306/WI-3308 extraction contract)', () => {
+  const saved = process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+    else process.env.PAPERCUSP_DEV_SOURCE_ROOT = saved;
+  });
+
+  it('prefers a PAPERCUSP_DEV_SOURCE_ROOT that carries both repo markers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-devsrc-'));
+    mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
+    mkdirSync(join(root, 'libs', 'papercusp'), { recursive: true });
+    writeFileSync(join(root, 'apps', 'operator', 'package.json'), '{}');
+    writeFileSync(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+    process.env.PAPERCUSP_DEV_SOURCE_ROOT = root;
+    expect(defaultDetectSourceRoot()).toBe(resolve(root));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('a marker-less PAPERCUSP_DEV_SOURCE_ROOT (half-extracted tree) is ignored, not walked up', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-devsrc-empty-'));
+    process.env.PAPERCUSP_DEV_SOURCE_ROOT = root;
+    // Falls back to the dev-box walk — whatever it returns, it is NOT the empty dir.
+    expect(defaultDetectSourceRoot()).not.toBe(resolve(root));
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('sourceChildEnv (WI-3306 source-child contract)', () => {
+  const saved = process.env.PAPERCUSP_SIDECAR_BIN;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PAPERCUSP_SIDECAR_BIN;
+    else process.env.PAPERCUSP_SIDECAR_BIN = saved;
+  });
+
+  it('always pins the child PAPERCUSP_INTEGRATION_ROOT to its own tree', () => {
+    delete process.env.PAPERCUSP_SIDECAR_BIN;
+    expect(sourceChildEnv('/some/tree')).toEqual({
+      PAPERCUSP_INTEGRATION_ROOT: '/some/tree',
+    });
+  });
+
+  it('prepends the sidecar dir (and its bin/) to PATH when PAPERCUSP_SIDECAR_BIN is set', () => {
+    const sidecarDir = mkdtempSync(join(tmpdir(), 'pc-sidecar-'));
+    mkdirSync(join(sidecarDir, 'bin'), { recursive: true });
+    process.env.PAPERCUSP_SIDECAR_BIN = join(sidecarDir, 'serve.mjs');
+    const env = sourceChildEnv('/tree');
+    expect(env.PAPERCUSP_INTEGRATION_ROOT).toBe('/tree');
+    const parts = (env.PATH ?? '').split(delimiter);
+    expect(parts[0]).toBe(sidecarDir);
+    expect(parts[1]).toBe(join(sidecarDir, 'bin'));
+    // The inherited PATH tail is preserved.
+    expect(env.PATH?.endsWith(process.env.PATH ?? '')).toBe(true);
+    rmSync(sidecarDir, { recursive: true, force: true });
   });
 });

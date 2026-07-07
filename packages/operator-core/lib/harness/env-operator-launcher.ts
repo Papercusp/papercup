@@ -205,7 +205,8 @@ export interface LaunchEnvOperatorsDeps {
   readPrefs?: () => { disabled: string[] };
   /** Probe one origin for a live operator (default: GET /api/desktop/version). Never throws. */
   probe?: (origin: string) => Promise<boolean>;
-  /** Resolve the cloned `papercup` source root (default detectPapercupRoot). null ⇒ absent. */
+  /** Resolve the runnable source root (default defaultDetectSourceRoot:
+   *  PAPERCUSP_DEV_SOURCE_ROOT exact-checked, else detectPapercupRoot). null ⇒ absent. */
   detectSourceRoot?: () => string | null;
   /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). */
   hasToolchain?: () => Promise<boolean>;
@@ -271,6 +272,26 @@ function defaultSelfPort(): number | null {
   const raw = process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT;
   const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Default source-root resolution (WI-3306/WI-3308 extraction↔launcher contract, msg
+ * mrano4w7): prefer `PAPERCUSP_DEV_SOURCE_ROOT` — the tree the serve-side first-boot
+ * extracted from the packaged `source.tar.zst` — then fall back to the dev-box walk
+ * (detectPapercupRoot). The env var is EXACT-checked (marker files, no walk-up) so a
+ * half-extracted / missing tree degrades to the fallback instead of matching a parent.
+ * Deliberately NOT the primary's PAPERCUSP_INTEGRATION_ROOT: that var re-points
+ * prompt-assembly / capability base-dirs / git-pipeline on the PRIMARY, and on a
+ * packaged install the primary is the release — only the dev/local CHILDREN may see
+ * the extracted tree.
+ */
+export function defaultDetectSourceRoot(): string | null {
+  const extracted = process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+  if (extracted && extracted.trim() !== '') {
+    const root = resolve(extracted);
+    if (hasPapercupMarkers(root)) return root;
+  }
+  return detectPapercupRoot();
 }
 
 /** Default toolchain check: is the cloned source's apps/operator runnable? We need an
@@ -355,6 +376,23 @@ function resolveViteCli(treePath: string): string | null {
   return null;
 }
 
+/** Env additions every SOURCE-spawned child gets (extraction↔launcher contract, msg
+ *  mrano4w7 / WI-3306): the child's OWN tree as its PAPERCUSP_INTEGRATION_ROOT — its
+ *  prompt/capability/git internals must resolve to the tree it serves, never inherit
+ *  the primary's — and the bundled-sidecar dir(s) prepended to PATH so tree-spawned
+ *  subprocesses find the packaged node on installs where nothing useful is on PATH
+ *  (the runtime lives at <sidecarDir>/bin/node; both dirs are added, existence-gated). */
+export function sourceChildEnv(treePath: string): Record<string, string> {
+  const env: Record<string, string> = { PAPERCUSP_INTEGRATION_ROOT: treePath };
+  const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+  if (sidecarBin) {
+    const sidecarDir = dirname(sidecarBin);
+    const dirs = [sidecarDir, join(sidecarDir, 'bin')].filter((d) => existsSync(d));
+    if (dirs.length > 0) env.PATH = [...dirs, process.env.PATH ?? ''].join(delimiter);
+  }
+  return env;
+}
+
 /** Default spawn — mirror bin/dev-operator-ifneeded.sh's invocation, REQUEST-ONLY.
  *  Detached + unref'd + stdio:ignore so the spawned operator outlives this boot turn
  *  and never blocks it. The EI-126 single-writer knobs are the load-bearing safety here.
@@ -437,6 +475,7 @@ function defaultSpawnOperator(
         stdio: 'ignore',
         env: {
           ...process.env,
+          ...sourceChildEnv(treePath),
           ...(selfPort != null
             ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` }
             : {}),
@@ -457,6 +496,7 @@ function defaultSpawnOperator(
       stdio: 'ignore',
       env: {
         ...process.env,
+        ...sourceChildEnv(treePath),
         PAPERCUSP_HONO_PORT: String(entry.port),
         // ── EI-126 single-writer safety — the extra envs are request-only siblings ──
         PAPERCUSP_BACKGROUND_WORKERS: '0',
@@ -499,7 +539,7 @@ export async function launchEnvOperators(
   const host = deps.host ?? '127.0.0.1';
   const readPrefs = deps.readPrefs ?? (() => readEnvSwitcherPrefs());
   const probe = deps.probe ?? ((origin: string) => defaultProbe(origin));
-  const detectSourceRoot = deps.detectSourceRoot ?? detectPapercupRoot;
+  const detectSourceRoot = deps.detectSourceRoot ?? defaultDetectSourceRoot;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : defaultSelfPort();
   const spawnOperator = deps.spawnOperator ?? defaultSpawnOperator;
   const staggerMs = deps.staggerMs ?? 4000;
