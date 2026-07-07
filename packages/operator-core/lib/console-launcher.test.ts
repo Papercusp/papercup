@@ -40,6 +40,48 @@ describe('buildSuperuserMcpUrl (scoped-superuser-workspace-clamp D-004)', () => 
   });
 });
 
+describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 2026-07-07)', () => {
+  const ORIGINAL_AGENT_CMD = process.env.AGENT_CMD;
+  const ORIGINAL_CLAUDE_CMD = process.env.CLAUDE_CMD;
+  const ORIGINAL_BACKEND = process.env.AGENT_BACKEND;
+  afterEach(() => {
+    if (ORIGINAL_AGENT_CMD === undefined) delete process.env.AGENT_CMD;
+    else process.env.AGENT_CMD = ORIGINAL_AGENT_CMD;
+    if (ORIGINAL_CLAUDE_CMD === undefined) delete process.env.CLAUDE_CMD;
+    else process.env.CLAUDE_CMD = ORIGINAL_CLAUDE_CMD;
+    if (ORIGINAL_BACKEND === undefined) delete process.env.AGENT_BACKEND;
+    else process.env.AGENT_BACKEND = ORIGINAL_BACKEND;
+  });
+
+  it('claude resume carries the bypass flags — permission mode is per-invocation, so a bare `claude -r` regresses to ask-per-tool', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).toContain(
+      'exec claude --dangerously-skip-permissions --permission-mode bypassPermissions -r 3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+    );
+  });
+
+  it('omp resume carries --approval-mode yolo', async () => {
+    process.env.AGENT_CMD = 'omp';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: 'abc-123',
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).toContain('exec omp --approval-mode yolo -r abc-123');
+  });
+});
+
 describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () => {
   const ORIGINAL = process.env.PAPERCUSP_MCP_PROXY_BASE;
   afterEach(() => {

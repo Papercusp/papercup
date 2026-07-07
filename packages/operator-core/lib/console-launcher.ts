@@ -302,7 +302,17 @@ export async function buildConsoleEnvelope(
     // Both `claude` and `omp` accept `-r <session-id>`. The shell
     // greeting echoes the run id so a stale terminal is identifiable.
     const id = shellSafeId(opts.resumeSessionId);
-    greetingCmd = `echo "resuming plan-run ${id}…"; exec ${bin} -r ${id}`;
+    // Permission mode is per-INVOCATION, not inherited from the resumed
+    // session: a bare `claude -r` lands the user in default ask-per-tool
+    // mode (owner-hit on the Windows app, 2026-07-07). Re-assert the same
+    // frictionless posture psu-launcher's resumeArgsFor/suLaunchArgs use.
+    const bypass =
+      backend === 'claude-code'
+        ? '--dangerously-skip-permissions --permission-mode bypassPermissions '
+        : backend === 'omp'
+          ? '--approval-mode yolo '
+          : '';
+    greetingCmd = `echo "resuming plan-run ${id}…"; exec ${bin} ${bypass}-r ${id}`;
   }
 
   return {
