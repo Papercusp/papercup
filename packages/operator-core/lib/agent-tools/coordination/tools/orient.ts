@@ -488,7 +488,7 @@ export default defineTool({
     includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
     fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
     includeFleetHealth: z.boolean().optional().describe("Fold a COMPACT fleet-health glance (bees running/working, staged wakes, paused governor buckets) when you're in a named fleet (default true; full mode only) — the coord:glance health read agents otherwise re-fetch right after orient."),
-    afterCompaction: z.boolean().optional().describe('Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).'),
+    afterCompaction: z.boolean().optional().describe('Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, staleness_warnings (presence/fleet/claims that changed AFTER your summary was written — the summary’s view of them is stale), and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).'),
   }),
   // context-trimming-tiers P-012: orient is the fattest bootstrap read (one
   // unshaped call measured ~43k tokens in the 2026-07-01 fleet incident). The

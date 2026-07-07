@@ -28,6 +28,19 @@ export interface CompactionRecovery {
    *  via work_items:get — measured at 43% of post-compaction orients
    *  (compaction-fold-audit-2026-07-06). */
   checkpoints?: Array<{ id: string; title?: string; body?: string; checkpoint: string | null }>;
+  /** compaction-continuity-hardening P-004: presence/fleet/claims that changed
+   *  AFTER the summary was written (the transcript's compact_boundary time) —
+   *  the summary's view of anything listed here is guaranteed stale. Present
+   *  only when the boundary timestamp is derivable. */
+  staleness_warnings?: {
+    /** When the compaction summary was written (ISO). */
+    summaryAt: string;
+    /** Semantics of the list, for the reading agent. */
+    note: string;
+    /** Concrete detected changes, most-actionable first (bounded). Empty =
+     *  nothing detectably changed since the summary. */
+    warnings: string[];
+  };
 }
 
 const MAX_HELD_ITEMS = 6;
@@ -48,10 +61,12 @@ export async function buildCompactionRecovery(
   };
 
   // (c) self live-tail + pointer — freshness at the moment of hand-out.
+  let selfFilePath: string | null = null;
   try {
     const { resolveSelfSession } = await import('../../search/self-session');
     const self = await resolveSelfSession(ownerId);
     if (self) {
+      selfFilePath = self.filePath;
       recovery.selfSession = { sourceKind: self.sourceKind, sessionId: self.sessionId };
       try {
         const { ingestFileNow } = await import('../../search/session-ingest');
@@ -94,6 +109,29 @@ export async function buildCompactionRecovery(
         ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
         checkpoint: h.checkpoint ? h.checkpoint.slice(0, CHECKPOINT_CAP) : null,
       }));
+    }
+  } catch { /* best-effort */ }
+
+  // (d) staleness warnings (compaction-continuity-hardening P-004): recover the
+  // summary's timestamp from the transcript's compact_boundary entry, then flag
+  // the presence/fleet/claims that changed AFTER it — the changes the summary
+  // cannot know about but the successor will treat as fact.
+  try {
+    if (selfFilePath) {
+      const { readLastCompactBoundaryTs, buildStalenessWarnings } = await import(
+        './compaction-staleness'
+      );
+      const summaryAtMs = await readLastCompactBoundaryTs(selfFilePath);
+      if (summaryAtMs != null) {
+        recovery.staleness_warnings = {
+          summaryAt: new Date(summaryAtMs).toISOString(),
+          note:
+            'Everything below CHANGED after your compaction summary was written — the ' +
+            "summary's view of it is stale. Liveness/fleet counts, service states, and " +
+            'quantities in the summary are hypotheses to re-verify, never facts.',
+          warnings: await buildStalenessWarnings(ownerId, workspaceId, { summaryAtMs }),
+        };
+      }
     }
   } catch { /* best-effort */ }
 
