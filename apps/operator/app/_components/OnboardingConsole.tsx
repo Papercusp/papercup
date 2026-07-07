@@ -131,6 +131,30 @@ export async function loadOnboardConcierge(
   }
 }
 
+/**
+ * WI-3281: stamp `finished_at` (best-effort) so the root gate stops routing
+ * to first-run. The root route (`/`) hard-redirects to `/onboarding` whenever
+ * `finished_at` is unset, so navigating home WITHOUT stamping just reloads
+ * the tutorial — the mac-GUI "no way past the tutorial" loop (owner-reported
+ * 2026-07-06, the embedded-pane twin of the external path's escape-hatch
+ * fix). The PATCH is an idempotent merge-update, so stamping after the tutor
+ * already graduated is harmless. Pure + exported for unit tests. Never
+ * throws: a failed PATCH still lets the caller navigate — `/` re-checks and
+ * the worst case is landing back here, no worse than before.
+ */
+export async function markSetupFinished(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const r = await fetchImpl('/api/desktop/setup-wizard-state', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ finished_at: new Date().toISOString() }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 type ExternalState = 'idle' | 'launching' | 'running' | 'error';
 
 interface WindowWithTauriInvoke extends Window {
@@ -171,12 +195,24 @@ export function OnboardingConsole() {
     window.location.href = '/setup?force=1';
   };
 
-  // Concierge finished: either graduation (the tutor called setup:complete) or
-  // the user quit. Root re-gateways correctly in both cases (stateless
-  // re-detection), so simply go home.
+  // The one way home: stamp finished_at FIRST (best-effort), then navigate.
+  // Navigating `/` without the stamp bounces right back here (root redirects
+  // `/` → first-run while finished_at is unset) — the "can't get past the
+  // tutorial" loop (WI-3281).
+  const finishAndGoHome = useCallback(async () => {
+    await markSetupFinished();
+    window.location.href = '/';
+  }, []);
+
+  // Embedded pane finished: graduation stamps finished_at via the tutor's
+  // setup:complete — but a user who QUITS the tutor exits 0 WITHOUT
+  // graduating, and going home unstamped reloaded the tutorial forever (the
+  // mac GUI "no way past the tutorial" loop, owner-reported 2026-07-06,
+  // WI-3281). Stamp finished_at (idempotent merge-PATCH) before navigating,
+  // mirroring the external path's escape hatch below.
   useEffect(() => {
-    if (exited !== null && exited === 0) window.location.href = '/';
-  }, [exited]);
+    if (exited !== null && exited === 0) void finishAndGoHome();
+  }, [exited, finishAndGoHome]);
 
   const routeExternal =
     tauri === true &&
@@ -255,6 +291,12 @@ export function OnboardingConsole() {
           <button type="button" className="pc-btn pc-btn--primary" onClick={fallbackToWizard}>
             Open the setup wizard
           </button>
+          <p style={{ fontSize: 12, opacity: 0.55, marginTop: 12 }}>
+            {/* WI-3281: never strand a user on this fallback either. */}
+            <button type="button" className="pc-link-btn" onClick={() => void finishAndGoHome()}>
+              Skip setup — go to the app
+            </button>
+          </p>
         </div>
       </div>
     );
@@ -296,28 +338,10 @@ export function OnboardingConsole() {
                     <button
                       type="button"
                       className="pc-btn pc-btn--primary"
-                      onClick={async () => {
-                        // This is the ESCAPE HATCH for a user who quits the
-                        // terminal WITHOUT the tutor calling setup:complete — so
-                        // `finished_at` is unset. Navigating straight to `/`
-                        // bounced right back here: app/page.tsx redirects `/` →
-                        // `/setup` whenever `finished_at` is unset, an infinite
-                        // reload loop (owner-reported 2026-07-06). Stamp
-                        // finished_at ourselves (best-effort) BEFORE navigating so
-                        // `/` actually loads the app. Mirrors SetupWizard's
-                        // markFinished; the tutor's own setup:complete path is
-                        // unaffected.
-                        try {
-                          await fetch('/api/desktop/setup-wizard-state', {
-                            method: 'PATCH',
-                            headers: { 'content-type': 'application/json' },
-                            body: JSON.stringify({ finished_at: new Date().toISOString() }),
-                          });
-                        } catch {
-                          // best-effort — navigate regardless; page.tsx re-checks
-                        }
-                        window.location.href = '/';
-                      }}
+                      // ESCAPE HATCH for a user who quits the terminal WITHOUT
+                      // the tutor calling setup:complete: stamp finished_at
+                      // before navigating (see finishAndGoHome / WI-3281).
+                      onClick={() => void finishAndGoHome()}
                     >
                       I&apos;ve finished — continue
                     </button>
@@ -371,6 +395,13 @@ export function OnboardingConsole() {
             {' · '}
           </>
         ) : null}
+        {/* ALWAYS-VISIBLE way past the tutorial (WI-3281): the only prior
+            escapes were finishing the conversation or the wizard link — a
+            wedged/quit tutor left no path to the app at all. */}
+        <button type="button" className="pc-link-btn" onClick={() => void finishAndGoHome()}>
+          Skip the tutorial — go to the app
+        </button>
+        {' · '}
         Prefer clicking through a GUI?{' '}
         <button type="button" className="pc-link-btn" onClick={fallbackToWizard}>
           Use the classic setup wizard

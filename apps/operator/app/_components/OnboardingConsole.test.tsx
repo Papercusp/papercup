@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   loadOnboardConcierge,
+  markSetupFinished,
   pollGraduationOnce,
   shouldRouteExternalConsole,
 } from './OnboardingConsole';
