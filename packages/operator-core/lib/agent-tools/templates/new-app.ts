@@ -1,36 +1,37 @@
 /**
- * templates:new-app — materialize a Cupboard app-template into a fresh coding
- * harness AND (by default) kick off a building agent seeded with the template's
- * GUIDE.md (WI-3198). The self-serve "New app from template" flow for MCP agents:
- * before this, the materializer was HTTP-only (a desktop menu action + loopback
- * route), so a shell-less agent could READ a template (templates:get-guide) but
- * had no verb to BUILD from it.
+ * templates:new-app — materialize an app-template into a fresh coding harness AND
+ * (by default) kick off a building agent seeded with the template's GUIDE.md (WI-3198).
  *
- * Flow: resolve the listing → git-clone the public mirror + overlay `<ref>/` onto
- * a new harness:create'd dir (coding blueprint) → open an agent chat in the new
- * harness with the GUIDE as its brief. Composes existing tools through the
- * in-process dispatcher (harness:create, agent_chats:create/send_message), so each
- * sub-step re-runs the caller's OWN role/capability gates — a compound tool, the
- * cheap/safe complement to code:run (see _compound-dispatch.ts).
+ * v1 (local-first-party-template-bundling-2026-07-07): the first-party templates ship
+ * BUNDLED, so the common path COPIES the template's `<ref>/` dir straight from the local
+ * store (no clone, works offline). The Cupboard MARKETPLACE path (clone the public
+ * mirror) is a wired-but-dormant v2 seam behind FLAGS.TEMPLATES_MARKETPLACE. Both feed
+ * the SAME materialize (overlay onto a new harness) — the source-acquire is the only
+ * thing that differs, which is what lets a v2 user-installed template reuse this path.
+ *
+ * Composes existing tools through the in-process dispatcher (harness:create,
+ * agent_chats:create/send_message), so each sub-step re-runs the caller's OWN
+ * role/capability gates — a compound tool (see _compound-dispatch.ts).
  */
 import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { gitCloneShallow } from '../../cupboard/install-io';
 import { papercuspRoot } from '../../papercusp-root';
-import {
-  resolveTemplateListing,
-  fetchTemplateGuide,
-  type TemplateListing,
-} from '../../cupboard/templates';
+import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
+import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
 import {
   materializeTemplateCore,
+  cloneSourceAcquire,
+  localSourceAcquire,
   MaterializeTemplateError,
-  type MaterializeTemplateDeps,
+  type TemplateSourceDir,
   type MaterializeTemplateResult,
 } from '../../cupboard/materialize-template-core';
 
@@ -41,9 +42,21 @@ const fail = (status: number, error: string) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, status, error }) }],
 });
 
+/**
+ * Where to build from — what a source resolver hands composeNewApp. `acquireSourceDir`
+ * produces the `<ref>/` dir to overlay (a local dir passthrough, or a fresh clone).
+ */
+export interface ResolvedTemplateSource {
+  listing: { id: string; ref: string; title: string };
+  guide: string | null;
+  guideTruncated: boolean;
+  guideBranch: string | null;
+  acquireSourceDir: () => Promise<TemplateSourceDir>;
+}
+
 /** Compose the GUIDE.md into a builder kickoff message. */
 function kickoffMessage(
-  listing: TemplateListing,
+  listing: { title: string; ref: string },
   guide: string | null,
   guideTruncated: boolean,
 ): string {
@@ -65,62 +78,93 @@ export interface NewAppArgs {
   builderRole: string;
 }
 
-export interface NewAppDeps extends MaterializeTemplateDeps {
-  resolveListing: typeof resolveTemplateListing;
-  fetchGuide: typeof fetchTemplateGuide;
+export interface NewAppDeps {
+  /** Resolve a template ref to a build source (local-first; remote is the v2 seam). */
+  resolveSource: (
+    template: string,
+  ) => Promise<ResolvedTemplateSource | { error: string; status: number }>;
   /** The parent dir when the caller passes none (creates it if absent). */
   defaultParentDir: () => string;
 }
 
 /**
- * Pure composition (unit-testable with a mock `inner` + mock `deps`) — mirrors
- * composeHarnessOverview. Returns a ToolResult.
+ * Local-first source resolver: the bundled first-party store, then — only when
+ * FLAGS.TEMPLATES_MARKETPLACE is ON (v2) — the Cupboard mirror. Exported so the tool
+ * wires it; composeNewApp itself stays source-agnostic (a test injects its own resolver).
+ */
+export async function resolveTemplateSource(
+  template: string,
+): Promise<ResolvedTemplateSource | { error: string; status: number }> {
+  const local = resolveLocalTemplate(template);
+  if (local) {
+    const g = readLocalGuide(local);
+    return {
+      listing: { id: local.id, ref: local.ref, title: local.title },
+      guide: 'error' in g ? null : g.guide,
+      guideTruncated: 'error' in g ? false : g.guideTruncated,
+      guideBranch: 'local',
+      acquireSourceDir: localSourceAcquire(local.dir),
+    };
+  }
+  // Not a bundled template — the Cupboard MARKETPLACE is a dormant v2 seam.
+  if (!(await getFlag(FLAGS.TEMPLATES_MARKETPLACE, 'system'))) {
+    return { error: `template not found in the local store: ${template}`, status: 404 };
+  }
+  const listing = await resolveTemplateListing(template);
+  if ('error' in listing) return listing;
+  if (!listing.githubUrl) return { error: `template "${listing.ref}" has no github_url`, status: 422 };
+  const g = await fetchTemplateGuide({ githubUrl: listing.githubUrl, ref: listing.ref });
+  return {
+    listing: { id: listing.id, ref: listing.ref, title: listing.title },
+    guide: 'error' in g ? null : g.guide,
+    guideTruncated: 'error' in g ? false : g.guideTruncated,
+    guideBranch: 'error' in g ? null : g.branch,
+    acquireSourceDir: cloneSourceAcquire({
+      githubUrl: listing.githubUrl,
+      ref: listing.ref,
+      cloneRepo: gitCloneShallow,
+      tmpDir: tmpdir,
+    }),
+  };
+}
+
+/**
+ * Pure composition (unit-testable with a mock `inner` + mock `deps`). Returns a ToolResult.
  */
 export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: NewAppDeps) {
-  const listing = await deps.resolveListing(args.template);
-  if ('error' in listing) return fail(listing.status, listing.error);
-  if (!listing.githubUrl) return fail(422, `template "${listing.ref}" has no github_url`);
-
-  // Pre-fetch the GUIDE for the builder brief — best-effort (a miss must not block
-  // materialization; the GUIDE also lands in the repo via the overlay).
-  const guideRes = await deps.fetchGuide({ githubUrl: listing.githubUrl, ref: listing.ref });
-  const guide = 'error' in guideRes ? null : guideRes.guide;
-  const guideTruncated = 'error' in guideRes ? false : guideRes.guideTruncated;
-  const guideBranch = 'error' in guideRes ? null : guideRes.branch;
+  const src = await deps.resolveSource(args.template);
+  if ('error' in src) return fail(src.status, src.error);
 
   const parentDir = args.parentDir?.trim() || deps.defaultParentDir();
 
   let materialized: MaterializeTemplateResult;
   try {
-    materialized = await materializeTemplateCore(
-      {
-        githubUrl: listing.githubUrl,
-        ref: listing.ref,
-        createHarness: async () => {
-          const raw = await inner('harness:create', {
-            slug: args.slug,
-            parentDir,
-            folderName: args.slug,
-            blueprintId: 'coding',
-          });
-          const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string };
-          if (!r?.ok || !r.path || !r.slug) {
-            // A THROWN sub-handler arrives as the framework's `handler_error: …`
-            // PLAIN-TEXT envelope (unwrap() falls back to the raw string when the
-            // payload isn't JSON). Dropping it reported an opaque "unknown error"
-            // to the agent while the real cause was in the string (owner-hit
-            // 2026-07-07, WI-3291 follow-up) — surface whatever we got.
-            const detail =
-              typeof raw === 'string'
-                ? raw
-                : (r?.error ?? (raw ? JSON.stringify(raw).slice(0, 300) : 'unknown error'));
-            throw new MaterializeTemplateError(`harness:create failed: ${detail}`, 422);
-          }
-          return { slug: r.slug, path: r.path };
-        },
+    materialized = await materializeTemplateCore({
+      ref: src.listing.ref,
+      acquireSourceDir: src.acquireSourceDir,
+      createHarness: async () => {
+        const raw = await inner('harness:create', {
+          slug: args.slug,
+          parentDir,
+          folderName: args.slug,
+          blueprintId: 'coding',
+        });
+        const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string };
+        if (!r?.ok || !r.path || !r.slug) {
+          // A THROWN sub-handler arrives as the framework's `handler_error: …`
+          // PLAIN-TEXT envelope (unwrap() falls back to the raw string when the
+          // payload isn't JSON). Dropping it reported an opaque "unknown error"
+          // to the agent while the real cause was in the string (owner-hit
+          // 2026-07-07, WI-3291 follow-up) — surface whatever we got.
+          const detail =
+            typeof raw === 'string'
+              ? raw
+              : (r?.error ?? (raw ? JSON.stringify(raw).slice(0, 300) : 'unknown error'));
+          throw new MaterializeTemplateError(`harness:create failed: ${detail}`, 422);
+        }
+        return { slug: r.slug, path: r.path };
       },
-      deps,
-    );
+    });
   } catch (e) {
     if (e instanceof MaterializeTemplateError) return fail(e.status, e.message);
     throw e;
@@ -137,13 +181,13 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
       const chat = (await inner('agent_chats:create', {
         slug: materialized.slug,
         role: args.builderRole,
-        title: `Build from template: ${listing.ref}`,
+        title: `Build from template: ${src.listing.ref}`,
       })) as { id?: string; error?: string };
       if (!chat?.id) throw new Error(chat?.error ?? 'agent_chats:create returned no chat id');
       await inner('agent_chats:send_message', {
         slug: materialized.slug,
         chatId: chat.id,
-        content: kickoffMessage(listing, guide, guideTruncated),
+        content: kickoffMessage(src.listing, src.guide, src.guideTruncated),
       });
       builder = { spawned: true, chatId: chat.id, role: args.builderRole };
     } catch (e) {
@@ -159,8 +203,8 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
     harnessSlug: materialized.slug,
     path: materialized.path,
     filesCopied: materialized.filesCopied,
-    template: { id: listing.id, ref: listing.ref, title: listing.title },
-    guideBranch,
+    template: { id: src.listing.id, ref: src.listing.ref, title: src.listing.title },
+    guideBranch: src.guideBranch,
     builder,
   });
 }
@@ -168,7 +212,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
 export default defineTool({
   name: 'templates:new-app',
   description:
-    'Materialize a Cupboard app-template into a NEW coding harness and (by default) kick off a building agent seeded with the template GUIDE. Composes harness:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, builder:{spawned,chatId?} }. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
+    'Materialize an app-template into a NEW coding harness and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes harness:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, builder:{spawned,chatId?} }. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
   guidance: {
     when: 'The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.',
     notWhen:
@@ -218,10 +262,7 @@ export default defineTool({
       },
       inProcessCall(ctx),
       {
-        cloneRepo: gitCloneShallow,
-        tmpDir: tmpdir,
-        resolveListing: resolveTemplateListing,
-        fetchGuide: fetchTemplateGuide,
+        resolveSource: resolveTemplateSource,
         defaultParentDir: () => {
           const d = join(papercuspRoot(), 'apps');
           mkdirSync(d, { recursive: true });

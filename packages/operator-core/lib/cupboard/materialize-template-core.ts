@@ -88,18 +88,36 @@ export async function overlayTemplateFiles(src: string, targetDir: string): Prom
   return entries.filter((e) => e !== '.git');
 }
 
+/**
+ * A resolved template source: the `<ref>/` dir ready to overlay onto a new harness,
+ * plus a cleanup for any scratch it allocated. The remote path clones the mirror into
+ * tmp (cleanup = rm); the LOCAL path (v1 bundled first-party templates) points straight
+ * at the on-disk dir (cleanup = noop) — the seam that skips the clone for local templates
+ * and is the same source abstraction a v2 marketplace install reuses.
+ */
+export interface TemplateSourceDir {
+  srcDir: string;
+  cleanup: () => Promise<void>;
+}
+
 export interface MaterializeTemplateInput {
-  githubUrl: string;
   ref: string;
   /**
+   * Produce the `<ref>/` source dir to overlay. Runs BEFORE createHarness so a
+   * source failure (bad clone / missing subdir) leaves NO durable side effect.
+   */
+  acquireSourceDir: () => Promise<TemplateSourceDir>;
+  /**
    * Create the harness dir + registration, returning its slug + path. Runs AFTER
-   * the clone+locate succeed (so a clone failure leaves NO durable side effect) and
-   * BEFORE the overlay (so the template files land on the just-created dir).
+   * the source is acquired and BEFORE the overlay (so the template files land on the
+   * just-created dir).
    */
   createHarness: () => Promise<{ slug: string; path: string }>;
 }
 
-export interface MaterializeTemplateDeps {
+export interface CloneSourceDeps {
+  githubUrl: string;
+  ref: string;
   /** Shallow-clone `url` into `dest` (which does not yet exist). Throws on failure. */
   cloneRepo: (url: string, dest: string) => Promise<void>;
   /** A scratch dir for the clone (real: os.tmpdir()). */
@@ -113,34 +131,66 @@ export interface MaterializeTemplateResult {
   filesCopied: string[];
 }
 
+/**
+ * A source-acquire that CLONES the public mirror into a tmp dir and locates the
+ * `<clone>/<ref>/` subdir. Validates the url+ref up front (before any clone). The
+ * returned cleanup removes the tmp clone; a locate failure cleans up + rethrows so
+ * no scratch leaks.
+ */
+export function cloneSourceAcquire(deps: CloneSourceDeps): () => Promise<TemplateSourceDir> {
+  return async () => {
+    const url = (deps.githubUrl ?? '').trim();
+    if (!GITHUB_URL_RE.test(url)) {
+      throw new MaterializeTemplateError(
+        `invalid github_url "${url}" — must be https://github.com/<owner>/<repo>`,
+        400,
+      );
+    }
+    if (!SAFE_REF_RE.test(deps.ref ?? '')) {
+      throw new MaterializeTemplateError(`unsafe template ref ${JSON.stringify(deps.ref)}`, 400);
+    }
+    const cloneDir = join(
+      deps.tmpDir(),
+      `cupboard-template-${Date.now()}-${Math.floor(performance.now())}`,
+    );
+    try {
+      await deps.cloneRepo(url, cloneDir);
+      const srcDir = locateTemplateDir(cloneDir, deps.ref);
+      return {
+        srcDir,
+        cleanup: async () => {
+          await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+        },
+      };
+    } catch (e) {
+      await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+      throw e;
+    }
+  };
+}
+
+/**
+ * A source-acquire for an ON-DISK template dir (the v1 bundled local store). No
+ * clone, no scratch — the dir IS the `<ref>/` overlay source, so cleanup is a noop.
+ */
+export function localSourceAcquire(dir: string): () => Promise<TemplateSourceDir> {
+  return async () => ({ srcDir: dir, cleanup: async () => {} });
+}
+
 export async function materializeTemplateCore(
   input: MaterializeTemplateInput,
-  deps: MaterializeTemplateDeps,
 ): Promise<MaterializeTemplateResult> {
-  const url = (input.githubUrl ?? '').trim();
-  if (!GITHUB_URL_RE.test(url)) {
-    throw new MaterializeTemplateError(
-      `invalid github_url "${url}" — must be https://github.com/<owner>/<repo>`,
-      400,
-    );
-  }
   if (!SAFE_REF_RE.test(input.ref ?? '')) {
     throw new MaterializeTemplateError(`unsafe template ref ${JSON.stringify(input.ref)}`, 400);
   }
-
-  const cloneDir = join(
-    deps.tmpDir(),
-    `cupboard-template-${Date.now()}-${Math.floor(performance.now())}`,
-  );
+  const { srcDir, cleanup } = await input.acquireSourceDir();
   try {
-    await deps.cloneRepo(url, cloneDir);
-    const srcDir = locateTemplateDir(cloneDir, input.ref);
-    // Clone + locate succeeded (no durable side effect yet) → now create the
-    // harness, then overlay the template onto it.
+    // Source acquired (no durable side effect yet) → now create the harness, then
+    // overlay the template onto it.
     const created = await input.createHarness();
     const filesCopied = await overlayTemplateFiles(srcDir, created.path);
     return { slug: created.slug, path: created.path, filesCopied };
   } finally {
-    await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
+    await cleanup().catch(() => {});
   }
 }

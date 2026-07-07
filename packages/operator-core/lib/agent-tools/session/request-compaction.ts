@@ -21,9 +21,30 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
 
-/** Focus applied when the agent names none — mirrors the compaction.claude recipe. */
+/** Focus applied when the agent names none AND the carry-brief read fails —
+ *  the static floor under the session-specific default (P-003 below). */
 const DEFAULT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.';
+
+/**
+ * compaction-continuity-hardening-2026-07-07 P-003: the default focus is the
+ * session's CARRY BRIEF (held work-item ids, armed loop, standing facts, awaits,
+ * fleet pointer — as pointers, not copies), so an agent that names no focus still
+ * hands the summarizer its real continuity anchors instead of the generic
+ * preserve set. Best-effort: any failure falls back to the static DEFAULT_FOCUS.
+ */
+async function carryBriefFocus(ownerId: string, workspaceId?: string | null): Promise<string> {
+  try {
+    const { buildCarryBrief, renderCarryBriefFocus } = await import('../../carry-brief');
+    const focus = renderCarryBriefFocus(
+      await buildCarryBrief(ownerId, { workspaceId: workspaceId ?? undefined }),
+    ).trim();
+    if (focus.length > 0) return focus;
+  } catch {
+    /* fall through to the static floor */
+  }
+  return DEFAULT_FOCUS;
+}
 
 /**
  * WI-1804: the continuation turn opened on the compacted context when the host supports
