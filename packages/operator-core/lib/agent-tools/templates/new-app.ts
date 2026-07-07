@@ -97,17 +97,24 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
         githubUrl: listing.githubUrl,
         ref: listing.ref,
         createHarness: async () => {
-          const r = (await inner('harness:create', {
+          const raw = await inner('harness:create', {
             slug: args.slug,
             parentDir,
             folderName: args.slug,
             blueprintId: 'coding',
-          })) as { ok?: boolean; slug?: string; path?: string; error?: string };
+          });
+          const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string };
           if (!r?.ok || !r.path || !r.slug) {
-            throw new MaterializeTemplateError(
-              `harness:create failed: ${r?.error ?? 'unknown error'}`,
-              422,
-            );
+            // A THROWN sub-handler arrives as the framework's `handler_error: …`
+            // PLAIN-TEXT envelope (unwrap() falls back to the raw string when the
+            // payload isn't JSON). Dropping it reported an opaque "unknown error"
+            // to the agent while the real cause was in the string (owner-hit
+            // 2026-07-07, WI-3291 follow-up) — surface whatever we got.
+            const detail =
+              typeof raw === 'string'
+                ? raw
+                : (r?.error ?? (raw ? JSON.stringify(raw).slice(0, 300) : 'unknown error'));
+            throw new MaterializeTemplateError(`harness:create failed: ${detail}`, 422);
           }
           return { slug: r.slug, path: r.path };
         },

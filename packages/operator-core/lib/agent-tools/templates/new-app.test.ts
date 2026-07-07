@@ -175,4 +175,19 @@ describe('composeNewApp', () => {
     // no builder dispatch after a failed create.
     expect(calls).toEqual(['harness:create']);
   });
+
+  it('surfaces a THROWN harness:create (handler_error plain-text envelope) instead of "unknown error"', async () => {
+    // A sub-handler throw reaches the compound via unwrap() as a PLAIN STRING
+    // (`handler_error: …`) — not a { error } object. The owner-hit regression
+    // (2026-07-07) reported "unknown error" and sent the agent chasing ghosts.
+    const inner = vi.fn(async (name: string) => {
+      if (name === 'harness:create') return 'handler_error: ENOSPC: no space left on device';
+      throw new Error(`unexpected: ${name}`);
+    });
+    const result = await composeNewApp(baseArgs(), inner, baseDeps());
+    const payload = parse(result);
+    expect(payload).toMatchObject({ ok: false, status: 422 });
+    expect(payload.error).toContain('handler_error: ENOSPC: no space left on device');
+    expect(payload.error).not.toContain('unknown error');
+  });
 });

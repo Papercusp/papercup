@@ -374,16 +374,32 @@ export default defineTool({
     }
 
     // 4. Write the git-canonical blueprint file. PG projection is lazy.
+    //    Shaped-fail on fs errors: this is the first post-registration step that
+    //    could THROW, and an escaped throw here surfaces as the framework's
+    //    opaque `handler_error:` text while leaving the registry row + folder
+    //    with no explanation (the "dangling create" an agent chased on the
+    //    Windows rig, 2026-07-07 / WI-3291 follow-up). Report the real error
+    //    plus the partial state instead.
     const bpDir = join(path, '.papercusp');
-    mkdirSync(bpDir, { recursive: true });
     const bpFile = join(bpDir, 'blueprint.yaml');
-    writeFileSync(bpFile, stringifyYaml(childObj, { lineWidth: 100 }), 'utf8');
+    try {
+      mkdirSync(bpDir, { recursive: true });
+      writeFileSync(bpFile, stringifyYaml(childObj, { lineWidth: 100 }), 'utf8');
 
-    // 4a. Write the genome's prompt overlays to `.papercusp/genome/` (git-canonical),
-    //     completing the instance-config seed (the config knobs went to PG above).
-    const genomePrompts = args.instance?.genome?.prompts;
-    if (genomePrompts && Object.keys(genomePrompts).length > 0) {
-      writeGenomePrompts(path, genomePrompts);
+      // 4a. Write the genome's prompt overlays to `.papercusp/genome/` (git-canonical),
+      //     completing the instance-config seed (the config knobs went to PG above).
+      const genomePrompts = args.instance?.genome?.prompts;
+      if (genomePrompts && Object.keys(genomePrompts).length > 0) {
+        writeGenomePrompts(path, genomePrompts);
+      }
+    } catch (e) {
+      return fail({
+        error: `blueprint write failed after registration: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`,
+        slug: args.slug,
+        path,
+        registered: true,
+        provisioning,
+      });
     }
 
     // 5. Materialize the blueprint's triggers.schedule into harness_shared.routines
@@ -458,7 +474,7 @@ export default defineTool({
     //     `track:false` opts out). Best-effort + deterministic (no LLM, D-006): never
     //     fails the create; outcome reported as `docTracking`.
     let docTracking: import('../../harness/docs/seed-doc-tracking').SeedDocTrackingOutcome | undefined;
-    const docsKnob = (validation.blueprint!.knobs as Record<string, unknown>).docs as
+    const docsKnob = ((validation.blueprint!.knobs ?? {}) as Record<string, unknown>).docs as
       | { track?: boolean }
       | undefined;
     if (requiresRepo && docsKnob?.track !== false) {

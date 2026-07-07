@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 // The canonical invite is now COMMITTED (P-003 activation), so bakedCanonicalHiveInvite()
 // returns it by default — which would route every no-`canonicalInvite` test through the
@@ -12,6 +14,7 @@ import {
   startBootstrapPapercuspHive,
   __resetBootstrapInFlight,
   seedTargetDirs,
+  defaultSetHomeWorkspace,
   PAPERCUP_DOGFOOD_REPO_URL,
   GIT_SEED_RETRY_DELAYS_MS,
   type BootstrapPapercuspHiveDeps,
@@ -21,7 +24,7 @@ beforeEach(() => __resetBootstrapInFlight());
 import { join } from 'node:path';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
-import { workspacesRoot } from '../workspace-registry';
+import { workspacesRoot, isKnownWorkspace } from '../workspace-registry';
 
 // WI-3232: the seed CORESTORE must restore to the SAME dir boot opens it, else the
 // OFFLINE self-admit pot appears with EMPTY content (boot reads an empty corestore).
@@ -824,5 +827,53 @@ describe('startBootstrapPapercuspHive (single-flight)', () => {
     const second = await startBootstrapPapercuspHive(retry).done;
     expect(second.state).toBe('already-present');
     expect(retry.initSubmodules).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('defaultSetHomeWorkspace (registers before making current)', () => {
+  // The packaged-Linux "Starting onboarding… forever" bug (2026-07-07): setting
+  // registry.current to an UNLISTED id makes isKnownWorkspace(current) false. The
+  // operator injects `current` as `__PAPERCUSP_WS__`, so the webview stamps
+  // `x-papercusp-workspace: <current>` on EVERY /api fetch → the workspace-context
+  // middleware 400s `unknown_workspace` → the whole /api surface dead-ends and
+  // onboarding hangs. defaultSetHomeWorkspace must REGISTER the workspace (so it is
+  // KNOWN) before/when it makes it current.
+  const realRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'pcusp-setHome-'));
+    process.env.PAPERCUSP_WORKSPACES_ROOT = tmp;
+    // Fresh-install shape: only `default` listed, current=default.
+    writeFileSync(
+      join(tmp, 'registry.json'),
+      JSON.stringify({ current: 'default', workspaces: [{ id: 'default', name: 'Default', createdAt: 1 }] }),
+    );
+  });
+  afterEach(() => {
+    if (realRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+    else process.env.PAPERCUSP_WORKSPACES_ROOT = realRoot;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('adds the workspace to workspaces[] AND sets current — so isKnownWorkspace(current) is true', () => {
+    defaultSetHomeWorkspace(PAPERCUSP_WORKSPACE_ID);
+
+    const reg = JSON.parse(readFileSync(join(tmp, 'registry.json'), 'utf8'));
+    expect(reg.current).toBe(PAPERCUSP_WORKSPACE_ID);
+    // The regression guard: current must be a LISTED workspace, never dangling.
+    expect(reg.workspaces.map((w: { id: string }) => w.id)).toContain(PAPERCUSP_WORKSPACE_ID);
+    expect(isKnownWorkspace(PAPERCUSP_WORKSPACE_ID)).toBe(true);
+    // …and its data dir is provisioned (the switch() guard needs it).
+    expect(existsSync(join(tmp, PAPERCUSP_WORKSPACE_ID))).toBe(true);
+    // Pre-existing entries survive.
+    expect(reg.workspaces.map((w: { id: string }) => w.id)).toContain('default');
+  });
+
+  it('is idempotent — a second call does not duplicate the entry', () => {
+    defaultSetHomeWorkspace(PAPERCUSP_WORKSPACE_ID);
+    defaultSetHomeWorkspace(PAPERCUSP_WORKSPACE_ID);
+    const reg = JSON.parse(readFileSync(join(tmp, 'registry.json'), 'utf8'));
+    expect(reg.workspaces.filter((w: { id: string }) => w.id === PAPERCUSP_WORKSPACE_ID)).toHaveLength(1);
   });
 });

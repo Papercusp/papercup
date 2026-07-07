@@ -30,7 +30,7 @@ import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hiv
 import { detectPapercupRoot } from './register-papercusp';
 import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
 import { loadHarnessRegistry } from '../harness-registry';
-import { readRegistry, writeRegistry, workspacesRoot } from '../workspace-registry';
+import { ensureWorkspaceEntry, writeRegistry, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
 import {
   adoptSharedHiveIdentity,
@@ -241,9 +241,21 @@ export interface BootstrapPapercuspHiveDeps {
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
  *  ensurePapercuspWorkspace's "never hijack current" rule — used ONLY when we have
- *  actually created the home hive and want the user to land on it. */
-function defaultSetHomeWorkspace(ws: string): void {
-  const reg = readRegistry();
+ *  actually created the home hive and want the user to land on it.
+ *
+ *  REGISTER the entry (idempotent + provisions the data dir) BEFORE making it
+ *  current. Setting `current` to an UNLISTED id leaves the registry in a
+ *  `current`-points-at-unknown state, so `isKnownWorkspace(current)` is false —
+ *  and since the operator injects `current` as `__PAPERCUSP_WS__`, the webview
+ *  then stamps `x-papercusp-workspace: <current>` on EVERY /api fetch, which the
+ *  workspace-context middleware rejects `unknown_workspace` 400. The whole /api
+ *  surface dead-ends and onboarding hangs forever on "Starting onboarding…"
+ *  (verified live on the packaged Linux .deb, 2026-07-07 — the registry had
+ *  `current: papercusp-workspace` absent from `workspaces[]`). This mirrors
+ *  papercusp-hive-join's `defaultSetHome`, which already registers-then-sets;
+ *  the fix there was never mirrored back here until now. */
+export function defaultSetHomeWorkspace(ws: string): void {
+  const reg = ensureWorkspaceEntry(ws, 'Papercusp');
   if (reg.current !== ws) {
     reg.current = ws;
     writeRegistry(reg);
