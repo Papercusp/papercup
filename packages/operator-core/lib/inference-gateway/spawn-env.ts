@@ -3,10 +3,11 @@
  *
  * Pure + flag-evaluated by the caller (the spawn chokepoint), so the hot spawn path stays sync and
  * this stays trivially testable. When the `INFERENCE_GATEWAY` flag is ON, every bee spawn gets
- * `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` → the `claude -p` subprocess sends UNAUTHENTICATED
- * to the localhost gateway, which paces + injects the bound account's OAuth. The bee keeps its
- * symlinked `~/.claude` credential (harmlessly ignored — the gateway strips + reinjects auth), so
- * flipping the flag OFF instantly reverts to direct egress with no other change.
+ * `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` + `ANTHROPIC_AUTH_TOKEN=<placeholder>` → the claude
+ * CLI treats itself as authenticated (the auth-token env, NOT its local login state, is what makes
+ * it send at all) and the localhost gateway paces + strips/reinjects the bound account's real
+ * OAuth. Any local credential the spawn inherits is harmlessly ignored. Flipping the flag OFF
+ * instantly reverts to direct egress on the local login with no other change.
  */
 import { DEFAULT_GATEWAY_PORT } from './launch';
 import { ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
@@ -21,6 +22,16 @@ export const GATEWAY_BASE_URL_ENV = 'ANTHROPIC_BASE_URL';
  *  (chat-stream.ts `anthropicDirectTransport`), distinct from the standard `ANTHROPIC_BASE_URL`
  *  the `claude` CLI honors. */
 export const GATEWAY_SDK_URL_ENV = 'PAPERCUSP_ANTHROPIC_URL';
+/** Bearer the claude CLI presents to the gateway (`ANTHROPIC_AUTH_TOKEN`). NOT a secret — the
+ *  gateway strips + reinjects the routed account's real OAuth on every proxied request. Its job is
+ *  client-side: with an auth-token env set, the CLI considers itself authenticated and actually
+ *  SENDS, instead of gating on its LOCAL login state. Without it, a gateway-routed session whose
+ *  config dir has no live local credential boots "Not logged in · Please run /login" and never
+ *  makes a request — the macOS fleet-member failure (a fresh member config dir has no per-dir
+ *  Keychain item, inherits only the often-stale base snapshot, fails the local refresh, and logs
+ *  itself out; 2026-07-06 owner report #5). Verified live on the Mac VM: fresh config dir +
+ *  this env + gateway → real completions. */
+export const GATEWAY_CLIENT_AUTH_TOKEN = 'papercusp-gateway';
 
 /** The localhost gateway port (env override → default 8788). */
 export function gatewayPort(): number {
@@ -38,7 +49,15 @@ export function gatewaySpawnEnv(
   opts: { accountId?: string; ownerId?: string; priority?: string; hardPin?: boolean } = {},
 ): Record<string, string> {
   if (!enabled) return {};
-  const env: Record<string, string> = { [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}` };
+  const env: Record<string, string> = {
+    [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}`,
+    // Client-side login-gate bypass (see GATEWAY_CLIENT_AUTH_TOKEN): the CLI only sends when it
+    // believes it's authenticated. Local credential state is irrelevant upstream (the gateway
+    // reinjects the routed account's OAuth), so hand every gateway-routed claude spawn a bearer
+    // env — this is what makes a fresh-config-dir member log in with ZERO per-session login on
+    // macOS, where there is no symlinkable credentials file to inherit.
+    ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+  };
   // Custom request headers the claude CLI forwards on every call — ANTHROPIC_CUSTOM_HEADERS is parsed as
   // newline-separated `Name: Value` pairs (honored by claude-code 2.x):
   //  • the ACCOUNT pin (multi-credential cache-affinity routing P-004): pin this bee to its assigned pool
