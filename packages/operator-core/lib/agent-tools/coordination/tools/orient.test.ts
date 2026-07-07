@@ -260,6 +260,51 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.claimable).toHaveLength(2);
   });
 
+  // ── EI-8300: mode:'monitor' skips the heavy legs entirely (not just capped output) ──
+  describe("mode: 'monitor' (EI-8300 lean leader/monitor-loop tick)", () => {
+    it('skips claimable/facts/plan-events/fleet-catch-up/recipes entirely, even with intent set', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'coord:whoami': () => ({ fleetSlug: 'backend' }), // would trigger catch-up in full mode
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'watch the fleet', mode: 'monitor' }, call, 'leader');
+      expect(r.ok).toBe(true);
+      expect(r.claimable).toEqual([]);
+      expect(r.facts).toBeUndefined();
+      expect(r.planEvents).toBeUndefined();
+      expect(r.fleetCatchUp).toBeUndefined();
+      expect(r.recipes).toBeUndefined();
+      expect(r.memory).toBeUndefined(); // no recall even though `intent` was passed
+      expect(r.intentDeclared).toBe(true); // declare-intent still fires (cheap, peer-visible)
+      // no round-trip at all for the skipped legs — not just an empty/capped result
+      const called = new Set(calls.map((c) => c.name));
+      expect(called.has('work_items:list')).toBe(false);
+      expect(called.has('coord:plan-events')).toBe(false);
+      expect(called.has('coord:catch-up')).toBe(false);
+      expect(called.has('recipes:search')).toBe(false);
+      expect(called.has('memory:search')).toBe(false);
+      // the core kept legs still run
+      expect(called.has('fleet:assignments')).toBe(true);
+      expect(called.has('coord:inbox')).toBe(true);
+      expect(called.has('coord:declare-intent')).toBe(true);
+    });
+
+    it('still returns fleet:assignments (me) and the inbox read', async () => {
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ mode: 'monitor' }, call, 'leader');
+      expect((r.me as { agents: Array<{ ownerId: string }> }).agents[0].ownerId).toBe('me');
+      expect((r.inbox.summary as { total: number }).total).toBe(3);
+    });
+
+    it("default (omitted mode / 'full') is byte-identical to today — every heavy leg still runs", async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.claimable).toHaveLength(2);
+      expect(calls.some((c) => c.name === 'work_items:list')).toBe(true);
+    });
+  });
+
   // ── P-002 / D-001: queen-loop steering is withheld from a RESPONSIVE caller's recall ──
   const STEERING_RECALL = {
     'memory:search': () => ({

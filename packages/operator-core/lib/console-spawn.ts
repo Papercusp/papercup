@@ -520,7 +520,28 @@ export interface SpawnConsoleOpts {
 }
 
 export type SpawnConsoleResult =
-  | { status: 'ok'; pid: number | null; terminal: string; child: ChildProcess }
+  | {
+      status: 'ok';
+      pid: number | null;
+      terminal: string;
+      child: ChildProcess;
+      /**
+       * EI-8289: the DISPLAY the window actually opened on (Linux only; null on
+       * macOS, which has no X DISPLAY concept). Callers (capability:terminal,
+       * fleet:launch-on-plan) MUST surface this — a window reported as "opened"
+       * on a virtual/sandbox display the owner isn't watching is a silent
+       * failure of the "visible desktop terminal" contract otherwise.
+       */
+      display: string | null;
+      /**
+       * EI-8289: how `display` was resolved — 'operator-env'/'active-seat' are
+       * the owner's real desktop; 'socket-scan' means NO real logged-in seat
+       * was found and a raw X11 socket won by default, which MAY be a
+       * virtual/sandbox display (a leased Xvfb) rather than the owner's real
+       * one. null on macOS. Callers should flag 'socket-scan' loudly.
+       */
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+    }
   | { status: 'error'; error: string; code: number };
 
 /**
@@ -666,7 +687,17 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     try {
       unlinkSync(stderrPath); // window survived (fd stays valid for the child on Linux)
     } catch { /* best-effort */ }
-    return { status: 'ok', pid: child.pid ?? null, terminal: term.bin, child };
+    // EI-8289: report the DISPLAY the window actually opened on (its own env
+    // if it already had one, else whatever we resolved/injected) so a virtual-
+    // placement window is disclosed to the caller, never silent.
+    return {
+      status: 'ok',
+      pid: child.pid ?? null,
+      terminal: term.bin,
+      child,
+      display: desktop.env.DISPLAY ?? process.env.DISPLAY ?? null,
+      desktopEnvResolvedVia: desktop.resolvedVia,
+    };
   } catch (e: any) {
     if (stderrFd != null) {
       try {
@@ -704,7 +735,9 @@ function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): SpawnCons
       env: { ...process.env, ...envelope.env },
     });
     child.unref();
-    return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child };
+    // macOS has no X DISPLAY concept — display/desktopEnvResolvedVia are always
+    // null here (the EI-8289 disclosure only applies to the Linux X11 path).
+    return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child, display: null, desktopEnvResolvedVia: null };
   } catch (e: any) {
     return { status: 'error', error: `open Terminal failed: ${e?.message}`, code: 500 };
   }

@@ -108,8 +108,12 @@ describe('resolveLinuxDesktopEnv (WI-1886a)', () => {
     );
     expect(r.resolved).toBe(true);
     expect(r.env.DISPLAY).toBe(':1');
+    // EI-8289: no activeSeatDisplays probe supplied ⇒ no real seat found ⇒ the
+    // socket-scan fallback also carries its own disclosure warning now.
+    expect(r.resolvedVia).toBe('socket-scan');
     expect(r.warnings).toEqual([
-      expect.stringMatching(/stale DISPLAY=:0.*no X socket.*WI-2840/),
+      expect.stringMatching(/stale DISPLAY=:0.*no X socket.*WI-2840\/EI-8289/),
+      expect.stringMatching(/no active login seat detected.*socket scan.*EI-8289/),
     ]);
   });
 
@@ -131,6 +135,72 @@ describe('resolveLinuxDesktopEnv (WI-1886a)', () => {
     expect(r.env.XAUTHORITY).toBe('/home/user/.Xauthority');
     expect(r.warnings).toEqual([
       expect.stringMatching(/stale XAUTHORITY=\/stale\/xauth.*WI-2840/),
+    ]);
+  });
+
+  it('EI-8289: a real seat DISPLAY with NO socket file (GNOME/XWayland) is trusted, not discarded as stale', () => {
+    // Reproduces the 2026-07-06 incident exactly: operator process env carries
+    // the owner's real DISPLAY=:1, but :1 has no /tmp/.X11-unix socket file
+    // (XWayland `-nolisten local`) while a sandbox/frame Xvfb pool (:93, :115)
+    // DOES have one. `who` still reports :1 as the logged-in seat.
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':1' },
+      probes({
+        readdirSync: () => ['X93', 'X115'],
+        existsSync: () => false, // no /tmp/.X11-unix/X1
+        activeSeatDisplays: () => [':1'],
+      }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBeUndefined(); // trusted as-is, nothing injected
+    expect(r.resolvedVia).toBe('operator-env');
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('EI-8289: no operator DISPLAY at all ⇒ prefers the real active seat (who) over a virtual/sandbox socket', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({
+        readdirSync: () => ['X93', 'X115'], // a sandbox/frame Xvfb pool — NOT the real seat
+        existsSync: () => false,
+        activeSeatDisplays: () => [':1'],
+      }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBe(':1');
+    expect(r.resolvedVia).toBe('active-seat');
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('EI-8289: a stale operator DISPLAY that is NOT the real seat still heals via active-seat (not socket-scan)', () => {
+    const r = resolveLinuxDesktopEnv(
+      { DISPLAY: ':0' }, // some other, genuinely dead value
+      probes({
+        readdirSync: () => ['X93'],
+        existsSync: () => false,
+        activeSeatDisplays: () => [':1'],
+      }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBe(':1');
+    expect(r.resolvedVia).toBe('active-seat');
+    // healed via the real seat, so no "falling back to a raw X11 socket scan" note —
+    // only the original stale-DISPLAY warning.
+    expect(r.warnings).toEqual([
+      expect.stringMatching(/stale DISPLAY=:0.*not a currently logged-in seat.*WI-2840\/EI-8289/),
+    ]);
+  });
+
+  it('EI-8289: no real seat detected at all ⇒ still falls back to the socket scan, with a disclosure warning', () => {
+    const r = resolveLinuxDesktopEnv(
+      {},
+      probes({ readdirSync: () => ['X93'], existsSync: () => false, activeSeatDisplays: () => [] }),
+    );
+    expect(r.resolved).toBe(true);
+    expect(r.env.DISPLAY).toBe(':93');
+    expect(r.resolvedVia).toBe('socket-scan');
+    expect(r.warnings).toEqual([
+      expect.stringMatching(/no active login seat detected.*DISPLAY=:93.*virtual\/sandbox.*EI-8289/),
     ]);
   });
 

@@ -541,6 +541,50 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   });
 });
 
+describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('reports the resolved DISPLAY inline per opened member terminal', async () => {
+    spawnConsoleMock.mockReturnValue({
+      status: 'ok',
+      terminal: 'term-1',
+      pid: 123,
+      display: ':1',
+      desktopEnvResolvedVia: 'active-seat',
+    });
+    const res = await tool.handler(
+      { name: 'Display Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.message).toContain('[DISPLAY=:1]');
+    expect(payload.message).not.toMatch(/⚠.*socket scan/);
+  });
+
+  it('warns loudly when a member landed via a raw socket scan (possible virtual/sandbox placement, EI-8289)', async () => {
+    spawnConsoleMock.mockReturnValue({
+      status: 'ok',
+      terminal: 'term-1',
+      pid: 123,
+      display: ':93',
+      desktopEnvResolvedVia: 'socket-scan',
+    });
+    const res = await tool.handler(
+      { name: 'Xvfb Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.message).toContain('[DISPLAY=:93]');
+    expect(payload.message).toMatch(/⚠ no active login seat was detected.*socket scan.*EI-8289/);
+  });
+});
+
 describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03 leader doom-loop)', () => {
   beforeEach(async () => {
     spawnConsoleMock.mockReset();

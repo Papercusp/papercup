@@ -188,7 +188,11 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
         return sql`${col} ? ${String(v)}`;
       }
       if (leaf.op === 'glob') {
-        return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e LIKE ${globToLike(String(v))})`;
+        // ILIKE (not LIKE): glob is used for human-authored keyword matching (e.g. a
+        // path prefix or a tag), and WI-3268's title exclusion depends on
+        // case-insensitivity — a proper-noun title like "Hyperswarm sidecar
+        // isolation" must still match the lowercase pattern `*hyperswarm*`.
+        return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e ILIKE ${globToLike(String(v))})`;
       }
       if (leaf.op === 'in') {
         const arr = (Array.isArray(v) ? v : [v]).map(String);
@@ -217,11 +221,16 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
           : sql`${col}::text = ANY(${arr.map(String)}::text[])`;
       }
       if (leaf.op === 'glob') {
-        return sql`${col}::text LIKE ${globToLike(String(v))}`;
+        // ILIKE — see the json-array glob branch above: WI-3268's title exclusion
+        // (`*hyperswarm*` must match "Hyperswarm sidecar isolation") needs
+        // case-insensitive matching, and there is no scalar-text use case that
+        // wants case-SENSITIVE glob matching to break instead.
+        return sql`${col}::text ILIKE ${globToLike(String(v))}`;
       }
       if (leaf.op === 'contains') {
-        // substring containment for a scalar (text) field.
-        return sql`${col}::text LIKE ${'%' + String(v) + '%'}`;
+        // substring containment for a scalar (text) field — same case-insensitivity
+        // rationale as `glob` immediately above.
+        return sql`${col}::text ILIKE ${'%' + String(v) + '%'}`;
       }
       // Relational + equality ops on a scalar column. `inverted` (feature_order /
       // priority): flip the comparator so the spec author's intent on the LOGICAL

@@ -952,7 +952,12 @@ export default defineTool({
       allowSubagents: args.allowSubagents || undefined,
       extraArgs: args.extraArgs,
     });
-    const opened: Array<{ terminal: string; pid: number | null }> = [];
+    const opened: Array<{
+      terminal: string;
+      pid: number | null;
+      display: string | null;
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+    }> = [];
     const failed: Array<{ error: string; code: number }> = [];
     // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
     // window survives an early-exit probe instead of reporting ok+pid for a
@@ -968,8 +973,16 @@ export default defineTool({
       ),
     );
     for (const result of results) {
-      if (result.status === 'ok') opened.push({ terminal: result.terminal, pid: result.pid });
-      else failed.push({ error: result.error, code: result.code });
+      if (result.status === 'ok') {
+        opened.push({
+          terminal: result.terminal,
+          pid: result.pid,
+          display: result.display,
+          desktopEnvResolvedVia: result.desktopEnvResolvedVia,
+        });
+      } else {
+        failed.push({ error: result.error, code: result.code });
+      }
     }
 
     // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
@@ -991,7 +1004,22 @@ export default defineTool({
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No member terminals opened for fleet \`${fleetSlug}\`.`,
     );
-    for (const o of opened) lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) — ${command}`);
+    for (const o of opened) {
+      const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';
+      lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'})${displayNote} — ${command}`);
+    }
+    // EI-8289: a socket-scan placement means no real logged-in seat was found —
+    // these windows MAY have landed on a virtual/sandbox display (a leased
+    // Xvfb) rather than the owner's real desktop. The launch previously
+    // reported bare "opened" here even when that happened, which is exactly
+    // how the 2026-07-06 fleet-behavior-probe windows went invisible.
+    if (opened.some((o) => o.desktopEnvResolvedVia === 'socket-scan')) {
+      lines.push(
+        '  ⚠ no active login seat was detected (who) — the DISPLAY(s) above were picked by a raw X11 ' +
+          'socket scan and MAY be a virtual/sandbox display rather than the owner\'s real desktop ' +
+          '(EI-8289). Confirm the owner can actually see these windows before assuming supervision works.',
+      );
+    }
     if (failed.length) {
       lines.push(`${failed.length} failed:`);
       for (const f of failed) lines.push(`  • ${f.error}`);

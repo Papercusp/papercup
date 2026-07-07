@@ -60,6 +60,22 @@ export interface OrientArgs {
   claimableState?: string;
   claimableLimit?: number;
   inboxLimit?: number;
+  /**
+   * EI-8300: a repeating LEADER/MONITOR loop pays the full fresh-task bootstrap
+   * cost (claimable backlog + facts + plan-events + mem0 recall + fleet
+   * catch-up + recipes) every wake even though a monitoring tick only needs
+   * "what changed in the fleet" — a major driver of that loop's compaction
+   * frequency (measured: ~4 compactions in one lean-monitoring session).
+   * `'monitor'` skips those heavy legs ENTIRELY (no sub-call, not just a capped
+   * output): no `work_items:list` claimable read, no facts fold, no
+   * `coord:plan-events` fold, no fleet catch-up, no recipes search, no memory
+   * recall (even when `intent`/`memoryQuery` is set). It KEEPS `fleet:assignments`
+   * (the live/parked/stalled/orphaned counts a monitor loop actually watches),
+   * the inbox read (still your directed-message signal), and — if `intent` is
+   * passed — the `coord:declare-intent` write (cheap, and peers still see your
+   * status). Default `'full'` — every existing caller is byte-identical.
+   */
+  mode?: 'full' | 'monitor';
   // P-005 — the session-bootstrap folds (tool-call-batching-wrappers):
   /** Your one-line intent for THIS turn. When set: DECLARED to peers
    *  (coord:declare-intent) AND used as the memory:search recall query — the
@@ -161,21 +177,26 @@ export async function composeOrient(
    *  when provided; undefined ⇒ the leg is absent (e.g. a test that doesn't exercise it). */
   ownerPresent?: OrientResult['ownerPresent'],
 ): Promise<OrientResult> {
+  const monitor = args.mode === 'monitor';
   const me = await call('fleet:assignments', {
     ...(ownerId ? { agent: ownerId } : {}),
     ...(args.harness ? { harness: args.harness } : {}),
   });
-  const list = await call('work_items:list', {
-    ...(args.harness ? { harness: args.harness } : {}),
-    state: args.claimableState ?? 'todo',
-    limit: args.claimableLimit ?? 20,
-    // EI-7841: orient's claimable backlog feeds self-select loop agents — exclude
-    // feature-family items the G2 admission/trust gate would refuse a claim on, so
-    // "claimable" here matches what work_items:claim / claim_next will actually do
-    // (previously a remote un-admitted item looked pickable here and bounced with
-    // not_claimable on the real claim, burning a wake cycle).
-    admissibleOnly: true,
-  });
+  // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
+  // entirely (no round-trip), not just cap its output.
+  const list = monitor
+    ? []
+    : await call('work_items:list', {
+        ...(args.harness ? { harness: args.harness } : {}),
+        state: args.claimableState ?? 'todo',
+        limit: args.claimableLimit ?? 20,
+        // EI-7841: orient's claimable backlog feeds self-select loop agents — exclude
+        // feature-family items the G2 admission/trust gate would refuse a claim on, so
+        // "claimable" here matches what work_items:claim / claim_next will actually do
+        // (previously a remote un-admitted item looked pickable here and bounced with
+        // not_claimable on the real claim, burning a wake cycle).
+        admissibleOnly: true,
+      });
   const inbox = (await call('coord:inbox', {
     limit: args.inboxLimit ?? 10,
     max_body_chars: 300,
@@ -201,8 +222,10 @@ export async function composeOrient(
 
   // ── memory:search recall — only when a query is available (a query-less recall is
   // meaningless). BEST-EFFORT: memory p95 is multi-second and can time out; that must
-  // not break orientation.
-  const memQuery = args.memoryQuery ?? args.intent;
+  // not break orientation. EI-8300: a monitor tick skips the recall ENTIRELY, even
+  // when `intent`/`memoryQuery` is set — declare-intent (below) still fires, so peers
+  // still see the caller's status.
+  const memQuery = monitor ? undefined : (args.memoryQuery ?? args.intent);
   if (memQuery) {
     const memLimit = Math.min(args.memoryLimit ?? 5, MEMORY_HITS_CAP);
     try {
@@ -232,8 +255,10 @@ export async function composeOrient(
   // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
   // the fuzzy memory recall above: scoped conclusions delivered VERBATIM every
   // orient (workspace + this owner + the named harness). BEST-EFFORT like every
-  // other leg — a facts outage must never break orientation.
-  try {
+  // other leg — a facts outage must never break orientation. EI-8300: skipped
+  // entirely on a monitor tick (a leader loop re-reads its own steering facts on
+  // every wake for no reason — it already has them from an earlier full orient).
+  if (!monitor) try {
     const { foldFacts } = await import('../../../agent-facts/store');
     const selectors = [
       { scope: 'workspace' as const },
@@ -263,7 +288,8 @@ export async function composeOrient(
 
   // ── coord:plan-events — the "what plans changed" delta (default on; the bootstrap's
   // third leg). Already result-bounded server-side; we keep the newest few.
-  if (args.includePlanEvents !== false) {
+  // EI-8300: skipped entirely on a monitor tick.
+  if (!monitor && args.includePlanEvents !== false) {
     try {
       const pe = (await call('coord:plan-events', {
         ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
@@ -284,7 +310,8 @@ export async function composeOrient(
   // at wake (the pull counterpart to @fleet: broadcasts, which are NOT auto-polled). Gated +
   // BEST-EFFORT: resolve the caller's fleet via coord:whoami, then coord:catch-up; a non-fleet
   // caller or any failure degrades to absent/null. (fleet-messaging-integrate-and-land P-006)
-  if (args.includeFleetCatchUp !== false) {
+  // EI-8300: skipped entirely on a monitor tick.
+  if (!monitor && args.includeFleetCatchUp !== false) {
     try {
       const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
       const fleetSlug = who?.fleetSlug ?? null;
@@ -312,7 +339,8 @@ export async function composeOrient(
   // measured bottleneck is awareness, not authoring). Keyed off the same intent/memoryQuery
   // as the recall. BEST-EFFORT: a missing intel:read cap or a slow search degrades to null,
   // never breaks orientation. COMPACT: id/title/runCount/similarity only.
-  const recipeQuery = args.intent ?? args.memoryQuery;
+  // EI-8300: skipped entirely on a monitor tick.
+  const recipeQuery = monitor ? undefined : (args.intent ?? args.memoryQuery);
   if (recipeQuery && args.includeRecipes !== false) {
     const recLimit = Math.min(args.recipesLimit ?? RECIPES_DEFAULT, RECIPES_CAP);
     try {
@@ -365,7 +393,10 @@ export default defineTool({
       'At the START of a turn / on waking. Pass `intent` (your one-line task) to get, in ' +
       'ONE round-trip: assignments + claimable backlog + inbox summary + recent plan-events ' +
       '+ a memory recall for `intent` + your intent DECLARED to peers — the whole mandated ' +
-      'bootstrap. Omit `intent` for a lighter re-orientation (no recall / no declare).',
+      'bootstrap. Omit `intent` for a lighter re-orientation (no recall / no declare). On a ' +
+      "repeating LEADER/MONITOR loop tick, pass `mode: 'monitor'` instead — it skips the " +
+      'claimable/facts/plan-events/fleet-catch-up/recipes/memory-recall legs entirely (not ' +
+      'just capped output), keeping only fleet:assignments + inbox + declare-intent.',
     notWhen:
       'Fleet-wide wake/health for a status surface (coord:glance); full message bodies/history ' +
       '(coord:inbox); the whole presence roster (coord:presence). Do NOT pass a throwaway ' +
@@ -399,6 +430,12 @@ export default defineTool({
     claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'todo')."),
     claimableLimit: z.number().int().positive().max(100).optional().describe('Max claimable items (default 20).'),
     inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
+    mode: z
+      .enum(['full', 'monitor'])
+      .optional()
+      .describe(
+        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, facts fold, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
+      ),
     intent: hardText(LIMITS.ANNOTATION)
       .optional()
       .describe('Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.'),

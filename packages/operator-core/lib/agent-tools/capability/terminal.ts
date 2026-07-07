@@ -235,7 +235,14 @@ export default defineTool({
       }
     }
 
-    const opened: Array<{ command: string; cwd: string; terminal: string; pid: number | null }> = [];
+    const opened: Array<{
+      command: string;
+      cwd: string;
+      terminal: string;
+      pid: number | null;
+      display: string | null;
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+    }> = [];
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
     let fleetInjected = false;
@@ -269,7 +276,14 @@ export default defineTool({
       if (r.injected) fleetInjected = true;
       if (r.provenanceInjected) launchedByInjected = true;
       if (r.result.status === 'ok') {
-        opened.push({ command: r.command, cwd: r.cwd, terminal: r.result.terminal, pid: r.result.pid });
+        opened.push({
+          command: r.command,
+          cwd: r.cwd,
+          terminal: r.result.terminal,
+          pid: r.result.pid,
+          display: r.result.display,
+          desktopEnvResolvedVia: r.result.desktopEnvResolvedVia,
+        });
       } else {
         failed.push({ command: r.command, error: r.result.error, code: r.result.code });
       }
@@ -284,7 +298,19 @@ export default defineTool({
         : '';
       lines.push(`Opened ${opened.length} terminal${opened.length > 1 ? 's' : ''}${schemeNote}:`);
       for (const o of opened) {
-        lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${o.cwd} — ${o.command}`);
+        const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';
+        lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${o.cwd}${displayNote} — ${o.command}`);
+      }
+      // EI-8289: a socket-scan placement means no real logged-in seat was found —
+      // the window MAY have landed on a virtual/sandbox display instead of the
+      // owner's real desktop. Disclose this loudly instead of reporting a bare
+      // "opened" that silently strands the owner's supervision.
+      if (opened.some((o) => o.desktopEnvResolvedVia === 'socket-scan')) {
+        lines.push(
+          '  ⚠ no active login seat was detected (who) — the DISPLAY above was picked by a raw X11 ' +
+            'socket scan and MAY be a virtual/sandbox display rather than your real desktop (EI-8289). ' +
+            'If you cannot see the window(s), tell me and I will re-check `who` / your active seat.',
+        );
       }
       if (fleetInjected) {
         lines.push(

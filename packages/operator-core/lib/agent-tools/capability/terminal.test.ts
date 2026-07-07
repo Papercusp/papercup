@@ -269,3 +269,35 @@ describe('injectLaunchedByArg (solo-launch-provenance: --launched-by auto-inject
     expect(prov.command).toBe(`cd /repo && psu --launched-by=${OWNER} --fleet=f1 --no-picker --plan=p`);
   });
 });
+
+describe('capability:terminal EI-8289 display disclosure', () => {
+  it('reports the resolved DISPLAY inline for each opened terminal', async () => {
+    spawnMock.mockReturnValue({
+      status: 'ok',
+      pid: 1234,
+      terminal: 'xterm',
+      child: {} as any,
+      display: ':1',
+      desktopEnvResolvedVia: 'active-seat',
+    });
+    const res = await terminalTool.handler({ command: 'echo hi' }, baseCtx);
+    const text = (res as any).content[0].text as string;
+    expect(text).toContain('[DISPLAY=:1]');
+    expect(text).not.toMatch(/⚠.*socket scan/);
+  });
+
+  it('warns loudly when the display was resolved via a raw socket scan (possible virtual/sandbox placement)', async () => {
+    spawnMock.mockReturnValue({
+      status: 'ok',
+      pid: 1234,
+      terminal: 'xterm',
+      child: {} as any,
+      display: ':93',
+      desktopEnvResolvedVia: 'socket-scan',
+    });
+    const res = await terminalTool.handler({ command: 'echo hi' }, baseCtx);
+    const text = (res as any).content[0].text as string;
+    expect(text).toContain('[DISPLAY=:93]');
+    expect(text).toMatch(/⚠ no active login seat was detected.*socket scan.*EI-8289/);
+  });
+});
