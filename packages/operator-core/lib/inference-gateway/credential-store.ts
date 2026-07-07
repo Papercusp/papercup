@@ -173,6 +173,25 @@ export function readClaudeKeychainBundle(service: string): ClaudeCredentialBundl
   }
 }
 
+/** Enumerate Claude Code Keychain items (service + account, metadata only) — injectable for
+ *  tests (there is no Keychain off macOS). Defaults to agent-auth-detect's `dump-keychain` shim. */
+export type KeychainItemLister = () => { service: string; account: string | null }[];
+const defaultKeychainItemLister: KeychainItemLister = () => listClaudeKeychainCredentialItems();
+let keychainLister: KeychainItemLister = defaultKeychainItemLister;
+export function _setKeychainListerForTests(fn: KeychainItemLister | null): void {
+  keychainLister = fn ?? defaultKeychainItemLister;
+}
+
+/** Write a rotated bundle back into a Keychain item — injectable for tests. Defaults to
+ *  agent-auth-detect's `add-generic-password -U` shim (false off macOS / on ACL refusal). */
+export type KeychainBundleWriter = (service: string, account: string, secret: string) => boolean;
+const defaultKeychainBundleWriter: KeychainBundleWriter = (service, account, secret) =>
+  writeClaudeKeychainOAuthBundle(service, account, secret);
+let keychainWriter: KeychainBundleWriter = defaultKeychainBundleWriter;
+export function _setKeychainWriterForTests(fn: KeychainBundleWriter | null): void {
+  keychainWriter = fn ?? defaultKeychainBundleWriter;
+}
+
 /** One readable local Claude credential bundle found by the freshest-scan. */
 export interface LocalCredentialCandidate {
   /** Log identity + write-back routing: `keychain:<service>` or `file:<path>`. */

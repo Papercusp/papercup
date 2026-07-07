@@ -251,19 +251,14 @@ describe('poolAccountIdForRef', () => {
   });
 });
 
-describe('localLoginCredentialRef (P-006 darwin Keychain fallback)', () => {
-  it('darwin without a file bundle → the Keychain ref', () => {
-    expect(localLoginCredentialRef({ platform: 'darwin', exists: () => false, home: '/Users/u' })).toBe(
+describe('localLoginCredentialRef (darwin freshest-scan channel)', () => {
+  it('darwin ALWAYS routes to the keychain: scan channel — a stale on-disk snapshot must never shadow the live Keychain bundles (the 2026-07-06 fleet-member login root cause)', () => {
+    expect(localLoginCredentialRef({ platform: 'darwin', home: '/Users/u' })).toBe(
       'keychain:Claude Code-credentials',
     );
   });
-  it('darwin WITH a file bundle keeps the (refresh-capable) file ref', () => {
-    expect(localLoginCredentialRef({ platform: 'darwin', exists: () => true, home: '/Users/u' })).toBe(
-      'file:/Users/u/.claude/.credentials.json',
-    );
-  });
   it('linux always uses the file ref (even when absent — the resolve-time error is the right surface there)', () => {
-    expect(localLoginCredentialRef({ platform: 'linux', exists: () => false, home: '/home/u' })).toBe(
+    expect(localLoginCredentialRef({ platform: 'linux', home: '/home/u' })).toBe(
       'file:/home/u/.claude/.credentials.json',
     );
   });
