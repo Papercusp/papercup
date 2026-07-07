@@ -275,15 +275,31 @@ export function runBootstrap(): void {
     const armEnvOperators = setTimeout(() => {
       void (async () => {
         try {
+          const { launchEnvOperators } = await import(
+            '@papercusp/operator-core/lib/harness/env-operator-launcher'
+          );
+          // [WI-3330] Launch the BUNDLED env operators (prod:3070/staging:3170/
+          // release) FIRST — they need no source tree, so a fresh install gets them
+          // within seconds instead of waiting out the ~8-10min first-boot source
+          // extract below. dev(:3270)/local(:3055) skip on this pass ('no-source-tree'
+          // — PAPERCUSP_DEV_SOURCE_ROOT is still unset) and spawn on the second pass
+          // once the tree is extracted. launchEnvOperators skips already-reachable
+          // operators, so the second call is idempotent for the bundled ones.
+          const first = await launchEnvOperators();
+          console.log(
+            `[env-operators] bundled pass: spawned=${first.spawned.length} skipped=${first.skipped.length}`,
+          );
+
           // [WI-3308] First-boot: extract the bundled dev/local runnable source
           // tree (if a source-bundled build shipped one at PAPERCUSP_SOURCE_ARCHIVE)
           // into the writable PAPERCUSP_DEV_SOURCE_DIR, then export
           // PAPERCUSP_DEV_SOURCE_ROOT so the launcher's defaultDetectSourceRoot runs
           // dev(:3270)/local(:3055) from it. No-op + non-fatal when no bundle shipped
           // (dev/local stay skipped 'no-source-tree', exactly as before this feature).
+          let devSourceRoot: string | null = null;
           try {
             const { extractDevSourceTree } = await import('../lib/dev-source-extract');
-            const devSourceRoot = await extractDevSourceTree({
+            devSourceRoot = await extractDevSourceTree({
               archivePath: process.env.PAPERCUSP_SOURCE_ARCHIVE,
               targetDir: process.env.PAPERCUSP_DEV_SOURCE_DIR,
               log: (m) => console.log(m),
@@ -295,13 +311,17 @@ export function runBootstrap(): void {
               (e as Error)?.message ?? e,
             );
           }
-          const { launchEnvOperators } = await import(
-            '@papercusp/operator-core/lib/harness/env-operator-launcher'
-          );
-          const res = await launchEnvOperators();
-          console.log(
-            `[env-operators] provisioning: spawned=${res.spawned.length} skipped=${res.skipped.length}`,
-          );
+
+          // [WI-3330] Second pass — spawns dev/local from the freshly-extracted tree
+          // now that PAPERCUSP_DEV_SOURCE_ROOT is set; the bundled operators from the
+          // first pass are skipped as already-reachable. Only when the extract yielded
+          // a source root (no bundle → nothing new to spawn, skip the redundant call).
+          if (devSourceRoot) {
+            const second = await launchEnvOperators();
+            console.log(
+              `[env-operators] source pass: spawned=${second.spawned.length} skipped=${second.skipped.length}`,
+            );
+          }
         } catch (e) {
           console.warn('[env-operators] provisioning failed (non-fatal):', (e as Error)?.message ?? e);
         }

@@ -512,6 +512,30 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
 }
 
 /**
+ * Resolve the node binary a CLI shim should exec. Prefer the BUNDLED node over
+ * a bare PATH `node` (end users — a macOS Terminal, a WSL distro, a fresh Linux
+ * dogfood install — rarely have node on PATH). Two anchors, checked in order:
+ *   1. next to the launcher: `<dirname(dirname(launcher))>/bin/node` — the
+ *      bundled `sidecar/scripts/<launcher>` → `sidecar/bin/node` layout.
+ *   2. the sidecar root: `<cwd>/bin/node`. The packaged serve.mjs runs with
+ *      cwd = the sidecar dir, so this is the bundled node EVEN WHEN the launcher
+ *      resolved to the extracted dev-source tree (WI-3308) — whose grandparent
+ *      is `<dev-source>/apps/operator`, with no `bin/node`, so anchor 1 missed
+ *      and the shim fell back to bare `node` → "node not found" (WI-3334).
+ * Falls back to PATH `node` only in a dev/unbundled layout (the dev box has it).
+ */
+async function resolveShimNode(launcherPath: string): Promise<string> {
+  const candidates = [
+    path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node'),
+    path.join(process.cwd(), 'bin', 'node'),
+  ];
+  for (const c of candidates) {
+    if (await pathExists(c)) return c;
+  }
+  return 'node';
+}
+
+/**
  * Write an executable bash shim that `exec node`s the resolved launcher.
  * Same shape as the `psu`/`ptool` shims install-standalone-mcp.sh writes for
  * dev, but pointed at the bundled launcher in the shipped runtime. Refreshed
@@ -520,14 +544,7 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
  * survives — these shims run under bash on macOS / Linux / the WSL distro.
  */
 async function writeShim(shimPath: string, launcherPath: string, label: string): Promise<boolean> {
-  // Use the BUNDLED node (sidecar/bin/node, next to scripts/<launcher>) by
-  // absolute path, NOT a bare `node`. An end user running this from a plain
-  // macOS Terminal almost never has Node on PATH — `exec node …` then fails
-  // with "command not found: node" even though the shim itself resolves. Fall
-  // back to PATH `node` only in a dev/unbundled layout where the bundled node
-  // isn't present (the dev box has node on PATH).
-  const bundledNode = path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node');
-  const nodeCmd = (await pathExists(bundledNode)) ? bundledNode : 'node';
+  const nodeCmd = await resolveShimNode(launcherPath);
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
@@ -557,8 +574,7 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
  * macOS + dev boxes, where installPapercuspFiles is the install path.
  */
 async function writeDispatcherShim(shimPath: string, launcherPath: string): Promise<boolean> {
-  const bundledNode = path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node');
-  const nodeCmd = (await pathExists(bundledNode)) ? bundledNode : 'node';
+  const nodeCmd = await resolveShimNode(launcherPath);
   const body =
     '#!/usr/bin/env bash\n' +
     '# papercusp CLI dispatcher — managed by Papercusp.app (installPapercuspFiles).\n' +
