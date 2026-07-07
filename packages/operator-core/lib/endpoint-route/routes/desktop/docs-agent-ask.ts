@@ -115,13 +115,14 @@ export function composeDocsAgentKickoff(question: string): string {
  * superuser claude session with NO plan, stamped with the tracking label. Pure —
  * exported for tests.
  *
- * The free-form first-turn question is NOT a CLI arg here — it's delivered via the
- * PAPERCUSP_KICKOFF_PROMPT env var (see the handler). A question passed as a
- * `--kickoff=<text>` value inside the console greetingCmd gets double-single-
- * quoted by buildConsoleOneliner and breaks the shell (gnome-terminal exit 2);
- * an env value is exported with correct escaping and arrives intact. So this
- * command carries ONLY safe slug tokens (workspace ids / the fixed label are
- * bare; shq is a belt-and-braces guard that never actually quotes them).
+ * The free-form first-turn question is NOT a CLI arg here — it's delivered via
+ * the PAPERCUSP_KICKOFF_PROMPT env var (see the handler). Historically this
+ * dodged buildConsoleOneliner double-single-quoting any quoted greeting and
+ * breaking the shell (gnome-terminal exit 2); that builder bug is fixed (the
+ * greeting now travels as an eval'd literal), but env delivery stays — a
+ * multi-KB prompt has no business on a visible command line. So this command
+ * carries ONLY safe slug tokens (workspace ids / the fixed label are bare; shq
+ * is a belt-and-braces guard that never actually quotes them).
  */
 export function buildDocsAgentPsuCommand(opts: { label: string; workspace: string }): string {
   return [

@@ -6,6 +6,13 @@
  * off to an interactive login shell so the window stays open.
  */
 import { EventEmitter } from 'node:events';
+// NOTE: 'node:child_process' is vi.mock'd below with the original module
+// spread — only `spawn` is stubbed, so this execFileSync is the real one
+// (used to prove one-liners parse/execute under actual bash).
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildConsoleOneliner,
@@ -224,10 +231,10 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
 });
 
 describe('buildConsoleOneliner', () => {
-  it('cds, runs the greeting in a subshell, then execs an interactive login shell', () => {
+  it('cds, evals the greeting in a subshell, then execs an interactive login shell', () => {
     const out = buildConsoleOneliner('/proj', {}, 'npm run dev', APPEARANCE);
     expect(out).toContain("cd '/proj'");
-    expect(out).toContain('(npm run dev)');
+    expect(out).toContain("(eval 'npm run dev')");
     expect(out).toContain('exec "${SHELL:-/bin/bash}" -l');
   });
 
@@ -245,16 +252,62 @@ describe('buildConsoleOneliner', () => {
     expect(out).toContain("trap 'rm -f .papercup-console-active.$' EXIT");
   });
 
-  it('single-quote-escapes a command containing quotes (no breakout)', () => {
+  it('carries a command containing quotes as an escaped eval literal (no breakout, no mangle)', () => {
     const out = buildConsoleOneliner('/x', {}, "echo 'hi there'", APPEARANCE);
-    // each embedded ' becomes '\'' so the whole command survives bash -lc '…'
-    expect(out).toContain("(echo '\\''hi there'\\'')");
+    // The greeting is shellEscape'd as ONE literal the subshell evals — the
+    // pre-fix bare `'` → `'\''` replace (an escape for a single-quoted context
+    // the greeting was never inside) made any quoted greeting unparseable
+    // (macOS Terminal: `unexpected EOF while looking for matching "'"`).
+    expect(out).toContain("(eval 'echo '\\''hi there'\\''')");
+  });
+
+  it('a quote-bearing greeting yields a one-liner bash can actually parse (bash -n)', () => {
+    // The exact failure class from the 2026-07-07 mac fleet launch: a greeting
+    // with legitimate shq()-style quoting killed the whole window at parse time.
+    const greeting = "psu --context='it'\\''s a fleet' --plan=p1 | tee log && echo done";
+    const out = buildConsoleOneliner('/proj', { A: "va'l" }, greeting, {
+      mode: 'console',
+      planSlug: 'plan-x',
+      label: "owner's run",
+      scheme: null,
+    });
+    expect(() => execFileSync('bash', ['-n', '-c', out])).not.toThrow();
+  });
+
+  it('executes a quoted greeting verbatim end-to-end (subshell eval round-trip)', () => {
+    // Full execution proof: run the one-liner with SHELL=/bin/true so the
+    // trailing `exec "${SHELL:-/bin/bash}" -l` terminates instead of going
+    // interactive; the greeting must have written its apostrophe payload.
+    const dir = mkdtempSync(join(tmpdir(), 'papercup-oneliner-'));
+    try {
+      const payload = "it's a fleet's directive";
+      const greeting = `printf %s '${payload.replace(/'/g, "'\\''")}' > out.txt`;
+      const out = buildConsoleOneliner(dir, { SHELL: '/bin/true' }, greeting, APPEARANCE);
+      execFileSync('bash', ['-c', out], { stdio: 'ignore' });
+      expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe(payload);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a MALFORMED greeting (unbalanced quote) errors inside the subshell without killing the one-liner', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercup-oneliner-'));
+    try {
+      const out = buildConsoleOneliner(dir, { SHELL: '/bin/true' }, "echo 'oops", APPEARANCE);
+      // Parses fine (the broken greeting is data, not syntax) …
+      expect(() => execFileSync('bash', ['-n', '-c', out])).not.toThrow();
+      // … and still reaches the trailing exec (exit 0 via /bin/true) — the
+      // window would stay open showing eval's error instead of dying at parse.
+      expect(() => execFileSync('bash', ['-c', out], { stdio: 'ignore' })).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('preserves pipes / redirects / && in the arbitrary command', () => {
     const cmd = 'grep -r foo . | tee out.log && echo done';
     const out = buildConsoleOneliner('/x', {}, cmd, APPEARANCE);
-    expect(out).toContain(`(${cmd})`);
+    expect(out).toContain(`(eval '${cmd}')`);
   });
 
   it('exports env vars with valid bash names and skips invalid ones', () => {
@@ -320,7 +373,25 @@ describe('macConsoleInvocation (operator-direct macOS spawn — approach C)', ()
     expect(inv.content).toMatch(/^#!\/bin\/bash\n/);
     expect(inv.content).toContain('rm -f "$0"'); // self-delete so /tmp doesn't accrete one-shots
     expect(inv.content).toContain('exec bash -lc');
-    expect(inv.content).toContain('(npm run dev)'); // the full one-liner is carried verbatim
+    expect(inv.content).toContain('npm run dev'); // the full one-liner is carried
+  });
+
+  it('a quote-bearing greeting survives BOTH layers: the .command parses and its inner bash -lc payload parses', () => {
+    // The 2026-07-07 owner repro: mac fleet launch → Terminal.app ran the
+    // .command → `bash: -c: line 0: unexpected EOF while looking for matching
+    // "'"`. The .command wraps the one-liner in shellEscape (outer layer); the
+    // one-liner itself must ALSO be parseable when that inner bash -lc runs.
+    const oneliner = buildConsoleOneliner(
+      '/proj',
+      {},
+      "psu --context='it'\\''s a fleet' --plan=p1",
+      APPEARANCE,
+    );
+    const inv = macConsoleInvocation(oneliner, baseOpts);
+    // Outer layer: the .command body itself is valid bash.
+    expect(() => execFileSync('bash', ['-n'], { input: inv.content })).not.toThrow();
+    // Inner layer: what `exec bash -lc <arg>` will parse is the one-liner.
+    expect(() => execFileSync('bash', ['-n', '-c', oneliner])).not.toThrow();
   });
 
   it('names a fresh .command per pid+timestamp under tmpDir', () => {

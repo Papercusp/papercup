@@ -171,8 +171,9 @@ function formatWindowTitle(opts: AppearanceOpts): string {
  *   appearance → cd → env exports → sentinel + EXIT-trap → (greeting) → exec shell
  *
  * The `greeting` (for capability:terminal, the user's arbitrary command) is
- * single-quote-escaped and wrapped in a subshell `(...)`, then control hands to
- * an interactive login shell — so the command runs and the window STAYS OPEN.
+ * carried as a shell-escaped literal that a subshell `eval`s, then control
+ * hands to an interactive login shell — so the command runs (quotes and all)
+ * and the window STAYS OPEN.
  * The sentinel file lets the Rust/Tauri side detect when the user's shell exits
  * (the terminal launcher's own pid exits in ~1s, so we fingerprint via the fs).
  */
@@ -205,11 +206,23 @@ export function buildConsoleOneliner(
   // Run the greeting in a subshell, then ALWAYS exec an interactive login shell
   // — `;` (not `&&`) on BOTH sides of the greeting, so a command that exits
   // non-zero still leaves the window open. This matches the Rust/Tauri spawner
-  // (native_console.rs build_launcher_oneliner: `… ({greet}) ; exec …`); the old
-  // server-side `.join(' && ')` form left an `&& exec` that closed the window
-  // when the greeting failed. capability:terminal runs arbitrary commands that
-  // may fail, so the user must still see the result.
-  return `${prelude} ; (${greeting.replace(/'/g, "'\\''")}) ; exec "\${SHELL:-/bin/bash}" -l`;
+  // (native_console.rs build_launcher_oneliner: `… (eval {greet}) ; exec …`);
+  // the old server-side `.join(' && ')` form left an `&& exec` that closed the
+  // window when the greeting failed. capability:terminal runs arbitrary
+  // commands that may fail, so the user must still see the result.
+  //
+  // The greeting travels as a shellEscape'd LITERAL that a subshell `eval`s at
+  // runtime — it is never spliced into the one-liner as bare syntax. The old
+  // form did `(${greeting.replace(/'/g, "'\\''")})`: an escape for a
+  // single-quoted context the greeting was never actually inside, so ANY
+  // greeting containing a quote (e.g. fleet:launch-on-plan's shq()-quoted
+  // launch-context) produced an unparseable one-liner — macOS Terminal died
+  // with `bash: -c: line 0: unexpected EOF while looking for matching "'"`,
+  // gnome-terminal with exit 2 (the docs-agent-ask kickoff-env workaround
+  // dodged this same bug). eval-in-a-subshell also means a MALFORMED greeting
+  // (unbalanced quote, trailing `#`) errors visibly inside the open window
+  // instead of aborting the whole one-liner at parse time.
+  return `${prelude} ; (eval ${shellEscape(greeting)}) ; exec "\${SHELL:-/bin/bash}" -l`;
 }
 
 // ─── Desktop-env resolution + spawn verification (WI-1886) ───────────
