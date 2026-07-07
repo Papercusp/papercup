@@ -16,7 +16,10 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
+import { spawn } from 'node:child_process';
 import cluster from 'node:cluster';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
@@ -40,6 +43,47 @@ import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
 type GuardedGlobal = typeof globalThis & { [GUARD_KEY]?: boolean };
+
+async function packagedMcpProxyAlive(port = 9071): Promise<boolean> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/__mcp_proxy_health`, {
+      signal: AbortSignal.timeout(1_500),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+function startPackagedMcpProxy(): void {
+  const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
+  void (async () => {
+    if (await packagedMcpProxyAlive(port)) return;
+    const sidecarDir = dirname(process.argv[1] || '');
+    const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
+    if (!existsSync(proxyEntry)) {
+      console.warn(`[mcp-proxy] packaged proxy entry missing at ${proxyEntry}; psu sessions will use direct discovery`);
+      return;
+    }
+    const child = spawn(process.execPath, [proxyEntry], {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        PAPERCUSP_MCP_PROXY_PORT: String(port),
+        PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET: '1',
+        PAPERCUSP_MCP_PROXY_TARGET_HOST: process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST || '127.0.0.1',
+        PAPERCUSP_MCP_PROXY_TARGET_PORT: process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || '3070',
+        PAPERCUSP_MCP_PROXY_RETRY_MS: process.env.PAPERCUSP_MCP_PROXY_RETRY_MS || '90000',
+        PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE || `http://127.0.0.1:${port}`,
+      },
+    });
+    child.unref();
+    console.log(`[mcp-proxy] packaged proxy spawned on 127.0.0.1:${port} (dynamic operator.json target)`);
+  })().catch((e) => {
+    console.warn('[mcp-proxy] packaged proxy spawn failed:', (e as Error)?.message ?? e);
+  });
+}
 
 export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
@@ -118,6 +162,11 @@ export function runBootstrap(): void {
   // flag-gated, fire-and-forget + non-fatal: a missing `gh` auth / no network / an
   // already-present hive all no-op cleanly and the NEXT boot retries.
   if (process.env.PAPERCUSP_DESKTOP === '1') {
+    // WI-3247: packaged operators use dynamic per-boot ports. Keep psu/Claude/Codex
+    // sessions pinned to a stable loopback front door that re-resolves operator.json
+    // after restarts, instead of baking the current dynamic port into child env.
+    startPackagedMcpProxy();
+
     void (async () => {
       try {
         if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE, 'system'))) return;

@@ -22,7 +22,7 @@
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
 import http from 'node:http';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -73,13 +73,51 @@ function recordProxyFailure(rec: Record<string, unknown>): void {
 export interface McpProxyOptions {
   listenPort: number;
   listenHost?: string;
-  targetHost: string;
-  targetPort: number;
+  targetHost?: string;
+  targetPort?: number;
+  /** Resolve the current upstream per attempt. Used by packaged installs whose operator port changes per boot. */
+  resolveTarget?: () => McpProxyTarget;
   /** Total wall-clock budget to keep retrying a refused upstream (a :3070 restart). */
   retryWindowMs: number;
   /** Delay between retries while the upstream is refusing connections. */
   retryBackoffMs?: number;
   log?: (s: string) => void;
+}
+
+export interface McpProxyTarget {
+  host: string;
+  port: number;
+  source?: string;
+}
+
+export function staticMcpProxyTarget(host: string, port: number): McpProxyTarget {
+  return { host, port, source: 'static' };
+}
+
+export function readOperatorJsonTarget(path = join(homedir(), '.papercusp', 'operator.json')): McpProxyTarget | null {
+  try {
+    const d = JSON.parse(readFileSync(path, 'utf8')) as { httpUrl?: string; port?: number | string };
+    if (typeof d.httpUrl === 'string' && d.httpUrl.trim()) {
+      const u = new URL(d.httpUrl);
+      return { host: u.hostname || '127.0.0.1', port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)), source: 'operator.json' };
+    }
+    const port = Number(d.port);
+    if (Number.isFinite(port) && port > 0) return { host: '127.0.0.1', port, source: 'operator.json' };
+  } catch {
+    /* discovery unavailable */
+  }
+  return null;
+}
+
+function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
+  const dynamic = opts.resolveTarget?.();
+  if (dynamic) return dynamic;
+  const host = opts.targetHost ?? '127.0.0.1';
+  const port = Number(opts.targetPort);
+  if (!Number.isFinite(port) || port <= 0) {
+    throw new Error('mcp proxy targetPort must be set when resolveTarget is not provided');
+  }
+  return staticMcpProxyTarget(host, port);
 }
 
 /**
@@ -114,6 +152,13 @@ function forwardOnce(
   body: Buffer,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
+    let target: McpProxyTarget;
+    try {
+      target = resolveTarget(opts);
+    } catch (err) {
+      resolve({ err: err as NodeJS.ErrnoException, connected: false });
+      return;
+    }
     let connected = false;
     let settled = false;
     const done = (o: ForwardOutcome): void => {
@@ -123,11 +168,11 @@ function forwardOnce(
     };
     const upstream = http.request(
       {
-        host: opts.targetHost,
-        port: opts.targetPort,
+        host: target.host,
+        port: target.port,
         method,
         path: reqUrl,
-        headers: { ...headers, host: `${opts.targetHost}:${opts.targetPort}` },
+        headers: { ...headers, host: `${target.host}:${target.port}` },
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
         // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
         agent: UPSTREAM_AGENT,
@@ -160,6 +205,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const backoff = opts.retryBackoffMs ?? 500;
 
   return http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/__mcp_proxy_health') {
+      let target: McpProxyTarget | null = null;
+      try {
+        target = resolveTarget(opts);
+      } catch {
+        target = null;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, target }));
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('error', () => {
@@ -227,11 +283,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 export function startMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   const server = createMcpProxy(opts);
-  server.listen(opts.listenPort, opts.listenHost ?? '127.0.0.1', () =>
+  server.listen(opts.listenPort, opts.listenHost ?? '127.0.0.1', () => {
+    const target = opts.resolveTarget ? 'dynamic operator.json target' : `${opts.targetHost ?? '127.0.0.1'}:${opts.targetPort}`;
     log(
-      `listening on ${opts.listenHost ?? '127.0.0.1'}:${opts.listenPort} → ${opts.targetHost}:${opts.targetPort} ` +
+      `listening on ${opts.listenHost ?? '127.0.0.1'}:${opts.listenPort} → ${target} ` +
         `(retry-on-refused window ${opts.retryWindowMs}ms)`,
-    ),
-  );
+    );
+  });
   return server;
 }

@@ -6,6 +6,9 @@
  * until a client config (~/.claude.json / psu launcher) is repointed at this port (P-006),
  * so running it is harmless. Config via env:
  *   PAPERCUSP_MCP_PROXY_PORT          listen port (default 9071; :3071-3079 are taken on the dev box)
+ *   PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET=1
+ *                                     re-resolve upstream from ~/.papercusp/operator.json
+ *                                     on every attempt (packaged installs with dynamic ports)
  *   PAPERCUSP_MCP_PROXY_TARGET_HOST   upstream host (default 127.0.0.1)
  *   PAPERCUSP_MCP_PROXY_TARGET_PORT   upstream port (default PAPERCUSP_HONO_PORT or 3070)
  *   PAPERCUSP_MCP_PROXY_RETRY_MS      retry-on-refused window (default 90000 —
@@ -14,11 +17,16 @@
  *                                     45.6s = past the old 45s window; 90s gives
  *                                     2× headroom so a slow restart can't 503)
  */
-import { startMcpProxy } from '../lib/mcp-proxy/proxy';
+import { readOperatorJsonTarget, startMcpProxy } from '../lib/mcp-proxy/proxy';
+
+const dynamicTarget = process.env.PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET === '1';
+const targetHost = process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1';
+const targetPort = Number(process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? process.env.PAPERCUSP_HONO_PORT ?? 3070);
 
 startMcpProxy({
   listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
-  targetHost: process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1',
-  targetPort: Number(process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? process.env.PAPERCUSP_HONO_PORT ?? 3070),
+  ...(dynamicTarget
+    ? { resolveTarget: () => readOperatorJsonTarget() ?? { host: targetHost, port: targetPort, source: 'fallback' } }
+    : { targetHost, targetPort }),
   retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS ?? 90_000),
 });

@@ -52,6 +52,13 @@ export const NO_PLAN = '<no-plan>';
  */
 export function defaultMcpProxyProbe(port) {
   try {
+    const proxyHealth = spawnSync(
+      'curl',
+      ['-s', '-o', '/dev/null', '-m', '2', '-w', '%{http_code}', `http://127.0.0.1:${port}/__mcp_proxy_health`],
+      { encoding: 'utf8', timeout: 3_000 },
+    );
+    if ((proxyHealth.stdout ?? '').trim() === '200') return true;
+
     const unit = spawnSync('systemctl', ['--user', 'is-active', 'papercup-mcp-proxy'], {
       encoding: 'utf8',
       timeout: 2_000,
@@ -80,18 +87,17 @@ export function defaultMcpProxyProbe(port) {
  *   1. PAPERCUSP_OPERATOR_URL env — explicit override (highest). If it targets
  *      the fixed :3070 while the resilient proxy is active, a loud warning is
  *      emitted (WI-1457: proxy active-but-unrouted) — the override still wins.
- *   2. ~/.papercusp/operator.json `httpUrl` (or `port`) — the DESKTOP operator's
+ *   2. The RESILIENT MCP PROXY (`http://127.0.0.1:9071`, WI-1457 hardening) —
+ *      when it is verifiably alive. This is the dev-box steady state, and now
+ *      also the packaged steady state: sessions ride the always-up proxy so a
+ *      dynamic operator port restart is invisible (retry-on-refused, never
+ *      double-applies a write). Opt out with PAPERCUSP_MCP_PROXY=0; port
+ *      override via PAPERCUSP_MCP_PROXY_PORT. The proxy is a generic
+ *      passthrough, so the whole operator HTTP surface (not just /api/mcp)
+ *      works through it.
+ *   3. ~/.papercusp/operator.json `httpUrl` (or `port`) — the DESKTOP operator's
  *      ACTUAL address. A shipped Tauri desktop app runs its operator on a
  *      dynamically-assigned localhost port (rewritten on every boot), NOT a
- *      fixed :3070, and records it here. Without this, psu in a desktop install
- *      always reaches for a dead :3070 and fails with "operator unreachable".
- *   3. The RESILIENT MCP PROXY (`http://127.0.0.1:9071`, WI-1457 hardening) —
- *      when its systemd unit is active AND it health-checks end-to-end. This is
- *      the dev-box steady state: sessions ride the always-up proxy so a :3070
- *      deploy restart is invisible (retry-on-refused, never double-applies a
- *      write). Opt out with PAPERCUSP_MCP_PROXY=0; port override via
- *      PAPERCUSP_MCP_PROXY_PORT. The proxy is a generic passthrough, so the
- *      whole operator HTTP surface (not just /api/mcp) works through it.
  *   4. http://localhost:3070 — the dev-box direct default (no proxy installed).
  * The desktop never has operator.json missing, and the dev box never WRITES
  * operator.json in steady state, so each environment lands on the right branch
@@ -116,6 +122,11 @@ export function resolveOperatorTarget({
     }
     return { url: env.PAPERCUSP_OPERATOR_URL, source: 'env', startedAt: null };
   }
+  // WI-3247: prefer the stable proxy over desktop operator.json when present.
+  // operator.json carries a per-boot dynamic port; exporting it into a long-lived
+  // child makes that session lose MCP after the operator restarts. The proxy
+  // re-resolves operator.json per attempt, so the child env stays stable.
+  if (!proxyOptedOut && probe(proxyPort)) return { url: `http://127.0.0.1:${proxyPort}`, source: 'proxy', startedAt: null };
   try {
     const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
     // startedAt (epoch ms, written by serve on come-up) dates the record: a
@@ -128,10 +139,6 @@ export function resolveOperatorTarget({
   } catch {
     /* no/!readable operator.json (the dev box) → proxy / dev-port fallback below */
   }
-  // WI-1457 hardening: prefer the always-up resilient proxy over direct :3070
-  // whenever it is verifiably alive, so re-minted configs / fresh launches can
-  // never silently regress the P-006 cutover again.
-  if (!proxyOptedOut && probe(proxyPort)) return { url: `http://127.0.0.1:${proxyPort}`, source: 'proxy', startedAt: null };
   return { url: 'http://localhost:3070', source: 'dev-default', startedAt: null };
 }
 

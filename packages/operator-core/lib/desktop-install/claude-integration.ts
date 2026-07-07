@@ -54,10 +54,11 @@ import { resolveInstallPaths } from './papercusp-files';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 
 /** The default operator url baked as the `${PAPERCUSP_OPERATOR_URL:-…}` fallback.
- *  Only used for a bare `claude` (no psu); psu always exports the live url. Kept
- *  STATIC (not the dynamic boot port) so the written entry is byte-stable → the
- *  merge stays idempotent across boots. */
+ *  Only used for a bare `claude` (no psu); psu exports a resolved url. Kept
+ *  STATIC (never the dynamic boot port) so the written entry is byte-stable →
+ *  the merge stays idempotent across boots. */
 const DEFAULT_OPERATOR_URL_FALLBACK = 'http://localhost:3070';
+const DESKTOP_OPERATOR_URL_FALLBACK = 'http://127.0.0.1:9071';
 
 export interface ClaudeIntegrationOptions {
   /** Override ~/. Tests pass this. Defaults to os.homedir(). */
@@ -221,7 +222,9 @@ export async function installClaudeIntegration(
   // launch), so a direct-:3070 default here silently re-minted away the P-006
   // cutover minutes after every manual re-point. Still byte-stable: the proxy
   // base is a static loopback URL, so the merge stays idempotent across boots.
-  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(DEFAULT_OPERATOR_URL_FALLBACK);
+  const defaultFallback =
+    process.env.PAPERCUSP_DESKTOP === '1' ? DESKTOP_OPERATOR_URL_FALLBACK : DEFAULT_OPERATOR_URL_FALLBACK;
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(defaultFallback);
   const entry = buildClaudeMcpEntry(operatorUrl, token, agentId, profileDefault(opts.profile));
 
   // ~/.claude.json ABSENT = claude never launched on this box. Historically we
