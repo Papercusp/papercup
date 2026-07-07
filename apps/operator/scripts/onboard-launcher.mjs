@@ -27,7 +27,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
+import { discoverOperatorUrl, resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
 export const FRAMEWORKS = ['claude', 'codex', 'omp'];
 
@@ -78,7 +78,9 @@ function execTutorialShell(base, extraArgs = []) {
     return 1;
   }
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [runnerPath, `--operator-url=${base}`, ...extraArgs], {
+    // liveBase (WI-3283): hand the child the CURRENT operator address, not a pin
+    // that may already have gone stale during this process's lifetime.
+    const child = spawn(process.execPath, [runnerPath, `--operator-url=${liveBase ?? base}`, ...extraArgs], {
       stdio: 'inherit',
     });
     child.on('exit', (c) => resolve(c ?? 0));
@@ -119,11 +121,22 @@ function operatorUrlFrom(args, env = process.env) {
   return resolveOperatorBase(args, env);
 }
 
+/** WI-3283: set when a mid-run operator restart moved the port (rediscovery
+ *  followed it) — later calls AND the runner spawns prefer this over the
+ *  spawn-time base, so the child never inherits a stale pin. */
+let liveBase = null;
+
 async function api(base, path, init) {
   // Resilient (WI-3141): ride through the operator's first-boot / recycle window
   // rather than throwing on the first connection-refused. The concierge's outer
   // loop already re-polls, but this removes the scary error on a transient blip.
-  const r = await fetchResilient(`${base}/api${path}`, init);
+  // Rediscovery (WI-3283): follow an operator that restarted onto a new port.
+  const r = await fetchResilient(`${liveBase ?? base}/api${path}`, init, {
+    rediscover: discoverOperatorUrl,
+    onRebase: (b) => {
+      liveBase = b;
+    },
+  });
   if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
   return r.json();
 }
@@ -351,7 +364,7 @@ async function main() {
           const runnerArgs = [
             runnerPath,
             `--agent=${mapFrameworkToAgent(session.chosen)}`,
-            `--operator-url=${base}`,
+            `--operator-url=${liveBase ?? base}`,
           ];
           if (args.tutorialOnly) runnerArgs.push('--tutorial');
           const rc = await new Promise((resolve) => {

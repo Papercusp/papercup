@@ -46,6 +46,22 @@ export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
 }
 
 /**
+ * Swap `url`'s origin for `freshBase`, keeping path/query/hash. Returns null
+ * when either side is unparseable or the origin is already `freshBase` (no
+ * move). Exported for tests.
+ */
+export function rebaseUrl(url, freshBase) {
+  try {
+    const u = new URL(url);
+    const b = new URL(freshBase);
+    if (u.protocol === b.protocol && u.host === b.host) return null;
+    return `${b.protocol}//${b.host}${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resilient fetch for the sidecar CLIs — the shared, smaller sibling of
  * psu-launcher's fetchWithResilience (WI-3141). A packaged desktop operator is
  * routinely MID-BOOT when the user first opens the app and immediately clicks
@@ -66,6 +82,17 @@ export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
  * also rides through a brief operator blip. `onRetry` fires once, the first time
  * a retry is scheduled, so a caller can show a "still starting…" note.
  *
+ * `rediscover` (WI-3283): the operator may RESTART ONTO A DIFFERENT PORT while
+ * we retry — packaged installs re-pick the port when the sticky one is taken,
+ * and a `--operator-url` argv/env pin captured at spawn then points at a dead
+ * socket for the rest of the process's life (the long-running tutorial shell is
+ * the victim: "can't reach the papercusp server" mid-tutorial). Pass
+ * `rediscover: discoverOperatorUrl` and every CONNECTION-failure retry re-reads
+ * the live discovery file and FOLLOWS the move; `onRebase(newBase)` lets the
+ * caller update its own long-lived base. The common same-port mid-boot window
+ * stays a plain retry (discovery returns the same origin → no rebase), and a
+ * TIMEOUT (reachable-but-slow) never rebases.
+ *
  * Deps injected for tests (operator-discovery.test.ts) — fetchImpl/sleep/now
  * make the retry timing deterministic without real sockets or timers.
  */
@@ -80,6 +107,8 @@ export async function fetchResilient(
     connectBudgetMs = 30_000,
     timeoutRetries = 1,
     onRetry = null,
+    rediscover = null,
+    onRebase = null,
   } = {},
 ) {
   // A caller-supplied AbortSignal owns the request lifetime; without one we cap
@@ -119,6 +148,22 @@ export async function fetchResilient(
       // Retry on a short backoff until the wall-clock budget elapses.
       const remaining = connectDeadline - now();
       if (remaining <= 0) break;
+      if (rediscover) {
+        try {
+          const fresh = rediscover();
+          const moved = fresh ? rebaseUrl(url, fresh) : null;
+          if (moved) {
+            url = moved;
+            try {
+              onRebase?.(String(fresh).replace(/\/$/, ''));
+            } catch {
+              /* a notice must never break the fetch */
+            }
+          }
+        } catch {
+          /* rediscovery must never break the retry loop */
+        }
+      }
       if (!announced) {
         announced = true;
         try {

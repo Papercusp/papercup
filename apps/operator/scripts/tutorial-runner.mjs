@@ -48,7 +48,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core';
-import { resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
+import { discoverOperatorUrl, resolveOperatorBase, fetchResilient } from './operator-discovery.mjs';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for tests)
@@ -465,11 +465,23 @@ function operatorUrlFrom(args, env = process.env) {
   return resolveOperatorBase(args, env);
 }
 
+/** WI-3283: set when a mid-run operator restart moved the port (rediscovery
+ *  followed it) — every later call prefers this over the spawn-time base. */
+let liveBase = null;
+
 async function api(base, path, init, opts) {
   // Resilient (WI-3141): ride through the operator's first-boot / recycle window
   // instead of hard-failing on the first connection-refused (the "3 attempts
   // before the tutorial showed up" report). opts threads onRetry/timeouts.
-  const r = await fetchResilient(`${base}/api${path}`, init, opts);
+  // Rediscovery (WI-3283): the spawn-time --operator-url pin goes stale when the
+  // operator restarts onto a new port — follow the move via operator.json.
+  const r = await fetchResilient(`${liveBase ?? base}/api${path}`, init, {
+    ...(opts ?? {}),
+    rediscover: discoverOperatorUrl,
+    onRebase: (b) => {
+      liveBase = b;
+    },
+  });
   if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
   return r.json();
 }
@@ -551,12 +563,18 @@ async function answerQuestion(base, section, question) {
     // A brief connect budget rides through an operator mid-recycle blip. This is a
     // quick JSON POST (the server spawns the terminal / sends the coord message and
     // returns) — no streaming, so no long client deadline is needed.
-    const r = await fetchResilient(`${base}/api/desktop/docs-agent-ask`, {
+    const r = await fetchResilient(`${liveBase ?? base}/api/desktop/docs-agent-ask`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ question }),
       signal: ac.signal,
-    }, { connectBudgetMs: 8_000 });
+    }, {
+      connectBudgetMs: 8_000,
+      rediscover: discoverOperatorUrl,
+      onRebase: (b) => {
+        liveBase = b;
+      },
+    });
     if (r.ok) resp = await r.json().catch(() => null);
   } catch {
     resp = null;

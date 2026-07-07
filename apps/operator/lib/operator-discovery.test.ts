@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverOperatorUrl, resolveOperatorBase, fetchResilient } from '../scripts/operator-discovery.mjs';
+import { discoverOperatorUrl, resolveOperatorBase, fetchResilient, rebaseUrl } from '../scripts/operator-discovery.mjs';
 
 /** A deterministic fake clock: sleep() advances virtual time so budget/backoff
  *  logic is exercised without real timers. */
