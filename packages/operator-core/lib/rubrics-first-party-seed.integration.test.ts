@@ -19,10 +19,24 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  appSql: undefined as unknown as postgres.Sql,
+}));
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    // The seed WRITES through proposeRubric → withPlanLock → withWorkspace; without
+    // this mock the write escapes the testcontainer onto the real org PG (the
+    // _org-test-db.ts-prescribed pattern — RLS-scoped app role inside a txn).
+    withWorkspace: (ws: string, cb: (tx: postgres.Sql) => Promise<unknown>) =>
+      h.appSql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+        return cb(tx);
+      }),
+  };
 });
 
 const rubrics = await import('./rubrics');
@@ -36,6 +50,7 @@ let db: OrgTestDb;
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
+  h.appSql = db.appSql;
   rubrics.__resetRubricSeedStateForTests();
 }, 120_000);
 
