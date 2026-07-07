@@ -107,6 +107,8 @@ export function emitWorkItemClaimedEvent(
  * global key can filter by kind/harness itself. Fire-and-forget; never throws.
  */
 export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+  // eslint-disable-next-line no-console
+  console.error('DEBUG-REAL-EMIT-CREATED-RAN', wi.id, new Error().stack);
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = { id: wi.id, kind: wi.kind, severity: wi.severity, harness: wi.harness, title: wi.title };
   const summary = `${wi.id} created (${wi.kind}${wi.severity ? `, ${wi.severity}` : ''}): ${wi.title}`;

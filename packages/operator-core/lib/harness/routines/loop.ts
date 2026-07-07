@@ -67,7 +67,7 @@ export function loopRoutineName(ownerId: string): string {
   return `loop-${ownerId}`;
 }
 
-function loopRoutineId(harnessSlug: string, ownerId: string): string {
+export function loopRoutineId(harnessSlug: string, ownerId: string): string {
   return `rt_${harnessSlug}_${loopRoutineName(ownerId)}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
