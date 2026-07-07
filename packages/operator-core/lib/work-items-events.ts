@@ -63,8 +63,6 @@ function failSoft(scope: string, e: unknown): void {
     return;
   }
   console.warn(`[work-items-events] ${scope} emit failed: ${msg}`);
-  // eslint-disable-next-line no-console
-  console.info('DEBUG-FAILSOFT-STACK', scope, new Error('trace').stack);
 }
 
 /**

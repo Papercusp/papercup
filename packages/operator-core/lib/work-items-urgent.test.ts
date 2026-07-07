@@ -49,6 +49,22 @@ vi.mock('./work-items-events', async (importOriginal) => ({
   emitWorkItemStatusEvent: vi.fn(),
   emitWorkItemSettledEvents: vi.fn(async () => {}),
 }));
+// The module mock above spies the emit seam, but the create path fires the
+// lifecycle event via a fire-and-forget dynamic `import('./work-items-events')`
+// under a work-items ↔ work-items-events import CYCLE — a combination vitest's
+// per-function module mock does NOT reliably intercept, so a REAL
+// emitWorkItemCreatedEvent still leaked through, hit the real await-engine
+// against the fake sql (which answers EVERY query with [{ id: 'WI-9001' }], so
+// the await-row parse tripped `undefined.startsWith`), and console.warn'd at a
+// TIMING-DEPENDENT moment (surfacing inside a LATER test) → vitest-fail-on-console
+// red-pinned the release gate (EI-8413; WI-3309, 2026-07-07). Stub the SINGLE
+// SINK every emit funnels through — emitAwaitedEvent — so no emit path (mocked
+// or leaked) can ever touch PG. This is the true choke point; the event leg has
+// its own coverage in work-items-events.test.ts.
+vi.mock('./events/await/engine', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  emitAwaitedEvent: vi.fn(async () => ({ ok: true, key: '', woken: 0, notified: [], msgId: null })),
+}));
 vi.mock('./issue-blocks-merge', () => ({
   featureRef: (h: string, id: string) => `${h}#${id}`,
   FEATURE_KIND: 'feature',
