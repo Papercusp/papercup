@@ -69,6 +69,7 @@ const refRow = {
   install_slug: 'papercusp',
   workspace_id: 'ws-papercusp',
   reschedule_interval_sec: 120,
+  target_owner_id: 'su-owner',
 };
 
 describe('loopRoutineIdFromSource', () => {
@@ -164,5 +165,76 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire });
     expect(res.handled).toBe(false);
     expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
+describe('turn-settle wall nag (compaction-continuity-hardening P-006)', () => {
+  const cleanExitWithAsk = (finalText: string): ResumeTurnExitRaw =>
+    deathRaw({ exitCode: 0, signal: null, stdoutTail: finalText });
+
+  it('a clean exit ending on an owner-ask with ZERO wall rows stashes the nag', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow });
+    const stashWallNag = vi.fn(async () => true);
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      cleanExitWithAsk('shipped the fix.\nThe teardown is pending owner approval.'),
+      {
+        sql: sql as never,
+        getLoopCarryNote: (async () => '## Next action\ngo') as never, // note, but NO walls rows
+        stashWallNag: stashWallNag as never,
+        now: 42,
+      },
+    );
+    expect(res).toMatchObject({ handled: false, routineId: 'loop_su_owner', nagged: true });
+    expect(stashWallNag).toHaveBeenCalledWith(
+      { harness: 'papercusp', ownerId: 'su-owner' },
+      'The teardown is pending owner approval.',
+      42,
+    );
+  });
+
+  it('an owner-ask already covered by a wall row stays silent', async () => {
+    const sql = fakeSql({ ref: refRow });
+    const stashWallNag = vi.fn(async () => true);
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      cleanExitWithAsk('still awaiting owner OK on the PIDs.'),
+      {
+        sql: sql as never,
+        getLoopCarryNote: (async () => '## Walls\n- zombie PIDs await owner OK — re-check: ps -p 95902') as never,
+        stashWallNag: stashWallNag as never,
+      },
+    );
+    expect(res).toMatchObject({ handled: false, routineId: 'loop_su_owner' });
+    expect(res.nagged).toBeUndefined();
+    expect(stashWallNag).not.toHaveBeenCalled();
+  });
+
+  it('a clean exit with NO owner-ask never touches the DB (pure detect gates the read)', async () => {
+    const sql = fakeSql({ ref: refRow });
+    const res = await handleLoopResumeTurnExit(loopDelivery(), cleanExitWithAsk('all green; ending the turn.'), {
+      sql: sql as never,
+      stashWallNag: vi.fn(async () => true) as never,
+    });
+    expect(res).toMatchObject({ handled: false, routineId: 'loop_su_owner' });
+    expect(sql.calls).toHaveLength(0);
+  });
+
+  it('a throwing carry-note read fails soft — the outcome contract is undisturbed', async () => {
+    const sql = fakeSql({ ref: refRow });
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      cleanExitWithAsk('blocked on the owner for credentials.'),
+      {
+        sql: sql as never,
+        getLoopCarryNote: (async () => {
+          throw new Error('pg down');
+        }) as never,
+        stashWallNag: vi.fn(async () => true) as never,
+      },
+    );
+    expect(res).toMatchObject({ handled: false, routineId: 'loop_su_owner' });
+    expect(res.nagged).toBeUndefined();
   });
 });

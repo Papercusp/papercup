@@ -10,12 +10,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const setLoopCarryNote = vi.fn();
+const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
-// Mock the store: a sentinel renderCarryNote keeps this test about ROUTING (structured →
-// render, raw → passthrough), not renderCarryNote's exact output (covered in carry-note's
-// own tests). Fully mocked ⇒ no @papercusp/db-org / PG pulled into a unit test.
-vi.mock('../../carry-note', () => ({
+// Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
+// (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
+// walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
+// REAL via importOriginal — the P-006 merge tests below pin the tool's contract around it.
+vi.mock('../../carry-note', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
+  getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
 }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
@@ -51,6 +55,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   setLoopCarryNote.mockResolvedValue('stored-note');
+  getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
 });
 
@@ -150,5 +155,70 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('rejects an empty call (nothing to write) at the args boundary', () => {
     expect(() => parse({})).toThrow();
+  });
+});
+
+describe('loop:checkpoint — the P-006 walls merge (commitments cleared explicitly, never incidentally)', () => {
+  const PRIOR_WITH_WALL = [
+    '## Next action',
+    'old next step',
+    '',
+    '## Walls',
+    '- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)',
+  ].join('\n');
+
+  it('a rewrite WITHOUT walls carries the prior walls forward onto the new note', async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    const b = body(await call({ did: 'landed X', next: 'ship Y' }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('RENDERED:');
+    expect(written).toContain('## Walls');
+    expect(written).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
+    expect(b).toMatchObject({ ok: true, walls: 1 });
+  });
+
+  it("a note CLEAR with standing walls preserves them as a walls-only note (never an incidental clear)", async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    await call({ note: '' });
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('## Walls\n- zombie PIDs await owner OK');
+    expect(written).not.toContain('old next step');
+  });
+
+  it('walls:[] is the one true clear — with a blank note the whole row clears', async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    setLoopCarryNote.mockResolvedValue(null);
+    const b = body(await call({ note: '', walls: [] }));
+    expect(setLoopCarryNote).toHaveBeenCalledWith(expect.anything(), '');
+    expect(b).toMatchObject({ ok: true, cleared: true, walls: 0 });
+  });
+
+  it('explicit walls replace the set, preserving sinceMs + recheck for a claim that already stood', async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    await call({
+      next: 'continue',
+      walls: [{ claim: 'zombie PIDs await owner OK' }, { claim: 'capital arming pending owner decision' }],
+    });
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
+    expect(written).toContain('- capital arming pending owner decision (since ');
+  });
+
+  it('a walls-ONLY write keeps the prior narrative body and replaces the walls set', async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    const b = body(await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }] }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('## Next action\nold next step'); // body carried forward
+    expect(written).toContain('- new wall — re-check: check-it');
+    expect(written).not.toContain('zombie PIDs');
+    expect(b).toMatchObject({ ok: true, walls: 1 });
+  });
+
+  it('a throwing prior-note read fails open: the write proceeds with no carried walls', async () => {
+    getLoopCarryNote.mockRejectedValue(new Error('pg down'));
+    const b = body(await call({ next: 'x' }));
+    expect(b).toMatchObject({ ok: true, walls: 0 });
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).not.toContain('## Walls');
   });
 });

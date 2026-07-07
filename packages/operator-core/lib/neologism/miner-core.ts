@@ -382,6 +382,11 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((r) => setImmediate(r));
 }
 
+/** Ceiling on fire-bar passers that get the full-corpus corroboration scan
+ *  per tick (each scan ≈ the whole insights corpus, ~7 ms/MB) — a flood of
+ *  passers must not reopen the O(terms · corpusBytes) regime this bounds. */
+const MAX_CORROBORATED = 200;
+
 export async function aggregateNeologisms(
   rows: readonly CoordTextRow[],
   insights: readonly InsightDoc[],
@@ -407,22 +412,25 @@ export async function aggregateNeologisms(
   // digit-normalized text is identical are one utterance, not independent
   // coinage events (the live corpus' worst offender: resource-lock drain
   // notices — one template, dozens of synthetic senders). Keep the freshest.
-  const byText = new Map<string, CoordTextRow>();
+  // The sanitized+lowercased text rides along so extraction below doesn't
+  // re-run the 6-regex sanitize pass over the whole corpus a second time.
+  const byText = new Map<string, { row: CoordTextRow; lc: string }>();
   let _dedupN = 0;
   for (const row of rows) {
     if ((++_dedupN & 0x1ff) === 0) await yieldToEventLoop();
-    const key = sanitizeCoordText(row.text).toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+    const lc = sanitizeCoordText(row.text).toLowerCase();
+    const key = lc.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
     const prev = byText.get(key);
-    if (!prev || row.at > prev.at) byText.set(key, row);
+    if (!prev || row.at > prev.row.at) byText.set(key, { row, lc });
   }
 
   let _scanN = 0;
-  for (const row of byText.values()) {
+  for (const { row, lc } of byText.values()) {
     if ((++_scanN & 0xff) === 0) await yieldToEventLoop();
     const atMs = Date.parse(row.at);
     if (!Number.isFinite(atMs) || atMs > asOfMs) continue;
     const isRecent = atMs >= recentStartMs;
-    for (const term of extractTerms(row.text)) {
+    for (const term of extractTermsFromSanitized(lc)) {
       if (isCoveredByNamespace(term, namespaceIndex)) continue;
       const acc = byTerm.get(term);
       if (!acc) {
@@ -448,31 +456,46 @@ export async function aggregateNeologisms(
   }
 
   const priorDays = o.windowDays - o.recentDays;
-  // Pre-lowercase each insight ONCE. Was re-lowercasing every doc for every
-  // term — O(terms · insights · textLen) of synchronous toLowerCase, the block
-  // that pegged bg-host's event loop at the 6h neologism slot (2026-06-30).
-  const insightsLc = insights.map((d) => ({ slug: d.slug, lc: d.text.toLowerCase() }));
   const entries: NeologismEntry[] = [];
   let _termN = 0;
   for (const [term, acc] of byTerm) {
     if ((++_termN & 0xff) === 0) await yieldToEventLoop();
     const recentRate = acc.recent / o.recentDays;
     const priorRate = (acc.prior + 1) / priorDays;
-    const termDash = term.replace(/ /g, '-');
-    const insightSlugs = insightsLc
-      .filter((d) => d.lc.includes(term) || d.lc.includes(termDash))
-      .map((d) => d.slug);
     entries.push({
       term,
       recentMentions: acc.recent,
       priorMentions: acc.prior,
       distinctSpeakers: acc.speakers.size,
       growth: recentRate / priorRate,
-      insightSlugs,
+      insightSlugs: [],
       firstSeenAt: acc.firstSeenAt,
       lastSeenAt: acc.lastSeenAt,
       exampleText: acc.exampleText.slice(0, 300),
     });
+  }
+
+  // Insight corroboration, ONLY for fire-bar passers (see the docstring): each
+  // corroboration is a full-corpus substring scan, so the passer set is capped
+  // and every scan is preceded by a yield. Passers are corroborated in
+  // traffic×spread order so a pathological over-cap tick still corroborates
+  // the hottest ones; within the cap, candidate selection is byte-identical
+  // to the old scan-everything behavior.
+  const insightsLc = insights.map((d) => ({ slug: d.slug, lc: d.text.toLowerCase() }));
+  const passers = entries
+    .filter(
+      (e) =>
+        e.recentMentions >= o.minRecentMentions &&
+        e.distinctSpeakers >= o.minSpeakers &&
+        e.growth >= o.growthFactor,
+    )
+    .sort((a, b) => score(b) - score(a));
+  for (const e of passers.slice(0, MAX_CORROBORATED)) {
+    await yieldToEventLoop();
+    const termDash = e.term.replace(/ /g, '-');
+    e.insightSlugs = insightsLc
+      .filter((d) => d.lc.includes(e.term) || d.lc.includes(termDash))
+      .map((d) => d.slug);
   }
 
   return entries.sort(

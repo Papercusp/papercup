@@ -199,9 +199,17 @@ describe('aggregateNeologisms', () => {
     expect(entries.find((e) => e.term === 'wake storm')).toBeDefined();
   });
 
-  it('matches insight corroboration in both spaced and hyphenated spellings', async () => {
+  it('matches insight corroboration in both spaced and hyphenated spellings (fire-bar passers only)', async () => {
+    // 4 recent rows / 4 speakers / no prior history — over every default bar,
+    // so the term gets the corroboration scan.
+    const rows = [
+      row('a', 'a wake-storm', 1),
+      row('b', 'wake-storm again', 2),
+      row('c', 'that wake-storm', 3),
+      row('d', 'worst wake-storm yet', 4),
+    ];
     const entries = await aggregateNeologisms(
-      [row('a', 'a wake-storm', 1)],
+      rows,
       [
         { slug: 'wake-storm-runbook', text: 'When a wake-storm hits…' },
         { slug: 'unrelated', text: 'nothing here' },
@@ -211,6 +219,19 @@ describe('aggregateNeologisms', () => {
     );
     const e = entries.find((x) => x.term === 'wake storm')!;
     expect(e.insightSlugs).toEqual(['wake-storm-runbook']);
+  });
+
+  it('skips the corroboration scan for terms under the fire bars (the O(terms·corpus) guard)', async () => {
+    // One mention / one speaker — under the bars, so even a corpus that
+    // mentions the term must NOT be scanned into insightSlugs.
+    const entries = await aggregateNeologisms(
+      [row('a', 'a wake-storm', 1)],
+      [{ slug: 'wake-storm-runbook', text: 'When a wake-storm hits…' }],
+      emptyIndex,
+      AS_OF,
+    );
+    const e = entries.find((x) => x.term === 'wake storm')!;
+    expect(e.insightSlugs).toEqual([]);
   });
 });
 

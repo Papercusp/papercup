@@ -159,6 +159,7 @@ export async function finishSpawnPg(sql: Db, input: FinishSpawnInput): Promise<v
   // captured), record SOME last_output_at rather than leaving it permanently null.
   // Never clobbers an earlier, more precise mid-run heartbeat stamp with an older
   // value — GREATEST keeps whichever is newer.
+  const outputTail: string | null = input.outputTail ?? null;
   await sql`
     UPDATE harness_shared.spawned_agents
        SET status = ${input.status},
@@ -166,9 +167,9 @@ export async function finishSpawnPg(sql: Db, input: FinishSpawnInput): Promise<v
            duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
            exit_code = ${input.exitCode ?? null},
            error_message = COALESCE(${input.errorMessage ?? null}, error_message),
-           output_tail = COALESCE(${input.outputTail ?? null}, output_tail),
+           output_tail = COALESCE(${outputTail}::text, output_tail),
            last_output_at = CASE
-             WHEN ${input.outputTail ?? null} IS NOT NULL THEN GREATEST(COALESCE(last_output_at, now()), now())
+             WHEN ${outputTail}::text IS NOT NULL THEN GREATEST(COALESCE(last_output_at, now()), now())
              ELSE last_output_at
            END
      WHERE workspace_id = ${input.workspaceId} AND spawn_id = ${input.spawnId}

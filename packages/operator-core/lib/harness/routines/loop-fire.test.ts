@@ -496,3 +496,97 @@ describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', 
     expect(out).not.toContain('STALE');
   });
 });
+
+describe('walls + turn-settle nag in the wake text (compaction-continuity-hardening P-006)', () => {
+  const FULL_KICKOFF = ['🔁 Work the plan toward the goal.', 'line 2 of the contract.'].join('\n');
+  const NOTE_WITH_WALLS = [
+    '## Next action',
+    'ship P-006',
+    '',
+    '## Walls',
+    '- 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)',
+  ].join('\n');
+
+  it('renderLoopWakeText renders the walls block in BOTH forms, outside the truncatable note', () => {
+    const walls = [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: Date.now() - 3_600_000 }];
+    const short = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 5, checkpoint: '## Next action\ngo', walls });
+    expect(short).toContain('⛔ OPEN WALLS');
+    expect(short).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902 (standing 1h)');
+    const full = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: '## Next action\ngo', walls });
+    expect(full).toContain('⛔ OPEN WALLS');
+    expect(full).toContain('line 2 of the contract.'); // still the full kickoff
+    // No walls ⇒ no block.
+    expect(renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: null })).not.toContain('OPEN WALLS');
+  });
+
+  it('renderLoopWakeText splices the nag line in BOTH forms, ahead of the checkpoint block', () => {
+    const nag = '⚠ TURN-SETTLE NAG: your previous turn ended with an owner-ask';
+    const short = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 5,
+      checkpoint: '## Next action\ngo',
+      wallNagLine: nag,
+    });
+    expect(short).toContain(nag);
+    expect(short.indexOf(nag)).toBeLessThan(short.indexOf('Current loop:checkpoint'));
+    const full = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: null, wallNagLine: nag });
+    expect(full).toContain(nag);
+  });
+
+  it('fireLoopWake parses walls OUT of the note: the wake carries the block, and the checkpoint body loses the section', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: NOTE_WITH_WALLS, updatedAtMs: Date.now() - 30_000 })) as never,
+    });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    expect(res).toMatchObject({ fired: true });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('⛔ OPEN WALLS');
+    expect(opts.summary).toContain('  • 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902');
+    expect(opts.summary).not.toContain('## Walls'); // the section never rides the truncatable body
+    expect(opts.summary).toContain('ship P-006'); // the narrative body still renders
+  });
+
+  it('fireLoopWake takes the pending nag (read-and-clear) and splices the hard mandate', async () => {
+    const takeWallNag = vi.fn(async () => ({ atMs: 1, excerpt: 'awaiting owner OK on the teardown' }));
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: '## Next action\ngo', updatedAtMs: Date.now() })) as never,
+      takeWallNag: takeWallNag as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    expect(takeWallNag).toHaveBeenCalledWith({ harness: 'papercusp', ownerId: 'su-pinned' });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('TURN-SETTLE NAG');
+    expect(opts.summary).toContain('"awaiting owner OK on the teardown"');
+  });
+
+  it('a throwing nag-take degrades to a plain wake (fail-soft)', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: '## Next action\ngo', updatedAtMs: Date.now() })) as never,
+      takeWallNag: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as never,
+    });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    expect(res).toMatchObject({ fired: true });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).not.toContain('TURN-SETTLE NAG');
+  });
+
+  it('a walls-ONLY note counts as no checkpoint (full form) but still renders the walls block', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({
+        note: '## Walls\n- zombie PIDs await owner OK',
+        updatedAtMs: Date.now(),
+      })) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('line 2 of the contract.'); // full form — no narrative checkpoint to shorten on
+    expect(opts.summary).toContain('⛔ OPEN WALLS');
+    expect(opts.summary).toContain('  • zombie PIDs await owner OK');
+  });
+});
