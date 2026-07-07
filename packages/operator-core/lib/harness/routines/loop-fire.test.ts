@@ -232,18 +232,20 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     );
   });
 
-  it('the fire counter is incremented ONLY when maxFires is configured (P2a)', async () => {
-    const incrementFireCount = vi.fn(async () => {});
-    const deps = mkDeps({
-      deadMan: vi.fn(async () => ({ breach: false })) as never,
-      incrementFireCount: incrementFireCount as never,
-    });
-    // A duration-only bound fires but does NOT count (no maxFires).
+  it('the fire counter is incremented UNCONDITIONALLY after a reached fire (P-001b — the full/short wake cadence reads it), but never on a non-reached one', async () => {
+    // Plain warm loop, no maxFires, no cold — the previously-stuck-at-0 case.
+    const deps = mkDeps({ deadMan: vi.fn(async () => ({ breach: false })) as never });
     await fireLoopWake({ ...baseInput, payloadTemplate: { maxDurationSec: 3600 } }, deps);
-    expect(incrementFireCount).not.toHaveBeenCalled();
-    // A maxFires bound increments after the fire.
-    await fireLoopWake({ ...baseInput, payloadTemplate: { maxFires: 100 } }, deps);
-    expect(incrementFireCount).toHaveBeenCalledTimes(1);
+    expect(deps.incrementFireCount).toHaveBeenCalledTimes(1);
+    await fireLoopWake(baseInput, deps);
+    expect(deps.incrementFireCount).toHaveBeenCalledTimes(2);
+
+    // A fire that reaches NO session consumes no slot.
+    const depsMissed = mkDeps({
+      wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })) as never,
+    });
+    await fireLoopWake(baseInput, depsMissed);
+    expect(depsMissed.incrementFireCount).not.toHaveBeenCalled();
   });
 
   it('no target_owner_id → withheld with no gate/wake calls', async () => {
@@ -298,15 +300,15 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     });
   });
 
-  it('a WARM loop stamps NO payload marker (byte-identical to today) and never touches the fire counter', async () => {
+  it('a WARM loop stamps NO payload marker, but its fire counter still advances (P-001b: the wake cadence needs it)', async () => {
     const readFireCount = vi.fn(async () => 3);
     const incrementFireCount = vi.fn(async () => {});
     const deps = mkDeps({ readFireCount: readFireCount as never, incrementFireCount: incrementFireCount as never });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'x' } }, deps); // carry absent → warm
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(opts.payload).toBeUndefined();
-    expect(readFireCount).not.toHaveBeenCalled();
-    expect(incrementFireCount).not.toHaveBeenCalled();
+    expect(readFireCount).toHaveBeenCalledTimes(1);
+    expect(incrementFireCount).toHaveBeenCalledTimes(1);
   });
 
   it('an explicit carry:"warm" is also treated as warm (no marker)', async () => {
@@ -329,5 +331,92 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
     expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
     expect(incrementFireCount).not.toHaveBeenCalled();
+  });
+});
+
+// ── compaction-continuity-hardening-2026-07-07 P-001 (wake diet) + P-002 (staleness stamp) ──
+//
+// Measured: the ~3KB arm-time kickoff was re-delivered verbatim on all 263 wakes of one
+// live session (~200k tokens of repeated boilerplate), and the spliced checkpoint claimed
+// "fresh at fire time" when only its READ was fresh — a stale note kept instructing an
+// already-done next action after compaction (the re-report trap).
+
+const FULL_KICKOFF = ['🔁 Loop wake toward: goal G', '', 'Each wake:', '1. do things', '2. more things'].join('\n');
+
+describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
+  const note = '## Next action\ncontinue the edit';
+
+  it('fire 1 gets the FULL kickoff + checkpoint block', () => {
+    const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 1, checkpoint: note });
+    expect(out).toContain('Each wake:');
+    expect(out).toContain('## Next action');
+  });
+
+  it('fires 2..N-1 get the SHORT form: first kickoff line + checkpoint + footer, NOT the full contract', () => {
+    for (const fireNumber of [2, 5, LOOP_WAKE_FULL_TEMPLATE_EVERY]) {
+      const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber, checkpoint: note });
+      expect(out).toContain('🔁 Loop wake toward: goal G');
+      expect(out).toContain(`(wake #${fireNumber}; short form`);
+      expect(out).not.toContain('Each wake:');
+      expect(out).toContain('## Next action');
+      expect(out).toContain('refresh loop:checkpoint, then END YOUR TURN');
+    }
+  });
+
+  it(`every ${LOOP_WAKE_FULL_TEMPLATE_EVERY}th wake after the first (11, 21, …) re-delivers the FULL contract as a refresher`, () => {
+    for (const fireNumber of [LOOP_WAKE_FULL_TEMPLATE_EVERY + 1, 2 * LOOP_WAKE_FULL_TEMPLATE_EVERY + 1]) {
+      const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber, checkpoint: note });
+      expect(out).toContain('Each wake:');
+    }
+  });
+
+  it('NO checkpoint ⇒ the full kickoff regardless of fire number (it is the only brief the agent has)', () => {
+    const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 5, checkpoint: null });
+    expect(out).toBe(FULL_KICKOFF);
+  });
+
+  it('a warm fireLoopWake threads the fire number: prior fires 4 ⇒ wake #5 short form', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 30_000 })) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('(wake #5; short form');
+    expect(opts.summary).not.toContain('Each wake:');
+  });
+});
+
+describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', () => {
+  const note = '## Next action\nre-report the fix to the owner';
+
+  it('a FRESH note is stamped with its write age and asserted as the wake authority', () => {
+    const out = renderLoopCheckpointBlock(note, { updatedAtMs: Date.now() - 90_000, intervalSec: 120 });
+    expect(out).toContain('you wrote it');
+    expect(out).toContain('this is the authority for what to do this wake');
+    expect(out).not.toContain('STALE');
+  });
+
+  it('a STALE note (older than max(3 intervals, 30min)) is demoted to a LEAD with a do-not-re-execute warning', () => {
+    const out = renderLoopCheckpointBlock(note, { updatedAtMs: Date.now() - 45 * 60_000, intervalSec: 120 });
+    expect(out).toContain('⚠ Your loop:checkpoint is STALE');
+    expect(out).toContain('Treat it as a LEAD');
+    expect(out).toContain('do NOT re-execute its "next action" verbatim');
+    expect(out).toContain('Refresh it with loop:checkpoint');
+  });
+
+  it('the staleness ceiling scales with the loop interval: max(3×interval, 30min)', () => {
+    expect(loopCheckpointStaleMs(120)).toBe(30 * 60_000); // 3×120s < 30min floor
+    expect(loopCheckpointStaleMs(3600)).toBe(3 * 3600 * 1000); // 3h for an hourly loop
+    expect(loopCheckpointStaleMs(null)).toBe(30 * 60_000); // no interval ⇒ the floor
+    // The same 45min-old note is NOT stale under an hourly loop's 3h ceiling.
+    const out = renderLoopCheckpointBlock(note, { updatedAtMs: Date.now() - 45 * 60_000, intervalSec: 3600 });
+    expect(out).not.toContain('STALE');
+  });
+
+  it('no write instant available ⇒ no age claim, no false "fresh at fire time" assertion of content freshness', () => {
+    const out = renderLoopCheckpointBlock(note, {});
+    expect(out).toContain('you wrote it earlier');
+    expect(out).not.toContain('STALE');
   });
 });

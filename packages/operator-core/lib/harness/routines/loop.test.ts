@@ -160,6 +160,39 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(cold).toContain('COLD loop');
   });
 
+  it("a MONITOR loop gets the lean check/steer/checkpoint contract with NO work-item boilerplate (compaction-continuity P-001c)", () => {
+    const monitor = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 120, harness: 'papercusp', goal: 'watch the bug-drain fleet', mode: 'monitor',
+    });
+    // The lean monitoring contract…
+    expect(monitor).toContain('Monitor wake');
+    expect(monitor).toContain('watch the bug-drain fleet');
+    expect(monitor).toContain('120');
+    expect(monitor).toContain('deltas');
+    expect(monitor).toContain('loop:end');
+    // …with NONE of the per-wake work-item contract (the boilerplate a monitor loop burned every wake).
+    expect(monitor).not.toContain('work_items:create');
+    expect(monitor).not.toContain('assign_to');
+    expect(monitor).not.toContain('work_items:complete');
+    // every placeholder was substituted
+    expect(monitor).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
+  });
+
+  it("mode 'work' (default / absent) is byte-identical to the existing template", () => {
+    const workDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
+    const workExplicit = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', mode: 'work' });
+    expect(workExplicit).toBe(workDefault);
+    expect(workDefault).toContain('work_items:create');
+  });
+
+  it('the monitor mode composes with the cold/gated addenda like the work mode does', () => {
+    const coldMonitor = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', mode: 'monitor', carry: 'cold',
+    });
+    expect(coldMonitor).toContain('Monitor wake');
+    expect(coldMonitor).toContain('COLD loop');
+  });
+
   it("a SETTLE loop (default / absent continuation) has no gated addendum (flush-to-proceed P-005)", () => {
     const settleDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
     const settleExplicit = buildLoopWakePrompt({
