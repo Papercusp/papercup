@@ -27,6 +27,8 @@
  * switcher self-hides until install-time provisioning (P-017) brings the others up.
  */
 
+import { detectPapercupRoot } from './register-papercusp';
+
 export interface DevOperatorDescriptor {
   /** Stable id (persisted/selected). */
   id: string;
@@ -36,6 +38,17 @@ export interface DevOperatorDescriptor {
   port: number;
   /** Hover tooltip explaining what the env serves. */
   tooltip: string;
+  /**
+   * True for envs that can ONLY exist where a papercup source checkout is
+   * present (`dev` = the working tree itself; `local` = the Vite HMR dev
+   * frontend). On an install without a source tree these are OMITTED from the
+   * resolved list entirely — a button for an env that cannot exist is not a
+   * "disabled" state, it's noise (owner-reported greyed-button wall on the mac
+   * build, WI-3284; plan env-switcher-packaged-all-platforms-2026-07-06).
+   * `prod`/`staging` stay: packaged installs run them from the per-branch
+   * BUNDLED sidecars (owner directive 2026-07-06), no source needed.
+   */
+  requiresSourceTree?: boolean;
 }
 
 /**
@@ -48,6 +61,7 @@ export const DEV_OPERATORS: readonly DevOperatorDescriptor[] = [
     port: 3270,
     tooltip:
       'Dev operator (:3270) — this session’s own working-tree build. The default target.',
+    requiresSourceTree: true,
   },
   {
     id: 'prod',
@@ -69,6 +83,7 @@ export const DEV_OPERATORS: readonly DevOperatorDescriptor[] = [
     port: 3055,
     tooltip:
       'Local Vite SPA (:3055) — the hot-reloading dev frontend; its /api proxies to :3070.',
+    requiresSourceTree: true,
   },
 ] as const;
 
@@ -106,6 +121,12 @@ export interface ResolveDevOperatorsDeps {
   candidates?: readonly DevOperatorDescriptor[];
   /** Env ids the user has disabled (D-007) — reflected as `enabled:false`. 'release' is never disabled. */
   disabledIds?: readonly string[];
+  /**
+   * Whether a papercup source checkout exists on this machine (tests). Default:
+   * `detectPapercupRoot() != null`. When false, `requiresSourceTree` envs
+   * (dev/local) are omitted from the result entirely — see the descriptor doc.
+   */
+  hasSourceTree?: boolean;
 }
 
 /** This operator's listen port, from the same env the host reads (PAPERCUSP_HONO_PORT / PORT). */
@@ -188,9 +209,16 @@ export async function resolveDevOperators(
   const doFetch = deps.fetch ?? globalThis.fetch;
   const host = deps.bindHost ?? '127.0.0.1';
   const timeoutMs = deps.timeoutMs ?? 700;
-  const candidates = deps.candidates ?? DEV_OPERATORS;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : detectSelfPort();
   const disabled = new Set(deps.disabledIds ?? []);
+  // Omit source-tree-only envs (dev/local) where no papercup checkout exists —
+  // on a packaged install they CANNOT run, and rendering them as permanently
+  // grey buttons is the WI-3284 owner-reported wall. prod/staging remain (the
+  // per-branch bundled sidecars serve them; owner directive 2026-07-06).
+  const hasSourceTree = deps.hasSourceTree ?? detectPapercupRoot() != null;
+  const candidates = (deps.candidates ?? DEV_OPERATORS).filter(
+    (d) => hasSourceTree || !d.requiresSourceTree,
+  );
 
   const envOps = await Promise.all(
     candidates.map(async (d): Promise<ResolvedDevOperator> => {

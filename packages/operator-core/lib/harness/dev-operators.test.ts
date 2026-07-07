@@ -89,6 +89,35 @@ describe('resolveDevOperators', () => {
   });
 });
 
+describe('source-tree-only env omission (WI-3284 / env-switcher-packaged-all-platforms-2026-07-06)', () => {
+  it('omits dev + local entirely when no papercup source tree exists (packaged install)', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('dddddddd'));
+    const { operators } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      hasSourceTree: false,
+    });
+    const ids = operators.map((o) => o.id);
+    expect(ids).not.toContain('dev');
+    expect(ids).not.toContain('local');
+    // prod/staging stay — the per-branch BUNDLED sidecars serve them.
+    expect(ids).toContain('prod');
+    expect(ids).toContain('staging');
+    expect(ids).toContain('release');
+  });
+
+  it('keeps all four envs when the source tree is present (dev box)', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('eeeeeeee'));
+    const { operators } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      hasSourceTree: true,
+    });
+    const ids = operators.map((o) => o.id);
+    for (const id of ['dev', 'prod', 'staging', 'local', 'release']) expect(ids).toContain(id);
+  });
+});
+
 describe('resolveReleaseOrigin (WI-3284: dead release button on packaged installs)', () => {
   const ENV_KEYS = ['PAPERCUSP_RELEASE_ORIGIN', 'PAPERCUSP_DESKTOP', 'PAPERCUSP_HONO_PORT', 'PORT'] as const;
   const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
