@@ -20,7 +20,10 @@ function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & 
     name: null,
     present: true,
     alive: true,
-    heartbeatAt: '2026-07-04T00:00:00Z',
+    // Fresh by default — the fixture models a "heartbeat-alive" agent (it sets
+    // alive:true), and since fleet-liveness-zombie-await-2026-07-07 an hour-cold
+    // heartbeat is authoritatively `ended`, so a static past date would read dead.
+    heartbeatAt: new Date().toISOString(),
     intent: '',
     declaredPlanSlug: null,
     fleetSlug: null,
@@ -72,6 +75,17 @@ describe('reconcileWakeability (EI-6077)', () => {
     const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
+  });
+
+  it('fleet-liveness-zombie-await-2026-07-07: wakeable but hour-cold heartbeat → ended, not parked', async () => {
+    // The reboot-zombie shape on the fleet:assignments surface: a lingering
+    // (never-cancelled) wake-await makes it wakeable, but the heartbeat has been
+    // cold for an hour → the DEAD-ceiling backstop forces `ended`, not `parked`.
+    const agent = baseAgent({ alive: false, heartbeatAt: new Date(Date.now() - 72 * 60_000).toISOString() });
+    const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    expect(out.sessionState).toBe('ended');
+    expect(out.alive).toBe(false);
   });
 
   it('no wakeability signal for the agent (e.g. a federated peer) — leaves alive/sessionState untouched', async () => {

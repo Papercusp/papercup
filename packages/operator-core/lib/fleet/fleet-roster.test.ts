@@ -193,6 +193,44 @@ describe('foldFleetRoster', () => {
     expect(byId.get('su-parked')?.alive).toBe(true);
   });
 
+  // fleet-liveness-zombie-await-2026-07-07: a reboot-killed member leaves a live
+  // wake-await (wakeable:true) but an hour-cold heartbeat. Pre-fix it read `parked`
+  // and was COUNTED a live member (the invisible-dead-fleet bug the leader hit);
+  // now the DEAD-ceiling backstop forces it to `ended`.
+  it('classifies a wakeable-but-hour-cold member as ended (zombie await from an abrupt death)', () => {
+    const p = pres({
+      ownerId: 'su-zombie',
+      stale: true,
+      fleetSlug: 'f',
+      fleetRole: 'member',
+      agentRole: 'su',
+      heartbeatAt: '2026-06-29T02:48:00Z', // 72 min before NOW — past the 30m DEAD ceiling
+    });
+    const [e] = foldFleetRoster([p], [], tier1({}), NOW, wake({ 'su-zombie': { wakeable: true, liveTurn: false } }));
+    expect(e.sessionState).toBe('ended'); // was 'parked' pre-fix
+    expect(e.alive).toBe(false);
+    // fleet:status derives memberCount off the roster with sessionState==='ended'
+    // filtered out — so a dead-but-wakeable member no longer inflates the live count.
+    const live = [e].filter((m) => m.sessionState !== 'ended');
+    expect(splitFleetRosterCounts(live)).toEqual({ members: 0, bees: 0 });
+  });
+
+  it('does NOT over-reach: a wakeable member cold < the DEAD ceiling stays parked', () => {
+    // Same wakeable+idle shape, but the heartbeat is only ~15 min cold (stale, yet
+    // inside the 30m ceiling) → still `parked` (a recently-parked, resumable session).
+    const p = pres({
+      ownerId: 'su-recent-park',
+      stale: true,
+      fleetSlug: 'f',
+      heartbeatAt: '2026-06-29T03:45:00Z', // 15 min before NOW
+    });
+    const [e] = foldFleetRoster([p], [], tier1({}), NOW, wake({ 'su-recent-park': { wakeable: true, liveTurn: false } }));
+    // The distinguishing signal is sessionState (parked, resumable — NOT ended);
+    // `alive` is heartbeat-derived and already false for any stale row.
+    expect(e.sessionState).toBe('parked');
+    expect(e.alive).toBe(false);
+  });
+
   it('leaves alive heartbeat-derived + sessionState null when wakeability is absent (federated/unknown)', () => {
     // No wakeability entry (a federated peer, or the read was unavailable) → behavior
     // unchanged: alive stays heartbeat-derived and sessionState is null (state unknown).

@@ -7,7 +7,7 @@
  * whether a coordinator sees an agent as live | parked | ended.
  */
 import { describe, it, expect } from 'vitest';
-import { deriveSessionState } from './presence-wakeability';
+import { deriveSessionState, isHardStale, PRESENCE_DEAD_MS } from './presence-wakeability';
 
 describe('deriveSessionState', () => {
   it('not wakeable → ended (no live await; a wake reaches nobody — relaunch only)', () => {
@@ -30,5 +30,41 @@ describe('deriveSessionState', () => {
     // A stale row is NOT automatically dead: a live await means a wake relaunches it.
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: true })).toBe('parked');
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+  });
+
+  // fleet-liveness-zombie-await-2026-07-07: an abrupt death (reboot/SIGKILL)
+  // leaves the wake-await un-cancelled, so `wakeable:true` would pin a long-dead
+  // row to `parked` forever. `hardStale` (heartbeat cold > PRESENCE_DEAD_MS) is
+  // the authoritative backstop that forces it to `ended`.
+  it('hardStale overrides a lingering (never-cancelled) wake-await → ended', () => {
+    // The exact incident shape: wakeable (zombie await) + no running turn, but the
+    // heartbeat has been cold past the DEAD ceiling ⇒ dead, needs relaunch.
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: true })).toBe('ended');
+    // hardStale beats even a (spurious) running-turn signal.
+    expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: true, hardStale: true })).toBe('ended');
+  });
+
+  it('hardStale:false leaves the pre-fix behavior unchanged (back-compat)', () => {
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('parked');
+    // omitted hardStale defaults to false
+    expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+  });
+});
+
+describe('isHardStale', () => {
+  const now = 1_000_000_000_000;
+  it('true only once the heartbeat is cold beyond PRESENCE_DEAD_MS', () => {
+    expect(isHardStale(now - (PRESENCE_DEAD_MS + 1), now)).toBe(true);
+    expect(isHardStale(now - (PRESENCE_DEAD_MS - 1), now)).toBe(false);
+    expect(isHardStale(now, now)).toBe(false);
+  });
+  it('is conservative on missing/unparseable timestamps (never force-ends on absent data)', () => {
+    expect(isHardStale(null, now)).toBe(false);
+    expect(isHardStale(undefined, now)).toBe(false);
+    expect(isHardStale(NaN, now)).toBe(false);
+  });
+  it('the 72-min-cold incident heartbeat is hard-stale (DEAD ceiling is 30m)', () => {
+    expect(PRESENCE_DEAD_MS).toBe(30 * 60_000);
+    expect(isHardStale(now - 72 * 60_000, now)).toBe(true);
   });
 });
