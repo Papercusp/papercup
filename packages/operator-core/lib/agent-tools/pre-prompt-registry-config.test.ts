@@ -12,7 +12,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/pre-prompt-registry-config.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { PRE_PROMPT_REGISTRY } from './pre-prompt-registry-config';
+import './work_items/set_state';
+import './work_items/claim';
 
 describe('PRE_PROMPT_REGISTRY', () => {
   it('has unique, non-empty entry names', () => {
@@ -51,5 +55,23 @@ describe('PRE_PROMPT_REGISTRY', () => {
 
     const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
     expect(claim?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
+  });
+
+  it('advertises real work_items bulk schemas as row+keyed oneOf, not inert keyed-only fallback (WI-3260)', () => {
+    for (const [name, expectedOrder] of [
+      ['work_items:set_state', 'id, state, harness?'],
+      ['work_items:claim', 'id, assignee?, harness?'],
+    ] as const) {
+      const projected = lookupByMcpName(name);
+      expect(projected, name).toBeDefined();
+      const advertised = advertisedArgsSchema(name, projected!.inputSchema as Record<string, unknown>);
+      const oneOf = (advertised as { oneOf?: unknown[] }).oneOf;
+      expect(oneOf, name).toHaveLength(2);
+      const row = oneOf![0] as { properties?: Record<string, { description?: string }> };
+      expect(row.properties?.row?.description).toContain(expectedOrder);
+      const keyed = oneOf![1] as { properties?: Record<string, unknown> };
+      expect(keyed.properties).toHaveProperty('ids');
+      expect(keyed.properties).toHaveProperty('items');
+    }
   });
 });

@@ -85,16 +85,21 @@ export function nextTab(active) {
 
 /**
  * Which tab the shell opens on (owner 2026-07-06: "THE SETUP PAGE SHOULD BE THE FIRST
- * THING, NOT THE TUTORIAL"). Setup is the first thing until it is FINISHED: while any
- * required step (an agent backend + sign-in + the mem0 memory key) is unfinished the
- * shell ALWAYS opens on Setup — whatever command launched it — so a new user can never
- * be dropped into the tour with setup incomplete. Only once setup is complete does
- * `papercusp tutorial` / the first-run handoff open the Tutorial tab; `papercusp setup`
- * (`--tab=setup`) always opens Setup. Pure.
+ * THING, NOT THE TUTORIAL. when i do papercusp tutorial it takes me to the tutorial
+ * instead of the setup screen"). Setup is the first thing. The shell opens on Setup when:
+ *   - required setup (agent + sign-in + mem0 key) is UNFINISHED — a new user can never be
+ *     dropped into the tour with setup incomplete; or
+ *   - the user ran `papercusp setup` (`--tab=setup`); or
+ *   - the user ran `papercusp tutorial` (`--tutorial`) — per the owner it must show the
+ *     Setup screen first even on a set-up box (the tour is one Tab away, and the Setup tab
+ *     just reads all ✓).
+ * Only the first-run concierge handoff (setup just completed, no `--tutorial`) lands
+ * directly on the Tutorial tab. Pure.
  */
 export function defaultTab(args, { setupComplete = false } = {}) {
   if (!setupComplete) return 'setup';
   if (args?.tab === 'setup') return 'setup';
+  if (args?.tutorial) return 'setup';
   return 'tutorial';
 }
 

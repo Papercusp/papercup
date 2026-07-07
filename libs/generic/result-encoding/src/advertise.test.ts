@@ -12,7 +12,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   isWritePositional: vi.fn<(n: string) => boolean>(() => false),
-  getPrePromptEntry: vi.fn<(n: string) => { freeTextArg?: string } | undefined>(() => undefined),
+  getPrePromptEntry: vi.fn<
+    (n: string) =>
+      | {
+          freeTextArg?: string;
+          writeColumnNames?: readonly string[];
+          writeRequiredColumnNames?: readonly string[];
+          writeKeyedFallback?: boolean;
+        }
+      | undefined
+  >(() => undefined),
 }));
 vi.mock('./registry', () => ({
   isWritePositional: (n: string) => h.isWritePositional(n),
@@ -31,8 +40,22 @@ const NESTED_ARGS = {
   required: ['id'],
   properties: { id: { type: 'string' }, payload: { type: 'object' } }, // nested → not positional
 };
+const BULK_ARGS = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string' },
+    state: { type: 'string' },
+    harness: { type: 'string' },
+    ids: { type: 'array', items: { type: 'string' } },
+    items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, state: { type: 'string' } } } },
+  },
+};
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  h.getPrePromptEntry.mockReturnValue(undefined);
+});
 
 describe('advertisedArgsSchema', () => {
   it('returns the real args schema unchanged for a non-write-positional tool', () => {
@@ -51,5 +74,32 @@ describe('advertisedArgsSchema', () => {
   it('falls back to the real args when a write-positional tool does not fit (nested args)', () => {
     h.isWritePositional.mockReturnValue(true);
     expect(advertisedArgsSchema('plans:weird', NESTED_ARGS)).toBe(NESTED_ARGS);
+  });
+
+  it('advertises row OR full keyed args for bulk tools with explicit row columns', () => {
+    h.isWritePositional.mockReturnValue(true);
+    h.getPrePromptEntry.mockReturnValue({
+      writeColumnNames: ['id', 'state', 'harness'],
+      writeRequiredColumnNames: ['id', 'state'],
+      writeKeyedFallback: true,
+    });
+    const out = advertisedArgsSchema('work_items:set_state', BULK_ARGS);
+    const oneOf = (out as { oneOf?: unknown[] }).oneOf;
+    expect(oneOf).toHaveLength(2);
+    const rowProps = (oneOf![0] as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(Object.keys(rowProps)).toEqual(['row']);
+    expect((rowProps.row as { description?: string }).description).toContain('id, state, harness?');
+    expect(oneOf![1]).toBe(BULK_ARGS);
+  });
+
+  it('is idempotent for a row+keyed oneOf advertisement', () => {
+    h.isWritePositional.mockReturnValue(true);
+    h.getPrePromptEntry.mockReturnValue({
+      writeColumnNames: ['id', 'state'],
+      writeRequiredColumnNames: ['id', 'state'],
+      writeKeyedFallback: true,
+    });
+    const once = advertisedArgsSchema('work_items:set_state', BULK_ARGS);
+    expect(advertisedArgsSchema('work_items:set_state', once)).toBe(once);
   });
 });
