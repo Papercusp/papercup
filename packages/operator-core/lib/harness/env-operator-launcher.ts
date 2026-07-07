@@ -290,34 +290,48 @@ async function defaultHasToolchain(sourceRoot: string | null): Promise<boolean> 
 }
 
 /**
- * Bundled per-branch sidecar discovery — THE PACKAGING CONTRACT (owner directive
- * 2026-07-06, WI-3285/WI-3287; coordinate packaging changes on plan
- * env-switcher-packaged-all-platforms-2026-07-06):
+ * Bundled env-sidecar discovery — THE PINNED PACKAGING CONTRACT (owner directive
+ * 2026-07-06; contract pinned on plan env-switcher-packaged-all-platforms-2026-07-06,
+ * msg mra0qw49):
  *
- *   <env-sidecars-dir>/<branch>/serve.mjs
+ *   <sidecarDir>/env-sidecars/<envId>/serve.mjs
  *
- * where <env-sidecars-dir> is PAPERCUSP_ENV_SIDECARS_DIR when set (the Tauri host /
- * platform packaging may point anywhere), else `env-sidecars/` NEXT TO the running
- * serve.mjs (process.argv[1] — the primary bundle dir, e.g. the install's `sidecar/`).
- * So a package that wants a live `staging` button ships
- * `sidecar/env-sidecars/staging/serve.mjs` (+ its bundle deps in that dir), and the
- * launcher runs it with the SAME node binary that runs this primary — no npm/npx/tsx
- * on the user machine (verified absent on real installs, WI-3287). Keyed by BRANCH
- * (per the directive: builds ship per-branch bundled sidecars) so two envs on one
- * branch share one bundle.
+ * where <sidecarDir> = dirname(PAPERCUSP_SIDECAR_BIN) — main.rs already sets it on
+ * every platform and WSLENV-forwards it, so discovery needs zero Rust changes.
+ * PAPERCUSP_ENV_SIDECARS_DIR overrides explicitly (tests / future packaging); the
+ * running serve.mjs's own dir (process.argv[1]) is the last-resort fallback. Each env
+ * dir is a SIDECAR-SHAPED bundle (serve.mjs + spa/ + db-sql/ …) so the env operator
+ * serves its own UI; there is NO per-env node — the launcher reuses the primary's
+ * runtime (process.execPath; npm/npx/tsx are verifiably absent on real installs,
+ * WI-3287). V1 packaging ships exactly one extra bundle: env-sidecars/staging/.
+ *
+ * PROD SPECIAL CASE: when env-sidecars/prod/ is absent (the V1 default), prod resolves
+ * to the PRIMARY's own <sidecarDir>/serve.mjs — the installed release IS green `main`,
+ * so the prod button serves the same code on its fixed :3070 port.
  */
-export function resolveBundledSidecar(branch: string): string | null {
+export function resolveBundledSidecar(envId: string): string | null {
   try {
     const explicit = process.env.PAPERCUSP_ENV_SIDECARS_DIR;
+    const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+    const sidecarDir = sidecarBin
+      ? dirname(sidecarBin)
+      : process.argv[1]
+        ? dirname(process.argv[1])
+        : null;
     const baseDir =
       explicit && explicit.trim() !== ''
         ? explicit
-        : process.argv[1]
-          ? join(dirname(process.argv[1]), 'env-sidecars')
+        : sidecarDir
+          ? join(sidecarDir, 'env-sidecars')
           : null;
     if (!baseDir) return null;
-    const bundle = join(baseDir, branch, 'serve.mjs');
-    return existsSync(bundle) ? bundle : null;
+    const bundle = join(baseDir, envId, 'serve.mjs');
+    if (existsSync(bundle)) return bundle;
+    if (envId === 'prod' && sidecarDir) {
+      const primary = join(sidecarDir, 'serve.mjs');
+      if (existsSync(primary)) return primary;
+    }
+    return null;
   } catch {
     return null;
   }

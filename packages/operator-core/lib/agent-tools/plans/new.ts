@@ -48,7 +48,8 @@ const stringTolerantBool = z.preprocess(
   z.boolean(),
 );
 
-export const argsSchema = z.object({
+export const argsSchema = z
+  .object({
   harness: harnessArg,
   slug: z
     .string()
