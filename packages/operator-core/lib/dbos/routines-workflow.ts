@@ -109,6 +109,7 @@ async function routineFireImpl(
             installSlug,
             targetOwnerId,
             payloadTemplate,
+            intervalSec: rescheduleIntervalSec,
           });
           if (!res.fired) {
             console.warn(`[routines] loop ${routineId} fire WITHHELD (${res.reason}: ${res.detail ?? ''})`);

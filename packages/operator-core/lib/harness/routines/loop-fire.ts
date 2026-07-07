@@ -256,7 +256,14 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
   const readFireCount = deps.readFireCount ?? defaultReadLoopFireCount;
-  const getLoopCarryNote = deps.getLoopCarryNote ?? defaultGetLoopCarryNote;
+  const getNoteMeta =
+    deps.getLoopCarryNoteWithMeta ??
+    (deps.getLoopCarryNote
+      ? async (ref: Parameters<typeof defaultGetLoopCarryNoteWithMeta>[0]) => ({
+          note: await deps.getLoopCarryNote!(ref),
+          updatedAtMs: null,
+        })
+      : defaultGetLoopCarryNoteWithMeta);
   const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
 
   if (!input.targetOwnerId) {
@@ -317,26 +324,32 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // record the outcome.
   await recordFire(input.installSlug, input.routineName, 'firing', 'attempt').catch(() => {});
   const armTimeKickoff = readLoopKickoff(input.payloadTemplate) ?? defaultLoopKickoff(input.routineId);
-  const currentCheckpoint = await getLoopCarryNote({
+  // Fire number = priorFires + 1, read UNCONDITIONALLY (P-001b): the full/short wake cadence
+  // needs it on every loop, warm or cold. Fail-soft: a read miss ⇒ fire 1 (full form).
+  const priorFires = await readFireCount(input.sql, input.routineId).catch(() => 0);
+  const fireNumber = priorFires + 1;
+  const checkpointMeta = await getNoteMeta({
     harness: input.installSlug,
     ownerId: input.targetOwnerId,
     workspaceId: input.workspaceId,
-  }).catch(() => null);
-  const kickoff = spliceCurrentLoopCheckpoint(armTimeKickoff, currentCheckpoint);
+  }).catch(() => ({ note: null, updatedAtMs: null }));
+  const kickoff = renderLoopWakeText({
+    kickoff: armTimeKickoff,
+    fireNumber,
+    checkpoint: checkpointMeta.note,
+    checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,
+    intervalSec: input.intervalSec,
+  });
 
   // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor
   // forks to a fresh-context RESET / periodic RECYCLE instead of the warm in-place turn.
-  // wakeCount = this fire's 1-based number (priorFires + 1) → the consumer HYBRID cadence
-  // recycles every Nth wake; `harness` (the loop's install_slug) is the carry-note scope key.
-  // A WARM loop stamps NO payload → byte-identical to today (the whole path is also dormant
-  // downstream until the P-007 gate is wired on in Phase 3). Fail-soft: a fire-count read miss
-  // ⇒ wakeCount 1 (a RESET), never a throw.
+  // wakeCount = this fire's 1-based number → the consumer HYBRID cadence recycles every Nth
+  // wake; `harness` (the loop's install_slug) is the carry-note scope key. A WARM loop stamps
+  // NO payload (the whole path is also dormant downstream until the P-007 gate is wired on in
+  // Phase 3).
   const carry = readLoopCarry(input.payloadTemplate);
-  let coldPayload: { carry: 'cold'; wakeCount: number; harness: string } | undefined;
-  if (carry === 'cold') {
-    const priorFires = await readFireCount(input.sql, input.routineId).catch(() => 0);
-    coldPayload = { carry: 'cold', wakeCount: priorFires + 1, harness: input.installSlug };
-  }
+  const coldPayload: { carry: 'cold'; wakeCount: number; harness: string } | undefined =
+    carry === 'cold' ? { carry: 'cold', wakeCount: fireNumber, harness: input.installSlug } : undefined;
 
   const fan = await wake([input.targetOwnerId], {
     summary: kickoff,
@@ -377,13 +390,12 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   }
   await recordFire(input.installSlug, input.routineName, 'queued', 'attempt').catch(() => {});
 
-  // P2a: bump the live fire counter so the dead-man `maxFires` bound can read it on the next
-  // fire. Also bumped for a COLD loop (su-cold-auto P-003) so the cold wakeCount cadence
-  // advances monotonically across delivered wakes. Only incremented after a REACHED fire, so a
-  // non-delivered wake never consumes a wakeCount slot. Best-effort; single-flight per loop.
-  if (maxFires != null || carry === 'cold') {
-    await incrementFireCount(input.sql ?? undefined, input.routineId).catch(() => {});
-  }
+  // Bump the live fire counter UNCONDITIONALLY after a reached fire (P-001b): the full/short
+  // wake cadence, the dead-man `maxFires` bound, and the cold wakeCount cadence all read it.
+  // (Previously gated on maxFires/cold, which left every plain warm loop's fireNumber stuck
+  // at 0 — full boilerplate on every wake.) Only incremented after a REACHED fire, so a
+  // non-delivered wake never consumes a slot. Best-effort; single-flight per loop.
+  await incrementFireCount(input.sql ?? undefined, input.routineId).catch(() => {});
 
   return { fired: true, woken: fan.woken, staged: fan.staged };
 }

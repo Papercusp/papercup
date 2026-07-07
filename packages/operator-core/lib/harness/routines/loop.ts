@@ -115,6 +115,25 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
 ].join('\n');
 
 /**
+ * MONITOR-mode wake template (compaction-continuity-hardening-2026-07-07 P-001c). A
+ * leader/supervisor loop that WATCHES (a fleet, a pipeline, a soak) does not create +
+ * self-assign work_items each wake — delivering the work-item contract to it every wake
+ * is pure boilerplate burn (measured: a monitor loop re-received the full ~3KB work
+ * contract on 263 consecutive wakes). This template is the lean monitoring contract:
+ * check, steer/escalate only on deltas, checkpoint, end turn.
+ */
+export const MONITOR_LOOP_WAKE_PROMPT_TEMPLATE = [
+  '🔁 Monitor wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session, MONITORING: {goal}',
+  '',
+  'Each wake:',
+  '1. Check the watched state (coord:orient { mode:"monitor" } for a fleet; the relevant status tool otherwise). If the thing you are watching is FINISHED or no longer needs a monitor, call `loop:end` and stop — do not spin on empty wakes.',
+  '2. Act ONLY on deltas: something stalled/failed/blocked → unblock it, re-steer, or escalate. Nothing changed → write a one-line loop:checkpoint and END YOUR TURN — a quiet wake is a SUCCESS, not a license to invent work. Do NOT create work_items for routine checks; only file one when a delta needs real follow-up work.',
+  '3. END YOUR TURN when this check settles. The loop re-wakes this same session ~{intervalSec}s after the turn settles.',
+  '',
+  'To stop: `loop:end`. `loop:status` shows the loop state.',
+].join('\n');
+
+/**
  * COLD-loop bootstrap addendum (su-cold-auto-mode-2026-07-03 P-002 producer). Appended
  * to the wake prompt only for a `carry:'cold'` loop. Until the FIRST carry-note exists,
  * decideColdWake's P-006 no-anchor guard keeps the loop WARM, so these early wakes inject
@@ -219,11 +238,16 @@ export function buildLoopWakePrompt(opts: {
   goal: string;
   carry?: 'warm' | 'cold';
   continuation?: 'settle' | 'gated';
+  /** 'work' (default) = the create+self-assign work-item contract; 'monitor' = the lean
+   *  check/steer/checkpoint contract with NO work-item boilerplate (P-001c). */
+  mode?: 'work' | 'monitor';
   /** The work-item this loop drives (auto-claimed at arm time, WI-2429 fix A). When set on
    *  a cold loop, its per-item checkpoint mandate is named concretely in the wake prompt. */
   workItem?: string | null;
 }): string {
-  let prompt = DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
+  const base = opts.mode === 'monitor' ? MONITOR_LOOP_WAKE_PROMPT_TEMPLATE : DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE;
+  let prompt = base
+    .replace(/\{intervalSec\}/g, String(opts.intervalSec))
     .replace(/\{harness\}/g, opts.harness)
     .replace(/\{ownerId\}/g, opts.ownerId)
     .replace(/\{goal\}/g, opts.goal);
