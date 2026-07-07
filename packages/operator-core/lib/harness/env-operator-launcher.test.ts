@@ -133,8 +133,8 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
     probe: async () => false, // nothing already up
     detectSourceRoot: () => '/src/papercup',
     hasToolchain: async () => true,
-    // Never let a unit test fall through to the REAL default (npm install + lockfile).
-    ensureToolchain: async () => false,
+    // Never let a unit test fall through to the REAL default (fs probe of the package).
+    detectBundledSidecar: () => null,
     selfPort: null,
     // Passthrough tree-prepare by default — the real git-worktree prepare is exercised
     // in env-tree-prepare.test.ts; these tests focus on launcher orchestration.
@@ -202,43 +202,49 @@ describe('launchEnvOperators (effectful, fully faked)', () => {
     expect(res.skipped.every((s) => s.reason === 'no-toolchain')).toBe(true);
   });
 
-  it('a missing toolchain triggers the one-time install; success unblocks the spawns (WI-3285)', async () => {
-    const ensured: string[] = [];
+  it('a bundled per-branch sidecar spawns with NO source tree and NO toolchain (packaged install)', async () => {
     const { deps, spawnedCalls } = fakeLaunchDeps({
+      detectSourceRoot: () => null,
       hasToolchain: async () => false,
-      ensureToolchain: async (root) => {
-        ensured.push(root);
-        return true; // npm install produced a runnable tree
-      },
+      detectBundledSidecar: (branch) =>
+        branch === 'staging' ? `/opt/pkg/sidecar/env-sidecars/staging/serve.mjs` : null,
     });
     const res = await launchEnvOperators(deps);
-    expect(ensured).toEqual(['/src/papercup']);
-    expect(res.spawned.map((s) => s.id).sort()).toEqual(['dev', 'prod', 'staging']);
-    expect(spawnedCalls).toHaveLength(3);
+    // dev + staging both ride the 'staging' branch bundle; prod (main) has no bundle,
+    // and with no source tree it honestly skips.
+    expect(res.spawned.map((s) => s.id).sort()).toEqual(['dev', 'staging']);
+    expect(res.skipped).toContainEqual({ id: 'prod', reason: 'no-source-tree' });
+    for (const c of spawnedCalls) {
+      expect(c.entry.spawnMode).toBe('bundled');
+      expect(c.entry.bundlePath).toBe('/opt/pkg/sidecar/env-sidecars/staging/serve.mjs');
+      // bundled spawns run from the bundle dir — prepareTree is bypassed
+      expect(c.treePath).toBe('/opt/pkg/sidecar/env-sidecars/staging');
+    }
   });
 
-  it('does not attempt the toolchain install when the toolchain is already present', async () => {
-    let ensureCalls = 0;
-    const { deps } = fakeLaunchDeps({
-      ensureToolchain: async () => {
-        ensureCalls++;
-        return true;
-      },
+  it('a bundled sidecar wins over the source path even when a tree+toolchain exist', async () => {
+    const { deps, spawnedCalls } = fakeLaunchDeps({
+      detectBundledSidecar: (branch) =>
+        branch === 'main' ? `/opt/pkg/env-sidecars/main/serve.mjs` : null,
     });
     await launchEnvOperators(deps);
-    expect(ensureCalls).toBe(0);
+    const prod = spawnedCalls.find((c) => c.entry.id === 'prod');
+    expect(prod?.entry.spawnMode).toBe('bundled');
+    const dev = spawnedCalls.find((c) => c.entry.id === 'dev');
+    expect(dev?.entry.spawnMode).toBe('source');
   });
 
-  it('an ensureToolchain that throws degrades to no-toolchain skips (never fatal)', async () => {
-    const { deps } = fakeLaunchDeps({
+  it('a vite env never uses a bundle — source-only (SPA dev server transforms the tree)', async () => {
+    const { deps, spawnedCalls } = fakeLaunchDeps({
+      specs: [{ id: 'local', port: 3055, branch: 'staging', run: 'vite' }],
+      detectSourceRoot: () => null,
       hasToolchain: async () => false,
-      ensureToolchain: async () => {
-        throw new Error('npm exploded');
-      },
+      detectBundledSidecar: () => '/opt/pkg/env-sidecars/staging/serve.mjs',
     });
     const res = await launchEnvOperators(deps);
     expect(res.spawned).toHaveLength(0);
-    expect(res.skipped.every((s) => s.reason === 'no-toolchain')).toBe(true);
+    expect(spawnedCalls).toHaveLength(0);
+    expect(res.skipped).toContainEqual({ id: 'local', reason: 'no-source-tree' });
   });
 
   it('spawns the local vite env alongside the source operators (WI-3285)', async () => {

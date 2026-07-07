@@ -118,6 +118,12 @@ export interface EnvOperatorPlanEntry extends EnvOperatorSpec {
   action: LaunchAction;
   /** Present iff action==='skip' — WHY it was skipped. */
   skipReason?: SkipReason;
+  /** Present iff action==='spawn': 'bundled' runs the package's per-branch serve.mjs
+   *  (no toolchain needed); 'source' runs the cloned tree (dev box). */
+  spawnMode?: 'bundled' | 'source';
+  /** For spawnMode==='bundled': absolute path to that branch's bundled serve.mjs
+   *  (stamped by launchEnvOperators after planning; the planner stays pure). */
+  bundlePath?: string;
 }
 
 export interface PlanEnvOperatorLaunchInput {
@@ -133,6 +139,10 @@ export interface PlanEnvOperatorLaunchInput {
   hasSourceTree: boolean;
   /** Whether a Node/npx+tsx run path is available on this machine. */
   hasToolchain: boolean;
+  /** Branches with a bundled per-branch sidecar in the package (owner directive
+   *  2026-07-06 / WI-3285): a bundled env spawns with NO source tree and NO toolchain.
+   *  `run:'vite'` envs are source-only and never bundled. */
+  bundledBranches?: readonly string[];
   /** Bind host for the rendered origin (default 127.0.0.1). */
   host?: string;
 }
@@ -141,11 +151,14 @@ export interface PlanEnvOperatorLaunchInput {
  * PURE planner: decide, per env, spawn-or-skip and (when skipped) WHY. No side effects.
  *
  * Skip precedence (deterministic, most-specific first):
- *   disabled → is-self → already-reachable → no-source-tree → no-toolchain → spawn.
+ *   disabled → is-self → already-reachable → [bundled? spawn] → no-source-tree →
+ *   no-toolchain → spawn (source).
  * `disabled` wins over everything (an off env is never started regardless of state);
  * `is-self` / `already-reachable` win over the env gates so an already-up operator is
- * never reported as "no toolchain"; the source/toolchain gates apply only to an env we
- * would otherwise actually spawn.
+ * never reported as "no toolchain". A bundled per-branch sidecar (owner directive
+ * 2026-07-06) spawns REGARDLESS of source/toolchain — that's the packaged-install path;
+ * the source/toolchain gates apply only to an env we'd otherwise run from the tree.
+ * `run:'vite'` envs are source-only (the SPA dev server transforms the tree).
  */
 export function planEnvOperatorLaunch(
   input: PlanEnvOperatorLaunchInput,
@@ -154,6 +167,7 @@ export function planEnvOperatorLaunch(
   const host = input.host ?? '127.0.0.1';
   const disabled = new Set(input.disabledIds ?? []);
   const reachable = new Set(input.reachablePorts ?? []);
+  const bundled = new Set(input.bundledBranches ?? []);
   const selfPort = input.selfPort ?? null;
 
   return specs.map((spec): EnvOperatorPlanEntry => {
@@ -168,9 +182,12 @@ export function planEnvOperatorLaunch(
     if (disabled.has(spec.id)) return skip('disabled');
     if (selfPort != null && selfPort === spec.port) return skip('is-self');
     if (reachable.has(spec.port)) return skip('already-reachable');
+    if (spec.run !== 'vite' && bundled.has(spec.branch)) {
+      return { ...base, action: 'spawn', spawnMode: 'bundled' };
+    }
     if (!input.hasSourceTree) return skip('no-source-tree');
     if (!input.hasToolchain) return skip('no-toolchain');
-    return { ...base, action: 'spawn' };
+    return { ...base, action: 'spawn', spawnMode: 'source' };
   });
 }
 
@@ -192,11 +209,12 @@ export interface LaunchEnvOperatorsDeps {
   detectSourceRoot?: () => string | null;
   /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). */
   hasToolchain?: () => Promise<boolean>;
-  /** Make the source tree runnable when the toolchain check fails — the packaged-install
-   *  path (WI-3285): a ONE-TIME best-effort `npm install` in `sourceRoot`, single-flighted
-   *  and bounded. Returns whether the toolchain is now available. DEFAULT:
-   *  defaultEnsureToolchain. Non-fatal: false ⇒ the source envs skip 'no-toolchain'. */
-  ensureToolchain?: (sourceRoot: string) => Promise<boolean>;
+  /** Resolve the bundled per-branch sidecar for a branch (owner directive 2026-07-06 /
+   *  WI-3285): absolute path to that branch's serve.mjs, or null when the package
+   *  doesn't ship one. DEFAULT: resolveBundledSidecar — `<dir>/<branch>/serve.mjs`
+   *  under PAPERCUSP_ENV_SIDECARS_DIR, else `env-sidecars/` next to the RUNNING
+   *  serve.mjs (process.argv[1]). */
+  detectBundledSidecar?: (branch: string) => string | null;
   /** This operator's listen port (default: PAPERCUSP_HONO_PORT / PORT). */
   selfPort?: number | null;
   /** Prepare the on-disk tree for an env (worktree/branch checkout) and return its path.
@@ -271,106 +289,37 @@ async function defaultHasToolchain(sourceRoot: string | null): Promise<boolean> 
   }
 }
 
-/** How long one npm install may run before we give up (a cold seeded checkout pulls the
- *  whole workspace dep tree — minutes, not seconds; 20min is the generous ceiling). */
-const TOOLCHAIN_INSTALL_TIMEOUT_MS = 20 * 60_000;
-/** A lock older than this is a crashed installer's leftover — safe to take over. */
-const TOOLCHAIN_LOCK_STALE_MS = 60 * 60_000;
-
-/** Single-flight the npm install across concurrently-booting operators: O_EXCL create of
- *  a pid-stamped lockfile under ~/.papercusp/env-trees/. A stale lock (crashed installer)
- *  is broken once. Returns whether WE hold the lock. */
-function acquireToolchainLock(lockPath: string): boolean {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      mkdirSync(dirname(lockPath), { recursive: true });
-      const fd = openSync(lockPath, 'wx');
-      writeSync(fd, `${process.pid} ${new Date().toISOString()}`);
-      closeSync(fd);
-      return true;
-    } catch {
-      try {
-        const st = statSync(lockPath);
-        if (Date.now() - st.mtimeMs <= TOOLCHAIN_LOCK_STALE_MS) return false; // live installer elsewhere
-        unlinkSync(lockPath); // stale — break it and retry the O_EXCL create
-      } catch {
-        return false;
-      }
-    }
-  }
-  return false;
-}
-
-/** Run one `npm install` attempt via `cmd`. Resolves (never rejects) with the exit code. */
-function runNpmInstall(cmd: string, sourceRoot: string): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve) => {
-    try {
-      execFile(
-        cmd,
-        ['install', '--no-audit', '--no-fund', '--loglevel=error'],
-        {
-          cwd: sourceRoot,
-          timeout: TOOLCHAIN_INSTALL_TIMEOUT_MS,
-          maxBuffer: 16 * 1024 * 1024,
-          env: { ...process.env },
-        },
-        (err, _stdout, stderr) => {
-          const code = err
-            ? typeof (err as { code?: unknown }).code === 'number'
-              ? ((err as { code: number }).code)
-              : 1
-            : 0;
-          resolve({ code, stderr: stderr?.toString() ?? '' });
-        },
-      );
-    } catch (e) {
-      resolve({ code: 1, stderr: (e as Error)?.message ?? 'spawn failed' });
-    }
-  });
-}
-
-/** Default ensureToolchain (WI-3285): a packaged install ships the cloned source WITHOUT
- *  node_modules, so every env used to die on 'no-toolchain'. Run a ONE-TIME best-effort
- *  `npm install` in the seeded checkout — npm from PATH, falling back to the npm shipped
- *  alongside the running node binary — then re-check. Single-flighted via the lockfile,
- *  bounded by TOOLCHAIN_INSTALL_TIMEOUT_MS, and strictly non-fatal (false ⇒ the source
- *  envs skip 'no-toolchain', exactly the pre-WI-3285 behaviour). */
-async function defaultEnsureToolchain(
-  sourceRoot: string,
-  log: (message: string) => void,
-): Promise<boolean> {
-  if (await defaultHasToolchain(sourceRoot)) return true;
-  const lockPath = join(papercuspPath('env-trees'), '.toolchain-install.lock');
-  if (!acquireToolchainLock(lockPath)) {
-    log('[env-operators] toolchain install already running elsewhere — skipping this round');
-    return false;
-  }
+/**
+ * Bundled per-branch sidecar discovery — THE PACKAGING CONTRACT (owner directive
+ * 2026-07-06, WI-3285/WI-3287; coordinate packaging changes on plan
+ * env-switcher-packaged-all-platforms-2026-07-06):
+ *
+ *   <env-sidecars-dir>/<branch>/serve.mjs
+ *
+ * where <env-sidecars-dir> is PAPERCUSP_ENV_SIDECARS_DIR when set (the Tauri host /
+ * platform packaging may point anywhere), else `env-sidecars/` NEXT TO the running
+ * serve.mjs (process.argv[1] — the primary bundle dir, e.g. the install's `sidecar/`).
+ * So a package that wants a live `staging` button ships
+ * `sidecar/env-sidecars/staging/serve.mjs` (+ its bundle deps in that dir), and the
+ * launcher runs it with the SAME node binary that runs this primary — no npm/npx/tsx
+ * on the user machine (verified absent on real installs, WI-3287). Keyed by BRANCH
+ * (per the directive: builds ship per-branch bundled sidecars) so two envs on one
+ * branch share one bundle.
+ */
+export function resolveBundledSidecar(branch: string): string | null {
   try {
-    log('[env-operators] source tree has no node_modules — running one-time npm install (this can take several minutes)…');
-    let res = await runNpmInstall('npm', sourceRoot);
-    if (res.code !== 0) {
-      // A GUI-launched packaged app may not have npm on PATH — node installs ship npm
-      // alongside the node binary, so try the sibling of the running runtime.
-      const sibling = join(dirname(process.execPath), 'npm');
-      if (existsSync(sibling)) res = await runNpmInstall(sibling, sourceRoot);
-    }
-    if (res.code !== 0) {
-      log(`[env-operators] npm install failed — source envs stay hidden (non-fatal): ${res.stderr.trim().slice(0, 200)}`);
-      return false;
-    }
-    const ok = await defaultHasToolchain(sourceRoot);
-    log(
-      ok
-        ? '[env-operators] toolchain ready — source-tree deps installed'
-        : '[env-operators] npm install finished but the toolchain check still fails — source envs stay hidden',
-    );
-    return ok;
-  } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* best-effort */
-    }
+    const explicit = process.env.PAPERCUSP_ENV_SIDECARS_DIR;
+    const baseDir =
+      explicit && explicit.trim() !== ''
+        ? explicit
+        : process.argv[1]
+          ? join(dirname(process.argv[1]), 'env-sidecars')
+          : null;
+    if (!baseDir) return null;
+    const bundle = join(baseDir, branch, 'serve.mjs');
+    return existsSync(bundle) ? bundle : null;
+  } catch {
+    return null;
   }
 }
 
@@ -402,6 +351,29 @@ function defaultSpawnOperator(
   treePath: string,
 ): SpawnedOperator | null {
   try {
+    if (entry.spawnMode === 'bundled' && entry.bundlePath) {
+      // Packaged install: run the per-branch bundled serve.mjs with the same node
+      // that runs this primary. Self-contained — no source tree, no toolchain.
+      const child = spawn(process.execPath, [entry.bundlePath], {
+        cwd: dirname(entry.bundlePath),
+        detached: true,
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          PAPERCUSP_HONO_PORT: String(entry.port),
+          // ── EI-126 single-writer safety — the extra envs are request-only siblings ──
+          PAPERCUSP_BACKGROUND_WORKERS: '0',
+          PAPERCUSP_DBOS_ENABLE: '0',
+          // The provisioning launcher must not re-run for the children (no recursion).
+          PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+          // Each child reached by top-level navigation, not the primary's IPC fast path.
+          PAPERCUSP_IPC_ENABLE: '0',
+          DBOS__VMID: `desktop-env-${entry.port}`,
+        },
+      });
+      child.unref();
+      return { id: entry.id, port: entry.port, pid: child.pid };
+    }
     if (entry.run === 'vite') {
       // The `local` env: the Vite SPA dev server over the working tree, its /api
       // proxied to THIS primary operator (the packaged install has no :3070 prod).
@@ -485,19 +457,18 @@ export async function launchEnvOperators(
 
   const sourceRoot = detectSourceRoot();
   const hasSourceTree = !!sourceRoot;
-  let hasToolchain = deps.hasToolchain
+  const hasToolchain = deps.hasToolchain
     ? await deps.hasToolchain()
     : await defaultHasToolchain(sourceRoot);
-  // A packaged install ships the source WITHOUT node_modules (WI-3285) — try the
-  // one-time bounded npm install before writing every env off as 'no-toolchain'.
-  if (!hasToolchain && sourceRoot) {
-    const ensureToolchain =
-      deps.ensureToolchain ?? ((root: string) => defaultEnsureToolchain(root, log));
-    try {
-      hasToolchain = await ensureToolchain(sourceRoot);
-    } catch {
-      /* non-fatal — stays false, envs skip 'no-toolchain' */
-    }
+
+  // Which branches ship a bundled per-branch sidecar in this package (owner directive
+  // 2026-07-06) — the packaged-install spawn path that needs no source or toolchain.
+  const detectBundledSidecar = deps.detectBundledSidecar ?? resolveBundledSidecar;
+  const bundleByBranch = new Map<string, string>();
+  for (const s of specs) {
+    if (s.run === 'vite' || bundleByBranch.has(s.branch)) continue;
+    const bundle = detectBundledSidecar(s.branch);
+    if (bundle) bundleByBranch.set(s.branch, bundle);
   }
 
   // Probe every candidate port in parallel for an already-live operator (idempotent skip).
@@ -514,8 +485,15 @@ export async function launchEnvOperators(
     selfPort,
     hasSourceTree,
     hasToolchain,
+    bundledBranches: [...bundleByBranch.keys()],
     host,
   });
+  // Stamp each bundled entry with its bundle path (the planner is pure and path-free).
+  for (const entry of planned) {
+    if (entry.action === 'spawn' && entry.spawnMode === 'bundled') {
+      entry.bundlePath = bundleByBranch.get(entry.branch);
+    }
+  }
 
   const spawned: SpawnedOperator[] = [];
   const skipped: { id: string; reason: string }[] = [];
@@ -543,11 +521,17 @@ export async function launchEnvOperators(
     // rather than loop position so the gap always sits between two live boots.
     if (spawned.length > 0 && staggerMs > 0) await sleep(staggerMs);
 
+    // A bundled sidecar is self-contained — no source tree to prepare; it runs from
+    // its own bundle dir. Only source spawns need the worktree/branch checkout.
     let treePath: string | null = null;
-    try {
-      treePath = await prepareTree(entry, sourceRoot as string);
-    } catch {
-      treePath = null;
+    if (entry.spawnMode === 'bundled' && entry.bundlePath) {
+      treePath = dirname(entry.bundlePath);
+    } else {
+      try {
+        treePath = await prepareTree(entry, sourceRoot as string);
+      } catch {
+        treePath = null;
+      }
     }
     if (!treePath) {
       skipped.push({ id: entry.id, reason: 'tree-prepare-failed' });
@@ -556,7 +540,9 @@ export async function launchEnvOperators(
     const handle = spawnOperator(entry, treePath);
     if (handle) {
       spawned.push(handle);
-      log(`[env-operators] spawned ${entry.id} on :${entry.port} (request-only, pid=${handle.pid ?? '?'})`);
+      log(
+        `[env-operators] spawned ${entry.id} on :${entry.port} (${entry.spawnMode ?? 'source'}, request-only, pid=${handle.pid ?? '?'})`,
+      );
     } else {
       skipped.push({ id: entry.id, reason: 'spawn-failed' });
       log(`[env-operators] spawn FAILED for ${entry.id} on :${entry.port} (non-fatal)`);
