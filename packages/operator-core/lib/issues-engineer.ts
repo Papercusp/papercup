@@ -544,10 +544,50 @@ export interface UpdateIssuePatch {
   by?: string;
   /** Skip the subscribe→inject fan-out (cosmetic edits like a generated title). */
   silent?: boolean;
+  /** EI-8497: bypass the fat-finger body-shrink guard below — pass true when a large
+   *  reduction in body length is genuinely intended (not a mis-call). */
+  confirmShrink?: boolean;
 }
 
-export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<EngineerIssue | null> {
+/**
+ * EI-8497 fat-finger guard: a mis-called `work_items:update` silently overwrote a
+ * substantial description with a short placeholder body, and there was no revision
+ * history to recover the prior text from. Rather than build full body versioning,
+ * this stops the destructive class at the door: an edit that would replace a
+ * substantial existing body with something far shorter is REJECTED (nothing is
+ * written) unless the caller explicitly confirms it. Trips only when BOTH hold —
+ * below either threshold a shrink reads as a plausible genuine simplification, not
+ * a fat-finger:
+ *   - the existing body is at least `BODY_SHRINK_GUARD_MIN_LENGTH` chars (a short
+ *     body has little to lose), AND
+ *   - the new body keeps less than `BODY_SHRINK_GUARD_RETAIN_RATIO` of that length.
+ */
+export const BODY_SHRINK_GUARD_MIN_LENGTH = 40;
+export const BODY_SHRINK_GUARD_RETAIN_RATIO = 0.15;
+
+export interface ShrinkGuardTripped {
+  shrinkGuardTripped: true;
+  field: 'body';
+  existingLength: number;
+  newLength: number;
+}
+
+function bodyShrinkTripped(existingBody: string | undefined | null, newBody: string): ShrinkGuardTripped | null {
+  if (!existingBody || existingBody.length < BODY_SHRINK_GUARD_MIN_LENGTH) return null;
+  if (newBody.length >= existingBody.length * BODY_SHRINK_GUARD_RETAIN_RATIO) return null;
+  return { shrinkGuardTripped: true, field: 'body', existingLength: existingBody.length, newLength: newBody.length };
+}
+
+export async function updateIssue(
+  id: string,
+  patch: UpdateIssuePatch,
+): Promise<EngineerIssue | null | ShrinkGuardTripped> {
   const { sql } = getOrgPg();
+  if (patch.body !== undefined && !patch.confirmShrink) {
+    const existing = await getIssue(id);
+    const tripped = existing ? bodyShrinkTripped(existing.body, patch.body) : null;
+    if (tripped) return tripped;
+  }
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET
       title = ${patch.title ?? sql`title`},

@@ -3126,6 +3126,9 @@ export interface UpdateWorkItemPatch {
   kind?: IssueKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
+  /** EI-8497: bypass the fat-finger body-shrink guard (see updateIssue) — pass true
+   *  when a large reduction in body length is genuinely intended. */
+  confirmShrink?: boolean;
 }
 
 /**
@@ -3135,19 +3138,28 @@ export interface UpdateWorkItemPatch {
  *   - issue-family (bug | change | task) → engineer-issues updateIssue (notifies subs).
  *   - feature-family (feature | research-task | chunk) → unsupported: a feature's
  *     fields are owned by the pipeline (scoper/architect), not a direct edit.
- * Returns the refreshed WorkItem on success, or a typed reason on failure.
+ * Returns the refreshed WorkItem on success, or a typed reason on failure — including
+ * `body_shrink_guard` (EI-8497) when the edit would replace a substantial existing
+ * body with something far shorter and the caller didn't pass `confirmShrink`.
  */
 export async function updateWorkItem(
   id: string,
   patch: UpdateWorkItemPatch,
   by?: string,
   opts: { harness?: string } = {},
-): Promise<{ ok: true; item: WorkItem } | { ok: false; reason: 'not_found' | 'unsupported_family' }> {
+): Promise<
+  | { ok: true; item: WorkItem }
+  | { ok: false; reason: 'not_found' | 'unsupported_family' }
+  | { ok: false; reason: 'body_shrink_guard'; existingLength: number; newLength: number }
+> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { ok: false, reason: 'not_found' };
   if (wi.family !== 'issue') return { ok: false, reason: 'unsupported_family' };
   const issue = await updateIssue(id, { ...patch, by });
-  if (!issue) return { ok: false, reason: 'not_found' };
+  if (issue === null) return { ok: false, reason: 'not_found' };
+  if ('shrinkGuardTripped' in issue) {
+    return { ok: false, reason: 'body_shrink_guard', existingLength: issue.existingLength, newLength: issue.newLength };
+  }
   const refreshed = await getWorkItem(id, opts.harness);
   return refreshed ? { ok: true, item: refreshed } : { ok: false, reason: 'not_found' };
 }
