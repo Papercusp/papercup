@@ -13,12 +13,21 @@ import { registeredAuthorityOpKinds } from '../../authority';
 import { PLAN_ITEM_CLAIM_OP_KINDS } from '../../plan-items/claims';
 
 describe('plan_items tool barrel boots cleanly', () => {
-  // 60s timeout: the barrel import transitively transforms a large module graph;
+  // 180s timeout (EI-8386, 2026-07-07: bumped again from 60s — 4 timeout failures
+  // in 6h against a test that completes in ~3s isolated, confirming this is STILL
+  // the same "merely slow under a heavily-loaded box" class the 20s→60s bump
+  // already documented below, not a new hang: installSwarmClaimAuthority()/
+  // registerPlanItemClaimAuthorityOps() at the bottom of ./index run fully
+  // synchronously — no await, no network/PG I/O at import time — so the only
+  // thing that can make this test slow is CPU-bound module-graph TRANSFORM time
+  // under concurrent fleet load, never a stuck async op. Fleet concurrency has
+  // grown since the 60s bump, so 60s is no longer enough margin; hanging-at-boot
+  // — the thing this test actually guards — still fails eventually, just slower
+  // to report.) The barrel import transitively transforms a large module graph;
   // under a fully-parallel affected run on a loaded box (the green-checkpoint's
-  // isolated tree, peers deploying) the default 20s flaked while the import was
-  // merely SLOW, not hung (it passes in ~1.6s isolated). Hanging-at-boot — the
-  // thing this test guards — still fails at 60s.
-  it('importing the barrel installs the swarm claim authority + claim op handlers without throwing', { timeout: 60_000 }, async () => {
+  // isolated tree, peers deploying) a tight timeout flakes while the import is
+  // merely SLOW, not hung (it passes in ~1.6-3s isolated).
+  it('importing the barrel installs the swarm claim authority + claim op handlers without throwing', { timeout: 180_000 }, async () => {
     // Default before the barrel loads: the pure single-peer local authority.
     expect(getClaimAuthority()).toBeInstanceOf(LocalClaimAuthority);
 
