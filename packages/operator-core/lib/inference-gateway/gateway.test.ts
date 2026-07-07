@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
@@ -255,6 +255,60 @@ test('classify429Shape — a non-429 (e.g. 529) is unclassified', () => {
   assert.equal(
     classify429Shape({ status: 529, isUsageCap: false, bare: true, hasWindowReset: false, unifiedRejected: false }),
     'unclassified',
+  );
+});
+
+// classifyColdRest429 (WI-3151) — the cold-rest CAUSATION probe: a 429 moments after an account rejoined
+// rotation from a cold rest. A bare-burst at low util here means resting the account did NOT clear the
+// throttle AND it has budget ⇒ a shared edge/IP cause, not the account's own quota. A real per-account
+// shape (usage-cap/rate-window/unified) means the account itself is still walled (premature readmit).
+const COLD = { windowMs: 120_000, highUtil: 0.8 };
+test('classifyColdRest429 — not-cold-rest when the account was never rested (msSinceReadmit undefined)', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'bare-burst', msSinceReadmit: undefined, utilization5h: 0.1, ...COLD }),
+    'not-cold-rest',
+  );
+});
+test('classifyColdRest429 — not-cold-rest when the 429 is outside the cold-rest window', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'bare-burst', msSinceReadmit: 200_000, utilization5h: 0.1, ...COLD }),
+    'not-cold-rest',
+  );
+});
+test('classifyColdRest429 — edge-not-account: a bare-burst moments after a cold rest, at low util → shared-edge cause', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'bare-burst', msSinceReadmit: 3_000, utilization5h: 0.12, ...COLD }),
+    'edge-not-account',
+  );
+});
+test('classifyColdRest429 — edge-not-account when util is unknown (header absent) — a rested account still has budget by assumption', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'bare-burst', msSinceReadmit: 3_000, utilization5h: undefined, ...COLD }),
+    'edge-not-account',
+  );
+});
+test('classifyColdRest429 — inconclusive: a bare-burst just after a rest but the account itself is near budget (high util)', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'bare-burst', msSinceReadmit: 3_000, utilization5h: 0.95, ...COLD }),
+    'inconclusive',
+  );
+});
+test('classifyColdRest429 — account-still-latched: a usage-cap within the window is a real per-account wall', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'usage-cap', msSinceReadmit: 3_000, utilization5h: 0.0, ...COLD }),
+    'account-still-latched',
+  );
+});
+test('classifyColdRest429 — account-still-latched: a unified-5h-rejected within the window (the rest was premature)', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'unified-5h-rejected', msSinceReadmit: 50_000, utilization5h: 0.99, ...COLD }),
+    'account-still-latched',
+  );
+});
+test('classifyColdRest429 — inconclusive for an unclassified shape within the window', () => {
+  assert.equal(
+    classifyColdRest429({ shape: 'unclassified', msSinceReadmit: 3_000, utilization5h: 0.1, ...COLD }),
+    'inconclusive',
   );
 });
 

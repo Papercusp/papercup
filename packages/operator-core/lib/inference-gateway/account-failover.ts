@@ -96,6 +96,11 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   const log = opts.log ?? (() => {});
   /** accountId → epoch ms its budget resets; an entry with a still-future value is skipped. */
   const exhaustedUntil = new Map<string, number>();
+  /** accountId → epoch ms it was EARLY-readmitted via readmit() (the half-open proxy-recovered path,
+   *  which deletes the exhaustedUntil entry). Observability-only, read solely by msSinceReadmit — the
+   *  cold-rest causation probe (WI-3151). A NATURAL expiry needs no entry here: exhaustedUntil retains
+   *  the (now-past) reset boundary, which msSinceReadmit reads directly. */
+  const readmittedAt = new Map<string, number>();
   /** Round-robin cursor — the NEXT index to consider, advanced on every `active()` so unpinned
    *  egress spreads across the whole pool instead of concentrating on one account. */
   let rrIdx = 0;
@@ -145,6 +150,9 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  a reset). Idempotent: re-exhausting an already-paused account just refreshes its reset. */
   function onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null {
     exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
+    // Re-exhausted ⇒ no longer "freshly readmitted"; drop any stale early-readmit stamp so the next
+    // rejoin's boundary is this new pause's expiry, not a prior readmit() (msSinceReadmit, WI-3151).
+    readmittedAt.delete(exhaustedId);
     for (let step = 0; step < live.length; step++) {
       const idx = (rrIdx + step) % live.length;
       if (live[idx].accountId !== exhaustedId && available(live[idx])) {
@@ -164,8 +172,32 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  the account wasn't paused. */
   function readmit(accountId: string): void {
     if (exhaustedUntil.delete(accountId)) {
+      readmittedAt.set(accountId, now()); // stamp the rejoin moment for the cold-rest probe (WI-3151)
       log('warn', `inference-gateway: '${accountId}' readmitted to rotation (egress proxy recovered)`);
     }
+  }
+
+  /** Cold-rest causation probe (WI-3151): ms since this account last REJOINED rotation from a cold rest,
+   *  or undefined when it is either currently paused/exhausted (not "rested and back") or was never
+   *  exhausted at all. The gateway pairs this with the 429 shape at the throttle site to tell a
+   *  rested-account-still-429s event apart from a genuine account wall — a bare/edge 429 moments after a
+   *  cold rest is evidence the throttle is SHARED-edge/IP-caused (resting the account didn't clear it),
+   *  not this account's own budget. Read-only bookkeeping: it never affects selection. The rejoin
+   *  boundary is the LATER of the naturally-expired pause (exhaustedUntil retains its past reset) and any
+   *  early readmit() stamp. */
+  function msSinceReadmit(accountId: string, at: number = now()): number | undefined {
+    const until = exhaustedUntil.get(accountId);
+    if (until !== undefined && until > at) return undefined; // still paused — not a rejoin
+    const expiredBoundary = until; // present here only when until <= at (a naturally-expired pause)
+    const explicitBoundary = readmittedAt.get(accountId);
+    let boundary: number | undefined;
+    if (expiredBoundary !== undefined && explicitBoundary !== undefined) {
+      boundary = Math.max(expiredBoundary, explicitBoundary);
+    } else {
+      boundary = expiredBoundary ?? explicitBoundary;
+    }
+    if (boundary === undefined) return undefined; // never exhausted ⇒ never cold-rested
+    return Math.max(0, at - boundary);
   }
 
   /** Per-request cache-affinity routing (inference-gateway-multi-credential-routing P-002):
@@ -186,6 +218,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     live = next.slice();
     const presentIds = new Set(live.map((e) => e.accountId));
     for (const id of [...exhaustedUntil.keys()]) if (!presentIds.has(id)) exhaustedUntil.delete(id);
+    for (const id of [...readmittedAt.keys()]) if (!presentIds.has(id)) readmittedAt.delete(id);
     rrIdx = rrIdx % live.length;
     log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
   }
@@ -214,5 +247,5 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live;
   }
 
-  return { active, onExhausted, select, reload, readmit, healthyCount, peek, size, entries: entriesSnapshot };
+  return { active, onExhausted, select, reload, readmit, msSinceReadmit, healthyCount, peek, size, entries: entriesSnapshot };
 }

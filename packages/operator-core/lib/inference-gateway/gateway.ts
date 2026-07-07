@@ -544,6 +544,11 @@ export interface AccountPool {
   /** Read-only snapshot of the live pool entries (no cursor advance) — the proactive egress prober's
    *  enumerator (gateway-rayobyte-hardening P-002). Optional: probing is skipped when absent. */
   entries?(): readonly ActiveAccount[];
+  /** Cold-rest causation probe (WI-3151): ms since `accountId` last rejoined rotation from a cold rest,
+   *  or undefined when it is currently paused/exhausted or was never exhausted. Read-only observability —
+   *  the 429 site pairs it with the 429 shape to tell a rested-account-still-429s (shared-edge/IP-caused)
+   *  event apart from a genuine per-account wall. Optional: a single-account pool omits it. */
+  msSinceReadmit?(accountId: string, nowMs?: number): number | undefined;
 }
 
 export interface GatewayDeps {
@@ -966,6 +971,57 @@ export function classify429Shape(o: {
   if (o.hasWindowReset) return 'rate-window';
   if (o.unifiedRejected) return 'unified-5h-rejected';
   return 'unclassified';
+}
+
+/** Cold-rest causation probe (WI-3151): a 429 that lands within this many ms of an account rejoining
+ *  rotation from a cold rest is a "cold-rest event" — the account JUST rested, so a still-429 here is
+ *  strong evidence the throttle is not this account's own budget. Env-tunable; default 2 min (a rested
+ *  account that 429s minutes later is back to normal load, not a cold-rest signal). */
+export const COLD_REST_CAUSATION_WINDOW_MS = Number(process.env.PAPERCUSP_GATEWAY_COLD_REST_WINDOW_MS) || 120_000;
+/** Cold-rest causation probe (WI-3151): at/above this unified-5h utilization a bare-burst on a
+ *  freshly-rested account can't be cleanly blamed on the edge — the account IS near its own budget, so
+ *  the verdict degrades to `inconclusive` rather than `edge-not-account`. */
+export const COLD_REST_HIGH_UTIL = Number(process.env.PAPERCUSP_GATEWAY_COLD_REST_HIGH_UTIL) || 0.8;
+
+/** The causation verdict for a 429 on a freshly-cold-rested account (WI-3151) — the loggable answer to
+ *  "the account just rested; why is it STILL 429ing?", the diagnostic sibling of {@link classify429Shape}:
+ *   - `edge-not-account`     — a bare-burst (no window headers) moments after a cold rest, at util well
+ *                              below budget → resting the account did NOT clear it AND the account has
+ *                              headroom, so the throttle is a SHARED edge/IP layer, not this account's quota.
+ *   - `account-still-latched`— a usage-cap / rate-window / unified-5h 429 within the window → the account
+ *                              genuinely still has a wall (a premature readmit / real per-account cap).
+ *   - `not-cold-rest`        — the 429 is outside the cold-rest window (or the account was never rested),
+ *                              so this probe doesn't apply.
+ *   - `inconclusive`         — cold-rested, but the shape/util don't cleanly separate edge from account
+ *                              (a bare-burst while the account itself is near budget, or a non-429 shape). */
+export type ColdRest429Cause = 'edge-not-account' | 'account-still-latched' | 'not-cold-rest' | 'inconclusive';
+
+export function classifyColdRest429(o: {
+  /** The 429's shape (from classify429Shape). */
+  shape: Gateway429Shape;
+  /** ms since the account rejoined rotation from a cold rest (pool.msSinceReadmit); undefined ⇒ never
+   *  rested / currently paused. */
+  msSinceReadmit: number | undefined;
+  /** The cold-rest window; a 429 later than this is `not-cold-rest`. */
+  windowMs: number;
+  /** The account's observed unified-5h utilization fraction [0,1], or undefined when the header was absent. */
+  utilization5h: number | undefined;
+  /** The high-util cutoff above which a bare-burst can't be cleanly blamed on the edge. */
+  highUtil: number;
+}): ColdRest429Cause {
+  if (o.msSinceReadmit === undefined || o.msSinceReadmit > o.windowMs) return 'not-cold-rest';
+  switch (o.shape) {
+    case 'usage-cap':
+    case 'rate-window':
+    case 'unified-5h-rejected':
+      // A real per-account boundary right after a rest ⇒ the account itself is still walled.
+      return 'account-still-latched';
+    case 'bare-burst':
+      // Rested + still bare-throttled. Low/unknown util ⇒ the account has budget, so the edge caused it.
+      return o.utilization5h === undefined || o.utilization5h < o.highUtil ? 'edge-not-account' : 'inconclusive';
+    default:
+      return 'inconclusive';
+  }
 }
 
 /**
@@ -2946,6 +3002,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 .map(([k, v]) => `${k}=${v}`)
                 .join(' ');
               shape429Suffix += ` [bare-burst-origin ${origin || 'no-provenance-headers'}]`;
+            }
+            // COLD-REST CAUSATION PROBE (WI-3151): if THIS account rejoined rotation from a cold rest
+            // moments ago and is 429ing anyway, name whether the rest failed because of the account's own
+            // budget (`account-still-latched`) or a shared edge/IP throttle (`edge-not-account`). Pure
+            // observability appended to the same journald suffix — never a routing input (see the const).
+            const msSinceReadmit = pool.msSinceReadmit?.(throttled429AccountId);
+            const util5hNum = Number(u5);
+            const coldRestCause = classifyColdRest429({
+              shape: shape429,
+              msSinceReadmit,
+              windowMs: COLD_REST_CAUSATION_WINDOW_MS,
+              utilization5h: Number.isFinite(util5hNum) ? util5hNum : undefined,
+              highUtil: COLD_REST_HIGH_UTIL,
+            });
+            if (coldRestCause !== 'not-cold-rest') {
+              shape429Suffix += ` [cold-rest-cause=${coldRestCause} since-readmit=${msSinceReadmit ?? '-'}ms]`;
             }
           }
           if (up.status === 529) {
