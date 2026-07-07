@@ -127,14 +127,22 @@ export function decideColdWake(input: {
  * (b) to refresh the note via `loop:checkpoint` before ending, or the NEXT cold wake
  * restarts from this same stale note. This closes the loop that keeps a cold loop's
  * anchor fresh across wakes. Pure — the wake executor calls it at the inject boundary.
+ *
+ * `extras` (compaction-continuity-hardening-2026-07-07 P-003): the session's wider
+ * carry brief beyond the loop note — held work-items + checkpoints, standing facts
+ * (walls), armed awaits, fleet pointer — rendered by carry-brief.ts's
+ * renderCarryBriefColdExtras and appended after the note. Optional and additive:
+ * a failed brief read injects the note alone, exactly as before.
  */
-export function renderColdWakeInjection(carryNote: string): string {
+export function renderColdWakeInjection(carryNote: string, extras?: string): string {
   const note = (carryNote ?? '').trim();
+  const extraBlock = (extras ?? '').trim();
   return [
     '❄️ COLD LOOP WAKE — your context was just reset to your carry-note. Your prior transcript is GONE;',
     'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
     '',
     note,
+    ...(extraBlock ? ['', extraBlock] : []),
     '',
     '────────',
     'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —',

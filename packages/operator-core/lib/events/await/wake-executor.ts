@@ -574,6 +574,15 @@ export interface ExecuteWakeDeps {
     ownerId: string;
     workspaceId?: string;
   }) => Promise<string | null>;
+  /** compaction-continuity-hardening-2026-07-07 P-003: assemble the subscriber's
+   *  carry BRIEF (held work-items + checkpoints, standing facts/walls, armed awaits,
+   *  fleet pointer) appended to a COLD injection after the carry-note. Injected for
+   *  tests; defaults to the real buildCarryBrief (carry-brief.ts). Best-effort — a
+   *  failed read injects the note alone. */
+  buildCarryBriefFn?: (
+    ownerId: string,
+    opts?: { workspaceId?: string },
+  ) => Promise<import('../../carry-brief').CarryBrief>;
 }
 
 /**
@@ -631,9 +640,22 @@ async function injectPsuHostWake(
     // injected text is the cold agent's ENTIRE opening context, so it must both frame the
     // note as the working state AND tell the agent to refresh it before ending — else the
     // note goes stale after one cold wake.
+    // P-003: append the wider carry brief (held items + checkpoints, walls/facts, awaits,
+    // fleet pointer) after the note — best-effort, note-only on any failure.
+    let extras = '';
+    try {
+      const buildBrief =
+        deps.buildCarryBriefFn ?? (await import('../../carry-brief')).buildCarryBrief;
+      const { renderCarryBriefColdExtras } = await import('../../carry-brief');
+      extras = renderCarryBriefColdExtras(
+        await buildBrief(d.subscriberId, { workspaceId: d.workspaceId }),
+      );
+    } catch {
+      /* note-only injection */
+    }
     const ok = await injectPsuHost(sock, {
       mode: decision.mode,
-      data: renderColdWakeInjection(decision.carryNote),
+      data: renderColdWakeInjection(decision.carryNote, extras),
     });
     if (ok) {
       return {

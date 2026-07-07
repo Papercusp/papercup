@@ -129,7 +129,8 @@ export default defineTool({
         isError: true,
       };
     }
-    const focus = (args.focus ?? DEFAULT_FOCUS).trim();
+    const focus =
+      (args.focus ?? '').trim() || (await carryBriefFocus(identity.ownerId, identity.workspaceId));
     const autoContinue = args.autoContinue ?? true;
     // WI-1804: when the live host understands mode:'compact', let IT drive the sequence —
     // submit /compact, wait for the compaction TURN to complete (output-idle, the only place

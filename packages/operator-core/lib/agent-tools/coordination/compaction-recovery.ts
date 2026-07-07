@@ -16,9 +16,6 @@
  * Every leg is best-effort — recovery must never break orientation.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
-
 export interface CompactionRecovery {
   /** The one-line pointer back to the pre-compaction verbatim record. */
   selfRecall: string;
@@ -84,34 +81,19 @@ export async function buildCompactionRecovery(
   }
 
   // (a) held work-items' checkpoints — normally re-injected only on pickup;
-  // after a compaction the agent may not know it still HOLDS them.
+  // after a compaction the agent may not know it still HOLDS them. Shares the
+  // carry-brief held-items read (compaction-continuity-hardening P-003) so this
+  // fold and the compaction/cold-anchor briefs can never drift.
   try {
-    const { sql } = getOrgPg();
-    const held = await sql<Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>>`
-      SELECT issue_id, title, body, scope
-        FROM harness_shared.engineer_issues
-       WHERE assignee = ${ownerId}
-         AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
-         AND (workspace_id = ${workspaceId} OR workspace_id = 'default')
-       ORDER BY issue_id DESC
-       LIMIT ${MAX_HELD_ITEMS}
-    `;
+    const { readHeldWorkItems } = await import('../../carry-brief');
+    const held = await readHeldWorkItems(ownerId, workspaceId, { limit: MAX_HELD_ITEMS });
     if (held.length) {
-      const out: NonNullable<CompactionRecovery['checkpoints']> = [];
-      for (const h of held) {
-        const harness = h.scope?.startsWith('harness:') ? h.scope.slice('harness:'.length) : 'papercup';
-        let checkpoint: string | null = null;
-        try {
-          checkpoint = await getWorkItemCheckpoint({ harness, workItemId: h.issue_id, workspaceId });
-        } catch { /* per-item best-effort */ }
-        out.push({
-          id: h.issue_id,
-          ...(h.title ? { title: h.title.slice(0, 120) } : {}),
-          ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
-          checkpoint: checkpoint ? checkpoint.slice(0, CHECKPOINT_CAP) : null,
-        });
-      }
-      recovery.checkpoints = out;
+      recovery.checkpoints = held.map((h) => ({
+        id: h.id,
+        ...(h.title ? { title: h.title.slice(0, 120) } : {}),
+        ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
+        checkpoint: h.checkpoint ? h.checkpoint.slice(0, CHECKPOINT_CAP) : null,
+      }));
     }
   } catch { /* best-effort */ }
 
