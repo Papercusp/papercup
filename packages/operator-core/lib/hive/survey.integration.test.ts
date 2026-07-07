@@ -10,7 +10,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
 import { fetchFrontierRows } from './survey';
 
 const readMigration = (f: string) =>
@@ -50,6 +50,12 @@ beforeAll(async () => {
   // readMigration's line filter (breaking the DO body); the CREATE TABLE + INDEX is
   // all the anti-join needs, so apply just that (mirrors HARNESS_FEATURES_CONSOLIDATED_DDL).
   await db.sql.unsafe(HIVE_PLACEMENTS_DDL).simple();
+  // EI-8498 — fetchFrontierRows now applies the G2 admission gate (autoPickableWhereSql),
+  // whose trust fast-path subquery reads harness_shared.user_trust_list unconditionally
+  // whenever a workspaceId is passed (every real call). Must exist or every query in this
+  // suite errors "relation does not exist" (D-014 read-path-completeness, mirrors the
+  // datatype_registry/plan_item_claims precedent in _work-items-schema.ts).
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
 }, 90_000);
 
 /** The hive_placements table (migration 263), table + index only — see beforeAll. */
@@ -90,7 +96,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.hive_placements `;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.hive_placements, harness_shared.user_trust_list`;
 });
 
 const HOME = 'papercup-hive';
@@ -189,5 +195,26 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     await seedPlacement('WI-WORKING', 'working');
     const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
     expect(rows.map((r) => r.feature_id).sort()).toEqual(['WI-RECOVERING', 'WI-WORKING']);
+  });
+
+  it('EI-8498: excludes a REMOTE, un-admitted (quarantined) item — the same G2 gate fleet:place_batch enforces', async () => {
+    await seed(MEMBER_A, 'WI-LOCAL', { createdTs: 1 }); // origin defaults 'local'
+    await seed(MEMBER_A, 'WI-REMOTE-ADMITTED', { createdTs: 2, origin: 'remote', auditVerdict: 'admit' });
+    await seed(MEMBER_A, 'WI-REMOTE-QUARANTINED', { createdTs: 3, origin: 'remote', auditVerdict: null });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    // Before this fix all three showed up as "ready" — a quarantined remote item
+    // was indistinguishable from real placeable work, feeding false work-feed-stuck
+    // escalations (WI-2601). Now the survey's frontier matches what placement can
+    // actually pick up.
+    expect(rows.map((r) => r.feature_id).sort()).toEqual(['WI-LOCAL', 'WI-REMOTE-ADMITTED']);
+  });
+
+  it('EI-8498: the trust-list fast-path admits a remote item whose verified author is locally trusted', async () => {
+    await seed(MEMBER_A, 'WI-TRUSTED-REMOTE', { createdTs: 1, origin: 'remote', auditVerdict: null });
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET verified_author_github_user_id = 42 WHERE feature_id = 'WI-TRUSTED-REMOTE'`;
+    await db.sql`INSERT INTO harness_shared.user_trust_list (workspace_id, trusted_github_user_id) VALUES ('default', 42)`;
+    await seed(MEMBER_A, 'WI-UNTRUSTED-REMOTE', { createdTs: 2, origin: 'remote', auditVerdict: null });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-TRUSTED-REMOTE']);
   });
 });

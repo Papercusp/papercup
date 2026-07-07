@@ -193,6 +193,23 @@ describe('engineer issues surface (real PG)', () => {
     expectFresh((await issues.mergeIssuePayload('EI-1', { note: 'x' }))?.updatedAt);
   });
 
+  // EI-8497: updateIssue rejects a drastic body-shrink (a fat-finger overwrite of a
+  // substantial description) unless the caller confirms it — nothing is written on
+  // a trip, and passing confirmShrink applies it.
+  it('updateIssue rejects a fat-finger body shrink, leaves the row untouched, and applies it when confirmed', async () => {
+    const longBody = 'a real detailed description of the bug '.repeat(10);
+    const created = await issues.createIssue({ title: 'has a real body', body: longBody, createdBy: 'agA' });
+
+    const tripped = await issues.updateIssue(created.id, { body: 'placeholder' });
+    expect(tripped).toMatchObject({ shrinkGuardTripped: true, field: 'body', existingLength: longBody.length, newLength: 'placeholder'.length });
+    // Untouched: re-reading the issue shows the original body, not the rejected edit.
+    expect((await issues.getIssue(created.id))?.body).toBe(longBody);
+
+    const confirmed = await issues.updateIssue(created.id, { body: 'placeholder', confirmShrink: true });
+    expect(confirmed && 'body' in confirmed ? confirmed.body : undefined).toBe('placeholder');
+    expect((await issues.getIssue(created.id))?.body).toBe('placeholder');
+  });
+
   it('tag→topic fan-out: topic subscriber notified; author not self-notified', async () => {
     await topicStore.create({ slug: 'zero-cache', description: 'the replicator', created_ts: NOW });
     await subs.subscribe({ subscriber_id: 'agB', target_kind: 'topic', target_ref: 'zero-cache', created_ts: NOW });
