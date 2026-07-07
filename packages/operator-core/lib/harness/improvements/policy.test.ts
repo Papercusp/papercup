@@ -182,6 +182,30 @@ describe('needs-human routing (close-loop D-001 — the resolve back-edge)', () 
   });
 });
 
+describe('replication-liveness detector EIs never reach the auto lane (EI-8455)', () => {
+  it('createdBy=system:replication-liveness forces human even for an auto-eligible kind=bug', () => {
+    const d = classifyImprovement(
+      cand({ id: 'rl1', kind: 'bug', title: 'connected_never_replicated', createdBy: 'system:replication-liveness' }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.reasons.join(' ')).toMatch(/replication-liveness detector/);
+    expect(d.protectedHit).toBe('system:replication-liveness');
+  });
+
+  it('is NOT lifted by the owner full-autonomy grant (a wrong-tool bar, not a safety bar)', () => {
+    const d = classifyImprovement(
+      cand({ id: 'rl2', kind: 'bug', createdBy: 'system:replication-liveness' }),
+      DEFAULT_RISK_TIER_POLICY,
+      { ownerFullAutonomy: true },
+    );
+    expect(d.tier).toBe('human');
+  });
+
+  it('a plain bug from a different createdBy is unaffected (still auto)', () => {
+    expect(classifyImprovement(cand({ id: 'rl3', kind: 'bug', createdBy: 'some-other-filer' })).tier).toBe('auto');
+  });
+});
+
 describe('Phase 4 graduation is a CONFIG change', () => {
   it('adding change to autoKinds graduates change items to auto', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change'] };

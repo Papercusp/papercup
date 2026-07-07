@@ -317,6 +317,8 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
 /**
  * Classify a single candidate into its risk tier. The order is deliberate:
  *   0. explicit needs-human routing (improvements:resolve back-edge) → HUMAN.
+ *   0.5. filed by the replication-liveness detector (EI-8455) → HUMAN, regardless
+ *        of kind — a "wrong tool" bar like infra-environment, not a safety bar.
  *   1. kind gate — not an auto kind → HUMAN immediately (the common case).
  *   2. infra-environment (D-002/D-005) → HUMAN (a worker cannot fix a port mapping).
  *   3. protected paths (when known) → HUMAN (the safety surfaces).
@@ -333,6 +335,20 @@ export function classifyImprovement(
   if (c.needsHuman) {
     reasons.push('explicitly routed to a human (needs-human — set via improvements:resolve) → human');
     return { tier: 'human', reasons };
+  }
+
+  // EI-8455: a system:replication-liveness detector EI is a RUNTIME p2p-fleet
+  // condition no generic worker can verify/resolve (needs the p2p fleet live
+  // in-process) — gate it here, before the kind check, since these are filed
+  // kind=bug (otherwise auto-eligible) and would slip into the auto lane every
+  // dispatch. Mirrors the infra-environment gate: a "wrong tool" bar, NOT lifted
+  // by the owner full-autonomy grant (recursive-self-improvement doesn't make a
+  // worker able to run the p2p fleet in-process).
+  if (c.createdBy === REPLICATION_LIVENESS_DETECTOR_OWNER) {
+    reasons.push(
+      `filed by the replication-liveness detector (createdBy=${REPLICATION_LIVENESS_DETECTOR_OWNER}) — gated to the p2p-release-readiness fleet, a generic worker cannot resolve it → human`,
+    );
+    return { tier: 'human', reasons, protectedHit: REPLICATION_LIVENESS_DETECTOR_OWNER };
   }
 
   if (!policy.autoKinds.includes(c.kind)) {

@@ -1492,6 +1492,21 @@ async function reconcileStrandedWork(
   return out;
 }
 
+/** EI-8437 — how long a `recovering` placement can sit untouched (no reconcile
+ *  activity — {@link summarizeOpenPlacements}'s `p.updated_at`, which only moves
+ *  on an actual reconcile touch, not every 30s tick) before the brief stops just
+ *  re-noting it as stale and starts telling the reader to VERIFY-and-close.
+ *  Observed live: WI-329 sat `recovering` from 2026-07-03 through 2026-07-07
+ *  (5+ days) across 3 separate Queen triage sessions that each independently
+ *  concluded "needs reconciliation" but never actually verified the underlying
+ *  work had already landed — so the brief now surfaces that verification is
+ *  overdue instead of making every reader re-derive the staleness by hand.
+ *  Env-overridable like the other watchdog tunables. */
+export const DEFAULT_STALE_RECOVERING_MS = (() => {
+  const v = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_STALE_MS ?? 24 * 60 * 60_000);
+  return Number.isFinite(v) && v >= 0 ? v : 24 * 60 * 60_000;
+})();
+
 /** Open placements needing the Queen's attention — surfaced in pot:status so she
  *  acts on recoveries/cursed/stranded each wake (P-020/P-023: completion). */
 export interface OpenPlacementSummary {
@@ -1499,15 +1514,44 @@ export interface OpenPlacementSummary {
   cursed: number;
   stranded: number;
   workingTracked: number;
-  items: Array<{ workItemId: string; status: string; failCount: number; harness: string | null }>;
+  items: Array<{
+    workItemId: string;
+    status: string;
+    failCount: number;
+    harness: string | null;
+    /** EI-8437 — hours since this placement row last saw reconcile activity, when
+     *  known (undefined if the caller didn't supply `updated_at`, e.g. older test
+     *  fixtures / callers). */
+    ageHours?: number;
+    /** EI-8437 — `status === 'recovering'` AND `ageHours` exceeds
+     *  {@link DEFAULT_STALE_RECOVERING_MS} — a nudge that re-placing alone hasn't
+     *  worked and the underlying work should be VERIFIED (it may have already
+     *  landed) before re-placing again. */
+    stale?: boolean;
+    /** EI-8437 — `<planSlug>#<itemId>` (joined) when the work-item traces to a
+     *  plan item, so a triaging agent can jump straight to `plans:get` instead of
+     *  re-deriving the link from scratch. Null when the item carries no plan link. */
+    planItem?: string | null;
+  }>;
 }
 
 type OpenPlacementCountRow = { status: string; count: number | string };
-type OpenPlacementItemRow = { work_item_id: string; status: string; fail_count: number; harness_slug: string | null };
+type OpenPlacementItemRow = {
+  work_item_id: string;
+  status: string;
+  fail_count: number;
+  harness_slug: string | null;
+  /** Placement row's own `updated_at` (only moves on a reconcile touch) — optional
+   *  so pre-EI-8437 callers/fixtures that don't select it still type-check. */
+  updated_at?: string | Date | null;
+  source_plan_slug?: string | null;
+  source_plan_item_ids?: string[] | null;
+};
 
 export function buildOpenPlacementSummary(
   countRows: OpenPlacementCountRow[],
   itemRows: OpenPlacementItemRow[],
+  nowMs: number = Date.now(),
 ): OpenPlacementSummary {
   const summary: OpenPlacementSummary = { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] };
   for (const r of countRows) {
@@ -1519,7 +1563,20 @@ export function buildOpenPlacementSummary(
   }
   for (const r of itemRows) {
     if (r.status !== 'working') {
-      summary.items.push({ workItemId: r.work_item_id, status: r.status, failCount: r.fail_count, harness: r.harness_slug });
+      const updatedAtMs = r.updated_at != null ? new Date(r.updated_at).getTime() : NaN;
+      const ageHours = Number.isFinite(updatedAtMs) ? Math.max(0, (nowMs - updatedAtMs) / 3_600_000) : undefined;
+      const stale = r.status === 'recovering' && ageHours != null && ageHours * 3_600_000 >= DEFAULT_STALE_RECOVERING_MS;
+      const planItemId = r.source_plan_item_ids?.[0];
+      const planItem = r.source_plan_slug && planItemId ? `${r.source_plan_slug}#${planItemId}` : null;
+      summary.items.push({
+        workItemId: r.work_item_id,
+        status: r.status,
+        failCount: r.fail_count,
+        harness: r.harness_slug,
+        ...(ageHours != null ? { ageHours } : {}),
+        ...(stale ? { stale: true } : {}),
+        ...(planItem ? { planItem } : {}),
+      });
     }
   }
   // EI-6005: the wake-brief renders only `caps.placements`-many items (a bounded
@@ -1571,7 +1628,8 @@ export async function summarizeOpenPlacements(
     const rows = await sql<OpenPlacementItemRow[]>`
       WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
       live_open AS (
-        SELECT p.work_item_id, p.status, p.fail_count, p.harness_slug, p.updated_at
+        SELECT p.work_item_id, p.status, p.fail_count, p.harness_slug, p.updated_at,
+               f.source_plan_slug, f.source_plan_item_ids
           FROM harness_shared.hive_placements p
           LEFT JOIN harness_shared.harness_features_consolidated f
             ON f.workspace_id = p.workspace_id
@@ -1590,7 +1648,7 @@ export async function summarizeOpenPlacements(
              )
            )
       )
-      SELECT work_item_id, status, fail_count, harness_slug
+      SELECT work_item_id, status, fail_count, harness_slug, updated_at, source_plan_slug, source_plan_item_ids
         FROM live_open
        ORDER BY (status = 'cursed') DESC, (status = 'stranded') DESC, (status = 'recovering') DESC, updated_at DESC
        LIMIT ${limit}`;

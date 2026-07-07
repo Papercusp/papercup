@@ -505,7 +505,15 @@ export function renderQueenBrief(input: QueenBriefInput): string {
         `stranded ${op.stranded} (blocker stuck) · working ${op.workingTracked} (in flight)`,
     );
     for (const it of op.items.slice(0, caps.placements)) {
-      out.push(`- ${it.workItemId} [${it.status}]${it.harness ? ` (${it.harness})` : ''}${it.failCount ? ` ×${it.failCount} fails` : ''}`);
+      // EI-8437 — a `recovering` placement that has sat untouched past the stale
+      // threshold has already been through re-place-and-fail cycles; re-noting it
+      // as stale again wastes another triage pass. Nudge VERIFY-and-close instead,
+      // and carry the plan-item link so the reader doesn't have to re-derive it.
+      const ageNote = it.stale ? ` ⚠ STALE ${Math.round(it.ageHours ?? 0)}h — VERIFY the work hasn't already landed before re-placing again` : '';
+      const planNote = it.planItem ? ` [plan: ${it.planItem}]` : '';
+      out.push(
+        `- ${it.workItemId} [${it.status}]${it.harness ? ` (${it.harness})` : ''}${it.failCount ? ` ×${it.failCount} fails` : ''}${planNote}${ageNote}`,
+      );
     }
     const overflow = op.items.length - caps.placements;
     if (overflow > 0) out.push(`…+${overflow} more (pot:status to drill down)`);
