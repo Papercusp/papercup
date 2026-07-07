@@ -621,6 +621,34 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null }): b
  * one on a false read (e.g. a genuinely-alive Queen singleton or long-running
  * durable-spawn worker) would be a correctness hazard this function must never
  * risk. That class's reclaim stays the boot-id-aware sweep's job.
+ *
+ * EI-8528 CORRECTION (2026-07-07): a NULL `last_output_at` on a SUPERVISED bee
+ * row must NOT be treated as jam evidence either. This function originally read
+ * "never streamed" the same as "streamed, then went silent" — but PG truth
+ * across every real cup spawn in this deployment (0 of 149 supervised rows in a
+ * 48h sample EVER populated `last_output_at`, root cause tracked separately as
+ * the stdout-stream-wiring gap) shows `last_output_at` is currently NEVER set
+ * for a live, working cup either — so "no signal" was being misread as "proof
+ * of death" and this sweep was flipping genuinely-alive, mid-task cups to
+ * `status='failed'` the moment they crossed {@link CEILING_JAM_MIN_AGE_MS} (15
+ * min) — well within a normal long tool call (a build, a VM test cycle).
+ * Confirmed empirically: WI-3282/WI-3286's real cups were reclaimed this way
+ * while still working and went on to land genuine, evidenced completions 15+
+ * minutes AFTER being marked 'failed' — plus each reclaim silently frees the
+ * cup's work-item claim (comment above), inviting a duplicate re-placement of
+ * the SAME item onto a fresh cup while the original is still legitimately
+ * running. This mirrors the exact principle {@link isPossiblyWedged} already
+ * documents ("absence of signal is not evidence of a wedge") — now applied
+ * consistently here too: only a row that DID stream at some point and then
+ * went silent past {@link CEILING_JAM_SILENT_MS} is jam evidence; a row that
+ * has NEVER streamed is unproven either way and is left alone (its true
+ * liveness stays the job of the heartbeat/`/proc`-liveness sweeps and, for a
+ * genuinely wedged process, the flag-gated {@link reclaimWedgedSpawns}). Net
+ * effect while the streaming gap is open: this sweep reclaims nothing — a
+ * disclosed, deliberate regression to "wait for the boot reconcile" for THIS
+ * narrow signal, preferred over actively destroying live work. Re-enables
+ * itself automatically once the streaming wiring is fixed and real rows start
+ * carrying a non-null `last_output_at`.
  */
 export async function reclaimCeilingJamDebits(
   sql: Db,
@@ -652,7 +680,9 @@ export async function reclaimCeilingJamDebits(
     const startedMs = new Date(c.started_at).getTime();
     if (isNaN(startedMs) || now - startedMs <= minAgeMs) continue; // not old enough to judge
     const outAt = c.last_output_at ? new Date(c.last_output_at).getTime() : null;
-    const streamedRecently = outAt != null && !isNaN(outAt) && now - outAt <= silentMs;
+    if (outAt == null) continue; // EI-8528: no signal is not evidence of a jam — never flag it
+    if (isNaN(outAt)) continue; // unparseable timestamp — never trust a jam call to bad data
+    const streamedRecently = now - outAt <= silentMs;
     if (streamedRecently) continue; // genuinely live — proved by real stream output
     jammed.push(c.spawn_id);
   }

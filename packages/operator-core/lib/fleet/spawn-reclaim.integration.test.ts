@@ -1049,11 +1049,13 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
 describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit reconcile, real PG)', () => {
   const WINDOW = { minAgeMs: 15 * 60_000, silentMs: 15 * 60_000 };
 
-  it('reclaims a supervised bee row: old + no stream activity, EVEN with a fresh heartbeat (reused-pid false-alive)', async () => {
-    // heartbeat fresh (5s ago — looks perfectly alive) but never streamed and
-    // started 20 min ago: this is exactly the row reclaimOrphanedSpawns can
-    // never see (its own precondition requires a STALE heartbeat).
-    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60 });
+  it('reclaims a supervised bee row that DID stream, then went silent, EVEN with a fresh heartbeat (reused-pid false-alive)', async () => {
+    // heartbeat fresh (5s ago — looks perfectly alive), streamed once 20 min
+    // ago then went quiet: this is exactly the row reclaimOrphanedSpawns can
+    // never see (its own precondition requires a STALE heartbeat), and it
+    // carries genuine jam EVIDENCE (a stream that stopped), unlike a row that
+    // never streamed at all (see the never-streamed test below, EI-8528).
+    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60, lastOutputAgoSec: 20 * 60 });
     const r = await reclaimCeilingJamDebits(db.sql, WINDOW);
     expect(r.reclaimed).toBe(1);
     expect(r.spawnIds).toEqual(['jammed']);
@@ -1064,8 +1066,21 @@ describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit re
     expect(row.error_message).toMatch(/spawn-ceiling-jam.*no stream activity/);
   });
 
-  it('frees the concurrency ceiling for the jammed row while leaving a genuinely-streaming row alone', async () => {
-    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60 });
+  it('EI-8528: does NOT reclaim a row that never streamed at all (no last_output_at) — absence of signal is not jam evidence', async () => {
+    // This is the row shape EVERY real cup spawn in this deployment currently
+    // has (0/149 in a 48h PG sample ever populate last_output_at — a separate,
+    // tracked stdout-stream-wiring gap). Before this fix, this exact shape was
+    // being force-reclaimed the instant it crossed the 15-min min-age window —
+    // killing genuinely-alive, mid-task cups (WI-3282/WI-3286) and silently
+    // freeing their work-item claim for a wasteful duplicate re-placement.
+    await insertSpawn('never-streamed', 'running', 5, { startedAgoSec: 20 * 60 });
+    const r = await reclaimCeilingJamDebits(db.sql, WINDOW);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('never-streamed')).toBe('running');
+  });
+
+  it('frees the concurrency ceiling for a jammed (streamed-then-silent) row while leaving a genuinely-streaming row alone', async () => {
+    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60, lastOutputAgoSec: 20 * 60 });
     await insertSpawn('streaming', 'running', 5, { startedAgoSec: 20 * 60, lastOutputAgoSec: 30 });
     expect(await runningCount()).toBe(2);
     await reclaimCeilingJamDebits(db.sql, WINDOW);
@@ -1074,7 +1089,7 @@ describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit re
   });
 
   it('does NOT reclaim a row still under the min-age window (a legitimate fresh start)', async () => {
-    await insertSpawn('fresh', 'running', 5, { startedAgoSec: 60 }); // 1 min old
+    await insertSpawn('fresh', 'running', 5, { startedAgoSec: 60, lastOutputAgoSec: 60 }); // 1 min old
     const r = await reclaimCeilingJamDebits(db.sql, WINDOW);
     expect(r.reclaimed).toBe(0);
     expect(await statusOf('fresh')).toBe('running');
@@ -1113,14 +1128,14 @@ describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit re
   });
 
   it('reclaims a restarting row too (it also holds a concurrency slot)', async () => {
-    await insertSpawn('restarting-jam', 'restarting', 5, { startedAgoSec: 20 * 60 });
+    await insertSpawn('restarting-jam', 'restarting', 5, { startedAgoSec: 20 * 60, lastOutputAgoSec: 20 * 60 });
     const r = await reclaimCeilingJamDebits(db.sql, WINDOW);
     expect(r.reclaimed).toBe(1);
     expect(await statusOf('restarting-jam')).toBe('failed');
   });
 
   it('is idempotent — a settled row is not re-reclaimed on the next sweep', async () => {
-    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60 });
+    await insertSpawn('jammed', 'running', 5, { startedAgoSec: 20 * 60, lastOutputAgoSec: 20 * 60 });
     const first = await reclaimCeilingJamDebits(db.sql, WINDOW);
     expect(first.reclaimed).toBe(1);
     const second = await reclaimCeilingJamDebits(db.sql, WINDOW);
