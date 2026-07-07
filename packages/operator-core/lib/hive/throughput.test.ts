@@ -190,6 +190,18 @@ describe('detectThroughputBreaches — FB-21 audit-as-sensors', () => {
     expect(breaches.find((b) => b.kind === 'starvation')?.watchdogKey).toBe('governor-starvation:papercup');
   });
 
+  it('saturation at an owner maxBees cap is expected and does not raise starvation', () => {
+    const m = computeHiveThroughput(input({ ceiling: 3, running: 3, frontierDepth: 5 }));
+    const breaches = detectThroughputBreaches(m, 'papercup', { ownerMaxBees: 3, systemCeiling: 16 });
+    expect(breaches.some((b) => b.kind === 'starvation')).toBe(false);
+  });
+
+  it('saturation still raises starvation when owner maxBees is not lowering the system ceiling', () => {
+    const m = computeHiveThroughput(input({ ceiling: 3, running: 3, frontierDepth: 5 }));
+    const breaches = detectThroughputBreaches(m, 'papercup', { ownerMaxBees: 3, systemCeiling: 3 });
+    expect(breaches.some((b) => b.kind === 'starvation')).toBe(true);
+  });
+
   it('saturation with an EMPTY frontier is fine — nothing waiting, no breach', () => {
     const m = computeHiveThroughput(input({ ceiling: 8, running: 8, frontierDepth: 0 }));
     expect(detectThroughputBreaches(m, 'papercup').some((b) => b.kind === 'starvation')).toBe(false);

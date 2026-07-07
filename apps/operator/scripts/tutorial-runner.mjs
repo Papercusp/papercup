@@ -84,12 +84,17 @@ export function nextTab(active) {
 }
 
 /**
- * Which tab the shell opens on. An explicit `--tab=` wins; otherwise the tour (the
- * concierge already finished setup at first-run handoff, and `papercusp tutorial`
- * re-entry wants the tour). `papercusp setup` passes `--tab=setup`. Pure.
+ * Which tab the shell opens on (owner 2026-07-06: "THE SETUP PAGE SHOULD BE THE FIRST
+ * THING, NOT THE TUTORIAL"). Setup is the first thing until it is FINISHED: while any
+ * required step (an agent backend + sign-in + the mem0 memory key) is unfinished the
+ * shell ALWAYS opens on Setup — whatever command launched it — so a new user can never
+ * be dropped into the tour with setup incomplete. Only once setup is complete does
+ * `papercusp tutorial` / the first-run handoff open the Tutorial tab; `papercusp setup`
+ * (`--tab=setup`) always opens Setup. Pure.
  */
-export function defaultTab(args) {
-  if (args?.tab === 'setup' || args?.tab === 'tutorial') return args.tab;
+export function defaultTab(args, { setupComplete = false } = {}) {
+  if (!setupComplete) return 'setup';
+  if (args?.tab === 'setup') return 'setup';
   return 'tutorial';
 }
 
@@ -733,6 +738,21 @@ async function fetchOnboardingStatus(base, session = {}) {
   return api(base, `/desktop/onboarding-status${qs ? `?${qs}` : ''}`);
 }
 
+/** Whether EVERY required setup step (agent backend + sign-in + mem0 key) is done —
+ *  decides the shell's opening tab (setup-first until complete; owner 2026-07-06).
+ *  Best-effort: on any error, returns false so the shell opens on Setup (erring toward
+ *  showing setup is the safe default). Mirrors runSetupTab's completeness check + the
+ *  server-side requiredSetupComplete, computed off the SAME setupChecklist. */
+async function fetchSetupComplete(base) {
+  try {
+    const status = await fetchOnboardingStatus(base, {});
+    const steps = setupChecklist(status?.snapshot, status?.labels, []);
+    return steps.filter((s) => s.required).every((s) => s.status === 'done');
+  } catch {
+    return false;
+  }
+}
+
 /** Run ONE setup step for the current stage (reuses the concierge's pty specs).
  *  Mutates `session` (chosen / embeddingsSkipped) so the next poll advances. */
 async function runSetupStep(base, status, prompts, session) {
@@ -1045,7 +1065,14 @@ async function runTutorialTab(shell) {
     // section for details/search/ask). A jump resets t.shownIdx via idx change.
     if (t.shownIdx !== t.idx) {
       process.stdout.write(`\n${bold(s.title)}\n`);
-      await typeOut(s.brief);
+      // Instant (no typewriter) when we just landed here from a tab switch — the
+      // animation would otherwise be a window where a follow-up Tab press is dropped.
+      if (t.instantReprint) {
+        process.stdout.write(`${s.brief}\n`);
+        t.instantReprint = false;
+      } else {
+        await typeOut(s.brief);
+      }
       t.shownIdx = t.idx;
     }
 
@@ -1068,14 +1095,21 @@ async function runShell(shell) {
     if (result?.exit) return 0;
     if (result?.switchTo) {
       shell.activeTab = result.switchTo;
-      // Make a tab-switch VISIBLE. When returning to the Tutorial tab, force the
-      // current section's chapter header + brief to re-print, so the hop back
-      // isn't a silent bare menu (owner 2026-07-05: "Tab only seemed to work
-      // once" — Tutorial→Setup was obvious, but the hop back re-showed just the
-      // menu with no context, reading as "nothing happened").
+      // IMMEDIATE, unmissable switch feedback (owner 2026-07-06: "pressing tab doesn't
+      // switch … reliably"). The key was never lost — the perceived unreliability was
+      // LATENCY: the Setup tab does a status fetch and the Tutorial tab re-typewrites its
+      // brief BEFORE the destination screen appears, so a switch you'd already made looked
+      // like "nothing happened" and you pressed Tab again, cancelling it (the earlier "Tab
+      // only worked once" report). Print the destination the instant the switch is handled
+      // — before any fetch/animation — so every press visibly registers.
+      say(accent(bold(`↹  ${result.switchTo === 'setup' ? 'Setup' : 'Tutorial'}`)));
       if (result.switchTo === 'tutorial') {
+        // Re-print the current section header + brief on the hop back (else it's a silent
+        // bare menu), but print it INSTANTLY (skip the typewriter) so there's no animation
+        // window where a follow-up Tab press is dropped.
         shell.tut.lastChapter = null;
         shell.tut.shownIdx = -1;
+        shell.tut.instantReprint = true;
       }
       continue;
     }
@@ -1101,6 +1135,11 @@ async function main() {
 
   const prompts = await import('@inquirer/prompts');
   const interactive = Boolean(process.stdout.isTTY) && Boolean(process.stdin.isTTY);
+
+  // Setup-first (owner 2026-07-06): fetch setup completeness so the shell can open on
+  // Setup until it's finished. Kicked off here to overlap the banner + script settle
+  // (no added latency); interactive-only (the non-TTY walk never picks a tab).
+  const setupCompleteP = interactive ? fetchSetupComplete(base) : Promise.resolve(false);
 
   // The banner animates (~0.8s) while the fetch is in flight — the fetch latency is
   // hidden under work we'd do anyway rather than added in front of it.
@@ -1134,6 +1173,8 @@ async function main() {
   // Q&A launches/reuses a visible agent terminal server-side (POST
   // /api/desktop/docs-agent-ask) — no per-session CLI backend to choose here.
 
+  const setupComplete = await setupCompleteP;
+
   // ── Unified Tutorial | Setup shell (#4) ──
   // Shared, MUTABLE state so a Tab-switch preserves tutorial position + progress
   // across tabs (you resume the same section you left).
@@ -1144,13 +1185,14 @@ async function main() {
     interactive,
     script,
     sections,
-    setupComplete: false,
-    activeTab: defaultTab(args),
+    setupComplete,
+    activeTab: defaultTab(args, { setupComplete }),
     tut: {
       idx: resumeIndex(sections, script.progress),
       completed: new Set(script.progress?.completed_ids ?? []),
       lastChapter: null,
       shownIdx: -1,
+      instantReprint: false,
       entered: false,
     },
     setup: {

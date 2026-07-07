@@ -174,6 +174,32 @@ export interface HiveThroughputBreach {
   watchdogKey: string;
 }
 
+export interface HiveThroughputBreachContext {
+  /** Owner steering maxBees knob for this hive. Null/undefined means no owner cap. */
+  ownerMaxBees?: number | null;
+  /** System-level spawn cap before owner maxBees lowers it. */
+  systemCeiling?: number | null;
+}
+
+function positiveInt(n: number | null | undefined): number | null {
+  return Number.isFinite(n) && n != null && n > 0 ? Math.trunc(n) : null;
+}
+
+function saturatedOnlyByOwnerCeiling(
+  metrics: HiveThroughputMetrics,
+  context: HiveThroughputBreachContext | undefined,
+): boolean {
+  const ownerMaxBees = positiveInt(context?.ownerMaxBees);
+  const systemCeiling = positiveInt(context?.systemCeiling);
+  return (
+    ownerMaxBees != null &&
+    systemCeiling != null &&
+    ownerMaxBees < systemCeiling &&
+    metrics.beesCap === ownerMaxBees &&
+    metrics.beesBusy >= ownerMaxBees
+  );
+}
+
 /**
  * The sensor predicate (FB-21): which metrics constitute a breach to escalate.
  * PURE — the orchestrator files whatever this returns. Two breaches, each with
@@ -186,9 +212,15 @@ export interface HiveThroughputBreach {
 export function detectThroughputBreaches(
   metrics: HiveThroughputMetrics,
   hiveSlug: string,
+  context?: HiveThroughputBreachContext,
 ): HiveThroughputBreach[] {
   const breaches: HiveThroughputBreach[] = [];
-  if (metrics.beesCap > 0 && metrics.utilization >= 1 && metrics.frontierDepth > 0) {
+  if (
+    metrics.beesCap > 0 &&
+    metrics.utilization >= 1 &&
+    metrics.frontierDepth > 0 &&
+    !saturatedOnlyByOwnerCeiling(metrics, context)
+  ) {
     breaches.push({
       kind: 'starvation',
       severity: 'warn',
@@ -331,7 +363,20 @@ export async function recordHiveThroughputTick(opts: {
       lastTickAtMs: ms(lastRows[0]?.tick_at),
       stuckThresholdMs: stuckThresholdMs(),
     });
-    const breaches = detectThroughputBreaches(metrics, opts.hiveSlug);
+    let ownerMaxBees: number | null = null;
+    let systemCeiling: number | null = null;
+    try {
+      const [{ getOwnerSteering }, { spawnConcurrencyCeiling }] = await Promise.all([
+        import('../owner-steering'),
+        import('../fleet/operator-spawn'),
+      ]);
+      const steering = await getOwnerSteering(ws, opts.hiveSlug);
+      ownerMaxBees = steering.maxBees ?? null;
+      systemCeiling = spawnConcurrencyCeiling();
+    } catch {
+      // Fail open: a steering read fault must not hide a genuine starvation breach.
+    }
+    const breaches = detectThroughputBreaches(metrics, opts.hiveSlug, { ownerMaxBees, systemCeiling });
 
     await sql`
       INSERT INTO harness_shared.hive_throughput_ticks

@@ -156,11 +156,15 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const base = operatorUrlFrom(args);
 
-  // #4: `papercusp setup` (dispatcher passes --tab=setup) opens the unified
-  // Tutorial|Setup shell straight on the Setup tab — the linear concierge below
-  // stays the desktop's AUTO first-boot flow (`papercusp onboard`), not this entry.
-  if (args.tab === 'setup' || args.tab === 'tutorial') {
-    return execTutorialShell(base, [`--tab=${args.tab}`]);
+  // `papercusp setup` (--tab=setup) AND `papercusp tutorial` (--tutorial) both open the
+  // unified Tutorial|Setup shell directly — the shell decides the opening tab (Setup
+  // FIRST until required setup is finished; owner 2026-07-06: "the setup page should be
+  // the first thing, not the tutorial"). Routing tutorial here too drops the old linear
+  // concierge → tutorial-runner double layer (which jumped past setup on a machine with
+  // an agent already installed). Only the desktop's AUTO first-boot (`papercusp onboard`,
+  // no flags) still runs the linear concierge below.
+  if (args.tab === 'setup' || args.tab === 'tutorial' || args.tutorialOnly) {
+    return execTutorialShell(base, args.tutorialOnly ? ['--tutorial'] : [`--tab=${args.tab}`]);
   }
 
   const { select, confirm, password } = await import('@inquirer/prompts');

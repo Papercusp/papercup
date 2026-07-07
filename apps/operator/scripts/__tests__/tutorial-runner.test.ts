@@ -159,12 +159,20 @@ describe('nextTab / defaultTab / SHELL_TABS — the tab model (#4)', () => {
     expect(nextTab('tutorial')).toBe('setup');
     expect(nextTab('setup')).toBe('tutorial');
   });
-  it('defaultTab: explicit --tab wins, else the tutorial tab', () => {
+  it('defaultTab: setup is the FIRST thing until setup is complete (owner 2026-07-06)', () => {
+    // Incomplete (the default): ALWAYS open Setup — whatever command launched the shell.
+    // A new user can never be dropped into the tour with required setup unfinished.
     expect(defaultTab({ tab: 'setup' })).toBe('setup');
-    expect(defaultTab({ tab: 'tutorial' })).toBe('tutorial');
-    expect(defaultTab({ tutorial: true })).toBe('tutorial'); // `papercusp tutorial`
-    expect(defaultTab({})).toBe('tutorial'); // first-run handoff → the tour
-    expect(defaultTab({ tab: 'bogus' })).toBe('tutorial'); // unknown → safe default
+    expect(defaultTab({ tab: 'tutorial' })).toBe('setup'); // even an explicit tutorial tab yields
+    expect(defaultTab({ tutorial: true })).toBe('setup'); // `papercusp tutorial`, setup unfinished
+    expect(defaultTab({})).toBe('setup'); // first-run handoff, setup unfinished
+    expect(defaultTab({ tab: 'bogus' })).toBe('setup');
+  });
+  it('defaultTab: once setup is COMPLETE, the command chooses the tab', () => {
+    expect(defaultTab({ tab: 'setup' }, { setupComplete: true })).toBe('setup'); // `papercusp setup`
+    expect(defaultTab({ tab: 'tutorial' }, { setupComplete: true })).toBe('tutorial');
+    expect(defaultTab({ tutorial: true }, { setupComplete: true })).toBe('tutorial'); // re-entry → tour
+    expect(defaultTab({}, { setupComplete: true })).toBe('tutorial'); // handoff on a set-up box → tour
   });
 });
 
