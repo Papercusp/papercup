@@ -111,6 +111,20 @@ const COVERAGE_IGNORE_DIRS = new Set([
   '.vitest-tmp', 'vitest-tmp', 'scratch',
 ]);
 
+// Repo-root-relative dirs to skip WHOLESALE — matched by FULL POSIX path (not
+// basename like COVERAGE_IGNORE_DIRS, which matches at any depth), so ONLY the
+// intended dir is skipped. `templates/` is the vendored first-party template
+// store (local-first-party-template-bundling-2026-07-07): PORTABLE content copied
+// verbatim into a composed downstream app, whose `checks/*.test.ts` are the
+// DOWNSTREAM app's tests (they run inside that generated app, never in operator
+// CI), so they belong in no operator domain and must not surface in the /adv Tests
+// tab. A basename skip would ALSO hide the real operator test at
+// packages/operator-core/lib/agent-tools/templates/new-app.test.ts — hence this is
+// path-anchored to the top-level store alone.
+const COVERAGE_IGNORE_REL = new Set([
+  'templates',
+]);
+
 const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;
 
 /** Split a glob into [literalPrefix, remainder] — see testing-shell/glob.ts. */
@@ -164,7 +178,7 @@ async function walkAll(dir: string, match: RegExp = CANONICAL_TEST_RE, base = ''
   for (const e of entries) {
     const rel = base ? posix.join(base, e.name) : e.name;
     if (e.isDirectory()) {
-      if (COVERAGE_IGNORE_DIRS.has(e.name) || COVERAGE_IGNORE_RE.test(e.name)) continue;
+      if (COVERAGE_IGNORE_DIRS.has(e.name) || COVERAGE_IGNORE_RE.test(e.name) || COVERAGE_IGNORE_REL.has(rel)) continue;
       out.push(...await walkAll(join(dir, e.name), match, rel));
     } else if (e.isFile() && match.test(e.name)) {
       out.push(rel);
