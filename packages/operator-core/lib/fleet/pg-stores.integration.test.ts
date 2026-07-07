@@ -195,4 +195,34 @@ describe('status transitions', () => {
     expect(row.status).toBe('failed');
     expect(row.error_message).toBe('segfault');
   });
+
+  // WI-3302: durable-spawn/blueprint/chat launches call heartbeatSpawns() with no
+  // output-activity map, so last_output_at never gets a mid-run stamp for them —
+  // finishSpawnPg is their only remaining chance to record ANY non-null value.
+  it('finishSpawnPg stamps last_output_at when outputTail is non-null (cheap terminal fallback)', async () => {
+    await recordSpawnPg(sql, spawn('R'));
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'passed', outputTail: 'done.' });
+    const [row] = await sql<{ last_output_at: Date | null }[]>`
+      SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
+    expect(row.last_output_at).not.toBeNull();
+  });
+
+  it('finishSpawnPg leaves last_output_at null when there is no outputTail', async () => {
+    await recordSpawnPg(sql, spawn('R'));
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'failed' });
+    const [row] = await sql<{ last_output_at: Date | null }[]>`
+      SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
+    expect(row.last_output_at).toBeNull();
+  });
+
+  it('finishSpawnPg never regresses an earlier (mid-run heartbeat) last_output_at to an older value', async () => {
+    await recordSpawnPg(sql, spawn('R'));
+    await sql`UPDATE harness_shared.spawned_agents SET last_output_at = now() WHERE spawn_id = 'R'`;
+    const [before] = await sql<{ last_output_at: Date }[]>`
+      SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
+    await finishSpawnPg(sql, { workspaceId: WS, spawnId: 'R', status: 'passed', outputTail: 'done.' });
+    const [after] = await sql<{ last_output_at: Date }[]>`
+      SELECT last_output_at FROM harness_shared.spawned_agents WHERE spawn_id = 'R'`;
+    expect(after.last_output_at.getTime()).toBeGreaterThanOrEqual(before.last_output_at.getTime());
+  });
 });

@@ -31,8 +31,14 @@ import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coord
 import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  splitCarryNoteWalls,
+  type WallEntry,
 } from '../../carry-note';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
+import {
+  renderWallNagLine,
+  takeLoopWallNag as defaultTakeLoopWallNag,
+} from './loop-wall-nag';
 import {
   extractWakeRecipeQuery,
   findTopRecipeForWake as defaultFindTopRecipeForWake,
@@ -91,6 +97,8 @@ export interface LoopFireDeps {
   getLoopCarryNoteWithMeta?: typeof defaultGetLoopCarryNoteWithMeta;
   /** P-005c: the top-recipe lookup the SHORT wake form splices (fail-soft, time-bounded). */
   findWakeRecipe?: typeof defaultFindTopRecipeForWake;
+  /** P-006: read-and-clear the pending turn-settle wall nag (fail-soft). */
+  takeWallNag?: typeof defaultTakeLoopWallNag;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
@@ -205,6 +213,26 @@ export function isLoopWakeFullForm(fireNumber: number, hasCheckpoint: boolean): 
   return fireNumber <= 1 || fireNumber % LOOP_WAKE_FULL_TEMPLATE_EVERY === 1 || !hasCheckpoint;
 }
 
+/** Render the OPEN-WALLS block (P-006): the carried owner-gated commitments, as
+ *  rows, in EVERY wake form until cleared — rendered OUTSIDE the truncatable
+ *  checkpoint body so a capped note can never clip a commitment off the end. */
+export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: number = Date.now()): string | null {
+  if (!walls.length) return null;
+  const lines = walls.map((w) => {
+    const recheck = w.recheck ? ` — re-check: ${w.recheck}` : '';
+    const age =
+      w.sinceMs != null && Number.isFinite(w.sinceMs)
+        ? ` (standing ${humanAge(Math.max(0, nowMs - w.sinceMs))})`
+        : '';
+    return `  • ${w.claim}${recheck}${age}`;
+  });
+  return (
+    '⛔ OPEN WALLS — owner-gated / pending decisions you are carrying (re-check, do not re-litigate or ' +
+    're-declare resolved; clear a resolved one via loop:checkpoint { walls }):\n' +
+    lines.join('\n')
+  );
+}
+
 /**
  * Render the wake-turn text for fire #`fireNumber` (P-001b wake diet):
  *   - FULL form (the whole arm-time kickoff) per isLoopWakeFullForm;
@@ -212,6 +240,8 @@ export function isLoopWakeFullForm(fireNumber: number, hasCheckpoint: boolean): 
  *     goal) + the checkpoint block + an optional on-point recipe line (P-005c) + a
  *     one-line footer. The checkpoint IS the brief — re-sending the full contract
  *     every wake is what burned ~200k tokens/session.
+ * The wall-nag line and the walls block (P-006) render in BOTH forms — commitments
+ * ride every wake until cleared.
  */
 export function renderLoopWakeText(opts: {
   kickoff: string;
@@ -223,19 +253,28 @@ export function renderLoopWakeText(opts: {
   /** P-005c: the pre-rendered top-recipe one-liner (renderWakeRecipeLine), spliced
    *  into the SHORT form only — the moment-of-need reuse pointer. */
   recipeLine?: string | null;
+  /** P-006: open walls parsed OUT of the note (splitCarryNoteWalls) — rendered as
+   *  their own un-truncatable block in every form. */
+  walls?: ReadonlyArray<WallEntry>;
+  /** P-006: the pre-rendered turn-settle nag line (renderWallNagLine), when the
+   *  previous turn ended on a row-less owner-ask. */
+  wallNagLine?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
     nowMs: opts.nowMs,
     intervalSec: opts.intervalSec,
   });
+  const wallsBlock = renderLoopWallsBlock(opts.walls ?? [], opts.nowMs);
+  const priority = [opts.wallNagLine || null, wallsBlock].filter((s): s is string => Boolean(s));
   if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
-    return block == null ? opts.kickoff : `${opts.kickoff}\n\n${block}`;
+    return [opts.kickoff, ...priority, ...(block ? [block] : [])].join('\n\n');
   }
   const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
   return [
     `${firstLine} (wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
     '',
+    ...priority.flatMap((s) => [s, '']),
     block,
     '',
     ...(opts.recipeLine ? [opts.recipeLine, ''] : []),
@@ -352,14 +391,21 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     ownerId: input.targetOwnerId,
     workspaceId: input.workspaceId,
   }).catch(() => ({ note: null, updatedAtMs: null }));
+  // P-006: walls render OUTSIDE the truncatable checkpoint body (a commitment
+  // clipped off a capped note is a dissolved commitment) — split them out and
+  // render the block in every form. The pending turn-settle nag is taken
+  // (read-and-cleared) here, fail-soft.
+  const { body: checkpointBody, walls } = splitCarryNoteWalls(checkpointMeta.note);
+  const takeWallNag = deps.takeWallNag ?? defaultTakeLoopWallNag;
+  const nag = await takeWallNag({ harness: input.installSlug, ownerId: input.targetOwnerId }).catch(() => null);
   // P-005c: on a SHORT-form wake only, splice the one on-point recipe (the
   // moment-of-need reuse pointer). Fail-soft + time-bounded — a missing
   // embedder / slow lookup degrades to no line, never delays the fire.
-  const hasCheckpoint = Boolean((checkpointMeta.note ?? '').trim());
+  const hasCheckpoint = Boolean(checkpointBody.trim());
   let recipeLine: string | null = null;
   if (!isLoopWakeFullForm(fireNumber, hasCheckpoint)) {
     const findWakeRecipe = deps.findWakeRecipe ?? defaultFindTopRecipeForWake;
-    const hit = await findWakeRecipe(extractWakeRecipeQuery(checkpointMeta.note, armTimeKickoff), {
+    const hit = await findWakeRecipe(extractWakeRecipeQuery(checkpointBody, armTimeKickoff), {
       sql: input.sql,
     }).catch(() => null);
     if (hit) recipeLine = renderWakeRecipeLine(hit);
@@ -367,10 +413,12 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
     fireNumber,
-    checkpoint: checkpointMeta.note,
+    checkpoint: checkpointBody,
     checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,
     intervalSec: input.intervalSec,
     recipeLine,
+    walls,
+    wallNagLine: nag ? renderWallNagLine(nag) : null,
   });
 
   // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor

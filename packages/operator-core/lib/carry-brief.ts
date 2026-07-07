@@ -4,8 +4,9 @@
  *
  * A context boundary (warm compaction OR cold reset/recycle) loses the transcript
  * but NOT the state parked on the carry surfaces: the loop carry-note, held
- * work-item checkpoints, owner-scoped standing facts (walls / unverified claims),
- * armed awaits, and fleet membership. This module reads all of them in one place
+ * work-item checkpoints, open WALLS (structured owner-gated commitments, P-006),
+ * owner-scoped standing facts, armed awaits, and fleet membership. This module
+ * reads all of them in one place
  * so every boundary hands the successor the SAME brief:
  *
  *   (i)   the compaction watchdog's force-compact `/compact` FOCUS
@@ -26,7 +27,12 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { getLoopCarryNoteWithMeta, type LoopCarryNoteWithMeta } from './carry-note';
+import {
+  getLoopCarryNoteWithMeta,
+  splitCarryNoteWalls,
+  type LoopCarryNoteWithMeta,
+  type WallEntry,
+} from './carry-note';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -52,8 +58,12 @@ export interface CarryBrief {
   } | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. */
   heldItems: CarryBriefHeldItem[];
-  /** Owner-scoped standing facts — the walls / unverified-claims carrier (P-006
-   *  will structure walls further; until then they live here as facts). */
+  /** Open WALLS (P-006): owner-gated commitments as structured rows, parsed out of
+   *  the loop carry-note's `## Walls` section. The brief carries them VERBATIM —
+   *  they are open commitments, and prose dissolves them. */
+  walls: WallEntry[];
+  /** Owner-scoped standing facts — the softer standing-context carrier (structured
+   *  walls live in `walls` since P-006; facts remain for everything else). */
   facts: Array<{ key: string; body: string }>;
   /** Armed event awaits (infra inbox-wake rows excluded) — they survive the
    *  boundary and WILL wake the successor. */
@@ -168,7 +178,7 @@ export async function buildCarryBrief(
   opts: BuildCarryBriefOpts = {},
 ): Promise<CarryBrief> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId() ?? 'default';
-  const brief: CarryBrief = { ownerId, loop: null, heldItems: [], facts: [], awaits: [], fleet: null };
+  const brief: CarryBrief = { ownerId, loop: null, heldItems: [], walls: [], facts: [], awaits: [], fleet: null };
 
   try {
     const getStatus =
@@ -190,6 +200,8 @@ export async function buildCarryBrief(
         carryNote: meta.note,
         carryNoteUpdatedAtMs: meta.updatedAtMs,
       };
+      // P-006: walls ride the note's `## Walls` section — surface them structured.
+      brief.walls = splitCarryNoteWalls(meta.note).walls;
     }
   } catch {
     /* section stays null */
@@ -281,6 +293,11 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   const parts: string[] = [
     'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls',
   ];
+  if (brief.walls.length > 0) {
+    // P-006: open walls outrank everything else — they are open COMMITMENTS, kept
+    // VERBATIM (per-claim capped only to survive the hard focus cap).
+    parts.push(`OPEN WALLS (carry verbatim, do not re-declare resolved): ${brief.walls.map((w) => `"${cap(w.claim, 90)}"`).join('; ')}`);
+  }
   if (brief.heldItems.length > 0) {
     const ids = brief.heldItems.map((h) => h.id).join(', ');
     parts.push(
@@ -315,6 +332,17 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
  */
 export function renderCarryBriefColdExtras(brief: CarryBrief): string {
   const sections: string[] = [];
+  if (brief.walls.length > 0) {
+    // P-006: walls FIRST, as rows, VERBATIM — the redundancy with the note's own
+    // `## Walls` section is deliberate; commitments are the one carry class where
+    // double-delivery beats any byte saving.
+    const lines = brief.walls.map(
+      (w) => `  • ${w.claim}${w.recheck ? ` — re-check: ${w.recheck}` : ''}`,
+    );
+    sections.push(
+      `⛔ OPEN WALLS — owner-gated commitments you still carry (re-check, do not re-litigate or re-declare resolved; clear via loop:checkpoint { walls }):\n${lines.join('\n')}`,
+    );
+  }
   if (brief.heldItems.length > 0) {
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';

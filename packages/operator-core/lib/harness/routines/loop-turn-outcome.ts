@@ -29,6 +29,8 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { classifyFireError, recordFire as defaultRecordFire } from '../../autoloop';
+import { getLoopCarryNote as defaultGetLoopCarryNote, splitCarryNoteWalls } from '../../carry-note';
+import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
   classifyResumeTurnExit,
@@ -78,14 +80,23 @@ interface LoopRoutineRef {
   installSlug: string;
   workspaceId: string;
   intervalSec: number | null;
+  /** The pinned session the loop wakes — the carry-note / wall-nag scope key (P-006). */
+  targetOwnerId: string | null;
 }
 
 /** Resolve a loop routine's fire-gate key (install_slug + name) + workspace + interval. */
 async function getLoopRoutineRef(sql: Sql, routineId: string): Promise<LoopRoutineRef | null> {
   const rows = await sql<
-    Array<{ id: string; name: string; install_slug: string; workspace_id: string; reschedule_interval_sec: number | null }>
+    Array<{
+      id: string;
+      name: string;
+      install_slug: string;
+      workspace_id: string;
+      reschedule_interval_sec: number | null;
+      target_owner_id: string | null;
+    }>
   >`
-    SELECT id, name, install_slug, workspace_id, reschedule_interval_sec
+    SELECT id, name, install_slug, workspace_id, reschedule_interval_sec, target_owner_id
       FROM harness_shared.routines
      WHERE id = ${routineId} AND reschedule_interval_sec IS NOT NULL
      LIMIT 1
@@ -98,6 +109,7 @@ async function getLoopRoutineRef(sql: Sql, routineId: string): Promise<LoopRouti
     installSlug: r.install_slug,
     workspaceId: r.workspace_id,
     intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
+    targetOwnerId: r.target_owner_id ?? null,
   };
 }
 
@@ -124,6 +136,9 @@ export interface LoopTurnOutcomeDeps {
   sql?: Sql;
   recordFire?: typeof defaultRecordFire;
   now?: number;
+  /** P-006 turn-settle nag seams. */
+  getLoopCarryNote?: typeof defaultGetLoopCarryNote;
+  stashWallNag?: typeof defaultStashLoopWallNag;
 }
 
 /**
@@ -135,13 +150,36 @@ export async function handleLoopResumeTurnExit(
   d: DeliveryWork,
   raw: ResumeTurnExitRaw,
   deps: LoopTurnOutcomeDeps = {},
-): Promise<{ handled: boolean; routineId?: string; class?: string; rearmedMs?: number }> {
+): Promise<{ handled: boolean; routineId?: string; class?: string; rearmedMs?: number; nagged?: boolean }> {
   try {
     const routineId = loopRoutineIdFromSource(d.source);
     if (!routineId) return { handled: false }; // not a loop wake — nothing to attribute
     const now = deps.now ?? Date.now();
     const outcome = classifyResumeTurnExit(raw, now);
-    if (outcome.ok) return { handled: false, routineId }; // survived — reconcile owns the 'ok' reset
+    if (outcome.ok) {
+      // Survived — reconcile owns the 'ok' circuit reset. P-006 turn-settle nag: a clean
+      // detached turn's stdout tail IS its final text — an owner-ask there with ZERO wall
+      // rows is a commitment about to dissolve; stash the nag for the next fire. Pure
+      // detect FIRST (no DB unless it hits), then everything fail-soft.
+      let nagged = false;
+      try {
+        const excerpt = detectOwnerAsk(raw.stdoutTail);
+        if (excerpt) {
+          const sql = deps.sql ?? getOrgPg().sql;
+          const ref = await getLoopRoutineRef(sql, routineId);
+          if (ref?.targetOwnerId) {
+            const getNote = deps.getLoopCarryNote ?? defaultGetLoopCarryNote;
+            const note = await getNote({ harness: ref.installSlug, ownerId: ref.targetOwnerId });
+            if (splitCarryNoteWalls(note).walls.length === 0) {
+              const stash = deps.stashWallNag ?? defaultStashLoopWallNag;
+              nagged = await stash({ harness: ref.installSlug, ownerId: ref.targetOwnerId }, excerpt, now);
+              if (nagged) log(`loop '${routineId}' turn ended on a row-less owner-ask — nag stashed for the next wake`);
+            }
+          }
+        }
+      } catch { /* the nag is best-effort — never disturb the outcome contract */ }
+      return { handled: false, routineId, ...(nagged ? { nagged: true } : {}) };
+    }
 
     const sql = deps.sql ?? getOrgPg().sql;
     const recordFire = deps.recordFire ?? defaultRecordFire;
