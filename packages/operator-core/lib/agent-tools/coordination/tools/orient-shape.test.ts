@@ -170,3 +170,33 @@ describe('shapeOrient standard', () => {
     expect(shapeOrient({ me: 42, claimable: 'not-array' }, 'trimmed')).toMatchObject({ me: 42 });
   });
 });
+
+describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', () => {
+  it('fold #2: a post-compaction payload (recovery present) relaxes the inbox re-cap', () => {
+    const base = fixture(); // 10 inbox entries, summaries 400 chars
+    // baseline: NO recovery ⇒ the standard trimmed cap (5 entries, 140-char summaries) applies
+    const capped = shapeOrient(base, 'trimmed') as { inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown } };
+    expect(capped.inbox.recent).toHaveLength(5);
+    expect(capped.inbox.recentTruncated).toBeDefined();
+    expect(capped.inbox.recent[0].summary.length).toBeLessThanOrEqual(140);
+    // recovery present (⇒ afterCompaction) ⇒ all 10 entries survive with fuller bodies, no truncation
+    const recovered = shapeOrient({ ...base, recovery: { selfRecall: 'x' } }, 'trimmed') as {
+      inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown };
+    };
+    expect(recovered.inbox.recent).toHaveLength(10);
+    expect(recovered.inbox.recentTruncated).toBeUndefined();
+    expect(recovered.inbox.recent[0].summary.length).toBe(400); // 400 < relaxed 700-char cap ⇒ untruncated
+  });
+
+  it('fold #1: passes a compact fleetHealth through unchanged (not re-shaped away)', () => {
+    const fleetHealth = {
+      bees: { running: 3, working: 2 },
+      wake: { default: 'auto', stagedTotal: 1, stagedOwners: 1 },
+      governor: { anyPaused: false, paused: [] },
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeOrient({ ...fixture(), fleetHealth }, tier) as { fleetHealth: unknown };
+      expect(out.fleetHealth).toEqual(fleetHealth);
+    }
+  });
+});

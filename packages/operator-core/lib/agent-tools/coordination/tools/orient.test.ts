@@ -253,11 +253,90 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:catch-up': () => {
         throw new Error('capability: coord:read required');
       },
+      'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
     });
     const r = await composeOrient({}, call, 'me');
     expect(r.ok).toBe(true);
     expect(r.fleetCatchUp).toBeNull();
     expect(r.claimable).toHaveLength(2);
+  });
+
+  // ── fold #1 (compaction-fold-audit-2026-07-06): a compact fleet-health glance ──
+  const GLANCE = () => ({
+    ok: true,
+    bees: { running: 3, working: 2 },
+    wake: { default: 'auto', stagedTotal: 1, stagedOwners: 1 },
+    governor: { anyPaused: false, paused: [] },
+    activity: [{ x: 1 }],
+    tips: ['t'],
+    display: { title: 'human render' },
+  });
+
+  it('folds a COMPACT fleet-health glance for a fleet caller (bees/wake/governor only)', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+      'coord:glance': GLANCE,
+    });
+    const r = await composeOrient({}, call, 'me');
+    // COMPACT: only the health subset — no activity rows, tips, or display block.
+    expect(r.fleetHealth).toEqual({
+      bees: { running: 3, working: 2 },
+      wake: { default: 'auto', stagedTotal: 1, stagedOwners: 1 },
+      governor: { anyPaused: false, paused: [] },
+    });
+    // called with the lean agent audience + no activity rows (skip the human render).
+    expect(calls.find((c) => c.name === 'coord:glance')!.args).toMatchObject({ audience: 'su', activity_limit: 0 });
+  });
+
+  it('skips the fleet-health glance off-fleet, and when includeFleetHealth:false', async () => {
+    // non-fleet caller → no glance call, field absent
+    {
+      const { call, calls } = fakeCall({ ...CORE, 'coord:glance': GLANCE });
+      const r = await composeOrient({}, call, 'me');
+      expect(calls.some((c) => c.name === 'coord:glance')).toBe(false);
+      expect(r.fleetHealth).toBeUndefined();
+    }
+    // in a fleet but includeFleetHealth:false → no glance call
+    {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'coord:whoami': () => ({ fleetSlug: 'backend' }),
+        'coord:catch-up': () => ({ total: 0, rows: [] }),
+        'coord:glance': GLANCE,
+      });
+      const r = await composeOrient({ includeFleetHealth: false }, call, 'me');
+      expect(calls.some((c) => c.name === 'coord:glance')).toBe(false);
+      expect(r.fleetHealth).toBeUndefined();
+    }
+  });
+
+  it('best-effort: a failing fleet-health glance degrades to null, not a thrown orient', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+      'coord:glance': () => {
+        throw new Error('capability: coord:read required');
+      },
+    });
+    const r = await composeOrient({}, call, 'me');
+    expect(r.ok).toBe(true);
+    expect(r.fleetHealth).toBeNull();
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
+    expect(r.claimable).toHaveLength(2);
+  });
+
+  // ── fold #2 (compaction-fold-audit-2026-07-06): afterCompaction beefs the inbox ──
+  it('afterCompaction folds MORE inbox entries + fuller bodies (an explicit inboxLimit still wins)', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    await composeOrient({ afterCompaction: true }, call, 'me');
+    expect(calls.find((c) => c.name === 'coord:inbox')!.args).toMatchObject({ limit: 25, max_body_chars: 800 });
+
+    const { call: c2, calls: k2 } = fakeCall({ ...CORE });
+    await composeOrient({ afterCompaction: true, inboxLimit: 7 }, c2, 'me');
+    expect(k2.find((c) => c.name === 'coord:inbox')!.args).toMatchObject({ limit: 7, max_body_chars: 800 });
   });
 
   // ── EI-8300: mode:'monitor' skips the heavy legs entirely (not just capped output) ──
@@ -274,6 +353,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r.facts).toBeUndefined();
       expect(r.planEvents).toBeUndefined();
       expect(r.fleetCatchUp).toBeUndefined();
+      expect(r.fleetHealth).toBeUndefined(); // fold #1 skipped on a monitor tick too
       expect(r.recipes).toBeUndefined();
       expect(r.memory).toBeUndefined(); // no recall even though `intent` was passed
       expect(r.intentDeclared).toBe(true); // declare-intent still fires (cheap, peer-visible)
@@ -282,6 +362,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(called.has('work_items:list')).toBe(false);
       expect(called.has('coord:plan-events')).toBe(false);
       expect(called.has('coord:catch-up')).toBe(false);
+      expect(called.has('coord:glance')).toBe(false); // fold #1: no fleet-health glance on a monitor tick
+      expect(called.has('coord:whoami')).toBe(false); // fleet block skipped wholesale
       expect(called.has('recipes:search')).toBe(false);
       expect(called.has('memory:search')).toBe(false);
       // the core kept legs still run
