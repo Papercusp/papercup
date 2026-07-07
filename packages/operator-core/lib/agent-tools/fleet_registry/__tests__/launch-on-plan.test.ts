@@ -6,7 +6,7 @@
  * Importing the module also validates its whole import chain compiles + loads (the
  * tool self-registers via defineTool on import).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const spawnConsoleMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
@@ -698,6 +698,92 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// WI-1811 (fleet-launch-agent-inheritance-2026-07-03#P-007): the P-005 idempotency guard's
+// TOOL-LEVEL behavior — a second in-window fleet:launch-on-plan call must open ZERO members
+// (no-op, not a second wave) and hand the leader the exact standing-job notice, not a bare
+// error. Store-level claim semantics (won/lost, window, concurrency) are covered in
+// agent-fleets-store.integration.test.ts; this pins what the HANDLER does with a lost claim.
+describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire inside the window opens 0 members)', () => {
+  beforeEach(async () => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockReset();
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockReset();
+  });
+
+  afterEach(async () => {
+    // Restore the module-level default (won:true) so later describe blocks that don't touch
+    // this mock themselves aren't left seeing this block's last (won:false) resolution.
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockReset();
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ won: true, at: 1 });
+  });
+
+  it('a lost claim opens 0 members — spawnConsole is never called', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      won: false,
+      priorAt: Date.now() - 5_000,
+      priorCount: 2,
+    });
+    const res = await tool.handler(
+      { name: 'Refire Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toEqual([]);
+    expect(payload.failed).toEqual([]);
+    expect(payload.relaunchSuppressed).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('the notice names the fleet, the prior member count/age, and tells the leader not to re-call', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      won: false,
+      priorAt: Date.now() - 12_000,
+      priorCount: 3,
+    });
+    const res = await tool.handler(
+      { name: 'Refire Fleet', plan: 'drain-me', harness: 'papercusp', count: 3 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).toMatch(/Fleet `refire-fleet` was already launched — 3 members opened \d+s ago \(possibly by this very session\)\./);
+    expect(payload.message).toContain(
+      'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
+    );
+    expect(payload.message).toContain('Until the plan `drain-me` is drained, your standing job each cycle:');
+    expect(payload.message).toContain(
+      'Those members were launched with this MEMBER OPERATING BASELINE (do NOT re-issue or contradict it; a later custom brief still layers below it):',
+    );
+    // Every LEADER_STANDING_JOB point + MEMBER_BASELINE_RULES headline is enumerated, not just referenced.
+    for (const point of LEADER_STANDING_JOB) expect(payload.message).toContain(point);
+    for (const rule of MEMBER_BASELINE_RULES) expect(payload.message).toContain(rule.head);
+  });
+
+  it('singularizes "member" (not "members") when exactly one prior member was opened', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      won: false,
+      priorAt: Date.now() - 1_000,
+      priorCount: 1,
+    });
+    const res = await tool.handler(
+      { name: 'Solo Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).toMatch(/1 member opened \d+s ago/);
+    expect(payload.message).not.toMatch(/1 members opened/);
   });
 });
 
