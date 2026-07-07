@@ -28,24 +28,31 @@ plans:
 This runbook still describes the original (2026-05-31) shape. Two parts now mislead:
 
 1. **Plan-review is no longer a push source — there is no 4th producer.** The
-   `harness_plan_review` source and its `POST /api/internal/plan-review-event`
-   endpoint were **retired by B-14/P-101**. There is no live writer and no such
-   `defineTool` — only stale comments remain in `harness-fs-watcher.ts`. There are
-   now **three** producer call-sites (escalation, smoke-fail, needs-human), not
-   four, and `plan-review` is **not** a notify kind (`AttentionNotifyKind` is
-   `'needs-human' | 'intervention' | 'smoke-fail'`). needs-human plan items are the
-   review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts`
-   (~line 309), `apps/operator/bin/host-bootstrap.ts` (~line 467),
-   `packages/operator-core/lib/harness-state/table-registry.ts` (~line 302) — line
+   `harness_plan_review` source was **retired by B-14/P-101**, and its
+   `POST /api/internal/plan-review-event` endpoint FILE (`plan-review-event.ts`)
+   is now **deleted outright — not moved.** There is no live writer and no such
+   `defineTool` — only stale comments remain in `harness-fs-watcher.ts` (~lines
+   379-380, 476-477, 588). There are now **three** producer call-sites (escalation,
+   smoke-fail, needs-human), not four, and `plan-review` is **not** a notify kind
+   (`AttentionNotifyKind` is `'needs-human' | 'intervention' | 'smoke-fail'`,
+   confirmed at `packages/operator-core/lib/attention-notify.ts:26`). needs-human
+   plan items are the review gate now. See
+   `packages/operator-core/lib/agent-tools/plans/attention.ts` (~line 309),
+   `apps/operator/bin/host-bootstrap.ts` (~line 549),
+   `packages/operator-core/lib/harness-state/table-registry.ts` (~line 308) — line
    numbers drift as the surrounding files grow, so treat these as approximate;
    search each file for `plan-review`/`harness_plan_review` if they've moved
-   again. Ignore the `plan-review` row in the importance table and the
-   `plan-review` row in the "four producer call-sites" table below.
+   again. So, in the body below: (a) ignore the `plan-review` row in the importance
+   table and the `plan-review` row in the "four producer call-sites" table, and
+   (b) the "Where those rows are written" section now lists only **two** live
+   producer endpoints — `escalation-event` and `smoke-test-event`; its
+   `POST /api/internal/plan-review-event` → `harness_plan_review` bullet is dead
+   (that endpoint file is gone).
 2. **The native desktop OS notification is now opt-in (disabled by default).** Since
    the 2026-06-18 owner request it fires only when
    `localStorage['papercusp:desktopOsNotifications'] === '1'` **and** running in the
    Tauri shell. The in-app sonner toast still fires **always** — only the OS-level
-   popup changed. See `apps/operator/app/_components/DesktopAttentionNotifier.tsx:62-79`.
+   popup changed. See `apps/operator/app/_components/DesktopAttentionNotifier.tsx:62-82`.
 
 Path note: the internal `*-event` endpoints moved from app routes to
 `packages/operator-core/lib/endpoint-route/routes/internal/`. Everything else
