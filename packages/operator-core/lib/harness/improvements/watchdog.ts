@@ -1471,14 +1471,41 @@ export function escalationSignalsFromRows(rows: EscalationRow[]): WatchdogSignal
     scope: `harness:${r.harness_slug}`,
   }));
 }
-/** unresolved-escalation: a harness escalation with no supervisor_notes (unaddressed). */
+/** The two green-checkpoint-gate escalation phases (release-actions.ts's in-routine
+ *  `GATE_STALL_PHASE` + green-stall-watchdog.ts's standalone `WATCHDOG_PHASE`) — the
+ *  ONLY phases whose clear path keys on a LIVE `system:green-checkpoint` routine
+ *  (EI-8396), so they're the only ones this dead-install guard applies to. */
+const GREEN_CHECKPOINT_ESCALATION_PHASES = ['green-checkpoint-stall', 'green-checkpoint-watchdog'];
+
+/** unresolved-escalation: a harness escalation with no supervisor_notes (unaddressed).
+ *  EI-8396: a green-checkpoint-{stall,watchdog} escalation row is cleared by
+ *  trackGateStall / green-stall-watchdog.ts matching `harness_slug = ctx.installSlug`
+ *  (release-actions.ts) — so a row that survives an install-slug RENAME (e.g. the
+ *  papercup → papercusp rename left a row keyed under the dead `papercup` slug) can
+ *  NEVER be cleared by the live install and re-fires this collector every tick
+ *  forever, re-dispatching an auto-implement worker each time (EI-7690 and the
+ *  EI-7557/7569/7575 storm). A dead install-slug has no LIVE `system:green-checkpoint`
+ *  routine (the rename leaves the row un-migrated) — skip exactly those two phases
+ *  when that's true, so a genuinely dead install-slug's stale escalation can't loop
+ *  forever; every OTHER phase (and a live install's green-checkpoint escalation) is
+ *  untouched. */
 export async function collectEscalationSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
   const rows = await sql<EscalationRow[]>`
-    SELECT harness_slug, phase
-      FROM harness_shared.harness_escalations
-     WHERE workspace_id = ${workspaceId}
-       AND COALESCE(escalation, '') <> ''
-       AND COALESCE(supervisor_notes, '') = ''
+    SELECT e.harness_slug, e.phase
+      FROM harness_shared.harness_escalations e
+     WHERE e.workspace_id = ${workspaceId}
+       AND COALESCE(e.escalation, '') <> ''
+       AND COALESCE(e.supervisor_notes, '') = ''
+       AND NOT (
+         e.phase = ANY(${GREEN_CHECKPOINT_ESCALATION_PHASES})
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.routines r
+            WHERE r.workspace_id = ${workspaceId}
+              AND r.install_slug = e.harness_slug
+              AND r.name = 'green-checkpoint'
+              AND r.active
+         )
+       )
      LIMIT 10`;
   return escalationSignalsFromRows(rows);
 }
