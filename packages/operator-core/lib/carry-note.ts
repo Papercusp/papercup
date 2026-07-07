@@ -337,6 +337,36 @@ export async function getLoopCarryNote(ref: LoopCarryNoteRef): Promise<string | 
   }
 }
 
+/** A loop carry-note plus its write instant — the staleness input the wake
+ *  renderer needs (compaction-continuity-hardening-2026-07-07 P-002): a note is
+ *  only trustworthy relative to WHEN it was written, so the fire path reads both
+ *  in one query instead of the note alone. */
+export interface LoopCarryNoteWithMeta {
+  note: string | null;
+  /** Epoch ms of the note's last write (carry_notes.updated_ts), null when no note. */
+  updatedAtMs: number | null;
+}
+
+/** Read an su AUTO loop's carry-note WITH its write instant. Same pinned-then-
+ *  any-workspace precedence as {@link getLoopCarryNote}, collapsed to one query
+ *  (the pinned coord-workspace row wins; else the newest row for the scope). */
+export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<LoopCarryNoteWithMeta> {
+  const scope = loopScope(ref.harness, ref.ownerId);
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ note: string | null; updated_ts: string | number | null }[]>`
+      SELECT note, updated_ts FROM harness_shared.carry_notes
+       WHERE scope = ${scope} AND note IS NOT NULL
+       ORDER BY (workspace_id = ${loopCarryWs()}) DESC, updated_ts DESC LIMIT 1`;
+    const note = (rows[0]?.note ?? '').trim();
+    if (note.length === 0) return { note: null, updatedAtMs: null };
+    const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
+    return { note, updatedAtMs: Number.isFinite(ts) ? ts : null };
+  } catch {
+    return { note: null, updatedAtMs: null };
+  }
+}
+
 /** Read an su AUTO loop's carry-JOURNAL (newest first) — its recent trajectory.
  *  Same pinned-then-any-workspace resolution as {@link getLoopCarryNote}. */
 export async function getLoopCarryJournal(ref: LoopCarryNoteRef): Promise<CarryJournalEntry[]> {

@@ -32,6 +32,23 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-urgent' }));
 vi.mock('./sync/hyperbee/fanout-projection', () => ({ fanoutForObject: vi.fn(async () => {}) }));
+// The lifecycle-event emits are fire-and-forget into the REAL events engine —
+// and the fakeSql above answers EVERY query with [{ id: 'WI-9001' }], so the
+// engine's await-row parse hit `undefined.startsWith` and console.warn'd at a
+// TIMING-DEPENDENT moment (often inside a later test on a loaded machine) →
+// vitest-fail-on-console flaked this whole file and red-pinned the release gate
+// (2026-07-07, WI-3309 investigation; 4 consecutive gate reds). Spy the emit
+// seam out entirely — the event leg has its own coverage in
+// work-items-events.test.ts; this file is about the urgent-wake hook.
+vi.mock('./work-items-events', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  emitWorkItemCreatedEvent: vi.fn(),
+  emitWorkItemClaimedEvent: vi.fn(),
+  emitClaimReleasedEvent: vi.fn(),
+  emitWorkItemBlockedEvent: vi.fn(),
+  emitWorkItemStatusEvent: vi.fn(),
+  emitWorkItemSettledEvents: vi.fn(async () => {}),
+}));
 vi.mock('./issue-blocks-merge', () => ({
   featureRef: (h: string, id: string) => `${h}#${id}`,
   FEATURE_KIND: 'feature',

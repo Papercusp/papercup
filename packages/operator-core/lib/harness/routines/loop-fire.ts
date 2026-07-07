@@ -28,7 +28,10 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
-import { getLoopCarryNote as defaultGetLoopCarryNote } from '../../carry-note';
+import {
+  getLoopCarryNote as defaultGetLoopCarryNote,
+  getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+} from '../../carry-note';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   checkLoopDeadMan as defaultCheckLoopDeadMan,
@@ -61,6 +64,9 @@ export interface LoopFireInput {
   /** The routine's payload_template — carries the loop's `kickoff` (wake-turn text) +
    *  optional `costCapCents` (the cost-cap). */
   payloadTemplate: Record<string, unknown> | null;
+  /** The loop's interval (routines.reschedule_interval_sec) — the P-002 checkpoint
+   *  staleness ceiling scales with it. Optional/back-compat: absent ⇒ the 30min floor. */
+  intervalSec?: number | null;
   /** Seam for the cost-cap's DB reads/writes (defaults to the admin pool). */
   sql?: Sql;
 }
@@ -76,6 +82,8 @@ export interface LoopFireDeps {
   readFireCount?: typeof defaultReadLoopFireCount;
   /** EI-7809: read the CURRENT loop:checkpoint at fire time so wake text does not stale at arm time. */
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
+  /** P-002: the meta-carrying read (note + write instant) the staleness stamp needs. */
+  getLoopCarryNoteWithMeta?: typeof defaultGetLoopCarryNoteWithMeta;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
@@ -126,6 +134,93 @@ export function spliceCurrentLoopCheckpoint(kickoff: string, checkpoint: string 
     '',
     'Current loop:checkpoint (fresh at fire time; prefer this over any stale arm-time goal text if they conflict):',
     clipped,
+  ].join('\n');
+}
+
+// ── Wake-text rendering (compaction-continuity-hardening-2026-07-07 P-001/P-002) ──
+//
+// Measured on a live warm AUTO session (2026-07-07): the ~3KB arm-time kickoff was
+// re-delivered VERBATIM on all 263 wakes of one session ≈ ~200k tokens of repeated
+// boilerplate — the single biggest recurring context injection, directly accelerating
+// compaction frequency. And the spliced checkpoint was labeled "fresh at fire time"
+// when only its READ is fresh — a checkpoint WRITTEN before turns the agent can no
+// longer see kept instructing an already-done "next action" (the re-report trap).
+
+/** Re-deliver the FULL arm-time kickoff every Nth wake (1, 11, 21, …) as a contract
+ *  refresher; all other wakes get the short form. */
+export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
+
+/** Checkpoint staleness ceiling: older than max(3 intervals, 30min) ⇒ the note likely
+ *  predates turns the agent cannot see — demote its authority instead of asserting it. */
+export function loopCheckpointStaleMs(intervalSec: number | null | undefined): number {
+  const iv = typeof intervalSec === 'number' && Number.isFinite(intervalSec) && intervalSec > 0 ? intervalSec : 60;
+  return Math.max(3 * iv * 1000, 30 * 60_000);
+}
+
+function humanAge(ms: number): string {
+  if (ms < 90_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  if (ms < 90 * 60_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 36 * 3_600_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+/** Render the fire-time checkpoint block with an explicit WRITE-AGE stamp. A fresh
+ *  note is the single authority for the turn; a stale one is demoted to a lead the
+ *  agent must reconcile — never re-execute — because turns it cannot see may have
+ *  happened since (P-002; the exact post-compaction trap this session hit). */
+export function renderLoopCheckpointBlock(
+  checkpoint: string | null | undefined,
+  opts: { updatedAtMs?: number | null; nowMs?: number; intervalSec?: number | null } = {},
+): string | null {
+  const note = (checkpoint ?? '').trim();
+  if (!note) return null;
+  const clipped =
+    note.length > LOOP_WAKE_CHECKPOINT_MAX_CHARS
+      ? `${note.slice(0, LOOP_WAKE_CHECKPOINT_MAX_CHARS)}\n… (loop:checkpoint truncated in wake prompt)`
+      : note;
+  const now = opts.nowMs ?? Date.now();
+  const ageMs = opts.updatedAtMs != null && Number.isFinite(opts.updatedAtMs) ? Math.max(0, now - opts.updatedAtMs) : null;
+  const stale = ageMs != null && ageMs > loopCheckpointStaleMs(opts.intervalSec);
+  const header = stale
+    ? `⚠ Your loop:checkpoint is STALE (written ${humanAge(ageMs!)} ago — turns you cannot see may have happened since). ` +
+      'Treat it as a LEAD, not the truth: RECONCILE against live state first, and do NOT re-execute its "next action" ' +
+      'verbatim (it may already be done). Refresh it with loop:checkpoint { did, left, insight, next } before this turn ends:'
+    : `Current loop:checkpoint (you wrote it ${ageMs != null ? humanAge(ageMs) + ' ago' : 'earlier'}; read fresh at fire time) — this is the authority for what to do this wake:`;
+  return `${header}\n${clipped}`;
+}
+
+/**
+ * Render the wake-turn text for fire #`fireNumber` (P-001b wake diet):
+ *   - FULL form (the whole arm-time kickoff) on fire 1, on every
+ *     LOOP_WAKE_FULL_TEMPLATE_EVERY-th wake after (11, 21, …), and whenever there is
+ *     NO checkpoint (the kickoff is then the only brief the agent has);
+ *   - SHORT form otherwise: the kickoff's first line (which carries the 🔁 marker +
+ *     goal) + the checkpoint block + a one-line footer. The checkpoint IS the brief —
+ *     re-sending the full contract every wake is what burned ~200k tokens/session.
+ */
+export function renderLoopWakeText(opts: {
+  kickoff: string;
+  fireNumber: number;
+  checkpoint: string | null | undefined;
+  checkpointUpdatedAtMs?: number | null;
+  intervalSec?: number | null;
+  nowMs?: number;
+}): string {
+  const block = renderLoopCheckpointBlock(opts.checkpoint, {
+    updatedAtMs: opts.checkpointUpdatedAtMs,
+    nowMs: opts.nowMs,
+    intervalSec: opts.intervalSec,
+  });
+  const refresher = opts.fireNumber % LOOP_WAKE_FULL_TEMPLATE_EVERY === 1; // 1, 11, 21, …
+  const full = opts.fireNumber <= 1 || refresher || block == null;
+  if (full) return block == null ? opts.kickoff : `${opts.kickoff}\n\n${block}`;
+  const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
+  return [
+    `${firstLine} (wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
+    '',
+    block,
+    '',
+    'When this unit settles: refresh loop:checkpoint, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
   ].join('\n');
 }
 
