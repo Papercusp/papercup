@@ -321,13 +321,21 @@ export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
             by: FIRST_PARTY_RUBRIC_SEED_OWNER,
             status: 'active',
           });
-        } catch {
+        } catch (err) {
           ok = false; // one broken/blocked rubric never stops the rest
+          console.warn(
+            `[rubrics] first-party seed failed for '${r.rubricId}' (will retry on a later read):`,
+            err instanceof Error ? err.message : err,
+          );
         }
       }
     }
-  } catch {
+  } catch (err) {
     ok = false;
+    console.warn(
+      '[rubrics] first-party seed deferred (store/bundle unavailable; will retry on a later read):',
+      err instanceof Error ? err.message : err,
+    );
   }
   rubricSeedState = ok ? 'done' : 'pending';
 }

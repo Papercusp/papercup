@@ -40,6 +40,52 @@ describe('createFailoverPool (EI-535) — load distribution', () => {
   });
 });
 
+describe('createFailoverPool — msSinceReadmit (cold-rest causation probe, WI-3151)', () => {
+  it('undefined for an account that was never exhausted (never cold-rested)', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    t = 5000;
+    expect(p.msSinceReadmit!('a')).toBeUndefined();
+  });
+
+  it('undefined while an account is still paused (not yet a rejoin)', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 60_000); // paused until t=61000
+    t = 30_000; // still inside the pause
+    expect(p.msSinceReadmit!('a')).toBeUndefined();
+  });
+
+  it('after a NATURAL expiry, reports ms since the pause boundary (exhaustedUntil retains the past reset)', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 60_000); // reset boundary = 61000
+    t = 61_000 + 4_000; // 4s past the boundary → back in rotation (rejoin is implicit via available())
+    expect(p.msSinceReadmit!('a')).toBe(4_000);
+  });
+
+  it('after an EARLY readmit(), reports ms since the readmit moment', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000); // long pause
+    t = 10_000;
+    p.readmit!('a'); // proxy recovered → rejoin at t=10000
+    t = 12_500; // 2.5s later
+    expect(p.msSinceReadmit!('a')).toBe(2_500);
+  });
+
+  it('a re-exhaustion drops the stale readmit stamp — the next rejoin measures from the NEW pause', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 30_000);
+    t = 30_500;
+    p.readmit!('a'); // early readmit at 30500 (stamps readmittedAt)
+    p.onExhausted('a', t + 60_000); // immediately re-exhausted at 30500 → boundary now 90500, stamp cleared
+    t = 90_500 + 1_000; // 1s past the NEW boundary
+    expect(p.msSinceReadmit!('a')).toBe(1_000);
+  });
+});
+
 describe('accountLoadKey — load-aware selection (load-aware-routing-2026-06-29)', () => {
   it('an idle, clean, fresh-proxy account scores 0 (the happy path — the proactive walk skips it)', () => {
     expect(accountLoadKey({})).toBe(0);
