@@ -13,6 +13,7 @@ import {
   pickGitEncryption,
   assertEpochSealIdentityPresent,
   encodeEpochKeysFile,
+  collectSeedEpochKeys,
   graftCorestoreEntry,
   readReusableCorestore,
 } from './cut-seed-cli';
@@ -148,16 +149,57 @@ function manifest(stores: SeedStoreEntry[], cutAtEpoch = 0): SeedManifest {
   return { seedFormatVersion: 1, hiveId: 'papercusp', cutAtEpoch, cutHlc: '0:0', cutTs: 1, stores };
 }
 
-describe('encodeEpochKeysFile (WI-3232 bundled epoch key)', () => {
+describe('encodeEpochKeysFile (WI-3232 bundled epoch keys, WI-3297 multi-epoch)', () => {
+  const key = (fill: number) => Uint8Array.from(Array.from({ length: 32 }, () => fill));
+
   it('serializes { hive: { epoch: base64 } } for a 32-byte key', () => {
-    const key = Uint8Array.from(Array.from({ length: 32 }, (_, i) => i));
-    const out = JSON.parse(encodeEpochKeysFile('papercusp', 0, key));
-    expect(out).toEqual({ papercusp: { '0': Buffer.from(key).toString('base64') } });
+    const k = Uint8Array.from(Array.from({ length: 32 }, (_, i) => i));
+    const out = JSON.parse(encodeEpochKeysFile('papercusp', new Map([[0, k]])));
+    expect(out).toEqual({ papercusp: { '0': Buffer.from(k).toString('base64') } });
     // round-trips back to the exact 32 bytes
-    expect(Uint8Array.from(Buffer.from(out.papercusp['0'], 'base64'))).toEqual(key);
+    expect(Uint8Array.from(Buffer.from(out.papercusp['0'], 'base64'))).toEqual(k);
+  });
+  it('serializes MULTIPLE epochs under one hive, epoch-sorted', () => {
+    const out = JSON.parse(
+      encodeEpochKeysFile('papercusp', new Map([[2, key(2)], [0, key(0)], [1, key(1)]])),
+    );
+    expect(Object.keys(out.papercusp)).toEqual(['0', '1', '2']);
+    expect(out.papercusp['2']).toBe(Buffer.from(key(2)).toString('base64'));
   });
   it('rejects a non-32-byte key (never ship a truncated seal key)', () => {
-    expect(() => encodeEpochKeysFile('papercusp', 0, new Uint8Array(16))).toThrow(/32 bytes/);
+    expect(() => encodeEpochKeysFile('papercusp', new Map([[0, new Uint8Array(16)]]))).toThrow(/32 bytes/);
+  });
+  it('rejects an empty map (an empty file would silently defer every op)', () => {
+    expect(() => encodeEpochKeysFile('papercusp', new Map())).toThrow(/no epoch keys/);
+  });
+});
+
+describe('collectSeedEpochKeys (WI-3297 historical-epoch bundling)', () => {
+  const key = (fill: number) => Uint8Array.from(Array.from({ length: 32 }, () => fill));
+
+  it('bundles the current key plus every keychain-present historical epoch (load-only)', async () => {
+    const loadKey = vi.fn(async (_h: string, epoch: number) => (epoch === 1 ? null : key(epoch)));
+    const warn = vi.fn();
+    const keys = await collectSeedEpochKeys({ hive: 'papercusp', cutAtEpoch: 3, currentKey: key(9), loadKey, warn });
+    expect([...keys.keys()].sort((a, b) => a - b)).toEqual([0, 2, 3]);
+    expect(keys.get(3)).toEqual(key(9)); // current epoch = the seal-derived key, never re-loaded
+    expect(loadKey.mock.calls.map(([, e]) => e)).toEqual([0, 1, 2]); // never touches cutAtEpoch
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/epoch 1 key NOT in the keychain/);
+  });
+  it('cutAtEpoch 0 bundles exactly the current key with no keychain reads', async () => {
+    const loadKey = vi.fn();
+    const keys = await collectSeedEpochKeys({ hive: 'papercusp', cutAtEpoch: 0, currentKey: key(7), loadKey });
+    expect([...keys.entries()]).toEqual([[0, key(7)]]);
+    expect(loadKey).not.toHaveBeenCalled();
+  });
+  it('propagates a loader failure (unreadable ≠ absent — fail closed)', async () => {
+    const loadKey = vi.fn(async () => {
+      throw new Error('keychain read FAILED');
+    });
+    await expect(
+      collectSeedEpochKeys({ hive: 'papercusp', cutAtEpoch: 1, currentKey: key(1), loadKey, warn: () => {} }),
+    ).rejects.toThrow(/keychain read FAILED/);
   });
 });
 

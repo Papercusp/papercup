@@ -57,9 +57,11 @@
  *                          --out) is the normal case: the corestore is moved aside across the outDir wipe
  *                          and moved back. Requires the git half (not --no-git); epoch must match.
  *   --emit-epoch-key       WI-3232 (owner "Full pot, plaintext seed", alpha): also write epoch-keys.json
- *                          (the hive epoch key) into the seed so a FRESH packaged install decrypts the pot
- *                          OFFLINE (no admission). Ships the hive READABLE — deliberate, flag-gated. Needs
- *                          an epoch context (--workspace-id or --epoch).
+ *                          into the seed so a FRESH packaged install decrypts the pot OFFLINE (no
+ *                          admission). WI-3297: bundles the CURRENT epoch key plus every HISTORICAL
+ *                          epoch key still in the keychain (load-only — a missing one is warned, never
+ *                          minted), so ops sealed under past epochs decrypt too. Ships the hive READABLE
+ *                          — deliberate, flag-gated. Needs an epoch context (--workspace-id or --epoch).
  *   --json                 print the manifest + size report as JSON
  */
 
@@ -81,6 +83,7 @@ import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry 
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
+import { loadEpochKeyIfPresent } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-crypto-impl';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -200,13 +203,56 @@ export async function assertEpochSealIdentityPresent(inp: {
  *  Shape: { "<hive>": { "<epoch>": "<base64 32-byte key>" } }. */
 export const EPOCH_KEYS_FILE = 'epoch-keys.json';
 
-/** WI-3232 (owner "Full pot, plaintext seed", alpha-authorised): serialize the hive
- *  epoch key so the bundled EpochKeyProvider can unwrap the seed's git bundles AND
+/** WI-3232 (owner "Full pot, plaintext seed", alpha-authorised): serialize hive
+ *  epoch keys so the bundled EpochKeyProvider can unwrap the seed's git bundles AND
  *  the corestore content with NO federation join. Ships the hive READABLE — only
- *  emitted behind the explicit --emit-epoch-key flag. */
-export function encodeEpochKeysFile(hive: string, epoch: number, key: Uint8Array): string {
-  if (key.length !== 32) throw new Error(`epoch key must be 32 bytes, got ${key.length}`);
-  return JSON.stringify({ [hive]: { [String(epoch)]: Buffer.from(key).toString('base64') } }, null, 2) + '\n';
+ *  emitted behind the explicit --emit-epoch-key flag. WI-3297: takes the FULL
+ *  per-epoch map (the provider already resolves any epoch in the doc) — seed logs
+ *  carry ops sealed under PAST epochs, and a single-epoch file leaves those
+ *  permanently undecryptable on a fresh install (the epoch-decrypt-fail DROP class). */
+export function encodeEpochKeysFile(hive: string, keys: ReadonlyMap<number, Uint8Array>): string {
+  if (keys.size === 0) throw new Error('encodeEpochKeysFile: no epoch keys to emit');
+  const byEpoch: Record<string, string> = {};
+  for (const epoch of [...keys.keys()].sort((a, b) => a - b)) {
+    const key = keys.get(epoch)!;
+    if (key.length !== 32) throw new Error(`epoch ${epoch} key must be 32 bytes, got ${key.length}`);
+    byEpoch[String(epoch)] = Buffer.from(key).toString('base64');
+  }
+  return JSON.stringify({ [hive]: byEpoch }, null, 2) + '\n';
+}
+
+/**
+ * WI-3297: assemble the full epoch-key map for --emit-epoch-key — the CURRENT
+ * epoch's key (already derived by the seal path, get-or-create semantics
+ * unchanged) plus every HISTORICAL epoch 0..cutAtEpoch-1 whose key the keychain
+ * still holds, via a load-ONLY read (deriveEpochKey would MINT a fresh key for
+ * any epoch the keychain misses and ship it as if real). A missing historical
+ * key is warned and skipped — its ops stay undecryptable exactly as before,
+ * never silently re-keyed.
+ */
+export async function collectSeedEpochKeys(inp: {
+  readonly hive: string;
+  readonly cutAtEpoch: number;
+  readonly currentKey: Uint8Array;
+  /** Injected for tests; defaults to the real load-only keychain read. */
+  readonly loadKey?: (hive: string, epoch: number) => Promise<Uint8Array | null>;
+  readonly warn?: (msg: string) => void;
+}): Promise<Map<number, Uint8Array>> {
+  const warn = inp.warn ?? ((m: string) => console.warn(m));
+  const loadKey = inp.loadKey ?? loadEpochKeyIfPresent;
+  const keys = new Map<number, Uint8Array>();
+  for (let epoch = 0; epoch < inp.cutAtEpoch; epoch++) {
+    const key = await loadKey(inp.hive, epoch);
+    if (key) keys.set(epoch, key);
+    else {
+      warn(
+        `[cut-seed] ⚠ historical epoch ${epoch} key NOT in the keychain — ops sealed under it stay ` +
+          'undecryptable on seeded installs (bundling every epoch the keychain holds; never minting).',
+      );
+    }
+  }
+  keys.set(inp.cutAtEpoch, inp.currentKey);
+  return keys;
 }
 
 /**
@@ -475,10 +521,15 @@ async function main(): Promise<void> {
         }
         key = Uint8Array.from(await (await resolveHiveEpochCrypto(true)).deriveEpochKey(hive, cutAtEpoch));
       }
-      await writeFile(join(outDir, EPOCH_KEYS_FILE), encodeEpochKeysFile(hive, cutAtEpoch, key));
+      // WI-3297: bundle every keychain-present historical epoch key too — seed logs
+      // carry ops sealed under past epochs, and a current-epoch-only file leaves them
+      // permanently DROPped (epoch_decrypt_fail) on every fresh install.
+      const epochKeys = await collectSeedEpochKeys({ hive, cutAtEpoch, currentKey: key });
+      await writeFile(join(outDir, EPOCH_KEYS_FILE), encodeEpochKeysFile(hive, epochKeys));
       console.warn(
-        `[cut-seed] ⚠ WI-3232: wrote ${EPOCH_KEYS_FILE} (hive '${hive}' epoch ${cutAtEpoch}) — the seed is now ` +
-          'OFFLINE-DECRYPTABLE (owner-authorised for alpha; the pot ships READABLE).',
+        `[cut-seed] ⚠ WI-3232: wrote ${EPOCH_KEYS_FILE} (hive '${hive}', epochs ${[...epochKeys.keys()]
+          .sort((a, b) => a - b)
+          .join(',')}) — the seed is now OFFLINE-DECRYPTABLE (owner-authorised for alpha; the pot ships READABLE).`,
       );
     }
 
