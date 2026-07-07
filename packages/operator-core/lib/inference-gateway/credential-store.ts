@@ -219,7 +219,7 @@ export function localCredentialsFilePath(): string {
 export async function scanLocalCredentialCandidates(baseService: string): Promise<LocalCredentialCandidate[]> {
   const out: LocalCredentialCandidate[] = [];
   const metas = new Map<string, string | null>([[baseService, null]]);
-  for (const m of listClaudeKeychainCredentialItems()) {
+  for (const m of keychainLister()) {
     if (!metas.has(m.service) || m.account) metas.set(m.service, m.account);
   }
   for (const [service, account] of metas) {
@@ -277,7 +277,7 @@ export function selectLocalCredential(
 async function persistLocalCandidate(c: LocalCredentialCandidate): Promise<void> {
   if (c.kind === 'keychain') {
     const account = c.account ?? process.env.USER ?? '';
-    if (account && writeClaudeKeychainOAuthBundle(c.service!, account, JSON.stringify(c.bundle))) return;
+    if (account && keychainWriter(c.service!, account, JSON.stringify(c.bundle))) return;
   }
   const filePath = c.kind === 'file' ? c.path! : localCredentialsFilePath();
   try {

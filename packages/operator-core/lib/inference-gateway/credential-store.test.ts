@@ -14,6 +14,8 @@ import {
   normalizeBearerToken,
   scrubSecrets,
   _setKeychainReaderForTests,
+  _setKeychainListerForTests,
+  _setKeychainWriterForTests,
   type ClaudeCredentialBundle,
 } from './credential-store';
 import {
@@ -24,12 +26,19 @@ import {
 import { __resetTokenCacheForTest } from '../oauth/token';
 
 let dir: string;
+let savedHome: string | undefined;
 beforeEach(async () => {
   dir = await fs.mkdtemp(join(tmpdir(), 'ig-cred-'));
+  // The keychain channel's freshest-scan includes $HOME/.claude/.credentials.json — redirect
+  // HOME so no test ever reads (or writes!) the real box credential.
+  savedHome = process.env.HOME;
+  process.env.HOME = dir;
   __resetRegistryForTest();
   __resetTokenCacheForTest();
 });
 afterEach(async () => {
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
   await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -363,7 +372,7 @@ test('parseCredentialRef — keychain: names the macOS Keychain service', () => 
   });
 });
 
-test('keychain resolver — reads the bundle, caches until near expiry, invalidate() re-reads', async () => {
+test('keychain resolver — serves the scanned bundle, caches until near expiry, invalidate() re-scans', async () => {
   let reads = 0;
   _setKeychainReaderForTests((service) => {
     assert.equal(service, 'Claude Code-credentials');
@@ -378,49 +387,230 @@ test('keychain resolver — reads the bundle, caches until near expiry, invalida
     assert.equal(reads, 1, 'far-from-expiry token is served from cache');
     r.invalidate();
     assert.equal(await r.current(), 'kc-token-1');
-    assert.equal(reads, 2, 'invalidate() forces a Keychain re-read');
+    assert.equal(reads, 2, 'invalidate() forces a re-scan');
   } finally {
     _setKeychainReaderForTests(null);
   }
 });
 
-test('keychain resolver — near-expiry re-reads every call; hard-expired throws actionable guidance', async () => {
+test('keychain resolver — near-expiry re-scan is rate-bounded (the scan shells out per item, never per request)', async () => {
   let reads = 0;
-  let expiresAt = Date.now() + 60_000; // inside the 5-min refresh skew, not yet expired
   _setKeychainReaderForTests(() => {
     reads++;
-    return JSON.stringify({ claudeAiOauth: { accessToken: 'kc-near', expiresAt } });
+    return JSON.stringify({ claudeAiOauth: { accessToken: 'kc-near', expiresAt: Date.now() + 60_000 } }); // inside the 5-min skew
   });
   try {
     const r = makeCredentialResolver('keychain:Claude Code');
     assert.equal(await r.current(), 'kc-near');
     assert.equal(await r.current(), 'kc-near');
-    assert.equal(reads, 2, 'near-expiry keeps re-reading (Claude Code may refresh the item any moment)');
-    expiresAt = Date.now() - 1_000; // the bundle went stale-dead (Claude Code not running)
-    await assert.rejects(r.current(), /expired at .* run Claude Code on this Mac/s);
+    assert.equal(reads, 1, 'a just-completed scan is not repeated per request within the throttle window');
+    r.invalidate(); // a 401 bypasses the throttle — the served token is bad NOW
+    assert.equal(await r.current(), 'kc-near');
+    assert.equal(reads, 2);
   } finally {
     _setKeychainReaderForTests(null);
   }
 });
 
-test('keychain resolver — missing item / non-JSON payload throw descriptive errors', async () => {
+test('keychain resolver — no readable source anywhere throws the UNAUTHENTICATED guidance', async () => {
   _setKeychainReaderForTests(() => null);
   try {
     await assert.rejects(
       makeCredentialResolver('keychain:Claude Code-credentials').current(),
-      /no readable Keychain item/,
+      /UNAUTHENTICATED.*none readable.*Sign in with `claude`/s,
     );
   } finally {
     _setKeychainReaderForTests(null);
   }
-  _setKeychainReaderForTests(() => 'not-json');
+  _setKeychainReaderForTests(() => 'not-json'); // a non-bundle payload is skipped, not fatal
   try {
     await assert.rejects(
       makeCredentialResolver('keychain:Claude Code-credentials').current(),
-      /not a credentials-bundle JSON/,
+      /UNAUTHENTICATED.*none readable/s,
     );
   } finally {
     _setKeychainReaderForTests(null);
+  }
+});
+
+// ── keychain freshest-scan (fleet-member-login root-cause fix, 2026-07-06) ─────────────────────
+// Claude Code keeps ONE rotating bundle PER config dir (base item + hashed siblings). The gateway
+// must serve the freshest LIVE bundle across all of them + the disk file — a stale snapshot in
+// any single source must never 401 the whole fleet while a live CLI holds a fresh token.
+
+const BASE = 'Claude Code-credentials';
+const hour = 60 * 60 * 1000;
+const bundleJson = (accessToken: string, expiresAt?: number, refreshToken?: string) =>
+  JSON.stringify({ claudeAiOauth: { accessToken, ...(expiresAt !== undefined ? { expiresAt } : {}), ...(refreshToken ? { refreshToken } : {}) } });
+
+test('freshest-scan — a LIVE hashed sibling wins over a stale base item AND a stale disk bundle (the Mac-VM fleet-member scenario)', async () => {
+  const now = Date.now();
+  // The disk bundle: the dead snapshot that used to shadow everything (file: took precedence).
+  await fs.mkdir(join(dir, '.claude'), { recursive: true });
+  await fs.writeFile(join(dir, '.claude', '.credentials.json'), bundleJson('file-stale', now - 12 * hour, 'RT-dead'));
+  _setKeychainListerForTests(() => [
+    { service: BASE, account: 'u' },
+    { service: `${BASE}-6ede4198`, account: 'u' }, // the live CLI session's item
+    { service: `${BASE}-b8ad9472`, account: 'u' }, // a long-dead session's item
+  ]);
+  _setKeychainReaderForTests((service) => {
+    if (service === BASE) return bundleJson('base-stale', now - 12 * hour, 'RT-dead');
+    if (service === `${BASE}-6ede4198`) return bundleJson('live-cli-token', now + 7 * hour, 'RT-live');
+    if (service === `${BASE}-b8ad9472`) return bundleJson('old-stale', now - 290 * hour, 'RT-ancient');
+    return null;
+  });
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    assert.equal(await r.current(), 'live-cli-token', 'the freshest LIVE bundle is served, wherever it lives');
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+  }
+});
+
+test('freshest-scan — a known-future expiry beats no-expiry junk; unknown-expiry serves only when it is all there is', async () => {
+  const now = Date.now();
+  _setKeychainListerForTests(() => [
+    { service: `${BASE}-junk`, account: 'u' },
+    { service: `${BASE}-live`, account: 'u' },
+  ]);
+  _setKeychainReaderForTests((service) => {
+    if (service === `${BASE}-junk`) return bundleJson('junk-no-expiry');
+    if (service === `${BASE}-live`) return bundleJson('known-live', now + hour);
+    return null;
+  });
+  try {
+    assert.equal(await makeCredentialResolver(`keychain:${BASE}`).current(), 'known-live');
+  } finally {
+    _setKeychainReaderForTests(null);
+  }
+  _setKeychainReaderForTests((service) => (service === `${BASE}-junk` ? bundleJson('junk-no-expiry') : null));
+  try {
+    assert.equal(
+      await makeCredentialResolver(`keychain:${BASE}`).current(),
+      'junk-no-expiry',
+      'an unknown-expiry bundle is still better than failing when nothing else exists',
+    );
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+  }
+});
+
+test('freshest-scan — ALL expired: refreshes the freshest refreshable bundle and persists the rotation back to its Keychain item', async () => {
+  const now = Date.now();
+  const { provider, refreshes } = fakeClaude();
+  registerProvider(provider);
+  const writes: { service: string; account: string; secret: string }[] = [];
+  _setKeychainListerForTests(() => [
+    { service: `${BASE}-older`, account: 'u' },
+    { service: `${BASE}-newer`, account: 'u' },
+  ]);
+  _setKeychainReaderForTests((service) => {
+    if (service === `${BASE}-older`) return bundleJson('stale-a', now - 20 * hour, 'RT-older');
+    if (service === `${BASE}-newer`) return bundleJson('stale-b', now - 1 * hour, 'RT-newer');
+    return null;
+  });
+  _setKeychainWriterForTests((service, account, secret) => {
+    writes.push({ service, account, secret });
+    return true;
+  });
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    assert.equal(await r.current(), 'refreshed-1');
+    assert.equal(refreshes(), 1, 'exactly one refresh — the freshest refreshable bundle');
+    assert.equal(writes.length, 1, 'the rotated bundle was persisted');
+    assert.equal(writes[0].service, `${BASE}-newer`, 'freshest-first: the most recent bundle holds the valid refresh token');
+    assert.equal(writes[0].account, 'u');
+    const persisted = JSON.parse(writes[0].secret) as ClaudeCredentialBundle;
+    assert.equal(persisted.claudeAiOauth.refreshToken, 'RT-newer-rotated', 'the ROTATED refresh token is what survives');
+    assert.equal(persisted.claudeAiOauth.accessToken, 'refreshed-1');
+    // the refreshed token is cached — no second refresh on the next call
+    assert.equal(await r.current(), 'refreshed-1');
+    assert.equal(refreshes(), 1);
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+    _setKeychainWriterForTests(null);
+  }
+});
+
+test('freshest-scan — a refused Keychain write-back falls back to persisting the disk bundle (rotation must land SOMEWHERE)', async () => {
+  const now = Date.now();
+  const { provider } = fakeClaude();
+  registerProvider(provider);
+  _setKeychainListerForTests(() => [{ service: `${BASE}-x`, account: 'u' }]);
+  _setKeychainReaderForTests((service) => (service === `${BASE}-x` ? bundleJson('stale', now - hour, 'RT1') : null));
+  _setKeychainWriterForTests(() => false); // ACL refused the non-creating writer
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    assert.equal(await r.current(), 'refreshed-1');
+    const onDisk = JSON.parse(await fs.readFile(join(dir, '.claude', '.credentials.json'), 'utf8')) as ClaudeCredentialBundle;
+    assert.equal(onDisk.claudeAiOauth.refreshToken, 'RT1-rotated');
+    assert.equal(onDisk.claudeAiOauth.accessToken, 'refreshed-1');
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+    _setKeychainWriterForTests(null);
+  }
+});
+
+test('freshest-scan — identical refresh tokens across snapshots are attempted ONCE; total failure throws UNAUTHENTICATED with a negative cache', async () => {
+  const now = Date.now();
+  let attempts = 0;
+  registerProvider({
+    id: 'claude',
+    config: { clientId: 'x', clientSecret: '', authorizeUrl: 'a', tokenUrl: 't', redirectUri: 'r' },
+    buildAuthorizeUrl: () => 'url',
+    exchangeCode: async () => ({ accessToken: 'a' }),
+    refresh: async () => {
+      attempts += 1;
+      throw new Error('Refresh token not found or invalid');
+    },
+  });
+  let reads = 0;
+  _setKeychainListerForTests(() => [
+    { service: `${BASE}-copy1`, account: 'u' },
+    { service: `${BASE}-copy2`, account: 'u' },
+  ]);
+  _setKeychainReaderForTests((service) => {
+    reads++;
+    if (service === `${BASE}-copy1`) return bundleJson('stale-1', now - 2 * hour, 'RT-same');
+    if (service === `${BASE}-copy2`) return bundleJson('stale-2', now - 3 * hour, 'RT-same'); // same family snapshot
+    return null;
+  });
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    await assert.rejects(r.current(), /UNAUTHENTICATED.*all hard-expired.*refresh attempts failed/s);
+    assert.equal(attempts, 1, 'the shared refresh token was attempted once, not once per snapshot');
+    const readsAfterFirst = reads;
+    await assert.rejects(r.current(), /UNAUTHENTICATED/);
+    assert.equal(reads, readsAfterFirst, 'the UNAUTHENTICATED verdict is served from the negative cache, not re-derived per request');
+    r.invalidate();
+    await assert.rejects(r.current(), /UNAUTHENTICATED/);
+    assert.ok(reads > readsAfterFirst, 'invalidate() clears the negative cache so a fresh sign-in is picked up immediately');
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
+  }
+});
+
+test('freshest-scan — 401 recovery: invalidate() + re-scan picks up a bundle a CLI refreshed in the meantime', async () => {
+  const now = Date.now();
+  let generation = 1;
+  _setKeychainListerForTests(() => [{ service: `${BASE}-live`, account: 'u' }]);
+  _setKeychainReaderForTests((service) =>
+    service === `${BASE}-live` ? bundleJson(`cli-token-${generation}`, now + generation * hour) : null,
+  );
+  try {
+    const r = makeCredentialResolver(`keychain:${BASE}`);
+    assert.equal(await r.current(), 'cli-token-1');
+    generation = 2; // the CLI rotated its bundle; upstream 401s our cached token
+    r.invalidate();
+    assert.equal(await r.current(), 'cli-token-2', 'the very next request serves the CLI-refreshed token — no gateway restart');
+  } finally {
+    _setKeychainReaderForTests(null);
+    _setKeychainListerForTests(null);
   }
 });
 
