@@ -8,7 +8,7 @@
  * the urgent-wake module itself is unit-covered in hive/urgent-wake.test.ts —
  * here it is a spy seam.
  */
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const requestUrgentHiveWake = vi.fn(async (_opts: { reason: string; harness: string | null }) => ({
   fired: true,
@@ -93,17 +93,6 @@ vi.mock('./issues-engineer', () => ({
 
 import { createWorkItem } from './work-items';
 import createTool from './agent-tools/work_items/create';
-
-// Pre-resolve the ./work-items-events mock BEFORE any create runs. The mock
-// factory is async (it spreads importOriginal over a module that circularly
-// imports ./work-items), so the FIRST dynamic import('./work-items-events')
-// from createWorkItem could race the factory and get the REAL module — its
-// fire-and-forget created-event emit then hit the fakeSql and console.warn'd
-// at a timing-dependent moment, red-pinning the gate (EI-8413). Warming the
-// mock here forces the factory to finish + cache before the first create.
-beforeAll(async () => {
-  await import('./work-items-events');
-});
 
 beforeEach(() => {
   requestUrgentHiveWake.mockClear();

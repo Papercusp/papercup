@@ -121,7 +121,15 @@ vi.mock('node:fs/promises', async (orig) => {
 // spawn() returns, then resolves its Promise on 'close'. We emit a line of stdout
 // and close(0) on the next microtask — after the listeners are wired.
 const spawnMock = vi.fn(() => makeFakeChild(0));
-vi.mock('node:child_process', () => ({ spawn: (...a: unknown[]) => spawnMock(...(a as [])) }));
+// Spread the REAL module and override ONLY spawn: the invoke runner
+// (dbos/orchestrator-runner) also pulls `execFile` (ensureFeatureBranch, ~L1347),
+// so a bare `{ spawn }` mock drops it and Vitest 4's evaluator fails the module
+// link under load → the route 500s (EI-8598). Mirrors the node:fs / flags / db-org
+// partial-mock pattern above; keeps spawn faked so the routing assertions hold.
+vi.mock('node:child_process', async (orig) => {
+  const actual = await orig<typeof import('node:child_process')>();
+  return { ...actual, spawn: (...a: unknown[]) => spawnMock(...(a as [])) };
+});
 
 function makeFakeChild(exitCode: number) {
   const stdoutCbs: Array<(d: unknown) => void> = [];

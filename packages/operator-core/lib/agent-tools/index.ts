@@ -487,6 +487,9 @@ import './fleet_registry/recolor';
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
 import './coordination/tools/whoami';
+// Identity durability across relaunch (compaction-continuity-hardening P-007):
+// migrate ownerId-keyed surfaces from a dead predecessor sid to the live one.
+import './coordination/tools/rebind-identity';
 import './coordination/tools/presence';
 // Unified presence/roster reader (presence-coord-unification P-001 / D-001): one door
 // with four view lenses (live/members/claims/history) that consolidates coord:presence,

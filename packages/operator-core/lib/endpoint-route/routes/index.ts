@@ -206,6 +206,7 @@ import agentMcp_consoleRecord from './agent-mcp/console-record';
 import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
 import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_sessionRecoveryBrief from './agent-mcp/session-recovery-brief';
+import agentMcp_rebindIdentity from './agent-mcp/rebind-identity';
 import agentMcp_decisions from './agent-mcp/decisions';
 import agentMcp_delegateChat from './agent-mcp/delegate-chat';
 import agentMcp_operatorHindsight from './agent-mcp/operator-hindsight';
@@ -476,6 +477,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_bootstrapSu as AnyRoute[]),
   ...flatten(agentMcp_bootstrapRole as AnyRoute[]),
   ...flatten(agentMcp_sessionRecoveryBrief as AnyRoute[]),
+  ...flatten(agentMcp_rebindIdentity as AnyRoute[]),
   ...flatten(agentMcp_decisions as AnyRoute),
   ...flatten(agentMcp_delegateChat as AnyRoute),
   ...flatten(agentMcp_operatorHindsight as AnyRoute[]),
