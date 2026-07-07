@@ -649,6 +649,14 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
   });
 
+  it('seeds work_items:release for worker handoffs instead of relying on deferred discovery', () => {
+    // EI-8588: release existed server-side, but seeded worker/fleet surfaces omitted it,
+    // so a member trying to return a misclaimed item could not discover/call the flat
+    // MCP tool reliably from the trimmed surface.
+    expect([...CORE_MCP_TOOL_NAMES]).toContain('work_items:release');
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('work_items:release');
+  });
+
   it('is otherwise identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
     const ompMinusFleet = OMP_CORE_MCP_TOOL_NAMES.filter((n) => n !== 'fleet:launch-on-plan');
     expect([...ompMinusFleet]).toEqual([...CORE_MCP_TOOL_NAMES]);

@@ -96,7 +96,7 @@ describe('HEALTH_ENDPOINTS', () => {
   // back in (any new entry here is a deliberate edit + a failing test to update).
   it('watches exactly the live dev services', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['code-server', 'operator', 'scout', 'vite'].sort(),
+      ['operator', 'scout', 'vite'].sort(),
     );
   });
 

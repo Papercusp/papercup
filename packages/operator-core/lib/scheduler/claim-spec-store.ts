@@ -213,17 +213,24 @@ export async function getNextForBee(args: {
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
-}): Promise<GetNextResult | null> {
-  const spec = args.ignoreStoredSpec
-    ? DEFAULT_CLAIM_SPEC
-    : await getClaimSpec({ beeId: args.beeId, workspaceId: args.workspaceId });
-  return getNextWorkItem(spec, { assignee: args.beeId, heldPaths: args.heldPaths }, {
+}): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
+  // EI-8579: resolve via getClaimSpecRecord (not the bare getClaimSpec) so the caller can
+  // tell WHICH row answered — a bee with neither a per-bee nor an inherited fleet spec
+  // (source:'default') is silently drawing plain oldest-first ordering, which can hand it
+  // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
+  // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
+  // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
+  const record = args.ignoreStoredSpec
+    ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
+    : await getClaimSpecRecord({ beeId: args.beeId, workspaceId: args.workspaceId });
+  const result = await getNextWorkItem(record.spec, { assignee: args.beeId, heldPaths: args.heldPaths }, {
     harness: args.harness,
     ...(args.swarmId ? { swarmId: args.swarmId } : {}),
     ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
     ...(args.states ? { states: args.states } : {}),
     ...(args.rigAvailable ? { rigAvailable: true } : {}),
   });
+  return result ? { ...result, specSource: record.source } : null;
 }
 
 /**

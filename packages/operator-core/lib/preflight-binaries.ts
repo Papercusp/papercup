@@ -37,14 +37,14 @@ export async function detectClaude(): Promise<boolean> {
 
 export async function detectOmp(): Promise<boolean> {
   if (await tryProbe('omp')) return true;
-  // GUI app launches on macOS often miss the user's login-shell PATH;
-  // also covers Tauri sidecar/bin and common manual install locations.
-  const bundledOmp = process.cwd() ? `${process.cwd()}/bin/omp` : '';
+  // GUI app launches on macOS often miss the user's login-shell PATH, so probe
+  // the locations the first-run installer (setup-pty-commands
+  // buildFrameworkInstallSpec) and common manual installs land omp. omp is NOT
+  // bundled in the sidecar anymore (owner directive 2026-07-07 — we use the
+  // user's own install), so there is no sidecar/bin/omp candidate here.
   // Windows has no $HOME; the omp installer targets %USERPROFILE%\.papercusp\bin.
   const winHome = process.env.USERPROFILE ?? '';
   const candidates = [
-    bundledOmp,
-    `${bundledOmp}.exe`,
     '/usr/local/bin/omp',
     '/opt/homebrew/bin/omp',
     `${process.env.HOME ?? ''}/.cargo/bin/omp`,

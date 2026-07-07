@@ -48,7 +48,8 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // timeout for the other (consistently fast, <100ms) endpoints.
   { name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 10_000 },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
-  { name: 'code-server', url: 'http://127.0.0.1:8082/' },
+  // code-server probe removed (owner directive 2026-07-07): code-server is no
+  // longer bundled or spawned, so :8082 was a permanent false-DOWN.
 ];
 
 export interface ProbeResult {

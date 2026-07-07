@@ -24,7 +24,7 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ the default ordering (== work_items:claim_next). Returns the claimed item + the spec revision that selected it, or null.',
+    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ default ordering (== work_items:claim_next) + an advisory `warning` (EI-8579). Returns the claimed item + the spec revision that selected it, or null.',
   guidance: {
     when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s / fleet leader\'s judgment expressed as your claim spec; the pickup is yours. NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is a cup or an su fleet member, NOT a scoper.',
     notWhen:
@@ -84,13 +84,22 @@ export default defineTool({
       rigAvailable: args.rigAvailable,
       ignoreStoredSpec: !specOn,
     });
+    // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
+    // DEFAULT_CLAIM_SPEC (plain oldest-first) — it can silently draw owner-deferred work
+    // (a paused/de-scoped category) a curated spec would have excluded. Advisory only (the
+    // claim already happened): nudge the caller to set its own spec, same non-blocking
+    // posture as set_claim_spec's EI-6079 wakeability warning.
+    const warning =
+      res && res.specSource === 'default'
+        ? 'You have no per-bee or fleet claim spec — this claim used plain oldest-first DEFAULT_CLAIM_SPEC, which can hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {beeId: you} to scope your own pulls.'
+        : undefined;
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify(
             res
-              ? { ok: true, workItem: res.workItem, claimedUnder: res.claimedUnder }
+              ? { ok: true, workItem: res.workItem, claimedUnder: res.claimedUnder, ...(warning ? { warning } : {}) }
               : { ok: false, error: 'no claimable work-item matched your spec within the floors' },
           ),
         },

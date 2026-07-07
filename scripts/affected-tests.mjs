@@ -161,20 +161,48 @@ function affectedWorkspaces() {
   try {
     changed = changedFiles();
   } catch (e) {
-    // `--ignore-submodules=all` (see changedFiles) means a broken retired
-    // submodule no longer trips this — so a failure HERE is now a GENUINE git
-    // problem, not the routine retired-submodule breakage. Make the
-    // degrade-to-everything LOUD: the old fallback printed two quiet lines and
-    // ran all ~80 workspaces, which read as a normal (if slow) run and hid the
-    // real cause (EI-1989). A banner on stderr ensures it can't masquerade as
-    // the intended fast path.
-    console.error('');
-    console.error('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
-    console.error(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
-    console.error('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
-    console.error('!!!!!! Fix the git error above; do not rely on this fallback.');
-    console.error('');
-    return [...wsByDir.values()];
+    // EI-8580: a shallow clone whose fetch horizon no longer overlaps
+    // `base` (origin/main) fails `git diff base...HEAD` with something
+    // like "no merge base" / "no common ancestor" — the diff needs the
+    // merge-base commit, not just the tip. This is self-healing: a bounded
+    // `git fetch --deepen=2000` is additive (never touches the working
+    // tree) and, on a normal drift, restores the merge base outright. Try
+    // that ONCE before giving up to --all, so a stale-but-fixable shallow
+    // clone doesn't silently pay a full-tree run (and the unrelated flakes
+    // that come with it) every single time.
+    const looksLikeMergeBaseGap = /no merge base|no common ancestor|unrelated histories/i.test(e.message);
+    let healed = false;
+    if (looksLikeMergeBaseGap) {
+      console.error('');
+      console.error(`!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`);
+      console.error('!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...');
+      try {
+        execSync('git fetch --deepen=2000 origin main staging', { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
+        changed = changedFiles();
+        healed = true;
+        console.error('!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.');
+        console.error('');
+      } catch (e2) {
+        console.error(`!!!!!! Self-heal fetch/retry failed: ${e2.message}`);
+        console.error('');
+      }
+    }
+    if (!healed) {
+      // `--ignore-submodules=all` (see changedFiles) means a broken retired
+      // submodule no longer trips this — so a failure HERE is now a GENUINE git
+      // problem, not the routine retired-submodule breakage. Make the
+      // degrade-to-everything LOUD: the old fallback printed two quiet lines and
+      // ran all ~80 workspaces, which read as a normal (if slow) run and hid the
+      // real cause (EI-1989). A banner on stderr ensures it can't masquerade as
+      // the intended fast path.
+      console.error('');
+      console.error('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
+      console.error(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
+      console.error('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
+      console.error('!!!!!! Fix the git error above; do not rely on this fallback.');
+      console.error('');
+      return [...wsByDir.values()];
+    }
   }
 
   const directlyChanged = new Set();

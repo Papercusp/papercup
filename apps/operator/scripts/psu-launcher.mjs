@@ -1208,11 +1208,12 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // work_items:create: #1 gap of the 2026-07-05 rebalance (608 fallback + 1,354 direct
   // across 5 roles/7d) — the spine had claim/complete but not the verb that CREATES one.
   'work_items:list', 'work_items:create', 'work_items:claim',
-  // EI-6770: self-pull (claim_next) + read (get) + finish (complete) — the rest of the
-  // canonical worker loop; their absence caused "tool not available" self-halts.
+  // EI-6770/EI-8588: self-pull (claim_next) + read (get) + finish (complete) +
+  // release — the rest of the canonical worker loop; their absence caused "tool
+  // not available" self-halts and stranded claim handoffs.
   // (work_items:update cut 2026-07-05 — 104 calls/7d; set_state + comment cover it.)
   'work_items:claim_next', 'work_items:get', 'work_items:complete',
-  'work_items:set_state',
+  'work_items:release', 'work_items:set_state',
   // scheduler:get_next: the fleet-member feed loop (claim-spec pull, 732 fallback
   // reaches/7d) — a drain member hits this every iteration.
   'scheduler:get_next',
