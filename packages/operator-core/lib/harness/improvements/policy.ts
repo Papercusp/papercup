@@ -102,6 +102,21 @@ export interface ImprovementCandidate {
   observation?: import('./observation-types').StructuredObservation;
 }
 
+/**
+ * The replication-liveness detector's stable filer identity (payload._ei.created_by,
+ * == RECOVERY_OWNER in sync/hyperbee/replication-stall-ei.ts — hardcoded here rather
+ * than imported to keep this module pure/IO-free per the file-header contract; pinned
+ * against drift by tcb-invariants-style string-literal tests). These are RUNTIME
+ * p2p-fleet conditions (connected_never_replicated / stall episodes) a generic worker
+ * structurally cannot resolve: verifying the current verdict needs the p2p fleet live
+ * in-process (getReplicationLiveness()/dogfood-substrate diagnostics), not PG-queryable
+ * (same rationale as WI-2633, which added `federationDetectorExclusionSql` for the
+ * SELF-SELECT path in work-items.ts). EI-8455: the AUTO-IMPLEMENT DISPATCH path (this
+ * classifier) had no equivalent gate — kind=bug made these auto-eligible, so the
+ * detector's EIs slipped into the auto lane and burned a dispatch/wake each time.
+ */
+export const REPLICATION_LIVENESS_DETECTOR_OWNER = 'system:replication-liveness';
+
 export type Tier = 'auto' | 'human';
 
 export interface RiskTierPolicy {
