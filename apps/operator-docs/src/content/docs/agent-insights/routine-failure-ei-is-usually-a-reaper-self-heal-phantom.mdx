@@ -25,11 +25,20 @@ metadata.last_error        = "DBOS routineFire produced no DBOS operation output
 metadata.last_error_source = "dbos-executor-reaper"
 ```
 
-This marker means *"I recovered this routine"* — **NOT** that the routine failed. But
-`collectRoutineFailureSignals` alarms on **any** non-empty `last_error` regardless of source, so
-the self-heal note is misread as a failure and an EI is minted. `clearStaleReaperLastError` only
-wipes the marker on the routine's **next successful fire**, so a low-cadence or **deactivated**
-routine carries it (and the phantom) indefinitely.
+This marker means *"I recovered this routine"* — **NOT** that the routine failed. The
+`collectRoutineFailureSignals` collector is now **source-aware** (`routineFailureSignalsFromRows`,
+`watchdog.ts`): for a `dbos-executor-reaper`-tagged error it **suppresses** the signal when recovery
+is proven — the routine is a loop (a real wedge is caught by the separate loop-stalled collector),
+OR its `next_fire_at` is a concrete FUTURE timestamp, OR it fired within the last 30 min
+(`last_fired_at` newer than `RECENT_FIRE_PROOF_MS`, WI-3098 — added because `next_fire_at` alone
+raced the collection instant, firing EI-7771 as a false positive for `cross-hive-outbox-drain`). So
+most self-heal markers no longer mint an EI. What still **leaks through** (and mints one) is an
+**active**, non-loop, reaper-marked routine with NEITHER a future `next_fire_at` NOR a recent
+`last_fired_at` — a low-cadence routine that hasn't re-fired since the requeue still reads as failing.
+`clearStaleReaperLastError` only wipes the marker on the routine's **next successful fire**, so a
+low-cadence routine carries it (and the phantom) between fires. (Note the collector query filters
+`WHERE active = true`, so a fully **deactivated** routine is never selected and can't re-file at
+all — see the `active = false` triage row below.)
 
 ## Triage in one query
 ```sql
@@ -53,7 +62,10 @@ goes `active=false, next_fire_at=infinity` — a normal lifecycle, not a wedge.
   routine the reaper keeps cancelling; the `git-sync-stall-watchdog` alarms on this on purpose.
 
 ## The durable class fix is a STOP surface
-Making the collector source-aware (skip `dbos-executor-reaper` markers unless `reaped_count >= N`)
-lives in `watchdog.ts` / `dbos-executor-reaper.ts` — both auto-implement **protected surfaces**.
-Route that to a human (tracked via EI-6061); resolve the individual phantom instances `fixed` with
-the query evidence above.
+The collector is now **partially source-aware** (EI-6172 / WI-3098): reaper self-heal markers are
+suppressed when recovery is proven (loop, future `next_fire_at`, or `last_fired_at` within 30 min —
+see above), which auto-filters most phantoms. The residual hardening — suppressing even a
+stale-marked low-cadence routine that hasn't re-fired yet (e.g. keying on `reaped_count >= N` rather
+than only re-fire recency) — still lives in `watchdog.ts` / `dbos-executor-reaper.ts`, both
+auto-implement **protected surfaces**. Route any such change to a human (tracked via EI-6061); resolve
+the individual residual phantom instances `fixed` with the query evidence above.

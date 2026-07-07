@@ -205,9 +205,14 @@ launch via `recordDurableSpawnAdmission`/`recordSpawn` before firing and
 `parentRole: undefined` that would violate the `spawned_agents.parent_role`
 NOT NULL constraint from item 3 of the original triad). `buildLaunchSpawnRequest`
 (`packages/operator-core/lib/blueprint/launch-blueprint.ts`) — the implement
-seam — passes `spawnRecord`, while the general-purpose `defaultFire` durable
-branch deliberately does not (hive launches record their own queen/bee rows
-and would double-count in `fleet:tree` otherwise). So: durably-fired implement
+seam — passes `spawnRecord`. **(Correction, current code:** the general-purpose
+`defaultFire` durable branch now passes `spawnRecord` too — so *every* durably-fired
+launch records a `spawned_agents` row via `durableSpawnFireImpl`, with the same
+`parent?.role ?? 'operator'` fallback, and `recordSpawn`'s stable `durable-spawn:<key>`
+id keeps re-fires idempotent. The earlier staging note's "deliberately NOT the
+`defaultFire` durable branch" no longer holds — both record. The queen→mug rename
+also landed here: `defaultFire`'s singleton-admission branch is now keyed on
+`role === 'mug'` alone.**)** So: durably-fired implement
 workers are now visible in `spawned_agents` / `fleet:tree`, and the
 `assigned_at`-wedge fix (item 1) has since hardened further —
 `releaseIssue` (`issues-engineer.ts`) now clears **both** `assignee` and

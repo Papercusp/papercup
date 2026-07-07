@@ -116,10 +116,16 @@ package) is excluded and never spawned here.
   when `env-sidecars/prod/` is absent (the V1 default), `prod` resolves to the primary's own
   `<sidecarDir>/serve.mjs` — the installed release IS green `main`, so the prod button serves the
   same code on its fixed :3070 port.
-- **Source** (`spawnMode:'source'`) — the dev box: `node` + the tree's own `tsx` against
-  `bin/hono-host.ts` (mirroring `bin/dev-operator-ifneeded.sh`), only where the cloned source +
-  installed deps exist. `run:'vite'` envs are **source-only** (the SPA dev server transforms the
-  tree).
+- **Source** (`spawnMode:'source'`) — `node` + the tree's own `tsx` against
+  `bin/hono-host.ts` (mirroring `bin/dev-operator-ifneeded.sh`), where a runnable source tree +
+  installed deps exist. The source root is resolved by `defaultDetectSourceRoot`
+  (`env-operator-launcher.ts`, WI-3306/WI-3308): `PAPERCUSP_DEV_SOURCE_ROOT` first — the tree the
+  serve-side first-boot extracted from the packaged `source.tar.zst` (exact-checked for marker
+  files, no walk-up) — else the dev-box walk (`detectPapercupRoot`). So source mode is **no longer
+  the dev box only**: it also runs from an EXTRACTED tree on a packaged install. Each source-spawned
+  child gets its OWN tree as `PAPERCUSP_INTEGRATION_ROOT` + the bundled node dir prepended to `PATH`
+  (`sourceChildEnv`), so its prompt/capability/git internals resolve to the tree it serves, never the
+  primary's. `run:'vite'` envs are **source-only** (the SPA dev server transforms the tree).
 
 - **Pure planner** — `planEnvOperatorLaunch(...)` decides spawn-or-skip per env with a
   deterministic reason: `disabled` → `is-self` → `already-reachable` → **[bundled? spawn]** →
