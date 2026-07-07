@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { writeLinuxTutorialDesktopEntry } from './papercusp-files';
+import { appendGnomeFavorite, pinLinuxTutorialToDock, writeLinuxTutorialDesktopEntry } from './papercusp-files';
 
 let tmp: string;
 let home: string;

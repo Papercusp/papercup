@@ -88,6 +88,9 @@ export interface InstallResult extends InstallPaths {
   macTutorialAppWritten: boolean;
   /** True when the Linux per-user tutorial `.desktop` launcher was written (linux only). */
   linuxTutorialDesktopWritten: boolean;
+  /** True when the tutorial launcher was newly pinned to the GNOME dock this call (linux
+   *  only; one-time via a marker so a later user un-pin is respected). */
+  linuxTutorialPinned: boolean;
   /** Resolved psu launcher the shim points at. Empty when not found. */
   psuLauncherSource: string;
   /** Resolved ptool launcher the shim points at. Empty when not found. */
@@ -738,6 +741,89 @@ export async function writeLinuxTutorialDesktopEntry(
 }
 
 /**
+ * Append a desktop-id to a GNOME `favorite-apps` gsettings array LITERAL, idempotently.
+ * Pure/string-only so it is unit-testable without a session bus. Handles the shapes
+ * gsettings emits: `['a.desktop', 'b.desktop']`, an empty `[]`, and the typed-empty
+ * `@as []`. Returns the input unchanged (sans type annotation) when `id` is already
+ * present, so callers never double-pin.
+ */
+export function appendGnomeFavorite(current: string, id: string): string {
+  let s = (current || '').trim();
+  if (s.startsWith('@as ')) s = s.slice(4).trim(); // drop the type annotation on empty arrays
+  const item = `'${id}'`;
+  if (s.includes(item)) return s; // already pinned — no-op (don't duplicate)
+  if (s === '' || s === '[]') return `[${item}]`;
+  const close = s.lastIndexOf(']');
+  if (close < 0) return `[${item}]`;
+  const inner = s.slice(s.indexOf('[') + 1, close).trim();
+  return inner.length ? `[${inner}, ${item}]` : `[${item}]`;
+}
+
+/**
+ * Auto-pin the tutorial launcher to the GNOME dock/taskbar (owner 2026-07-06, repeated
+ * to a 5th report: "I still don't see the papercusp icon in my taskbar"). Writing the
+ * `.desktop` only lands it in the app GRID — the owner wants it PINNED to the dock — so
+ * this appends `papercusp-tutorial.desktop` to `org.gnome.shell.favorite-apps` (GNOME's
+ * dock-favorites list) via gsettings.
+ *
+ * Pins exactly ONCE, guarded by `markerPath`: installPapercuspFiles re-runs on every
+ * boot, and re-pinning every time would fight a user who deliberately un-pinned it — so
+ * after the first attempt we drop a marker and never touch favorites again. Best-effort
+ * and GNOME-only: silently no-ops when gsettings / the schema is absent (non-GNOME DE,
+ * no session bus) and never throws (an install must not fail over a dock cosmetic).
+ *
+ * NOTE: on an already-running GNOME session the newly-pinned favorite only renders once
+ * the shell has re-scanned `~/.local/share/applications` (a fresh app is registered via
+ * its file monitor after `update-desktop-database`); a first-boot / fresh login always
+ * shows it. This is why the dev box that had a shell running for days needed a manual
+ * shell reload once — a normal install does not.
+ */
+export async function pinLinuxTutorialToDock(desktopId: string, markerPath: string): Promise<boolean> {
+  try {
+    // Pin-once gate: if we've already attempted a pin, respect any later user un-pin.
+    try {
+      await fs.access(markerPath);
+      return false;
+    } catch {
+      /* not attempted yet — fall through */
+    }
+
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const pexec = promisify(execFile);
+
+    let current = '';
+    try {
+      const { stdout } = await pexec('gsettings', ['get', 'org.gnome.shell', 'favorite-apps']);
+      current = stdout.trim();
+    } catch {
+      return false; // no gsettings / GNOME schema (non-GNOME DE, headless) — nothing to pin
+    }
+
+    const next = appendGnomeFavorite(current, desktopId);
+    let pinned = false;
+    if (next !== current.replace(/^@as\s+/, '').trim()) {
+      try {
+        await pexec('gsettings', ['set', 'org.gnome.shell', 'favorite-apps', next]);
+        pinned = true;
+      } catch {
+        return false; // couldn't write — don't drop the marker, allow a retry next boot
+      }
+    }
+    // Mark the one-time attempt as done (whether we added it or it was already present).
+    try {
+      await fs.mkdir(path.dirname(markerPath), { recursive: true });
+      await fs.writeFile(markerPath, `${new Date().toISOString()}\n`, { mode: 0o644 });
+    } catch {
+      /* marker is best-effort; worst case we re-check (idempotent) next boot */
+    }
+    return pinned;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ensure ~/.papercusp/bin is on the user's shell PATH so `psu` / `ptool` work in
  * ANY terminal the user opens — not only the in-app "+" console (which sets PATH
  * itself). Appends an idempotent, marker-guarded block to the common login +
@@ -1185,6 +1271,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // install, which the .deb postinstall never covers (that only fires on a .deb install,
   // into root /usr/share). Gated on the dispatcher having landed (it is the Exec target).
   let linuxTutorialDesktopWritten = false;
+  let linuxTutorialPinned = false;
   if (process.platform === 'linux' && papercuspCliWritten) {
     linuxTutorialDesktopWritten = await writeLinuxTutorialDesktopEntry(
       paths.linuxTutorialDesktopPath,
@@ -1192,6 +1279,14 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
       home,
       operatorAppRoot,
     );
+    // Pin it to the dock/taskbar (once) — writing the `.desktop` alone only lands it in
+    // the app grid, but the owner wants it ON the taskbar (2026-07-06, 5th report).
+    if (linuxTutorialDesktopWritten) {
+      linuxTutorialPinned = await pinLinuxTutorialToDock(
+        path.basename(paths.linuxTutorialDesktopPath),
+        path.join(home, '.papercusp', 'state', 'linux-tutorial-dock-pinned'),
+      );
+    }
   }
 
   return {
@@ -1207,6 +1302,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     papercuspCliWritten,
     macTutorialAppWritten,
     linuxTutorialDesktopWritten,
+    linuxTutorialPinned,
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',

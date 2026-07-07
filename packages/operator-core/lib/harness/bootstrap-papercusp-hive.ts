@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine } from './clone-github';
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { detectPapercupRoot } from './register-papercusp';
-import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
+import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
 import { loadHarnessRegistry } from '../harness-registry';
 import { readRegistry, writeRegistry, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
@@ -134,6 +134,13 @@ export interface BootstrapPapercuspHiveDeps {
   ensureHive?: typeof ensurePapercuspHive;
   /** Make `ws` the active/home workspace (so the hive is visible). */
   setHomeWorkspace?: (ws: string) => void;
+  /** WI-3288: ensure papercusp-workspace is LISTED in registry.json workspaces[]
+   *  (not just set as `current`). The offline self-admit path homed the workspace
+   *  via setHome but never listed it → `current` pointed at an UNLISTED workspace →
+   *  /api/workspaces returned {workspaces:[]} → the dogfood pot was invisible despite
+   *  being fully registered. Default: ensurePapercuspWorkspace (idempotent; lists +
+   *  provisions the dir; never hijacks `current`) — what the online create path already does. */
+  ensureWorkspaceListed?: () => void;
   /** Best-effort submodule init for a fresh clone; fired (not awaited) in prod.
    *  `onProgress(done, total)` streams completion; `onDone(ok)` fires once at the
    *  end (success/fail) so the bootstrap can record the terminal step. */
@@ -650,6 +657,7 @@ export async function bootstrapPapercuspHive(
   const clone = deps.clone ?? cloneGithubRepo;
   const ensureHive = deps.ensureHive ?? ensurePapercuspHive;
   const setHome = deps.setHomeWorkspace ?? defaultSetHomeWorkspace;
+  const ensureWorkspaceListed = deps.ensureWorkspaceListed ?? ensurePapercuspWorkspace;
   const initSubmodules = deps.initSubmodules ?? defaultInitSubmodules;
   const record =
     deps.recordProgress ??
@@ -685,6 +693,10 @@ export async function bootstrapPapercuspHive(
     const reg = await loadRegistry(PAPERCUSP_WORKSPACE_ID);
     const existing = reg.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);
     if (existing) {
+      // WI-3288: self-heal — ensure papercusp-workspace is LISTED in registry.json
+      // workspaces[] on every boot (an install self-admitted before this fix homed it
+      // without listing it → the pot stayed invisible). ensurePapercuspWorkspace is idempotent.
+      ensureWorkspaceListed();
       setHome(PAPERCUSP_WORKSPACE_ID);
       record('clone', 'done', { detail: 'already present' });
       if (existing.path && (await submodulesNeedUpdate(existing.path))) {
@@ -791,6 +803,11 @@ export async function bootstrapPapercuspHive(
         const selfAdmit = deps.selfAdmitCanonical ?? defaultSelfAdmitCanonical;
         const selfRes = await selfAdmit(canonicalInvite, record);
         if (selfRes.state === 'admitted') {
+          // WI-3288: LIST the workspace before homing it. self-admit registered the pot
+          // (harness_registry + hives) and set `current`, but never listed papercusp-workspace
+          // → `current` pointed at an unlisted workspace → /api/workspaces empty → the dogfood
+          // pot was INVISIBLE despite being fully on disk. ensurePapercuspWorkspace lists + provisions.
+          ensureWorkspaceListed();
           setHome(PAPERCUSP_WORKSPACE_ID);
           // WI-3232 (offline FIRST-boot fix, bf97d 2026-07-06): the startup substrate boot
           // (bootAllHarnessesForActiveWorkspace) already ran with the OLD active workspace

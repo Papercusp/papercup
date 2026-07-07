@@ -308,6 +308,13 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     body: 'Before you build anything, spend ~2 min confirming the fix has not already shipped — read the code/tests, check `git log` and sibling work-items. Re-implementing what a peer already fixed is the single biggest waste of fleet time. If it is already done, close it as already-fixed WITH the evidence you checked (files/tests) — do not rebuild it.',
   },
   {
+    // EI-8318: members were completing exactly ONE item per external wake, then ending
+    // their turn with no armed self-wake — the leader became a manual clock, capping
+    // fleet throughput at its re-wake cadence instead of draining continuously.
+    head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
+    body: 'You have no human at your keyboard: as your FIRST action (before or right after your first pull), call `loop:arm { intervalSec, goal }` toward draining your lane. Each wake: self-assign + advance the next claimable item (`scheduler:get_next` → work it to terminal → `work_items:complete`) — the armed loop re-wakes you automatically, so "repeat" in your pull loop below means the NEXT wake, not a hope that someone re-wakes you. `loop:end` ONLY when `scheduler:get_next` returns nothing claimable for your spec (report "queue empty" to your leader) or you are genuinely blocked. Ending a turn with no armed loop IS parking — you go silent until the leader manually re-wakes you (EI-8318), which caps the WHOLE fleet at the leader\'s wake cadence regardless of remaining backlog.',
+  },
+  {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
     body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send / coord:escalate) so it lands in their inbox — a broadcast is easy to miss. Routine status/updates belong to your fleet: a bare to:["*"] is auto-scoped to `@fleet:<slug>` (your leader included), so reserve `allHive:true` for genuinely system-wide / urgent news everyone must see.',
   },

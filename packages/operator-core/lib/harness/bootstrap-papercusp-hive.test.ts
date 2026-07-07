@@ -56,6 +56,7 @@ function spyDeps(over: Partial<BootstrapPapercuspHiveDeps> = {}) {
       slug: PAPERCUSP_HIVE_SLUG,
     })),
     setHomeWorkspace: vi.fn(),
+    ensureWorkspaceListed: vi.fn(),
     bootActiveWorkspace: vi.fn(async () => ({ attempted: 1, booted: 1, alreadyBooted: 0, failed: 0 })),
     initSubmodules: vi.fn(),
     recordProgress: vi.fn(),
@@ -463,6 +464,36 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     );
     expect(deps.ensureHive).not.toHaveBeenCalled();
     expect(deps.clone).not.toHaveBeenCalled();
+    expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
+    // WI-3288: self-admit must also LIST the workspace, not just home it.
+    expect(deps.ensureWorkspaceListed).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('WI-3288: offline self-admit LISTS papercusp-workspace (not just homes it) so /api/workspaces is not empty', async () => {
+    // The bug: self-admit registered the pot (harness_registry + hives) and set registry.current
+    // via setHome, but never added papercusp-workspace to registry.json workspaces[] → current
+    // pointed at an UNLISTED workspace → /api/workspaces returned {workspaces:[]} → the dogfood
+    // pot was invisible in the UI despite being fully restored on disk. The fix calls the
+    // workspace-lister (ensurePapercuspWorkspace) in the self-admit success path.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      joinCanonical: vi.fn(async () => ({ state: 'skipped' as const, slug: null, reason: 'owner offline' })),
+      restoreSeed: vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] })),
+      restoreDeferredGitSeed: vi.fn(async () => ({ restored: ['git'], stillDeferred: [] })),
+      selfAdmitCanonical: vi.fn(async () => ({
+        state: 'admitted' as const,
+        slug: PAPERCUSP_HIVE_SLUG,
+        path: '/clones/papercusp',
+      })),
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    expect(res).toMatchObject({ state: 'cloned-and-created', slug: PAPERCUSP_HIVE_SLUG });
+    expect(deps.ensureWorkspaceListed).toHaveBeenCalled(); // the regression guard for WI-3288
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
     warn.mockRestore();
   });
