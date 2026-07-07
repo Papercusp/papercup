@@ -55,6 +55,19 @@ export function loopScope(harness: string, ownerId: string): string {
 
 // ── The structured shape — a "note to my next self" ──────────────────────────
 
+/** An owner-gated / pending-decision COMMITMENT carried as a row, never prose
+ *  (compaction-continuity-hardening-2026-07-07 P-006). Prose asks dissolve at a
+ *  context boundary; a wall row survives it mechanically — rendered into every
+ *  wake and every carry brief until explicitly cleared. */
+export interface WallEntry {
+  /** The pending action / decision, stated concretely ("3 zombie PIDs await owner OK to kill"). */
+  claim: string;
+  /** A concrete re-check command a successor runs to test whether the wall still stands. */
+  recheck?: string;
+  /** Epoch ms the wall was first recorded — preserved across rewrites of the same claim. */
+  sinceMs?: number;
+}
+
 /** FACTS, not a self-grade (D-004). All fields optional; a plain string is equally
  *  valid (the store is free TEXT). {@link renderCarryNote} produces the canonical
  *  template a cold successor knows how to read. */
@@ -67,25 +80,66 @@ export interface CarryNoteFields {
   insight?: string;
   /** next-action — the single concrete next step to take on the next wake. */
   next?: string;
+  /** open WALLS — owner-gated commitments as rows (P-006); rendered as a `## Walls`
+   *  section of parseable one-line rows, carried until explicitly cleared. */
+  walls?: WallEntry[];
 }
 
-const CARRY_NOTE_SECTIONS: ReadonlyArray<{ key: keyof CarryNoteFields; heading: string }> = [
+type CarryNoteTextKey = 'did' | 'left' | 'insight' | 'next';
+
+const CARRY_NOTE_SECTIONS: ReadonlyArray<{ key: CarryNoteTextKey; heading: string }> = [
   { key: 'did', heading: 'Did' },
   { key: 'left', heading: 'Left' },
   { key: 'insight', heading: 'Key insight' },
   { key: 'next', heading: 'Next action' },
 ];
 
+/** The walls section heading (P-006). Rendered LAST so the four narrative sections
+ *  keep their positions for existing parsers/extractors. */
+export const CARRY_NOTE_WALLS_HEADING = 'Walls';
+
+/** Bound on carried wall rows — a wall set past this is a triage problem, not a note. */
+export const CARRY_NOTE_MAX_WALLS = 12;
+
+/** One wall as a parseable single line: `- <claim> — re-check: <cmd> (since <ISO>)`.
+ *  The " — re-check: " and trailing " (since …)" markers are the round-trip anchors. */
+export function renderWallLine(w: WallEntry): string {
+  const recheck = (w.recheck ?? '').trim();
+  const since =
+    w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
+  return `- ${w.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${since}`;
+}
+
+/** Parse one walls-section line back into a {@link WallEntry}; null for a
+ *  non-row line (blank, prose, malformed). */
+export function parseWallLine(line: string): WallEntry | null {
+  const m = /^-\s+(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(line);
+  if (!m) return null;
+  const claim = (m[1] ?? '').trim();
+  if (!claim) return null;
+  const out: WallEntry = { claim };
+  const recheck = (m[2] ?? '').trim();
+  if (recheck) out.recheck = recheck;
+  if (m[3]) {
+    const t = Date.parse(m[3]);
+    if (Number.isFinite(t)) out.sinceMs = t;
+  }
+  return out;
+}
+
 /** Render structured fields into the canonical carry-note template (the shared
  *  SHAPE). Blank/omitted sections are skipped; returns '' when nothing is set (⇒ a
- *  clear when passed to {@link setCarryNote}). */
+ *  clear when passed to {@link setCarryNote}). Walls render last as parseable rows. */
 export function renderCarryNote(fields: CarryNoteFields): string {
-  return CARRY_NOTE_SECTIONS.map(({ key, heading }) => {
+  const sections = CARRY_NOTE_SECTIONS.map(({ key, heading }) => {
     const v = (fields[key] ?? '').trim();
     return v.length > 0 ? `## ${heading}\n${v}` : null;
-  })
-    .filter((s): s is string => s !== null)
-    .join('\n\n');
+  }).filter((s): s is string => s !== null);
+  const walls = (fields.walls ?? []).filter((w) => (w.claim ?? '').trim().length > 0);
+  if (walls.length > 0) {
+    sections.push(`## ${CARRY_NOTE_WALLS_HEADING}\n${walls.map(renderWallLine).join('\n')}`);
+  }
+  return sections.join('\n\n');
 }
 
 /** Best-effort parse of a canonical carry-note (as produced by {@link renderCarryNote})
@@ -93,13 +147,19 @@ export function renderCarryNote(fields: CarryNoteFields): string {
  *  recognized `## <Heading>` markers yields {} (the caller keeps the raw text). */
 export function parseCarryNote(text: string): CarryNoteFields {
   const fields: CarryNoteFields = {};
-  const byHeading = new Map(CARRY_NOTE_SECTIONS.map((s) => [s.heading.toLowerCase(), s.key]));
+  const byHeading = new Map<string, CarryNoteTextKey | 'walls'>(
+    CARRY_NOTE_SECTIONS.map((s) => [s.heading.toLowerCase(), s.key] as const),
+  );
+  byHeading.set(CARRY_NOTE_WALLS_HEADING.toLowerCase(), 'walls');
   // Split on lines that are exactly a known "## Heading".
   const lines = (text ?? '').split('\n');
-  let cur: keyof CarryNoteFields | null = null;
+  let cur: CarryNoteTextKey | 'walls' | null = null;
   let buf: string[] = [];
   const flush = () => {
-    if (cur) {
+    if (cur === 'walls') {
+      const walls = buf.map(parseWallLine).filter((w): w is WallEntry => w !== null);
+      if (walls.length) fields.walls = walls;
+    } else if (cur) {
       const body = buf.join('\n').trim();
       if (body) fields[cur] = body;
     }
@@ -117,6 +177,73 @@ export function parseCarryNote(text: string): CarryNoteFields {
   }
   flush();
   return fields;
+}
+
+/** Split a note into its walls rows and everything else (the `## Walls` section
+ *  removed). The wake renderer needs walls SEPARATE from the truncatable note body
+ *  (a wall clipped off the end of a capped note is a dissolved commitment), and the
+ *  carry-forward merge needs the body without them. */
+export function splitCarryNoteWalls(note: string | null | undefined): { body: string; walls: WallEntry[] } {
+  const text = (note ?? '').trim();
+  if (!text) return { body: '', walls: [] };
+  const headingRe = new RegExp(`^##\\s+${CARRY_NOTE_WALLS_HEADING}\\s*$`, 'i');
+  const lines = text.split('\n');
+  const bodyLines: string[] = [];
+  const walls: WallEntry[] = [];
+  let inWalls = false;
+  for (const line of lines) {
+    if (headingRe.test(line)) {
+      inWalls = true;
+      continue;
+    }
+    if (inWalls && /^##\s+/.test(line)) inWalls = false; // a later section ends the walls block
+    if (inWalls) {
+      const w = parseWallLine(line);
+      if (w) walls.push(w);
+      continue; // non-row lines inside the section are dropped with it
+    }
+    bodyLines.push(line);
+  }
+  return { body: bodyLines.join('\n').trim(), walls };
+}
+
+/** Re-attach a walls set to a note body (any existing `## Walls` in `body` is
+ *  replaced). An empty walls set yields the bare body; a blank body with walls
+ *  yields a walls-only note — commitments survive a careless note clear. */
+export function withCarryNoteWalls(body: string, walls: WallEntry[]): string {
+  const { body: stripped } = splitCarryNoteWalls(body);
+  const kept = walls.filter((w) => (w.claim ?? '').trim().length > 0);
+  if (kept.length === 0) return stripped;
+  const section = `## ${CARRY_NOTE_WALLS_HEADING}\n${kept.map(renderWallLine).join('\n')}`;
+  return stripped ? `${stripped}\n\n${section}` : section;
+}
+
+/** Normalize an incoming walls write against the prior set: trim + drop blank
+ *  claims, dedup by claim, preserve the ORIGINAL sinceMs for a claim that already
+ *  stood (age is evidence — a rewrite must not reset it), stamp `nowMs` on new
+ *  ones, cap at {@link CARRY_NOTE_MAX_WALLS}. */
+export function normalizeWallEntries(
+  entries: ReadonlyArray<{ claim: string; recheck?: string; sinceMs?: number }>,
+  prior: ReadonlyArray<WallEntry>,
+  nowMs: number = Date.now(),
+): WallEntry[] {
+  const priorByClaim = new Map(prior.map((w) => [w.claim.trim(), w] as const));
+  const seen = new Set<string>();
+  const out: WallEntry[] = [];
+  for (const e of entries) {
+    const claim = (e.claim ?? '').trim();
+    if (!claim || seen.has(claim)) continue;
+    seen.add(claim);
+    const existing = priorByClaim.get(claim);
+    const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
+    out.push({
+      claim,
+      ...(recheck ? { recheck } : {}),
+      sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
+    });
+    if (out.length >= CARRY_NOTE_MAX_WALLS) break;
+  }
+  return out;
 }
 
 // ── The journal ring (lifted verbatim from hive/wake.ts — the Queen's L1a

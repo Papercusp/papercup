@@ -151,6 +151,14 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
 }
 
 export async function finishSpawnPg(sql: Db, input: FinishSpawnInput): Promise<void> {
+  // WI-3302: durable-spawn / blueprint / chat launch paths call heartbeatSpawns()
+  // with no output-activity map at all (mapless by construction — they never track
+  // per-chunk activity), so last_output_at stays null for their entire run even when
+  // real output landed (output_tail proves it). Stamp it here as a cheap terminal
+  // fallback: whenever this finish carries a non-null outputTail (real output was
+  // captured), record SOME last_output_at rather than leaving it permanently null.
+  // Never clobbers an earlier, more precise mid-run heartbeat stamp with an older
+  // value — GREATEST keeps whichever is newer.
   await sql`
     UPDATE harness_shared.spawned_agents
        SET status = ${input.status},
@@ -158,7 +166,11 @@ export async function finishSpawnPg(sql: Db, input: FinishSpawnInput): Promise<v
            duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
            exit_code = ${input.exitCode ?? null},
            error_message = COALESCE(${input.errorMessage ?? null}, error_message),
-           output_tail = COALESCE(${input.outputTail ?? null}, output_tail)
+           output_tail = COALESCE(${input.outputTail ?? null}, output_tail),
+           last_output_at = CASE
+             WHEN ${input.outputTail ?? null} IS NOT NULL THEN GREATEST(COALESCE(last_output_at, now()), now())
+             ELSE last_output_at
+           END
      WHERE workspace_id = ${input.workspaceId} AND spawn_id = ${input.spawnId}
   `;
 }
