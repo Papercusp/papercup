@@ -158,7 +158,12 @@ export function sanitizeCoordText(raw: string): string {
  * All terms are lowercase, space-joined, ≤ MAX_TERM_WORDS words.
  */
 export function extractTerms(rawText: string): Set<string> {
-  const text = sanitizeCoordText(rawText).toLowerCase();
+  return extractTermsFromSanitized(sanitizeCoordText(rawText).toLowerCase());
+}
+
+/** The extraction body over already-sanitized+lowercased text — aggregate
+ *  sanitizes once per row (dedup key + extraction share the pass). */
+function extractTermsFromSanitized(text: string): Set<string> {
   const terms = new Set<string>();
 
   // 1. hyphenated compounds
@@ -360,6 +365,16 @@ function resolveOptions(opts: NeologismFilingOptions): Required<NeologismFilingO
  * Insights are corroboration, not time-series: MDX files carry no usable
  * timestamps, so insight mentions never enter the growth math — they rank
  * (score) and they evidence (the proposal body names the slugs).
+ *
+ * Insight corroboration is computed ONLY for fire-bar-passing entries (top
+ * MAX_CORROBORATED by traffic×spread). Scanning every term was
+ * O(terms · corpusBytes) of synchronous `.includes` — at live size (~50k+
+ * terms × 3.7 MB of insights, twice per miss) hundreds of GB of byte
+ * scanning per tick, the single hottest frame in the 2026-07-07 bg-host
+ * loop-saturation profiles (43% of all real self-time; ~14 min of sustained
+ * event-loop saturation at every 6h slot). The fire bars never depended on
+ * corroboration, so candidate SELECTION is byte-identical; only the ranking
+ * of never-selectable non-passers (and their `insightSlugs`, now `[]`) moved.
  */
 /** Yield control to the event loop so a large synchronous scan cannot block
  *  routinesTick / the DBOS scheduler (the 2026-06-30 6h-slot freeze cascade). */

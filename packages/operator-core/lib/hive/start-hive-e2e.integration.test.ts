@@ -239,6 +239,11 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
     )`);
+  // WI-3192 cluster (4): the calibration seam (calibration/store.ts) opportunistically
+  // records a "bet" at wake time; it's caught + non-fatal without this table ("bet not
+  // recorded (host call unaffected)") but real end-to-end coverage should let it
+  // actually record. Self-contained migration, no deps.
+  await rootSql.unsafe(readMigration('253-calibration-predictions.sql')).simple();
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();

@@ -110,10 +110,34 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
       ownerId: 'su-abc',
       loop: null,
       heldItems: [],
+      walls: [],
       facts: [],
       awaits: [],
       fleet: null,
     });
+  });
+
+  it('parses open walls out of the loop note (P-006) — structured rows on the brief', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note:
+            '## Next action\nship P-006\n\n## Walls\n' +
+            '- 3 zombie PIDs 95902/200903/220406 await owner OK to kill — re-check: ps -o pid,rss -p 95902,200903,220406 (since 2026-07-07T12:00:00.000Z)',
+          updatedAtMs: Date.now(),
+        }),
+      }),
+    );
+    expect(brief.walls).toEqual([
+      {
+        claim: '3 zombie PIDs 95902/200903/220406 await owner OK to kill',
+        recheck: 'ps -o pid,rss -p 95902,200903,220406',
+        sinceMs: Date.parse('2026-07-07T12:00:00.000Z'),
+      },
+    ]);
+    // The note itself stays verbatim on the brief (walls included).
+    expect(brief.loop?.carryNote).toContain('## Walls');
   });
 
   it('a loop with no carry-note still reports the loop (note null)', async () => {
@@ -152,6 +176,7 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
       ownerId: 'x',
       loop: null,
       heldItems: [],
+      walls: [],
       facts: [],
       awaits: [],
       fleet: null,
@@ -160,6 +185,21 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
     expect(focus).toBe(
       'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.',
     );
+  });
+
+  it('carries open walls VERBATIM, ahead of held items (P-006)', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
+      walls: [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 }],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    const focus = renderCarryBriefFocus(brief);
+    expect(focus).toContain('OPEN WALLS (carry verbatim, do not re-declare resolved): "zombie PIDs await owner OK"');
+    expect(focus.indexOf('OPEN WALLS')).toBeLessThan(focus.indexOf('WI-1'));
   });
 
   it('is HARD-capped at the focus max, ellipsis-marked, for any brief size', async () => {
@@ -205,11 +245,32 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       ownerId: 'x',
       loop: { harness: 'h', active: true, intervalSec: 60, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
       heldItems: [],
+      walls: [],
       facts: [],
       awaits: [],
       fleet: null,
     };
     expect(renderCarryBriefColdExtras(empty)).toBe('');
+  });
+
+  it('renders open walls FIRST, as verbatim rows with re-check commands (P-006)', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
+      walls: [
+        { claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902', sinceMs: 1 },
+        { claim: 'capital arming pending owner', sinceMs: 2 },
+      ],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('⛔ OPEN WALLS');
+    expect(out).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902');
+    expect(out).toContain('  • capital arming pending owner');
+    expect(out.indexOf('OPEN WALLS')).toBeLessThan(out.indexOf('You still HOLD'));
   });
 
   it('caps a long checkpoint and flags a missing one', () => {
@@ -220,6 +281,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         { id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: 'y'.repeat(2000) },
         { id: 'WI-2', title: null, body: null, harness: 'h', checkpoint: null },
       ],
+      walls: [],
       facts: [],
       awaits: [],
       fleet: null,

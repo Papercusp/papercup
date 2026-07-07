@@ -238,6 +238,16 @@ beforeAll(async () => {
   await rootSql.unsafe(
     `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp","harness_kind":"hive"}]}'::jsonb)`,
   );
+  // WI-3192 cluster (4): the G2 trust leg the dispatch/admission path consults
+  // (autoPickableWhereSql / the pot:declare-wake dispatch handler) reads
+  // user_trust_list (migration 276) — apply it verbatim (self-contained, no
+  // deps) rather than hand-rolling, matching this file's own convention below.
+  await rootSql.unsafe(readMigration('276-user-trust-list.sql')).simple();
+  // The calibration seam (calibration/store.ts) opportunistically records a
+  // "bet" at wake time; it's caught + non-fatal without this table ("bet not
+  // recorded (host call unaffected)") but real end-to-end coverage should let
+  // it actually record. Self-contained migration, no deps.
+  await rootSql.unsafe(readMigration('253-calibration-predictions.sql')).simple();
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();

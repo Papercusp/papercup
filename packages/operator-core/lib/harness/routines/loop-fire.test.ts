@@ -25,6 +25,7 @@ function mkDeps(
     | 'readFireCount'
     | 'incrementFireCount'
     | 'findWakeRecipe'
+    | 'takeWallNag'
   >
 > {
   return {
@@ -42,6 +43,7 @@ function mkDeps(
     readFireCount: vi.fn(async () => 0) as never,
     incrementFireCount: vi.fn(async () => {}) as never,
     findWakeRecipe: vi.fn(async () => null) as never,
+    takeWallNag: vi.fn(async () => null) as never,
     ...over,
   };
 }

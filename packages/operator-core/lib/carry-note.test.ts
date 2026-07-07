@@ -11,10 +11,17 @@ import {
   loopScope,
   renderCarryNote,
   parseCarryNote,
+  renderWallLine,
+  parseWallLine,
+  splitCarryNoteWalls,
+  withCarryNoteWalls,
+  normalizeWallEntries,
   appendCarryJournal,
   CARRY_JOURNAL_MAX_ENTRIES,
   CARRY_JOURNAL_NOTE_MAX_CHARS,
   CARRY_JOURNAL_TOTAL_MAX_CHARS,
+  CARRY_NOTE_MAX_WALLS,
+  type WallEntry,
 } from './carry-note';
 
 describe('scope constructors — the convergence axis', () => {
@@ -75,6 +82,88 @@ describe('renderCarryNote — the structured shape (did / left / insight / next)
       did: 'line1\nline2',
       next: 'go',
     });
+  });
+});
+
+describe('walls — commitments as rows (compaction-continuity-hardening P-006)', () => {
+  const WALL: WallEntry = {
+    claim: '3 zombie PIDs await owner OK to kill',
+    recheck: 'ps -o pid,rss -p 95902,200903,220406',
+    sinceMs: Date.parse('2026-07-07T12:00:00.000Z'),
+  };
+
+  it('a wall line round-trips through render + parse', () => {
+    expect(parseWallLine(renderWallLine(WALL))).toEqual(WALL);
+    // Minimal wall (claim only) round-trips too.
+    expect(parseWallLine(renderWallLine({ claim: 'just a claim' }))).toEqual({ claim: 'just a claim' });
+    // recheck-less but dated.
+    expect(parseWallLine(renderWallLine({ claim: 'c', sinceMs: 1751892000000 }))).toEqual({
+      claim: 'c',
+      sinceMs: 1751892000000,
+    });
+  });
+
+  it('parseWallLine rejects non-row lines', () => {
+    expect(parseWallLine('')).toBeNull();
+    expect(parseWallLine('prose without a dash')).toBeNull();
+    expect(parseWallLine('- ')).toBeNull();
+  });
+
+  it('renderCarryNote appends a ## Walls section LAST; parseCarryNote structures it back', () => {
+    const fields = { did: 'a', next: 'b', walls: [WALL] };
+    const out = renderCarryNote(fields);
+    expect(out.indexOf('## Walls')).toBeGreaterThan(out.indexOf('## Next action'));
+    expect(parseCarryNote(out)).toEqual(fields);
+  });
+
+  it('a walls-only note renders and round-trips (commitments survive a body clear)', () => {
+    const out = renderCarryNote({ walls: [WALL] });
+    expect(out).toBe(`## Walls\n${renderWallLine(WALL)}`);
+    expect(parseCarryNote(out)).toEqual({ walls: [WALL] });
+  });
+
+  it('splitCarryNoteWalls separates rows from the body; a section mid-note does not eat later sections', () => {
+    const note = ['## Did', 'x', '', '## Walls', renderWallLine(WALL), 'stray prose in the section', '', '## Next action', 'go'].join('\n');
+    const { body, walls } = splitCarryNoteWalls(note);
+    expect(walls).toEqual([WALL]);
+    expect(body).toContain('## Did');
+    expect(body).toContain('## Next action');
+    expect(body).not.toContain('## Walls');
+    expect(body).not.toContain('stray prose');
+    expect(splitCarryNoteWalls(null)).toEqual({ body: '', walls: [] });
+  });
+
+  it('withCarryNoteWalls replaces an existing section, and yields a walls-only note for a blank body', () => {
+    const prior = renderCarryNote({ next: 'go', walls: [{ claim: 'old wall' }] });
+    const swapped = withCarryNoteWalls(prior, [WALL]);
+    expect(swapped).not.toContain('old wall');
+    expect(splitCarryNoteWalls(swapped).walls).toEqual([WALL]);
+    expect(withCarryNoteWalls('', [WALL])).toBe(`## Walls\n${renderWallLine(WALL)}`);
+    expect(withCarryNoteWalls('body only', [])).toBe('body only');
+  });
+
+  it('normalizeWallEntries preserves the ORIGINAL sinceMs for a standing claim, stamps now on new ones, dedups + caps', () => {
+    const prior: WallEntry[] = [{ claim: 'standing', recheck: 'old-cmd', sinceMs: 1000 }];
+    const out = normalizeWallEntries(
+      [
+        { claim: '  standing  ' },
+        { claim: 'standing' }, // dupe — dropped
+        { claim: 'brand new', recheck: 'check-it' },
+        { claim: '   ' }, // blank — dropped
+      ],
+      prior,
+      5000,
+    );
+    expect(out).toEqual([
+      { claim: 'standing', recheck: 'old-cmd', sinceMs: 1000 }, // age + recheck inherited
+      { claim: 'brand new', recheck: 'check-it', sinceMs: 5000 },
+    ]);
+    const flood = normalizeWallEntries(
+      Array.from({ length: 30 }, (_, i) => ({ claim: `w${i}` })),
+      [],
+      1,
+    );
+    expect(flood).toHaveLength(CARRY_NOTE_MAX_WALLS);
   });
 });
 
