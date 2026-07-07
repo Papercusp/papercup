@@ -113,6 +113,19 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   raw interrupt bytes still write once immediately, while turn injections write
   text first and submit CR(s) as later ordered steps. Do not collapse this back
   to one global delay without a live Codex coord-injection check.
+- **A submit-VERIFIER backstops every injected turn (WI-2930 / WI-2975), all
+  agents.** The fixed CR plan above is best-effort; a `makeSubmitVerifier`
+  (`psu-pty-host.mjs`) then confirms the submit *actually started a turn*. After
+  injecting, it polls the pty's `lastOutputAt` for a bounded window
+  (`PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS` × `..._POLL_MS`): if output is flowing,
+  a turn is running and it stops; if the composer stays quiet past the verifier's
+  OWN threshold (`submitVerifyQuietMs`, deliberately larger than the busy-gate's
+  `OUTPUT_QUIET_MS` — an ordinary post-submit thinking/latency gap must NOT read
+  as a swallowed CR, the WI-2975 spurious-resubmit fix), it resubmits a bare `\r`,
+  up to `PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR` (default **3**) times. Any human
+  keystroke after verification starts aborts the remaining polls (never fight a
+  human editing the staged line). This is the general "text visible but
+  unsubmitted" guard the Codex two-CR plan only partially covered.
 - **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
   fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a
   real OMP turn to observe.
