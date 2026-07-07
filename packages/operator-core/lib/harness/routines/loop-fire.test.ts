@@ -24,6 +24,7 @@ function mkDeps(
     | 'deactivateLoop'
     | 'readFireCount'
     | 'incrementFireCount'
+    | 'findWakeRecipe'
   >
 > {
   return {
@@ -40,6 +41,7 @@ function mkDeps(
     deactivateLoop: vi.fn(async () => true) as never,
     readFireCount: vi.fn(async () => 0) as never,
     incrementFireCount: vi.fn(async () => {}) as never,
+    findWakeRecipe: vi.fn(async () => null) as never,
     ...over,
   };
 }

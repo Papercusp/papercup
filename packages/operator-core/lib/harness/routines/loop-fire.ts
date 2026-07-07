@@ -144,7 +144,7 @@ export function spliceCurrentLoopCheckpoint(kickoff: string, checkpoint: string 
   ].join('\n');
 }
 
-// ── Wake-text rendering (compaction-continuity-hardening-2026-07-07 P-001/P-002) ──
+// ── Wake-text rendering (compaction-continuity-hardening-2026-07-07 P-001/P-002/P-005c) ──
 //
 // Measured on a live warm AUTO session (2026-07-07): the ~3KB arm-time kickoff was
 // re-delivered VERBATIM on all 263 wakes of one session ≈ ~200k tokens of repeated
@@ -352,12 +352,25 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     ownerId: input.targetOwnerId,
     workspaceId: input.workspaceId,
   }).catch(() => ({ note: null, updatedAtMs: null }));
+  // P-005c: on a SHORT-form wake only, splice the one on-point recipe (the
+  // moment-of-need reuse pointer). Fail-soft + time-bounded — a missing
+  // embedder / slow lookup degrades to no line, never delays the fire.
+  const hasCheckpoint = Boolean((checkpointMeta.note ?? '').trim());
+  let recipeLine: string | null = null;
+  if (!isLoopWakeFullForm(fireNumber, hasCheckpoint)) {
+    const findWakeRecipe = deps.findWakeRecipe ?? defaultFindTopRecipeForWake;
+    const hit = await findWakeRecipe(extractWakeRecipeQuery(checkpointMeta.note, armTimeKickoff), {
+      sql: input.sql,
+    }).catch(() => null);
+    if (hit) recipeLine = renderWakeRecipeLine(hit);
+  }
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
     fireNumber,
     checkpoint: checkpointMeta.note,
     checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,
     intervalSec: input.intervalSec,
+    recipeLine,
   });
 
   // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor

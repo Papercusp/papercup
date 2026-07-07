@@ -1,12 +1,18 @@
 /**
  * pg-read-query.test.ts — unit coverage for the single-read-statement guard
  * (the defense-in-depth check; the READ ONLY transaction is the real
- * enforcement, covered in pg-read-query.integration.test.ts).
+ * enforcement, covered in pg-read-query.integration.test.ts) and the P-005
+ * point-of-use guards (table extraction, 42703 column hint, tenant-scope
+ * advisory) through an injected client stub.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   assertSingleReadStatement,
   extractPgErrorInfo,
+  extractReferencedTables,
+  describeReferencedTableColumns,
+  buildTenantScopeAdvisory,
+  clearTenantScopeSchemaCache,
   PgReadQueryError,
 } from './pg-read-query';
 
@@ -160,5 +166,161 @@ describe('extractPgErrorInfo (EI-8301 — surface PG HINT/DETAIL/code/position)'
   it('omits empty-string PG fields rather than surfacing blanks', () => {
     const pgErr = Object.assign(new Error('x'), { hint: '', detail: '', code: '' });
     expect(extractPgErrorInfo(pgErr)).toEqual({ message: 'x' });
+  });
+});
+
+// ── P-005 point-of-use guards ────────────────────────────────────────────────
+
+describe('extractReferencedTables (P-005)', () => {
+  it('extracts FROM + JOIN names, schema-qualified or bare, lowercased + deduped', () => {
+    expect(
+      extractReferencedTables(
+        'SELECT * FROM harness_shared.Engineer_Issues e JOIN work_items w ON w.id = e.id ' +
+          'LEFT JOIN harness_shared.engineer_issues e2 ON e2.id = w.id',
+      ),
+    ).toEqual(['harness_shared.engineer_issues', 'work_items']);
+  });
+
+  it('does not extract a table name from inside a string literal', () => {
+    expect(
+      extractReferencedTables("SELECT * FROM t1 WHERE note = 'copied from harness_plans join x'"),
+    ).toEqual(['t1']);
+  });
+
+  it('skips a subquery FROM ( and caps the list', () => {
+    const sql =
+      'SELECT * FROM (SELECT 1) sub JOIN a ON 1=1 JOIN b ON 1=1 JOIN c ON 1=1 JOIN d ON 1=1 JOIN e ON 1=1';
+    expect(extractReferencedTables(sql)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('returns [] when nothing matches', () => {
+    expect(extractReferencedTables('SELECT 1')).toEqual([]);
+  });
+});
+
+/** A tagged-template `sql` stub returning canned information_schema rows. */
+function stubClient(rows: Array<{ table_schema: string; table_name: string; column_name: string }>) {
+  const calls: unknown[][] = [];
+  const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push(values);
+    return rows;
+  };
+  return { sql: sql as never, calls };
+}
+
+describe('describeReferencedTableColumns (P-005a — the 42703 column hint)', () => {
+  it('returns each referenced table with its columns in ordinal order', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'issue_id' },
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'title' },
+      { table_schema: 'harness_shared', table_name: 'engineer_issues', column_name: 'state' },
+    ]);
+    const out = await describeReferencedTableColumns(
+      'SELECT wrong_col FROM harness_shared.engineer_issues',
+      { client: sql },
+    );
+    expect(out).toEqual([
+      { table: 'harness_shared.engineer_issues', columns: ['issue_id', 'title', 'state'] },
+    ]);
+  });
+
+  it('resolves a bare name matched in many schemas to the preferred one (harness_shared first)', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_zzz_clone', table_name: 'messages', column_name: 'clone_col' },
+      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'id' },
+      { table_schema: 'harness_shared', table_name: 'messages', column_name: 'body' },
+    ]);
+    const out = await describeReferencedTableColumns('SELECT nope FROM messages', { client: sql });
+    expect(out).toEqual([{ table: 'harness_shared.messages', columns: ['id', 'body'] }]);
+  });
+
+  it('returns [] without querying when the SQL references no tables', async () => {
+    const { sql, calls } = stubClient([]);
+    expect(await describeReferencedTableColumns('SELECT 1', { client: sql })).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () => {
+  const TENANT_ROWS = [
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'plan_slug' },
+  ];
+
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('fires for a filtered query on a tenant table with no scope predicate', async () => {
+    const { sql } = stubClient(TENANT_ROWS);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'my-plan'",
+      { client: sql },
+    );
+    expect(advisory).toContain('harness_shared.harness_plans');
+    expect(advisory).toContain('workspace_id + harness_slug');
+    expect(advisory).toContain('raw-sql-plan-slug-needs-workspace-harness-scope');
+  });
+
+  it('is silent when the query already carries a scope column', async () => {
+    const { sql, calls } = stubClient(TENANT_ROWS);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'p' AND workspace_id = 'ws'",
+        { client: sql },
+      ),
+    ).toBeNull();
+    expect(calls).toHaveLength(0); // short-circuits before the schema read
+  });
+
+  it("is silent for an unfiltered aggregate (no WHERE — usually a deliberate cross-tenant count)", async () => {
+    const { sql, calls } = stubClient(TENANT_ROWS);
+    expect(
+      await buildTenantScopeAdvisory('SELECT count(*) FROM harness_shared.harness_plans', {
+        client: sql,
+      }),
+    ).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('is silent when the referenced table has no tenant columns', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'public', table_name: 'plain_table', column_name: 'id' },
+    ]);
+    expect(
+      await buildTenantScopeAdvisory('SELECT * FROM plain_table WHERE id = 1', { client: sql }),
+    ).toBeNull();
+  });
+
+  it("a scope column mentioned only inside a string literal does NOT count as a predicate", async () => {
+    const { sql } = stubClient(TENANT_ROWS);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'workspace_id-lookalike'",
+      { client: sql },
+    );
+    expect(advisory).not.toBeNull();
+  });
+
+  it('caches the schema read (second call for the same table skips the query)', async () => {
+    const { sql, calls } = stubClient(TENANT_ROWS);
+    await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'a'",
+      { client: sql },
+    );
+    await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'b'",
+      { client: sql },
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('propagates nothing on a schema-read failure (caller catches — advisory just absent)', async () => {
+    const throwing = (async () => {
+      throw new Error('pg down');
+    }) as never;
+    await expect(
+      buildTenantScopeAdvisory("SELECT * FROM harness_shared.harness_plans WHERE x = 1", {
+        client: throwing,
+      }),
+    ).rejects.toThrow('pg down');
   });
 });

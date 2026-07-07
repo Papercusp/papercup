@@ -38,9 +38,13 @@ export default defineTool({
   // context-trimming-tiers P-023: trimmed/standard sessions get lean entry
   // rows, a clipped active-doc body with a loud continuation pointer, and the
   // `files` duplicate collapsed to a count (see list-shape.ts).
+  // EI-8326: a caller that supplied `docId` wants a compact per-doc status,
+  // not the whole harness's global entries list re-sent every time.
   shape: {
-    standard: (data) => shapeHarnessDocsList(data, 'standard'),
-    trimmed: (data) => shapeHarnessDocsList(data, 'trimmed'),
+    standard: (data, sctx) =>
+      shapeHarnessDocsList(data, 'standard', { docIdRequested: !!(sctx.args as { docId?: string }).docId }),
+    trimmed: (data, sctx) =>
+      shapeHarnessDocsList(data, 'trimmed', { docIdRequested: !!(sctx.args as { docId?: string }).docId }),
   },
   async handler(args, ctx) {
     const scope = resolveHarnessScope(args.harness, ctx as { harnessSlug?: string });
