@@ -644,7 +644,9 @@ describe('surveyWorkspace crossHive dedup (EI-8377)', () => {
     const rowB = frontierRow({ feature_id: 'WI-2', harness_slug: 'B' });
     const deps = wsDeps({
       loadRegistry: async () => ({ projects }),
-      fetchFrontier: async (slugs) => [rowA, rowB].filter((r) => slugs.includes(r.harness_slug)),
+      // Neither A nor B has a member wired, so resolveHiveMembership falls back
+      // to `surveySlugs: []` (workspace-wide scope) for each — mirror that here.
+      fetchFrontier: async (slugs) => [rowA, rowB].filter((r) => slugs.length === 0 || slugs.includes(r.harness_slug)),
     });
     const ws = await surveyWorkspace('ws', { listHiveSlugs: async () => ['A', 'B'], deps });
     expect(ws.crossHive.frontier.map((f) => f.id).sort()).toEqual(['WI-1', 'WI-2']);
