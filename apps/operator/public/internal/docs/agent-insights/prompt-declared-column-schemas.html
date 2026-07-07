@@ -91,14 +91,18 @@ write side) is the higher-value lever. Plan: <code dir="auto">token-efficient-ag
 <ul>
 <li><code dir="auto">registry.ts</code> — the configurable <strong>pre-prompt registry</strong> (a curated list of
 tool names + per-tool <code dir="auto">read</code>/<code dir="auto">write</code> override). <code dir="auto">configurePrePromptRegistry</code>,
-<code dir="auto">getPrePromptEntry</code>, <code dir="auto">readPrePromptFormat</code>, <code dir="auto">isWritePositional</code>.</li>
+<code dir="auto">getPrePromptEntry</code>, <code dir="auto">readPrePromptFormat</code>, <code dir="auto">isWritePositional</code>. For
+bulk-capable write tools, the registry can also declare the <strong>single-row</strong>
+column subset (<code dir="auto">writeColumnNames</code> / <code dir="auto">writeRequiredColumnNames</code>) and whether
+the full keyed shape should remain advertised (<code dir="auto">writeKeyedFallback</code>).</li>
 <li><code dir="auto">positional.ts</code> — <code dir="auto">projectReadColumns</code> / <code dir="auto">projectWriteColumns</code> (JSON-Schema →
 <code dir="auto">ColumnSpec[]</code>), <code dir="auto">encodePositionalRows</code> (headerless CSV + <code dir="auto">[N]</code>),
 <code dir="auto">reconstructArgs</code> (row → typed args + the misalignment guard),
 <code dir="auto">positionalRowSchema</code> (the <code dir="auto">{ row }</code> schema a write tool advertises).</li>
 <li><code dir="auto">legend.ts</code> — <code dir="auto">renderWireSchemas</code> (the <code dir="auto">## Wire schemas</code> markdown).</li>
 <li><code dir="auto">advertise.ts</code> — <code dir="auto">advertisedArgsSchema(name, argsSchema)</code>: swaps a
-write-positional tool’s <code dir="auto">tools/list</code> schema to a single <code dir="auto">row</code> string.</li>
+write-positional tool’s <code dir="auto">tools/list</code> schema to either a single <code dir="auto">row</code> string
+or, for bulk-capable tools, <code dir="auto">oneOf: [{ row }, &#x3C;full keyed args>]</code>.</li>
 </ul>
 </li>
 <li><strong>The host config</strong> lives at
@@ -118,10 +122,13 @@ into the psu playbook at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:WIRE-SCHEMAS --
 <div class="sl-heading-wrapper level-h2"><h2 id="the-single-projection-anti-desync-guarantee">The single-projection (anti-desync) guarantee</h2><a class="sl-anchor-link" href="#the-single-projection-anti-desync-guarantee"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The single-projection (anti-desync) guarantee”</span></a></div>
 <p>The legend the model reads, the read encoder’s column order, and the write shim’s
 column order <strong>all come from the same <code dir="auto">projectReadColumns</code> / <code dir="auto">projectWriteColumns</code>
-call on the same tool schema</strong>. A positional format can’t self-correct a schema
-mismatch (there’s no inline header), so this is load-bearing — it’s asserted by
-the anti-desync test in <code dir="auto">tooldef/src/positional-integration.test.ts</code>. If you fork
-the projection, that test fails.</p>
+projection</strong>. For ordinary write tools, that projection is the whole args
+schema. For bulk-capable write tools, it is the explicitly declared single-row
+subset in the pre-prompt registry. A positional format can’t self-correct a
+schema mismatch (there’s no inline header), so this is load-bearing — it’s
+asserted by the anti-desync test in <code dir="auto">tooldef/src/positional-integration.test.ts</code>
+and the production-registry test for <code dir="auto">work_items:set_state</code> / <code dir="auto">work_items:claim</code>.
+If you fork the projection, those tests fail.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="rules-when-you-touch-this">Rules when you touch this</h2><a class="sl-anchor-link" href="#rules-when-you-touch-this"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Rules when you touch this”</span></a></div>
 <ul>
 <li><strong>Read Tier-3 only activates for a flat scalar array.</strong> The tool needs a
@@ -132,17 +139,24 @@ gracefully. The declared columns MUST cover every key the data can carry, or
 the headerless encoder silently drops the undeclared ones (this is why
 <code dir="auto">harness:list</code>, whose <code dir="auto">full</code> mode adds scalar columns its summary schema omits,
 is <strong>not</strong> Tier-3-enabled, while <code dir="auto">audit:list</code>, whose extra field is nested, is).</li>
-<li><strong>Write positional fits a bounded shape only</strong> (D-006): scalars/enums/ids + <strong>at
-most one trailing free-text field</strong> (server splits on the first N−1 commas, so
-its embedded commas/newlines are safe — no model-side escaping), <strong>no
-array/object args</strong>, and <strong>optionals must be a contiguous TRAILING block</strong> — a
-required column after an optional would let the model omit the optional and
-silently shift every later value into the wrong column, so such a tool is
-rejected. <code dir="auto">projectWriteColumns</code> returns <code dir="auto">undefined</code> for anything that doesn’t
-fit, and the tool stays typed-JSON. Tools like <code dir="auto">coord:send</code> (<code dir="auto">to[]</code>),
+<li><strong>Write positional fits a bounded row shape only</strong> (D-006): scalars/enums/ids +
+<strong>at most one trailing free-text field</strong> (server splits on the first N−1
+commas, so its embedded commas/newlines are safe — no model-side escaping),
+<strong>no array/object row cells</strong>, and <strong>optionals must be a contiguous TRAILING
+block</strong> — a required column after an optional would let the model omit the
+optional and silently shift every later value into the wrong column, so such a
+row is rejected. <code dir="auto">projectWriteColumns</code> returns <code dir="auto">undefined</code> for anything that
+doesn’t fit, and the tool stays typed-JSON. Tools like <code dir="auto">coord:send</code> (<code dir="auto">to[]</code>),
 <code dir="auto">coord:handoff</code> (arrays), and <code dir="auto">plans:set-status</code> (a non-last free-text <code dir="auto">note</code>)
 are correctly rejected. A Zod <code dir="auto">.default()</code> column counts as optional (the model
 may omit it; Zod fills the default).</li>
+<li><strong>Bulk-capable positional write tools need an explicit single-row subset</strong>
+(WI-3260). Do not loosen <code dir="auto">projectWriteColumns</code> to accept unrelated array/object
+fields from a bulk schema. Instead, declare the row columns in
+<code dir="auto">pre-prompt-registry-config.ts</code> and set <code dir="auto">writeKeyedFallback:true</code>; <code dir="auto">tools/list</code>
+then advertises <code dir="auto">oneOf(row, keyed args)</code>. The runtime shim already only
+reconstructs when <code dir="auto">row</code> is a string and otherwise leaves keyed args untouched,
+so keyed <code dir="auto">ids:[...]</code> / <code dir="auto">items:[...]</code> calls keep working.</li>
 <li><strong>Reconstruct normalizes edge whitespace + an empty result still self-presents.</strong>
 Each positional field is <code dir="auto">.trim()</code>’d so the natural <code dir="auto">WI-42, passed</code> spacing
 isn’t rejected by the enum/id guard (internal commas/newlines in a free-text
@@ -156,7 +170,10 @@ sanity (id <code dir="auto">pattern</code>, enum membership, numeric/boolean coe
 — do not flip such a tool to <code dir="auto">write:'positional'</code> on the live fleet until the
 P-013 LLM-scenario emit-correctness gate passes for it.</li>
 <li><strong>Keyed args still work.</strong> The shim only fires when the caller sends a <code dir="auto">row</code>
-string; a programmatic/keyed call is untouched.</li>
+string; a programmatic/keyed call is untouched. For bulk-capable positional
+tools, the keyed shape is also explicitly advertised as the second <code dir="auto">oneOf</code>
+member so prompt-aware and programmatic callers can both see the supported
+contract.</li>
 <li><strong>Typed-JSON / TOON remain the default everywhere.</strong> Pre-prompting earns its
 prompt cost only for tools called <strong>> ~once per session</strong> (the registry is
 telemetry-derived and stays short).</li>

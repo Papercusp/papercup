@@ -675,7 +675,7 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
  * appears in the app grid; pinning it to a dock/taskbar is the user's/DE's choice (the
  * .deb doesn't auto-pin either). Best-effort throughout — never breaks the install.
  */
-async function writeLinuxTutorialDesktopEntry(
+export async function writeLinuxTutorialDesktopEntry(
   desktopPath: string,
   papercuspCliPath: string,
   home: string,
@@ -1104,6 +1104,20 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     }
   }
 
+  // Linux tutorial `.desktop` icon (owner 2026-07-06, "4th time"): the Linux leg of the
+  // tutorial-icon parity — provisioned HERE at first boot for dev boxes / any non-.deb
+  // install, which the .deb postinstall never covers (that only fires on a .deb install,
+  // into root /usr/share). Gated on the dispatcher having landed (it is the Exec target).
+  let linuxTutorialDesktopWritten = false;
+  if (process.platform === 'linux' && papercuspCliWritten) {
+    linuxTutorialDesktopWritten = await writeLinuxTutorialDesktopEntry(
+      paths.linuxTutorialDesktopPath,
+      paths.papercuspCliPath,
+      home,
+      operatorAppRoot,
+    );
+  }
+
   return {
     ...paths,
     minted: { token: token.minted, agentId: agentId.minted },
@@ -1116,6 +1130,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     ptoolShimWritten,
     papercuspCliWritten,
     macTutorialAppWritten,
+    linuxTutorialDesktopWritten,
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',

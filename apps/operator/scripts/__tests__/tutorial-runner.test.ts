@@ -168,11 +168,11 @@ describe('nextTab / defaultTab / SHELL_TABS — the tab model (#4)', () => {
     expect(defaultTab({})).toBe('setup'); // first-run handoff, setup unfinished
     expect(defaultTab({ tab: 'bogus' })).toBe('setup');
   });
-  it('defaultTab: once setup is COMPLETE, the command chooses the tab', () => {
+  it('defaultTab: even when setup is COMPLETE, `papercusp tutorial` still opens Setup first (owner 2026-07-06)', () => {
     expect(defaultTab({ tab: 'setup' }, { setupComplete: true })).toBe('setup'); // `papercusp setup`
-    expect(defaultTab({ tab: 'tutorial' }, { setupComplete: true })).toBe('tutorial');
-    expect(defaultTab({ tutorial: true }, { setupComplete: true })).toBe('tutorial'); // re-entry → tour
-    expect(defaultTab({}, { setupComplete: true })).toBe('tutorial'); // handoff on a set-up box → tour
+    expect(defaultTab({ tutorial: true }, { setupComplete: true })).toBe('setup'); // `papercusp tutorial` → Setup first
+    expect(defaultTab({ tab: 'tutorial' }, { setupComplete: true })).toBe('tutorial'); // explicit tutorial tab still honored
+    expect(defaultTab({}, { setupComplete: true })).toBe('tutorial'); // ONLY the first-run handoff lands on the tour
   });
 });
 

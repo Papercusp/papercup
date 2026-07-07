@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { resolveDevOperators, DEV_OPERATORS } from './dev-operators';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { resolveDevOperators, resolveReleaseOrigin, DEV_OPERATORS } from './dev-operators';
 
 function versionResponse(sha: string): Response {
   return new Response(JSON.stringify({ sidecarSha: sha }), {
@@ -86,5 +86,44 @@ describe('resolveDevOperators', () => {
       timeoutMs: 50,
     });
     expect(operators.every((o) => !o.reachable)).toBe(true);
+  });
+});
+
+describe('resolveReleaseOrigin (WI-3284: dead release button on packaged installs)', () => {
+  const ENV_KEYS = ['PAPERCUSP_RELEASE_ORIGIN', 'PAPERCUSP_DESKTOP', 'PAPERCUSP_HONO_PORT', 'PORT'] as const;
+  const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('an explicit PAPERCUSP_RELEASE_ORIGIN always wins', () => {
+    process.env.PAPERCUSP_RELEASE_ORIGIN = 'http://127.0.0.1:9999/';
+    process.env.PAPERCUSP_DESKTOP = '1';
+    expect(resolveReleaseOrigin()).toBe('http://127.0.0.1:9999');
+  });
+
+  it('packaged desktop (PAPERCUSP_DESKTOP=1, dynamic port): falls back to SELF, not the nonexistent :3070', () => {
+    delete process.env.PAPERCUSP_RELEASE_ORIGIN;
+    process.env.PAPERCUSP_DESKTOP = '1';
+    process.env.PAPERCUSP_HONO_PORT = '17174';
+    expect(resolveReleaseOrigin()).toBe('http://127.0.0.1:17174');
+  });
+
+  it('dev box (no PAPERCUSP_DESKTOP): keeps the :3070 green-release fallback', () => {
+    delete process.env.PAPERCUSP_RELEASE_ORIGIN;
+    delete process.env.PAPERCUSP_DESKTOP;
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    expect(resolveReleaseOrigin()).toBe('http://127.0.0.1:3070');
+  });
+
+  it('packaged desktop with an undeterminable self port: still falls back to :3070 rather than a broken origin', () => {
+    delete process.env.PAPERCUSP_RELEASE_ORIGIN;
+    process.env.PAPERCUSP_DESKTOP = '1';
+    delete process.env.PAPERCUSP_HONO_PORT;
+    delete process.env.PORT;
+    expect(resolveReleaseOrigin()).toBe('http://127.0.0.1:3070');
   });
 });

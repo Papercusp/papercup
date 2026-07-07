@@ -124,6 +124,19 @@ export function resolveReleaseOrigin(deps: { host?: string } = {}): string {
   const host = deps.host ?? '127.0.0.1';
   const env = process.env.PAPERCUSP_RELEASE_ORIGIN;
   if (env && /^https?:\/\//.test(env)) return env.replace(/\/+$/, '');
+  // Packaged desktop (PAPERCUSP_DESKTOP=1) with no explicit origin: the bundled
+  // primary operator IS the release code, and its port is DYNAMIC — the old
+  // unconditional `:3070` fallback pointed at a port that doesn't exist on a
+  // user install, so the release escape-hatch button rendered permanently dead
+  // (owner-reported on the mac build 2026-07-06, WI-3284). Resolve to SELF: the
+  // bar then marks release as the active env (honest — you're ON the release
+  // code) instead of an unreachable ghost. The dev box keeps the `:3070`
+  // fallback (its operators run without PAPERCUSP_DESKTOP; the green release
+  // really is :3070 there).
+  if (process.env.PAPERCUSP_DESKTOP === '1') {
+    const selfPort = detectSelfPort();
+    if (selfPort != null) return `http://${host}:${selfPort}`;
+  }
   return `http://${host}:3070`;
 }
 
