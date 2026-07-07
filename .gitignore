@@ -121,3 +121,6 @@ apps/operator/public/silero_vad_*.onnx
 apps/operator/public/vad.worklet.bundle.min.js
 # Stale duplicate docs backup trees under the served internal docs.
 apps/operator/public/internal/docs.old.*/
+
+# WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
+apps/operator/dist-host/
