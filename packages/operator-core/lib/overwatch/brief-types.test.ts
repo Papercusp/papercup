@@ -19,6 +19,7 @@ function unhealthyBrief(): OverwatchBrief {
     plans: { active: 6, stalledItems: 4, agingEscalations: 2 },
     observations: { laneCount: 9, recentByRole: { worker: 5, queen: 3, scout: 1 } },
     crossMonitor: { queenAlive: false, overwatchAlive: true },
+    ownerSteering: { pauseNewWork: false, pausedUntil: null, eligiblePlans: [] },
     inbox: [
       { kind: 'message', from: 'mug', summary: 're: F-FIX-021 — re-opened, thanks' },
       { kind: 'escalation', summary: 'owner: keep an eye on the opus bucket' },
