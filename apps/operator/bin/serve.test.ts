@@ -147,6 +147,53 @@ describe('cold-start lock (singleton guard)', () => {
   });
 });
 
+// WI-3287 recurrence guard: found live on the first real packaged-Linux
+// env-switcher verify (2026-07-07) — a bundled env-sidecar sibling
+// (env-operator-launcher.ts's `prod`/`staging`) re-execs this SAME serve.mjs
+// under the SAME $HOME as the primary. Before PAPERCUSP_ENV_OPERATOR_ID
+// scoping, its acquireColdStartLock() call collided with the primary's
+// `operator.lock` — which the primary holds for its ENTIRE lifetime (only
+// released on shutdown) — so every env-sidecar boot permanently failed with
+// "another `serve` holds the cold-start lock" the instant the primary was up.
+describe('cold-start lock scoping for env-operator siblings (PAPERCUSP_ENV_OPERATOR_ID)', () => {
+  const stagingLock = () => join(pcDir(), serve.lockFileNameForEnvId('staging'));
+  const prodLock = () => join(pcDir(), serve.lockFileNameForEnvId('prod'));
+
+  afterEach(() => {
+    rmSync(lockFile(), { force: true });
+    rmSync(stagingLock(), { force: true });
+    rmSync(prodLock(), { force: true });
+  });
+
+  it('the primary (no id) and every env-sidecar id resolve to distinct, well-formed lock filenames', () => {
+    expect(serve.lockFileNameForEnvId(null)).toBe('operator.lock');
+    expect(serve.lockFileNameForEnvId('staging')).toBe('operator.lock.env-staging');
+    expect(serve.lockFileNameForEnvId('prod')).toBe('operator.lock.env-prod');
+    // No two distinct ids (including the primary's null) ever collide.
+    const names = [null, 'prod', 'staging', 'dev', 'local'].map((id) =>
+      serve.lockFileNameForEnvId(id),
+    );
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('a sibling lock file can be acquired while the primary (unscoped) lock is held', () => {
+    // Primary holds its own lock for its entire lifetime (released only on
+    // shutdown) — the bug (found live 2026-07-07) was every sibling boot
+    // colliding with THIS still-held lock via the same fixed path.
+    expect(serve.acquireColdStartLock()).toBe(true);
+    try {
+      // Simulate a sibling's own acquire against its SCOPED path directly —
+      // writeFileSync mirrors acquireColdStartLock's own `wx` (O_EXCL) create.
+      expect(() => writeFileSync(stagingLock(), '12345', { flag: 'wx' })).not.toThrow();
+      expect(statSync(stagingLock()).isFile()).toBe(true);
+      // A second, different sibling id is likewise unaffected by both.
+      expect(() => writeFileSync(prodLock(), '12346', { flag: 'wx' })).not.toThrow();
+    } finally {
+      serve.releaseColdStartLock();
+    }
+  });
+});
+
 describe('sweepOrphanPostgres', () => {
   const dataDir = () => join(tmpHome, 'pg-data');
   const pidFile = () => join(dataDir(), 'postmaster.pid');

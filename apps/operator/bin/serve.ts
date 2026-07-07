@@ -66,10 +66,13 @@ const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, 'superuser-token');
 // lit because of this). Scoping by id gives each sibling (and the primary)
 // its own lock, so they can legitimately cold-start concurrently.
 const ENV_OPERATOR_ID = process.env.PAPERCUSP_ENV_OPERATOR_ID || null;
-const LOCK_PATH = join(
-  PAPERCUSP_DIR,
-  ENV_OPERATOR_ID ? `operator.lock.env-${ENV_OPERATOR_ID}` : 'operator.lock',
-);
+/** Pure — exported so the scoping rule is unit-testable without a full module
+ *  re-import (serve.ts has non-idempotent module-load side effects — DBOS
+ *  workflow registration — that a `vi.resetModules()` re-import re-triggers). */
+export function lockFileNameForEnvId(envOperatorId: string | null): string {
+  return envOperatorId ? `operator.lock.env-${envOperatorId}` : 'operator.lock';
+}
+const LOCK_PATH = join(PAPERCUSP_DIR, lockFileNameForEnvId(ENV_OPERATOR_ID));
 // WI-2644: was `process.env.npm_package_version ?? '0.1.0-dev'` — npm never
 // invokes the bundled sidecar, so this was ALWAYS the '0.1.0-dev' fallback on
 // every packaged desktop build. build-info.ts already resolves the correct
