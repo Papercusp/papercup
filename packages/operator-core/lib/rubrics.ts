@@ -34,6 +34,7 @@ import {
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
+import { listLocalRubrics, rubricsNeedingSeed } from './cupboard/rubric-store';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
 export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', 'retired'];
@@ -220,9 +221,18 @@ function sortRubrics(rubrics: Rubric[]): Rubric[] {
 }
 
 /** Every rubric-template plan in the rubric workspace, mapped to Rubric. The single read
- *  path the three public reads filter/search over. Degrades to [] if the plans store is
- *  unavailable (e.g. a test DB with no harness_plans) — reads never throw. */
+ *  path the three public reads filter/search over — which makes it the ONE choke point
+ *  where the first-party seed hooks (any rubrics:list/get/search or Overwatch getRubric
+ *  triggers it). Degrades to [] if the plans store is unavailable (e.g. a test DB with
+ *  no harness_plans) — reads never throw. */
 async function loadAllRubrics(): Promise<Rubric[]> {
+  await ensureFirstPartyRubricsSeeded();
+  return queryRubricPlans();
+}
+
+/** The raw plan-row read behind loadAllRubrics, seed-free (the seed itself reads/writes
+ *  through paths that land back here — the seed gate above breaks the recursion). */
+async function queryRubricPlans(): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
     // Exclude per-run instance plans (template_slug IS NOT NULL) — a rubric is a
@@ -239,6 +249,87 @@ async function loadAllRubrics(): Promise<Rubric[]> {
   } catch {
     return [];
   }
+}
+
+// ─── first-party seed (local-first-party-rubric-bundling-2026-07-07 P-003) ───────────
+// Templates-v1 design applied to rubrics, with the one structural difference: a rubric
+// IS a plan row with ratify/trend/scorecard machinery keyed off the DB, so the bundled
+// layer (cupboard/rubric-store.ts) SEEDS into the workspace store instead of being read
+// through. Idempotent + no-clobber: an existing workspace rubricId (any status) always
+// wins — a local ratified edit is never overwritten; the bundle only fills gaps. Also
+// the cold-start fix: a fresh install has ZERO rubric rows until this runs.
+
+/** The recorded plan owner for a seeded rubric (createdBy/proposedBy/ratifiedBy in
+ *  reads). The content VERSION lives in the bundle (rubric.json/listing.json), not in
+ *  template_data — rubricTemplateDataSchema is .strict() and a version field there
+ *  would fail loud; v1 has no upgrade semantics anyway (existing rows always win). */
+export const FIRST_PARTY_RUBRIC_SEED_OWNER = 'first-party-bundle';
+
+type RubricSeedState = 'pending' | 'running' | 'done';
+let rubricSeedState: RubricSeedState = 'pending';
+
+/** Test-only: re-arm the once-per-process seed gate. */
+export function __resetRubricSeedStateForTests(): void {
+  rubricSeedState = 'pending';
+}
+
+/** Raw slug existence set for the no-clobber check. Deliberately NOT planRowToRubric
+ *  (which nulls out rows with invalid template_data): even a half-authored rubric plan
+ *  row must block the seed rather than be silently overwritten. THROWS on a DB error so
+ *  the caller can defer the seed instead of mistaking "unreachable" for "empty". */
+async function existingRubricPlanSlugs(): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ plan_slug: string }[]>`
+    SELECT plan_slug
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${rubricsScopeWorkspace()}
+       AND template = ${RUBRIC_TEMPLATE_NAME}`;
+  return new Set(rows.map((r) => r.plan_slug));
+}
+
+/**
+ * Seed the bundled first-party rubrics into the workspace store, once per process —
+ * wired into loadAllRubrics, so any rubrics:list/get/search (or the Overwatch scorecard
+ * getRubric) triggers it lazily. Seeded rubrics are authored ACTIVE (they shipped
+ * ratified) with owner FIRST_PARTY_RUBRIC_SEED_OWNER, via the canonical proposeRubric
+ * path (fail-loud schema validation, plan-lock writes).
+ *
+ * Re-entrancy: the seed's own writes read back through loadAllRubrics — the 'running'
+ * state short-circuits those (and, benignly, a concurrent first read races the seed and
+ * may see the pre-seed set once). Any failure re-arms 'pending' so a later read retries
+ * (e.g. the DB was briefly unavailable at first read); the per-id existence check makes
+ * the retry cheap and clobber-free. Never throws — reads stay degrade-only.
+ */
+export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
+  if (rubricSeedState !== 'pending') return;
+  rubricSeedState = 'running';
+  let ok = true;
+  try {
+    const bundled = listLocalRubrics();
+    if (bundled.length > 0) {
+      const missing = rubricsNeedingSeed(bundled, await existingRubricPlanSlugs());
+      for (const r of missing) {
+        try {
+          await proposeRubric({
+            rubricId: r.rubricId,
+            characteristic: r.characteristic,
+            title: r.title,
+            ...(r.description ? { description: r.description } : {}),
+            criteria: r.criteria,
+            ratingScale: r.ratingScale,
+            ...(r.methodRef ? { methodRef: r.methodRef } : {}),
+            by: FIRST_PARTY_RUBRIC_SEED_OWNER,
+            status: 'active',
+          });
+        } catch {
+          ok = false; // one broken/blocked rubric never stops the rest
+        }
+      }
+    }
+  } catch {
+    ok = false;
+  }
+  rubricSeedState = ok ? 'done' : 'pending';
 }
 
 export interface ListRubricsFilter {

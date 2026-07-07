@@ -1,6 +1,6 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Writable } from 'node:stream';
 
@@ -45,6 +45,48 @@ export interface ExtractDevSourceDeps {
   log?: (m: string) => void;
 }
 
+/** Minimal shape of the tar-fs entry header the `ignore` predicate needs. */
+interface TarLinkHeader {
+  type?: string;
+  linkname?: string;
+}
+
+/**
+ * tar-fs `ignore` predicate that SKIPS symlink/hardlink entries whose target
+ * escapes the extraction root, instead of letting tar-fs abort the whole stream
+ * on the first one (tar-fs index.js:264 `'<name> is not a valid symlink'` — its
+ * inCwd() path-traversal guard). The monorepo's node_modules can carry dev-box-
+ * local out-of-tree links (a `file:../ExternalProj` dep npm-links into
+ * node_modules, e.g. `storewolf-libs -> ../../Storewolf-Libs`) that can NEVER
+ * resolve on an install and that nothing in the app imports; without this, one
+ * such link aborted the entire 11.75GB first-boot extract, so dev/local fell
+ * back to 'no-source-tree' (WI-3308). We mirror tar-fs's own inCwd() check so we
+ * skip EXACTLY the entries it would have rejected — every in-tree link (the
+ * node_modules/.bin/* + @papercusp/* workspace links the toolchain needs) is
+ * kept. Generic by construction: any future stray out-of-tree link is skipped
+ * too, not just the known Storewolf ones.
+ */
+export function escapingLinkIgnore(
+  dir: string,
+  onSkip?: (name: string, linkname: string) => void,
+): (name: string, header?: TarLinkHeader) => boolean {
+  const root = resolve(dir);
+  return (name: string, header?: TarLinkHeader): boolean => {
+    const type = header?.type;
+    if (type !== 'symlink' && type !== 'link') return false;
+    const linkname = header?.linkname ?? '';
+    // symlink target is relative to the link's own directory (tar-fs:263);
+    // hardlink target is joined from the extraction root (tar-fs:273).
+    const dst = type === 'symlink' ? resolve(dirname(name), linkname) : resolve(root, linkname);
+    const inside = dst === root || dst.startsWith(root + sep);
+    if (!inside) {
+      onSkip?.(name, linkname);
+      return true;
+    }
+    return false;
+  };
+}
+
 export interface ExtractDevSourceOpts extends ExtractDevSourceDeps {
   /** Bundled source.tar.zst path (PAPERCUSP_SOURCE_ARCHIVE). undefined ⇒ no-op. */
   archivePath: string | undefined;
@@ -78,7 +120,7 @@ export async function extractDevSourceTree(
   try {
     await mkdir(targetDir, { recursive: true });
     const makeDecompress = opts.makeDecompress ?? (await defaultDecompress());
-    const makeExtract = opts.makeExtract ?? (await defaultExtract());
+    const makeExtract = opts.makeExtract ?? (await defaultExtract(log));
     log(`[dev-source] extracting ${archivePath} → ${targetDir} (first boot; ~2 min)`);
     await pipeline(createReadStream(archivePath), makeDecompress(), makeExtract(targetDir));
     if (!hasPapercupMarkers(targetDir)) {
@@ -107,12 +149,22 @@ async function defaultDecompress(): Promise<() => NodeJS.ReadWriteStream> {
   return () => make();
 }
 
-async function defaultExtract(): Promise<(dir: string) => Writable> {
+type TarfsExtract = (
+  dir: string,
+  opts?: { ignore?: (name: string, header?: TarLinkHeader) => boolean },
+) => Writable;
+
+async function defaultExtract(log: (m: string) => void): Promise<(dir: string) => Writable> {
   const tarfs = (await import('tar-fs')) as unknown as {
-    extract?: (dir: string) => Writable;
-    default?: { extract?: (dir: string) => Writable };
+    extract?: TarfsExtract;
+    default?: { extract?: TarfsExtract };
   };
   const extract = tarfs.extract ?? tarfs.default?.extract;
   if (typeof extract !== 'function') throw new Error('tar-fs extract unavailable');
-  return (dir: string) => extract(dir);
+  return (dir: string) =>
+    extract(dir, {
+      ignore: escapingLinkIgnore(dir, (name, linkname) =>
+        log(`[dev-source] skipping out-of-tree link ${name} → ${linkname} (unportable; omitted)`),
+      ),
+    });
 }

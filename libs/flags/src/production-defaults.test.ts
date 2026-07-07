@@ -144,6 +144,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // to v2. The remote-fetch code is wired but dormant. OFF is the intended v1 production
   // state (ON = v2). Count 16 → 17; well under DARK_FLAGS_HIGH_WATERMARK (22).
   'papercusp-templates-marketplace',
+  // 2026-07-07 — papercusp-rubrics-marketplace (local-first-party-rubric-bundling,
+  // owner-directed): the rubrics sibling of papercusp-templates-marketplace — the same
+  // DELIBERATE v1/v2 split (case: parked), not inversion drift. V1 bundles the
+  // first-party rubrics in-app and seeds them into the workspace rubric store; the
+  // Cupboard kind='rubric' marketplace merge is deferred to v2 (no remote-fetch code
+  // yet — the flag reserves the seam). OFF is the intended v1 production state
+  // (ON = v2). Count 17 → 18; well under DARK_FLAGS_HIGH_WATERMARK (22).
+  'papercusp-rubrics-marketplace',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -275,7 +283,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-07 — papercusp-templates-marketplace: DELIBERATE new dark flag (case:
     // parked, owner-directed v1/v2 split — local-first-party-template-bundling). The
     // v2 Cupboard marketplace merge is wired but dormant in v1. Count 16 → 17.
-    expect(offCount).toBe(17);
+    // 2026-07-07 — papercusp-rubrics-marketplace: the rubrics sibling of the same
+    // owner-directed v1/v2 split (local-first-party-rubric-bundling): v1 bundles +
+    // seeds first-party rubrics locally; the kind='rubric' Cupboard marketplace is a
+    // reserved v2 seam (no remote-fetch code yet). Count 17 → 18.
+    expect(offCount).toBe(18);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

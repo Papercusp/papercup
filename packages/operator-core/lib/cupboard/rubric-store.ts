@@ -1,0 +1,239 @@
+/**
+ * Local rubric store (local-first-party-rubric-bundling-2026-07-07) — the data layer
+ * behind the BUNDLED first-party rubrics. Mirrors template-store.ts (the templates-v1
+ * design, owner-directed 2026-07-07: install the first-party content locally + ship it
+ * in release builds, designed for the v2 Cupboard marketplace).
+ *
+ * The ONE structural difference from templates: a rubric IS a plan row
+ * (template:'rubric' in harness_shared.harness_plans) with ratify/trend/scorecard
+ * machinery keyed off the DB — so the bundled layer cannot be read through directly;
+ * it SEEDS into the workspace rubric store (rubrics.ts ensureFirstPartyRubricsSeeded:
+ * idempotent, no-clobber — an existing workspace rubricId always wins, so local
+ * ratified edits are never overwritten). The seed also fixes cold-start: a fresh
+ * install has ZERO rubric rows until it runs (the Overwatch's mandatory
+ * hive-coordination-health scorecard had nothing to grade against).
+ *
+ * The store is a resolved rubrics root, LAYERED (same shape as template-store):
+ *   - bundled (read-only): ships in-app. Release: Tauri main.rs sets
+ *     PAPERCUSP_RUBRICS_DIR → <resources>/sidecar/rubrics. Dev: the in-repo
+ *     `rubrics/` dir (resolved relative to this file). Holds the first-party set.
+ *   - user (writable): <papercuspRoot>/rubrics — EMPTY in v1; v2's Cupboard
+ *     `kind='rubric'` install target (flag `papercusp-rubrics-marketplace`).
+ *
+ * Each rubric is a SELF-DESCRIBING subdir: `rubric.json` (the manifest — the
+ * rubricTemplateDataSchema fields + title/version/source) + `listing.json`
+ * (storefront metadata, the template-listing field shape) + optional `METHOD.md`
+ * (the method_ref runbook — the GUIDE.md analog). "Install a rubric" is just "drop a
+ * self-describing dir into the user layer", the seam v2 user-install reuses.
+ */
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { papercuspPath } from '../papercusp-root';
+
+/** One gradeable criterion as authored in rubric.json — field-for-field the store's
+ *  RubricCriterion (rubrics.ts), so the seed passes criteria straight to proposeRubric
+ *  (which fail-loud validates against rubricTemplateDataSchema). */
+export interface LocalRubricCriterion {
+  key: string;
+  title: string;
+  model: string;
+  method: string;
+  driftMarkers: string;
+  ratingScale?: string[];
+}
+
+/** A rubric resolved from the local store (a single self-describing subdir). */
+export interface LocalRubric {
+  /** The subdir name; equals rubricId for the first-party set. */
+  ref: string;
+  rubricId: string;
+  title: string;
+  characteristic: string;
+  description: string;
+  ratingScale: string[];
+  methodRef: string | null;
+  criteria: LocalRubricCriterion[];
+  version: string;
+  /** 'first-party' for the bundled set; v2 installs may mark 'installed'. */
+  source: string;
+  /** Absolute path to the rubric's content dir. */
+  dir: string;
+  layer: 'bundled' | 'user';
+}
+
+export interface RubricRoot {
+  dir: string;
+  layer: 'bundled' | 'user';
+}
+
+// Dev fallback for the bundled layer: the in-repo `rubrics/` dir. This file is
+// <repo>/packages/operator-core/lib/cupboard/rubric-store.ts, so four levels up is
+// the repo root (mirrors template-store.ts's inRepoTemplatesDir).
+const inRepoRubricsDir = join(
+  dirname(fileURLToPath(import.meta.url)), // <repo>/packages/operator-core/lib/cupboard
+  '..',
+  '..',
+  '..',
+  '..',
+  'rubrics',
+);
+
+/** The bundled (read-only) rubrics dir: env override → in-repo dev fallback. */
+export function bundledRubricsDir(): string {
+  const fromEnv = process.env.PAPERCUSP_RUBRICS_DIR;
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  return inRepoRubricsDir;
+}
+
+/** The writable user rubrics dir (v2 install target). Empty in v1. */
+export function userRubricsDir(): string {
+  return papercuspPath('rubrics');
+}
+
+/**
+ * The layered roots, in RESOLUTION order — later layers shadow earlier ones on a
+ * ref collision, so the writable user layer wins over the bundled first-party set.
+ */
+export function rubricRoots(): RubricRoot[] {
+  return [
+    { dir: bundledRubricsDir(), layer: 'bundled' },
+    { dir: userRubricsDir(), layer: 'user' },
+  ];
+}
+
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);
+
+/** Tolerant structural read of a rubric.json criteria array. Returns null when any
+ *  entry lacks a required string field — the dir is skipped rather than surfaced
+ *  broken (deep validation happens again at seed time via rubricTemplateDataSchema). */
+function readCriteria(v: unknown): LocalRubricCriterion[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const out: LocalRubricCriterion[] = [];
+  for (const c of v) {
+    if (typeof c !== 'object' || c === null) return null;
+    const o = c as Record<string, unknown>;
+    const key = str(o.key);
+    const title = str(o.title);
+    const model = str(o.model);
+    const method = str(o.method);
+    const driftMarkers = str(o.driftMarkers);
+    if (!key || !title || !model || !method || !driftMarkers) return null;
+    const ratingScale =
+      Array.isArray(o.ratingScale) && o.ratingScale.every((s) => typeof s === 'string')
+        ? (o.ratingScale as string[])
+        : undefined;
+    out.push({ key, title, model, method, driftMarkers, ...(ratingScale ? { ratingScale } : {}) });
+  }
+  return out;
+}
+
+function readJsonOrNull(path: string): Record<string, unknown> | null {
+  try {
+    if (!existsSync(path)) return null;
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read a rubric subdir's self-describing content into a LocalRubric. rubric.json is
+ *  the manifest and is REQUIRED; listing.json fills storefront gaps (description /
+ *  version / source) when the manifest lacks them. Null ⇒ not a rubric dir (skipped). */
+function readRubricDir(dir: string, ref: string, layer: 'bundled' | 'user'): LocalRubric | null {
+  const manifest = readJsonOrNull(join(dir, 'rubric.json'));
+  if (!manifest) return null;
+  const listing = readJsonOrNull(join(dir, 'listing.json')) ?? {};
+
+  const rubricId = str(manifest.rubricId) ?? str(listing.id) ?? ref;
+  const title = str(manifest.title) ?? str(listing.title);
+  const characteristic = str(manifest.characteristic) ?? str(listing.category);
+  const criteria = readCriteria(manifest.criteria);
+  const ratingScale =
+    Array.isArray(manifest.ratingScale) && manifest.ratingScale.every((s) => typeof s === 'string')
+      ? (manifest.ratingScale as string[])
+      : null;
+  if (!title || !characteristic || !criteria || !ratingScale || ratingScale.length === 0) return null;
+
+  return {
+    ref,
+    rubricId,
+    title,
+    characteristic,
+    description: str(manifest.description) ?? str(listing.description) ?? '',
+    ratingScale,
+    methodRef: str(manifest.methodRef) ?? null,
+    criteria,
+    version: str(manifest.version) ?? str(listing.version) ?? '0.1.0',
+    source: str(manifest.source) ?? str(listing.source) ?? (layer === 'user' ? 'installed' : 'first-party'),
+    dir,
+    layer,
+  };
+}
+
+/**
+ * Enumerate every rubric across the layered roots. A user-layer ref shadows a
+ * bundled one. Non-dir entries (README.md) and dirs without a valid rubric.json are
+ * skipped. Sorted by ref for stable output.
+ */
+export function listLocalRubrics(roots: RubricRoot[] = rubricRoots()): LocalRubric[] {
+  const byRef = new Map<string, LocalRubric>();
+  for (const root of roots) {
+    if (!existsSync(root.dir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(root.dir);
+    } catch {
+      continue;
+    }
+    for (const ref of entries) {
+      const dir = join(root.dir, ref);
+      let isDir = false;
+      try {
+        isDir = statSync(dir).isDirectory();
+      } catch {
+        isDir = false;
+      }
+      if (!isDir) continue;
+      const r = readRubricDir(dir, ref, root.layer);
+      if (r) byRef.set(ref, r); // later root (user) overwrites earlier (bundled)
+    }
+  }
+  return [...byRef.values()].sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+/** Resolve one rubric by ref (or rubricId) from the local store, or null. */
+export function resolveLocalRubric(
+  idOrRef: string,
+  roots: RubricRoot[] = rubricRoots(),
+): LocalRubric | null {
+  const key = (idOrRef ?? '').trim();
+  if (!key) return null;
+  const all = listLocalRubrics(roots);
+  return all.find((r) => r.ref === key || r.rubricId === key) ?? null;
+}
+
+/** Read a local rubric dir's METHOD.md (the method_ref runbook — GUIDE.md analog), or
+ *  null when the rubric ships without one (methodRef null). */
+export function readLocalRubricMethod(r: Pick<LocalRubric, 'dir'>): string | null {
+  try {
+    const path = join(r.dir, 'METHOD.md');
+    return existsSync(path) ? readFileSync(path, 'utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The seed's PURE decision core (unit-tested without a DB): which bundled rubrics need
+ * seeding into the workspace store. No-clobber: any rubricId already present in the
+ * workspace (any status — active, proposed, retired, even a half-authored row) always
+ * wins, so a re-run against a seeded store returns [] (idempotence).
+ */
+export function rubricsNeedingSeed(
+  bundled: LocalRubric[],
+  existingRubricIds: ReadonlySet<string>,
+): LocalRubric[] {
+  return bundled.filter((r) => !existingRubricIds.has(r.rubricId));
+}

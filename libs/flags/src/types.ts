@@ -1388,6 +1388,16 @@ export const FLAGS = {
   // marketplace listings merge on top (local wins a ref collision) and non-local
   // refs resolve via the Cupboard. Default OFF — owner-directed staged v2 cutover.
   TEMPLATES_MARKETPLACE: "papercusp-templates-marketplace",
+  // local-first-party-rubric-bundling-2026-07-07 (the templates-v1 design applied to
+  // rubrics): v1 ships the first-party rubrics bundled in-app (PAPERCUSP_RUBRICS_DIR
+  // content dirs, cupboard/rubric-store.ts) and SEEDS them into the workspace rubric
+  // store on first rubrics:* read — a rubric is a plan row, trend/ratify/scorecards
+  // key off the DB, so it seeds rather than reads through. This flag gates the v2
+  // Cupboard MARKETPLACE merge for rubrics (kind='rubric' listings fetched at
+  // runtime, installed into the user layer, merged local-shadows-remote like
+  // templates:list). OFF (v1) ⇒ rubrics:* resolve the workspace store (+ bundled
+  // seed) only; there is no remote path yet. Default OFF — staged v2 cutover.
+  RUBRICS_MARKETPLACE: "papercusp-rubrics-marketplace",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1444,6 +1454,10 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // remote Cupboard path stays dormant. Flipped ON in v2 once the marketplace is
     // ready. Not incomplete/unsafe — a deliberate owner-directed staged cutover.
     [FLAGS.TEMPLATES_MARKETPLACE, { case: 'parked', reason: 'local-first-party-template-bundling-2026-07-07 (owner-directed 2026-07-07): V1 ships the first-party templates bundled in-app + resolved from the local store; the Cupboard MARKETPLACE merge (user-published, runtime-fetched templates via templates:list/get-guide/new-app) is deliberately deferred to v2. The remote-fetch code is wired but dormant. OFF ⇒ templates:* resolve the local store only (offline, no Cupboard round-trip). Owner flips ON in v2 when the marketplace ships.' }],
+    // The rubrics sibling of TEMPLATES_MARKETPLACE — the same owner-directed v1/v2
+    // split (local-first-party-rubric-bundling-2026-07-07): v1 bundles + seeds the
+    // first-party rubrics locally; the Cupboard kind='rubric' marketplace is a v2 seam.
+    [FLAGS.RUBRICS_MARKETPLACE, { case: 'parked', reason: 'local-first-party-rubric-bundling-2026-07-07 (owner-directed 2026-07-07, the templates-v1 design applied to rubrics): V1 ships the first-party rubrics bundled in-app (sidecar/rubrics content dirs) and seeds them into the workspace rubric store on first rubrics:* read (idempotent, no-clobber — an existing workspace rubricId always wins). The Cupboard MARKETPLACE merge for kind=rubric listings is deliberately deferred to v2 — no remote-fetch code exists yet; the flag reserves the seam. OFF ⇒ rubrics:* resolve the workspace store (+ bundled seed) only. Owner flips ON in v2 when the rubric marketplace ships.' }],
   ]);
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────

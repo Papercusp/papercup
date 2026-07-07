@@ -3,7 +3,11 @@ import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
-import { extractDevSourceTree, hasPapercupMarkers } from './dev-source-extract';
+import {
+  extractDevSourceTree,
+  hasPapercupMarkers,
+  escapingLinkIgnore,
+} from './dev-source-extract';
 
 async function tmp(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'devsrc-'));
@@ -121,5 +125,54 @@ describe('extractDevSourceTree', () => {
     });
     expect(r).toBeNull();
     await rm(t, { recursive: true, force: true });
+  });
+});
+
+describe('escapingLinkIgnore', () => {
+  const root = '/x/dev-source';
+  const nm = join(root, 'node_modules');
+
+  it('keeps a non-link entry (file/directory)', () => {
+    const ig = escapingLinkIgnore(root);
+    expect(ig(join(root, 'apps/operator/index.ts'), { type: 'file' })).toBe(false);
+    expect(ig(join(root, 'apps'), { type: 'directory' })).toBe(false);
+    // a header without a type (defensive) is also kept
+    expect(ig(join(root, 'x'), {})).toBe(false);
+    expect(ig(join(root, 'x'))).toBe(false);
+  });
+
+  it('keeps an in-tree relative symlink (npm workspace / .bin link)', () => {
+    const ig = escapingLinkIgnore(root);
+    // node_modules/.bin/tsx -> ../tsx/dist/cli.mjs  (stays inside root)
+    expect(
+      ig(join(nm, '.bin/tsx'), { type: 'symlink', linkname: '../tsx/dist/cli.mjs' }),
+    ).toBe(false);
+    // node_modules/@papercusp/foo -> ../../packages/foo (still inside root)
+    expect(
+      ig(join(nm, '@papercusp/foo'), { type: 'symlink', linkname: '../../packages/foo' }),
+    ).toBe(false);
+  });
+
+  it('skips an out-of-tree relative symlink (the storewolf-libs class) and reports it', () => {
+    const skips: Array<[string, string]> = [];
+    const ig = escapingLinkIgnore(root, (n, l) => skips.push([n, l]));
+    const name = join(nm, 'storewolf-libs');
+    // ../../Storewolf-Libs from node_modules escapes above root
+    expect(ig(name, { type: 'symlink', linkname: '../../Storewolf-Libs' })).toBe(true);
+    expect(skips).toEqual([[name, '../../Storewolf-Libs']]);
+  });
+
+  it('skips a symlink with an absolute out-of-tree target', () => {
+    const ig = escapingLinkIgnore(root);
+    expect(
+      ig(join(nm, 'weird'), { type: 'symlink', linkname: '/home/dev/Elsewhere' }),
+    ).toBe(true);
+  });
+
+  it('skips an out-of-tree hardlink but keeps an in-tree one', () => {
+    const ig = escapingLinkIgnore(root);
+    // hardlink target is joined from the extraction root
+    expect(ig(join(root, 'a'), { type: 'link', linkname: 'libs/papercusp/x' })).toBe(false);
+    expect(ig(join(root, 'a'), { type: 'link', linkname: '../outside/x' })).toBe(true);
   });
 });
