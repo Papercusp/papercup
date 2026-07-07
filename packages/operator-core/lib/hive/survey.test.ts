@@ -15,6 +15,7 @@ import {
   planToCandidate,
   resolveHiveMembership,
   surveyHive,
+  surveyWorkspace,
   type FrontierRow,
   type HarnessBlockGraph,
   type SurveyDeps,
@@ -595,5 +596,57 @@ describe('notStopped (per-hive Stop stop-list, pure)', () => {
   it('withholds ONLY harnesses in the stop-list', () => {
     expect(notStopped('stopped', { stoppedHarnesses: ['stopped'] })).toBe(false);
     expect(notStopped('other', { stoppedHarnesses: ['stopped'] })).toBe(true); // standalone/other passes
+  });
+});
+
+describe('surveyWorkspace crossHive dedup (EI-8377)', () => {
+  function wsDeps(over: Partial<SurveyDeps>): SurveyDeps {
+    return {
+      loadRegistry: async () => ({ projects: [] }),
+      listPlanRows: async () => [],
+      fetchFrontier: async () => [],
+      fetchBlockGraph: async () => ({ blockers: new Map(), statuses: new Map() }),
+      now: () => NOW,
+      ...over,
+    };
+  }
+
+  it('a work-item echoed via a pass-through/nested hive (same harness slug) is counted ONCE in crossHive.frontier', async () => {
+    // Hive B is BOTH a member of hive A (its own hive_slug points at A) AND its
+    // own top-level hive (registered as kind:'hive') — the "pass-through" shape:
+    // A's own survey includes harness 'B' as a member slug, and B's own
+    // top-level survey ALSO covers harness 'B' as its home. A work-item filed
+    // directly under harness 'B' is therefore surfaced by BOTH surveyHive(A)
+    // and surveyHive(B) — the crossHive merge must collapse it to one entry.
+    const projects = [
+      { slug: 'A', hive_slug: undefined, harness_kind: 'hive' },
+      { slug: 'B', hive_slug: 'A', harness_kind: 'hive' },
+    ];
+    const row = frontierRow({ feature_id: 'WI-1', harness_slug: 'B' });
+    const deps = wsDeps({
+      loadRegistry: async () => ({ projects }),
+      fetchFrontier: async (slugs) => (slugs.includes('B') ? [row] : []),
+    });
+    const ws = await surveyWorkspace('ws', { listHiveSlugs: async () => ['A', 'B'], deps });
+    expect(ws.crossHive.frontier).toHaveLength(1);
+    expect(ws.crossHive.frontier[0].id).toBe('WI-1');
+    // The top-level deduped count is what a caller (e.g. a Kettle escalation)
+    // must read — never a caller-side sum of the per-hive sections, which
+    // legitimately overlap by design (each hive's OWN focused view).
+  });
+
+  it('distinct items across non-overlapping hives all surface (no over-dedup)', async () => {
+    const projects = [
+      { slug: 'A', hive_slug: undefined, harness_kind: 'hive' },
+      { slug: 'B', hive_slug: undefined, harness_kind: 'hive' },
+    ];
+    const rowA = frontierRow({ feature_id: 'WI-1', harness_slug: 'A' });
+    const rowB = frontierRow({ feature_id: 'WI-2', harness_slug: 'B' });
+    const deps = wsDeps({
+      loadRegistry: async () => ({ projects }),
+      fetchFrontier: async (slugs) => [rowA, rowB].filter((r) => slugs.includes(r.harness_slug)),
+    });
+    const ws = await surveyWorkspace('ws', { listHiveSlugs: async () => ['A', 'B'], deps });
+    expect(ws.crossHive.frontier.map((f) => f.id).sort()).toEqual(['WI-1', 'WI-2']);
   });
 });
