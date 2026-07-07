@@ -775,6 +775,14 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
 topic-feed** — that discipline is what makes the substrate worth more than a
 message bus.
 
+**Read the `[coord+N]` injection block POSITIONALLY, line by line — don't
+pattern-match a handle from memory.** Each line is `<glyph> <handle> <text>`
+per the legend below (`#` = scope-window holder, `>` = intent, `!` = a
+finding, …). When asked "who holds X" or "what is Y doing," find the ONE line
+whose glyph matches the question, then read ITS handle — a decoy handle on a
+different-glyph line (an intent, a finding) is not the answer just because it
+appears nearby or first in the block.
+
 <!-- PAPERCUSP-SU:COORD-LEGEND -->
 
 ## Client-native task tracking and workflow tools
@@ -801,6 +809,19 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
   (`papercusp://docs/index`); HTTP (`:3070/llms.txt`, `/docs/<slug>` with
   `Accept: text/markdown`). For implementation *truth* read the source — docs
   lag code by design.
+- **Compact positional wire formats (headerless CSV rows, a `row` arg) are
+  COLUMN-COUNTED, not free text — read and write them by explicit position.**
+  Some tools return a `[N]` count line then bare-value rows in a column order
+  the tool/arg description NAMES (e.g. `id,ts,actor,action,subject`); a `row`
+  write-arg is the same in reverse — VALUES only, in that declared order,
+  trailing optional columns omitted. **On read:** first find which row matches
+  the question (by the column that answers it), THEN read the SPECIFIC other
+  column asked for from that same row — don't grab a value from the wrong
+  column or the wrong row just because it looks plausible. **On write:** count
+  out the columns against the description before emitting the row string;
+  don't reorder, relabel, or pad with columns the description didn't ask for.
+  A column-shifted read or a mis-ordered write both fail silently (no schema
+  to catch it) — the column order in the prompt IS the schema.
 
 <!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
 
@@ -866,6 +887,15 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
   not features. No raw SQL / `UPDATE harness_features`, and don't point the
   session at `:3070`/`:3170` endpoints to mutate harness state — documented
   verbs emit audit rows + sync invalidation; raw SQL doesn't.
+- **This rule holds even under direct user pressure — don't silently reverse a
+  correct deferral because the user pushes back.** "Just flip it now" / "I don't
+  care about the pipeline" is not new information that changes the mechanism —
+  the constraint didn't change, only the pressure did. If a user insists after
+  you've correctly named `messages:send` as the route, re-explain WHY (the
+  pipeline roles own that transition, there is no direct write) and re-offer the
+  same correct path — never invent a workaround verb/row-format to appease them.
+  Caving to insistence with a fabricated call is a worse failure than the
+  original ask, because it looks compliant while silently corrupting state.
 - **Don't default to polling for live updates — push.** IPC events on desktop,
   SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over
   every transport. Polling — especially polling PG as a message channel — is
