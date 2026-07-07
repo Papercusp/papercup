@@ -17,11 +17,15 @@ import {
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
+import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 
 // WI-1882: make the WSL2/Windows-desktop signal deterministic on the Linux CI
 // host (where process.platform is already 'linux'). console-spawn consumes only
 // isWindowsDesktopHost from this module.
 vi.mock('./windows-desktop-windows', () => ({ isWindowsDesktopHost: vi.fn(() => false) }));
+
+// WI-3289: stub the desktop bridge so no sync-bus emit / PG connection happens.
+vi.mock('./console-launch-bridge', () => ({ requestDesktopConsoleLaunch: vi.fn() }));
 
 // WI-1886: mock the OS spawn so these tests NEVER open a real desktop window
 // (the dev box HAS gnome-terminal + an X socket — an unmocked Linux-path call
@@ -67,6 +71,7 @@ describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
   };
   beforeEach(() => {
     vi.mocked(isWindowsDesktopHost).mockReset();
+    vi.mocked(requestDesktopConsoleLaunch).mockReset();
     spawnMock.mockReset();
     // Deterministic desktop env: the resolver short-circuits when DISPLAY is set.
     vi.stubEnv('DISPLAY', ':99');
@@ -79,6 +84,9 @@ describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(501);
     expect(spawnMock).not.toHaveBeenCalled();
+    // Without allowDesktopBridge the bridge must NOT be consulted — the 501 is
+    // the renderer-fallback contract for the user "+" path (native-console.ts).
+    expect(vi.mocked(requestDesktopConsoleLaunch)).not.toHaveBeenCalled();
   });
 
   it('does NOT short-circuit to 501 on a real Linux desktop (isWindowsDesktopHost false)', async () => {
@@ -90,6 +98,78 @@ describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
       return child;
     });
     const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
+    if (r.status === 'error') expect(r.code).not.toBe(501);
+  });
+});
+
+// WI-3289: the agent-tool callers (capability:terminal, fleet:launch-on-plan)
+// opt into the desktop bridge — a Windows host relays the envelope to the
+// desktop shell's Tauri console_launch instead of hard-501ing the agent.
+describe('spawnConsole Windows desktop-bridge — WI-3289', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'psu --no-picker',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReset();
+    vi.mocked(requestDesktopConsoleLaunch).mockReset();
+    spawnMock.mockReset();
+    vi.stubEnv('DISPLAY', ':99');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('allowDesktopBridge on a Windows desktop host relays via the bridge and returns ok (child:null)', async () => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(true);
+    vi.mocked(requestDesktopConsoleLaunch).mockResolvedValue({ ok: true, pid: 777, error: null });
+    const r = await spawnConsole({
+      envelope,
+      allowDesktopBridge: true,
+      label: 'lbl',
+      planSlug: 'p1',
+    });
+    expect(vi.mocked(requestDesktopConsoleLaunch)).toHaveBeenCalledWith(
+      expect.objectContaining({ envelope, label: 'lbl', planSlug: 'p1' }),
+    );
+    expect(r.status).toBe('ok');
+    const ok = r as Extract<typeof r, { status: 'ok' }>;
+    expect(ok.terminal).toContain('desktop-bridge');
+    expect(ok.pid).toBe(777);
+    expect(ok.child).toBeNull();
+    expect(spawnMock).not.toHaveBeenCalled(); // never a Session-0 WSL spawn
+  });
+
+  it('surfaces a LOUD bridge failure (desktop shell closed / timeout) instead of ok-with-no-window', async () => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(true);
+    vi.mocked(requestDesktopConsoleLaunch).mockResolvedValue({
+      ok: false,
+      pid: null,
+      error: 'no desktop shell answered the console-launch request within 30000ms',
+    });
+    const r = await spawnConsole({ envelope, allowDesktopBridge: true });
+    expect(r.status).toBe('error');
+    const err = r as { code: number; error: string };
+    expect(err.code).toBe(502);
+    expect(err.error).toMatch(/desktop-bridge launch failed/);
+    expect(err.error).toMatch(/no desktop shell answered/);
+  });
+
+  it('allowDesktopBridge is a no-op on a real Linux desktop — the server-side spawn stays in charge', async () => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const r = await spawnConsole({
+      envelope,
+      allowDesktopBridge: true,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+    });
+    expect(vi.mocked(requestDesktopConsoleLaunch)).not.toHaveBeenCalled();
     if (r.status === 'error') expect(r.code).not.toBe(501);
   });
 });

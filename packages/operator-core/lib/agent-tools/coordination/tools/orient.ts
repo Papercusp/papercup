@@ -421,31 +421,26 @@ export default defineTool({
   name: 'coord:orient',
   description:
     "One agent wake-orientation + session-bootstrap read: your assignments (+lane+load), " +
-    "the claimable backlog, your inbox summary, and the recent plan-events delta — plus, " +
-    "when you pass `intent`, a memory recall for it AND a coord:declare-intent so peers see " +
-    "you. Collapses the mandated bootstrap (memory:search + coord:inbox + coord:plan-events " +
-    "+ coord:declare-intent, with assignments + claimable) into ONE round-trip. For a fleet " +
-    'member it also folds a compact fleet-health glance (bees/wake/governor counts).',
+    "the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with " +
+    "`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap " +
+    "(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE " +
+    'round-trip; a fleet member also gets a compact fleet-health glance.',
   guidance: {
     when:
-      'At the START of a turn / on waking. Pass `intent` (your one-line task) to get, in ' +
-      'ONE round-trip: assignments + claimable backlog + inbox summary + recent plan-events ' +
-      '+ a memory recall for `intent` + your intent DECLARED to peers — the whole mandated ' +
-      'bootstrap. Omit `intent` for a lighter re-orientation (no recall / no declare). On a ' +
-      "repeating LEADER/MONITOR loop tick, pass `mode: 'monitor'` instead — it skips the " +
-      'claimable/facts/plan-events/fleet-catch-up/recipes/memory-recall legs entirely (not ' +
-      'just capped output), keeping only fleet:assignments + inbox + declare-intent.',
+      'At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole ' +
+      'bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall ' +
+      "+ your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating " +
+      "LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/" +
+      'recipes/recall legs, keeping fleet:assignments + inbox + declare.',
     notWhen:
-      'A human status-surface RENDER (coord:glance display block — orient folds only the health ' +
-      'counts) or the whole presence roster (coord:presence). Do NOT pass a throwaway `intent` ' +
-      'just to fire the declare. After a successful orient do NOT re-call coord:plan-events / ' +
-      'memory:search / coord:inbox / coord:glance / coord:declare-intent — it ALREADY returned ' +
-      '(and declared) them this turn (pass afterCompaction:true for fuller inbox + the recovery block).',
+      'A human status-surface render (coord:glance display block — orient folds only the health ' +
+      'counts) or the full presence roster (coord:presence). After a successful orient do NOT ' +
+      're-call coord:plan-events / memory:search / coord:inbox / coord:glance / coord:declare-intent ' +
+      '— it ALREADY returned them (pass afterCompaction:true for fuller inbox + the recovery block).',
     chaining:
-      'Bundles: fleet:assignments + work_items:list + coord:inbox + coord:plan-events ' +
-      '[+ memory:search + recipes:search + coord:declare-intent when `intent` is set] — prefer ' +
-      'this at wake over calling them separately. If `recipes` comes back with a close hit, ' +
-      'recipes:run it instead of hand-looping/re-authoring. → work_items:pickup { id, intent }.',
+      'Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search ' +
+      '+ recipes:search + declare with `intent`] — prefer at wake over separate calls. A close ' +
+      '`recipes` hit → recipes:run it. → work_items:pickup { id, intent }.',
   },
   capability: 'coord:read',
   // tool-call-batching-wrappers P-010 — composite marker: the primitives this bundles.
