@@ -100,6 +100,200 @@ export function extractPgErrorInfo(err: unknown): PgErrorInfo {
   return info;
 }
 
+// ── Point-of-use guard helpers (compaction-continuity-hardening-2026-07-07 P-005) ──
+//
+// Two recurring post-compaction footguns measured on live sessions: (a) 35×
+// "column … does not exist" round-trips re-guessing column names a fresh
+// context has no memory of, and (b) tenant-scoped tables filtered by a bare
+// slug/id silently matching ANOTHER tenant's rows (the "~560 bugs" class —
+// agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope). Both guards
+// key off the tables a query REFERENCES, resolved against information_schema
+// (canonical, never drifts) rather than a hardcoded table list.
+
+/** Max table references considered by the guards (a fatter join list adds noise). */
+const GUARD_MAX_TABLES = 4;
+/** information_schema lookups are cached this long (schema changes are rare). */
+const SCHEMA_HINT_CACHE_TTL_MS = 5 * 60_000;
+
+/**
+ * The table names a query references via FROM / JOIN, as written (optionally
+ * schema-qualified), deduped case-insensitively, bounded. Regex over the
+ * literal/comment-stripped text — best-effort: a quoted identifier or exotic
+ * clause simply doesn't match (the guards then stay silent), never throws.
+ */
+export function extractReferencedTables(rawSql: string): string[] {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  for (let m = re.exec(stripped); m && out.length < GUARD_MAX_TABLES; m = re.exec(stripped)) {
+    const name = m[1].toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+interface SchemaHintRow {
+  table_schema: string;
+  table_name: string;
+  column_name: string;
+}
+
+/** Prefer the schema an agent almost certainly meant when a BARE table name
+ *  matches several (per-harness schema clones make this common). */
+function preferSchema(a: string, b: string): number {
+  const rank = (s: string): number => (s === 'harness_shared' ? 0 : s === 'public' ? 1 : 2);
+  return rank(a) - rank(b) || a.localeCompare(b);
+}
+
+/** One information_schema read for the referenced tables' columns, in ordinal
+ *  order. Bare names are resolved to a single preferred schema. */
+async function readReferencedColumns(
+  tables: string[],
+  client?: OrgSql,
+): Promise<Map<string, { schema: string; columns: string[] }>> {
+  const qualified = tables.filter((t) => t.includes('.'));
+  const bare = tables.filter((t) => !t.includes('.'));
+  const sql = client ?? getOrgPg().sql;
+  const rows = (await sql`
+    SELECT table_schema, table_name, column_name
+      FROM information_schema.columns
+     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+       AND (lower(table_schema || '.' || table_name) = ANY(${qualified})
+            OR lower(table_name) = ANY(${bare}))
+     ORDER BY table_schema, table_name, ordinal_position
+  `) as unknown as SchemaHintRow[];
+
+  // Group by schema.table, then pick ONE schema per referenced name.
+  const bySchemaTable = new Map<string, { schema: string; table: string; columns: string[] }>();
+  for (const r of rows) {
+    const key = `${r.table_schema}.${r.table_name}`.toLowerCase();
+    let g = bySchemaTable.get(key);
+    if (!g) {
+      g = { schema: r.table_schema, table: r.table_name, columns: [] };
+      bySchemaTable.set(key, g);
+    }
+    g.columns.push(r.column_name);
+  }
+  const byRef = new Map<string, { schema: string; columns: string[] }>();
+  for (const g of bySchemaTable.values()) {
+    const bareName = g.table.toLowerCase();
+    const ref = qualified.includes(`${g.schema}.${g.table}`.toLowerCase())
+      ? `${g.schema}.${g.table}`.toLowerCase()
+      : bare.includes(bareName)
+        ? bareName
+        : null;
+    if (!ref) continue;
+    const existing = byRef.get(ref);
+    if (!existing || preferSchema(g.schema, existing.schema) < 0) {
+      byRef.set(ref, { schema: g.schema, columns: g.columns });
+    }
+  }
+  return byRef;
+}
+
+/**
+ * P-005(a): the canonical column lists of the tables a failed query references —
+ * appended to a 42703 (undefined_column) error so the fix takes ONE round trip
+ * instead of a guessing loop. Best-effort: returns [] on any miss.
+ */
+export async function describeReferencedTableColumns(
+  rawSql: string,
+  opts: { client?: OrgSql } = {},
+): Promise<Array<{ table: string; columns: string[] }>> {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return [];
+  const byRef = await readReferencedColumns(tables, opts.client);
+  const out: Array<{ table: string; columns: string[] }> = [];
+  for (const ref of tables) {
+    const hit = byRef.get(ref);
+    if (!hit) continue;
+    const table = ref.includes('.') ? ref : `${hit.schema}.${ref}`;
+    out.push({ table, columns: hit.columns });
+  }
+  return out;
+}
+
+interface TenantScopeInfo {
+  hasWorkspaceId: boolean;
+  hasHarnessSlug: boolean;
+  at: number;
+}
+
+const tenantScopeCache = new Map<string, TenantScopeInfo>();
+
+/** Test seam — drop the tenant-scope schema cache. */
+export function clearTenantScopeSchemaCache(): void {
+  tenantScopeCache.clear();
+}
+
+async function readTenantScopeInfo(
+  tables: string[],
+  client?: OrgSql,
+): Promise<Map<string, TenantScopeInfo>> {
+  const now = Date.now();
+  const result = new Map<string, TenantScopeInfo>();
+  const misses: string[] = [];
+  for (const t of tables) {
+    const cached = tenantScopeCache.get(t);
+    if (cached && now - cached.at < SCHEMA_HINT_CACHE_TTL_MS) result.set(t, cached);
+    else misses.push(t);
+  }
+  if (misses.length) {
+    const byRef = await readReferencedColumns(misses, client);
+    for (const t of misses) {
+      const cols = byRef.get(t)?.columns ?? [];
+      const info: TenantScopeInfo = {
+        hasWorkspaceId: cols.includes('workspace_id'),
+        hasHarnessSlug: cols.includes('harness_slug'),
+        at: now,
+      };
+      tenantScopeCache.set(t, info);
+      result.set(t, info);
+    }
+  }
+  return result;
+}
+
+/**
+ * P-005(b): a one-line advisory when a FILTERED query references a multi-tenant
+ * table (live-schema-verified: it has a `workspace_id` / `harness_slug` column)
+ * without any tenant predicate — the query still runs; the advisory rides the
+ * result. Silent for unfiltered aggregates (no WHERE — usually a deliberate
+ * cross-tenant count) and whenever the query already mentions a scope column.
+ * Best-effort: any schema-read failure returns null.
+ */
+export async function buildTenantScopeAdvisory(
+  rawSql: string,
+  opts: { client?: OrgSql } = {},
+): Promise<string | null> {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  if (!/\bwhere\b/i.test(stripped)) return null;
+  if (/\b(workspace_id|harness_slug)\b/i.test(stripped)) return null;
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return null;
+  const info = await readTenantScopeInfo(tables, opts.client);
+  const offenders: string[] = [];
+  for (const t of tables) {
+    const i = info.get(t);
+    if (!i || (!i.hasWorkspaceId && !i.hasHarnessSlug)) continue;
+    const cols = [i.hasWorkspaceId ? 'workspace_id' : null, i.hasHarnessSlug ? 'harness_slug' : null]
+      .filter(Boolean)
+      .join(' + ');
+    offenders.push(`${t} (keyed by ${cols})`);
+    if (offenders.length >= 3) break;
+  }
+  if (!offenders.length) return null;
+  return (
+    `⚠ tenant scope: ${offenders.join(', ')} — multi-tenant, but this filtered query has no ` +
+    'workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER ' +
+    "tenant's rows and read as stale/diverged state. Add the scope predicate(s) " +
+    '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).'
+  );
+}
+
 export const PG_READ_QUERY_DEFAULT_MAX_ROWS = 200;
 export const PG_READ_QUERY_HARD_MAX_ROWS = 2000;
 export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;

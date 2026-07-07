@@ -34,6 +34,11 @@ import {
 } from '../../carry-note';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
+  extractWakeRecipeQuery,
+  findTopRecipeForWake as defaultFindTopRecipeForWake,
+  renderWakeRecipeLine,
+} from './loop-wake-recipe';
+import {
   checkLoopDeadMan as defaultCheckLoopDeadMan,
   incrementLoopFireCount as defaultIncrementLoopFireCount,
   readLoopFireCount as defaultReadLoopFireCount,
@@ -84,6 +89,8 @@ export interface LoopFireDeps {
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
   /** P-002: the meta-carrying read (note + write instant) the staleness stamp needs. */
   getLoopCarryNoteWithMeta?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** P-005c: the top-recipe lookup the SHORT wake form splices (fail-soft, time-bounded). */
+  findWakeRecipe?: typeof defaultFindTopRecipeForWake;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
@@ -189,14 +196,22 @@ export function renderLoopCheckpointBlock(
   return `${header}\n${clipped}`;
 }
 
+/** Whether fire #`fireNumber` gets the FULL arm-time kickoff: fire 1, every
+ *  LOOP_WAKE_FULL_TEMPLATE_EVERY-th wake after (11, 21, …), or no checkpoint
+ *  (the kickoff is then the only brief the agent has). Exported so the fire
+ *  path can skip short-form-only work (the recipe lookup) without duplicating
+ *  the cadence condition. */
+export function isLoopWakeFullForm(fireNumber: number, hasCheckpoint: boolean): boolean {
+  return fireNumber <= 1 || fireNumber % LOOP_WAKE_FULL_TEMPLATE_EVERY === 1 || !hasCheckpoint;
+}
+
 /**
  * Render the wake-turn text for fire #`fireNumber` (P-001b wake diet):
- *   - FULL form (the whole arm-time kickoff) on fire 1, on every
- *     LOOP_WAKE_FULL_TEMPLATE_EVERY-th wake after (11, 21, …), and whenever there is
- *     NO checkpoint (the kickoff is then the only brief the agent has);
+ *   - FULL form (the whole arm-time kickoff) per isLoopWakeFullForm;
  *   - SHORT form otherwise: the kickoff's first line (which carries the 🔁 marker +
- *     goal) + the checkpoint block + a one-line footer. The checkpoint IS the brief —
- *     re-sending the full contract every wake is what burned ~200k tokens/session.
+ *     goal) + the checkpoint block + an optional on-point recipe line (P-005c) + a
+ *     one-line footer. The checkpoint IS the brief — re-sending the full contract
+ *     every wake is what burned ~200k tokens/session.
  */
 export function renderLoopWakeText(opts: {
   kickoff: string;
@@ -205,21 +220,25 @@ export function renderLoopWakeText(opts: {
   checkpointUpdatedAtMs?: number | null;
   intervalSec?: number | null;
   nowMs?: number;
+  /** P-005c: the pre-rendered top-recipe one-liner (renderWakeRecipeLine), spliced
+   *  into the SHORT form only — the moment-of-need reuse pointer. */
+  recipeLine?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
     nowMs: opts.nowMs,
     intervalSec: opts.intervalSec,
   });
-  const refresher = opts.fireNumber % LOOP_WAKE_FULL_TEMPLATE_EVERY === 1; // 1, 11, 21, …
-  const full = opts.fireNumber <= 1 || refresher || block == null;
-  if (full) return block == null ? opts.kickoff : `${opts.kickoff}\n\n${block}`;
+  if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
+    return block == null ? opts.kickoff : `${opts.kickoff}\n\n${block}`;
+  }
   const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
   return [
     `${firstLine} (wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
     '',
     block,
     '',
+    ...(opts.recipeLine ? [opts.recipeLine, ''] : []),
     'When this unit settles: refresh loop:checkpoint, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
   ].join('\n');
 }

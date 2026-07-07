@@ -182,29 +182,10 @@ function readRubricDir(dir: string, ref: string, layer: 'bundled' | 'user'): Loc
  * skipped. Sorted by ref for stable output.
  */
 export function listLocalRubrics(roots: RubricRoot[] = rubricRoots()): LocalRubric[] {
-  const byRef = new Map<string, LocalRubric>();
-  for (const root of roots) {
-    if (!existsSync(root.dir)) continue;
-    let entries: string[];
-    try {
-      entries = readdirSync(root.dir);
-    } catch {
-      continue;
-    }
-    for (const ref of entries) {
-      const dir = join(root.dir, ref);
-      let isDir = false;
-      try {
-        isDir = statSync(dir).isDirectory();
-      } catch {
-        isDir = false;
-      }
-      if (!isDir) continue;
-      const r = readRubricDir(dir, ref, root.layer);
-      if (r) byRef.set(ref, r); // later root (user) overwrites earlier (bundled)
-    }
-  }
-  return [...byRef.values()].sort((a, b) => a.ref.localeCompare(b.ref));
+  // Enumeration + user-shadows-bundled + sort live in the shared read core
+  // (self-describing-store.ts) — the Q2 consult outcome: share the read half,
+  // keep the write halves (template overlay vs rubric seed) separate.
+  return enumerateSelfDescribingDirs(roots, readRubricDir);
 }
 
 /** Resolve one rubric by ref (or rubricId) from the local store, or null. */

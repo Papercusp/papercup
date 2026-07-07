@@ -13,6 +13,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import {
   pgReadQuery,
   extractPgErrorInfo,
+  buildTenantScopeAdvisory,
+  describeReferencedTableColumns,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
   PG_READ_QUERY_HARD_MAX_ROWS,
 } from '../../pg-read-query';
@@ -63,11 +65,16 @@ export default defineTool({
   async handler(args) {
     try {
       const result = await pgReadQuery(args.sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
+      // P-005(b): tenant-scope advisory on a filtered read of a multi-tenant
+      // table with no workspace_id/harness_slug predicate — the silent
+      // wrong-tenant match footgun. Advisory only; never blocks the result.
+      const advisory = await buildTenantScopeAdvisory(args.sql).catch(() => null);
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
+              ...(advisory ? { advisory } : {}),
               rowCount: result.rowCount,
               truncated: result.truncated,
               fields: result.fields,
@@ -88,6 +95,15 @@ export default defineTool({
       if (info.detail) payload.detail = info.detail;
       if (info.code) payload.code = info.code;
       if (info.position) payload.position = info.position;
+      // P-005(a): a 42703 (undefined_column) carries the referenced tables'
+      // CANONICAL column lists so the retry takes one round trip, not a
+      // guessing loop (a fresh post-compaction context has no query memory).
+      if (info.code === '42703') {
+        const described = await describeReferencedTableColumns(args.sql).catch(() => []);
+        if (described.length) {
+          payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
+        }
+      }
       return {
         isError: true,
         content: [{ type: 'text', text: JSON.stringify(payload) }],
