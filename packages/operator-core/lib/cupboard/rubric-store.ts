@@ -26,10 +26,15 @@
  * (the method_ref runbook — the GUIDE.md analog). "Install a rubric" is just "drop a
  * self-describing dir into the user layer", the seam v2 user-install reuses.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { papercuspPath } from '../papercusp-root';
+import {
+  bundledDirFromEnv,
+  selfDescribingRoots,
+  enumerateSelfDescribingDirs,
+} from './self-describing-store';
 
 /** One gradeable criterion as authored in rubric.json — field-for-field the store's
  *  RubricCriterion (rubrics.ts), so the seed passes criteria straight to proposeRubric
@@ -81,9 +86,7 @@ const inRepoRubricsDir = join(
 
 /** The bundled (read-only) rubrics dir: env override → in-repo dev fallback. */
 export function bundledRubricsDir(): string {
-  const fromEnv = process.env.PAPERCUSP_RUBRICS_DIR;
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
-  return inRepoRubricsDir;
+  return bundledDirFromEnv('PAPERCUSP_RUBRICS_DIR', inRepoRubricsDir);
 }
 
 /** The writable user rubrics dir (v2 install target). Empty in v1. */
@@ -96,10 +99,11 @@ export function userRubricsDir(): string {
  * ref collision, so the writable user layer wins over the bundled first-party set.
  */
 export function rubricRoots(): RubricRoot[] {
-  return [
-    { dir: bundledRubricsDir(), layer: 'bundled' },
-    { dir: userRubricsDir(), layer: 'user' },
-  ];
+  return selfDescribingRoots({
+    envVar: 'PAPERCUSP_RUBRICS_DIR',
+    devFallbackDir: inRepoRubricsDir,
+    userSubdir: 'rubrics',
+  });
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);

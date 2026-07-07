@@ -20,11 +20,16 @@
  * self-describing dir into the user layer" — the seam that makes v2 user-install
  * reuse this exact resolution + materialize path, with no first-party special case.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { papercuspPath } from '../papercusp-root';
 import type { TemplateListing } from './templates';
+import {
+  bundledDirFromEnv,
+  selfDescribingRoots,
+  enumerateSelfDescribingDirs,
+} from './self-describing-store';
 
 /** A template resolved from the local store (a single self-describing subdir). */
 export interface LocalTemplate {
@@ -62,9 +67,7 @@ const inRepoTemplatesDir = join(
 
 /** The bundled (read-only) templates dir: env override → in-repo dev fallback. */
 export function bundledTemplatesDir(): string {
-  const fromEnv = process.env.PAPERCUSP_TEMPLATES_DIR;
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
-  return inRepoTemplatesDir;
+  return bundledDirFromEnv('PAPERCUSP_TEMPLATES_DIR', inRepoTemplatesDir);
 }
 
 /** The writable user templates dir (v2 install target). Empty in v1. */
@@ -77,10 +80,11 @@ export function userTemplatesDir(): string {
  * ref collision, so the writable user layer wins over the bundled first-party set.
  */
 export function templateRoots(): TemplateRoot[] {
-  return [
-    { dir: bundledTemplatesDir(), layer: 'bundled' },
-    { dir: userTemplatesDir(), layer: 'user' },
-  ];
+  return selfDescribingRoots({
+    envVar: 'PAPERCUSP_TEMPLATES_DIR',
+    devFallbackDir: inRepoTemplatesDir,
+    userSubdir: 'templates',
+  });
 }
 
 /** Read a template subdir's self-describing metadata into a LocalTemplate. */
@@ -140,29 +144,9 @@ function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'user'): L
  * bundled one. Non-dir entries (README.md) and dirs without a manifest are skipped.
  */
 export function listLocalTemplates(roots: TemplateRoot[] = templateRoots()): LocalTemplate[] {
-  const byRef = new Map<string, LocalTemplate>();
-  for (const root of roots) {
-    if (!existsSync(root.dir)) continue;
-    let entries: string[];
-    try {
-      entries = readdirSync(root.dir);
-    } catch {
-      continue;
-    }
-    for (const ref of entries) {
-      const dir = join(root.dir, ref);
-      let isDir = false;
-      try {
-        isDir = statSync(dir).isDirectory();
-      } catch {
-        isDir = false;
-      }
-      if (!isDir) continue;
-      const t = readTemplateDir(dir, ref, root.layer);
-      if (t) byRef.set(ref, t); // later root (user) overwrites earlier (bundled)
-    }
-  }
-  return [...byRef.values()].sort((a, b) => a.ref.localeCompare(b.ref));
+  // Enumeration + user-shadows-bundled + sort live in the shared read core
+  // (self-describing-store.ts, extracted for the rubric-store sibling).
+  return enumerateSelfDescribingDirs(roots, readTemplateDir);
 }
 
 /** Resolve one template by ref (or id) from the local store, or null. */
