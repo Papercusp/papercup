@@ -12,8 +12,9 @@
  * EventEmitter spawn-fake. pipeline-events is mocked so no PG is touched. No
  * subprocess, no network.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { fileURLToPath } from 'node:url';
 
 // --- mocks (hoisted) ---------------------------------------------------------
 const spawnMock = vi.fn();
@@ -197,6 +198,29 @@ function aheadOfMainPlanJson(): string {
     `\n${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: 'plan', plan })}\n`
   );
 }
+
+// EI-8397: the scope-isolation tests below exercise runScript's DEFAULT root
+// resolution (integrationRoot() in release-actions.ts), which falls back to
+// `path.resolve(process.cwd(), '..', '..')` when PAPERCUSP_INTEGRATION_ROOT is
+// unset — an ambient-cwd-dependent path that only happens to land on the repo
+// root (where node_modules/.bin/tsx actually exists) when vitest is invoked
+// with cwd 2 levels below the repo root (e.g. from packages/operator-core, as
+// `npm run test:affected` does per-workspace). Invoking vitest directly from
+// the repo root itself (cwd = repo root) instead resolves 2 levels ABOVE the
+// repo — landing outside it entirely ("missing_tsx at /home/…") — a real,
+// repeatable false-red (the watchdog's 3x-in-6h signal), not a code defect.
+// Fix the TEST, not the ambient-cwd-dependent resolution: pin
+// PAPERCUSP_INTEGRATION_ROOT explicitly to the real repo root, computed from
+// THIS file's own location (import.meta.url), independent of process.cwd().
+const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
+
+beforeAll(() => {
+  process.env.PAPERCUSP_INTEGRATION_ROOT = REPO_ROOT;
+});
+
+afterAll(() => {
+  delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+});
 
 beforeEach(() => {
   spawnMock.mockReset();
