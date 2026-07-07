@@ -306,18 +306,20 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
 export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
   {
     head: 'Already-fixed check FIRST',
-    body: 'Before you build anything, spend ~2 min confirming the fix has not already shipped — read the code/tests, check `git log` and sibling work-items. Re-implementing what a peer already fixed is the single biggest waste of fleet time. If it is already done, close it as already-fixed WITH the evidence you checked (files/tests) — do not rebuild it.',
+    body: 'Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer\'s fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.',
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending
     // their turn with no armed self-wake — the leader became a manual clock, capping
     // fleet throughput at its re-wake cadence instead of draining continuously.
+    // EI-8393: kept tight — this rule is the single biggest driver of the P-013
+    // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'You have no human at your keyboard: as your FIRST action (before or right after your first pull), call `loop:arm { intervalSec, goal }` toward draining your lane. Each wake: self-assign + advance the next claimable item (`scheduler:get_next` → work it to terminal → `work_items:complete`) — the armed loop re-wakes you automatically, so "repeat" in your pull loop below means the NEXT wake, not a hope that someone re-wakes you. `loop:end` ONLY when `scheduler:get_next` returns nothing claimable for your spec (report "queue empty" to your leader) or you are genuinely blocked. Ending a turn with no armed loop IS parking — you go silent until the leader manually re-wakes you (EI-8318), which caps the WHOLE fleet at the leader\'s wake cadence regardless of remaining backlog.',
+    body: 'You have no human at your keyboard: as your FIRST action, call `loop:arm { intervalSec, goal }` to drain your lane. Each wake: pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat — the armed loop re-wakes you automatically. `loop:end` ONLY when nothing is claimable for your spec, or you are genuinely blocked. Ending a turn with no armed loop IS parking (EI-8318): you go silent until the leader manually re-wakes you, capping the WHOLE fleet at their wake cadence.',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
-    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send / coord:escalate) so it lands in their inbox — a broadcast is easy to miss. Routine status/updates belong to your fleet: a bare to:["*"] is auto-scoped to `@fleet:<slug>` (your leader included), so reserve `allHive:true` for genuinely system-wide / urgent news everyone must see.',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send/escalate) — a broadcast is easy to miss. Routine status belongs to your fleet: a bare to:["*"] auto-scopes to `@fleet:<slug>`; reserve `allHive:true` for genuinely system-wide news.',
   },
   {
     head: 'Do not re-claim a ping-ponging item',
@@ -337,13 +339,13 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'A hive pause is a Queen-loop signal, not a self-drain order',
-    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you merely SEE in your orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you: read its authority+scope stamp (`hive-queen(<hive>)→hive-wide` is the Mug pausing the pot; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business, ignore it), or an explicit `fleet:*` / owner action. Unsure? Ask your leader — never self-drain on an observed pause.',
+    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.',
   },
   {
     // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
     // integrity clause, ported to fleet members (bee.base.md / the overwatch prompt).
     head: 'Turn-end reflection + reporting integrity',
-    body: 'End each turn with ONE bounded reflection pass: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING. It is a sensor reading (a concrete, attributable fact — a tool/file/WI ref), never a fix and never a self-grade. And never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you are not in, a send you did not make, or a reading you did not take.',
+    body: 'End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren\'t in, a send you didn\'t make, or a reading you didn\'t take.',
   },
   {
     // su-loop-capability-parity P-012: the bee checkpoint protocol (bee.base.md §"End of

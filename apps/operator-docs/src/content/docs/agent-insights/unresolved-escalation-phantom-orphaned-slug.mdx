@@ -1,6 +1,6 @@
 ---
 title: "\"Unresolved escalation in harness X\" phantoms: a stale/orphaned harness_escalations row, not a live problem"
-description: "The recurring auto-implement EI 'Unresolved escalation in harness X' is almost always a PHANTOM — a harness_shared.harness_escalations row whose escalation is set + supervisor_notes empty, while the underlying condition is long since resolved. The green-checkpoint-stall variant self-clears via trackGateStall only when the row's harness_slug equals the LIVE install-slug; a row keyed under a DEAD/renamed slug (e.g. legacy 'papercup' after the papercup→papercusp rename, which has no system:green-checkpoint routine) can NEVER be matched by the clear and re-fires the unresolved-escalation watchdog forever. The drill: confirm the real condition is resolved via routines.gate_health, then clear the stale row (escalation=NULL + supervisor_notes) — do NOT try to 'fix' a green gate."
+description: "The recurring auto-implement EI 'Unresolved escalation in harness X' is almost always a PHANTOM — a harness_shared.harness_escalations row whose escalation is set + supervisor_notes empty, while the underlying condition is long since resolved. The green-checkpoint-{stall,watchdog} variants self-clear via trackGateStall / green-stall-watchdog only when the row's harness_slug equals the LIVE install-slug; a row keyed under a DEAD/renamed slug (e.g. legacy 'papercup' after the papercup→papercusp rename, which has no live green-checkpoint routine) can never be matched by the clear. As of the EI-8396 fix, collectEscalationSignals now SUPPRESSES exactly those two green-checkpoint phases when the row's install-slug has no live green-checkpoint routine, so a dead-install orphan of those phases no longer loops forever. A stale row under any OTHER phase (or a same-slug row that just never got cleared) still re-fires the watchdog every tick. The drill: confirm the real condition is resolved via routines.gate_health, then clear the stale row (escalation=NULL + supervisor_notes) — do NOT try to 'fix' a green gate."
 discovered: 2026-07-07
 tags: [watchdog, escalation, unresolved-escalation, green-checkpoint-stall, phantom, orphaned-row, install-slug-rename, auto-implement, EI-7690, EI-8396, WI-2825]
 status: active
@@ -21,22 +21,32 @@ key `escalation:<harness>:<phase>`). It has recurred many times for the
 ## What it actually means
 
 `collectEscalationSignals` (watchdog.ts) fires for **every** row in
-`harness_shared.harness_escalations` where `escalation <> '' AND supervisor_notes = ''`.
-It is a **presence** check on a durable row — it says nothing about whether the
-underlying condition is still live. So a stale row that never got cleared re-fires the
-signal **every tick**, re-dispatching a worker indefinitely on a problem that is already gone.
+`harness_shared.harness_escalations` where `escalation <> '' AND supervisor_notes = ''`
+— **except** the two green-checkpoint phases when the row's install-slug has no live
+green-checkpoint routine (the EI-8396 dead-install guard, below). It is otherwise a
+**presence** check on a durable row — it says nothing about whether the underlying
+condition is still live. So a stale row that never got cleared re-fires the signal
+**every tick**, re-dispatching a worker indefinitely on a problem that is already gone.
 
-For `green-checkpoint-stall`, the row is written by `trackGateStall`
-(release-actions.ts) when `main` is held red too long, and **cleared on the first green
-tick** by:
+There are two green-checkpoint escalation phases, both keyed on the LIVE install-slug for
+their clear (so both are covered by the dead-install guard):
+
+- `green-checkpoint-stall` — written by `trackGateStall` (release-actions.ts,
+  `GATE_STALL_PHASE`) when `main` is held red too long.
+- `green-checkpoint-watchdog` — written by the standalone green-stall-watchdog.ts
+  (`WATCHDOG_PHASE`, its own `watchdogAlerted` dedup flag).
+
+The `green-checkpoint-stall` row is **cleared on the first green tick** by `trackGateStall`
+(release-actions.ts) via:
 
 ```sql
-UPDATE harness_shared.harness_escalations SET escalation = NULL
+UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $now
  WHERE harness_slug = ctx.installSlug AND phase = 'green-checkpoint-stall' AND escalation IS NOT NULL
 ```
 
 The clear keys on `ctx.installSlug` — the **live** install running the green-checkpoint
-routine.
+routine. `green-checkpoint-watchdog` has a mirror clear in green-stall-watchdog.ts keyed the
+same way.
 
 ## The orphaned-slug trap (EI-7690)
 
@@ -47,9 +57,34 @@ it. This happens after an **install-slug rename**: legacy `papercup` (4 routines
 says `harness_slug: papercusp` — is permanently orphaned: no routine runs as `papercup`, so
 nothing ever clears it, and the watchdog re-fires forever.
 
-`WI-2825` hardened the **same-slug** 0-row clear-miss (a loud `console.warn` when
-`gate_health.stallAlerted` is true but the clear matched 0 rows). It does **not** cover the
-different-slug/dead-install orphan — that residual gap is tracked as **EI-8396**.
+`WI-2825` hardened the **same-slug** 0-row clear-miss (a loud `console.warn`,
+`shouldWarnOnStallClearMiss`, when `gate_health.stallAlerted` is true but the clear matched
+0 rows). It did not cover the different-slug/dead-install orphan — that gap was tracked as
+**EI-8396**.
+
+**EI-8396 is now fixed (current behavior, 2026-07):** `collectEscalationSignals` no longer
+blindly re-fires a dead-install green-checkpoint orphan. Its query suppresses a row whose
+`phase` is one of the two green-checkpoint phases when **no live green-checkpoint routine
+exists for that row's install-slug**:
+
+```sql
+AND NOT (
+  e.phase = ANY(ARRAY['green-checkpoint-stall','green-checkpoint-watchdog'])
+  AND NOT EXISTS (
+    SELECT 1 FROM harness_shared.routines r
+     WHERE r.workspace_id = e.workspace_id
+       AND r.install_slug  = e.harness_slug
+       AND r.name = 'green-checkpoint'
+       AND r.active
+  )
+)
+```
+
+So the `papercup`-orphan class (a green-checkpoint escalation under a dead/renamed slug with
+no live `green-checkpoint` routine) is now **silently skipped** — it no longer re-dispatches a
+worker forever. The guard is deliberately narrow: it only touches those two phases, and only
+when the install-slug is genuinely dead; a same-slug row that just never got cleared, or a
+stale row under any other phase, still re-fires and still needs the manual clear below.
 
 ## The drill (how to resolve one of these EIs)
 
