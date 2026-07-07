@@ -106,11 +106,15 @@ describe('planEnvOperatorLaunch (pure)', () => {
     expect(plan.dev.skipReason).toBe('no-source-tree');
   });
 
-  it('defaults to the PROVISIONABLE set (dev/prod/staging — never local or release)', () => {
+  it('defaults to the PROVISIONABLE set (dev/prod/staging/local — never release)', () => {
     const plan = planEnvOperatorLaunch({ hasSourceTree: true, hasToolchain: true });
     const ids = plan.map((e) => e.id).sort();
-    expect(ids).toEqual(['dev', 'prod', 'staging']);
-    expect(PROVISIONABLE_ENV_OPERATORS.some((s) => s.id === 'local')).toBe(false);
+    expect(ids).toEqual(['dev', 'local', 'prod', 'staging']);
+    // local (:3055, the Vite SPA over the working tree) is provisionable since WI-3285;
+    // release is the immutable bundled sidecar and is never spawned from source.
+    const local = PROVISIONABLE_ENV_OPERATORS.find((s) => s.id === 'local');
+    expect(local?.run).toBe('vite');
+    expect(local?.port).toBe(3055);
     expect(PROVISIONABLE_ENV_OPERATORS.some((s) => s.id === 'release')).toBe(false);
   });
 });
@@ -129,6 +133,8 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
     probe: async () => false, // nothing already up
     detectSourceRoot: () => '/src/papercup',
     hasToolchain: async () => true,
+    // Never let a unit test fall through to the REAL default (npm install + lockfile).
+    ensureToolchain: async () => false,
     selfPort: null,
     // Passthrough tree-prepare by default — the real git-worktree prepare is exercised
     // in env-tree-prepare.test.ts; these tests focus on launcher orchestration.
@@ -188,12 +194,62 @@ describe('launchEnvOperators (effectful, fully faked)', () => {
     expect(res.skipped.every((s) => s.reason === 'no-source-tree')).toBe(true);
   });
 
-  it('skips everything when the toolchain is missing', async () => {
+  it('skips everything when the toolchain is missing and cannot be installed', async () => {
     const { deps, spawnedCalls } = fakeLaunchDeps({ hasToolchain: async () => false });
     const res = await launchEnvOperators(deps);
     expect(res.spawned).toHaveLength(0);
     expect(spawnedCalls).toHaveLength(0);
     expect(res.skipped.every((s) => s.reason === 'no-toolchain')).toBe(true);
+  });
+
+  it('a missing toolchain triggers the one-time install; success unblocks the spawns (WI-3285)', async () => {
+    const ensured: string[] = [];
+    const { deps, spawnedCalls } = fakeLaunchDeps({
+      hasToolchain: async () => false,
+      ensureToolchain: async (root) => {
+        ensured.push(root);
+        return true; // npm install produced a runnable tree
+      },
+    });
+    const res = await launchEnvOperators(deps);
+    expect(ensured).toEqual(['/src/papercup']);
+    expect(res.spawned.map((s) => s.id).sort()).toEqual(['dev', 'prod', 'staging']);
+    expect(spawnedCalls).toHaveLength(3);
+  });
+
+  it('does not attempt the toolchain install when the toolchain is already present', async () => {
+    let ensureCalls = 0;
+    const { deps } = fakeLaunchDeps({
+      ensureToolchain: async () => {
+        ensureCalls++;
+        return true;
+      },
+    });
+    await launchEnvOperators(deps);
+    expect(ensureCalls).toBe(0);
+  });
+
+  it('an ensureToolchain that throws degrades to no-toolchain skips (never fatal)', async () => {
+    const { deps } = fakeLaunchDeps({
+      hasToolchain: async () => false,
+      ensureToolchain: async () => {
+        throw new Error('npm exploded');
+      },
+    });
+    const res = await launchEnvOperators(deps);
+    expect(res.spawned).toHaveLength(0);
+    expect(res.skipped.every((s) => s.reason === 'no-toolchain')).toBe(true);
+  });
+
+  it('spawns the local vite env alongside the source operators (WI-3285)', async () => {
+    const { deps, spawnedCalls } = fakeLaunchDeps({
+      specs: [...SPECS, { id: 'local', port: 3055, branch: 'staging', run: 'vite' }],
+    });
+    const res = await launchEnvOperators(deps);
+    expect(res.spawned.map((s) => s.id).sort()).toEqual(['dev', 'local', 'prod', 'staging']);
+    const localCall = spawnedCalls.find((c) => c.entry.id === 'local');
+    expect(localCall?.entry.run).toBe('vite');
+    expect(localCall?.entry.port).toBe(3055);
   });
 
   it('records a tree-prepare failure as a skip and continues with the rest', async () => {
