@@ -56,7 +56,7 @@ them.
 | Tutor prompt | `onboarding-tutor.md` + token splice (`{{PACK_INDEX}}`, `{{GUI_TAB_TOUR}}`, setup snapshot, OS, agent…) | `apps/operator/prompts/onboarding-tutor.md` + `…/lib/onboarding/launch-context.ts` |
 | Content pack | `apps/operator/prompts/tutorial/<ch>/<nn>-<slug>.md` (frontmatter `id/chapter/order/title/docSlugs`, `## Brief` + `## Details`) + loader/registry | `packages/operator-core/lib/onboarding/` |
 | GUI finale | `GUI_TAB_TOUR` mirrors `ADV_TABS` — tutor drives tabs via `ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}` | `…/lib/onboarding/gui-tab-tour.ts` |
-| Re-entry | `papercusp tutorial` / desktop icon → `onboard-launcher --tutorial` (finished machines resolve to handoff, not done) | launcher + `…/lib/desktop-install/papercusp-files.ts` |
+| Re-entry | `papercusp tutorial` / desktop icon → `onboard-launcher --tutorial` → the unified Tutorial\|Setup shell, opening on the **Setup tab** (owner 2026-07-06: "the setup page should be the first thing, not the tutorial" — `defaultTab` returns `setup` for `--tutorial` even on a set-up box; the tour is one Tab away). `papercusp setup` AND `papercusp tutorial` both route STRAIGHT to the shell now (the old concierge→runner double-layer is dropped — it jumped past setup on a machine with an agent already installed); only the auto first-boot `papercusp onboard` (no flags) still runs the linear concierge. | launcher + `…/lib/desktop-install/papercusp-files.ts` |
 | Graduation | tutor calls `setup:complete` → `finished_at`; all stages re-derive statelessly (resumable by construction) | `setup:*` tools |
 | Wizard fallback | Settings → Advanced → "Setup Wizard (classic)" + `/setup?force=1` | `apps/operator/app/settings/layout.tsx` |
 

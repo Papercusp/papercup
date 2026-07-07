@@ -17,9 +17,15 @@
  * (a child of the desktop .app, in the user's GUI session) opens Terminal/iTerm
  * itself via `open -na` — mirroring the Linux child_process path, so fleet color
  * schemes + the sentinel lifecycle work identically. On Windows the operator runs
- * inside WSL and cannot spawn a Windows GUI terminal, so {@link spawnConsole}
- * returns `code:501` and the desktop shell spawns it Rust-side via the Tauri
- * `console_launch` command (papercusp-desktop/src-tauri/src/native_console.rs).
+ * inside WSL and cannot spawn a Windows GUI terminal itself; the spawn must
+ * happen in the Session-1 desktop shell via the Tauri `console_launch` command
+ * (papercusp-desktop/src-tauri/src/native_console.rs). Two ways there:
+ *   - user path ("+" button): {@link spawnConsole} returns `code:501` and
+ *     native-console.ts's renderer fallback invokes `console_launch` directly;
+ *   - agent path (WI-3289, `allowDesktopBridge`): {@link spawnConsole} relays
+ *     the envelope to the desktop webview over the sync-bus bridge
+ *     (lib/console-launch-bridge.ts) and awaits the Tauri result, so
+ *     capability:terminal / fleet:launch-on-plan open REAL Windows terminals.
  *
  * Server-only.
  */
@@ -40,6 +46,7 @@ import { join } from 'node:path';
 import type { ConsoleEnvelope } from './console-launcher';
 import type { ColorScheme } from './console-color-schemes';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
+import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
@@ -517,6 +524,16 @@ export interface SpawnConsoleOpts {
    * Default false. A no-op when `envelope.mcpJsonContents` is empty.
    */
   writeMcpJson?: boolean;
+  /**
+   * WI-3289: on a Windows desktop host (operator inside WSL2), relay the spawn
+   * to the desktop shell's Tauri `console_launch` command over the sync-bus
+   * bridge (lib/console-launch-bridge.ts) instead of returning 501. Opt-in for
+   * the AGENT-invoked callers (capability:terminal, fleet:launch-on-plan); the
+   * user-facing /console/launch route keeps its 501 so native-console.ts's
+   * renderer-side Tauri fallback (one hop, already shipped) stays in charge of
+   * the "+" button path. Default false.
+   */
+  allowDesktopBridge?: boolean;
 }
 
 export type SpawnConsoleResult =
@@ -524,7 +541,13 @@ export type SpawnConsoleResult =
       status: 'ok';
       pid: number | null;
       terminal: string;
-      child: ChildProcess;
+      /**
+       * The spawned terminal's Node handle (Linux/macOS server-side spawns) so
+       * callers can attach exit watchers / adv-session bookkeeping. `null` on
+       * the WI-3289 Windows desktop-bridge path — the child lives in the Rust
+       * desktop-shell process, there is no Node handle to watch.
+       */
+      child: ChildProcess | null;
       /**
        * EI-8289: the DISPLAY the window actually opened on (Linux only; null on
        * macOS, which has no X DISPLAY concept). Callers (capability:terminal,
@@ -596,11 +619,40 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   //    WSL operator spawns lands in Session 0 (invisible to the interactive
   //    desktop, per D-002); so on Windows we MUST defer to the desktop shell's
   //    Tauri `console_launch` command (spawn_windows_wsl_new_window, which spawns
-  //    the Session-1 wt.exe titled `Papercup — <id>`). Return 501 so the renderer
-  //    falls through to that path. WI-1882: without the isWindowsDesktopHost()
-  //    clause this fell into the Linux cascade below and died with "no terminal
-  //    emulator found" because process.platform==='linux' in WSL.
+  //    the Session-1 wt.exe titled `Papercup — <id>`). Two ways to defer:
+  //    - allowDesktopBridge (WI-3289, the agent-tool callers): relay the envelope
+  //      to the desktop webview over the sync-bus bridge and await the Tauri
+  //      result here, so the CALLER still gets a real ok/error verdict;
+  //    - otherwise return 501 so the renderer falls through to its own Tauri
+  //      fallback (native-console.ts — the user "+" path).
+  //    WI-1882: without the isWindowsDesktopHost() clause this fell into the
+  //    Linux cascade below and died with "no terminal emulator found" because
+  //    process.platform==='linux' in WSL.
   if (process.platform !== 'linux' || isWindowsDesktopHost()) {
+    if (opts.allowDesktopBridge && isWindowsDesktopHost()) {
+      const bridged = await requestDesktopConsoleLaunch({
+        envelope,
+        label: opts.label ?? null,
+        planSlug: opts.planSlug ?? null,
+      });
+      if (bridged.ok) {
+        return {
+          status: 'ok',
+          // Windows-namespace pid — display-only (never liveness-checked from
+          // WSL; see console-record.ts's no-pid rationale). May be null.
+          pid: bridged.pid,
+          terminal: 'wt.exe (desktop-bridge)',
+          child: null,
+          display: null,
+          desktopEnvResolvedVia: null,
+        };
+      }
+      return {
+        status: 'error',
+        error: `desktop-bridge launch failed: ${bridged.error}`,
+        code: 502,
+      };
+    }
     return {
       status: 'error',
       error:

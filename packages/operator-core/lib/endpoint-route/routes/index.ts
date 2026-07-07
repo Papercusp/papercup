@@ -200,6 +200,7 @@ import pluginsRuntimeFireEvent from './plugins/runtime-fire-event';
 import pluginsCatchall from './plugins/catchall';
 import agentMcp_agents from './agent-mcp/agents';
 import agentMcp_consoleLaunch from './agent-mcp/console-launch';
+import agentMcp_consoleLaunchBridge from './agent-mcp/console-launch-bridge';
 import agentMcp_consoleResolve from './agent-mcp/console-resolve';
 import agentMcp_consoleRecord from './agent-mcp/console-record';
 import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
@@ -468,6 +469,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployVncSession as AnyRoute),
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
+  ...flatten(agentMcp_consoleLaunchBridge as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),
   ...flatten(agentMcp_consoleRecord as AnyRoute),
   ...flatten(agentMcp_bootstrapSu as AnyRoute[]),

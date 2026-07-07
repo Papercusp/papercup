@@ -26,12 +26,18 @@ export interface CompactionRecovery {
   selfSession?: { sourceKind: string; sessionId: string } | null;
   /** Armed engine loop, if any — the loop's carry-note is re-injected on its own wake. */
   loop?: { active: boolean; intervalSec?: number | null } | null;
-  /** Held (assigned, non-terminal) work-items + their checkpoints. */
-  checkpoints?: Array<{ id: string; title?: string; checkpoint: string | null }>;
+  /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
+   *  item's description (capped) so the post-compaction agent doesn't re-fetch it
+   *  via work_items:get — measured at 43% of post-compaction orients
+   *  (compaction-fold-audit-2026-07-06). */
+  checkpoints?: Array<{ id: string; title?: string; body?: string; checkpoint: string | null }>;
 }
 
 const MAX_HELD_ITEMS = 6;
 const CHECKPOINT_CAP = 1200;
+/** Held-item body cap (fold #3) — enough of the description to resume without a
+ *  work_items:get, small enough to stay compact across up to MAX_HELD_ITEMS. */
+const BODY_CAP = 600;
 
 export async function buildCompactionRecovery(
   ownerId: string,
@@ -81,8 +87,8 @@ export async function buildCompactionRecovery(
   // after a compaction the agent may not know it still HOLDS them.
   try {
     const { sql } = getOrgPg();
-    const held = await sql<Array<{ issue_id: string; title: string | null; scope: string }>>`
-      SELECT issue_id, title, scope
+    const held = await sql<Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>>`
+      SELECT issue_id, title, body, scope
         FROM harness_shared.engineer_issues
        WHERE assignee = ${ownerId}
          AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
@@ -101,6 +107,7 @@ export async function buildCompactionRecovery(
         out.push({
           id: h.issue_id,
           ...(h.title ? { title: h.title.slice(0, 120) } : {}),
+          ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
           checkpoint: checkpoint ? checkpoint.slice(0, CHECKPOINT_CAP) : null,
         });
       }
