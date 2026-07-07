@@ -189,3 +189,30 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
     },
   };
 }
+
+/**
+ * Load-ONLY epoch-key read (WI-3297, the multi-epoch seed-bundling seam). Unlike
+ * `deriveEpochKey` (get-or-CREATE — a miss MINTS a fresh key), this NEVER writes:
+ * a historical-epoch bundling loop that used deriveEpochKey would silently mint
+ * keys for epochs that never had one (the WI-1981 divergent-key class) and ship
+ * them as if they were real. Returns null on `not_found`; a keychain READ error
+ * (io/decryption) throws — a key may exist but be unreadable, and silently
+ * skipping it would cut a seed missing a recoverable key (fail closed, matching
+ * loadHiveKeyStatus's tri-state discipline).
+ */
+export async function loadEpochKeyIfPresent(hiveId: string, epoch: number): Promise<EpochKey | null> {
+  const loaded = await keychainLoad(epochKeyId(hiveId, epoch), EPOCH_KEY_SERVICE);
+  if (loaded.kind === 'ok') {
+    if (loaded.value.length !== EPOCH_KEY_BYTES) {
+      throw new Error(
+        `stored epoch key for ${epochKeyId(hiveId, epoch)} is ${loaded.value.length}B, expected ${EPOCH_KEY_BYTES}`,
+      );
+    }
+    return asEpochKey(Uint8Array.from(loaded.value));
+  }
+  if (loaded.error.kind === 'not_found') return null;
+  throw new Error(
+    `keychain read FAILED for epoch key ${epochKeyId(hiveId, epoch)} (${loaded.error.kind}` +
+      `${'reason' in loaded.error ? `: ${loaded.error.reason}` : ''}) — cannot tell absent from unreadable, refusing to skip`,
+  );
+}
