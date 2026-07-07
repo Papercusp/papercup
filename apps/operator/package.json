@@ -106,6 +106,7 @@
     "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/ipc-endpoint-server": "file:../../libs/generic/ipc-endpoint-server",
     "@papercusp/ipc-framing": "file:../../libs/generic/ipc-framing",
+    "@papercusp/lexicon": "file:../../libs/generic/lexicon",
     "@papercusp/locks": "file:../../libs/papercusp/packages/locks",
     "@papercusp/memory": "file:../../libs/generic/memory",
     "@papercusp/operator-core": "file:../../packages/operator-core",
