@@ -142,10 +142,14 @@ export const commands = {
 	/**
 	 *  The canonical env set the in-webview `EnvSwitcherBar` renders — the
 	 *  AUTHORITATIVE source. The bar reads THIS (never a routable `/api` fetch), so
-	 *  it can't self-hide on a `/api` routing glitch. Dev-only: a packaged
-	 *  single-operator build has nothing to switch, so it returns `[]` (the bar then
-	 *  hides, correctly). Reachability is probed here because Rust can reach the
-	 *  sibling operators a webview can't (CORS).
+	 *  it can't self-hide on a `/api` routing glitch. On the dev box it returns all
+	 *  4 TARGETS (the never-hide floor — unreachable ones render greyed). On a
+	 *  packaged (release) build it returns only the REACHABLE envs (+ the one we're
+	 *  on): "ALL INSTALLS ARE DOGFOOD INSTALLS" (owner, 2026-07-06), so a user
+	 *  install legitimately runs multiple envs (bundled per-branch sidecars —
+	 *  prod/staging), but must not paint ghost dev/local buttons for envs that need a
+	 *  source tree it doesn't ship. Reachability is probed here because Rust can
+	 *  reach the sibling operators a webview can't (CORS).
 	 */
 	listEnvs: () => __TAURI_INVOKE<EnvInfo[]>("list_envs"),
 	/**

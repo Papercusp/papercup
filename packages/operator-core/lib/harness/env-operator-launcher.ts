@@ -46,22 +46,27 @@
  * deferred WITH the live spawn verify (not before it) because process-lifecycle behaviour
  * is platform-specific and only observable on a real build.
  *
- * ── GRACEFUL on a machine without the toolchain ─────────────────────────────────────
- * A non-bundled env runs from SOURCE (node + tsx against bin/hono-host.ts, mirroring
- * bin/dev-operator-ifneeded.sh), so it needs Node + the cloned repo + installed deps.
- * A packaged install ships the cloned source WITHOUT node_modules (the bootstrap never
- * npm-installs — WI-3285 root cause #2), so the launcher first runs a ONE-TIME best-effort
- * `npm install` in the seeded checkout (ensureToolchain, single-flighted via an O_EXCL
- * lockfile, bounded, non-fatal). Only when that genuinely can't produce a runnable
- * toolchain is the env reported unavailable (skipReason 'no-toolchain' /
- * 'no-source-tree') and not spawned — the switcher keeps self-hiding for it. The bundled
- * `release` env always works with no toolchain and is never spawned from source here.
+ * ── BUNDLED-FIRST on a packaged install (owner directive 2026-07-06, WI-3285) ────────
+ * "All installs are dogfood installs" and env provisioning on user builds means
+ * PER-BRANCH BUNDLED SIDECARS — never npm-install-from-source on a user machine.
+ * Verified on the real packaged Linux deb (WI-3287): the bundle ships a BARE node (no
+ * npm/npx/tsx) and the clone dir is an empty stub, so any from-source path ENOENTs.
+ * So the launcher spawns each env from a bundled per-branch `serve.mjs` when the package
+ * ships one (see resolveBundledSidecar for the discovery contract:
+ * `<env-sidecars-dir>/<branch>/serve.mjs`, dir from PAPERCUSP_ENV_SIDECARS_DIR or
+ * `env-sidecars/` next to the running serve.mjs), running it with the SAME node binary
+ * that runs this primary (process.execPath — always present, PATH-independent).
+ * From-source (node + the tree's own tsx CLI against bin/hono-host.ts, mirroring
+ * bin/dev-operator-ifneeded.sh) remains for machines where the cloned source + installed
+ * deps actually exist (the dev box). When neither a bundle nor a runnable tree exists,
+ * the env is reported unavailable (skipReason 'no-source-tree' / 'no-toolchain') and not
+ * spawned — the switcher keeps self-hiding for it. The bundled `release` env always works
+ * with no toolchain and is never spawned here (it IS the running package).
  */
 
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
-import { papercuspPath } from '../papercusp-root';
+import { existsSync } from 'node:fs';
 import { detectPapercupRoot } from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
 
