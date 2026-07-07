@@ -969,6 +969,34 @@ export function classify429Shape(o: {
 }
 
 /**
+ * Classify a top-level proxy-handler rejection (after the QueueFullError load-shed is handled
+ * separately): a benign DOWNSTREAM `client-abort` (the caller gave up / the connection dropped)
+ * vs a real handler `crash` (a gateway/upstream fault → loud error log + HTTP 500).
+ *
+ * A client abort is benign WHETHER OR NOT response headers were already sent. The distinguishing
+ * signal is that the DOWNSTREAM response object went away: `res.destroyed || res.writableEnded`
+ * is true only when the CLIENT tore down the connection — an upstream/internal abort (stall-waker,
+ * internal timeout) throws an abort-shaped error but leaves `res` intact, so it correctly stays a
+ * `crash`. The previous inline logic additionally required `res.headersSent`, which wrongly
+ * excluded the PRE-headers case: a caller that aborted while still QUEUED (before the gateway sent
+ * a byte) was misread as a crash → `upstreamErrors++` + an HTTP 500 "inference-gateway internal
+ * error". Under fan-out (subscription buckets pace at maxConcurrent=3, so the 4th/5th caller queues
+ * in the absorb window and often aborts before headers) that produced the ~1700 `proxy handler
+ * crashed: aborted` log storm and agent-visible 500s — the "gateway fails at a few agents" report.
+ * Pure + exported so both cases (pre- and post-headers) are unit-testable.
+ */
+export type ProxyHandlerFailure = 'client-abort' | 'crash';
+
+export function classifyProxyHandlerError(
+  msg: string,
+  res: { destroyed: boolean; writableEnded: boolean },
+): ProxyHandlerFailure {
+  const clientAbort =
+    /\baborted\b|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET/i.test(msg) && (res.destroyed || res.writableEnded);
+  return clientAbort ? 'client-abort' : 'crash';
+}
+
+/**
  * Parse the unified-5h rolling budget window from an upstream response (present on 200s too, not
  * just 429s) → the fraction used + the reset boundary. This is the cross-process signal the drain
  * selector routes by (more Max subscriptions = more aggregate 5h budget — the capacity lever).
@@ -4114,15 +4142,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         return;
       }
-      // P-005: a CLIENT abort (bee interrupted / connection dropped mid-request) is not a gateway crash —
-      // the old unconditional `proxy handler crashed: aborted` error-spam made every starved/interrupted
-      // caller read as a gateway fault in the journal (8-at-a-time bursts during the 2026-07-01 tier-5
-      // starvation were exactly this). Keep the loud error for REAL handler faults.
+      // P-005: a CLIENT abort (bee interrupted / connection dropped mid-request, OR a caller that
+      // gave up while still QUEUED) is not a gateway crash — see classifyProxyHandlerError. The old
+      // unconditional `proxy handler crashed: aborted` error-spam made every starved/interrupted
+      // caller read as a gateway fault in the journal (8-at-a-time bursts during the 2026-07-01
+      // tier-5 starvation were exactly this). A later `&& res.headersSent` gate fixed only the
+      // POST-headers case and still misread a PRE-headers abort as a crash → `upstreamErrors++` +
+      // an HTTP 500 "inference-gateway internal error" (the storm + agent-visible 500s under
+      // fan-out — the "gateway fails at a few agents" report). Now benign whether or not headers
+      // were sent. Keep the loud error for REAL handler/upstream faults.
       const msg = (e as Error).message ?? '';
-      const clientAbort = /\baborted\b|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET/i.test(msg) && (res.destroyed || res.writableEnded);
-      if (clientAbort && res.headersSent) {
+      if (classifyProxyHandlerError(msg, res) === 'client-abort') {
         log('info', `proxy request ended early (client abort / stream torn down): ${msg}`);
-        res.destroy();
+        if (!res.destroyed) res.destroy();
         return;
       }
       upstreamErrors++;

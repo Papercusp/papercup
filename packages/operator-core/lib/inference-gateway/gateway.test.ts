@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
@@ -256,6 +256,31 @@ test('classify429Shape — a non-429 (e.g. 529) is unclassified', () => {
     classify429Shape({ status: 529, isUsageCap: false, bare: true, hasWindowReset: false, unifiedRejected: false }),
     'unclassified',
   );
+});
+
+// classifyProxyHandlerError — a benign DOWNSTREAM client abort vs a real handler crash. The
+// distinguishing signal is that the response object went away (res.destroyed || res.writableEnded);
+// a client abort is benign WHETHER OR NOT headers were sent. The regression this locks: a caller
+// that aborted while still QUEUED (pre-headers) must NOT be misread as a crash (→ upstreamErrors++
+// + HTTP 500 "inference-gateway internal error" — the "gateway fails at a few agents" storm).
+test('classifyProxyHandlerError — PRE-headers client abort (queued caller gave up) is a benign client-abort, not a crash', () => {
+  // res.destroyed=true (client tore down the socket), res.writableEnded=false, and headers were
+  // never sent — the exact shape the old `&& res.headersSent` gate misclassified as a crash.
+  assert.equal(classifyProxyHandlerError('The operation was aborted', { destroyed: true, writableEnded: false }), 'client-abort');
+});
+test('classifyProxyHandlerError — POST-headers client abort (stream torn down mid-response) is a client-abort', () => {
+  assert.equal(classifyProxyHandlerError('ERR_STREAM_PREMATURE_CLOSE', { destroyed: false, writableEnded: true }), 'client-abort');
+});
+test('classifyProxyHandlerError — ECONNRESET with a destroyed downstream is a client-abort', () => {
+  assert.equal(classifyProxyHandlerError('socket hang up ECONNRESET', { destroyed: true, writableEnded: false }), 'client-abort');
+});
+test('classifyProxyHandlerError — an abort-shaped message but the downstream is INTACT (upstream/internal abort) is a crash', () => {
+  // A stall-waker / internal-timeout abort throws an abort-shaped error while the CLIENT is still
+  // connected (res not destroyed/ended) — that is a real gateway fault, keep the loud 500 path.
+  assert.equal(classifyProxyHandlerError('upstream fetch aborted', { destroyed: false, writableEnded: false }), 'crash');
+});
+test('classifyProxyHandlerError — a non-abort error with a destroyed downstream is still a crash (message must match)', () => {
+  assert.equal(classifyProxyHandlerError('TypeError: cannot read properties of undefined', { destroyed: true, writableEnded: false }), 'crash');
 });
 
 test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS util headers, not the rotated-to account', async () => {
