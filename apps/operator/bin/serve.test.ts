@@ -191,3 +191,75 @@ describe('sweepOrphanPostgres', () => {
     expect(logs.join('\n')).toMatch(/leaving it alone/);
   });
 });
+
+describe('sticky operator port (stale-port-pin class fix, 2026-07-07)', () => {
+  const portMemory = () => join(pcDir(), 'operator-port.json');
+  afterEach(() => {
+    rmSync(portMemory(), { force: true });
+  });
+
+  it('readRememberedPort round-trips a persisted port and rejects missing/corrupt/invalid', () => {
+    expect(serve.readRememberedPort()).toBeNull();
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(portMemory(), JSON.stringify({ port: 17333 }));
+    expect(serve.readRememberedPort()).toBe(17333);
+    writeFileSync(portMemory(), 'not-json{');
+    expect(serve.readRememberedPort()).toBeNull();
+    writeFileSync(portMemory(), JSON.stringify({ port: 0 }));
+    expect(serve.readRememberedPort()).toBeNull();
+    writeFileSync(portMemory(), JSON.stringify({ port: 99999 }));
+    expect(serve.readRememberedPort()).toBeNull();
+  });
+
+  it('portAvailable is true for a free port and false for a held one', async () => {
+    const { createServer } = await import('node:net');
+    const holder = createServer();
+    const held = await new Promise<number>((resolve) => {
+      holder.listen(0, '127.0.0.1', () => {
+        resolve((holder.address() as { port: number }).port);
+      });
+    });
+    try {
+      expect(await serve.portAvailable(held, '127.0.0.1')).toBe(false);
+    } finally {
+      await new Promise((r) => holder.close(r));
+    }
+    expect(await serve.portAvailable(held, '127.0.0.1')).toBe(true);
+  });
+
+  it('resolveStickyPort prefers the remembered port on the desktop when free — a restart keeps pinned client URLs valid', async () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(portMemory(), JSON.stringify({ port: 18742 }));
+    const port = await serve.resolveStickyPort(19999, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' });
+    expect(port).toBe(18742);
+  });
+
+  it('resolveStickyPort falls back to the launcher hint when the remembered port is taken', async () => {
+    const { createServer } = await import('node:net');
+    const holder = createServer();
+    const held = await new Promise<number>((resolve) => {
+      holder.listen(0, '127.0.0.1', () => {
+        resolve((holder.address() as { port: number }).port);
+      });
+    });
+    try {
+      mkdirSync(pcDir(), { recursive: true });
+      writeFileSync(portMemory(), JSON.stringify({ port: held }));
+      const port = await serve.resolveStickyPort(19999, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' });
+      expect(port).toBe(19999);
+    } finally {
+      await new Promise((r) => holder.close(r));
+    }
+  });
+
+  it('resolveStickyPort NEVER second-guesses a non-desktop boot (dev box / tests pin their port deliberately)', async () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(portMemory(), JSON.stringify({ port: 18742 }));
+    expect(await serve.resolveStickyPort(3070, '127.0.0.1', {})).toBe(3070);
+    expect(await serve.resolveStickyPort(3070, '127.0.0.1', { PAPERCUSP_DESKTOP: '0' })).toBe(3070);
+  });
+
+  it('resolveStickyPort with no memory returns the hint (first desktop boot seeds it later)', async () => {
+    expect(await serve.resolveStickyPort(19999, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' })).toBe(19999);
+  });
+});

@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
 import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER } from './splice-tooling-overlay';
 import { renderModesPolicy } from '../operating-modes-policy';
@@ -100,6 +101,9 @@ export interface InstallResult extends InstallPaths {
   claudeHooksInstalled: string[];
   /** True when the CC hooks + fleet statusline were merged into ~/.claude/settings.json. */
   claudeSettingsMerged: boolean;
+  /** True when [tui].status_line was merged into an existing ~/.codex/config.toml this call
+   *  (false when codex isn't set up here or the user already configured their own status line). */
+  codexStatusLineMerged: boolean;
 }
 
 export interface InstallOpts {
@@ -1006,6 +1010,73 @@ async function installClaudeHooks(
   return { installed, settingsMerged: true };
 }
 
+/**
+ * The codex built-in `[tui].status_line` items papercusp configures for the user's SHARED
+ * ~/.codex/config.toml — the codex parallel of the Claude fleet statusLine (EI-8191). codex has
+ * NO command-backed status item (openai/codex#17827), so this is codex's OWN native bottom pane
+ * (run-state · model+reasoning · context-remaining · git-branch), NOT the fleet coord chips.
+ * Kept identical to CODEX_TUI_TOML in role-codex-home.ts (per-session homes) so plain `codex` and
+ * a psu-launched codex render the SAME status line.
+ */
+export const CODEX_STATUS_LINE_ITEMS = [
+  'run-state',
+  'model-with-reasoning',
+  'context-remaining',
+  'git-branch',
+] as const;
+
+/**
+ * Non-destructive, idempotent merge of `[tui].status_line` into a codex `config.toml` STRING
+ * (returns the new text + whether it changed). The codex analogue of merge_statusline: codex's
+ * default is `status_line = None` ⇒ NO status line renders, which is exactly the "I see no status
+ * lines in codex at all" report. NON-CLOBBER: we set `status_line` ONLY when it is entirely absent,
+ * so any user choice (including an explicit `[]` = "off on purpose", or a personal item list set via
+ * `/statusline`) is preserved. Corrupt/unparseable TOML ⇒ returns unchanged (caller leaves the file
+ * alone) rather than risk clobbering. Pure + exported for unit tests.
+ */
+export function mergeCodexStatusLineToml(raw: string): { toml: string; changed: boolean } {
+  let obj: Record<string, any>;
+  try {
+    const parsed = TOML.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { toml: raw, changed: false };
+    obj = parsed as Record<string, any>;
+  } catch {
+    // Unparseable — never clobber a config we can't understand.
+    return { toml: raw, changed: false };
+  }
+  const tui =
+    obj.tui && typeof obj.tui === 'object' && !Array.isArray(obj.tui) ? (obj.tui as Record<string, any>) : (obj.tui = {});
+  if (tui.status_line !== undefined) return { toml: raw, changed: false };
+  tui.status_line = [...CODEX_STATUS_LINE_ITEMS];
+  return { toml: TOML.stringify(obj as any), changed: true };
+}
+
+/**
+ * Merge the papercusp codex status line into the user's shared ~/.codex/config.toml (best-effort,
+ * idempotent) — so a PLAIN `codex` gets a native bottom status pane, the codex sibling of the Claude
+ * settings.json statusLine merge (EI-8191). Only touches an EXISTING codex config (we don't create a
+ * ~/.codex the user never set up); leaves any user-configured status_line untouched. Never throws.
+ */
+async function installCodexStatusLine(home: string): Promise<{ merged: boolean }> {
+  const configPath = path.join(home, '.codex', 'config.toml');
+  let raw: string;
+  try {
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch {
+    // No ~/.codex/config.toml (codex not set up here) — nothing to do. The per-session CODEX_HOME
+    // path (role-codex-home.ts) already covers psu-launched codex.
+    return { merged: false };
+  }
+  try {
+    const { toml, changed } = mergeCodexStatusLineToml(raw);
+    if (!changed) return { merged: false };
+    await fs.writeFile(configPath, toml.endsWith('\n') ? toml : toml + '\n', { mode: 0o600 });
+    return { merged: true };
+  } catch {
+    return { merged: false };
+  }
+}
+
 export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<InstallResult> {
   const home = opts.home ?? os.homedir();
   const explicitRoot = !!opts.operatorAppRoot;
@@ -1049,6 +1120,11 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const claudeHooks = ccHookSrcDir
     ? await installClaudeHooks(home, ccHookSrcDir)
     : { installed: [] as string[], settingsMerged: false };
+
+  // Codex status line (parallel to the Claude statusLine merge above): a plain `codex` reads the
+  // user's shared ~/.codex/config.toml, whose default status_line=None renders NOTHING — the
+  // "no status lines in codex at all" report. Merge our native [tui].status_line in non-destructively.
+  const codexStatusLine = await installCodexStatusLine(home);
 
   // agent-managed-compaction: render the Claude compaction floor (base + claude overlay)
   // to ~/.papercusp/compaction-strategy.md and @import it from ~/.claude/CLAUDE.md's
@@ -1137,6 +1213,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     pathProfilesUpdated,
     claudeHooksInstalled: claudeHooks.installed,
     claudeSettingsMerged: claudeHooks.settingsMerged,
+    codexStatusLineMerged: codexStatusLine.merged,
   };
 }
 

@@ -37,6 +37,7 @@
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
+import { createServer as createNetServer } from 'node:net';
 import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
@@ -130,6 +131,66 @@ export function readToken(): string | null {
   } catch {
     return null;
   }
+}
+
+// ── Sticky operator port (stale-port-pin class fix, 2026-07-07) ─────────────
+// The packaged desktop launcher (main.rs spawn_serve) hands us a FRESH
+// portpicker-picked port on every boot, so every app restart used to move the
+// operator's address — and every long-lived URL pin (tutorial-runner's
+// --operator-url, dock CLIs, spawned members' MCP configs) died with it
+// ("can't reach the Papercusp server", dead member MCP — owner-reported).
+// Remembering the last successfully-bound port and re-binding it when free
+// keeps the address stable across restarts; pinned clients then ride through a
+// restart on their normal connection retry (operator-discovery.mjs
+// fetchResilient) instead of pointing at a dead port forever.
+const OPERATOR_PORT_MEMORY = join(PAPERCUSP_DIR, 'operator-port.json');
+
+/** Last successfully-bound HTTP port, or null. Unlike operator.json (unlinked
+ *  on every shutdown), operator-port.json survives — it is the memory that
+ *  makes the port sticky. */
+export function readRememberedPort(): number | null {
+  try {
+    const j = JSON.parse(readFileSync(OPERATOR_PORT_MEMORY, 'utf8')) as { port?: unknown };
+    const p = Number(j?.port);
+    if (Number.isInteger(p) && p > 0 && p < 65536) return p;
+  } catch {
+    /* missing / corrupt → no memory */
+  }
+  return null;
+}
+
+/** True when `port` can be bound on `host` right now (probe bind + close). */
+export function portAvailable(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createNetServer();
+    probe.unref();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
+  });
+}
+
+/**
+ * The port to bind: on the packaged desktop (PAPERCUSP_DESKTOP=1, the one
+ * environment whose launcher hint is a fresh random port each boot), prefer
+ * the remembered port when it is still free; everywhere else — dev box,
+ * tests, anyone pinning PAPERCUSP_HONO_PORT deliberately — the hint stands.
+ */
+export async function resolveStickyPort(
+  hinted: number,
+  hostname: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  if (env.PAPERCUSP_DESKTOP !== '1') return hinted;
+  const remembered = readRememberedPort();
+  if (!remembered || remembered === hinted) return hinted;
+  if (!(await portAvailable(remembered, hostname))) {
+    log(`remembered operator port ${remembered} is taken — using launcher hint ${hinted}`);
+    return hinted;
+  }
+  log(
+    `re-binding remembered operator port ${remembered} (launcher hint ${hinted}) — pinned client URLs stay valid across restarts`,
+  );
+  return remembered;
 }
 
 /**
@@ -482,9 +543,12 @@ async function main(): Promise<void> {
     ensureToolPathEnv();
   }
 
-  const port = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
   const hostname =
     process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
+  const port = await resolveStickyPort(
+    Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070),
+    hostname,
+  );
   const httpUrl = `http://${hostname}:${port}`;
 
   // --ensure: reuse a healthy running operator and exit 0.
@@ -603,6 +667,13 @@ async function main(): Promise<void> {
       };
       await writeJsonAtomic(OPERATOR_JSON, discovery);
       log(`wrote ${OPERATOR_JSON}`);
+      try {
+        // Port memory for the next boot (sticky port — see resolveStickyPort).
+        // Optional state: a failed write must never affect the running boot.
+        await writeJsonAtomic(OPERATOR_PORT_MEMORY, { port: info.port, updatedAt: Date.now() });
+      } catch (e) {
+        log(`could not persist port memory (${(e as Error).message}) — next restart re-picks`);
+      }
     }) as unknown as { close?: () => void };
   } catch (e) {
     releaseColdStartLock();
