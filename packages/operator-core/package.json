@@ -18,6 +18,7 @@
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
     "@papercusp/activity-bridge": "*",
     "@papercusp/audio-dsp": "*",
     "@papercusp/bench-metrics": "*",

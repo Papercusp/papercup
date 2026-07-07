@@ -48,6 +48,7 @@ import {
   parsePayloadTier,
   type PayloadTier,
   type UnifiedToolContext,
+  type RequestOriginMetadata,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
@@ -120,6 +121,60 @@ type McpCallResult = {
   _meta?: Record<string, unknown>;
   structuredContent?: unknown;
 };
+
+const REQUEST_ORIGIN_QUERY_KEYS = new Set([
+  'superuser',
+  'power_user',
+  'workspace',
+  'harness',
+  'role',
+  'client',
+  'agent',
+  'model',
+  'profile',
+  'ctx_tier',
+  'tools',
+  'format',
+  'structured',
+  'delta',
+  'plan_run',
+  'all_workspaces',
+]);
+
+const REQUEST_ORIGIN_HEADER_KEYS = [
+  'host',
+  'user-agent',
+  'origin',
+  'referer',
+  'sec-fetch-site',
+  'x-papercusp-client',
+  'x-papercusp-workspace',
+  'x-papercusp-profile',
+  'x-papercusp-agent',
+  'x-papercusp-model',
+  'mcp-session-id',
+] as const;
+
+function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefined {
+  const url = urlFromExtra(extra);
+  if (!url) return undefined;
+  const headers = headersFromExtra(extra);
+  const query: Record<string, string> = {};
+  for (const [key, value] of url.searchParams.entries()) {
+    if (REQUEST_ORIGIN_QUERY_KEYS.has(key)) query[key] = value;
+  }
+  const headerMeta: Record<string, string> = {};
+  for (const key of REQUEST_ORIGIN_HEADER_KEYS) {
+    const value = (headers.get(key) ?? '').trim();
+    if (value) headerMeta[key] = value;
+  }
+  return {
+    transport: 'mcp',
+    path: url.pathname,
+    ...(Object.keys(query).length > 0 ? { query } : {}),
+    ...(Object.keys(headerMeta).length > 0 ? { headers: headerMeta } : {}),
+  };
+}
 
 interface DeltaProxySession {
   client: DeltaToolClient;
@@ -404,6 +459,7 @@ export interface BuiltSpawnContext {
    * (unshaped — today's behavior, byte-identical).
    */
   contextTier?: PayloadTier;
+  requestOrigin?: RequestOriginMetadata;
 }
 
 /**
@@ -438,6 +494,7 @@ export type TrySpawnContextResult =
 async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResult> {
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
+  const requestOrigin = buildMcpRequestOrigin(extra);
 
   // Plan-run provenance (plan-agent-launch-2026-05-21, P-006). Folded
   // onto every built ctx below; the plan-agent runner (P-011) sets it,
@@ -587,6 +644,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // Session payload tier (context-trimming-tiers D-004) — env-expanded by
         // psu into the user-level MCP URL, like `tools=`.
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
+        requestOrigin,
       },
     };
   }
@@ -651,6 +709,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // Power-user tokens always imply the power profile.
         profile: 'power',
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
+        requestOrigin,
       },
     };
   }
@@ -777,6 +836,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // Spawned agents get their tier from the per-spawn mcp.json URL
         // (context-trimming-tiers D-004; the orchestrator threads it).
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
+        requestOrigin,
       },
     };
   } catch (err) {
@@ -1065,6 +1125,7 @@ async function buildMcpToolContext(
     requestedFormat,
     requestedStructured,
     requestedDelta,
+    requestOrigin: spawn.requestOrigin,
     log: (msg) => {
        
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);

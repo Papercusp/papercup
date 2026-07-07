@@ -397,6 +397,43 @@ describe('caller backend/model stamping', () => {
   });
 });
 
+describe('request-origin telemetry context', () => {
+  it('folds sanitized MCP request provenance onto ctx without auth or signature fields', async () => {
+    await callTool(
+      'gatingtest:crossworkspace',
+      {},
+      superuserExtra('&workspace=ws-test&client=su-test&agent=codex&model=gpt-5&sig=secret-sig&exp=999', {
+        authorization: 'Bearer test-su-bearer',
+        'x-papercusp-client': 'su-header',
+        'user-agent': 'codex-cli-test',
+        referer: 'http://127.0.0.1:3055/admin',
+      }),
+    );
+
+    const origin = seen.at(-1)!.ctx.requestOrigin!;
+    expect(origin).toMatchObject({
+      transport: 'mcp',
+      path: '/api/mcp',
+      query: {
+        superuser: '1',
+        workspace: 'ws-test',
+        client: 'su-test',
+        agent: 'codex',
+        model: 'gpt-5',
+      },
+      headers: {
+        host: '127.0.0.1:3070',
+        'x-papercusp-client': 'su-header',
+        'user-agent': 'codex-cli-test',
+        referer: 'http://127.0.0.1:3055/admin',
+      },
+    });
+    expect(origin.query).not.toHaveProperty('sig');
+    expect(origin.query).not.toHaveProperty('exp');
+    expect(origin.headers).not.toHaveProperty('authorization');
+  });
+});
+
 /* ─── scoped-superuser-workspace-clamp (P-006 / P-007) ───────────────── */
 
 describe('scoped-superuser-workspace-clamp', () => {

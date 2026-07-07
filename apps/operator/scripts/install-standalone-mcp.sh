@@ -499,6 +499,68 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# Codex sibling of merge_statusline (TS twin: mergeCodexStatusLineToml in
+# packages/operator-core/lib/desktop-install/papercusp-files.ts — KEEP THE TWO IN SYNC).
+# A plain `codex` reads ~/.codex/config.toml, whose default status_line=None renders NOTHING
+# ("no status lines in codex at all"). Merge our native [tui].status_line in NON-destructively:
+# only when status_line is entirely absent (any user/`/statusline` choice, incl. an explicit [], is
+# preserved). Never CREATES ~/.codex (codex not set up ⇒ nothing to do). tomllib-validated: an insert
+# that would corrupt the TOML is discarded. codex has no command-backed item (openai/codex#17827), so
+# this shows codex's OWN items, not the fleet chips.
+#   $1 = ~/.codex/config.toml path
+merge_codex_statusline() {
+  python3 - "$1" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        raw = f.read()
+except FileNotFoundError:
+    sys.exit(0)  # no ~/.codex/config.toml — don't create one
+
+try:
+    import tomllib
+    have_tomllib = True
+except ModuleNotFoundError:
+    have_tomllib = False
+
+# Already configured? Leave it (respect the user / a prior install).
+if have_tomllib:
+    try:
+        data = tomllib.loads(raw)
+    except Exception:
+        sys.exit(0)  # unparseable — never clobber
+    if isinstance(data.get('tui'), dict) and data['tui'].get('status_line') is not None:
+        sys.exit(0)
+elif re.search(r'(?m)^\s*status_line\s*=', raw):
+    sys.exit(0)
+
+block = (
+    '[tui]\n'
+    'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]\n'
+)
+lines = raw.splitlines(keepends=True)
+# Insert the [tui] block before the FIRST table header (so it lands after any top-level bare keys
+# and before any [tui.subtable], which keeps it valid TOML); append at EOF if there is no table.
+insert_at = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith('[')), len(lines))
+if insert_at < len(lines):
+    out = ''.join(lines[:insert_at]) + block + '\n' + ''.join(lines[insert_at:])
+else:
+    sep = '' if raw.endswith('\n') or raw == '' else '\n'
+    out = raw + sep + '\n' + block
+
+if have_tomllib:
+    try:
+        tomllib.loads(out)  # discard an insert that would break the file
+    except Exception:
+        sys.exit(0)
+
+with open(path, 'w') as f:
+    f.write(out)
+print('merged [tui].status_line into ' + path)
+PYEOF
+}
+
 # Merge the named-resource Bash gate as its OWN PreToolUse entry (matcher
 # "Bash"). Idempotent: drops any prior entry pointing at our script. The hook
 # fail-opens + pre-filters locally, so it's inert until a registered resource

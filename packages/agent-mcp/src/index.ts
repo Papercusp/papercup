@@ -208,6 +208,7 @@ export {
   type ToolExposureMcp,
   type ToolExposureSlash,
   type UnifiedToolContext,
+  type RequestOriginMetadata,
   type MinimalEventSink,
   type PapercuspBinaryEnvelope,
 } from '@papercusp/tooldef';

@@ -375,14 +375,21 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       return null;
     }
   })();
-  // Audit the reaction cause-chain (event-reaction-system D-010) into
-  // metadata_json so "why did this fire?" is answerable: a reaction row carries
-  // metadata.reaction = { depth, chain, ruleId, rootRunId }.
+  // Audit host provenance into metadata_json. Reactions answer "why did this
+  // fire?"; requestOrigin answers "which loopback client surface sent this?"
+  // for unattributed MCP calls that otherwise collapse to coord_owner_id
+  // "loopback".
   const metadataJson = (() => {
     const reaction = input.ctx.reactionCause;
-    const meta = reaction
-      ? { ...(input.metadataJson ?? {}), reaction }
-      : input.metadataJson;
+    const requestOrigin = input.ctx.requestOrigin;
+    const meta =
+      input.metadataJson || reaction || requestOrigin
+        ? {
+            ...(input.metadataJson ?? {}),
+            ...(requestOrigin ? { requestOrigin } : {}),
+            ...(reaction ? { reaction } : {}),
+          }
+        : null;
     return meta ? jsonbSafeStringify(meta) : null;
   })();
   // WI-1279: stamp the calling agent's coordination owner id so dev:sessions can
