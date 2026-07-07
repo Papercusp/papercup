@@ -703,6 +703,24 @@ export interface WorkspaceSurvey {
   hives: string[];
 }
 
+type SurveyScope = HiveSurvey['scope'];
+
+function crossHiveCandidateKey(c: PlacementCandidate): string {
+  return `${c.view}:${c.harness}:${c.id}`;
+}
+
+function addCrossHiveCandidate(
+  acc: Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>,
+  candidate: PlacementCandidate,
+  scope: SurveyScope,
+) {
+  const key = crossHiveCandidateKey(candidate);
+  const existing = acc.get(key);
+  if (!existing || (existing.scope === 'workspace' && scope === 'members')) {
+    acc.set(key, { candidate, scope });
+  }
+}
+
 /**
  * Survey the WHOLE workspace for the central-dispatcher Queen (P-003). Resolves
  * every hive (registry `kind:'hive'` projects), surveys each individually (the
@@ -757,17 +775,17 @@ export async function surveyWorkspace(
   // The ranker is hive-agnostic and re-derives the rank from the candidate fields,
   // so re-ranking the union is correct; the `hive` tag rides through as metadata
   // the placement path routes on.
-  const planCandidates: PlacementCandidate[] = [];
-  const frontierCandidates: PlacementCandidate[] = [];
+  const planCandidates = new Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>();
+  const frontierCandidates = new Map<string, { candidate: PlacementCandidate; scope: SurveyScope }>();
   let frontierBlocked = 0;
   for (const { hive, survey } of perHive) {
-    for (const c of survey.plans) planCandidates.push({ ...c, hive });
-    for (const c of survey.frontier) frontierCandidates.push({ ...c, hive });
+    for (const c of survey.plans) addCrossHiveCandidate(planCandidates, { ...c, hive }, survey.scope);
+    for (const c of survey.frontier) addCrossHiveCandidate(frontierCandidates, { ...c, hive }, survey.scope);
     frontierBlocked += survey.frontierBlocked;
   }
   const [plans, frontier] = await Promise.all([
-    rankPlacements(planCandidates),
-    rankPlacements(frontierCandidates),
+    rankPlacements([...planCandidates.values()].map((v) => v.candidate)),
+    rankPlacements([...frontierCandidates.values()].map((v) => v.candidate)),
   ]);
 
   return {

@@ -187,6 +187,39 @@ describe('surveyWorkspace — the cross-hive ranked backlog (P-003 Phase B / D-0
     expect(tagOf('WI-B')).toBe('hive-b');
   });
 
+  it('de-dups workspace-fallback frontier echoes and keeps the member-scoped hive tag', async () => {
+    const ws = await surveyWorkspace(WS, {
+      // The pass-through hive is first to prove a later member-scoped row
+      // replaces its workspace-wide echo for the same real work item.
+      listHiveSlugs: async () => ['pass-through-hive', 'real-hive'],
+      deps: {
+        now: () => NOW,
+        loadRegistry: async () => ({
+          projects: [
+            { slug: 'pass-through-hive' },
+            { slug: 'real-hive' },
+            { slug: 'real-proj', hive_slug: 'real-hive' },
+          ],
+        }),
+        listPlanRows: async () => [],
+        fetchFrontier: async (surveySlugs) =>
+          surveySlugs.includes('real-proj')
+            ? [frontierRow({ feature_id: 'WI-A', harness_slug: 'real-proj' })]
+            : [
+                frontierRow({ feature_id: 'WI-A', harness_slug: 'real-proj' }),
+                frontierRow({ feature_id: 'WI-B', harness_slug: 'loose-proj' }),
+              ],
+        fetchBlockGraph: async () => noBlockers,
+      },
+    });
+
+    expect(ws.perHive.find((s) => s.hive === 'pass-through-hive')!.survey.scope).toBe('workspace');
+    expect(ws.perHive.find((s) => s.hive === 'real-hive')!.survey.scope).toBe('members');
+    expect(ws.crossHive.frontier.map((c) => c.id).sort()).toEqual(['WI-A', 'WI-B']);
+    expect(ws.crossHive.frontier.filter((c) => c.id === 'WI-A')).toHaveLength(1);
+    expect(ws.crossHive.frontier.find((c) => c.id === 'WI-A')?.hive).toBe('real-hive');
+  });
+
   it('sums frontierBlocked across all hives', async () => {
     const ws = await surveyWorkspace(WS, {
       listHiveSlugs: async () => ['hive-a', 'hive-b'],
