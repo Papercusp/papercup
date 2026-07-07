@@ -1379,6 +1379,15 @@ export const FLAGS = {
   // feature_disabled; existing search:* scopes are unaffected. The instant
   // kill-switch if ingest volume ever misbehaves on a small host.
   SESSION_SEARCH: "papercusp-session-search",
+  // local-first-party-template-bundling-2026-07-07 (owner-directed v1/v2 split):
+  // the `templates:*` verbs resolve the first-party templates from the LOCAL store
+  // (bundled in-app) in v1. This flag gates the v2 Cupboard MARKETPLACE merge —
+  // browsing/get-guide/new-app for user-published, runtime-fetched templates. OFF
+  // (v1) ⇒ templates:list shows only the local store, get-guide/new-app resolve
+  // local only; the remote Cupboard path is wired but dormant. ON (v2) ⇒ remote
+  // marketplace listings merge on top (local wins a ref collision) and non-local
+  // refs resolve via the Cupboard. Default OFF — owner-directed staged v2 cutover.
+  TEMPLATES_MARKETPLACE: "papercusp-templates-marketplace",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
