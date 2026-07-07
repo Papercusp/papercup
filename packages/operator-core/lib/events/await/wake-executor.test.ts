@@ -923,6 +923,52 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.data).toContain('loop:checkpoint');
   });
 
+  it('P-003 (compaction-continuity-hardening): the cold injection appends the carry-brief EXTRAS (held items + walls/facts + awaits + fleet) after the note; the note stays the core', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const buildCarryBriefFn = vi.fn(async (ownerId: string) => ({
+      ownerId,
+      loop: null,
+      heldItems: [
+        { id: 'WI-3319', title: 'Shared carry-brief builder', body: null, harness: 'papercusp', checkpoint: 'watchdog wired; cold anchor next' },
+      ],
+      facts: [{ key: 'zombie-pids-wall', body: '3 PIDs await owner OK' }],
+      awaits: [{ eventKey: 'deploy:done:release-77', note: null }],
+      fleet: { slug: 'bug-drain', role: 'leader' },
+    }));
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({ injectPsuHost: injectPsuHost as never, buildCarryBriefFn: buildCarryBriefFn as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(buildCarryBriefFn).toHaveBeenCalledWith('su-abc', { workspaceId: 'ws' });
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    // The note leads, the extras follow, the re-checkpoint mandate closes.
+    expect(data).toContain('## Next action\nresume the wiring');
+    expect(data).toContain('WI-3319 — Shared carry-brief builder');
+    expect(data).toContain('checkpoint: watchdog wired; cold anchor next');
+    expect(data).toContain('zombie-pids-wall: 3 PIDs await owner OK');
+    expect(data).toContain('deploy:done:release-77');
+    expect(data).toContain('Fleet: you are in "bug-drain" as leader');
+    expect(data.indexOf('resume the wiring')).toBeLessThan(data.indexOf('WI-3319'));
+    expect(data.indexOf('WI-3319')).toBeLessThan(data.indexOf('Before you END this turn'));
+  });
+
+  it('P-003 fail-soft: a THROWING carry-brief reader injects the note alone (byte-identical to the extras-less injection)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        buildCarryBriefFn: vi.fn(async () => {
+          throw new Error('pg down');
+        }) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    expect(data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+  });
+
   it('the HYBRID cadence recycles every Nth wake (wakeCount 8 → RECYCLE, channel psu-socket-recycle)', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const out = await executeWake(

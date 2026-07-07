@@ -34,7 +34,7 @@ afterEach(async () => {
 
 /** A `cloneRepo` that lays down a realistic mirror clone at `dest`: a `.git`, an
  *  unrelated sibling template, and our `<ref>/` with app files. */
-function fakeClone(): MaterializeTemplateDeps['cloneRepo'] {
+function fakeClone(): CloneSourceDeps['cloneRepo'] {
   return async (_url, dest) => {
     mkdirSync(join(dest, '.git'), { recursive: true });
     writeFileSync(join(dest, '.git', 'HEAD'), 'ref: refs/heads/main\n');
@@ -126,16 +126,16 @@ describe('overlayTemplateFiles', () => {
 });
 
 describe('materializeTemplateCore', () => {
-  const deps = (clone = fakeClone()): MaterializeTemplateDeps => ({
-    cloneRepo: clone,
-    tmpDir: () => scratch,
-  });
+  // The remote (clone) source-acquire — validates url+ref, clones into scratch, locates <clone>/<ref>.
+  const cloneAcquire = (clone = fakeClone(), url = URL, ref = REF) =>
+    cloneSourceAcquire({ githubUrl: url, ref, cloneRepo: clone, tmpDir: () => scratch });
 
   it('clones, creates the harness, overlays the template, and cleans the clone dir', async () => {
-    const r = await materializeTemplateCore(
-      { githubUrl: URL, ref: REF, createHarness: fakeCreateHarness('my-app') },
-      deps(),
-    );
+    const r = await materializeTemplateCore({
+      ref: REF,
+      acquireSourceDir: cloneAcquire(),
+      createHarness: fakeCreateHarness('my-app'),
+    });
     expect(r.slug).toBe('my-app');
     expect(r.filesCopied).toEqual(expect.arrayContaining(['GUIDE.md', 'package.json', 'src']));
     // The template files (only the <ref>/ subtree) landed, not the sibling template.
@@ -148,36 +148,63 @@ describe('materializeTemplateCore', () => {
     expect(leftovers).toEqual([]);
   });
 
+  it('materializes from an ON-DISK local dir with no clone and no scratch (localSourceAcquire)', async () => {
+    // Lay down a local template dir (the v1 bundled-store shape).
+    const localDir = join(scratch, 'local', REF);
+    mkdirSync(join(localDir, 'src'), { recursive: true });
+    writeFileSync(join(localDir, 'GUIDE.md'), '# local build\n');
+    writeFileSync(join(localDir, 'package.json'), '{"name":"local-webapp"}\n');
+    writeFileSync(join(localDir, 'src', 'index.ts'), 'export const y = 2;\n');
+
+    const r = await materializeTemplateCore({
+      ref: REF,
+      acquireSourceDir: localSourceAcquire(localDir),
+      createHarness: fakeCreateHarness('local-app'),
+    });
+    expect(r.slug).toBe('local-app');
+    expect(r.filesCopied).toEqual(expect.arrayContaining(['GUIDE.md', 'package.json', 'src']));
+    expect(readFileSync(join(r.path, 'package.json'), 'utf8')).toBe('{"name":"local-webapp"}\n');
+    expect(readFileSync(join(r.path, '.papercusp', 'blueprint.yaml'), 'utf8')).toBe('id: coding\n');
+    // The source dir is UNTOUCHED (local acquire has a noop cleanup — never deletes it).
+    expect(existsSync(localDir)).toBe(true);
+    // No clone scratch was created.
+    const leftovers = (await fs.readdir(scratch)).filter((n) => n.startsWith('cupboard-template-'));
+    expect(leftovers).toEqual([]);
+  });
+
   it('rejects a non-github url before cloning', async () => {
     let cloned = false;
     await expect(
-      materializeTemplateCore(
-        { githubUrl: 'https://gitlab.com/x/y', ref: REF, createHarness: fakeCreateHarness('x') },
-        deps(async () => {
-          cloned = true;
+      materializeTemplateCore({
+        ref: REF,
+        acquireSourceDir: cloneSourceAcquire({
+          githubUrl: 'https://gitlab.com/x/y',
+          ref: REF,
+          cloneRepo: async () => {
+            cloned = true;
+          },
+          tmpDir: () => scratch,
         }),
-      ),
+        createHarness: fakeCreateHarness('x'),
+      }),
     ).rejects.toThrow(expect.objectContaining({ status: 400 }));
     expect(cloned).toBe(false);
   });
 
   it('does NOT create the harness when the ref subdir is missing (422), and cleans up', async () => {
     let created = false;
-    const clone: MaterializeTemplateDeps['cloneRepo'] = async (_u, dest) => {
+    const clone: CloneSourceDeps['cloneRepo'] = async (_u, dest) => {
       mkdirSync(dest, { recursive: true }); // clone with NO <ref>/ subdir
     };
     await expect(
-      materializeTemplateCore(
-        {
-          githubUrl: URL,
-          ref: REF,
-          createHarness: async () => {
-            created = true;
-            return { slug: 'x', path: join(scratch, 'x') };
-          },
+      materializeTemplateCore({
+        ref: REF,
+        acquireSourceDir: cloneAcquire(clone),
+        createHarness: async () => {
+          created = true;
+          return { slug: 'x', path: join(scratch, 'x') };
         },
-        deps(clone),
-      ),
+      }),
     ).rejects.toThrow(expect.objectContaining({ status: 422 }));
     expect(created).toBe(false);
     const leftovers = (await fs.readdir(scratch)).filter((n) => n.startsWith('cupboard-template-'));
@@ -186,16 +213,13 @@ describe('materializeTemplateCore', () => {
 
   it('propagates a createHarness failure and still cleans the clone dir', async () => {
     await expect(
-      materializeTemplateCore(
-        {
-          githubUrl: URL,
-          ref: REF,
-          createHarness: async () => {
-            throw new MaterializeTemplateError('harness:create failed: slug already exists', 422);
-          },
+      materializeTemplateCore({
+        ref: REF,
+        acquireSourceDir: cloneAcquire(),
+        createHarness: async () => {
+          throw new MaterializeTemplateError('harness:create failed: slug already exists', 422);
         },
-        deps(),
-      ),
+      }),
     ).rejects.toThrow(/slug already exists/);
     const leftovers = (await fs.readdir(scratch)).filter((n) => n.startsWith('cupboard-template-'));
     expect(leftovers).toEqual([]);

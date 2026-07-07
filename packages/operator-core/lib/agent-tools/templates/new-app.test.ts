@@ -1,10 +1,10 @@
 /**
- * Coverage for templates:new-app's composition (WI-3198). Hermetic: a mock
- * `inner` stands in for the in-process dispatcher (harness:create + agent_chats),
- * `cloneRepo` lays down a fixture, resolveListing/fetchGuide are stubbed. The REAL
- * materializeTemplateCore + overlay run against temp dirs. Exercises: happy-path
- * materialize + builder kickoff, listing-resolution passthrough, kickoffBuilder:false,
- * and best-effort builder failure (materialization still succeeds).
+ * Coverage for templates:new-app's composition (WI-3198 / local-first-party-template-
+ * bundling-2026-07-07). Hermetic: a mock `inner` stands in for the in-process
+ * dispatcher (harness:create + agent_chats), and `resolveSource` yields a source whose
+ * `acquireSourceDir` lays down a fixture template dir. The REAL materializeTemplateCore
+ * + overlay run against temp dirs. Exercises: happy-path materialize + builder kickoff,
+ * source-resolution passthrough, kickoffBuilder:false, and best-effort builder failure.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -49,22 +49,26 @@ function baseArgs(over: Partial<NewAppArgs> = {}): NewAppArgs {
   };
 }
 
-/** A cloneRepo that writes a fixture template into `<dest>/<REF>/`. */
-function fakeClone() {
-  return async (_url: string, dest: string) => {
-    const t = join(dest, REF);
-    mkdirSync(t, { recursive: true });
-    writeFileSync(join(t, 'GUIDE.md'), '# Build it\n');
-    writeFileSync(join(t, 'package.json'), '{"name":"webapp"}');
-  };
-}
-
+/**
+ * A resolveSource that yields a source whose acquireSourceDir writes a fixture
+ * `<srcDir>/` (GUIDE.md + package.json) to overlay — mirrors both the local (no-clone)
+ * and remote (post-clone) shape, since composeNewApp is source-agnostic.
+ */
 function baseDeps(over: Partial<NewAppDeps> = {}): NewAppDeps {
   return {
-    cloneRepo: fakeClone(),
-    tmpDir: () => scratch,
-    resolveListing: (async () => LISTING) as NewAppDeps['resolveListing'],
-    fetchGuide: (async () => GUIDE) as NewAppDeps['fetchGuide'],
+    resolveSource: (async () => ({
+      listing: { id: LISTING.id, ref: REF, title: LISTING.title },
+      guide: GUIDE.guide,
+      guideTruncated: GUIDE.guideTruncated,
+      guideBranch: GUIDE.branch,
+      acquireSourceDir: async () => {
+        const dir = join(scratch, 'src');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'GUIDE.md'), '# Build it\n');
+        writeFileSync(join(dir, 'package.json'), '{"name":"webapp"}');
+        return { srcDir: dir, cleanup: async () => {} };
+      },
+    })) as NewAppDeps['resolveSource'],
     defaultParentDir: () => {
       const d = join(scratch, 'apps');
       mkdirSync(d, { recursive: true });
@@ -128,13 +132,16 @@ describe('composeNewApp', () => {
     expect(calls[0].args).toMatchObject({ slug: 'my-app', blueprintId: 'coding' });
   });
 
-  it('passes through a listing-resolution error', async () => {
+  it('passes through a source-resolution error', async () => {
     const { inner } = mockInner();
     const result = await composeNewApp(
       baseArgs({ template: 'no-such' }),
       inner,
       baseDeps({
-        resolveListing: (async () => ({ error: 'template not found: no-such', status: 404 })) as NewAppDeps['resolveListing'],
+        resolveSource: (async () => ({
+          error: 'template not found in the local store: no-such',
+          status: 404,
+        })) as NewAppDeps['resolveSource'],
       }),
     );
     const payload = parse(result);
