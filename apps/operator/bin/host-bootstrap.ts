@@ -275,6 +275,26 @@ export function runBootstrap(): void {
     const armEnvOperators = setTimeout(() => {
       void (async () => {
         try {
+          // [WI-3308] First-boot: extract the bundled dev/local runnable source
+          // tree (if a source-bundled build shipped one at PAPERCUSP_SOURCE_ARCHIVE)
+          // into the writable PAPERCUSP_DEV_SOURCE_DIR, then export
+          // PAPERCUSP_DEV_SOURCE_ROOT so the launcher's defaultDetectSourceRoot runs
+          // dev(:3270)/local(:3055) from it. No-op + non-fatal when no bundle shipped
+          // (dev/local stay skipped 'no-source-tree', exactly as before this feature).
+          try {
+            const { extractDevSourceTree } = await import('../lib/dev-source-extract');
+            const devSourceRoot = await extractDevSourceTree({
+              archivePath: process.env.PAPERCUSP_SOURCE_ARCHIVE,
+              targetDir: process.env.PAPERCUSP_DEV_SOURCE_DIR,
+              log: (m) => console.log(m),
+            });
+            if (devSourceRoot) process.env.PAPERCUSP_DEV_SOURCE_ROOT = devSourceRoot;
+          } catch (e) {
+            console.warn(
+              '[dev-source] extract failed (non-fatal):',
+              (e as Error)?.message ?? e,
+            );
+          }
           const { launchEnvOperators } = await import(
             '@papercusp/operator-core/lib/harness/env-operator-launcher'
           );
