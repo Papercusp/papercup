@@ -217,25 +217,26 @@ export function runBootstrap(): void {
   })();
 
   // [dogfood-silent-canonical-hive-join P-017 / D-006/D-007/D-009] Install-time
-  // provisioning of the LOCAL env operators (dev :3270 / prod :3070 / staging :3170)
-  // from the already-cloned `papercup` source, so the cross-platform env switcher
-  // (EnvSwitcherBar) — which self-hides on a single-operator install — lights up.
-  // DEFAULT-OFF + ships dark: gated on PAPERCUSP_PROVISION_ENV_OPERATORS=1 (the idiom of
-  // the other boot toggles — PAPERCUSP_DBOS_ENABLE / PAPERCUSP_GIT_EXPORT_COMMIT) AND
-  // PAPERCUSP_DESKTOP=1 (never hijack a dev/server operator). The spawn path is
-  // toolchain-dependent and only end-to-end verifiable on a real packaged build (D-009 —
-  // the verify is folded into P-008/P-010); a release build flips it on by exporting the
-  // env before the sidecar build (mirroring the PAPERCUP_DOGFOOD_HIVE_* injection in
-  // bin/release-local.sh). SAFE: every operator it spawns is REQUEST-ONLY
+  // provisioning of the LOCAL env operators (dev :3270 / prod :3070 / staging :3170 /
+  // local :3055) from the already-cloned `papercup` source, so the cross-platform env
+  // switcher (EnvSwitcherBar) — which self-hides on a single-operator install — lights up.
+  // DEFAULT-ON under the desktop (WI-3285): every PAPERCUSP_DESKTOP=1 boot provisions
+  // unless explicitly opted out with PAPERCUSP_PROVISION_ENV_OPERATORS=0. It originally
+  // shipped dark behind an opt-IN (=1) that no build path exported — the classic
+  // finished-work-ships-dark failure: every packaged install rendered all-dead switcher
+  // buttons (owner-reported on the Windows build; "The buttons should all be
+  // operational"). Never on a non-desktop host — the dev box's env operators are managed
+  // by their own launchers. SAFE: every operator it spawns is REQUEST-ONLY
   // (PAPERCUSP_BACKGROUND_WORKERS=0) so the EI-126 single-writer invariant holds — only
   // THIS primary runs the shared-DB background machinery. Idempotent (skips ports already
-  // served + this operator's own), graceful (missing tree/toolchain ⇒ that env is skipped),
+  // served + this operator's own), graceful (missing tree/toolchain ⇒ that env is skipped;
+  // the launcher npm-installs a dep-less seeded checkout once, best-effort),
   // fire-and-forget + non-fatal (a failure can never wedge boot; the launcher swallows its
   // own per-env errors). The launch is deferred ~20s so the PRIMARY's migrations + substrate
   // boot win the race against the request-only siblings (no cold-boot migration contention).
   if (
     process.env.PAPERCUSP_DESKTOP === '1' &&
-    process.env.PAPERCUSP_PROVISION_ENV_OPERATORS === '1'
+    process.env.PAPERCUSP_PROVISION_ENV_OPERATORS !== '0'
   ) {
     const armEnvOperators = setTimeout(() => {
       void (async () => {

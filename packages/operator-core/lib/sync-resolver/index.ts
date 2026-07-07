@@ -4170,25 +4170,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // back to the @papercusp/sync 180s drift-repair tick.
   'network.hiveDirectory': {
     resolve: async () => {
-      const { getHiveDirectory } = await import('../hive-directory-deps');
-      return getHiveDirectory()
-        .listDiscoveredHives({ includeExpired: false })
-        .filter((h) => h.visibility !== 'private')
-        .map((h) => ({
-          hiveId: h.hiveId,
-          title: h.title,
-          description: h.description,
-          owner: h.ownerGithubLogin,
-          visibility: (h.visibility === 'invite' ? 'invite' : 'public') as 'public' | 'invite',
-          memberTopics: h.memberTopics,
-          memberLinks: h.memberLinks ?? [],
-          memberCount: h.memberTopics.length,
-          createdAt: h.createdAt,
-          lastSeenMs: h.lastSeenMs,
-          // The hive's identity pubkey (raw-32-byte base64) — parity with the
-          // /discovery/pots endpoint so the Comb's ?hive= rollup can match.
-          hivePubkey: h.hivePubkey ?? null,
-        }));
+      const { buildHiveDirectoryRows } = await import('../discovery-hive-rows');
+      return buildHiveDirectoryRows({ includeExpired: false });
     },
   },
 

@@ -25,15 +25,15 @@
  * the extra envs are read/serve-only siblings, exactly as the dev box runs :3170
  * request-only alongside the :3070 primary today.
  *
- * ── DEFAULT-OFF, ships dark ─────────────────────────────────────────────────────────
- * The boot integration (host-bootstrap.ts) gates this on `PAPERCUSP_PROVISION_ENV_OPERATORS=1`
- * AND `PAPERCUSP_DESKTOP=1` — same idiom as the other default-off boot toggles
- * (PAPERCUSP_DBOS_ENABLE, PAPERCUSP_GIT_EXPORT_COMMIT). It ships dark because the spawn
- * path is toolchain-dependent and only END-TO-END verifiable on a real packaged build
- * (D-009 folds that verify into P-008/P-010). A release build flips it on by exporting
- * the env before the sidecar build, mirroring the PAPERCUP_DOGFOOD_HIVE_* injection in
- * bin/release-local.sh. The PLANNER below (planEnvOperatorLaunch) is a PURE function and
- * is fully unit-tested; the effectful spawn/probe/tree seams are injected.
+ * ── DEFAULT-ON under the desktop (WI-3285) ──────────────────────────────────────────
+ * The boot integration (host-bootstrap.ts) runs this on every `PAPERCUSP_DESKTOP=1` boot
+ * unless explicitly opted out (`PAPERCUSP_PROVISION_ENV_OPERATORS=0`). It originally
+ * shipped dark behind an opt-IN env, which meant every packaged install rendered the env
+ * switcher with all-dead buttons (owner-reported on the Windows build, WI-3285:
+ * "The buttons should all be operational"). Never on a non-desktop host — the dev box's
+ * dev/prod/staging operators are managed by their own launchers and must not be hijacked.
+ * The PLANNER below (planEnvOperatorLaunch) is a PURE function and is fully unit-tested;
+ * the effectful spawn/probe/tree/toolchain seams are injected.
  *
  * ── PROCESS LIFECYCLE / REAPING (handle at the live-verify, P-008/P-010) ────────────
  * Spawned operators are detached + unref'd so they outlive this boot turn. They are
@@ -47,17 +47,21 @@
  * is platform-specific and only observable on a real build.
  *
  * ── GRACEFUL on a machine without the toolchain ─────────────────────────────────────
- * A non-bundled env runs from SOURCE (`npx tsx bin/hono-host.ts`, mirroring
+ * A non-bundled env runs from SOURCE (node + tsx against bin/hono-host.ts, mirroring
  * bin/dev-operator-ifneeded.sh), so it needs Node + the cloned repo + installed deps.
- * When the toolchain or the source tree is absent, the env is reported unavailable
- * (skipReason 'no-toolchain' / 'no-source-tree') and simply not spawned — the switcher
- * keeps self-hiding for it. The bundled `release` env always works with no toolchain and
- * is never spawned from source here.
+ * A packaged install ships the cloned source WITHOUT node_modules (the bootstrap never
+ * npm-installs — WI-3285 root cause #2), so the launcher first runs a ONE-TIME best-effort
+ * `npm install` in the seeded checkout (ensureToolchain, single-flighted via an O_EXCL
+ * lockfile, bounded, non-fatal). Only when that genuinely can't produce a runnable
+ * toolchain is the env reported unavailable (skipReason 'no-toolchain' /
+ * 'no-source-tree') and not spawned — the switcher keeps self-hiding for it. The bundled
+ * `release` env always works with no toolchain and is never spawned from source here.
  */
 
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { papercuspPath } from '../papercusp-root';
 import { detectPapercupRoot } from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
 
@@ -71,14 +75,18 @@ export interface EnvOperatorSpec {
   /** The git branch/tree this env serves (D-006). Used by the (release-build)
    *  worktree-preparation seam; the conservative default runs the detected checkout. */
   branch: string;
+  /** How the env is served: a source operator host (node+tsx bin/hono-host.ts — the
+   *  default) or the Vite SPA dev server (`local` :3055, whose /api proxies to the
+   *  primary operator via PAPERCUSP_API_TARGET). */
+  run?: 'operator' | 'vite';
 }
 
 /**
  * The env operators install-time provisioning brings up (D-006's port/multi-operator
- * model). Deliberately EXCLUDES two DEV_OPERATORS entries:
- *  - `local` (:3055) — the Vite HMR frontend has NO operator of its own (its /api
- *    proxies to prod); in a packaged build it maps to the prod sidecar or is omitted
- *    (D-006), so there is nothing to spawn.
+ * model). Includes `local` (:3055) — the Vite SPA dev server run from the working tree,
+ * its /api proxied to THIS primary operator (WI-3285: the owner mandated every switcher
+ * button be operational on a packaged install; D-006's original "maps to prod or is
+ * omitted" left it permanently dead). Deliberately EXCLUDES one DEV_OPERATORS entry:
  *  - `release` — the immutable bundled sidecar (already running as the primary, or at
  *    PAPERCUSP_RELEASE_ORIGIN); it is never spawned from source (it IS the package).
  * Overlaps with whatever the primary/release already serves are handled by the
@@ -88,6 +96,7 @@ export const PROVISIONABLE_ENV_OPERATORS: readonly EnvOperatorSpec[] = [
   { id: 'dev', port: 3270, branch: 'staging' }, // the user's working-tree checkout (the cloned source as-is)
   { id: 'prod', port: 3070, branch: 'main' }, // the green/release tree
   { id: 'staging', port: 3170, branch: 'staging' }, // the shared integration tree
+  { id: 'local', port: 3055, branch: 'staging', run: 'vite' }, // the Vite SPA over the working tree
 ] as const;
 
 export type LaunchAction = 'spawn' | 'skip';
@@ -178,6 +187,11 @@ export interface LaunchEnvOperatorsDeps {
   detectSourceRoot?: () => string | null;
   /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). */
   hasToolchain?: () => Promise<boolean>;
+  /** Make the source tree runnable when the toolchain check fails — the packaged-install
+   *  path (WI-3285): a ONE-TIME best-effort `npm install` in `sourceRoot`, single-flighted
+   *  and bounded. Returns whether the toolchain is now available. DEFAULT:
+   *  defaultEnsureToolchain. Non-fatal: false ⇒ the source envs skip 'no-toolchain'. */
+  ensureToolchain?: (sourceRoot: string) => Promise<boolean>;
   /** This operator's listen port (default: PAPERCUSP_HONO_PORT / PORT). */
   selfPort?: number | null;
   /** Prepare the on-disk tree for an env (worktree/branch checkout) and return its path.
@@ -252,15 +266,164 @@ async function defaultHasToolchain(sourceRoot: string | null): Promise<boolean> 
   }
 }
 
+/** How long one npm install may run before we give up (a cold seeded checkout pulls the
+ *  whole workspace dep tree — minutes, not seconds; 20min is the generous ceiling). */
+const TOOLCHAIN_INSTALL_TIMEOUT_MS = 20 * 60_000;
+/** A lock older than this is a crashed installer's leftover — safe to take over. */
+const TOOLCHAIN_LOCK_STALE_MS = 60 * 60_000;
+
+/** Single-flight the npm install across concurrently-booting operators: O_EXCL create of
+ *  a pid-stamped lockfile under ~/.papercusp/env-trees/. A stale lock (crashed installer)
+ *  is broken once. Returns whether WE hold the lock. */
+function acquireToolchainLock(lockPath: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(dirname(lockPath), { recursive: true });
+      const fd = openSync(lockPath, 'wx');
+      writeSync(fd, `${process.pid} ${new Date().toISOString()}`);
+      closeSync(fd);
+      return true;
+    } catch {
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs <= TOOLCHAIN_LOCK_STALE_MS) return false; // live installer elsewhere
+        unlinkSync(lockPath); // stale — break it and retry the O_EXCL create
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/** Run one `npm install` attempt via `cmd`. Resolves (never rejects) with the exit code. */
+function runNpmInstall(cmd: string, sourceRoot: string): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        cmd,
+        ['install', '--no-audit', '--no-fund', '--loglevel=error'],
+        {
+          cwd: sourceRoot,
+          timeout: TOOLCHAIN_INSTALL_TIMEOUT_MS,
+          maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env },
+        },
+        (err, _stdout, stderr) => {
+          const code = err
+            ? typeof (err as { code?: unknown }).code === 'number'
+              ? ((err as { code: number }).code)
+              : 1
+            : 0;
+          resolve({ code, stderr: stderr?.toString() ?? '' });
+        },
+      );
+    } catch (e) {
+      resolve({ code: 1, stderr: (e as Error)?.message ?? 'spawn failed' });
+    }
+  });
+}
+
+/** Default ensureToolchain (WI-3285): a packaged install ships the cloned source WITHOUT
+ *  node_modules, so every env used to die on 'no-toolchain'. Run a ONE-TIME best-effort
+ *  `npm install` in the seeded checkout — npm from PATH, falling back to the npm shipped
+ *  alongside the running node binary — then re-check. Single-flighted via the lockfile,
+ *  bounded by TOOLCHAIN_INSTALL_TIMEOUT_MS, and strictly non-fatal (false ⇒ the source
+ *  envs skip 'no-toolchain', exactly the pre-WI-3285 behaviour). */
+async function defaultEnsureToolchain(
+  sourceRoot: string,
+  log: (message: string) => void,
+): Promise<boolean> {
+  if (await defaultHasToolchain(sourceRoot)) return true;
+  const lockPath = join(papercuspPath('env-trees'), '.toolchain-install.lock');
+  if (!acquireToolchainLock(lockPath)) {
+    log('[env-operators] toolchain install already running elsewhere — skipping this round');
+    return false;
+  }
+  try {
+    log('[env-operators] source tree has no node_modules — running one-time npm install (this can take several minutes)…');
+    let res = await runNpmInstall('npm', sourceRoot);
+    if (res.code !== 0) {
+      // A GUI-launched packaged app may not have npm on PATH — node installs ship npm
+      // alongside the node binary, so try the sibling of the running runtime.
+      const sibling = join(dirname(process.execPath), 'npm');
+      if (existsSync(sibling)) res = await runNpmInstall(sibling, sourceRoot);
+    }
+    if (res.code !== 0) {
+      log(`[env-operators] npm install failed — source envs stay hidden (non-fatal): ${res.stderr.trim().slice(0, 200)}`);
+      return false;
+    }
+    const ok = await defaultHasToolchain(sourceRoot);
+    log(
+      ok
+        ? '[env-operators] toolchain ready — source-tree deps installed'
+        : '[env-operators] npm install finished but the toolchain check still fails — source envs stay hidden',
+    );
+    return ok;
+  } finally {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/** The tsx CLI installed by the tree's own npm install — spawning it via
+ *  process.execPath works on a packaged install where `npx` is not on PATH. */
+function resolveTsxCli(treePath: string): string | null {
+  const cli = join(treePath, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  return existsSync(cli) ? cli : null;
+}
+
+/** The vite CLI for the `local` env — hoisting may place it under the app or the root. */
+function resolveViteCli(treePath: string): string | null {
+  for (const cli of [
+    join(treePath, 'apps', 'operator-vite', 'node_modules', 'vite', 'bin', 'vite.js'),
+    join(treePath, 'node_modules', 'vite', 'bin', 'vite.js'),
+  ]) {
+    if (existsSync(cli)) return cli;
+  }
+  return null;
+}
+
 /** Default spawn — mirror bin/dev-operator-ifneeded.sh's invocation, REQUEST-ONLY.
  *  Detached + unref'd + stdio:ignore so the spawned operator outlives this boot turn
- *  and never blocks it. The EI-126 single-writer knobs are the load-bearing safety here. */
+ *  and never blocks it. The EI-126 single-writer knobs are the load-bearing safety here.
+ *  Prefers `process.execPath` + the tree's own tsx/vite CLI over `npx` from PATH — a
+ *  GUI-launched packaged app has no shell PATH to speak of (WI-3285). */
 function defaultSpawnOperator(
   entry: EnvOperatorPlanEntry,
   treePath: string,
 ): SpawnedOperator | null {
   try {
-    const child = spawn('npx', ['tsx', 'bin/hono-host.ts'], {
+    if (entry.run === 'vite') {
+      // The `local` env: the Vite SPA dev server over the working tree, its /api
+      // proxied to THIS primary operator (the packaged install has no :3070 prod).
+      const viteCli = resolveViteCli(treePath);
+      if (!viteCli) return null;
+      const selfPort = defaultSelfPort();
+      const child = spawn(process.execPath, [viteCli], {
+        cwd: join(treePath, 'apps', 'operator-vite'),
+        detached: true,
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          ...(selfPort != null
+            ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` }
+            : {}),
+          // The provisioning launcher must not re-run for the children (no recursion).
+          PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+        },
+      });
+      child.unref();
+      return { id: entry.id, port: entry.port, pid: child.pid };
+    }
+    const tsxCli = resolveTsxCli(treePath);
+    const [cmd, args] = tsxCli
+      ? [process.execPath, [tsxCli, 'bin/hono-host.ts']]
+      : ['npx', ['tsx', 'bin/hono-host.ts']];
+    const child = spawn(cmd as string, args as string[], {
       cwd: join(treePath, 'apps', 'operator'),
       detached: true,
       stdio: 'ignore',
@@ -317,9 +480,20 @@ export async function launchEnvOperators(
 
   const sourceRoot = detectSourceRoot();
   const hasSourceTree = !!sourceRoot;
-  const hasToolchain = deps.hasToolchain
+  let hasToolchain = deps.hasToolchain
     ? await deps.hasToolchain()
     : await defaultHasToolchain(sourceRoot);
+  // A packaged install ships the source WITHOUT node_modules (WI-3285) — try the
+  // one-time bounded npm install before writing every env off as 'no-toolchain'.
+  if (!hasToolchain && sourceRoot) {
+    const ensureToolchain =
+      deps.ensureToolchain ?? ((root: string) => defaultEnsureToolchain(root, log));
+    try {
+      hasToolchain = await ensureToolchain(sourceRoot);
+    } catch {
+      /* non-fatal — stays false, envs skip 'no-toolchain' */
+    }
+  }
 
   // Probe every candidate port in parallel for an already-live operator (idempotent skip).
   const reachableEntries = await Promise.all(

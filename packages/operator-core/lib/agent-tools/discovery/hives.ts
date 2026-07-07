@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getHiveDirectory } from '../../hive-directory-deps';
+import { buildHiveDirectoryRows } from '../../discovery-hive-rows';
 import type { HiveStatusBeacon } from '../../hive-beacon';
 
 export interface DiscoveredHiveRow {
@@ -68,27 +68,12 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
-    const dir = getHiveDirectory();
-    const hives = dir
-      .listDiscoveredHives({ includeExpired: args.includeExpired })
-      .filter((h) => h.visibility !== 'private');
-    const rows: DiscoveredHiveRow[] = hives.slice(0, args.limit ?? 200).map((h) => ({
-      hiveId: h.hiveId,
-      title: h.title,
-      description: h.description,
-      owner: h.ownerGithubLogin,
-      visibility: h.visibility === 'invite' ? 'invite' : 'public',
-      hivePubkey: h.hivePubkey ?? '',
-      memberTopics: h.memberTopics,
-      memberLinks: h.memberLinks ?? [],
-      // memberTopics is empty for from-repo publishes (publishCreatedHive hardcodes
-      // []), which read as memberCount:0 despite real joinable members — fall back
-      // to the one-click member links (P-024 audit item 8).
-      memberCount: h.memberTopics.length || h.memberLinks?.length || 0,
-      createdAt: h.createdAt,
-      lastSeenMs: h.lastSeenMs,
-      ...(h.beacon ? { beacon: h.beacon } : {}),
-    }));
+    const rows: DiscoveredHiveRow[] = (await buildHiveDirectoryRows({ includeExpired: args.includeExpired }))
+      .slice(0, args.limit ?? 200)
+      .map((h) => ({
+        ...h,
+        hivePubkey: h.hivePubkey ?? '',
+      }));
     return {
       content: [
         {

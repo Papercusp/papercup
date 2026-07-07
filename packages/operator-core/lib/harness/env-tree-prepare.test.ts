@@ -10,9 +10,9 @@ import type { EnvOperatorPlanEntry } from './env-operator-launcher';
 const SRC = '/src/papercup';
 const BASE = '/home/u/.papercusp/env-trees';
 
-function entry(id: string, branch: string): EnvOperatorPlanEntry {
-  const portById: Record<string, number> = { dev: 3270, prod: 3070, staging: 3170 };
-  return { id, port: portById[id] ?? 9999, branch, origin: `http://127.0.0.1:${portById[id] ?? 9999}`, action: 'spawn' };
+function entry(id: string, branch: string, run?: 'operator' | 'vite'): EnvOperatorPlanEntry {
+  const portById: Record<string, number> = { dev: 3270, prod: 3070, staging: 3170, local: 3055 };
+  return { id, port: portById[id] ?? 9999, branch, run, origin: `http://127.0.0.1:${portById[id] ?? 9999}`, action: 'spawn' };
 }
 
 /** A scripted, recording git. `handler(args)` returns the GitResult for a call. */
@@ -39,6 +39,13 @@ describe('prepareEnvWorktree', () => {
   it('runs the working-tree env (dev) in place — returns the source root, no git', async () => {
     const { runGit, calls } = fakeGit(() => ({}));
     const out = await prepareEnvWorktree(entry(WORKING_TREE_ENV_ID, 'staging'), SRC, deps({ runGit }));
+    expect(out).toBe(SRC);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("runs a vite env (local) in place too — the SPA serves the working tree, no worktree", async () => {
+    const { runGit, calls } = fakeGit(() => ({}));
+    const out = await prepareEnvWorktree(entry('local', 'staging', 'vite'), SRC, deps({ runGit }));
     expect(out).toBe(SRC);
     expect(calls).toHaveLength(0);
   });

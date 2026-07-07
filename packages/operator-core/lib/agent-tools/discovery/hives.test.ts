@@ -5,12 +5,33 @@
  * asserting it projects the directory's verified list into browse rows and
  * never leaks a private hive.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import hivesTool from './hives';
 import { configureHiveDirectoryForTest, __resetHiveDirectorySingleton } from '../../hive-directory-deps';
 import type { HiveDirectoryDeps } from '../../hive-directory';
 import { buildHiveAnnounce, type HiveAnnounceBody, type SignedHiveAnnounce } from '../../sync/hyperbee/hive-announce';
+
+const remoteHiveFixture = vi.hoisted(() => ({
+  projects: [] as Array<Record<string, unknown>>,
+  hives: new Map<string, Record<string, unknown>>(),
+}));
+
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: vi.fn(async () => ({ projects: remoteHiveFixture.projects })),
+  };
+});
+
+vi.mock('../../hive-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../hive-store')>();
+  return {
+    ...actual,
+    getHiveBySlug: vi.fn(async (_workspaceId: string, slug: string) => remoteHiveFixture.hives.get(slug) ?? null),
+  };
+});
 
 const NOW = 1_700_000_000_000;
 
@@ -52,6 +73,11 @@ const call = async (args: unknown) => {
   return JSON.parse(res.content[0].text);
 };
 
+beforeEach(() => {
+  remoteHiveFixture.projects = [];
+  remoteHiveFixture.hives.clear();
+});
+
 afterEach(() => __resetHiveDirectorySingleton());
 
 describe('discovery:hives endpoint (P-005)', () => {
@@ -59,6 +85,35 @@ describe('discovery:hives endpoint (P-005)', () => {
     configureHiveDirectoryForTest(fakeDeps());
     const out = await call({});
     expect(out).toEqual({ ok: true, count: 0, rows: [] });
+  });
+
+  it('projects a joined remote_hive view when offline self-admit materialized the hive before P2P discovery (WI-3267)', async () => {
+    configureHiveDirectoryForTest(fakeDeps());
+    const pk = 'P'.repeat(43) + '=';
+    remoteHiveFixture.projects = [
+      { slug: 'papercusp', path: '/home/tester/.papercusp-workspaces/clones/papercusp', harness_kind: 'hive', remote_hive: true, hive_pubkey: pk },
+    ];
+    remoteHiveFixture.hives.set('papercusp', {
+      homeSlug: 'papercusp',
+      pubkeyBase64: pk,
+      title: 'Papercusp',
+      description: 'Self-admitted offline hive',
+      createdAt: NOW - 500,
+      updatedAt: NOW,
+    });
+
+    const out = await call({});
+
+    expect(out.count).toBe(1);
+    expect(out.rows[0]).toMatchObject({
+      hiveId: 'papercusp',
+      title: 'Papercusp',
+      description: 'Self-admitted offline hive',
+      owner: 'remote',
+      visibility: 'invite',
+      hivePubkey: pk,
+      memberLinks: [],
+    });
   });
 
   it('projects discovered hives into browse rows (title/desc/owner/memberCount)', async () => {

@@ -12,7 +12,7 @@
  * grants nothing; joining runs the full admission flow).
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getHiveDirectory } from '../../../hive-directory-deps';
+import { buildHiveDirectoryRows } from '../../../discovery-hive-rows';
 
 export default defineTool({
   method: 'GET',
@@ -31,26 +31,7 @@ export default defineTool({
       .catch(() => {});
     const url = new URL(req.url);
     const includeExpired = url.searchParams.get('includeExpired') === 'true';
-    const rows = getHiveDirectory()
-      .listDiscoveredHives({ includeExpired })
-      .filter((h) => h.visibility !== 'private')
-      .map((h) => ({
-        hiveId: h.hiveId,
-        title: h.title,
-        description: h.description,
-        owner: h.ownerGithubLogin,
-        visibility: h.visibility === 'invite' ? 'invite' : 'public',
-        memberTopics: h.memberTopics,
-        memberLinks: h.memberLinks ?? [],
-        memberCount: h.memberTopics.length,
-        createdAt: h.createdAt,
-        lastSeenMs: h.lastSeenMs,
-        // The hive's identity pubkey (raw-32-byte base64) — lets the Comb's
-        // ?hive= rollup match its listings (which carry the same encoding in
-        // `hive_pubkey`) to this announce for the Join CTA
-        // (comb-hive-native-sharing-2026-06-11 P-001).
-        hivePubkey: h.hivePubkey ?? null,
-      }));
+    const rows = await buildHiveDirectoryRows({ includeExpired });
     return Response.json({ count: rows.length, rows });
   },
 });

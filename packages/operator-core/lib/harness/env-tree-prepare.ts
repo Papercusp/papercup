@@ -103,8 +103,10 @@ export async function prepareEnvWorktree(
   const baseDir = (deps.worktreeBaseDir ?? (() => papercuspPath('env-trees')))();
   const log = deps.log ?? ((m: string) => console.log(m));
 
-  // The working-tree env runs the checkout in place — no worktree.
-  if (entry.id === WORKING_TREE_ENV_ID) return sourceRoot;
+  // The working-tree env runs the checkout in place — no worktree. So does a
+  // `run:'vite'` env (`local`, WI-3285): the Vite SPA serves the same working tree
+  // the dev operator runs; a separate worktree would just double the checkout.
+  if (entry.id === WORKING_TREE_ENV_ID || entry.run === 'vite') return sourceRoot;
 
   if (!exists(sourceRoot)) return null;
 

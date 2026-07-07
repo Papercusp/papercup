@@ -12,6 +12,27 @@ import { configureHiveDirectoryForTest, __resetHiveDirectorySingleton } from '..
 import type { HiveDirectoryDeps } from '../../../hive-directory';
 import { buildHiveAnnounce, type HiveAnnounceBody, type SignedHiveAnnounce } from '../../../sync/hyperbee/hive-announce';
 
+const remoteHiveFixture = vi.hoisted(() => ({
+  projects: [] as Array<Record<string, unknown>>,
+  hives: new Map<string, Record<string, unknown>>(),
+}));
+
+vi.mock('../../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: vi.fn(async () => ({ projects: remoteHiveFixture.projects })),
+  };
+});
+
+vi.mock('../../../hive-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../hive-store')>();
+  return {
+    ...actual,
+    getHiveBySlug: vi.fn(async (_workspaceId: string, slug: string) => remoteHiveFixture.hives.get(slug) ?? null),
+  };
+});
+
 // EI-7726: the handler fires a real, un-awaited `ensureHiveDirectoryWired(...)` on every
 // GET (fire-and-forget lazy-wire — see hives.ts). Unmocked, that promise runs the REAL
 // boot path (resolveLocalAnnounceIdentity, getSharedSwarm, wireHiveDirectoryAtBoot) against
@@ -69,6 +90,8 @@ const savedEnv = process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
 
 beforeEach(() => {
   delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  remoteHiveFixture.projects = [];
+  remoteHiveFixture.hives.clear();
 });
 
 afterEach(() => {
@@ -118,6 +141,37 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     const { status, body } = await call('http://localhost/api/discovery/pots');
     expect(status).toBe(200);
     expect(body).toMatchObject({ count: 0, rows: [] });
+  });
+
+  it('includes a joined remote_hive view when self-admit succeeded before any directory announce was heard (WI-3267)', async () => {
+    configureHiveDirectoryForTest(fakeDeps());
+    const pk = 'P'.repeat(43) + '=';
+    remoteHiveFixture.projects = [
+      { slug: 'papercusp', path: '/home/tester/.papercusp-workspaces/clones/papercusp', harness_kind: 'hive', remote_hive: true, hive_pubkey: pk },
+      { slug: 'owner-self', path: '/src/papercusp', harness_kind: 'hive', self_repo: true, hive_pubkey: 'SHOULD_NOT_LIST' },
+    ];
+    remoteHiveFixture.hives.set('papercusp', {
+      homeSlug: 'papercusp',
+      pubkeyBase64: pk,
+      title: 'Papercusp',
+      description: 'Self-admitted offline hive',
+      createdAt: NOW - 500,
+      updatedAt: NOW,
+    });
+
+    const { status, body } = await call('http://127.0.0.1/api/discovery/pots');
+
+    expect(status).toBe(200);
+    expect(body.count).toBe(1);
+    expect(body.rows[0]).toMatchObject({
+      hiveId: 'papercusp',
+      title: 'Papercusp',
+      description: 'Self-admitted offline hive',
+      owner: 'remote',
+      visibility: 'invite',
+      hivePubkey: pk,
+      memberLinks: [],
+    });
   });
 
   // WI-569 (su-34db4): the route's stated invariant "never leaks a private hive" was
