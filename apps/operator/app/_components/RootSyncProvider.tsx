@@ -1,5 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
+import { enablePersistedSyncCache } from '@papercusp/sync';
 import { HarnessSyncProvider } from '../../providers/HarnessSyncProvider';
 import { installDesktopIpcPolyfills } from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
 import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
@@ -43,6 +44,12 @@ if (typeof window !== 'undefined') {
   // + Phase-E eligibility). No runtime change yet — nothing calls callTool until
   // the Phase B migration. Plan: calltool-endpoint-seam-2026-06-01.
   installCallToolResolver();
+  // Persisted sync cache (WI-3318): hydrate the sync QueryClient from
+  // localStorage NOW — module-eval runs before any component mounts, so the
+  // first render of every panel paints from the last session's data while
+  // staleTime + SSE invalidates revalidate it in the background. Bump the
+  // buster when sync row shapes change incompatibly.
+  enablePersistedSyncCache({ buster: 'v1' });
 }
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {

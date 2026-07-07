@@ -26677,7 +26677,11 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   left: calc(var(--op-chat-w, 360px) + 16px) !important;
 }
 
+<<<<<<< Updated upstream
 body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
+=======
+body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
+>>>>>>> Stashed changes
   opacity: 0.22;
   filter: saturate(0.45) blur(4px);
   pointer-events: none;
@@ -26782,7 +26786,11 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 }
 
 .operator-feed-search__icon {
+<<<<<<< Updated upstream
   color: rgb(from var(--accent-strong) r g b / 0.74) !important;
+=======
+  color: rgb(from var(--sky-300) r g b / 0.74) !important;
+>>>>>>> Stashed changes
 }
 
 .operator-entry__why,
@@ -26825,6 +26833,7 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
     display: none !important;
   }
 }
+<<<<<<< Updated upstream
 
 /* ── Report block card (report-cards-inbox-reconciliation-2026-06-05) ──
    The shared ReportBlock (two-tier plan→item status) rendered by
@@ -26933,3 +26942,5 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 .pcdar {
   top: var(--pc-env-bar-h, 0px) !important;
 }
+=======
+>>>>>>> Stashed changes
