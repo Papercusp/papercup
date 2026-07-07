@@ -93,31 +93,30 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // below closes that gap without touching either tool's real args schema
   // (which stays a loose string for legitimate cross-family use).
   //
-  // Separately found while verifying this (do NOT attempt inside EI-7927):
-  // as of the 2026-06-21 bulk-endpoint-standardization refactor, both tools'
-  // real args schema carries bulk fields (ids/items/decision) alongside the
-  // single-item shape, and projectWriteColumns rejects the WHOLE schema the
-  // moment ANY property is an array/nested-object — so it returns undefined
-  // for both today, advertisedArgsSchema falls back to full keyed args (which
-  // is what keeps bulk ids[]/items[] callable), and positional-row is in
-  // practice not exercised in production despite this entry's write:
-  // 'positional' (confirmed by feeding the real Zod-derived JSON Schema
-  // through projectWriteColumns directly). A real fix needs a UNION schema
-  // (row-string OR full keyed args); filed as WI-3260. The columnOverrides
-  // hardening below is unit-tested directly and activates the moment WI-3260
-  // (or any narrower future schema) makes either tool columns-eligible again.
+  // WI-3260 (2026-07-06): these tools are bulk-capable, so their FULL keyed
+  // args schemas contain array/object fields (`ids`, `items`, `decision`, ...)
+  // that are correctly not positional-row cells. `writeColumnNames` projects
+  // only the common single-item shorthand, while `writeKeyedFallback` keeps the
+  // bulk keyed shape advertised as a `oneOf` member. Do NOT "fix" this by
+  // loosening projectWriteColumns to accept array/object cells.
   {
     name: 'work_items:set_state',
     read: 'off',
     write: 'positional',
-    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; see WI-3260 for the bulk-schema eligibility gap',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; keyed bulk fallback preserved by WI-3260',
+    writeColumnNames: ['id', 'state', 'harness'],
+    writeRequiredColumnNames: ['id', 'state'],
+    writeKeyedFallback: true,
     columnOverrides: { id: WORK_ITEM_ID_OVERRIDE, state: WORK_ITEM_STATE_OVERRIDE },
   },
   {
     name: 'work_items:claim',
     read: 'off',
     write: 'positional',
-    note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?); columnOverrides hardened EI-7927; see WI-3260 for the bulk-schema eligibility gap',
+    note: 'positional live 2026-07-06 — S07 gate passed (cols id,assignee?,harness?); columnOverrides hardened EI-7927; keyed bulk fallback preserved by WI-3260',
+    writeColumnNames: ['id', 'assignee', 'harness'],
+    writeRequiredColumnNames: ['id'],
+    writeKeyedFallback: true,
     columnOverrides: { id: WORK_ITEM_ID_OVERRIDE },
   },
 ];

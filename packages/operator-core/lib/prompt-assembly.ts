@@ -443,6 +443,8 @@ export function renderWireSchemasSection(entryFilter?: (name: string) => boolean
         ? projectWriteColumns(tool.inputSchema as Record<string, unknown>, {
             freeTextName: entry.freeTextArg,
             columnOverrides: entry.columnOverrides,
+            columnNames: entry.writeColumnNames,
+            requiredColumnNames: entry.writeRequiredColumnNames,
           })
         : undefined;
     return { read, write };

@@ -38,6 +38,27 @@ export interface PrePromptEntry {
   /** Pins which arg is the trailing free-text column for the positional shim (overrides the name heuristic). */
   freeTextArg?: string;
   /**
+   * Explicit write-row columns when a bulk-capable tool's full args schema
+   * contains non-row fields (ids/items/decision/...) alongside the common
+   * single-item shorthand. The row projection is derived from ONLY these
+   * top-level properties, in this order; missing names make the tool
+   * ineligible. Omit for the normal "project the whole flat args object" path.
+   */
+  writeColumnNames?: readonly string[];
+  /**
+   * Columns that are required in the positional row even when the full keyed
+   * schema marks them optional because another keyed shape (`ids`, `items`) may
+   * be supplied instead. Must be a subset of `writeColumnNames`.
+   */
+  writeRequiredColumnNames?: readonly string[];
+  /**
+   * Advertise BOTH row-string and full keyed args (`oneOf`) for write-positional
+   * tools whose keyed bulk shape remains a first-class API. Runtime dispatch
+   * already falls through to keyed args when `row` is absent; this only exposes
+   * both shapes in tools/list.
+   */
+  writeKeyedFallback?: boolean;
+  /**
    * Per-column sanity overrides the tool's own Zod schema can't express — e.g.
    * an `id` arg that accepts several id-family prefixes, or a `state` arg typed
    * as a loose string so it can carry cross-family aliases. Merged onto the

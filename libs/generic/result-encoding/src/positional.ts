@@ -211,6 +211,33 @@ function projectFromObjectSchema(
   return cols;
 }
 
+function pickWriteColumnSchema(
+  objectSchema: Record<string, unknown> | undefined | null,
+  names: readonly string[] | undefined,
+  requiredNames: readonly string[] | undefined,
+): Record<string, unknown> | undefined {
+  if (!names || names.length === 0) return asObject(objectSchema);
+  const obj = asObject(objectSchema);
+  if (!obj || obj.type !== 'object') return undefined;
+  const props = asObject(obj.properties);
+  if (!props) return undefined;
+  const pickedProps: Record<string, unknown> = {};
+  for (const name of names) {
+    if (!(name in props)) return undefined;
+    pickedProps[name] = props[name];
+  }
+  const baseRequired = new Set(Array.isArray(obj.required) ? (obj.required as unknown[]).map(String) : []);
+  const required = requiredNames ? requiredNames.map(String) : names.filter((name) => baseRequired.has(name));
+  const known = new Set(names);
+  if (required.some((name) => !known.has(name))) return undefined;
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required,
+    properties: pickedProps,
+  };
+}
+
 /**
  * READ projection: the columns of a tool's list RESULT, from the JSON-Schema of
  * its output `data` node (must be `array(object{…scalars…})`). Used by the read
@@ -235,9 +262,15 @@ export function projectReadColumns(dataJsonSchema: Record<string, unknown> | und
  */
 export function projectWriteColumns(
   argsJsonSchema: Record<string, unknown> | undefined | null,
-  opts: { freeTextName?: string; columnOverrides?: Record<string, ColumnOverride> } = {},
+  opts: {
+    freeTextName?: string;
+    columnOverrides?: Record<string, ColumnOverride>;
+    columnNames?: readonly string[];
+    requiredColumnNames?: readonly string[];
+  } = {},
 ): ColumnSpec[] | undefined {
-  const cols = projectFromObjectSchema(asObject(argsJsonSchema), { freeTextLast: true, freeTextName: opts.freeTextName });
+  const rowSchema = pickWriteColumnSchema(asObject(argsJsonSchema), opts.columnNames, opts.requiredColumnNames);
+  const cols = projectFromObjectSchema(rowSchema, { freeTextLast: true, freeTextName: opts.freeTextName });
   if (!cols) return undefined;
   return applyColumnOverrides(cols, opts.columnOverrides);
 }
@@ -269,7 +302,9 @@ export function encodePositionalRows(
  * its keyed args: a single `row` string. This is what makes the model emit a
  * positional row at all — the per-column meaning lives in the prompt's "## Wire
  * schemas" legend, and the `row` description names the column order as a
- * belt-and-suspenders reminder. Keyed args never reach the wire for these tools.
+ * belt-and-suspenders reminder. Some bulk-capable write tools advertise this
+ * schema inside a `oneOf` next to their full keyed args, but the row member
+ * itself stays this exact shape.
  */
 export function positionalRowSchema(columns: ColumnSpec[]): Record<string, unknown> {
   const order = columns.map((c) => (c.optional ? `${c.name}?` : c.name)).join(', ');
