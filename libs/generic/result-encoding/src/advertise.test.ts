@@ -90,6 +90,10 @@ describe('advertisedArgsSchema', () => {
     expect(Object.keys(rowProps)).toEqual(['row']);
     expect((rowProps.row as { description?: string }).description).toContain('id, state, harness?');
     expect(oneOf![1]).toBe(BULK_ARGS);
+    // WI-3290: the MCP spec requires inputSchema.type === 'object'. A bare
+    // top-level oneOf made strict clients (Claude Code, ptool) reject the
+    // ENTIRE tool catalog — sessions booted with zero tools.
+    expect(out.type).toBe('object');
   });
 
   it('is idempotent for a row+keyed oneOf advertisement', () => {

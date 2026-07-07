@@ -30,6 +30,12 @@ function positionalWriteAdvertisedSchema(
 ): Record<string, unknown> {
   if (!keyedFallback) return rowSchema;
   return {
+    // WI-3290: the MCP spec requires `inputSchema.type === "object"` — a bare
+    // top-level `oneOf` is rejected by strict clients (Claude Code, ptool),
+    // and one bad tool made them drop the ENTIRE catalog (a session with zero
+    // tools). Both members are object schemas, so constraining the top level
+    // to `type: "object"` is semantically free.
+    type: 'object',
     oneOf: [rowSchema, argsJsonSchema],
     description: 'Accepts either a compact positional `row` string or the full keyed args shape.',
   };

@@ -13,8 +13,9 @@
  *                             name) → structural well-formedness checks.
  */
 import { describe, it, expect } from 'vitest';
-import '../agent-tools/index'; // side-effect: register the full real tool catalog
+import '../agent-tools/index'; // side-effect: register the full real tool catalog (+ pre-prompt registry)
 import { getCatalog, listAllProjectedTools, validateSync } from '@papercusp/tooldef';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
 
 const catalog = getCatalog(); // built-ins with Zod args
 const projected = listAllProjectedTools(); // full set, JSON inputSchema
@@ -73,6 +74,30 @@ describe('projected tool inputSchemas (invalid_args class — structural)', () =
       (t) => !t.inputSchema || (t.inputSchema as { type?: string }).type !== 'object',
     );
     expect(bad.length, `${bad.length} tools with a non-object inputSchema`).toBe(0);
+  });
+
+  it('every ADVERTISED inputSchema is still an object schema (WI-3290: the MCP-spec surface clients validate)', () => {
+    // The transport advertises advertisedArgsSchema(name, schema), NOT the raw
+    // projection this suite otherwise checks — the write-positional row/keyed
+    // `oneOf` rewrite happens there. A bare top-level oneOf (no type:"object")
+    // on work_items:set_state / work_items:claim violated the MCP spec and made
+    // strict clients (Claude Code, ptool) reject the ENTIRE catalog: sessions
+    // booted with ZERO papercusp tools. Guard the advertised surface itself so
+    // no future registry entry / advertise rewrite can re-ship a non-object
+    // inputSchema. (The pre-prompt registry is configured by the
+    // ../agent-tools/index side-effect import above, so the positional rewrite
+    // is LIVE here exactly as in production.)
+    const bad = projected.filter((t) => {
+      const name = (t as { name?: string }).name;
+      if (!name) return false;
+      const advertised = advertisedArgsSchema(name, t.inputSchema as Record<string, unknown>);
+      return (advertised as { type?: string }).type !== 'object';
+    });
+    expect(
+      bad.length,
+      `${bad.length} tools advertise a non-object inputSchema (MCP spec requires type:"object"): ` +
+        bad.map((t) => (t as { name?: string }).name).join(', '),
+    ).toBe(0);
   });
 
   it('every projected tool is strict (additionalProperties:false) — unknown args rejected at the wire', () => {
