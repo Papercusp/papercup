@@ -2613,9 +2613,14 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
       expect(probed).toEqual([9171]);
     });
 
-    it('operator.json (the desktop) still wins over an active proxy', () => {
+    it('WI-3247: active proxy wins over desktop operator.json so child env stays stable across dynamic port restarts', () => {
       writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
-      expect(resolveOperatorUrl({ env: {}, home, probe: () => true })).toBe('http://127.0.0.1:24689');
+      expect(resolveOperatorUrl({ env: {}, home, probe: () => true })).toBe('http://127.0.0.1:9071');
+      expect(resolveOperatorTarget({ env: {}, home, probe: () => true })).toEqual({
+        url: 'http://127.0.0.1:9071',
+        source: 'proxy',
+        startedAt: null,
+      });
     });
 
     it('warns (active-but-unrouted) when an explicit :3070 pin bypasses a live proxy — override still wins', () => {

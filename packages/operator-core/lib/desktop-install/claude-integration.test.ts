@@ -124,6 +124,25 @@ describe('installClaudeIntegration', () => {
     expect(srv?.headers?.Authorization).toBe('Bearer TOK-abc');
   });
 
+  it('WI-3247 desktop: seedIfAbsent bakes the stable MCP proxy fallback, not a dynamic or dead operator port', async () => {
+    await seedPhase1();
+    const prevDesktop = process.env.PAPERCUSP_DESKTOP;
+    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    process.env.PAPERCUSP_DESKTOP = '1';
+    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    try {
+      const res = await installClaudeIntegration({ home, seedIfAbsent: true });
+      expect(res.changed).toBe(true);
+      const srv = ((await readClaudeJson()).mcpServers as Record<string, { url: string }>)['papercusp-su'];
+      expect(srv.url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
+    } finally {
+      if (prevDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
+      else process.env.PAPERCUSP_DESKTOP = prevDesktop;
+      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+    }
+  });
+
   it('WI-3091 desktop: seedIfAbsent is idempotent when the file already exists (merges, does not overwrite user keys)', async () => {
     await seedPhase1();
     await writeClaudeJson({ hasCompletedOnboarding: true, theme: 'dark', mcpServers: { other: { type: 'http', url: 'http://x' } } });

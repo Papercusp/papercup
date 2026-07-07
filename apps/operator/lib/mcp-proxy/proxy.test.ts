@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
-import { shouldRetry, createMcpProxy } from './proxy';
+import { shouldRetry, createMcpProxy, type McpProxyTarget } from './proxy';
 
 describe('shouldRetry — refused-only + in-window (no double-execution)', () => {
   it('retries when NOT connected and within the window', () => {
@@ -94,6 +94,54 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     const r = await pending;
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":"recovered"}');
+  });
+
+  it('WI-3247: re-resolves a dynamic target between refused retries (packaged operator port changed)', async () => {
+    const oldPort = await freePort(); // stale operator.json port: stays down
+    const newUpstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200);
+        res.end('{"result":"new-port"}');
+      }),
+    );
+    await listen(newUpstream);
+    let target: McpProxyTarget = { host: '127.0.0.1', port: oldPort, source: 'operator.json' };
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        resolveTarget: () => target,
+        retryWindowMs: 5_000,
+        retryBackoffMs: 100,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const pending = request(port(proxy));
+    setTimeout(() => {
+      target = { host: '127.0.0.1', port: port(newUpstream), source: 'operator.json' };
+    }, 300);
+
+    const r = await pending;
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"new-port"}');
+  });
+
+  it('exposes proxy-local health without touching the upstream', async () => {
+    const targetPort = await freePort(); // down; health should still be proxy-local
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort, retryWindowMs: 400, retryBackoffMs: 100, log: () => {} }));
+    await listen(proxy);
+    const r = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: port(proxy), method: 'GET', path: '/__mcp_proxy_health' }, (res) => {
+        let b = '';
+        res.on('data', (d) => (b += d));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toContain('"ok":true');
   });
 
   it('503s (not a hang, not a replay) when the upstream is refused for the whole window', async () => {
