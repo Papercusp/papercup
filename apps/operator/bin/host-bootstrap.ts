@@ -62,7 +62,41 @@ function startPackagedMcpProxy(): void {
     const sidecarDir = dirname(process.argv[1] || '');
     const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
     if (!existsSync(proxyEntry)) {
-      console.warn(`[mcp-proxy] packaged proxy entry missing at ${proxyEntry}; psu sessions will use direct discovery`);
+      // A hot-patched serve.mjs on a pre-WI-3247 install has no mcp-proxy.mjs
+      // beside it — but ~/.claude.json's desktop registration already bakes the
+      // ${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:<port>} fallback, so leaving
+      // the port dark turns every claude launched without that env into a dead
+      // MCP door ("tools fetch failed" — owner-hit live on the mac VM,
+      // 2026-07-07). Serve the proxy IN-PROCESS instead: same dynamic
+      // operator.json target. It dies with this operator (unlike the detached
+      // packaged child), but the next boot re-arms it and the sticky operator
+      // port keeps direct pins valid across the gap.
+      try {
+        const { startMcpProxy, readOperatorJsonTarget } = await import('../lib/mcp-proxy/proxy');
+        const staticPort = Number(
+          process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || 3070,
+        );
+        const server = startMcpProxy({
+          listenPort: port,
+          resolveTarget: () =>
+            readOperatorJsonTarget() ?? { host: '127.0.0.1', port: staticPort, source: 'fallback' },
+          retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS || 90_000),
+        });
+        // startMcpProxy attaches no 'error' handler; without this an EADDRINUSE
+        // (non-proxy squatter that failed the health probe above) would be an
+        // uncaught 'error' event and kill the whole operator.
+        server.on('error', (e) => {
+          console.warn(`[mcp-proxy] in-process fallback proxy failed on :${port}:`, (e as Error)?.message ?? e);
+        });
+        console.log(
+          `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} — serving the MCP proxy IN-PROCESS on 127.0.0.1:${port} (stale-bundle fallback)`,
+        );
+      } catch (e) {
+        console.warn(
+          `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} and the in-process fallback failed; psu sessions will use direct discovery:`,
+          (e as Error)?.message ?? e,
+        );
+      }
       return;
     }
     const child = spawn(process.execPath, [proxyEntry], {

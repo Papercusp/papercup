@@ -441,7 +441,7 @@ export function resolveLinuxDesktopEnv(
     const found = candidates.find((p) => probes.existsSync(p));
     if (found) env.XAUTHORITY = found;
   }
-  return { env, resolved: true, error: null, warnings };
+  return { env, resolved: true, error: null, warnings, resolvedVia };
 }
 
 /**

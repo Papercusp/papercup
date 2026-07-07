@@ -81,6 +81,11 @@ describe('buildKey', () => {
     expect(buildKey('deploy-failed')).toBe('release:deploy-failed');
   });
 
+  it('work-item-created scopes per severity when supplied, global when omitted (EI-8296)', () => {
+    expect(buildKey('work-item-created', {})).toBe('work-item:created');
+    expect(buildKey('work-item-created', { severity: 'critical' })).toBe('work-item:created:critical');
+  });
+
   it('throws on an unknown family', () => {
     expect(() => buildKey('nope' as string)).toThrow(/unknown family/);
   });
