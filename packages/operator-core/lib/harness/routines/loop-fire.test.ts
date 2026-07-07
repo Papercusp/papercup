@@ -389,6 +389,78 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
   });
 });
 
+describe('the short-form recipe splice (P-005c — the moment-of-need reuse pointer)', () => {
+  const note = '## Next action\nbatch-triage the open observations';
+
+  it('renderLoopWakeText splices a recipeLine into the SHORT form only, above the footer', () => {
+    const short = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 5,
+      checkpoint: note,
+      recipeLine: "Recipe on point (cosine 0.72): recipes:run { id: 'r1' } — \"Batch triage\" (run 3×).",
+    });
+    expect(short).toContain("recipes:run { id: 'r1' }");
+    expect(short.indexOf('## Next action')).toBeLessThan(short.indexOf("recipes:run { id: 'r1' }"));
+    expect(short.indexOf("recipes:run { id: 'r1' }")).toBeLessThan(short.indexOf('END YOUR TURN'));
+
+    // The FULL form (fire 1 / refresher) never carries it — the kickoff is the brief there.
+    const full = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 1,
+      checkpoint: note,
+      recipeLine: 'should not appear',
+    });
+    expect(full).not.toContain('should not appear');
+  });
+
+  it('a SHORT-form fire queries the recipe seam with the checkpoint next-action and splices the hit', async () => {
+    const findWakeRecipe = vi.fn(async () => ({ id: 'r-triage', title: 'Batch triage', runCount: 3, sim: 0.72 }));
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never, // wake #5 → short form
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 30_000 })) as never,
+      findWakeRecipe: findWakeRecipe as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+
+    expect(findWakeRecipe).toHaveBeenCalledWith('batch-triage the open observations', { sql: undefined });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain("recipes:run { id: 'r-triage' }");
+    expect(opts.summary).toContain('run 3×');
+  });
+
+  it('a FULL-form fire (fire 1 / no checkpoint) never runs the lookup', async () => {
+    const findWakeRecipe = vi.fn(async () => null);
+    // Fire 1 with a checkpoint.
+    const deps1 = mkDeps({
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note, updatedAtMs: Date.now() })) as never,
+      findWakeRecipe: findWakeRecipe as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps1);
+    // Wake #8 but NO checkpoint.
+    const deps2 = mkDeps({
+      readFireCount: vi.fn(async () => 7) as never,
+      findWakeRecipe: findWakeRecipe as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps2);
+    expect(findWakeRecipe).not.toHaveBeenCalled();
+  });
+
+  it('a throwing / empty lookup degrades to the plain short form (fail-soft)', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 30_000 })) as never,
+      findWakeRecipe: vi.fn(async () => {
+        throw new Error('embedder down');
+      }) as never,
+    });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+    expect(res).toMatchObject({ fired: true });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('(wake #5; short form');
+    expect(opts.summary).not.toContain('recipes:run {');
+  });
+});
+
 describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', () => {
   const note = '## Next action\nre-report the fix to the owner';
 
