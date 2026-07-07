@@ -2,6 +2,13 @@
  * rubrics:list — the rubrics store read surface (rubric-driven-observations-2026-06-20
  * P-002). Active first, then proposed. Returns summary rows (criteriaCount, not the full
  * criteria) — use rubrics:get for the full criteria.
+ *
+ * v1 (local-first-party-rubric-bundling-2026-07-07): the first read lazily SEEDS the
+ * bundled first-party rubrics into the workspace store (listRubrics → loadAllRubrics →
+ * ensureFirstPartyRubricsSeeded; idempotent, no-clobber), so a fresh install lists the
+ * shipped set offline. v2 seam (flag FLAGS.RUBRICS_MARKETPLACE, dark): merge remote
+ * Cupboard kind='rubric' listings on top, local-shadows-remote — the exact
+ * templates:list merge shape; the remote fetch does not exist yet, the flag reserves it.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
