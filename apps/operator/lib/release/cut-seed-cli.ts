@@ -36,9 +36,10 @@
  *                          offline-cloneable; pass --all to seed every ref).
  *   --depth <n>            currently only `1`: cut an offline-cloneable one-commit snapshot of --rev instead
  *                          of full reachable history. Normal first-boot fetch back-fills history from origin.
- *                          The RELEASE default is FULL history (owner decision 2026-07-05, option A: "a full
- *                          git bundle along with a snapshot of the shared pot") — depth 1 is the opt-in
- *                          small-installer escape hatch (PAPERCUSP_SEED_DEPTH=1 in the build scripts).
+ *                          The RELEASE default is DEPTH 1 (owner directive 2026-07-07: trim git history from
+ *                          release builds, full history stays on GitHub — supersedes the 2026-07-05 option-A
+ *                          full-history default). All build scripts pass --depth 1 unless
+ *                          PAPERCUSP_SEED_DEPTH= (empty) forces a full-history cut.
  *   --shallow              alias for --depth 1.
  *   --allow-mint-epoch-key BOOTSTRAP ONLY: skip the load-don't-mint guard and let deriveEpochKey mint a
  *                          fresh epoch key when this box's keychain has no hive identity. Never for the

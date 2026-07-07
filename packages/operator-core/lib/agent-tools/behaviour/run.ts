@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import type { BehaviourContext } from '../../behaviour-suite/assertions';
 import { scoreTranscriptLines, runBehaviourSuite } from '../../behaviour-suite/runner';
 import { createNodeRunnerDeps, resolveSessionTranscript, expandHome } from '../../behaviour-suite/runner-node';
+import { emitBehaviourScorecard } from './scorecard';
 import { promises as fsp } from 'node:fs';
 
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
@@ -58,7 +59,7 @@ function ctxFromArgs(a: { expectedModelSubstr?: string; expectedWorkItemIds?: st
 export const behaviourRunTool = defineTool({
   name: 'behaviour:run',
   description:
-    'Score a real desktop-agent run against the 8-check behaviour standard. mode:"score" reads an existing transcript by sessionId or transcriptPath; mode:"launch" runs a visible agent on a fixture plan, captures the transcript, and scores it. Returns the behaviour report plus session/transcript metadata.',
+    'Score a real desktop-agent run against the 8-check behaviour standard. mode:"score" reads an existing transcript by sessionId or transcriptPath; mode:"launch" runs a visible agent on a fixture plan, captures the transcript, and scores it. Returns the behaviour report plus session/transcript metadata, and best-effort dual-emits ONE su-agent-behavior rubric scorecard (observation lane) so the checks feed rubrics:trend — the `scorecard` field reports that emit; it never alters the verdict.',
   guidance: {
     when:
       'Use when you need to grade how a desktop agent behaved on a plan run: routing, gating, scope, execution, launch discipline, and completion evidence. score grades an existing run; launch runs and grades a fresh fixture.',
@@ -95,7 +96,7 @@ export const behaviourRunTool = defineTool({
     .refine((a) => (a.mode ?? 'score') === 'launch' ? Boolean(a.planSlug) : Boolean(a.sessionId || a.transcriptPath), {
       message: 'score mode needs `sessionId` or `transcriptPath`; launch mode needs `planSlug`.',
     }),
-  async handler(args) {
+  async handler(args, toolCtx) {
     const mode = args.mode ?? 'score';
     const ctx = ctxFromArgs(args);
     try {
@@ -107,7 +108,10 @@ export const behaviourRunTool = defineTool({
         }
         const raw = await fsp.readFile(expandHome(path), 'utf8');
         const report = scoreTranscriptLines(raw.split('\n'), ctx, { sessionId: args.sessionId, planSlug: undefined }, Date.now());
-        return ok({ report, transcriptPath: path });
+        // Dual-emit (WI-3340): file the run as ONE su-agent-behavior scorecard so the
+        // checks feed rubrics:trend. Best-effort — never alters the report/verdict.
+        const scorecard = await emitBehaviourScorecard(report, { sessionId: args.sessionId, transcriptPath: path }, toolCtx);
+        return ok({ report, transcriptPath: path, scorecard });
       }
 
       // launch mode
@@ -122,7 +126,12 @@ export const behaviourRunTool = defineTool({
         },
         deps,
       );
-      return ok({ report: result.report, sessionId: result.sessionId, transcriptPath: result.transcriptPath, captureOutcome: result.captureOutcome });
+      const scorecard = await emitBehaviourScorecard(
+        result.report,
+        { sessionId: result.sessionId ?? undefined, transcriptPath: result.transcriptPath ?? undefined },
+        toolCtx,
+      );
+      return ok({ report: result.report, sessionId: result.sessionId, transcriptPath: result.transcriptPath, captureOutcome: result.captureOutcome, scorecard });
     } catch (e) {
       return fail({ error: `behaviour:run (${mode}) failed: ${errMsg(e)}` });
     }
