@@ -139,10 +139,10 @@ export interface PlanEnvOperatorLaunchInput {
   hasSourceTree: boolean;
   /** Whether a Node/npx+tsx run path is available on this machine. */
   hasToolchain: boolean;
-  /** Branches with a bundled per-branch sidecar in the package (owner directive
-   *  2026-07-06 / WI-3285): a bundled env spawns with NO source tree and NO toolchain.
-   *  `run:'vite'` envs are source-only and never bundled. */
-  bundledBranches?: readonly string[];
+  /** Env ids with a bundled sidecar in the package (owner directive 2026-07-06 /
+   *  WI-3285; contract: <sidecarDir>/env-sidecars/<envId>/serve.mjs): a bundled env
+   *  spawns with NO source tree and NO toolchain. `run:'vite'` envs are source-only. */
+  bundledEnvIds?: readonly string[];
   /** Bind host for the rendered origin (default 127.0.0.1). */
   host?: string;
 }
@@ -167,7 +167,7 @@ export function planEnvOperatorLaunch(
   const host = input.host ?? '127.0.0.1';
   const disabled = new Set(input.disabledIds ?? []);
   const reachable = new Set(input.reachablePorts ?? []);
-  const bundled = new Set(input.bundledBranches ?? []);
+  const bundled = new Set(input.bundledEnvIds ?? []);
   const selfPort = input.selfPort ?? null;
 
   return specs.map((spec): EnvOperatorPlanEntry => {
@@ -182,7 +182,7 @@ export function planEnvOperatorLaunch(
     if (disabled.has(spec.id)) return skip('disabled');
     if (selfPort != null && selfPort === spec.port) return skip('is-self');
     if (reachable.has(spec.port)) return skip('already-reachable');
-    if (spec.run !== 'vite' && bundled.has(spec.branch)) {
+    if (spec.run !== 'vite' && bundled.has(spec.id)) {
       return { ...base, action: 'spawn', spawnMode: 'bundled' };
     }
     if (!input.hasSourceTree) return skip('no-source-tree');
@@ -366,18 +366,30 @@ function defaultSpawnOperator(
 ): SpawnedOperator | null {
   try {
     if (entry.spawnMode === 'bundled' && entry.bundlePath) {
-      // Packaged install: run the per-branch bundled serve.mjs with the same node
-      // that runs this primary. Self-contained — no source tree, no toolchain.
+      // Packaged install: run the bundled env sidecar with the same node that runs
+      // this primary. Self-contained — no source tree, no toolchain. The env dir is
+      // sidecar-shaped (serve.mjs + spa/ + db-sql/ …): point the asset roots INTO it
+      // when present so the env operator serves ITS OWN UI/build, not the primary's
+      // (a prod-fallback bundle IS the primary's dir, so these resolve to the same
+      // paths there — harmless).
+      const envDir = dirname(entry.bundlePath);
+      const spaDir = join(envDir, 'spa');
+      const docsDir = join(envDir, 'internal-docs');
       const child = spawn(process.execPath, [entry.bundlePath], {
-        cwd: dirname(entry.bundlePath),
+        cwd: envDir,
         detached: true,
         stdio: 'ignore',
         env: {
           ...process.env,
           PAPERCUSP_HONO_PORT: String(entry.port),
+          ...(existsSync(spaDir) ? { PAPERCUSP_SPA_DIST: spaDir } : {}),
+          ...(existsSync(docsDir) ? { PAPERCUSP_DOCS_ROOT: docsDir } : {}),
           // ── EI-126 single-writer safety — the extra envs are request-only siblings ──
+          // (shared embedded PG; ONLY the primary runs the background machinery)
           PAPERCUSP_BACKGROUND_WORKERS: '0',
           PAPERCUSP_DBOS_ENABLE: '0',
+          PAPERCUSP_DBOS_ROUTINES: '0',
+          PAPERCUSP_DBOS_ORCHESTRATOR: '0',
           // The provisioning launcher must not re-run for the children (no recursion).
           PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
           // Each child reached by top-level navigation, not the primary's IPC fast path.
@@ -475,14 +487,15 @@ export async function launchEnvOperators(
     ? await deps.hasToolchain()
     : await defaultHasToolchain(sourceRoot);
 
-  // Which branches ship a bundled per-branch sidecar in this package (owner directive
-  // 2026-07-06) — the packaged-install spawn path that needs no source or toolchain.
+  // Which envs ship a bundled sidecar in this package (owner directive 2026-07-06;
+  // <sidecarDir>/env-sidecars/<envId>/serve.mjs, prod falling back to the primary's
+  // own bundle) — the packaged-install spawn path that needs no source or toolchain.
   const detectBundledSidecar = deps.detectBundledSidecar ?? resolveBundledSidecar;
-  const bundleByBranch = new Map<string, string>();
+  const bundleByEnvId = new Map<string, string>();
   for (const s of specs) {
-    if (s.run === 'vite' || bundleByBranch.has(s.branch)) continue;
-    const bundle = detectBundledSidecar(s.branch);
-    if (bundle) bundleByBranch.set(s.branch, bundle);
+    if (s.run === 'vite') continue;
+    const bundle = detectBundledSidecar(s.id);
+    if (bundle) bundleByEnvId.set(s.id, bundle);
   }
 
   // Probe every candidate port in parallel for an already-live operator (idempotent skip).
@@ -499,13 +512,13 @@ export async function launchEnvOperators(
     selfPort,
     hasSourceTree,
     hasToolchain,
-    bundledBranches: [...bundleByBranch.keys()],
+    bundledEnvIds: [...bundleByEnvId.keys()],
     host,
   });
   // Stamp each bundled entry with its bundle path (the planner is pure and path-free).
   for (const entry of planned) {
     if (entry.action === 'spawn' && entry.spawnMode === 'bundled') {
-      entry.bundlePath = bundleByBranch.get(entry.branch);
+      entry.bundlePath = bundleByEnvId.get(entry.id);
     }
   }
 

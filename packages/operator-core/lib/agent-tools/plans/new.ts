@@ -50,37 +50,45 @@ const stringTolerantBool = z.preprocess(
 
 export const argsSchema = z
   .object({
-  harness: harnessArg,
-  slug: z
-    .string()
-    .min(3)
-    .max(120)
-    .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'kebab-case, ends with alphanum')
-    .describe(
-      'Topic slug in kebab-case. A -YYYY-MM-DD suffix is appended automatically if not already present (plan filename convention, §3.1).',
-    ),
-  title: hardText(LIMITS.SHORT_TITLE),
-  status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
-  owner: z.string().email().optional(),
-  rationale: z
-    .string()
-    .optional()
-    .describe(
-      "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
-    ),
-  body: z
-    .string()
-    .max(200_000)
-    .optional()
-    .describe(
-      'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. Omit to get the empty starter template.',
-    ),
-  force: stringTolerantBool
-    .optional()
-    .describe(
-      'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation. Accepts the wire strings "true"/"false" too (EI-302: stale manifest-pinned tools/list schemas).',
-    ),
-});
+    harness: harnessArg,
+    slug: z
+      .string()
+      .min(3)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/, 'kebab-case, ends with alphanum')
+      .describe(
+        'Topic slug in kebab-case. A -YYYY-MM-DD suffix is appended automatically if not already present (plan filename convention, §3.1).',
+      ),
+    title: hardText(LIMITS.SHORT_TITLE),
+    status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
+    owner: z.string().email().optional(),
+    rationale: z
+      .string()
+      .optional()
+      .describe(
+        "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
+      ),
+    body: z
+      .string()
+      .max(200_000)
+      .optional()
+      .describe(
+        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. Omit to get the empty starter template.',
+      ),
+    force: stringTolerantBool
+      .optional()
+      .describe(
+        'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation. Accepts the wire strings "true"/"false" too (EI-302: stale manifest-pinned tools/list schemas).',
+      ),
+  })
+  // EI-8285: without .strict(), an unrecognized top-level key (e.g. the
+  // natural-but-wrong `content` — plans:set-content's field name) is
+  // SILENTLY STRIPPED by zod's default "strip unknown keys" behavior, so a
+  // caller who typos `content` for `body` gets `ok:true` with an EMPTY
+  // starter-template plan and no indication their body was dropped. .strict()
+  // makes an unknown key a loud `invalid_args` validation error instead —
+  // same precedent as promote-policy.ts / rubric-template.ts in this package.
+  .strict();
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);

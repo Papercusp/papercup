@@ -202,30 +202,37 @@ describe('launchEnvOperators (effectful, fully faked)', () => {
     expect(res.skipped.every((s) => s.reason === 'no-toolchain')).toBe(true);
   });
 
-  it('a bundled per-branch sidecar spawns with NO source tree and NO toolchain (packaged install)', async () => {
+  it('a bundled env sidecar spawns with NO source tree and NO toolchain (packaged install)', async () => {
+    // The pinned V1 packaged layout: env-sidecars/staging/ shipped, prod falling back
+    // to the primary's own serve.mjs (the resolver's prod special case — here faked).
     const { deps, spawnedCalls } = fakeLaunchDeps({
       detectSourceRoot: () => null,
       hasToolchain: async () => false,
-      detectBundledSidecar: (branch) =>
-        branch === 'staging' ? `/opt/pkg/sidecar/env-sidecars/staging/serve.mjs` : null,
+      detectBundledSidecar: (envId) =>
+        envId === 'staging'
+          ? '/opt/pkg/sidecar/env-sidecars/staging/serve.mjs'
+          : envId === 'prod'
+            ? '/opt/pkg/sidecar/serve.mjs'
+            : null,
     });
     const res = await launchEnvOperators(deps);
-    // dev + staging both ride the 'staging' branch bundle; prod (main) has no bundle,
-    // and with no source tree it honestly skips.
-    expect(res.spawned.map((s) => s.id).sort()).toEqual(['dev', 'staging']);
-    expect(res.skipped).toContainEqual({ id: 'prod', reason: 'no-source-tree' });
-    for (const c of spawnedCalls) {
-      expect(c.entry.spawnMode).toBe('bundled');
-      expect(c.entry.bundlePath).toBe('/opt/pkg/sidecar/env-sidecars/staging/serve.mjs');
-      // bundled spawns run from the bundle dir — prepareTree is bypassed
-      expect(c.treePath).toBe('/opt/pkg/sidecar/env-sidecars/staging');
-    }
+    // staging runs its bundle; prod runs the primary's own bundle on :3070; dev has
+    // neither a bundle nor a source tree → honest skip.
+    expect(res.spawned.map((s) => s.id).sort()).toEqual(['prod', 'staging']);
+    expect(res.skipped).toContainEqual({ id: 'dev', reason: 'no-source-tree' });
+    const staging = spawnedCalls.find((c) => c.entry.id === 'staging');
+    expect(staging?.entry.spawnMode).toBe('bundled');
+    expect(staging?.entry.bundlePath).toBe('/opt/pkg/sidecar/env-sidecars/staging/serve.mjs');
+    // bundled spawns run from the bundle dir — prepareTree is bypassed
+    expect(staging?.treePath).toBe('/opt/pkg/sidecar/env-sidecars/staging');
+    const prod = spawnedCalls.find((c) => c.entry.id === 'prod');
+    expect(prod?.entry.bundlePath).toBe('/opt/pkg/sidecar/serve.mjs');
   });
 
   it('a bundled sidecar wins over the source path even when a tree+toolchain exist', async () => {
     const { deps, spawnedCalls } = fakeLaunchDeps({
-      detectBundledSidecar: (branch) =>
-        branch === 'main' ? `/opt/pkg/env-sidecars/main/serve.mjs` : null,
+      detectBundledSidecar: (envId) =>
+        envId === 'prod' ? `/opt/pkg/env-sidecars/prod/serve.mjs` : null,
     });
     await launchEnvOperators(deps);
     const prod = spawnedCalls.find((c) => c.entry.id === 'prod');
