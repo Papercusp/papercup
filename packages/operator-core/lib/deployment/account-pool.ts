@@ -621,6 +621,37 @@ export function accountFull(a: ClaudeAccount, now: number): boolean {
 }
 
 /**
+ * USAGE WALL (WI-3310): until when is this account walled by an EXHAUSTED usage window — the
+ * binding (latest) reset among the 5h/7d windows whose utilization reads at/over
+ * `DRAIN_FULL_UTIL` — or 0 when it is not usage-walled.
+ *
+ * A usage wall and a rate-limit pause are DIFFERENT meters and must never be conflated:
+ * `rate.pausedUntil` is deliberately BOUNDED (the gateway caps a weekly-cap pause at ~6h, and a
+ * body-classified usage-cap without a parseable reset at ~1h, so one wrong header can never
+ * strand an account for days) — which means **pause expiry is NOT usage recovery**. An account
+ * whose pause lapsed but whose weekly window is still at 100% cannot serve a single request
+ * until `windowResetAt7d`. Consumers that mean "can this account actually serve right now"
+ * must check the wall too (`accountFull` / `accountStatus.available` / the stall-waker's
+ * `capacityBack`), not just the pause.
+ *
+ * Self-healing exactly like `drainUtil`/`drainUtil7d` (which this delegates to): the wall
+ * expires the instant the observed window's reset passes, and any fresh sub-cap reading clears
+ * it immediately — so a wrong/stale at-cap reading can gate the account no longer than the
+ * (provider-supplied) window reset itself.
+ */
+export function usageWalledUntil(a: ClaudeAccount, now: number): number {
+  let until = 0;
+  const r = a.rate;
+  if (drainUtil(a, now) >= DRAIN_FULL_UTIL && r.windowResetAt !== undefined && r.windowResetAt > now) {
+    until = Math.max(until, r.windowResetAt);
+  }
+  if (drainUtil7d(a, now) >= DRAIN_FULL_UTIL && r.windowResetAt7d !== undefined && r.windowResetAt7d > now) {
+    until = Math.max(until, r.windowResetAt7d);
+  }
+  return until;
+}
+
+/**
  * Is this account a valid SPAWN-SELECTION candidate — can a freshly-spawning bee pin to it?
  * Deliberately WIDER than `isAvailable` (account-spawn-eligibility fix, 2026-06-23): on Claude Max a
  * single transient per-minute 429 routinely carries a pause out to the multi-hour 5h/7d window reset

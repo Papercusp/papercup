@@ -116,8 +116,10 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     const startedOrder = setHiveStarted.mock.invocationCallOrder[0];
     const clearOrder = clearHiveTimeWake.mock.invocationCallOrder[0];
     expect(startedOrder).toBeLessThan(clearOrder);
-    // Per-hive: the hive's OWN placement bit is cleared too.
-    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false);
+    // Per-hive: the hive's OWN placement bit is cleared too — marked DELIBERATE
+    // (WI-3309) so the paused-hive recovery sweep never reads an owner Stop as a
+    // silent outage.
+    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false, { deliberate: true });
   });
 
   it('per-hive: keeps the workspace Queen loop running when ANOTHER hive is still started', async () => {
@@ -127,7 +129,7 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     expect(out.started).toBe(false); // THIS hive's placement is off…
     expect(out.workspaceLoopIdle).toBe(false); // …but the workspace loop stays up
     expect(out.wakeMode).toBe('auto');
-    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false);
+    expect(setHivePlacementStarted).toHaveBeenCalledWith('ws-1', 'my-hive', false, { deliberate: true });
     // The workspace loop is NOT idled: sentinel-off / wake-mode manual / time-wake clear all skipped.
     expect(setHiveStarted).not.toHaveBeenCalled();
     expect(setDefaultWakeMode).not.toHaveBeenCalled();
