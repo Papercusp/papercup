@@ -408,7 +408,7 @@ export function renderMemberBaseline(opts: { fleetSlug: string; plan: string; co
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    'Your loop, until nothing is claimable: **pull** your next item with `scheduler:get_next` → **read** it fully (`work_items:get`) → **classify + act** (real fix / already-fixed-close / genuinely-blocked) → drive it to a **terminal** state with evidence → repeat. Pull with `scheduler:get_next`, NOT `work_items:claim_next`: your leader steers WHICH item via your claim-spec (`scheduler:set_claim_spec`); with no spec set it is the same priority/oldest-first order as before and also covers the bug/change/task backlog (shared floors). Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s judgment expressed as your spec, the PICKUP is yours (the bee blackboard model).',
+    'Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s call, PICKUP is yours.',
     '',
     '## Non-negotiables',
     rules,

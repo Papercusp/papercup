@@ -105,6 +105,11 @@ stale row under any other phase, still re-fires and still needs the manual clear
 4. **Resolve the EI `fixed`** with the gate_health evidence. This is a **state-only**
    cleanup — zero code lines change — so the contract's "evidence says it no longer
    exists = verified fix" path applies; there is no unit diff to test.
-5. **The durable fix lives on a protected surface** (release-actions.ts clear step, or the
-   watchdog collector filtering out dead-install slugs). File/track it (EI-8396); don't
-   auto-fix it inline.
+5. **For the two green-checkpoint phases, the durable fix already landed** (EI-8396):
+   `collectEscalationSignals` now suppresses a dead-install orphan of those phases, so it
+   should no longer recur from a renamed slug. If you still see a green-checkpoint phantom,
+   the row's install-slug probably DOES have a live `green-checkpoint` routine (a same-slug
+   clear-miss, not the dead-install case) — check for the `shouldWarnOnStallClearMiss`
+   warning and clear the row manually. For any OTHER phase, a stale presence row still loops;
+   the manual clear (step 3) is the remediation, and a per-phase durable clear on a protected
+   surface is the real fix to file.
