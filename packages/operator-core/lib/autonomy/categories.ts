@@ -207,7 +207,7 @@ const CATEGORY_BY_ID: ReadonlyMap<AutonomyCategory, CategoryDef> = new Map(
   CATEGORIES.map((c) => [c.id, c]),
 );
 
-/** Type guard: is `s` one of the 13 canonical category ids? */
+/** Type guard: is `s` one of the 14 canonical category ids? */
 export function isAutonomyCategory(s: string): s is AutonomyCategory {
   return CATEGORY_BY_ID.has(s as AutonomyCategory);
 }
