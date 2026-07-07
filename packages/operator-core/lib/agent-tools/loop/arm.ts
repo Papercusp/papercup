@@ -118,6 +118,12 @@ export default defineTool({
       .describe(
         "Continuation policy (flush-to-proceed-stretch-discipline-2026-07-04 P-005). 'settle' (DEFAULT) = today's behaviour — do one iteration's work each wake, then end the turn. 'gated' = the runtime expects MULTIPLE units per turn, each gated by the continuation gate (loop:checkpoint returns the verdict: context headroom below the ceiling? no pending owner input / inbox interrupt?): after settling a unit you flush your checkpoints then continue in-turn while the gate is OPEN, else end the turn. Recovers the per-wake orient/re-read boundary tax by running units back-to-back — arm a LONGER interval for a gated loop. Rides payload_template (no schema change); a settle loop is byte-identical to today.",
       ),
+    mode: z
+      .enum(['work', 'monitor'])
+      .optional()
+      .describe(
+        "Wake-contract shape. 'work' (DEFAULT) = each wake creates + self-assigns work_items and works them. 'monitor' = a leader/supervisor loop that WATCHES something (a fleet, a pipeline, a soak): the wake says check → act only on deltas → checkpoint → end turn, with NO per-wake work-item boilerplate. Ignored when a custom wakePrompt is passed.",
+      ),
     costCapCents: z
       .number()
       .int()
@@ -263,6 +269,7 @@ export default defineTool({
         goal,
         carry,
         continuation: args.continuation ?? 'settle',
+        mode: args.mode ?? 'work',
         // Only name the item in the wake prompt if we ACTUALLY hold it — a conflicted /
         // not-found candidate must not tell the agent "you hold X".
         workItem: claimedWorkItem,

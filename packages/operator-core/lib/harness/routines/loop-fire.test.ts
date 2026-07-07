@@ -1,11 +1,30 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireLoopWake, defaultLoopKickoff, spliceCurrentLoopCheckpoint, type LoopFireDeps } from './loop-fire';
+import {
+  fireLoopWake,
+  defaultLoopKickoff,
+  spliceCurrentLoopCheckpoint,
+  renderLoopCheckpointBlock,
+  renderLoopWakeText,
+  loopCheckpointStaleMs,
+  LOOP_WAKE_FULL_TEMPLATE_EVERY,
+  type LoopFireDeps,
+} from './loop-fire';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
   over: Partial<LoopFireDeps> = {},
 ): Required<
-  Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap' | 'getLoopCarryNote' | 'deactivateLoop'>
+  Pick<
+    LoopFireDeps,
+    | 'checkFireGate'
+    | 'recordFire'
+    | 'wake'
+    | 'costCap'
+    | 'getLoopCarryNoteWithMeta'
+    | 'deactivateLoop'
+    | 'readFireCount'
+    | 'incrementFireCount'
+  >
 > {
   return {
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
@@ -17,8 +36,10 @@ function mkDeps(
       staged: 0,
     })) as never,
     costCap: vi.fn(async () => ({ breach: false, spendCents: 0, capCents: null })) as never,
-    getLoopCarryNote: vi.fn(async () => null) as never,
+    getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: null, updatedAtMs: null })) as never,
     deactivateLoop: vi.fn(async () => true) as never,
+    readFireCount: vi.fn(async () => 0) as never,
+    incrementFireCount: vi.fn(async () => {}) as never,
     ...over,
   };
 }
@@ -69,11 +90,14 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
   it('splices the CURRENT loop:checkpoint into the wake-turn text at fire time (EI-7809)', async () => {
     const deps = mkDeps({
-      getLoopCarryNote: vi.fn(async () => '## Did\nclosed WI-1\n\n## Next action\nclaim_next again') as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({
+        note: '## Did\nclosed WI-1\n\n## Next action\nclaim_next again',
+        updatedAtMs: Date.now() - 60_000,
+      })) as never,
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'arm-time goal text' } }, deps);
 
-    expect(deps.getLoopCarryNote).toHaveBeenCalledWith({
+    expect(deps.getLoopCarryNoteWithMeta).toHaveBeenCalledWith({
       harness: 'papercusp',
       ownerId: 'su-pinned',
       workspaceId: 'papercusp-workspace',
@@ -81,17 +105,28 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(opts.summary).toContain('arm-time goal text');
     expect(opts.summary).toContain('Current loop:checkpoint');
-    expect(opts.summary).toContain('prefer this over any stale arm-time goal text');
+    expect(opts.summary).toContain('this is the authority for what to do this wake');
     expect(opts.summary).toContain('## Next action\nclaim_next again');
   });
 
+  it('a legacy getLoopCarryNote dep (no meta) still splices the note, with no age claim (back-compat)', async () => {
+    const deps = mkDeps({
+      getLoopCarryNoteWithMeta: undefined,
+      getLoopCarryNote: vi.fn(async () => '## Next action\nresume the edit') as never,
+    } as never);
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'arm-time goal text' } }, deps);
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).toContain('you wrote it earlier');
+    expect(opts.summary).toContain('## Next action\nresume the edit');
+  });
+
   it('keeps the wake prompt byte-equivalent when no loop:checkpoint exists or the read fails', async () => {
-    const depsNoNote = mkDeps({ getLoopCarryNote: vi.fn(async () => null) as never });
+    const depsNoNote = mkDeps();
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, depsNoNote);
     expect((depsNoNote.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan X');
 
     const depsReadFail = mkDeps({
-      getLoopCarryNote: vi.fn(async () => {
+      getLoopCarryNoteWithMeta: vi.fn(async () => {
         throw new Error('carry store down');
       }) as never,
     });
@@ -104,6 +139,10 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(out).toContain('kickoff');
     expect(out).toContain('loop:checkpoint truncated in wake prompt');
     expect(out.length).toBeLessThan(3_300);
+
+    const block = renderLoopCheckpointBlock('y'.repeat(3_100), {});
+    expect(block).toContain('loop:checkpoint truncated in wake prompt');
+    expect(block!.length).toBeLessThan(3_400);
   });
 
   it('FAILURE-STREAK gate trips → fire WITHHELD, no wake', async () => {
