@@ -43,6 +43,7 @@ import {
   startSubstrateOutboxKeepalive,
   type OutboxKeepaliveHandle,
 } from './substrate-outbox-keepalive';
+import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import type { BootHarnessOpts } from './boot';
 
 export interface BootSubstrateOpts {
@@ -173,6 +174,17 @@ export async function bootSubstrateWithFallback(
   opts?: BootSubstrateOpts,
 ): Promise<BootSubstrateResult> {
   const useSidecar = await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system').catch(() => false);
+  // WI-3297 (flag-gated, default ON — the same gate substrate-sidecar-host reads):
+  // durable PG merge-cursor for IN-PROCESS engines, so a packaged install (no
+  // sidecar) resumes each admitted log's fold across restarts instead of
+  // re-folding the whole seed log from 0 every boot. Installed process-globally
+  // so standalone bootSingleHarness/rekeyHarness boots get it too; the sidecar
+  // branch clears it (the sidecar host constructs its own on its side).
+  const mergeCursorStoreFactory = (await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(
+    () => true,
+  ))
+    ? createPgMergeCursorStore
+    : null;
 
   const finish = async (
     r: Awaited<ReturnType<typeof bootAllHarnessesForActiveWorkspace>>,
@@ -186,7 +198,7 @@ export async function bootSubstrateWithFallback(
     // Flag OFF (the default + correct state): in-process boot, then the reaper.
     // Clear any sidecar boot defaults so standalone bootSingleHarness/rekeyHarness
     // boot in-process + wire the drain in-process (the byte-identical default path).
-    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false });
+    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory });
     const result = await bootAllHarnessesForActiveWorkspace(opts);
     return finish(result, false);
   }
@@ -229,7 +241,11 @@ export async function bootSubstrateWithFallback(
     // joinHiveAsView/join-shared-harness) for a harness created AFTER bootstrap
     // booted IN-PROCESS, so the sidecar never wired its outbox drain → content
     // captured + peer_connected but federation = 0 (the live cross-machine bug).
-    setSubstrateBootDefaults({ bootHarness: sidecarBootHarness, skipSendSideWiring: true });
+    setSubstrateBootDefaults({
+      bootHarness: sidecarBootHarness,
+      skipSendSideWiring: true,
+      mergeCursorStoreFactory: null,
+    });
     // WI-2105: tear down any engine that raced in-process before this decision
     // (see markSubstrateBootRoutingPending) so the sweep re-boots it via the
     // sidecar — left alive it is a SECOND concurrent substrate instance whose
@@ -268,7 +284,7 @@ export async function bootSubstrateWithFallback(
       );
     });
     // Sidecar unavailable → clear the defaults so standalone boots use in-process.
-    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false });
+    setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory });
     const result = await bootAllHarnessesForActiveWorkspace(opts);
     return finish(result, false);
   }

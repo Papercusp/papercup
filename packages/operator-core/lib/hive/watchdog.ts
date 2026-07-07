@@ -621,12 +621,38 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
     const { listPausedHives, setHiveStarted } = await import('./started');
     const paused = await listPausedHives();
     if (paused.length === 0) return results;
+    const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+    const wsCoordOn = await isWorkspaceCoordinationOn();
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
     const globalAutoResume = pausedRecoveryAutoResume();
     for (const { workspaceId, installSlug, pausedAtMs, deliberate } of paused) {
       const pausedForMs = pausedAtMs == null ? null : Math.max(0, now - pausedAtMs);
+      // WI-3309 (the Mug auto-unpause RECURRENCE — how the WI-3261 provenance fix
+      // was bypassed): under WORKSPACE_COORDINATION the Queen-loop liveness bit
+      // this sweep guards is the WORKSPACE SENTINEL row (installSlug ===
+      // workspaceId) ONLY. Every other hive_started row is the PER-HIVE
+      // placement/display bit — an owner Stop for that one hive, with no watchdog
+      // seams keyed on it. "Recovering" one is a category error twice over:
+      // setHiveStarted collapses the resume write onto the sentinel, so it (a)
+      // re-started the whole workspace loop the owner had deliberately paused and
+      // (b) WIPED the sentinel's deliberate provenance bit in the same write.
+      // With dozens of stale test-hive rows all "paused with demand" (the demand
+      // check is workspace-wide), that flipped the owner's pause back on several
+      // times a day. Skip per-hive rows entirely — this also matters because the
+      // sweep's deliberate bit below is only recorded at the scope setHiveStarted
+      // writes, so a per-hive row's provenance CANNOT gate a sentinel resume.
+      if (wsCoordOn && installSlug !== workspaceId) {
+        results.push({
+          workspaceId,
+          installSlug,
+          outcome: 'skipped',
+          reason: 'per-hive placement bit, not the workspace loop bit (WI-3309) — never auto-resume material under workspace coordination',
+          pausedForMs,
+        });
+        continue;
+      }
       if (!(await isRecoverablePausedHive(workspaceId, installSlug))) {
         results.push({
           workspaceId,

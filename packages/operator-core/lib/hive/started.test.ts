@@ -42,7 +42,7 @@ vi.mock('../workspace-brain-scope', () => ({
   workspaceBrainReadKeys: (_ws: string, perHiveSlug: string) => [perHiveSlug],
 }));
 
-import { setHiveStarted, listPausedHives } from './started';
+import { setHiveStarted, setHivePlacementStarted, listPausedHives } from './started';
 
 let startedRows: Array<{ key: string; updated_at: number }> = [];
 let deliberateRows: Array<{ key: string }> = [];
@@ -73,6 +73,32 @@ describe('setHiveStarted — pause provenance (WI-3261)', () => {
 
   it('a resume (started:true) ALWAYS clears provenance, even if deliberate:true is (nonsensically) passed', async () => {
     await setHiveStarted('ws-1', 'hive-a', true, { deliberate: true });
+    expect(inserted).toEqual([
+      { key: 'hive_started:ws-1:hive-a', value: 'true' },
+      { key: 'hive_paused_deliberate:ws-1:hive-a', value: 'false' },
+    ]);
+  });
+});
+
+describe('setHivePlacementStarted — per-hive pause provenance (WI-3309, the Mug auto-unpause RECURRENCE)', () => {
+  it('a deliberate per-hive Stop (pot:pause on one mug) writes the placement row AND deliberate:true provenance', async () => {
+    await setHivePlacementStarted('ws-1', 'hive-a', false, { deliberate: true });
+    expect(inserted).toEqual([
+      { key: 'hive_started:ws-1:hive-a', value: 'false' },
+      { key: 'hive_paused_deliberate:ws-1:hive-a', value: 'true' },
+    ]);
+  });
+
+  it('a plain per-hive stop (deliberate omitted) records deliberate:false — never mistaken for owner-initiated', async () => {
+    await setHivePlacementStarted('ws-1', 'hive-a', false);
+    expect(inserted).toEqual([
+      { key: 'hive_started:ws-1:hive-a', value: 'false' },
+      { key: 'hive_paused_deliberate:ws-1:hive-a', value: 'false' },
+    ]);
+  });
+
+  it('a per-hive resume (started:true) ALWAYS clears provenance', async () => {
+    await setHivePlacementStarted('ws-1', 'hive-a', true, { deliberate: true });
     expect(inserted).toEqual([
       { key: 'hive_started:ws-1:hive-a', value: 'true' },
       { key: 'hive_paused_deliberate:ws-1:hive-a', value: 'false' },

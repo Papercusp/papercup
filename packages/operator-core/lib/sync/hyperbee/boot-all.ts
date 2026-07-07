@@ -42,6 +42,7 @@ import {
   type BootHarnessOpts,
 } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
+import type { MergeCursorStore } from './read-merge';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
@@ -85,6 +86,21 @@ function key(workspaceId: string, harnessSlug: string): string {
 // today's in-process boot + in-process send-side wiring.
 let defaultBootHarness: ((opts: BootHarnessOpts) => Promise<BootedHarnessHandle>) | null = null;
 let defaultSkipSendSideWiring = false;
+
+// WI-3297: durable merge-cursor persistence for the IN-PROCESS boot path. The
+// WI-2105 PG-cursor store was constructed ONLY in substrate-sidecar-host, so a
+// host whose substrate boots in-process (SUBSTRATE_SIDECAR off — every packaged
+// desktop install) passed `mergeCursorStore: null`: positions never persisted
+// (harness_shared.substrate_merge_cursor stayed EMPTY) and every process boot
+// re-folded every admitted log from index 0 — on a seeded install that is the
+// whole 112k-op seed log, replaying its epoch-decrypt-fail storm each boot.
+// Installed process-globally by `bootSubstrateWithFallback`'s in-process
+// branches (flag-gated THERE, mirroring the sidecar host); tests never install
+// it, so `bootHarnessSubstrate` stays PG-free/hermetic by default. A per-call
+// `opts.bootHarness` override (tests, sidecar factory) bypasses it entirely.
+let defaultMergeCursorStoreFactory:
+  | ((workspaceId: string, harnessSlug: string) => MergeCursorStore)
+  | null = null;
 
 // ── Routing-decision latch (WI-2105) ─────────────────────────────────────────
 //
@@ -138,9 +154,15 @@ function settleSubstrateBootRouting(): void {
 export function setSubstrateBootDefaults(opts: {
   bootHarness?: ((o: BootHarnessOpts) => Promise<BootedHarnessHandle>) | null;
   skipSendSideWiring?: boolean;
+  /** WI-3297: per-(workspace,harness) durable merge-cursor store for IN-PROCESS
+   *  boots (null clears). Ignored whenever a bootHarness override is in play —
+   *  the sidecar host constructs its own store on its side of the IPC. */
+  mergeCursorStoreFactory?: ((workspaceId: string, harnessSlug: string) => MergeCursorStore) | null;
 }): void {
   if (opts.bootHarness !== undefined) defaultBootHarness = opts.bootHarness;
   if (opts.skipSendSideWiring !== undefined) defaultSkipSendSideWiring = opts.skipSendSideWiring;
+  if (opts.mergeCursorStoreFactory !== undefined)
+    defaultMergeCursorStoreFactory = opts.mergeCursorStoreFactory;
   // Either mode (sidecar factory installed OR cleared-to-in-process) IS the
   // routing decision — release any boots waiting on the WI-2105 latch.
   settleSubstrateBootRouting();
@@ -150,6 +172,7 @@ export function setSubstrateBootDefaults(opts: {
 export function _resetSubstrateBootDefaultsForTests(): void {
   defaultBootHarness = null;
   defaultSkipSendSideWiring = false;
+  defaultMergeCursorStoreFactory = null;
   settleSubstrateBootRouting();
 }
 
@@ -644,11 +667,19 @@ export async function bootSingleHarness(
   let rawBoot: Promise<BootedHarnessHandle> | null = null;
   const bootPromise = (async () => {
     const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
+    // WI-3297: durable merge-cursor for the DEFAULT in-process engine only. An
+    // explicit override or an installed sidecar factory builds/owns its own
+    // (or deliberately goes without — tests), so it is never injected there.
+    const mergeCursorStore =
+      bootHarness === bootHarnessSubstrate && defaultMergeCursorStoreFactory
+        ? defaultMergeCursorStoreFactory(workspaceId, harnessSlug)
+        : undefined;
     rawBoot = bootHarness({
       workspaceRoot,
       workspaceId,
       harnessSlug,
       swarmBinding,
+      mergeCursorStore,
     });
     return await Promise.race([
       rawBoot,

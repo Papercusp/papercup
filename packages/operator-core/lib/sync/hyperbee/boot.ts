@@ -1547,9 +1547,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the initial cursor; after a cursor RESET (roster rebind / truncation) we fall
   // back to folding from 0 (correct — the positions re-accumulate + re-persist),
   // never re-seeding, so a shrunk/forked log can't seed itself past its own tail.
-  // INJECTED by the production caller (substrate-sidecar-host reads the flag +
-  // builds the PG-backed store). Default null ⇒ in-memory cursor only, so this
-  // function stays PG-free and every merge test is hermetic unless it opts in.
+  // INJECTED by the production caller (substrate-sidecar-host builds the
+  // PG-backed store for sidecar boots; boot-all injects the process-global
+  // factory bootSubstrateWithFallback installs for in-process boots — WI-3297.
+  // Both read the same SUBSTRATE_MERGE_CURSOR_PG flag). Default null ⇒
+  // in-memory cursor only, so this function stays PG-free and every merge
+  // test is hermetic unless it opts in.
   const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
   let pgCursorSeeded = false;
 

@@ -78,7 +78,12 @@ export default defineTool({
     // Per-hive Stop (per-hive start-stop 2026-06-30): clear THIS hive's placement
     // bit FIRST (P-013 ordering — no watchdog seam re-arms between the wake clear
     // and the state flip). This stops the workspace Queen placing THIS hive's work.
-    await setHivePlacementStarted(workspaceId, installSlug, false);
+    // WI-3309: mark the PER-HIVE pause deliberate too — the sentinel-scoped
+    // deliberate mark below only fires when this is the LAST started hive
+    // (loopIdle), so without this the paused-hive recovery sweep read a
+    // single-hive owner Stop as a non-deliberate "silent outage" and
+    // auto-resumed it (the recurring Mug auto-unpause).
+    await setHivePlacementStarted(workspaceId, installSlug, false, { deliberate: true });
     // Idle the workspace Queen LOOP (sentinel off + wake-mode manual + clear the
     // pending time wake) ONLY when NO hive remains started — otherwise the single
     // workspace Queen keeps running for the other started hives.

@@ -119,11 +119,18 @@ export async function getHivePlacementStarted(workspaceId: string, installSlug: 
   return (rows[0] as { value?: string } | undefined)?.value === 'true';
 }
 
-/** Write the RAW per-hive started row (the per-hive placement/display bit). */
+/** Write the RAW per-hive started row (the per-hive placement/display bit).
+ *  `deliberate` (WI-3309, the Mug auto-unpause RECURRENCE): the per-hive Stop is
+ *  what pot:pause writes for a single hive (the sentinel-scoped setHiveStarted
+ *  only fires when the LAST hive pauses), so without its own provenance bit an
+ *  owner's per-hive pause read as `deliberate:false` — a "silent outage" — to
+ *  the paused-hive recovery sweep, which then auto-resumed it. Same semantics
+ *  as setHiveStarted: a resume (started:true) always CLEARS the bit. */
 export async function setHivePlacementStarted(
   workspaceId: string,
   installSlug: string,
   started: boolean,
+  opts: { deliberate?: boolean } = {},
 ): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
@@ -137,6 +144,7 @@ export async function setHivePlacementStarted(
     )
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;
+  await setHivePausedDeliberate(workspaceId, installSlug, started ? false : (opts.deliberate ?? false));
 }
 
 /**

@@ -24,6 +24,14 @@ vi.mock('../harness-registry', () => ({
     projects: [{ slug: 'live-hive', harness_kind: 'hive' }],
   })),
 }));
+// WI-3309: mutable so each test picks the K1 flag state; default OFF (legacy).
+let wsCoordOn = false;
+vi.mock('../workspace-brain-scope', () => ({
+  isWorkspaceCoordinationOn: async () => wsCoordOn,
+  workspaceBrainScopeKey: (ws: string, perHiveSlug: string, on: boolean) => (on ? ws : perHiveSlug),
+  workspaceBrainReadKeys: (ws: string, perHiveSlug: string, on: boolean) =>
+    on ? (perHiveSlug && perHiveSlug !== ws ? [ws, perHiveSlug] : [ws]) : [perHiveSlug],
+}));
 
 import {
   pausedHiveRecoverySweep,
@@ -106,6 +114,68 @@ describe('pausedHiveRecoverySweep — stale registry residue (EI-8177)', () => {
     ]);
     expect(setHiveStarted).not.toHaveBeenCalled();
     expect(declareHiveTimeWake).not.toHaveBeenCalled();
+  });
+});
+
+describe('pausedHiveRecoverySweep — scope correctness under WORKSPACE_COORDINATION (WI-3309, the Mug auto-unpause RECURRENCE)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    wsCoordOn = false;
+    delete process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC;
+  });
+
+  it('NEVER acts on a per-hive placement row (an owner Stop of one mug) — no resume, no sentinel write', async () => {
+    // The exact live shape that bypassed WI-3261: the owner's paused mug reads
+    // deliberate:false (the placement writer recorded no provenance), plus stale
+    // test-hive rows, all far past the threshold. The old sweep "recovered" each
+    // via setHiveStarted, which collapsed onto the WORKSPACE SENTINEL — re-starting
+    // the whole loop and wiping the sentinel's deliberate bit.
+    wsCoordOn = true;
+    process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC = '3600';
+    (listPausedHives as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { workspaceId: 'ws-1', installSlug: 'mug-hive', pausedAtMs: 0, deliberate: false },
+      { workspaceId: 'ws-1', installSlug: 'xbench-stale', pausedAtMs: 0, deliberate: false },
+    ]);
+
+    const res = await pausedHiveRecoverySweep({ now: 48 * HOUR });
+
+    expect(res.map((r) => r.outcome)).toEqual(['skipped', 'skipped']);
+    expect(res[0].reason).toContain('per-hive placement bit');
+    expect(setHiveStarted).not.toHaveBeenCalled();
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
+  });
+
+  it('still evaluates the workspace SENTINEL row (the real loop bit) through the normal gates', async () => {
+    wsCoordOn = true;
+    process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC = '3600';
+    (listPausedHives as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { workspaceId: 'ws-1', installSlug: 'ws-1', pausedAtMs: 0, deliberate: true },
+    ]);
+
+    const res = await pausedHiveRecoverySweep({ now: 48 * HOUR });
+
+    // NOT scope-skipped: the sentinel flows on to the demand/debounce gates
+    // (the mocked sql yields no demand ⇒ no action) — and is never resumed here.
+    expect(res).toEqual([]);
+    expect(setHiveStarted).not.toHaveBeenCalled();
+  });
+
+  it('flag OFF keeps the legacy per-hive behavior (rows flow to the registry gate)', async () => {
+    wsCoordOn = false;
+    process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC = '3600';
+    (listPausedHives as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { workspaceId: 'ws-1', installSlug: 'dead-hive', pausedAtMs: 0, deliberate: false },
+    ]);
+    (loadHarnessRegistry as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      projects: [{ slug: 'live-hive', harness_kind: 'hive' }],
+    });
+
+    const res = await pausedHiveRecoverySweep({ now: 2 * HOUR });
+
+    expect(res).toHaveLength(1);
+    expect(res[0].outcome).toBe('skipped');
+    expect(res[0].reason).toBe('hive is no longer registered');
+    expect(setHiveStarted).not.toHaveBeenCalled();
   });
 });
 
