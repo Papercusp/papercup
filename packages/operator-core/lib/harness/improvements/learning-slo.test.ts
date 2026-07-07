@@ -140,14 +140,21 @@ describe('mttshSignalsFromWindows (MTTSH regression)', () => {
   });
 
   it('EI-8387: a handful of incident-correlated extreme-outlier drills does NOT manufacture a regression', () => {
-    // Recent window: a normal population of fast-to-moderate drills (1-90s)
-    // PLUS a batch of multi-MINUTE outliers from one real, independently-
-    // confirmed infra incident (modeled directly in ms, not via the `ms()`
-    // seconds helper, to keep the minute-scale values unambiguous).
-    const normalPopulationSec = [1, 1, 2, 2, 3, 36, 36, 42, 52, 77, 88];
-    const incidentOutliersMs = [741_000, 794_000, 887_000, 939_000, 953_000, 1_119_000];
-    const recentMs = [...ms(...normalPopulationSec), ...incidentOutliersMs];
-    const baselineMs = ms(1, 1, 1, 2, 2, 3, 8, 13);
+    // The ACTUAL production shape that triggered EI-8387's false-positive
+    // (harness_shared.red_queen_drills, 7d window, 2026-07-07): a normal
+    // population of sub-2-minute drills PLUS 6 multi-MINUTE outliers all
+    // landing inside one confirmed shared infra-incident window
+    // (2026-06-30 ~18:20-18:35 — every drill class spiked in lockstep).
+    // Without trimming this raw-median'd to "36s vs a 15s baseline" (2.4x,
+    // past the 1.5x SLO) even though the collector queries themselves ran in
+    // ~30ms when investigated live — a detector false-positive, not a real
+    // engine regression.
+    const recentMs = [
+      1064, 1247, 1401, 1460, 1594, 1783, 3018, 4634, 4925, 5383, 8960, 12877,
+      35646, 36094, 41937, 51786, 76667, 88037, 128578, 167930,
+      793395, 793682, 939375, 953104, 1118956, 1459839, // the incident cluster
+    ];
+    const baselineMs = ms(15, 14, 16, 13, 15, 17, 14, 16); // the prior clean 15s-median window
     expect(mttshSignalsFromWindows({ recentMs, baselineMs })).toEqual([]);
   });
 
