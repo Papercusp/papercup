@@ -56,6 +56,9 @@ export interface InstallPaths {
    *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
    *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
   macTutorialAppPath: string;
+  /** ~/.local/share/applications/papercusp-tutorial.desktop — Linux-only per-user XDG
+   *  launcher for the guided tutorial (the .deb writes a system twin under /usr/share). */
+  linuxTutorialDesktopPath: string;
 }
 
 export interface InstallResult extends InstallPaths {
@@ -82,6 +85,8 @@ export interface InstallResult extends InstallPaths {
   papercuspCliWritten: boolean;
   /** True when the macOS "Papercusp Tutorial & Setup.app" wrapper was written (darwin only, WI-2197). */
   macTutorialAppWritten: boolean;
+  /** True when the Linux per-user tutorial `.desktop` launcher was written (linux only). */
+  linuxTutorialDesktopWritten: boolean;
   /** Resolved psu launcher the shim points at. Empty when not found. */
   psuLauncherSource: string;
   /** Resolved ptool launcher the shim points at. Empty when not found. */
@@ -653,6 +658,82 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
 }
 
 /**
+ * Write a per-user XDG `.desktop` launcher at
+ * `~/.local/share/applications/papercusp-tutorial.desktop` — the LINUX leg of the
+ * tutorial-icon parity (owner 2026-07-06: "how come I still don't see the icon on my
+ * taskbar in this dev box", 4th report). Until now the tutorial icon was provisioned
+ * ONLY by the .deb postinstall (deb/postinstall.sh, into the ROOT /usr/share) and by
+ * macOS `writeMacTutorialApp` — so a Linux DEV box or ANY non-.deb Linux install
+ * (a tarball, `npm run dev`, a hand-run operator) got NO tutorial icon at all. This is
+ * the first-boot equivalent, mirroring `writeMacTutorialApp`: an UNPRIVILEGED per-user
+ * dir (no root, unlike the .deb), `Exec` pointed at the per-user dispatcher shim, and
+ * `Terminal=true` so the DE opens a real terminal running `papercusp tutorial`.
+ *
+ * Icon: install a real PNG into the user hicolor theme and reference it by ABSOLUTE
+ * path (robust — no icon-cache refresh needed); if no source PNG resolves, fall back to
+ * the themed name `papercusp-desktop` (what the .deb + Tauri bundle install). The entry
+ * appears in the app grid; pinning it to a dock/taskbar is the user's/DE's choice (the
+ * .deb doesn't auto-pin either). Best-effort throughout — never breaks the install.
+ */
+async function writeLinuxTutorialDesktopEntry(
+  desktopPath: string,
+  papercuspCliPath: string,
+  home: string,
+  operatorAppRoot: string,
+): Promise<boolean> {
+  try {
+    const appsDir = path.dirname(desktopPath);
+    await fs.mkdir(appsDir, { recursive: true });
+
+    // Best-effort: install a real icon PNG into the user hicolor theme; reference it by
+    // absolute path so it renders even without a gtk-update-icon-cache pass.
+    let iconRef = 'papercusp-desktop'; // themed-name fallback (.deb / Tauri bundle install it)
+    const iconSrc = await firstExisting([
+      path.resolve(operatorAppRoot, '..', '..', 'papercusp-desktop', 'src-tauri', 'icons', '128x128.png'),
+      path.resolve(operatorAppRoot, 'papercusp-desktop', 'src-tauri', 'icons', '128x128.png'),
+      path.join(operatorAppRoot, 'icons', '128x128.png'),
+      path.join(operatorAppRoot, 'resources', 'icons', '128x128.png'),
+    ]);
+    if (iconSrc) {
+      const iconDst = path.join(home, '.local', 'share', 'icons', 'hicolor', '128x128', 'apps', 'papercusp-desktop.png');
+      try {
+        await fs.mkdir(path.dirname(iconDst), { recursive: true });
+        await fs.writeFile(iconDst, await fs.readFile(iconSrc), { mode: 0o644 });
+        iconRef = iconDst;
+      } catch {
+        /* keep the themed-name fallback */
+      }
+    }
+
+    // A path with spaces must be double-quoted per the freedesktop Exec spec.
+    const execBin = papercuspCliPath.includes(' ') ? `"${papercuspCliPath}"` : papercuspCliPath;
+    const desktop =
+      '[Desktop Entry]\n' +
+      'Type=Application\n' +
+      'Name=Papercusp Tutorial & Setup\n' +
+      'Comment=Open the guided Papercusp tutorial and setup (tabs for both)\n' +
+      `Exec=${execBin} tutorial\n` +
+      `Icon=${iconRef}\n` +
+      'Terminal=true\n' +
+      'Categories=Development;\n' +
+      'StartupNotify=true\n';
+    await fs.writeFile(desktopPath, desktop, { mode: 0o644 });
+    await fs.chmod(desktopPath, 0o644);
+
+    // Refresh the desktop DB so the entry shows without a re-login (best-effort, detached).
+    try {
+      const { spawn } = await import('node:child_process');
+      spawn('update-desktop-database', [appsDir], { stdio: 'ignore' }).on('error', () => {});
+    } catch {
+      /* not installed — the DE picks the entry up on its next scan */
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ensure ~/.papercusp/bin is on the user's shell PATH so `psu` / `ptool` work in
  * ANY terminal the user opens — not only the in-app "+" console (which sets PATH
  * itself). Appends an idempotent, marker-guarded block to the common login +
@@ -763,6 +844,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     ptoolPath: path.join(binDir, 'ptool'),
     papercuspCliPath: path.join(binDir, 'papercusp'),
     macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial & Setup.app'),
+    linuxTutorialDesktopPath: path.join(home, '.local', 'share', 'applications', 'papercusp-tutorial.desktop'),
   };
 }
 
