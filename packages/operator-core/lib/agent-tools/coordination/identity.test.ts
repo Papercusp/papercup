@@ -11,7 +11,7 @@
  * stable coord owner, AND that a truly unattributable ctx still hard-errors.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from './identity';
+import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID, isEphemeralMcpCallIdentity } from './identity';
 
 describe('resolveAgentIdentity — cup:spawn child (THE UMBILICAL)', () => {
   it('attributes a role-gated signed spawn ctx to its `s-…` client id (was: threw → MUTE bee)', () => {
@@ -149,5 +149,39 @@ describe('resolveAgentIdentity — verified signed spawn without client= (invoke
     });
     expect(pr.source).toBe('principal');
     expect(pr.ownerId).toBe('autoloop');
+  });
+});
+
+// EI-8509: scripts/mcp-call.mjs mints `mcp-call-${process.pid}` when the caller
+// passes no --client of its own — a one-shot process with no liveness behind it.
+// It resolves through the ordinary superuser branch (indistinguishable in shape
+// from a real su session), so isEphemeralMcpCallIdentity is the only signal.
+describe('isEphemeralMcpCallIdentity (EI-8509)', () => {
+  it('flags the exact auto-generated mcp-call.mjs shape', () => {
+    expect(isEphemeralMcpCallIdentity('mcp-call-12345')).toBe(true);
+    expect(isEphemeralMcpCallIdentity('mcp-call-1')).toBe(true);
+  });
+
+  it('does NOT flag a real su/spawn identity, an explicit --client, or the su-loopback fallback', () => {
+    expect(isEphemeralMcpCallIdentity('su-abc123')).toBe(false);
+    expect(isEphemeralMcpCallIdentity('s-1780000000000-deadbeef')).toBe(false);
+    expect(isEphemeralMcpCallIdentity(SUPERUSER_FALLBACK_CLIENT_ID)).toBe(false);
+    expect(isEphemeralMcpCallIdentity('mcp-call-su-1234')).toBe(false); // a real --client value someone chose
+    expect(isEphemeralMcpCallIdentity('mcp-call-')).toBe(false);
+  });
+
+  it('handles null/undefined/empty without throwing', () => {
+    expect(isEphemeralMcpCallIdentity(null)).toBe(false);
+    expect(isEphemeralMcpCallIdentity(undefined)).toBe(false);
+    expect(isEphemeralMcpCallIdentity('')).toBe(false);
+  });
+
+  it('resolveAgentIdentity resolves the mcp-call.mjs default shape through the ordinary superuser branch', () => {
+    // This is exactly what the transport sees when mcp-call.mjs is invoked with
+    // no --client: ?superuser=1&client=mcp-call-<pid>.
+    const id = resolveAgentIdentity({ isSuperuser: true, uiClientId: 'mcp-call-99887' });
+    expect(id.ownerId).toBe('mcp-call-99887');
+    expect(id.source).toBe('omp-hook-session');
+    expect(isEphemeralMcpCallIdentity(id.ownerId)).toBe(true);
   });
 });

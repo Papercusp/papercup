@@ -116,3 +116,66 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001', error: 'busy' });
   });
 });
+
+// EI-8509: a →wip flip auto-claims the item under the CALLER's identity. When the
+// caller is scripts/mcp-call.mjs's auto-generated fallback (`mcp-call-<pid>` — a
+// one-shot process with no liveness/heartbeat and no fleet cup behind it), that
+// auto-claim must be refused, the same "placed but nothing executes it" failure
+// EI-8509 found. This suite re-mocks resolveAgentIdentity to return that shape
+// (the sibling suite above mocks it to throw, which already skips this leg).
+describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback identity (EI-8509)', () => {
+  it('refuses the wip flip and never reaches the lock/claim path', async () => {
+    vi.resetModules();
+    vi.doMock('../_harness-scope', async (orig) => ({
+      ...(await orig<typeof import('../_harness-scope')>()),
+      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
+    }));
+    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+    vi.doMock('./revisions', () => ({
+      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
+    }));
+    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: () => ({ ownerId: 'mcp-call-42', ownerLabel: 'su · mcp-call-42', source: 'omp-hook-session' }),
+      isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
+    }));
+    const lock = vi.fn();
+    vi.doMock('./with-plan-lock', () => ({ withPlanLock: lock, bumpUpdatedDate: (s: string) => s }));
+    vi.doMock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+    vi.doMock('../plan-items/claim-discipline', () => ({
+      claimForWork: vi.fn(async () => ({ ok: true, claimId: 'c1', alreadyHeld: false })),
+      releaseOwnClaim: vi.fn(async () => true),
+    }));
+    vi.doMock('./source', () => ({
+      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
+    }));
+
+    const freshTool = (await import('./set-status')).default;
+    const out = (await freshTool.handler(
+      { slug: 'plan-a', itemId: 'P-001', status: 'wip' } as never,
+      {} as never,
+    )) as { data: any };
+    const b = out.data;
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      slug: 'plan-a',
+      itemId: 'P-001',
+      error: 'ephemeral_mcp_call_identity',
+    });
+    expect(b.results[0].hint).toMatch(/mcp-call\.mjs/);
+    expect(lock).not.toHaveBeenCalled();
+
+    vi.doUnmock('../_harness-scope');
+    vi.doUnmock('./_ctx-opts');
+    vi.doUnmock('./revisions');
+    vi.doUnmock('../coordination/plan-events');
+    vi.doUnmock('../coordination/identity');
+    vi.doUnmock('./with-plan-lock');
+    vi.doUnmock('../../sync-sse');
+    vi.doUnmock('../plan-items/claim-discipline');
+    vi.doUnmock('./source');
+    vi.resetModules();
+  });
+});

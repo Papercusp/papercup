@@ -196,6 +196,41 @@ export const SUPERUSER_FALLBACK_CLIENT_ID = 'su-loopback';
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The AUTO-GENERATED fallback client id `scripts/mcp-call.mjs` mints when the
+ * caller passes no `--client` of their own: `mcp-call-${process.pid}`. It is
+ * emitted per-invocation and the node process that made the single stateless
+ * `tools/call` request has already EXITED by the time the caller reads the
+ * response — there is no coord_presence heartbeat loop, no fleet:spawn row, no
+ * liveness behind it whatsoever, ever. It resolves through the ordinary
+ * superuser branch above (a `client=` that is not a bare UUID → 'omp-hook-
+ * session'), so structurally it is indistinguishable from a real, live su
+ * session's per-session id — the ONLY signal is this literal naming pattern.
+ *
+ * EI-8509: a prior Mug wake used the raw mcp-call.mjs fallback (documented as
+ * a recovery path for when MCP tools are genuinely unusable — see the script's
+ * header) to PLACE routine work-item claims, without ever passing its own
+ * `--client`. Each claim landed under a fresh `mcp-call-<pid>` identity that
+ * was already gone by the next tick, so the claim looked "placed" (assignee
+ * set, claim row present) but nothing was ever spawned to execute it — a
+ * silent no-op placement that only an audit caught, hours later.
+ */
+const EPHEMERAL_MCP_CALL_RE = /^mcp-call-\d+$/;
+
+/**
+ * True when `ownerId` is the mcp-call.mjs AUTO-GENERATED fallback identity
+ * (see EPHEMERAL_MCP_CALL_RE doc above) — never a real fleet cup, never able
+ * to heartbeat or make progress. Claim/lease call sites use this to refuse an
+ * IMPLICIT self-claim under this identity (the same shape as the
+ * `SUPERUSER_FALLBACK_CLIENT_ID` guard) so a raw one-shot mcp-call invocation
+ * can no longer silently "place" work that nothing will ever execute. An
+ * EXPLICIT `assignee` (a real agent id the caller names on purpose) is never
+ * blocked by this check — only the implicit "claim for whoever I am" path is.
+ */
+export function isEphemeralMcpCallIdentity(ownerId: string | null | undefined): boolean {
+  return Boolean(ownerId) && EPHEMERAL_MCP_CALL_RE.test(ownerId as string);
+}
+
 /** Cosmetic short form for owner labels. Never used for identity. */
 function shortId(id: string): string {
   if (id.startsWith('pus-')) return id.slice(0, 12);

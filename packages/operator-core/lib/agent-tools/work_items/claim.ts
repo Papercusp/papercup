@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from '../coordination/identity';
+import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID, isEphemeralMcpCallIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -38,6 +38,21 @@ async function claimOne(it: ClaimItem, claimerDefault: string): Promise<BulkItem
       error: 'missing_client_identity',
       hint:
         'Implicit work-item claims require a real per-session or spawn owner. This request arrived as the shared su-loopback fallback, so it was refused before mutating the claim. Reconnect with a client identity or pass an explicit assignee.',
+    };
+  }
+  // EI-8509: refuse an IMPLICIT claim under scripts/mcp-call.mjs's auto-generated
+  // fallback identity (`mcp-call-<pid>`) — a one-shot stateless call with zero
+  // liveness behind it, never a real spawned cup. Left unguarded, this is exactly
+  // how "placed" work silently rots with nothing ever executing it (fleet_assignments
+  // showed 4 such claims: assignee set, lastProgressAt/heartbeatAt null, sessionState
+  // 'ended'). An explicit `assignee` (naming a real agent on purpose) still passes.
+  if (!it.assignee && isEphemeralMcpCallIdentity(claimerDefault)) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'ephemeral_mcp_call_identity',
+      hint:
+        'Refused: this call arrived under scripts/mcp-call.mjs\'s auto-generated fallback identity (mcp-call-<pid>), a one-shot process with no liveness/heartbeat and no fleet cup behind it — claiming here would silently "place" work that nothing executes (EI-8509). Spawn a real cup (fleet:spawn / bee:spawn) and let IT claim, or pass an explicit `assignee` naming the real agent that will do the work.',
     };
   }
   const claimer = it.assignee ?? claimerDefault;

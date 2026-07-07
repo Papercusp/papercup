@@ -30,7 +30,7 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { emitPlanItemDoneEvent } from './plan-item-events';
 import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
-import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
@@ -374,6 +374,21 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     agentId = null;
   }
   if (agentId?.source === 'principal') agentId = null;
+  // EI-8509: a →wip flip auto-claims the item under the CALLER's own identity — refuse
+  // it outright when the caller is scripts/mcp-call.mjs's auto-generated fallback
+  // identity (`mcp-call-<pid>`), a one-shot stateless process with no liveness behind
+  // it. Left unguarded, the very same "placed but nothing ever executes it" failure
+  // EI-8509 found on work_items:claim happens here too (this tool auto-claims on wip).
+  if (agentId && it.status === 'wip' && isEphemeralMcpCallIdentity(agentId.ownerId)) {
+    return {
+      ok: false,
+      slug: it.slug,
+      itemId: it.itemId,
+      error: 'ephemeral_mcp_call_identity',
+      hint:
+        'Refused: →wip auto-claims under the caller\'s identity, and this call arrived as scripts/mcp-call.mjs\'s auto-generated fallback (mcp-call-<pid>) — a one-shot process with no heartbeat/liveness and no fleet cup behind it (EI-8509). Spawn a real cup and let IT flip this item to wip.',
+    };
+  }
   let claim: { claimId: string; autoClaimed: boolean } | null = null;
   if (agentId && it.status === 'wip') {
     const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});

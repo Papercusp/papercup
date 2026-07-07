@@ -18,7 +18,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, isEphemeralMcpCallIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -80,6 +80,35 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
+    // EI-8509: this tool always claims for the CALLER's own identity (no explicit
+    // assignee param) — refuse the whole batch when the caller is scripts/mcp-call.mjs's
+    // auto-generated fallback (`mcp-call-<pid>`), a one-shot process with no
+    // heartbeat/liveness and no fleet cup behind it. Unguarded, this is the same
+    // "placed but nothing ever executes it" failure mode EI-8509 found on
+    // work_items:claim / plans:set-status.
+    if (isEphemeralMcpCallIdentity(id.ownerId)) {
+      const list0: ClaimSpecItem[] = args.items?.length
+        ? args.items
+        : args.itemIds?.length
+          ? args.itemIds.map((item) => ({ plan: args.plan as string, item }))
+          : [{ plan: args.plan as string, item: args.item as string }];
+      const env = await runBulk(
+        list0,
+        async (it): Promise<BulkItemResult> => ({
+          ok: false,
+          plan: it.plan,
+          item: it.item,
+          result: {
+            status: 'refused',
+            reason: 'ephemeral_mcp_call_identity',
+            hint:
+              'Refused: this call arrived under scripts/mcp-call.mjs\'s auto-generated fallback identity (mcp-call-<pid>) — a one-shot process with no liveness/heartbeat and no fleet cup behind it — claiming here would silently "place" work that nothing executes (EI-8509). Spawn a real cup and let IT claim.',
+          },
+        }),
+        { keyOf: (it) => ({ plan: it.plan, item: it.item }) },
+      );
+      return bulkContent(env);
+    }
     const ownerUser = bestEffortOwnerUser(ctx);
     // work-queue-completeness Phase A (ENFORCEMENT): when the auto-convert flag is ON,
     // a claim is no longer a bare lease — it mints (or idempotently resumes) a tracked

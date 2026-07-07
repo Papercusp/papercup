@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const identity = vi.hoisted(() => ({ ownerId: 'me' }));
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
+  isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
 }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
@@ -56,6 +57,31 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ id: 'WI-DIRECTED', assignee: 's-bee-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(claimM).toHaveBeenCalledWith('WI-DIRECTED', 's-bee-1', { harness: undefined });
+  });
+
+  // EI-8509: scripts/mcp-call.mjs mints `mcp-call-<pid>` when invoked with no
+  // --client — a one-shot process with no liveness/heartbeat and no fleet cup
+  // behind it. An implicit claim under that identity must be refused the same
+  // way the su-loopback fallback is, so "placed" work can no longer silently
+  // rot with nothing ever executing it.
+  it('refuses an implicit claim under the mcp-call.mjs auto-generated fallback identity', async () => {
+    identity.ownerId = 'mcp-call-12345';
+    const b = await body({ id: 'WI-EPHEMERAL' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-EPHEMERAL',
+      error: 'ephemeral_mcp_call_identity',
+    });
+    expect(b.results[0].hint).toMatch(/mcp-call\.mjs/);
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('still permits explicit assignee claims from an mcp-call.mjs fallback caller', async () => {
+    identity.ownerId = 'mcp-call-12345';
+    const b = await body({ id: 'WI-DIRECTED-2', assignee: 's-bee-2' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED-2', 's-bee-2', { harness: undefined });
   });
 
   it('a claim_conflict fails only that item (top-level ok stays true) with holder + hint', async () => {
