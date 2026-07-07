@@ -577,6 +577,74 @@ export function controlBytes(decoded) {
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
 }
 
+// ── Same-source turn coalescing (compaction-continuity-hardening-2026-07-07 P-001a) ──
+//
+// Every control-socket connection runs its OWN async handler, and a gated 'turn'
+// waits at the idle + agent-busy gates before writing. So N wakes arriving while
+// the agent is busy all queue at the gates and ALL inject back-to-back the moment
+// the prompt returns — measured live: the same loop wake delivered up to 9×, each
+// a full template copy (~3KB), straight into the woken session's context. The
+// upstream layers are NOT the leak (loop fires park at infinity while a turn is in
+// flight; the await store's pump already coalesces per-subscriber deliveries) —
+// only injects that stack up INSIDE this host between gate-wait and pty-write.
+//
+// The coalescer folds same-source turns while one is still waiting: the FIRST
+// arrival becomes the waiter; later same-key arrivals just update it to the newest
+// text and bump a fold counter, then return. When the waiter finally passes the
+// gates it claims the newest text + fold count and delivers ONE turn annotated
+// with how many duplicates folded in. Keyed by the turn text's first non-empty
+// line: a loop wake's first line carries the loop marker + goal (stable across
+// wakes of the same loop), while distinct sources (owner messages, other loops)
+// differ — those still deliver independently.
+
+/** Coalesce key for an injected turn: its first non-empty line, trimmed+capped.
+ *  Pure — exported for tests. */
+export function turnCoalesceKey(data) {
+  const first = String(data ?? '')
+    .split('\n')
+    .find((l) => l.trim().length > 0);
+  return (first ?? '').trim().slice(0, 300);
+}
+
+/** Render the delivered turn text, annotating how many duplicates folded in.
+ *  Pure — exported for tests. */
+export function renderCoalescedTurn(data, folded) {
+  if (!folded || folded < 1) return data;
+  return (
+    `${data}\n(${folded} duplicate queued wake${folded === 1 ? ' was' : 's were'} coalesced ` +
+    'into this ONE delivery while your session was busy — treat this as a single wake, not ' +
+    `${folded + 1} separate ones)`
+  );
+}
+
+/** The per-host coalescer state machine. admit() returns true when the arrival was
+ *  FOLDED into an already-waiting inject (the caller must NOT proceed); false when
+ *  the caller became the waiter and must claim() at delivery — or on ANY early exit
+ *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
+export function makeTurnCoalescer() {
+  const pending = new Map(); // key -> { data, folded }
+  return {
+    admit(key, data) {
+      const p = pending.get(key);
+      if (p) {
+        p.data = data; // newest wins — it carries the freshest checkpoint splice
+        p.folded += 1;
+        return true;
+      }
+      pending.set(key, { data, folded: 0 });
+      return false;
+    },
+    claim(key) {
+      const p = pending.get(key) ?? null;
+      pending.delete(key);
+      return p;
+    },
+    size() {
+      return pending.size;
+    },
+  };
+}
+
 /** The ordered write STEPS the host performs against the pty for a decoded
  *  message. raw → ONE immediate verbatim write (force-interrupt byte). turn →
  *  TWO writes: the line text, then the submit Enter (CR) as a SEPARATE keystroke
@@ -1002,6 +1070,11 @@ export function hostThroughPty(o) {
     return verifier.verify();
   };
 
+  // P-001a (compaction-continuity-hardening): fold duplicate same-source turn
+  // injects that stack up at the gates while the agent is busy — see the
+  // makeTurnCoalescer doc block for the measured 9× duplication this kills.
+  const turnCoalescer = makeTurnCoalescer();
+
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
   // P-013: a 'turn' (wake) is deferred until the user's input line is idle so a
@@ -1015,6 +1088,20 @@ export function hostThroughPty(o) {
       const payload = Buffer.concat(chunks);
       if (!payload.length) return;
       const msg = decodeControl(payload);
+      // P-001a: a same-source turn already waiting at the gates absorbs this one —
+      // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
+      // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
+      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data) : null;
+      if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data)) {
+        try {
+          process.stderr.write(
+            `psu-pty-host: duplicate queued turn FOLDED for ${ownerId} (same-source coalesce, P-001a)\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        return;
+      }
       try {
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
@@ -1047,6 +1134,10 @@ export function hostThroughPty(o) {
             } catch {
               /* never let a diagnostic write break the session */
             }
+            // P-001a: clear the coalesce slot on defer — wakes folded into this
+            // waiter are dropped WITH it (same queue-to-next-turn semantics), and
+            // later arrivals must start a fresh cycle, never fold into a dead one.
+            if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
             return;
           }
         }
