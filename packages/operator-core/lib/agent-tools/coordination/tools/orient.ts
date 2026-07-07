@@ -102,6 +102,15 @@ export interface OrientArgs {
   includeFleetCatchUp?: boolean;
   /** Max fleet catch-up messages to fold (default 8, hard-capped 25). */
   fleetCatchUpLimit?: number;
+  /** Fold a COMPACT fleet-health glance (coord:glance's health subset — bees
+   *  running/working, staged wakes, paused governor buckets) when you belong to a
+   *  named fleet: the health read agents otherwise re-fetch via coord:glance right
+   *  after orient (compaction-fold-audit-2026-07-06). Default true; full mode only. */
+  includeFleetHealth?: boolean;
+  /** Set true on your FIRST orient after a compaction. Beefs the inbox fold (more
+   *  entries + fuller bodies — a just-compacted agent lost its message context), and
+   *  the handler ALSO folds the recovery block (held checkpoints + self-recall). */
+  afterCompaction?: boolean;
 }
 
 export interface OrientMemoryHit {
@@ -147,6 +156,11 @@ export interface OrientResult {
    *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
    *  failed fold. The auto-catch-up at wake. */
   fleetCatchUp?: { fleet: string; total: number; recent: unknown[] } | null;
+  /** A COMPACT fleet-health glance (coord:glance's health subset: bees, wake,
+   *  governor) — present only when the caller is in a fleet and includeFleetHealth
+   *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
+   *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
+  fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
   /** ownerPresent (flush-to-proceed-stretch-discipline-2026-07-04 P-004): whether a human
    *  power-user session is live for this workspace (readOwnerPresence — a fresh, non-revoked
    *  auth session), so presence-adaptive cadence keys off a MECHANICAL signal rather than
@@ -197,9 +211,14 @@ export async function composeOrient(
         // not_claimable on the real claim, burning a wake cycle).
         admissibleOnly: true,
       });
+  // afterCompaction (fold #2, compaction-fold-audit-2026-07-06): a just-compacted
+  // agent lost its message context and 79% immediately re-read coord:inbox, so fold
+  // MORE entries + fuller bodies (the shaper relaxes its inbox re-cap when a recovery
+  // block is present). Ambient broadcasts stay excluded by coord:inbox's default —
+  // the directed-message bias the audit asked for is already the default.
   const inbox = (await call('coord:inbox', {
-    limit: args.inboxLimit ?? 10,
-    max_body_chars: 300,
+    limit: args.inboxLimit ?? (args.afterCompaction ? 25 : 10),
+    max_body_chars: args.afterCompaction ? 800 : 300,
   })) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
@@ -305,17 +324,23 @@ export async function composeOrient(
     }
   }
 
-  // ── fleet catch-up — when the caller belongs to a named fleet, fold a bounded slice of
-  // that fleet's audience-keyed history so a freshly-joined/returning member auto-catches-up
-  // at wake (the pull counterpart to @fleet: broadcasts, which are NOT auto-polled). Gated +
-  // BEST-EFFORT: resolve the caller's fleet via coord:whoami, then coord:catch-up; a non-fleet
-  // caller or any failure degrades to absent/null. (fleet-messaging-integrate-and-land P-006)
-  // EI-8300: skipped entirely on a monitor tick.
-  if (!monitor && args.includeFleetCatchUp !== false) {
+  // ── fleet legs (full mode only) — resolve the caller's fleet ONCE via coord:whoami,
+  // then fold two bounded slices for a fleet member: (1) catch-up = "what did my fleet
+  // say while I was away" (the pull counterpart to @fleet: broadcasts, NOT auto-polled),
+  // and (2) fleet-health = the coord:glance health subset agents otherwise re-fetch right
+  // after orient (compaction-fold-audit-2026-07-06 — 44%+ did). Both gated + BEST-EFFORT:
+  // a non-fleet caller or any failure degrades to absent/null. EI-8300: skipped entirely
+  // on a monitor tick (both legs). (fleet-messaging-integrate-and-land P-006)
+  if (!monitor && (args.includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
+    let fleetSlug: string | null = null;
     try {
       const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
-      const fleetSlug = who?.fleetSlug ?? null;
-      if (fleetSlug) {
+      fleetSlug = who?.fleetSlug ?? null;
+    } catch {
+      fleetSlug = null;
+    }
+    if (fleetSlug && args.includeFleetCatchUp !== false) {
+      try {
         const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
         const cu = (await call('coord:catch-up', {
           audience: `@fleet:${fleetSlug}`,
@@ -327,9 +352,22 @@ export async function composeOrient(
           total: typeof cu?.total === 'number' ? cu.total : rows.length,
           recent: rows.slice(0, cuLimit),
         };
+      } catch {
+        result.fleetCatchUp = null;
       }
-    } catch {
-      result.fleetCatchUp = null;
+    }
+    // fleet-health (fold #1) — COMPACT: coord:glance's health subset only (bees/wake/
+    // governor; audience 'su' + activity_limit:0 skip the human display/tips/activity
+    // rows). Kills the post-orient coord:glance re-call for fleet members.
+    if (fleetSlug && args.includeFleetHealth !== false) {
+      try {
+        const g = (await call('coord:glance', { audience: 'su', activity_limit: 0 })) as
+          | { bees?: unknown; wake?: unknown; governor?: unknown }
+          | undefined;
+        result.fleetHealth = g ? { bees: g.bees, wake: g.wake, governor: g.governor } : null;
+      } catch {
+        result.fleetHealth = null;
+      }
     }
   }
 
@@ -386,8 +424,8 @@ export default defineTool({
     "the claimable backlog, your inbox summary, and the recent plan-events delta — plus, " +
     "when you pass `intent`, a memory recall for it AND a coord:declare-intent so peers see " +
     "you. Collapses the mandated bootstrap (memory:search + coord:inbox + coord:plan-events " +
-    "+ coord:declare-intent, with assignments + claimable) into ONE round-trip. coord:glance " +
-    'is the fleet-health read.',
+    "+ coord:declare-intent, with assignments + claimable) into ONE round-trip. For a fleet " +
+    'member it also folds a compact fleet-health glance (bees/wake/governor counts).',
   guidance: {
     when:
       'At the START of a turn / on waking. Pass `intent` (your one-line task) to get, in ' +
@@ -398,11 +436,11 @@ export default defineTool({
       'claimable/facts/plan-events/fleet-catch-up/recipes/memory-recall legs entirely (not ' +
       'just capped output), keeping only fleet:assignments + inbox + declare-intent.',
     notWhen:
-      'Fleet-wide wake/health for a status surface (coord:glance); full message bodies/history ' +
-      '(coord:inbox); the whole presence roster (coord:presence). Do NOT pass a throwaway ' +
-      '`intent` just to fire the declare. After a successful orient do NOT re-call ' +
-      'coord:plan-events / memory:search / coord:inbox / coord:declare-intent — it ALREADY ' +
-      'returned (and declared) them this turn.',
+      'A human status-surface RENDER (coord:glance display block — orient folds only the health ' +
+      'counts) or the whole presence roster (coord:presence). Do NOT pass a throwaway `intent` ' +
+      'just to fire the declare. After a successful orient do NOT re-call coord:plan-events / ' +
+      'memory:search / coord:inbox / coord:glance / coord:declare-intent — it ALREADY returned ' +
+      '(and declared) them this turn (pass afterCompaction:true for fuller inbox + the recovery block).',
     chaining:
       'Bundles: fleet:assignments + work_items:list + coord:inbox + coord:plan-events ' +
       '[+ memory:search + recipes:search + coord:declare-intent when `intent` is set] — prefer ' +
@@ -422,6 +460,7 @@ export default defineTool({
     'recipes:search',
     'coord:declare-intent',
     'coord:catch-up',
+    'coord:glance',
   ],
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
@@ -453,6 +492,7 @@ export default defineTool({
     recipesLimit: z.number().int().positive().max(5).optional().describe('Max relevant recipes to surface (default 3).'),
     includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
     fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
+    includeFleetHealth: z.boolean().optional().describe("Fold a COMPACT fleet-health glance (bees running/working, staged wakes, paused governor buckets) when you're in a named fleet (default true; full mode only) — the coord:glance health read agents otherwise re-fetch right after orient."),
     afterCompaction: z.boolean().optional().describe('Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).'),
   }),
   // context-trimming-tiers P-012: orient is the fattest bootstrap read (one

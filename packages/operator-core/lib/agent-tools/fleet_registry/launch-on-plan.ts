@@ -23,8 +23,9 @@
  *
  * Reuses the maintained machinery rather than forking: createFleetIfAbsent (the
  * fleet:create registry path) + buildConsoleEnvelope/spawnConsole (the
- * capability:terminal desktop-spawn path). Desktop-spawn is Linux+macOS only; on
- * Windows (operator in WSL) spawnConsole returns 501 with an actionable error.
+ * capability:terminal desktop-spawn path). Desktop-spawn works on Linux + macOS
+ * (server-side) AND Windows (WI-3289: relayed to the desktop shell's Tauri
+ * console_launch over the sync-bus bridge — the desktop window must be open).
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -456,7 +457,7 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first; Linux and macOS only.',
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Works on Linux, macOS, and Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
   guidance: {
     when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
@@ -976,6 +977,9 @@ export default defineTool({
           label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
           writeMcpJson: false,
           scheme,
+          // WI-3289: on a Windows desktop host, relay each member window to the
+          // desktop shell's Tauri console_launch instead of hard-501ing.
+          allowDesktopBridge: true,
         }),
       ),
     );
@@ -1030,9 +1034,9 @@ export default defineTool({
     if (failed.length) {
       lines.push(`${failed.length} failed:`);
       for (const f of failed) lines.push(`  • ${f.error}`);
-      if (failed.some((f) => f.code === 501)) {
+      if (failed.some((f) => f.code === 501 || f.error.includes('desktop-bridge'))) {
         lines.push(
-          '(Desktop-spawn is Linux + macOS only; on Windows the operator runs inside WSL and cannot open a GUI terminal.)',
+          '(On Windows member windows are relayed to the desktop shell via the sync-bus bridge (WI-3289) — the Papercusp desktop window must be OPEN for the relay to land. Linux + macOS spawn server-side directly.)',
         );
       }
     }

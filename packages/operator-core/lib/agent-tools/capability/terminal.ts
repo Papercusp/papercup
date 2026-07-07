@@ -21,10 +21,12 @@
  * that contains capability:bash. Recorded on capability-terminal-tool-2026-06-29.
  *
  * Cross-platform: server-side spawn works on Linux + macOS at this tier — on
- * macOS the operator opens Terminal/iTerm directly (see console-spawn.ts). Only
- * Windows can't (the operator runs inside WSL): there spawnConsole returns 501
- * and the desktop "+" button reaches the Tauri console_launch command instead,
- * a path an agent-invoked tool cannot reach, so Windows returns an actionable error.
+ * macOS the operator opens Terminal/iTerm directly (see console-spawn.ts). On
+ * Windows the operator runs inside WSL and cannot spawn a Session-1 window
+ * itself; `allowDesktopBridge` (WI-3289) relays the spawn to the desktop
+ * shell's Tauri `console_launch` command over the sync-bus bridge
+ * (console-launch-bridge.ts), so agent-opened terminals work there too —
+ * provided the Papercusp desktop window is open (otherwise: a loud timeout).
  *
  * Output is NOT captured — the terminals are interactive and detached. Use
  * capability:bash when you need a command's output / exit code.
@@ -268,6 +270,9 @@ export default defineTool({
           label: item.label ?? null,
           writeMcpJson: false,
           scheme,
+          // WI-3289: on a Windows desktop host, relay to the desktop shell's
+          // Tauri console_launch instead of hard-501ing the agent.
+          allowDesktopBridge: true,
         });
         return { command, cwd, injected: fleetInj.injected, provenanceInjected: provInj.injected, result };
       }),
@@ -326,9 +331,9 @@ export default defineTool({
     if (failed.length) {
       lines.push(`${failed.length} failed:`);
       for (const f of failed) lines.push(`  • ${f.command} — ${f.error}`);
-      if (failed.some((f) => f.code === 501)) {
+      if (failed.some((f) => f.code === 501 || f.error.includes('desktop-bridge'))) {
         lines.push(
-          '(On Windows the operator runs inside WSL and cannot open a Windows GUI terminal; that path goes through the desktop Tauri console_launch command, which an agent-invoked tool cannot reach. macOS + Linux spawn here directly.)',
+          '(On Windows the spawn is relayed to the desktop shell via the sync-bus bridge (WI-3289) — the Papercusp desktop window must be OPEN for the relay to land. macOS + Linux spawn server-side directly.)',
         );
       }
     }

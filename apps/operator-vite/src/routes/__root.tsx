@@ -35,6 +35,7 @@ import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
 import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
+import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
@@ -271,6 +272,11 @@ function RootComponent() {
                   attention.notify SSE event reaches the webview but nothing
                   turns it into a sonner toast + native OS notification. */}
               <DesktopAttentionNotifier />
+              {/* WI-3289: Windows agent console-launch bridge — relays
+                  console.launch-request sync-bus events (capability:terminal /
+                  fleet:launch-on-plan on a WSL2-hosted operator) to the Tauri
+                  console_launch command. No-op outside the Tauri webview. */}
+              <DesktopConsoleLaunchBridge />
               <PerfObserverProvider />
               <RecorderHost />
               {/* Dev admin rail — collapsible right cockpit (flags / run /

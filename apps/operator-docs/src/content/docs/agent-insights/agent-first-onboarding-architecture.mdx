@@ -122,3 +122,22 @@ them.
    e2e spec pins both directions — keep it green when touching routing.
 6. **`/onboarding` is deliberately un-gated** (no `requireFlag`): tutorial
    re-entry deep-links to it after first-run. Don't "fix" that.
+7. **Setup is the FIRST tab, not the tutorial (owner 2026-07-06).**
+   `defaultTab(args, { setupComplete })` in `tutorial-runner.mjs` opens the
+   unified shell on **Setup** whenever required setup (agent backend + sign-in +
+   mem0 key) is unfinished, OR the user ran `papercusp setup` (`--tab=setup`),
+   OR the user ran `papercusp tutorial` (`--tutorial`, which shows Setup first
+   even on a set-up box). Only the first-run concierge handoff (setup just
+   completed, no `--tutorial`) lands directly on the **Tutorial** tab.
+   `setupComplete` is computed off the same `setupChecklist` as `runSetupTab`;
+   on any fetch error it defaults to `false` (err toward showing Setup). Don't
+   "fix" `papercusp tutorial` back into opening the tour.
+8. **The `finished_at` redirect loop (WI-3281).** The root route (`/`)
+   hard-redirects to `/onboarding` whenever `setup-wizard-state.finished_at` is
+   unset, so navigating home from the embedded onboarding pane WITHOUT stamping
+   it just reloads the tutorial — the mac-GUI "no way past the tutorial" loop.
+   `OnboardingConsole.markSetupFinished()` PATCHes
+   `/api/desktop/setup-wizard-state { finished_at }` (idempotent merge,
+   best-effort, never throws) before navigating home; graduation via
+   `setup:complete` also stamps it. If you add another exit from the pane, stamp
+   `finished_at` first or the gate bounces the user back in.

@@ -233,7 +233,9 @@ const post = defineTool({
       // launch, so a spawned session could not be reconstructed after the fact.
       launchArgv: [result.terminal, envelope.greetingCmd].filter((s): s is string => !!s),
     });
-    attachExitWatcher(result.child, sessionPromise);
+    // `child` is always present here — this route never opts into the WI-3289
+    // desktop bridge (the only child-less ok path); the guard is type-narrowing.
+    if (result.child) attachExitWatcher(result.child, sessionPromise);
     console.log(`[console-launch] spawned ${result.terminal} pid=${result.pid} cwd=${envelope.cwd}`);
     return jsonRes({
       status: 'ok',

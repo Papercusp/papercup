@@ -121,11 +121,19 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
 
   const inbox = d.inbox as { summary?: unknown; recent?: unknown } | undefined;
   if (inbox && typeof inbox === 'object') {
+    // fold #2 (compaction-fold-audit-2026-07-06): a post-compaction orient (recovery
+    // block present ⇒ afterCompaction) carries a deliberately BEEFED inbox — a
+    // just-compacted agent lost its message context. Relax the inbox re-cap so the
+    // shaper doesn't re-truncate away the very entries/bodies the fold added; every
+    // other leg keeps its per-tier cap.
+    const afterCompaction = d.recovery != null;
+    const inboxCap = afterCompaction ? Math.max(c.inbox, 20) : c.inbox;
+    const inboxSummaryCap = afterCompaction ? Math.max(c.inboxSummary, 700) : c.inboxSummary;
     const recent = Array.isArray(inbox.recent) ? inbox.recent : [];
     out.inbox = {
       summary: inbox.summary,
-      recent: recent.slice(-c.inbox).map((e) => projectInboxEntry(e, c.inboxSummary)),
-      ...(recent.length > c.inbox ? { recentTruncated: { total: recent.length, shown: c.inbox, more: 'coord:inbox' } } : {}),
+      recent: recent.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap)),
+      ...(recent.length > inboxCap ? { recentTruncated: { total: recent.length, shown: inboxCap, more: 'coord:inbox' } } : {}),
     };
   }
 

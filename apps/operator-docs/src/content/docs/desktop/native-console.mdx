@@ -40,12 +40,26 @@ page is about how to test it.
 There are two launch paths. The **primary** path is a same-origin,
 server-side spawn: the operator process spawns the terminal itself, so
 no Tauri IPC is involved — this now covers **both Linux and macOS**
-(`console-spawn.ts` shared spawner). The **fallback** path (the Tauri
-`console_launch` IPC command) is used only when the operator host is
-the **Windows desktop's WSL2 sidecar** (`isWindowsDesktopHost()`) —
-the server route returns HTTP 501 and the renderer falls through to
-it. (A non-Linux, non-macOS, non-WSL2 host would also 501, but that
-isn't a supported desktop target.)
+(`console-spawn.ts` shared spawner). The **Windows** host (operator
+inside the WSL2 sidecar, `isWindowsDesktopHost()`) can't spawn a
+Session-1 GUI terminal itself, so it must defer to the desktop shell's
+Tauri `console_launch` command — **two ways there**:
+
+- **User "+" path:** the server route returns HTTP **501** and the
+  renderer (`native-console.ts`) falls through to invoking
+  `console_launch` directly over Tauri IPC.
+- **Agent path (WI-3289, `allowDesktopBridge`):** an agent-tool caller
+  (`capability:terminal`, and thus `fleet:launch-on-plan`) can't ride
+  the renderer fallback (there's no webview in the call), so
+  `spawnConsole` **relays the envelope to the desktop webview over the
+  sync-bus bridge** (`console-launch-bridge.ts` →
+  `requestDesktopConsoleLaunch`) and awaits the Tauri result — so the
+  caller gets a real `ok`/`error` verdict and REAL Windows terminals
+  open (a bridge failure returns `code:502`). Without this, an
+  agent-driven Windows launch just 501'd and opened nothing.
+
+(A non-Linux, non-macOS, non-WSL2 host would also 501, but that isn't a
+supported desktop target.)
 
 ```
 click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?, resumeSessionId? }   (PRIMARY)
@@ -239,9 +253,15 @@ not persist at cwd after you close the terminals.
 The `POST /console/launch` route also accepts `resumeSessionId`. When
 set, the greeting becomes `resuming plan-run <id>…` and the console
 `exec`s straight into the live agent CLI (`<agent-cli> -r <session-id>`)
-instead of opening a fresh shell. (The `/console/resolve` route used by
-the Tauri fallback does not thread `resumeSessionId` or `allWorkspaces`,
-so a resolve-based envelope is always scoped and non-resume.)
+instead of opening a fresh shell. The resume also **re-asserts the
+frictionless permission mode** per invocation (permission mode is NOT
+inherited from the resumed session): `claude` gets
+`--dangerously-skip-permissions --permission-mode bypassPermissions`,
+`omp` gets `--approval-mode yolo` — else a bare `claude -r` drops the
+user into default ask-per-tool mode (owner-hit on the Windows app,
+2026-07-07). (The `/console/resolve` route used by the Tauri fallback
+does not thread `resumeSessionId` or `allWorkspaces`, so a resolve-based
+envelope is always scoped and non-resume.)
 
 ## What the agent in the terminal can do
 
