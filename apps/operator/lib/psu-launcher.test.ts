@@ -65,6 +65,7 @@ import {
   NO_SUBAGENTS_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
   fetchWithResilience,
+  resolveFallbackOperatorTargets,
   resolveOperatorUrl,
   resolveOperatorTarget,
   readToken,
@@ -2544,7 +2545,7 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
         resolveFallback: () => [{ url: 'http://127.0.0.1:21960', source: 'discovery', startedAt: null }],
         onFailover: (t: { url: string }) => adopted.push(t.url),
       }),
-    ).rejects.toThrow(/PAPERCUSP_OPERATOR_URL .* refused connections .* unset PAPERCUSP_OPERATOR_URL/s);
+    ).rejects.toThrow(/PAPERCUSP_OPERATOR_URL \(.*\) refused connections .*`unset PAPERCUSP_OPERATOR_URL`/s);
     expect(adopted).toEqual([]); // never adopted an unhealthy target
   });
 

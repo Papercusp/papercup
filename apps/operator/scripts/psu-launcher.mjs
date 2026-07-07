@@ -1904,7 +1904,9 @@ export async function fetchWithResilience(
       // operatorUrl is never rebased), and only to a candidate that answers
       // /api/health right now — a mid-restart operator's candidates all fail
       // the health probe, so the normal ride-through behavior is unchanged.
-      if (!failoverAttempted) {
+      // ('dev-default' is exempt: it's a bare-dev-box guess, not a recorded or
+      // pinned address — its ride-through semantics stay exactly as before.)
+      if (!failoverAttempted && target?.source !== 'dev-default') {
         failoverAttempted = true;
         const base = target?.url ?? null;
         if (base && url.startsWith(base)) {
