@@ -17,6 +17,7 @@
  */
 import type postgres from 'postgres';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
+import { autoPickableWhereSql } from '../work-items-admission';
 import { SUMMARY_INACTIVE_UNIT_STATES } from './placement-watchdog';
 
 export interface WakeFrontierGuardInput {
@@ -89,6 +90,15 @@ export function evaluateWakeFrontierGuard(input: WakeFrontierGuardInput): WakeFr
  * The home harness's unplaced FRONTIER: feature-family work-items (feature /
  * research-task / chunk) that are `todo` and unassigned (`taken_by` null/empty) —
  * exactly what `claimNextWorkItem` would dispatch. Oldest-first, capped.
+ *
+ * WI-3300 — G2-ADMISSION excluded, mirroring survey.ts's fetchFrontierRows
+ * (EI-8498). Without this, a remote+un-admitted (quarantined) item in the home
+ * harness reads as "unplaced frontier" here even though the Queen genuinely
+ * cannot place it (it's gated on auditor admission, not on her dispatch) — forcing
+ * `pot:declare-wake` to keep refusing a no-time-wake declaration ("PLACE them this
+ * turn") for work she has no lever to place. Applying the SAME predicate here
+ * keeps this guard's notion of "placeable" consistent with what placement can
+ * actually pick up.
  */
 export async function listUnplacedHiveFrontier(
   sql: postgres.Sql,
@@ -104,6 +114,7 @@ export async function listUnplacedHiveFrontier(
        AND ${frontierPlacementKindClause(sql, workspaceId)}
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
+       AND ${autoPickableWhereSql(sql, workspaceId)}
      ORDER BY created_ts ASC
      LIMIT ${limit}`;
   return rows.map((r) => r.feature_id);

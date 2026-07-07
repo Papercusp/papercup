@@ -9,7 +9,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
 import { listUnplacedHiveFrontier } from './wake-frontier-guard';
 
 const readMigration = (f: string) =>
@@ -23,18 +23,32 @@ let db: FreshPgDb;
 async function seed(
   harness: string,
   id: string,
-  opts: { kind?: string; status?: string; takenBy?: string | null; createdTs?: number } = {},
+  opts: {
+    kind?: string;
+    status?: string;
+    takenBy?: string | null;
+    createdTs?: number;
+    origin?: string;
+    auditVerdict?: string | null;
+  } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, audit_verdict)
     VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
-            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
+            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0,
+            ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
 
 beforeAll(async () => {
   db = await createFreshPgDb('wake-frontier');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // WI-3300 — listUnplacedHiveFrontier now applies the G2 admission gate
+  // (autoPickableWhereSql), whose trust fast-path subquery reads
+  // harness_shared.user_trust_list unconditionally whenever a workspaceId is
+  // passed (every real call). Must exist or every query in this suite errors
+  // "relation does not exist" (mirrors survey.integration.test.ts's EI-8498 setup).
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
 }, 90_000);
 
 afterAll(async () => {
@@ -42,7 +56,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items `;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.user_trust_list`;
 });
 
 const HIVE = 'sb-devboard';
@@ -79,5 +93,25 @@ describe('listUnplacedHiveFrontier (EI-309)', () => {
     for (let i = 0; i < 5; i++) await seed(HIVE, `WI-${i}`, { createdTs: i });
     const frontier = await listUnplacedHiveFrontier(db.sql as unknown as postgres.Sql, 'default', HIVE, 3);
     expect(frontier).toEqual(['WI-0', 'WI-1', 'WI-2']);
+  });
+
+  it('WI-3300: excludes a REMOTE, un-admitted (quarantined) item — the same G2 gate fetchFrontierRows (EI-8498) enforces', async () => {
+    await seed(HIVE, 'WI-LOCAL', { createdTs: 1 }); // origin defaults 'local'
+    await seed(HIVE, 'WI-REMOTE-ADMITTED', { createdTs: 2, origin: 'remote', auditVerdict: 'admit' });
+    await seed(HIVE, 'WI-REMOTE-QUARANTINED', { createdTs: 3, origin: 'remote', auditVerdict: null });
+    const frontier = await listUnplacedHiveFrontier(db.sql as unknown as postgres.Sql, 'default', HIVE);
+    // Before this fix all three showed up as "unplaced frontier" — forcing
+    // pot:declare-wake to refuse a no-time-wake ("PLACE them this turn") for a
+    // quarantined item the Queen has no lever to place (WI-3300, mirrors EI-8498).
+    expect(frontier.sort()).toEqual(['WI-LOCAL', 'WI-REMOTE-ADMITTED']);
+  });
+
+  it('WI-3300: the trust-list fast-path admits a remote item whose verified author is locally trusted', async () => {
+    await seed(HIVE, 'WI-TRUSTED-REMOTE', { createdTs: 1, origin: 'remote', auditVerdict: null });
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET verified_author_github_user_id = 42 WHERE feature_id = 'WI-TRUSTED-REMOTE'`;
+    await db.sql`INSERT INTO harness_shared.user_trust_list (workspace_id, trusted_github_user_id) VALUES ('default', 42)`;
+    await seed(HIVE, 'WI-UNTRUSTED-REMOTE', { createdTs: 2, origin: 'remote', auditVerdict: null });
+    const frontier = await listUnplacedHiveFrontier(db.sql as unknown as postgres.Sql, 'default', HIVE);
+    expect(frontier).toEqual(['WI-TRUSTED-REMOTE']);
   });
 });
