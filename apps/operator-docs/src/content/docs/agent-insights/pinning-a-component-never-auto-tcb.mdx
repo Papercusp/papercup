@@ -7,6 +7,7 @@ status: active
 documents:
   - packages/operator-core/lib/harness/improvements/policy.ts
   - packages/operator-core/lib/blueprint-steps/tcb.ts
+  - packages/operator-core/lib/capability-envelope/tcb.ts
 plans:
   - deterministic-blueprints-migration-2026-06-13
 ---
@@ -71,11 +72,20 @@ dispatch gate); see the worked examples below.
    - and a clean off-component path still graduates to `auto` (the pin isn't
      vacuously blocking everything).
 
-Worked example: `deterministic-blueprints-migration-2026-06-13` P-141 pinned the
-program-mode spine executor + deterministic-step runner
-(`packages/operator-core/lib/coord-ops/**`, `.../blueprint-steps/**`,
-`libs/generic/step-program/**`, the blueprint validator) — see
-`blueprint-steps/tcb.ts` + `tcb-invariants.test.ts`.
+Worked examples — two components now use this exact co-located-constant pattern:
+
+- `deterministic-blueprints-migration-2026-06-13` P-141 pinned the program-mode
+  spine executor + deterministic-step runner
+  (`packages/operator-core/lib/coord-ops/**`, `.../blueprint-steps/**`,
+  `libs/generic/step-program/**`, the blueprint validator) — see
+  `blueprint-steps/tcb.ts` + `tcb-invariants.test.ts`.
+- `agent-capability-confinement-2026-06-13` (P-030 / D-007) pinned the capability
+  dispatch gate — the PDP (`capability-envelope/**`), the decision-ledger
+  (`decision-ledger/**`), the host wiring (`projected-tool-deps.ts`), the generic
+  dispatch stack (`libs/generic/tooldef/src/dispatch-stack.ts`), and the gated
+  capability tool surface (`agent-tools/capability/**`) — declared in
+  `capability-envelope/tcb.ts` (`CAPABILITY_DISPATCH_TCB_PATTERNS`) and pinned by
+  `capability-envelope/tcb-invariants.test.ts`.
 
 ## Gotcha: verify new `.ts` test files with direct `tsc`, not just vitest
 
