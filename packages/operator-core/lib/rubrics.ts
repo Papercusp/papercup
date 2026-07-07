@@ -226,7 +226,12 @@ function sortRubrics(rubrics: Rubric[]): Rubric[] {
  *  triggers it). Degrades to [] if the plans store is unavailable (e.g. a test DB with
  *  no harness_plans) — reads never throw. */
 async function loadAllRubrics(): Promise<Rubric[]> {
-  await ensureFirstPartyRubricsSeeded();
+  // Auto-seed on read in REAL processes only. Under vitest the established fixture
+  // pattern mocks getOrgPg but often not withWorkspace — the seed's proposeRubric
+  // writes would escape the testcontainer onto the real org PG (observed while
+  // building rubrics-first-party-seed.integration.test.ts, which now mocks both and
+  // exercises the seed EXPLICITLY via ensureFirstPartyRubricsSeeded()).
+  if (!process.env.VITEST) await ensureFirstPartyRubricsSeeded();
   return queryRubricPlans();
 }
 

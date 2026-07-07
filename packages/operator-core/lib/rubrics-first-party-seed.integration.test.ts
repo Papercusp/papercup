@@ -31,11 +31,11 @@ vi.mock('@papercusp/db-org', async () => {
     // The seed WRITES through proposeRubric → withPlanLock → withWorkspace; without
     // this mock the write escapes the testcontainer onto the real org PG (the
     // _org-test-db.ts-prescribed pattern — RLS-scoped app role inside a txn).
-    withWorkspace: (ws: string, cb: (tx: postgres.Sql) => Promise<unknown>) =>
+    withWorkspace: <T,>(ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> =>
       h.appSql.begin(async (tx) => {
         await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
         return cb(tx);
-      }),
+      }) as Promise<T>,
   };
 });
 
@@ -61,7 +61,10 @@ afterAll(async () => {
 describe('first-party rubric seed (bundled → workspace store, lazy on first read)', () => {
   it('cold start: the first read seeds the shipped set ACTIVE', async () => {
     // Fresh migrated DB: only the mig-338 hive-coordination-health row pre-exists.
-    // This read triggers ensureFirstPartyRubricsSeeded (loadAllRubrics choke point).
+    // In production the loadAllRubrics choke point auto-runs this on any rubrics
+    // read; under vitest the auto-hook is guarded off (see loadAllRubrics), so the
+    // test drives the seed explicitly.
+    await rubrics.ensureFirstPartyRubricsSeeded();
     const all = await rubrics.listRubrics({});
     const byId = new Map(all.map((r) => [r.rubricId, r]));
     for (const id of FIRST_PARTY_IDS) {
@@ -84,8 +87,9 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
     expect(hive!.createdBy).not.toBe(rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER);
   });
 
-  it('idempotence: re-arming the gate and re-reading creates no duplicate rows', async () => {
+  it('idempotence: re-arming the gate and re-seeding creates no duplicate rows', async () => {
     rubrics.__resetRubricSeedStateForTests();
+    await rubrics.ensureFirstPartyRubricsSeeded();
     const again = await rubrics.listRubrics({});
     for (const id of FIRST_PARTY_IDS) {
       expect(again.filter((r) => r.rubricId === id)).toHaveLength(1);
