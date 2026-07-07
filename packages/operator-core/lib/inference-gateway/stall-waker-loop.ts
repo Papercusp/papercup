@@ -148,7 +148,7 @@ let waker: StallWaker | null = null;
 export function ensureStallWakerLoop(workspaceId: string): void {
   if (timer) return;
   waker = new StallWaker(createStallWakerDeps(workspaceId));
-  timer = managedSetInterval('stall-waker-loop', POLL_MS, () => waker!.tick(), { category: 'global-sweep' });
+  timer = managedSetInterval('stall-waker-loop', POLL_MS, () => void waker!.tick(), { category: 'global-sweep' });
   console.log(`[stall-waker] started (poll ${POLL_MS}ms, idle ${IDLE_SILENCE_MS}ms) for ${workspaceId}`);
 }
 

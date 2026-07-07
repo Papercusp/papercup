@@ -28,6 +28,7 @@ import {
   drainUtil7d,
   effectiveDrainUtil,
   accountFull,
+  usageWalledUntil,
   AccountPoolError,
   DEFAULT_SCALE_POLICY,
   DRAIN_UTIL_STALE_MS,
@@ -580,6 +581,57 @@ describe('window-reset expiry — a freed account auto-re-enters rotation (stale
     let p = poolOf('a');
     p = recordAccountWindow(p, 'a', { utilization: DRAIN_FULL_UTIL, windowResetAt: T0 + 60 * MIN }, T0);
     expect(accountFull(getAccount(p, 'a')!, T0 + MIN)).toBe(true);
+  });
+});
+
+describe('usageWalledUntil (WI-3310 — the usage limit is a DIFFERENT meter than the rate-limit pause)', () => {
+  const WEEK = 7 * 24 * 60 * MIN;
+
+  it('a weekly-exhausted account is walled until windowResetAt7d even though its pause has lapsed', () => {
+    // The 2026-07-07 avistorewolf.com incident: util7d=1.0 with the weekly reset DAYS out, while the
+    // rate-limit pause is deliberately bounded (≤6h) and lapses long before. Pause expiry must never
+    // read as "the usage limit recovered".
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 0, utilization7d: 1.0, windowResetAt7d: T0 + WEEK }, T0);
+    const a = getAccount(p, 'a')!;
+    expect(isAvailable(a, T0 + MIN)).toBe(true); // the pause-only primitive says "usable"…
+    expect(usageWalledUntil(a, T0 + MIN)).toBe(T0 + WEEK); // …but the usage wall holds until the weekly reset
+    expect(accountFull(a, T0 + MIN)).toBe(true); // and the canonical serve predicate is full
+  });
+
+  it('the wall self-expires the instant the window resets (no manual accounts:reset-rate needed)', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization7d: 1.0, windowResetAt7d: T0 + 5 * MIN }, T0);
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + 6 * MIN)).toBe(0);
+  });
+
+  it('when both windows are exhausted the LATEST binding reset wins', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 1.0, windowResetAt: T0 + 60 * MIN, utilization7d: 1.0, windowResetAt7d: T0 + WEEK }, T0);
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + MIN)).toBe(T0 + WEEK);
+  });
+
+  it('a 5h-only exhaustion walls until the 5h reset', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 1.0, windowResetAt: T0 + 60 * MIN, utilization7d: 0.4, windowResetAt7d: T0 + WEEK }, T0);
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + MIN)).toBe(T0 + 60 * MIN);
+  });
+
+  it('sub-cap utilization is NOT a wall', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 0.5, windowResetAt: T0 + 60 * MIN, utilization7d: 0.6, windowResetAt7d: T0 + WEEK }, T0);
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + MIN)).toBe(0);
+  });
+
+  it('a STALE at-cap weekly reading still walls while its reset is pending (drainUtil7d parity)', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization7d: 1.0, windowResetAt7d: T0 + WEEK }, T0);
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(T0 + WEEK);
+  });
+
+  it('an account with no observed windows is never walled (cold pool degrades gracefully)', () => {
+    const p = poolOf('a');
+    expect(usageWalledUntil(getAccount(p, 'a')!, T0 + MIN)).toBe(0);
   });
 });
 
