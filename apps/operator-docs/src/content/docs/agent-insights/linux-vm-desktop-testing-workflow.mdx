@@ -159,7 +159,13 @@ What the seeded Linux GUI .deb actually does on a clean first boot:
   db-seed snapshot and the shipped migration SQL are internally *consistent* (both
   503) — this is **staleness, not a runtime migration bug**. **Cut releases from a
   tree that includes every intended migration**, and treat the on-VM sweep log as
-  a schema-freshness check.
+  a schema-freshness check. **Now guarded (WI-3047):** `release-local.sh` fetches
+  and compares the `libs/papercusp` submodule against `origin/<branch>` before
+  cutting — a stale (behind-remote) submodule **fails the build on stable/beta**
+  and **warns on alpha** (mirroring the dirty-tree channel split). That closes the
+  exact root cause here: `build-desktop-sidecar.sh` bakes `db-seed.tar.gz` from
+  whatever is checked out under `libs/papercusp/libs/db/sql/`, so a lagging
+  submodule pointer silently shipped pre-505/506 SQL.
 - ⚠️ **`native-terminal: could not establish X11 glue session`** → the ghostty
   terminal floats as a separate window instead of embedding in the webview.
   Suspected to be a VM-environment artifact: this barebones test VM runs an Xorg
@@ -184,4 +190,17 @@ What the seeded Linux GUI .deb actually does on a clean first boot:
 - `PAPERCUSP_BUILD_ROLES="gui"` builds only the GUI role (skips the server bundle);
   cargo incremental compile is ~3 min. The AppImage is built separately via
   `bin/build-appimage.sh` (Tauri's appimage target crashes linuxdeploy on the
-  sidecar tree — WI-2918).
+  sidecar tree — WI-2918). That script also **overwrites linuxdeploy's compiled
+  `AppRun` with a robust shell `AppRun`** (WI-2902): the ELF AppRun NULL-derefs in
+  libc on some hosts (`segfault at 0 … in libc.so.6`) and crashes the launch
+  before the app starts, even though the binary runs fine given `LD_LIBRARY_PATH`
+  + the WebKitGTK env; the shell AppRun sets that env off `$APPDIR` (pixbuf/gio/
+  gstreamer/webkit helper paths) and execs `usr/bin/papercusp-desktop`.
+
+- `scripts/linux-test-vm/boot-vm.sh` now guards the `reset→up` / port-collision
+  race (WI-2902): qemu treats a SPICE **or** hostfwd bind failure as FATAL and
+  boots no VM. It waits (bounded) for a just-killed VM to release the deterministic
+  SSH/SPICE ports, and **drops just the operator hostfwd** (`host:$OP_PORT →
+  guest:3070`) when that port is held by a live host service, booting anyway — the
+  in-guest tests (SSH + in-guest curl + screendump) never use the forward. Set
+  `VM_OP_BASE` to a free base to reclaim it; `VM_VGA` overrides the default `qxl`.

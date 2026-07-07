@@ -44,6 +44,16 @@ Current hook shape (2026-06-25): the shell hook is a dumb pipe. It calls
 Formatting, capping, and the `[coord+N]` layout live on the server side rather
 than being duplicated in `posttooluse-coord-inbox.sh`.
 
+**Context-gauge on the no-mail path (P-015).** Even when there are *no* new
+coord entries, the hook now surfaces the server-rendered `context_gauge` string
+(the ≥80% LOUD context-usage banner) as `additionalContext` — instead of the
+old pure no-op. This closes the zero-new-mail / zero-MCP-call gap: a heads-down
+session running only native Bash/Read/Edit (which never calls a coord tool)
+otherwise never sees its own context usage and can hit an auto-compaction blind
+(EI-6597, the 2026-07-02 incident). It stays a dumb pipe — the gauge is computed
+server-side; below 80% it's null and the hook no-ops exactly as before, and no
+cursor advance happens (there are no entries to mark shown).
+
 ## The cursor / dedup protocol
 
 - **Per-owner cursor.** Claude/Codex: a local file `coord-cursor-<owner>.json`

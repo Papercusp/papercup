@@ -47,7 +47,13 @@ write side) is the higher-value lever. Plan: `token-efficient-agent-io-2026-06-0
   - `legend.ts` — `renderWireSchemas` (the `## Wire schemas` markdown).
   - `advertise.ts` — `advertisedArgsSchema(name, argsSchema)`: swaps a
     write-positional tool's `tools/list` schema to either a single `row` string
-    or, for bulk-capable tools, `oneOf: [{ row }, <full keyed args>]`.
+    or, for bulk-capable tools, an object wrapping
+    `oneOf: [{ row }, <full keyed args>]`. The wrapper's top level is pinned to
+    `type: 'object'` (WI-3290): the MCP spec requires `inputSchema.type ===
+    "object"`, and strict clients (Claude Code, ptool) reject a bare top-level
+    `oneOf` — one bad tool made them drop the ENTIRE catalog (a session with zero
+    tools). Both `oneOf` members are already object schemas, so constraining the
+    top level is semantically free.
 - **The host config** lives at
   `packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts` — the
   one governed, telemetry-derived list (D-008). Imported as a side-effect at
