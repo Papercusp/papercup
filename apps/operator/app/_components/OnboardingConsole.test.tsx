@@ -66,6 +66,35 @@ describe('pollGraduationOnce (WI-3092: external-console auto-nav home)', () => {
   });
 });
 
+describe('markSetupFinished (WI-3281: the mac "no way past the tutorial" loop)', () => {
+  it('PATCHes finished_at to setup-wizard-state and reports success', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('PATCH');
+      const body = JSON.parse(String(init?.body)) as { finished_at?: string };
+      expect(typeof body.finished_at).toBe('string');
+      expect(Number.isNaN(Date.parse(body.finished_at as string))).toBe(false);
+      return new Response('{}', { status: 200 });
+    });
+    await expect(markSetupFinished(fetchImpl as unknown as typeof fetch)).resolves.toBe(true);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/desktop/setup-wizard-state',
+      expect.objectContaining({ method: 'PATCH' }),
+    );
+  });
+
+  it('returns false on a non-ok response — caller still navigates, root re-checks', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 500 }));
+    await expect(markSetupFinished(fetchImpl as unknown as typeof fetch)).resolves.toBe(false);
+  });
+
+  it('never throws on a network error (best-effort: navigation must proceed)', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('operator not listening');
+    });
+    await expect(markSetupFinished(fetchImpl as unknown as typeof fetch)).resolves.toBe(false);
+  });
+});
+
 describe('loadOnboardConcierge (WI-2902: retry the concierge fetch past operator boot)', () => {
   const spec = { command: 'bash', args: ['-lc', 'onboard'], cwd: '/home/tester', env: {} };
   const noSleep = async () => {};
