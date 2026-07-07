@@ -24,11 +24,6 @@ const CHAT_ID = 'chat-live-1';
 const CHAT_HARNESS = 'papercup';
 const AGENT_ID = 'su-e2e-live-worker';
 
-const SKIP_MSG =
-  'The /adv shell did not mount. Run against an HMR-enabled operator-vite ' +
-  '(the config webServer boots one with PAPERCUSP_ENABLE_HMR=1); a stale ' +
-  'HMR-disabled :3055 serves a blank #root.';
-
 const nowIso = '2026-07-06T20:00:00.000Z';
 const nowMs = Date.parse(nowIso);
 
@@ -254,14 +249,6 @@ async function stubCommonApis(page: Page) {
   });
 }
 
-async function shellMounted(page: Page): Promise<boolean> {
-  return page
-    .locator('main')
-    .waitFor({ state: 'visible', timeout: 30_000 })
-    .then(() => true)
-    .catch(() => false);
-}
-
 test.describe('/adv Conversations + Sessions e2e', () => {
   test('Conversations agent-chat detail embeds the interactive ChatPanel for a live chat', async ({
     page,
@@ -289,7 +276,6 @@ test.describe('/adv Conversations + Sessions e2e', () => {
     await page.goto(`${baseURL}/adv?tab=plans&view=sessions&slug=${SLUG}&scope=self`, {
       waitUntil: 'domcontentloaded',
     });
-    test.skip(!(await shellMounted(page)), SKIP_MSG);
 
     const roster = page.locator('.pc-roster').first();
     await expect(roster.getByText('Active agents')).toBeVisible({ timeout: 30_000 });
