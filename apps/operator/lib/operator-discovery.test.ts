@@ -157,3 +157,118 @@ describe('fetchResilient', () => {
     expect(calls).toBe(1); // no retry — the caller's abort is final
   });
 });
+
+describe('rebaseUrl (WI-3283)', () => {
+  it('swaps the origin and keeps path + query', () => {
+    expect(rebaseUrl('http://127.0.0.1:1111/api/x?a=1', 'http://127.0.0.1:2222')).toBe(
+      'http://127.0.0.1:2222/api/x?a=1',
+    );
+  });
+
+  it('returns null when the origin is unchanged (same-port mid-boot window)', () => {
+    expect(rebaseUrl('http://127.0.0.1:1111/api/x', 'http://127.0.0.1:1111')).toBeNull();
+    expect(rebaseUrl('http://127.0.0.1:1111/api/x', 'http://127.0.0.1:1111/')).toBeNull();
+  });
+
+  it('returns null on an unparseable base instead of throwing', () => {
+    expect(rebaseUrl('http://127.0.0.1:1111/api/x', 'not a url')).toBeNull();
+    expect(rebaseUrl('not a url', 'http://127.0.0.1:2222')).toBeNull();
+  });
+});
+
+describe('fetchResilient rediscovery (WI-3283: the operator moved ports mid-run)', () => {
+  it('follows the move: a refused pinned port + fresh discovery → retries the NEW base', async () => {
+    const { now, sleep } = fakeClock();
+    const urls: string[] = [];
+    const onRebase = vi.fn();
+    const r = await fetchResilient('http://127.0.0.1:1111/api/x?a=1', {}, {
+      fetchImpl: async (url: string) => {
+        urls.push(String(url));
+        if (String(url).includes(':1111')) throw connErr(); // the stale spawn-time pin
+        return okResp(); // the restarted operator's new port
+      },
+      now,
+      sleep,
+      rediscover: () => 'http://127.0.0.1:2222',
+      onRebase,
+    });
+    expect(r.ok).toBe(true);
+    expect(urls).toEqual(['http://127.0.0.1:1111/api/x?a=1', 'http://127.0.0.1:2222/api/x?a=1']);
+    expect(onRebase).toHaveBeenCalledWith('http://127.0.0.1:2222');
+  });
+
+  it('same-origin discovery = plain retry (the sticky-port mid-boot window)', async () => {
+    const { now, sleep } = fakeClock();
+    const urls: string[] = [];
+    const onRebase = vi.fn();
+    let calls = 0;
+    const r = await fetchResilient('http://127.0.0.1:1111/api/x', {}, {
+      fetchImpl: async (url: string) => {
+        urls.push(String(url));
+        calls++;
+        if (calls <= 2) throw connErr();
+        return okResp();
+      },
+      now,
+      sleep,
+      rediscover: () => 'http://127.0.0.1:1111',
+      onRebase,
+    });
+    expect(r.ok).toBe(true);
+    expect(new Set(urls).size).toBe(1); // never rebased
+    expect(onRebase).not.toHaveBeenCalled();
+  });
+
+  it('null discovery (no operator.json — dev box) and a THROWING rediscover both stay plain retries', async () => {
+    const { now, sleep } = fakeClock();
+    for (const rediscover of [() => null, () => { throw new Error('unreadable'); }]) {
+      let calls = 0;
+      const r = await fetchResilient('http://127.0.0.1:1111/api/x', {}, {
+        fetchImpl: async () => {
+          calls++;
+          if (calls <= 1) throw connErr();
+          return okResp();
+        },
+        now,
+        sleep,
+        rediscover,
+      });
+      expect(r.ok).toBe(true);
+      expect(calls).toBe(2);
+    }
+  });
+
+  it('a TIMEOUT never rediscovers (reachable-but-slow is not a moved port)', async () => {
+    const { now, sleep } = fakeClock();
+    const rediscover = vi.fn(() => 'http://127.0.0.1:2222');
+    await expect(
+      fetchResilient('http://127.0.0.1:1111/api/x', {}, {
+        fetchImpl: async () => { throw timeoutErr(); },
+        now,
+        sleep,
+        timeoutRetries: 1,
+        rediscover,
+      }),
+    ).rejects.toThrow(/timed out/);
+    expect(rediscover).not.toHaveBeenCalled();
+  });
+
+  it('keeps following across a SECOND move (restart during the retry window)', async () => {
+    const { now, sleep } = fakeClock();
+    const urls: string[] = [];
+    let discovered = 'http://127.0.0.1:2222';
+    const r = await fetchResilient('http://127.0.0.1:1111/api/x', {}, {
+      fetchImpl: async (url: string) => {
+        urls.push(String(url));
+        if (String(url).includes(':3333')) return okResp();
+        discovered = 'http://127.0.0.1:3333'; // it moved again while we retried
+        throw connErr();
+      },
+      now,
+      sleep,
+      rediscover: () => discovered,
+    });
+    expect(r.ok).toBe(true);
+    expect(urls.at(-1)).toBe('http://127.0.0.1:3333/api/x');
+  });
+});
