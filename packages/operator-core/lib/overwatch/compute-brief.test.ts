@@ -644,6 +644,13 @@ test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + m
   assert.deepEqual(b.observations.recentByRole, { queen: 2, worker: 4 });
 });
 
+test('mapSystemHealthToBrief — plumbs QueenHealth.started through to brief.queen.started (EI-8524)', () => {
+  const started = mapSystemHealthToBrief(fakeHealth({ queen: queenData({ started: true }) }), 'papercup-hive');
+  assert.equal(started.queen.started, true);
+  const notStarted = mapSystemHealthToBrief(fakeHealth({ queen: queenData({ started: false }) }), 'papercup-hive');
+  assert.equal(notStarted.queen.started, false);
+});
+
 test('mapSystemHealthToBrief — unreadable panels (data:null) degrade to neutral defaults, never an alarm', () => {
   const h = fakeHealth({
     queen: null,

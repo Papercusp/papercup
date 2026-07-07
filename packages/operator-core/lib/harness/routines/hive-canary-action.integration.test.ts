@@ -157,6 +157,18 @@ describe('hive-canary action (P-009)', () => {
     expect(rows.find((r) => r.feature_id === 'F-CANARY-OVERDUE')?.payload?.canary_reported).toBe(true);
     expect(rows.find((r) => r.feature_id === 'F-CANARY-DONE')?.payload?.canary_reported).toBeUndefined();
 
+    // EI-8524: the overdue canary is auto-deprecated once its miss is reported —
+    // the bug already carries the forensics, so leaving it `todo` forever only
+    // adds permanent frontier/Kettle "work-feed-stuck" noise. The already-terminal
+    // (`passed`) canary is untouched (never entered the overdue candidate set).
+    expect(rows.find((r) => r.feature_id === 'F-CANARY-OVERDUE')?.status).toBe('deprecated');
+    expect(rows.find((r) => r.feature_id === 'F-CANARY-DONE')?.status).toBe('passed');
+    const [deprecated] = await db.adminSql`
+      SELECT terminal_owner, terminal_completion_ref FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND feature_id = 'F-CANARY-OVERDUE'`;
+    expect(deprecated.terminal_owner).toBe('system:hive-canary');
+    expect(deprecated.terminal_completion_ref).toContain('Auto-deprecated (EI-8524)');
+
     // A second tick does NOT re-file (stamp + dedup).
     await fire();
     const again = await db.adminSql`

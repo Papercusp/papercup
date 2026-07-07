@@ -229,12 +229,23 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
     });
     // Mark reported regardless of created/deduped — one report per canary.
     // Merge canary_reported: true into the payload JSONB object (or create the object if payload is null).
+    // EI-8524: ALSO deprecate the canary itself here. Before this it stayed
+    // `todo` forever once reported — the miss is already captured durably as a
+    // bug (or deduped into an existing one), so leaving the work-item open adds
+    // nothing but permanent frontier/Kettle "work-feed-stuck" noise (observed
+    // live: F-CANARY-20260703 sat unplaced 4+ days, already `canary_reported`,
+    // still re-triggering the anomaly detector every wake). Deprecating loses no
+    // signal (the bug carries the forensics) and a fresh dated canary is queued
+    // every day regardless (Phase 2 below), so the E2E health check keeps running.
     const updateResult = await sql<{ feature_id: string }[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET payload = CASE
                WHEN payload IS NULL THEN '{"canary": true, "canary_reported": true}'::jsonb
                ELSE payload || '{"canary_reported": true}'::jsonb
              END,
+             status = 'deprecated',
+             terminal_owner = 'system:hive-canary',
+             terminal_completion_ref = ${`Canary missed its ${deadlineHours}h deadline; reported as ${res.issue?.id ?? (res.created ? 'a new bug' : 'a deduped bug')}. Auto-deprecated (EI-8524) — the miss is captured via the linked bug; a fresh canary is queued daily regardless.`},
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}
        RETURNING feature_id`;
