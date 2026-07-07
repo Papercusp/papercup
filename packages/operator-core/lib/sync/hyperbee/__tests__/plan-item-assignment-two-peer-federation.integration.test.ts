@@ -161,6 +161,10 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     );
   `);
   await sql.unsafe(readFileSync(join(SQL_DIR, 'archive/102-substrate-outbox.sql'), 'utf8'));
+  // WI-3192 cluster (2): migration 495 added drained_log_key so outbox-drain
+  // can stamp which own-log key drained each row — the live drain writer
+  // always writes it, but this fixture only replays the creating migration.
+  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
   await sql.unsafe(stripMeta(readFileSync(join(SQL_DIR, '140-plan-item-assignments.sql'), 'utf8')));
   await sql.unsafe(stripMeta(readFileSync(join(SQL_DIR, '145-plan-item-assignments-federation.sql'), 'utf8')));
   // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.

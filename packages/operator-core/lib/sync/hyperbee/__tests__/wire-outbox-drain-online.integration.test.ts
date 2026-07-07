@@ -166,6 +166,13 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
     await sql.unsafe(readFileSync(join(SQL_DIR, file), 'utf8'));
   }
 
+  // WI-3192 cluster (2): migration 495 added drained_log_key so outbox-drain
+  // can stamp which own-log key drained each row and detect prior-era orphan
+  // tails — the live drain writer (outbox-drain.ts) always writes it. This
+  // fixture replays only the creating migration (102), so keep the schema
+  // aligned with the current writer (mirrors composition-rig.ts's ALTER).
+  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
+
   // Stamp the one-time-backfill `backfill_done` marker so wireOutboxForHarness's
   // backfill SHORT-CIRCUITS (the seam under test is the live DRAIN, not the
   // backfill, which is proven elsewhere and reads tables this minimal schema
