@@ -460,6 +460,75 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
   );
 
   it(
+    'same-source turns stacked while the agent is busy COALESCE into ONE annotated delivery (compaction-continuity P-001a)',
+    async () => {
+      // The measured 9× duplication: N same-loop wakes arrive while the agent is
+      // mid-turn; each connection handler waits at the gates and pre-fix ALL N
+      // injected back-to-back the moment the prompt returned. Post-fix the first
+      // becomes the waiter, later same-key arrivals FOLD into it (newest text
+      // wins), and exactly ONE annotated turn lands.
+      const ownerId = uniqueOwner('COALESCE');
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        // Busy (emitting '.') for 900ms, then quiet; self-exits at 5000ms.
+        args: ['-e', busyThenIdleChildCode(900, 50, 5000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
+        },
+        ownerId,
+        advSessionId: 8883,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      const host = await waitForHost(ownerId);
+      expect(host).not.toBeNull();
+      // EI-7662: only inject once the child has GENUINELY started emitting.
+      expect(await waitForOutput(captured, '.')).toBe(true);
+
+      // Three same-source wakes while mid-turn: identical first line (the coalesce
+      // key — a loop's wake texts share it), differing detail (the checkpoint splice).
+      for (let n = 1; n <= 3; n++) {
+        const ok = await injectIntoHost(host!.sock, {
+          mode: 'turn',
+          data: `LOOPWAKE goal G\ndetail-${n}`,
+        });
+        expect(ok).toBe(true);
+      }
+
+      // After the busy window (~900ms) + quiet gate (200ms), ONE delivery lands.
+      await sleep(1600);
+      const out = captured();
+      // Exactly one turn delivered — not three.
+      expect(out.split('ECHO:LOOPWAKE goal G').length - 1).toBe(1);
+      // Newest text won; the folded earlier texts were never written at all.
+      expect(out).toContain('ECHO:detail-3');
+      expect(out).not.toContain('detail-1');
+      expect(out).not.toContain('detail-2');
+      // The delivery is annotated so the agent treats it as ONE wake.
+      expect(out).toContain('2 duplicate queued wakes were coalesced');
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+    },
+    20_000,
+  );
+
+  it(
     'an agent that stays busy past the cap DROPS the live inject (never wedges the turn) — the durable inbox stands',
     async () => {
       // The anti-wedge guarantee: if the agent never returns to its prompt within
