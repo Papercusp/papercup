@@ -53,7 +53,23 @@ const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, 'embedded-pg.json');
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, 'superuser-token');
-const LOCK_PATH = join(PAPERCUSP_DIR, 'operator.lock');
+// WI-3287: a packaged env-sidecar sibling (env-operator-launcher.ts's bundled
+// spawn — prod/staging running request-only alongside the primary, EI-126)
+// re-execs THIS SAME serve.mjs under the SAME $HOME, identified by
+// PAPERCUSP_ENV_OPERATOR_ID. Without scoping the lock file by that id, the
+// sibling's acquireColdStartLock() call collides with the primary's — which
+// holds `operator.lock` for its ENTIRE lifetime (only released on shutdown,
+// never after a successful boot) — so every env-sidecar boot would
+// permanently fail with "another `serve` holds the cold-start lock" the
+// moment the primary is up (found live on the first real packaged-Linux
+// env-switcher verify, 2026-07-07 — the switcher's staging button never
+// lit because of this). Scoping by id gives each sibling (and the primary)
+// its own lock, so they can legitimately cold-start concurrently.
+const ENV_OPERATOR_ID = process.env.PAPERCUSP_ENV_OPERATOR_ID || null;
+const LOCK_PATH = join(
+  PAPERCUSP_DIR,
+  ENV_OPERATOR_ID ? `operator.lock.env-${ENV_OPERATOR_ID}` : 'operator.lock',
+);
 // WI-2644: was `process.env.npm_package_version ?? '0.1.0-dev'` — npm never
 // invokes the bundled sidecar, so this was ALWAYS the '0.1.0-dev' fallback on
 // every packaged desktop build. build-info.ts already resolves the correct
@@ -545,10 +561,13 @@ async function main(): Promise<void> {
 
   const hostname =
     process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
-  const port = await resolveStickyPort(
-    Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070),
-    hostname,
-  );
+  const honoPortHint = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
+  // WI-3287: an env-sidecar sibling has a FIXED, well-known port per the
+  // env-switcher contract (env-operator-launcher.ts's PROVISIONABLE_ENV_OPERATORS)
+  // — it must never wander onto the PRIMARY's remembered sticky port (which
+  // operator-port.json records for the primary alone; siblings must not read
+  // OR write it — see the OPERATOR_JSON/OPERATOR_PORT_MEMORY guard below).
+  const port = ENV_OPERATOR_ID ? honoPortHint : await resolveStickyPort(honoPortHint, hostname);
   const httpUrl = `http://${hostname}:${port}`;
 
   // --ensure: reuse a healthy running operator and exit 0.
@@ -618,10 +637,13 @@ async function main(): Promise<void> {
         } catch {
           /* ignore */
         }
-        try {
-          unlinkSync(OPERATOR_JSON);
-        } catch {
-          /* already gone */
+        // WI-3287: never unlink the PRIMARY's discovery file from a sibling shutdown.
+        if (!ENV_OPERATOR_ID) {
+          try {
+            unlinkSync(OPERATOR_JSON);
+          } catch {
+            /* already gone */
+          }
         }
         if (pg) sigintPostmasterSync(resolvedPgDataDir());
         releaseColdStartLock();
@@ -657,22 +679,31 @@ async function main(): Promise<void> {
 
     server = serve({ fetch: handler, port, hostname }, async (info) => {
       log(`listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === '0' ? 'OFF' : 'ON'})`);
-      const discovery: OperatorDiscovery = {
-        httpUrl,
-        port: info.port,
-        token: readToken(),
-        pid: process.pid,
-        startedAt: Date.now(),
-        version: VERSION,
-      };
-      await writeJsonAtomic(OPERATOR_JSON, discovery);
-      log(`wrote ${OPERATOR_JSON}`);
-      try {
-        // Port memory for the next boot (sticky port — see resolveStickyPort).
-        // Optional state: a failed write must never affect the running boot.
-        await writeJsonAtomic(OPERATOR_PORT_MEMORY, { port: info.port, updatedAt: Date.now() });
-      } catch (e) {
-        log(`could not persist port memory (${(e as Error).message}) — next restart re-picks`);
+      // WI-3287: OPERATOR_JSON/OPERATOR_PORT_MEMORY are THE PRIMARY's discovery
+      // records — Tauri's `--ensure` reuse check, the sticky-port memory, and
+      // every external `--operator-url` consumer key off this ONE fixed path.
+      // An env-sidecar sibling (ENV_OPERATOR_ID set) must never write it: it
+      // would clobber the primary's own discovery with itself, breaking every
+      // future `--ensure` / reconnect. Siblings are reached by direct port
+      // navigation (the env switcher), not through this file.
+      if (!ENV_OPERATOR_ID) {
+        const discovery: OperatorDiscovery = {
+          httpUrl,
+          port: info.port,
+          token: readToken(),
+          pid: process.pid,
+          startedAt: Date.now(),
+          version: VERSION,
+        };
+        await writeJsonAtomic(OPERATOR_JSON, discovery);
+        log(`wrote ${OPERATOR_JSON}`);
+        try {
+          // Port memory for the next boot (sticky port — see resolveStickyPort).
+          // Optional state: a failed write must never affect the running boot.
+          await writeJsonAtomic(OPERATOR_PORT_MEMORY, { port: info.port, updatedAt: Date.now() });
+        } catch (e) {
+          log(`could not persist port memory (${(e as Error).message}) — next restart re-picks`);
+        }
       }
     }) as unknown as { close?: () => void };
   } catch (e) {
