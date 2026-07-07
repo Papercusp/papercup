@@ -2,7 +2,7 @@
 title: Linux-VM desktop testing — the test VM already exists, plus the seeded-.deb recipe
 description: The Linux clean-room test VM already exists at /mnt/data/offload/papercup-linux-test-vm (do NOT provision a new one). How to boot it, SSH/SPICE in, install and launch a seeded release .deb, and drive its GUI headlessly on DISPLAY=:0 via SPICE — plus the E2E findings from the first seeded-.deb run (2026-07-05).
 discovered: 2026-07-05
-tags: [linux, deb, desktop, tauri, vm, e2e, release, seed, spice, qemu]
+tags: [linux, deb, desktop, tauri, vm, e2e, release, seed, spice, qemu, postgres, psql, embedded-pg, pg_dump, snapshots]
 status: active
 documents:
   - papercusp-desktop/scripts/linux-test-vm/boot-vm.sh
@@ -105,6 +105,25 @@ PG="/usr/lib/Papercusp GUI/sidecar/node_modules/@papercusp/embedded-postgres-ser
 ```
 
 Write a tiny `.cjs` that `require(PG)`, connect with that URL, run your SELECTs.
+
+**Why the shipped psql is broken (root cause, traced 2026-07-07):**
+`papercusp-desktop/bin/build-desktop-sidecar.sh` ("wiring pg_dump / psql /
+pg_dumpall into sidecar/bin", ~line 977) needs client tools for the snapshot
+subsystem, but embedded-postgres ships server-only — so it falls back to
+copying whatever `command -v psql` resolves to on the **build host**. On
+Debian/Ubuntu that is `/usr/bin/psql` = postgresql-common's **perl
+`pg_wrapper` dispatcher**, not a real binary. It works on the build host
+(wrapper + versioned client both installed there), so the bug is invisible at
+build time, and dies on any clean machine (`Can't locate PgCommon.pm`). All
+FOUR shipped tools — `psql`, `pg_dump`, `pg_dumpall`, `pg_restore` — are the
+same ~9.5K wrapper (see `sidecar/bin/.pg-tools-source`), which means the
+**snapshot subsystem itself (pg_dump-based backup/restore) is broken in the
+packaged app on clean machines**, not just agent SQL access. The durable fix
+is to vendor the real binaries (`$(pg_config --bindir)` /
+`/usr/lib/postgresql/<N>/bin/`) plus required libs, or fail the build loudly
+when a copied tool is a perl script. Until that lands, use the node+pg recipe
+above — and never trust `which psql` inside a VM/packaged install as evidence
+of a working client.
 
 ## Seed-cut identity rule (do not violate)
 

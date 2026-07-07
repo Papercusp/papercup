@@ -75,6 +75,13 @@ away"). Don't assume it'll be there.
   ```bash
   psql "$(jq -r .url ~/.papercusp/embedded-pg.json)"
   ```
+  ⚠️ **Dev machines only.** The packaged desktop app's `sidecar/bin/psql` is a
+  broken Debian `pg_wrapper` perl shim copied from the build host (dies with
+  `Can't locate PgCommon.pm`), and clean VMs / fresh installs have no real
+  client at all — `which psql` succeeding there does NOT mean psql runs. On
+  those machines query via the bundled `node` + `pg` module instead: see
+  "Querying the guest's embedded Postgres" in the
+  `linux-vm-desktop-testing-workflow` insight.
 - **Never write a config file** that bakes a PG port at install time.
   Resolve at runtime.
 - If embedded-pg.json doesn't exist, the desktop hasn't been booted
