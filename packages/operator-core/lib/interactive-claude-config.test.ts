@@ -269,7 +269,9 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     return execFileSync(process.execPath, [join(configDir, RECOVER_HOOK)], {
       encoding: 'utf8',
       input: '{"session_id":"random-new-id","source":"startup"}',
-      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain) },
+      // PAPERCUSP_SID cleared: the test process's own psu identity would
+      // otherwise mismatch the seeded intent sid and fire the P-007 rebind leg.
+      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain), PAPERCUSP_SID: '' },
     });
   }
 

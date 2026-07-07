@@ -524,7 +524,7 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
  *      and the shim fell back to bare `node` → "node not found" (WI-3334).
  * Falls back to PATH `node` only in a dev/unbundled layout (the dev box has it).
  */
-async function resolveShimNode(launcherPath: string): Promise<string> {
+export async function resolveShimNode(launcherPath: string): Promise<string> {
   const candidates = [
     path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node'),
     path.join(process.cwd(), 'bin', 'node'),

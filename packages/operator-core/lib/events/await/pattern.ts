@@ -30,7 +30,7 @@ import { evaluateOperatorTest, type OperatorTest } from '@papercusp/rules';
  * and never start with `@`, so this classification is unambiguous.
  */
 export function isPattern(key: string): boolean {
-  return key.includes('*') || key.startsWith('@');
+  return typeof key === 'string' && (key.includes('*') || key.startsWith('@'));
 }
 
 /**
@@ -41,6 +41,10 @@ export function isPattern(key: string): boolean {
  * loudly at registration, never silently store a key that can never match.
  */
 export function expandPatternMacro(key: string): string {
+  // WI-3309/EI-8413: guard a malformed (non-string) key rather than crashing —
+  // callers on a best-effort emit path (fireAwaitsForKey) must never throw on
+  // bad candidate data; see the store.ts call-site comment for the concrete repro.
+  if (typeof key !== 'string') return key;
   if (!key.startsWith('@')) return key;
   const plan = /^@plan:(.+)$/.exec(key);
   if (plan) return `plan-item:done:${plan[1]}:*`;
@@ -76,6 +80,9 @@ export function patternToOperatorTest(glob: string): OperatorTest {
  * slip into the pattern candidate set.
  */
 export function keyMatchesPattern(pattern: string, firedKey: string): boolean {
+  // WI-3309/EI-8413: a malformed (non-string) candidate can never match anything —
+  // degrade to false rather than throwing (see store.ts's fireAwaitsForKey call site).
+  if (typeof pattern !== 'string') return false;
   const glob = expandPatternMacro(pattern);
   if (!glob.includes('*')) return glob === firedKey;
   return evaluateOperatorTest(patternToOperatorTest(glob), firedKey);

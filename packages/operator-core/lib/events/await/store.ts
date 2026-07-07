@@ -318,7 +318,16 @@ export async function fireAwaitsForKey(input: {
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND (once = true OR expires_ts IS NULL OR expires_ts > now())
   `;
-  const matched = patternCandidates.filter((r: any) => keyMatchesPattern(r.event_key, input.eventKey));
+  // WI-3309/EI-8413: `event_key` is schema NOT NULL in real Postgres (a NULL/undefined
+  // value can never satisfy the `LIKE '%*%'` filter above either), so this guard only
+  // ever trips on a malformed candidate row from a non-conforming caller (a test double
+  // that stubs `sql` to answer every query with a canned, differently-shaped row was
+  // hitting this — `keyMatchesPattern(undefined, ...)` threw `undefined.startsWith`,
+  // which escaped as a console.warn via the emit's fire-and-forget .catch). A malformed
+  // row can never usefully match a pattern, so skip it instead of crashing the emit.
+  const matched = patternCandidates.filter(
+    (r: any) => typeof r.event_key === 'string' && keyMatchesPattern(r.event_key, input.eventKey),
+  );
   const matchedOnceIds = matched.filter((r: any) => (r.once ?? true) === true).map((r: any) => Number(r.id));
   const matchedStanding = matched.filter((r: any) => (r.once ?? true) === false);
   // Atomic exactly-once claim of the matched one-shot patterns (mirrors onceRows: a

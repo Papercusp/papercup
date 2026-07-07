@@ -376,8 +376,8 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     expect(plan.status).toBe('draft'); // Queen-gated: a DRAFT, not auto-active (D-002/D-010)
     expect(Number(plan.version)).toBe(1);
     expect(plan.origin).toBe('local');
-    // The template body carries the Queen-triage Now block + the proposal rationale.
-    expect(plan.content).toContain('Awaiting Queen/owner triage');
+    // The template body carries the Mug-triage Now block + the proposal rationale.
+    expect(plan.content).toContain('Awaiting Mug/owner triage');
     expect(plan.content).toContain(`Why new: ${RAIL_PROPOSALS.plan.whyNew}`);
     expect(plan.content).toContain(dec.sourceIdeaIds[0]); // provenance back to the source idea
   });
