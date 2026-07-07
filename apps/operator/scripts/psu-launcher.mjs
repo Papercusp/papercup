@@ -677,6 +677,21 @@ export function kickoffPositionalArgs(res, args) {
 }
 
 /**
+ * The free-form first-turn text for a launch, with the SPAWN-SAFE env fallback:
+ * an explicit `--kickoff=<text>` flag wins, else `PAPERCUSP_KICKOFF_PROMPT` from
+ * the environment (else null → no kickoff). The env var is how the desktop
+ * tutorial's docs-agent launcher delivers the question: a `--kickoff=<text>`
+ * VALUE inside a console greetingCmd gets DOUBLE-single-quoted by
+ * buildConsoleOneliner and breaks the shell (the gnome-terminal exit-2 the
+ * docs-agent hit), whereas an env value is exported via a correctly-escaped
+ * `export K=…` in the oneliner prelude and arrives intact (multiline / embedded
+ * quotes included). Pure — exported for tests.
+ */
+export function resolveKickoffText(args, env = process.env) {
+  return args?.kickoffPromptText || env?.PAPERCUSP_KICKOFF_PROMPT || null;
+}
+
+/**
  * Per-agent resume command — RAW CLI (no `*-su` wrapper, P-042). Pure —
  * exported for tests. Returns the raw `bin` + resume args, re-supplying the
  * same launch flags the fresh-launch path uses (the wrappers used to bake
@@ -3936,10 +3951,21 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // an empty prompt) + an explicit --no-kickoff opt-out. Text is server-supplied
   // (res.kickoffPrompt = the canonical deriveLaunchPromptText, present iff a plan is
   // bound) so it never drifts from headless plans:launch's kickoff.
-  const kickoffArgs = kickoffPositionalArgs(res, args);
+  // Free-form kickoff precedence: explicit `--kickoff=<text>` flag, else the
+  // PAPERCUSP_KICKOFF_PROMPT env var. The env var is the SPAWN-SAFE channel — a
+  // free-form question passed as a `--kickoff=` VALUE inside a console greetingCmd
+  // gets double-single-quoted by buildConsoleOneliner and breaks the shell (the
+  // gnome-terminal exit-2 the tutorial docs-agent hit); an env value is exported
+  // via a correctly-escaped `export K=…` in the oneliner prelude and arrives
+  // intact (multiline / quotes included). So the desktop docs-agent launcher sets
+  // the env var, not the flag.
+  const kickoffArgs = kickoffPositionalArgs(res, {
+    ...args,
+    kickoffPromptText: resolveKickoffText(args),
+  });
   if (kickoffArgs.length) {
     launchArgs.push(...kickoffArgs);
-    console.error(`psu: kickoff — seeding first turn to advance plan ${res.planSlug ?? '?'} (suppress with --no-kickoff)`);
+    console.error(`psu: kickoff — seeding first turn${res.planSlug ? ` to advance plan ${res.planSlug}` : ''} (suppress with --no-kickoff)`);
   }
 
   // P-002 (omp-psu-interactive-parity-hardening-2026-06-29): an SU omp session

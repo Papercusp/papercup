@@ -54,6 +54,7 @@ import {
   roleLaunchArgs,
   suLaunchArgs,
   kickoffPositionalArgs,
+  resolveKickoffText,
   agentInvalidForRole,
   suWrapperExtraArgs,
   usePtyHost,
@@ -204,6 +205,30 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
     expect(
       kickoffPositionalArgs({}, parseArgs(['--no-picker', '--agent=claude', '--kickoff=q', '--no-kickoff'])),
     ).toEqual([]);
+  });
+});
+
+// resolveKickoffText — the SPAWN-SAFE env fallback the desktop docs-agent launcher
+// relies on (a free-form question rides PAPERCUSP_KICKOFF_PROMPT, not a --kickoff arg,
+// so it survives buildConsoleOneliner's greeting escaping instead of breaking the shell).
+describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
+  it('falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--label=docs-tutor']);
+    expect(args.kickoffPromptText).toBeNull();
+    const env = { PAPERCUSP_KICKOFF_PROMPT: "what's a pot?\nline two" };
+    expect(resolveKickoffText(args, env)).toBe("what's a pot?\nline two");
+    // and it actually seeds the first turn once threaded through kickoffPositionalArgs
+    expect(kickoffPositionalArgs({}, { ...args, kickoffPromptText: resolveKickoffText(args, env) })).toEqual([
+      "what's a pot?\nline two",
+    ]);
+  });
+  it('an explicit --kickoff flag wins over the env var', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=flag wins']);
+    expect(resolveKickoffText(args, { PAPERCUSP_KICKOFF_PROMPT: 'env loses' })).toBe('flag wins');
+  });
+  it('returns null when neither the flag nor the env var is set', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude']);
+    expect(resolveKickoffText(args, {})).toBeNull();
   });
 });
 

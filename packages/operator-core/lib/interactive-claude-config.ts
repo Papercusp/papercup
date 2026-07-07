@@ -86,7 +86,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { reconcileClaudeCredentials } from './claude-credential-sync';
 
@@ -118,6 +118,168 @@ const PERSONAL_MEMORY_ENTRIES = new Set(['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS
  */
 const FLEET_PRUNED_PLUGIN_NAMES = new Set(['github', 'cloudflare', 'firecrawl']);
 const FLEET_PRUNED_MCP_SERVERS = new Set(['playwright']);
+
+/**
+ * WI-3280 (argv-proof playbook delivery) — file names inside the session
+ * config dir. `RECOVER_HOOK` is a SessionStart hook script (registered in the
+ * session settings.json by writeSessionSettings); `RECOVER_PLAYBOOK` /
+ * `RECOVER_INTENT` are the parked playbook copy + launch metadata the hook
+ * injects from when it detects that claude's self-re-exec dropped the argv.
+ * Exported for the launcher-side writers and tests.
+ */
+export const RECOVER_HOOK = 'session-recover-hook.mjs';
+export const RECOVER_PLAYBOOK = 'launch-playbook.md';
+export const RECOVER_INTENT = 'launch-intent.json';
+
+/**
+ * The SessionStart recovery hook, written verbatim into every session config
+ * dir. Dependency-free (node builtins only) so it runs under any node on the
+ * box, including the WSL-mounted sidecar node on the Windows VM.
+ *
+ * Why it exists (WI-3278 → WI-3280, owner mandate): claude 2.1.x SELF-RE-EXECs
+ * (TUI fullscreen switch / update relaunch — `relaunchInto()` → `vge()` in the
+ * bundle) and the relaunch rebuilds argv as `[]` or `--resume <id>` via libc
+ * execve — the original launch flags (`--system-prompt-file` playbook,
+ * `--permission-mode`, `--session-id`, `--disallowedTools`) are NEVER
+ * re-passed, and the binary has NO config-level system-prompt key to bake the
+ * playbook into. Permissions survive via settings.json (WI-3278); this hook
+ * recovers the PLAYBOOK: on every SessionStart it inspects the live claude
+ * process's argv (the flag can only live there — the pty host passes args
+ * in-process, never on its own argv) and, when no `*-system-prompt-file` flag
+ * survives, injects the parked playbook copy as additionalContext. Silent
+ * no-op when argv is intact (zero token cost) or when no playbook was parked.
+ * `PSU_RECOVER_TEST_CHAIN` (JSON argv[][]) substitutes the ancestry walk for
+ * tests. Errors always exit 0 — a broken hook must never block a session.
+ */
+const RECOVER_HOOK_SOURCE = `#!/usr/bin/env node
+// session-recover-hook.mjs — WI-3280 argv-proof playbook delivery (generated
+// by interactive-claude-config.ts on every session materialize; do not edit).
+import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const dir = dirname(fileURLToPath(import.meta.url));
+const PLAYBOOK = join(dir, ${JSON.stringify(RECOVER_PLAYBOOK)});
+const INTENT = join(dir, ${JSON.stringify(RECOVER_INTENT)});
+const FLAGS = ['--system-prompt-file', '--append-system-prompt-file'];
+
+function cmdlineOf(pid) {
+  try {
+    const argv = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\\u0000').filter(Boolean);
+    if (argv.length) return argv;
+  } catch {}
+  try {
+    // macOS (no /proc). Whitespace-split degrades paths with spaces, but flag
+    // TOKENS are whitespace-delimited either way, which is all we test for.
+    const line = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+    if (line) return line.split(/\\s+/);
+  } catch {}
+  return null;
+}
+
+function ppidOf(pid) {
+  try {
+    const m = /^PPid:\\s*(\\d+)/m.exec(readFileSync('/proc/' + pid + '/status', 'utf8'));
+    if (m) return Number(m[1]);
+  } catch {}
+  try {
+    const n = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
+    if (Number.isFinite(n)) return n;
+  } catch {}
+  return 0;
+}
+
+function argvIntact() {
+  const chain = [];
+  if (process.env.PSU_RECOVER_TEST_CHAIN) {
+    try { chain.push(...JSON.parse(process.env.PSU_RECOVER_TEST_CHAIN)); } catch {}
+  } else {
+    let pid = process.ppid;
+    for (let hop = 0; hop < 10 && pid > 1; hop++) {
+      const argv = cmdlineOf(pid);
+      if (argv) chain.push(argv);
+      pid = ppidOf(pid);
+    }
+  }
+  const isClaude = (argv) => (argv[0] ?? '').toLowerCase().includes('claude');
+  const hasFlag = (argv) => argv.some((a) => FLAGS.some((f) => a === f || a.startsWith(f + '=')));
+  // The nearest claude ancestor decides; if none is identifiable (unusual
+  // argv[0], e.g. a bare versioned binary), fall back to any-flag-anywhere.
+  const claude = chain.find(isClaude);
+  return claude ? hasFlag(claude) : chain.some(hasFlag);
+}
+
+try {
+  if (!existsSync(PLAYBOOK)) process.exit(0);
+  if (argvIntact()) process.exit(0);
+  let intent = {};
+  try { intent = JSON.parse(readFileSync(INTENT, 'utf8')); } catch {}
+  const playbook = readFileSync(PLAYBOOK, 'utf8');
+  const banner = [
+    '⚠ SESSION RECOVERED — your launch system prompt was lost; it is re-delivered below.',
+    'This claude process self-relaunched (an internal claude re-exec: TUI fullscreen switch or',
+    'update relaunch) and claude rebuilds argv on relaunch WITHOUT the original launch flags:',
+    'the --system-prompt-file playbook, --permission-mode, --session-id and any --disallowedTools',
+    'were dropped. Permissions were separately restored via this session settings.json. Notes:',
+    intent.sid ? '- Your papercusp identity is ' + intent.sid + ' (env PAPERCUSP_SID) — coord/MCP identity is unaffected.' : '- Your coord/MCP identity (env PAPERCUSP_SID) is unaffected.',
+    intent.nativeSessionId ? '- Your native claude session id may differ from the recorded one (' + intent.nativeSessionId + ') — psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.' : '- psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.',
+    '- If the playbook below denies tools (subagents, native schedulers), honor it even though the CLI deny flags were lost.',
+    '- The document below IS your operating playbook / system prompt. Follow it in full.',
+  ].join('\\n');
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: banner + '\\n\\n' + playbook,
+    },
+  }));
+  process.exit(0);
+} catch {
+  process.exit(0); // never block a session start
+}
+`;
+
+/**
+ * WI-3280: park the launch playbook + intent metadata in the config dir, and
+ * (re)write the recovery hook script itself. The hook + settings entry are
+ * written on EVERY materialize (inert without a parked playbook); the playbook
+ * copy is written only when the caller supplies one — a resume-path
+ * re-materialize without `recovery` deliberately KEEPS the original launch's
+ * parked copy, so late re-execs (and raw `claude` launches in this config dir)
+ * still recover the correct playbook. Best-effort throughout: a failed write
+ * degrades to today's behavior (argv-only delivery), never a failed launch.
+ */
+function writeRecoveryArtifacts(
+  configDir: string,
+  recovery?: { playbookPath?: string | null; nativeSessionId?: string | null; sid?: string },
+): void {
+  try {
+    writeFileSync(join(configDir, RECOVER_HOOK), RECOVER_HOOK_SOURCE, { mode: 0o700 });
+  } catch {
+    /* hook unwritable — argv delivery still stands */
+  }
+  if (!recovery?.playbookPath) return;
+  try {
+    const playbook = readFileSync(recovery.playbookPath, 'utf8');
+    writeFileSync(join(configDir, RECOVER_PLAYBOOK), playbook, { mode: 0o600 });
+    writeFileSync(
+      join(configDir, RECOVER_INTENT),
+      JSON.stringify(
+        {
+          sid: recovery.sid ?? null,
+          nativeSessionId: recovery.nativeSessionId ?? null,
+          playbookPath: recovery.playbookPath,
+          writtenAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+  } catch {
+    /* unreadable playbook — nothing to park; the hook stays inert */
+  }
+}
 
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
  *  symlink — `existsSync` returns false for a dangling link, but on resume we
@@ -166,6 +328,15 @@ export function writeInteractiveClaudeConfig(opts: {
    * byte-identical to today).
    */
   prunePlugins?: boolean;
+  /**
+   * WI-3280 (argv-proof playbook delivery): the launch playbook to PARK in the
+   * config dir so the SessionStart recovery hook can re-deliver it when
+   * claude's self-re-exec drops the argv (`--system-prompt-file` and all).
+   * Omit on resume-path re-materializes — the original launch's parked copy is
+   * kept. `nativeSessionId` is surfaced in the recovery banner so a recovered
+   * session can disclose its degraded psu tracking.
+   */
+  recovery?: { playbookPath?: string | null; nativeSessionId?: string | null };
 }): InteractiveClaudeConfig {
   const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);
@@ -235,6 +406,10 @@ export function writeInteractiveClaudeConfig(opts: {
     writeSessionSettings(null, join(configDir, 'settings.json'));
   }
 
+  // WI-3280: the SessionStart recovery hook (always) + the parked playbook
+  // copy (when the caller supplies one) — see writeRecoveryArtifacts.
+  writeRecoveryArtifacts(configDir, { ...opts.recovery, sid: opts.sid });
+
   // The isolated conversation-transcript store — a REAL dir, never a symlink, so
   // `/resume` + `claude --resume <uuid>` see only this session's transcripts.
   // mkdir is idempotent and never clobbers an existing (resumed) transcript.
@@ -290,9 +465,27 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
     ...(cfg.permissions as Record<string, unknown> | undefined),
     defaultMode: 'bypassPermissions',
   };
+  // WI-3280: register the argv-drop recovery hook on SessionStart. APPENDED to
+  // (never replacing) the user's global hook groups, and rebuilt from the
+  // global file on every materialize, so it can't accumulate duplicates. The
+  // node running the operator is the node the hook runs under (exists on every
+  // box that can mint a session — the WSL-mounted sidecar node on the VM);
+  // JSON.stringify-quoting keeps space-containing paths shell-safe.
+  const hooks = { ...(cfg.hooks as Record<string, unknown> | undefined) };
+  const sessionStart = Array.isArray(hooks.SessionStart) ? [...(hooks.SessionStart as unknown[])] : [];
+  sessionStart.push({
+    hooks: [
+      {
+        type: 'command',
+        command: `${JSON.stringify(process.execPath)} ${JSON.stringify(join(dirname(dest), RECOVER_HOOK))}`,
+        timeout: 30,
+      },
+    ],
+  });
+  hooks.SessionStart = sessionStart;
   try {
     if (present(dest) && lstatSync(dest).isSymbolicLink()) rmSync(dest);
-    writeFileSync(dest, JSON.stringify({ ...cfg, permissions }, null, 2));
+    writeFileSync(dest, JSON.stringify({ ...cfg, permissions, hooks }, null, 2));
   } catch {
     /* best-effort — argv still carries the grant on a non-re-exec launch */
   }

@@ -1312,6 +1312,9 @@ const post = defineTool({
         claudeConfigDir = writeInteractiveClaudeConfig({
           sid,
           prunePlugins: spec.personaTier === 'fleet',
+          // WI-3280: park the playbook so the SessionStart recovery hook can
+          // re-deliver it if claude's self-re-exec drops the launch argv.
+          recovery: { playbookPath: promptFile || null, nativeSessionId },
         }).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);

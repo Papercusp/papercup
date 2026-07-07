@@ -464,7 +464,12 @@ const post = defineTool({
     let claudeConfigDir: string | null = null;
     if (agent === 'claude') {
       try {
-        claudeConfigDir = writeInteractiveClaudeConfig({ sid }).configDir;
+        claudeConfigDir = writeInteractiveClaudeConfig({
+          sid,
+          // WI-3280: park the role prompt so the SessionStart recovery hook can
+          // re-deliver it if claude's self-re-exec drops the launch argv.
+          recovery: { playbookPath: promptFile || null, nativeSessionId },
+        }).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-role] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
       }

@@ -112,11 +112,18 @@ export function composeDocsAgentKickoff(question: string): string {
 
 /**
  * The `psu` invocation that opens the docs tutor: a scripted (`--no-picker`)
- * superuser claude session with NO plan, seeded with the kickoff first turn and
- * stamped with the tracking label. Pure — exported for tests. The kickoff +
- * workspace values are shell-quoted (shq); the fixed tokens are safe slugs.
+ * superuser claude session with NO plan, stamped with the tracking label. Pure —
+ * exported for tests.
+ *
+ * The free-form first-turn question is NOT a CLI arg here — it's delivered via the
+ * PAPERCUSP_KICKOFF_PROMPT env var (see the handler). A question passed as a
+ * `--kickoff=<text>` value inside the console greetingCmd gets double-single-
+ * quoted by buildConsoleOneliner and breaks the shell (gnome-terminal exit 2);
+ * an env value is exported with correct escaping and arrives intact. So this
+ * command carries ONLY safe slug tokens (workspace ids / the fixed label are
+ * bare; shq is a belt-and-braces guard that never actually quotes them).
  */
-export function buildDocsAgentPsuCommand(opts: { kickoff: string; label: string; workspace: string }): string {
+export function buildDocsAgentPsuCommand(opts: { label: string; workspace: string }): string {
   return [
     'psu',
     '--no-picker',
@@ -124,7 +131,6 @@ export function buildDocsAgentPsuCommand(opts: { kickoff: string; label: string;
     '--no-plan',
     `--workspace=${shq(opts.workspace)}`,
     `--label=${shq(opts.label)}`,
-    `--kickoff=${shq(opts.kickoff)}`,
   ].join(' ');
 }
 
@@ -209,14 +215,15 @@ const docsAgentAsk = defineTool({
       return Response.json({ status: 'error', error: `envelope build failed: ${e?.message ?? e}` }, { status: 500 });
     }
 
-    const command = buildDocsAgentPsuCommand({
-      kickoff: composeDocsAgentKickoff(question),
-      label: DOCS_AGENT_LABEL,
-      workspace: workspaceId,
-    });
+    const command = buildDocsAgentPsuCommand({ label: DOCS_AGENT_LABEL, workspace: workspaceId });
+    // Deliver the free-form first-turn question via env (spawn-safe — see
+    // buildDocsAgentPsuCommand). buildConsoleOneliner exports it with correct
+    // shell escaping in the prelude, and psu reads PAPERCUSP_KICKOFF_PROMPT as the
+    // kickoff first turn.
+    const env = { ...base.env, PAPERCUSP_KICKOFF_PROMPT: composeDocsAgentKickoff(question) };
 
     const result = await spawnConsole({
-      envelope: { ...base, greetingCmd: command },
+      envelope: { ...base, env, greetingCmd: command },
       label: 'Docs tutor',
       writeMcpJson: false,
     });

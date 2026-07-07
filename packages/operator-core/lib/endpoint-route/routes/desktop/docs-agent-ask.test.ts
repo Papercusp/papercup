@@ -49,25 +49,16 @@ describe('composeDocsAgentKickoff (the seeded first user turn)', () => {
 });
 
 describe('buildDocsAgentPsuCommand (the psu launch)', () => {
-  it('is a scripted no-picker, no-plan claude launch stamped with the label + kickoff', () => {
-    const cmd = buildDocsAgentPsuCommand({
-      kickoff: 'answer: what is a pot?',
-      label: DOCS_AGENT_LABEL,
-      workspace: 'default',
-    });
-    expect(cmd.startsWith('psu --no-picker --agent=claude --no-plan')).toBe(true);
-    expect(cmd).toContain('--workspace=default');
-    expect(cmd).toContain('--label=docs-tutor');
-    // the free-form kickoff is single-quoted as ONE token
-    expect(cmd).toContain(`--kickoff='answer: what is a pot?'`);
+  it('is a scripted no-picker, no-plan claude launch stamped with the label', () => {
+    const cmd = buildDocsAgentPsuCommand({ label: DOCS_AGENT_LABEL, workspace: 'default' });
+    expect(cmd).toBe('psu --no-picker --agent=claude --no-plan --workspace=default --label=docs-tutor');
   });
-  it('shell-quotes a workspace / kickoff containing metacharacters', () => {
-    const cmd = buildDocsAgentPsuCommand({
-      kickoff: "what's a queen & a hive?",
-      label: DOCS_AGENT_LABEL,
-      workspace: 'ws one',
-    });
-    expect(cmd).toContain(`--workspace='ws one'`);
-    expect(cmd).toContain(`--kickoff='what'\\''s a queen & a hive?'`);
+  it('carries NO free-form text — the question rides PAPERCUSP_KICKOFF_PROMPT (spawn-safe), not a CLI arg', () => {
+    // Regression guard for the gnome-terminal exit-2 bug: a `--kickoff=<free text>`
+    // value inside the console greetingCmd gets double-single-quoted by
+    // buildConsoleOneliner and breaks the shell. The command must stay quote-free.
+    const cmd = buildDocsAgentPsuCommand({ label: DOCS_AGENT_LABEL, workspace: 'default' });
+    expect(cmd).not.toContain('--kickoff');
+    expect(cmd).not.toContain("'"); // no single quotes at all → nothing to double-escape
   });
 });

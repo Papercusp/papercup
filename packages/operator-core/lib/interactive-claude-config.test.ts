@@ -25,9 +25,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
-import { writeInteractiveClaudeConfig } from './interactive-claude-config';
+import {
+  RECOVER_HOOK,
+  RECOVER_INTENT,
+  RECOVER_PLAYBOOK,
+  writeInteractiveClaudeConfig,
+} from './interactive-claude-config';
 
 const savedRoot = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
 let root: string; // the per-session CLAUDE_CONFIG_DIR root (override)
@@ -104,7 +110,9 @@ describe('writeInteractiveClaudeConfig', () => {
     // claude self-re-exec that drops the argv flags still boots in bypass mode.
     expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(false);
     const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
-    expect(settings.hooks).toEqual({ PreToolUse: [] });
+    expect(settings.hooks.PreToolUse).toEqual([]);
+    // WI-3280: the argv-drop recovery hook rides SessionStart in the same file.
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain('session-recover-hook.mjs');
     expect(settings.permissions.defaultMode).toBe('bypassPermissions');
     expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
   });
@@ -217,5 +225,125 @@ describe('writeInteractiveClaudeConfig', () => {
       readFileSync(join(fullDir, 'plugins', 'installed_plugins.json'), 'utf8'),
     ) as { plugins: Record<string, unknown> };
     expect(Object.keys(fullReg.plugins)).toHaveLength(4);
+  });
+});
+
+/**
+ * WI-3280 — argv-proof playbook delivery. claude 2.1.x's self-re-exec
+ * (relaunchInto → vge) rebuilds argv WITHOUT the original launch flags, so the
+ * `--system-prompt-file` playbook is lost. The config dir parks a playbook
+ * copy + a SessionStart hook that re-injects it when the live claude process's
+ * argv no longer carries a *-system-prompt-file flag.
+ */
+describe('WI-3280: SessionStart playbook recovery', () => {
+  /** The exact chain shapes seen live: hook ← sh ← claude ← psu.mjs. */
+  const INTACT_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    [
+      '/home/papercup/.local/bin/claude',
+      '--dangerously-skip-permissions',
+      '--system-prompt-file',
+      '/home/papercup/.papercusp/launch-context/session-2.md',
+      '--exclude-dynamic-system-prompt-sections',
+      '--session-id',
+      '22fa0398-0e51-48b1-93cb-e7c8426064d1',
+      '--permission-mode',
+      'bypassPermissions',
+    ],
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+  const DROPPED_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    ['/home/papercup/.local/bin/claude'], // the re-exec'd bare argv, verbatim from /proc
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+  const RESUME_RELAUNCH_CHAIN = [
+    ['sh', '-c', 'node hook'],
+    ['/home/papercup/.local/bin/claude', '--resume', '22fa0398-0e51-48b1-93cb-e7c8426064d1'],
+    ['node', '/mnt/c/x/psu.mjs'],
+  ];
+
+  function runHook(configDir: string, chain: string[][]): string {
+    return execFileSync(process.execPath, [join(configDir, RECOVER_HOOK)], {
+      encoding: 'utf8',
+      input: '{"session_id":"random-new-id","source":"startup"}',
+      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain) },
+    });
+  }
+
+  function seedWithPlaybook(sid: string): string {
+    seedHome(home);
+    const playbookSrc = join(home, 'playbook.md');
+    writeFileSync(playbookSrc, '# SU engineer playbook\nA pot is the offline-first data substrate.\n');
+    return writeInteractiveClaudeConfig({
+      sid,
+      home,
+      recovery: { playbookPath: playbookSrc, nativeSessionId: '22fa0398-0e51-48b1-93cb-e7c8426064d1' },
+    }).configDir;
+  }
+
+  it('parks the playbook copy + intent and writes the hook script', () => {
+    const configDir = seedWithPlaybook('su-rec1');
+    expect(readFileSync(join(configDir, RECOVER_PLAYBOOK), 'utf8')).toContain('A pot is');
+    const intent = JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8'));
+    expect(intent.sid).toBe('su-rec1');
+    expect(intent.nativeSessionId).toBe('22fa0398-0e51-48b1-93cb-e7c8426064d1');
+    expect(readFileSync(join(configDir, RECOVER_HOOK), 'utf8')).toContain('argvIntact');
+    // The settings hook command points node at THIS session's hook script.
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    const cmd = JSON.stringify(settings.hooks.SessionStart);
+    expect(cmd).toContain(join(configDir, RECOVER_HOOK));
+    expect(cmd).toContain(JSON.stringify(process.execPath).slice(1, -1));
+  });
+
+  it('appends to (never replaces) existing global SessionStart hook groups', () => {
+    seedHome(home);
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo user-hook' }] }] },
+      }),
+    );
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec2', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.hooks.SessionStart).toHaveLength(2);
+    expect(JSON.stringify(settings.hooks.SessionStart[0])).toContain('user-hook');
+    expect(JSON.stringify(settings.hooks.SessionStart[1])).toContain(RECOVER_HOOK);
+  });
+
+  it('a resume-path re-materialize WITHOUT recovery keeps the original parked playbook', () => {
+    const configDir = seedWithPlaybook('su-rec3');
+    writeInteractiveClaudeConfig({ sid: 'su-rec3', home }); // wake-executor leg: no recovery opt
+    expect(readFileSync(join(configDir, RECOVER_PLAYBOOK), 'utf8')).toContain('A pot is');
+    expect(existsSync(join(configDir, RECOVER_INTENT))).toBe(true);
+  });
+
+  it('hook is SILENT when the claude ancestor still carries --system-prompt-file', () => {
+    const configDir = seedWithPlaybook('su-rec4');
+    expect(runHook(configDir, INTACT_CHAIN)).toBe('');
+  });
+
+  it('hook injects the playbook when the claude ancestor lost its argv (the VM shape)', () => {
+    const configDir = seedWithPlaybook('su-rec5');
+    const out = JSON.parse(runHook(configDir, DROPPED_CHAIN));
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(ctx).toContain('SESSION RECOVERED');
+    expect(ctx).toContain('su-rec5'); // identity from the intent file
+    expect(ctx).toContain('22fa0398-0e51-48b1-93cb-e7c8426064d1'); // recorded native id
+    expect(ctx).toContain('A pot is the offline-first data substrate'); // the playbook itself
+  });
+
+  it('hook injects on the --resume relaunch branch too (argv rebuilt without the prompt flag)', () => {
+    const configDir = seedWithPlaybook('su-rec6');
+    const out = JSON.parse(runHook(configDir, RESUME_RELAUNCH_CHAIN));
+    expect(out.hookSpecificOutput.additionalContext).toContain('A pot is');
+  });
+
+  it('hook is SILENT when no playbook was parked (role/raw dirs stay inert)', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-rec7', home });
+    expect(existsSync(join(configDir, RECOVER_PLAYBOOK))).toBe(false);
+    expect(runHook(configDir, DROPPED_CHAIN)).toBe('');
   });
 });
