@@ -60,6 +60,43 @@ export interface DeployLatencyMetrics {
   meanMs: number | null;
 }
 
+/** Mean injected bytes per loop wake above which the P-001 wake diet has regressed
+ *  (compaction-continuity-hardening-2026-07-07 P-008). Post-diet live baseline is
+ *  ~1.5k chars mean; the pre-diet full-boilerplate-every-wake behavior sat ≥3k. */
+export const WAKE_MEAN_CHAR_BUDGET = 3_000;
+
+/** How long after a compaction an error/owner-kick is attributed to it. */
+export const POST_COMPACTION_MARKER_WINDOW_MIN = 15;
+
+/** The post-compaction regression markers: a resumed session acting on hallucinated
+ *  schema (column/relation-not-found) right after its context was rebuilt. */
+export const POST_COMPACTION_ERROR_MARKER_REGEX =
+  'column .* does not exist|relation .* does not exist|no such column';
+
+/**
+ * Context-burn telemetry (P-008): what the coordination layer itself injects into
+ * agent contexts, and how often that forces compactions. WORKSPACE-scoped (wake
+ * deliveries + compactions key on owner ids, not harness membership), unlike the
+ * hive-scoped metrics above. `requestedCompactions` counts session:request-compaction
+ * calls — the disciplined path; native auto-compactions leave no durable row.
+ */
+export interface ContextBurnMetrics {
+  /** coord:inbox-wake deliveries queued in the window (the wake meter, D-007). */
+  loopWakes: number;
+  meanWakeChars: number | null;
+  maxWakeChars: number | null;
+  /** meanWakeChars / 4 — the usual chars-per-token heuristic. */
+  estMeanWakeTokens: number | null;
+  requestedCompactions: number;
+  /** Distinct owners that requested a compaction in the window. */
+  sessionsCompacting: number;
+  compactionsPerSession: number | null;
+  /** Failed tool calls matching POST_COMPACTION_ERROR_MARKER_REGEX within
+   *  POST_COMPACTION_MARKER_WINDOW_MIN of the same owner's compaction — the
+   *  regression metric for compaction-continuity-hardening-2026-07-07. */
+  postCompactionErrorMarkers: number;
+}
+
 export interface HiveSoakReport {
   hiveSlug: string;
   surveyScope: 'members' | 'workspace';
@@ -74,6 +111,7 @@ export interface HiveSoakReport {
   escalationBacklog: EscalationBacklogMetrics;
   gateGreenRatio: { green: number; total: number; ratio: number | null };
   deployLatency: DeployLatencyMetrics;
+  contextBurn: ContextBurnMetrics;
 }
 
 export interface HiveSoakReportSnapshot {
@@ -92,6 +130,7 @@ export interface SoakReportInput {
   escalationBacklog: EscalationBacklogMetrics;
   gateGreenRatio: { green: number; total: number; ratio: number | null };
   deployLatency: DeployLatencyMetrics;
+  contextBurn: ContextBurnMetrics;
 }
 
 function clampWindowHours(windowHours?: number): number {
@@ -172,6 +211,17 @@ export function computeSoakReport(input: SoakReportInput): HiveSoakReport {
   } else if (input.deployLatency.meanMs > DEPLOY_LATENCY_THRESHOLD_MS) {
     reasons.push(`mean deploy latency above ${Math.round(DEPLOY_LATENCY_THRESHOLD_MS / 60_000)}m`);
   }
+  // Context burn (P-008) reds only on POSITIVE bad evidence — a window with no loop
+  // wakes / no compactions is a quiet system, not missing evidence (unlike roles/gate
+  // above, loops and compactions are not required activity for a healthy hive).
+  if (input.contextBurn.meanWakeChars != null && input.contextBurn.meanWakeChars > WAKE_MEAN_CHAR_BUDGET) {
+    reasons.push(
+      `per-wake injected overhead above budget (mean ${input.contextBurn.meanWakeChars} chars > ${WAKE_MEAN_CHAR_BUDGET})`,
+    );
+  }
+  if (input.contextBurn.postCompactionErrorMarkers > 0) {
+    reasons.push(`post-compaction error markers in window (${input.contextBurn.postCompactionErrorMarkers})`);
+  }
 
   return {
     hiveSlug: input.hiveSlug,
@@ -187,6 +237,7 @@ export function computeSoakReport(input: SoakReportInput): HiveSoakReport {
     escalationBacklog: input.escalationBacklog,
     gateGreenRatio: input.gateGreenRatio,
     deployLatency: input.deployLatency,
+    contextBurn: input.contextBurn,
   };
 }
 
@@ -216,6 +267,18 @@ type PipelineEventRow = {
   kind: string;
   status: string;
   created_at: string | Date;
+};
+
+type WakeBurnAggRow = {
+  loop_wakes: number;
+  mean_wake_chars: number | null;
+  max_wake_chars: number | null;
+};
+
+type CompactionAggRow = {
+  compactions: number;
+  sessions: number;
+  post_markers: number;
 };
 
 function toMs(v: string | Date): number {
@@ -294,6 +357,8 @@ export async function readHiveSoakReport(
     escalationRows,
     pipelineAggRows,
     pipelineEventRows,
+    wakeBurnRows,
+    compactionRows,
   ] = await Promise.all([
     probeBgHostTicker(),
     readBgHostJournal(windowHours),
@@ -365,12 +430,56 @@ export async function readHiveSoakReport(
          )
        ORDER BY created_at ASC
     `,
+    // Context burn (P-008), workspace-scoped: the wake meter (event_wake_deliveries,
+    // D-007) carries every queued loop/coord wake's injected summary.
+    sql<WakeBurnAggRow[]>`
+      SELECT count(*)::int AS loop_wakes,
+             round(avg(length(summary)))::int AS mean_wake_chars,
+             max(length(summary))::int AS max_wake_chars
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${workspaceId}
+         AND event_key LIKE 'coord:inbox-wake:%'
+         AND created_at >= now() - make_interval(hours => ${windowHours})
+    `,
+    // Requested compactions per owner + the post-compaction error markers: failed
+    // calls matching the hallucinated-schema class within the attribution window
+    // of the SAME owner's compaction.
+    sql<CompactionAggRow[]>`
+      WITH compactions AS (
+        SELECT coord_owner_id AS owner, invoked_at
+          FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${workspaceId}
+           AND tool_name = 'session:request-compaction'
+           AND status = 'ok'
+           AND invoked_at >= now() - make_interval(hours => ${windowHours})
+      )
+      SELECT (SELECT count(*) FROM compactions)::int AS compactions,
+             (SELECT count(DISTINCT owner) FROM compactions WHERE owner IS NOT NULL)::int AS sessions,
+             (SELECT count(*)
+                FROM harness_shared.tool_invocations ti
+               WHERE ti.workspace_id = ${workspaceId}
+                 AND ti.invoked_at >= now() - make_interval(hours => ${windowHours})
+                 AND ti.status <> 'ok'
+                 AND ti.error_message ~* ${POST_COMPACTION_ERROR_MARKER_REGEX}
+                 AND EXISTS (
+                   SELECT 1
+                     FROM compactions c
+                    WHERE c.owner IS NOT NULL
+                      AND c.owner = ti.coord_owner_id
+                      AND ti.invoked_at >= c.invoked_at
+                      AND ti.invoked_at < c.invoked_at + make_interval(mins => ${POST_COMPACTION_MARKER_WINDOW_MIN})
+                 ))::int AS post_markers
+    `,
   ]);
 
   const curse = curseRows[0] ?? { placements_seen: 0, infra_curses: 0 };
   const escalation = escalationRows[0] ?? { open_now: 0, older_open_count: 0, newer_open_count: 0 };
   const pipeline = pipelineAggRows[0] ?? { green_total: 0, green_success: 0 };
   const deployLatency = computeDeployLatency(pipelineEventRows);
+  const wakeBurn = wakeBurnRows[0] ?? { loop_wakes: 0, mean_wake_chars: null, max_wake_chars: null };
+  const compaction = compactionRows[0] ?? { compactions: 0, sessions: 0, post_markers: 0 };
+  const meanWakeChars = wakeBurn.mean_wake_chars != null ? Number(wakeBurn.mean_wake_chars) : null;
+  const sessionsCompacting = Number(compaction.sessions ?? 0);
 
   return computeSoakReport({
     hiveSlug,
@@ -401,5 +510,16 @@ export async function readHiveSoakReport(
       ratio: Number(pipeline.green_total ?? 0) > 0 ? Number(pipeline.green_success ?? 0) / Number(pipeline.green_total ?? 0) : null,
     },
     deployLatency,
+    contextBurn: {
+      loopWakes: Number(wakeBurn.loop_wakes ?? 0),
+      meanWakeChars,
+      maxWakeChars: wakeBurn.max_wake_chars != null ? Number(wakeBurn.max_wake_chars) : null,
+      estMeanWakeTokens: meanWakeChars != null ? Math.round(meanWakeChars / 4) : null,
+      requestedCompactions: Number(compaction.compactions ?? 0),
+      sessionsCompacting,
+      compactionsPerSession:
+        sessionsCompacting > 0 ? Number(compaction.compactions ?? 0) / sessionsCompacting : null,
+      postCompactionErrorMarkers: Number(compaction.post_markers ?? 0),
+    },
   });
 }

@@ -39,9 +39,12 @@ source, so it stays hidden where the feature doesn't apply.
 **Source-tree-only envs are OMITTED on a packaged install (WI-3284).** `dev` (:3270, the
 working tree) and `local` (:3055, the Vite HMR frontend) carry `requiresSourceTree` in
 `DEV_OPERATORS`; `resolveDevOperators` drops them from the resolved list entirely when no
-papercup checkout exists (`detectPapercupRoot() == null`) — a button for an env that
-*cannot* exist is noise, not a "disabled" state (the owner-reported greyed-button wall on
-the mac build). `prod`/`staging` always stay: a packaged install runs them from the
+runnable **source tree** exists (`defaultDetectSourceRoot() == null` — the SAME detection
+`launchEnvOperators` uses, so a packaged install's first-boot extracted tree
+`PAPERCUSP_DEV_SOURCE_ROOT` counts too; the earlier raw `detectPapercupRoot()` wrongly
+dropped `dev`/`local` while `local` was literally running, WI-3307 mac verify 2026-07-07) —
+a button for an env that *cannot* exist is noise, not a "disabled" state (the owner-reported
+greyed-button wall on the mac build). `prod`/`staging` always stay: a packaged install runs them from the
 **per-branch bundled sidecars** (owner directive 2026-07-06), no source needed. The Rust
 `env_switch.rs::list_envs` mirrors this — on the dev box it lists all 4 targets (the
 never-hide floor; unreachable ones render greyed), on a packaged (release) build it lists
