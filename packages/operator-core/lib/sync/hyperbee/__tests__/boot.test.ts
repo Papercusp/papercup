@@ -15,7 +15,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
@@ -2063,5 +2063,130 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
     const msg = fired[0]?.message ?? '';
     expect(msg).toContain('hiveHome-resolve NONE→drop-all-cross-member');
     expect(msg).toContain('guardHome=<none>');
+  });
+});
+
+// WI-3288 (offline pot): the admitted-set otherwise grows only via swarm announces, so a
+// swarm-less packaged install (offline / gh-unauthenticated) merged NOTHING from the
+// WI-3232-restored seed corestore — pot visible, content empty (the owner's Windows VM).
+// These tests pin the new third admission source: the installer seed manifest's coreKeys,
+// admitted at boot iff the manifest's hiveId matches this boot's resolved hive home.
+describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', () => {
+  const SEED_LOG_KEY = 'ee'.repeat(32);
+  const HIVE_HOME = 'papercusp';
+
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-seed-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  /** Minimal manifest-bearing seed dir; hiveId is the admission gate under test. */
+  function writeSeedDir(hiveId: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-seed-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    writeFileSync(
+      join(dir, 'manifest.json'),
+      JSON.stringify({
+        seedFormatVersion: 1,
+        hiveId,
+        cutAtEpoch: 1,
+        cutHlc: '001:00000:aa',
+        cutTs: 1,
+        stores: [
+          {
+            kind: 'corestore',
+            hash: 'h',
+            sizeBytes: 1,
+            source: { type: 'resource', path: 'corestore' },
+            meta: { coreKeys: [SEED_LOG_KEY] },
+          },
+        ],
+      }),
+    );
+    return dir;
+  }
+
+  function fakeRemoteLog(keyHex: string): RemoteLog {
+    return {
+      keyHex,
+      length: 0,
+      contiguousLength: 0,
+      get: async () => null,
+      update: async () => {},
+      prefetch: () => {},
+      has: () => false,
+    };
+  }
+
+  function withSeedEnv(seedDir: string | undefined): void {
+    const prevSeedDir = process.env.PAPERCUSP_SEED_DIR;
+    const prevNoSeed = process.env.PAPERCUSP_NO_SEED;
+    if (seedDir === undefined) delete process.env.PAPERCUSP_SEED_DIR;
+    else process.env.PAPERCUSP_SEED_DIR = seedDir;
+    delete process.env.PAPERCUSP_NO_SEED;
+    cleanups.push(() => {
+      if (prevSeedDir === undefined) delete process.env.PAPERCUSP_SEED_DIR;
+      else process.env.PAPERCUSP_SEED_DIR = prevSeedDir;
+      if (prevNoSeed === undefined) delete process.env.PAPERCUSP_NO_SEED;
+      else process.env.PAPERCUSP_NO_SEED = prevNoSeed;
+    });
+  }
+
+  function bootOpts(workspaceId: string) {
+    return {
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug: HIVE_HOME,
+      swarmBinding: { kind: 'hive', hive_pubkey: Buffer.alloc(32, 7).toString('base64') } as const,
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set<string>(),
+      joinerHiveHomeSlugOverride: async () => null,
+      hiveHomeSlugForHarnessOverride: async () => HIVE_HOME,
+      openRemoteLogOverride: async (_store: unknown, logKeyHex: string) => fakeRemoteLog(logKeyHex),
+    };
+  }
+
+  it('admits the manifest coreKeys at boot with NO announce (the offline path)', async () => {
+    const workspaceId = 'ws-wi3288-admit';
+    withSeedEnv(writeSeedDir(HIVE_HOME));
+    const handle = await bootHarnessSubstrate(bootOpts(workspaceId));
+    cleanups.push(() => handle.close());
+
+    expect(handle.admitted.has(SEED_LOG_KEY)).toBe(true);
+    // Observable in boot-history (the dogfood substrate table / getBootHistory).
+    const events = listBootHistory({ workspaceId, harnessSlug: HIVE_HOME }).filter(
+      (e) => e.kind === ('seed_log_admitted' as never),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.message).toContain(SEED_LOG_KEY.slice(0, 8));
+  });
+
+  it('does NOT admit a hive-mismatched seed (a seed never leaks into another hive)', async () => {
+    const workspaceId = 'ws-wi3288-mismatch';
+    withSeedEnv(writeSeedDir('some-other-hive'));
+    const handle = await bootHarnessSubstrate(bootOpts(workspaceId));
+    cleanups.push(() => handle.close());
+
+    expect(handle.admitted.has(SEED_LOG_KEY)).toBe(false);
+    expect(handle.admitted.size).toBe(1); // own log only
+  });
+
+  it('no seed dir ⇒ byte-for-byte today: own log only, no seed events, boot succeeds', async () => {
+    const workspaceId = 'ws-wi3288-noseed';
+    withSeedEnv(undefined);
+    const handle = await bootHarnessSubstrate(bootOpts(workspaceId));
+    cleanups.push(() => handle.close());
+
+    expect(handle.admitted.size).toBe(1);
+    expect(
+      listBootHistory({ workspaceId, harnessSlug: HIVE_HOME }).filter(
+        (e) => e.kind === ('seed_log_admitted' as never),
+      ),
+    ).toEqual([]);
   });
 });
