@@ -23,7 +23,15 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveHiveHomeSlug } from '../../hive/wake';
-import { setLoopCarryNote, renderCarryNote } from '../../carry-note';
+import {
+  getLoopCarryNote,
+  normalizeWallEntries,
+  renderCarryNote,
+  setLoopCarryNote,
+  splitCarryNoteWalls,
+  withCarryNoteWalls,
+  CARRY_NOTE_MAX_WALLS,
+} from '../../carry-note';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
@@ -38,7 +46,8 @@ export default defineTool({
     '(reset / recycle) reconstructs its working state from (your transcript does NOT carry across a cold wake). ' +
     'Pass the structured fields { did, left, insight, next } (rendered to the canonical template) OR a raw { note }. ' +
     "Keyed by the loop's ownerId — stable across reset/recycle, so a cold successor reads the SAME note. " +
-    'Replace-on-write; blank/null clears. Returns { ok, harness, ownerId, cleared, length }.',
+    'Replace-on-write; blank/null clears — EXCEPT open { walls } rows (owner-gated commitments), which carry ' +
+    'forward until you pass walls:[] and render into every wake/brief. Returns { ok, harness, ownerId, cleared, length, walls }.',
   guidance: {
     when:
       "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs to continue — " +
@@ -77,6 +86,20 @@ export default defineTool({
         .optional()
         .describe('The non-obvious thing a cold successor would waste time re-deriving.'),
       next: z.string().max(8000).optional().describe('The single concrete next action for the next wake.'),
+      walls: z
+        .array(
+          z.object({
+            claim: z.string().min(1).max(500).describe('The pending owner-gated action/decision, stated concretely.'),
+            recheck: z.string().max(300).optional().describe('A concrete command a successor runs to re-check it.'),
+          }),
+        )
+        .max(CARRY_NOTE_MAX_WALLS)
+        .optional()
+        .describe(
+          'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
+            'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); pass the full ' +
+            'current set to change it; [] clears.',
+        ),
       ownerId: z
         .string()
         .max(120)
@@ -94,8 +117,9 @@ export default defineTool({
         a.did !== undefined ||
         a.left !== undefined ||
         a.insight !== undefined ||
-        a.next !== undefined,
-      { message: 'pass { did, left, insight, next } (any) or { note } — nothing to write' },
+        a.next !== undefined ||
+        a.walls !== undefined,
+      { message: 'pass { did, left, insight, next } (any), { note }, or { walls } — nothing to write' },
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -140,9 +164,26 @@ export default defineTool({
       args.did !== undefined || args.left !== undefined || args.insight !== undefined || args.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise the raw note verbatim.
-    const note = hasStructured
+    const baseNote = hasStructured
       ? renderCarryNote({ did: args.did, left: args.left, insight: args.insight, next: args.next })
       : args.note;
+
+    // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:
+    //   explicit `walls` wins (its [] is the only true clear); a raw note's own
+    //   `## Walls` rows win next; otherwise the PRIOR walls carry forward — across
+    //   rewrites AND across a note clear (the note then survives as walls-only).
+    //   A walls-only write likewise carries the prior note body forward.
+    const prior = await getLoopCarryNote({ harness, ownerId }).catch(() => null);
+    const priorParts = splitCarryNoteWalls(prior);
+    const rawParts = splitCarryNoteWalls(baseNote ?? '');
+    const walls =
+      args.walls !== undefined
+        ? normalizeWallEntries(args.walls, priorParts.walls)
+        : rawParts.walls.length > 0
+          ? normalizeWallEntries(rawParts.walls, priorParts.walls)
+          : priorParts.walls;
+    const hasNoteWrite = hasStructured || args.note !== undefined;
+    const note = withCarryNoteWalls(hasNoteWrite ? rawParts.body : priorParts.body, walls);
 
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     const stored = await setLoopCarryNote({ harness, ownerId, workspaceId: workspaceId ?? undefined }, note);
@@ -190,6 +231,7 @@ export default defineTool({
             ownerId,
             cleared: stored === null,
             length: stored?.length ?? 0,
+            walls: walls.length,
             ...(continuation ? { continuation } : {}),
           }),
         },
