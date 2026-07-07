@@ -16,6 +16,7 @@
     "@novnc/novnc": "^1.7.0",
     "@papercusp/lexicon": "file:../../libs/generic/lexicon",
     "@tanstack/react-router": "^1.170.6",
+    "@udecode/plate-markdown": "^48.0.2",
     "buffer": "^5.7.1",
     "hono": "^4.12.21",
     "lodash": "^4.17.19",
