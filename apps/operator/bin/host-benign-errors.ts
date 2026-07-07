@@ -148,10 +148,31 @@ export function isUnresolvablePlanScopeError(e: unknown): boolean {
 }
 
 /**
+ * A broken-pipe write (`write EPIPE` from libuv's WriteWrap): the READER end of
+ * a pipe/socket closed before a pending write completed — a disconnected
+ * SSE/HTTP client, a dead child process's stdin, a torn-down IPC socket. EPIPE
+ * is by construction peer-caused and connection-scoped (the errno only exists
+ * for writes against a peer-closed pipe; a read can't raise it), so the only
+ * casualty should be that one stream — never the process.
+ *
+ * The incident that mandates this (2026-07-07 12:36–12:51): sustained
+ * event-loop saturation (the WI-3333 neologism-miner slot) starved a pipe peer
+ * until it died; the pending write's EPIPE reached the process guard and
+ * HARD-CRASHED the bg-host (DBOS routines / git-sync / substrate primary) —
+ * then each reboot's catchup re-fired the same slot → SIX crash cycles in 16
+ * minutes, with every in-flight routine + git-sync killed each time. The
+ * saturation trigger is fixed separately; this closes the amplifier: a peer
+ * death mid-write must cost one stream, not the multi-tenant host.
+ */
+export function isBenignBrokenPipeError(e: unknown): boolean {
+  return (e as { code?: string } | null)?.code === 'EPIPE';
+}
+
+/**
  * Any process-level error that is client-caused + request-scoped, OR a transient
  * recoverable infra blip (a torn-down PG connection, an exhausted file-watcher
- * budget) → the host guards log it and KEEP RUNNING. Everything else stays fail-fast
- * (exit).
+ * budget, a peer-closed pipe) → the host guards log it and KEEP RUNNING.
+ * Everything else stays fail-fast (exit).
  */
 export function isBenignHostError(e: unknown): boolean {
   return (
@@ -159,6 +180,7 @@ export function isBenignHostError(e: unknown): boolean {
     isBenignRequestParse(e) ||
     isTransientPgConnectionError(e) ||
     isBenignFileWatcherError(e) ||
-    isUnresolvablePlanScopeError(e)
+    isUnresolvablePlanScopeError(e) ||
+    isBenignBrokenPipeError(e)
   );
 }

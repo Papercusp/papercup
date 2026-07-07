@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  isBenignBrokenPipeError,
   isBenignFileWatcherError,
   isBenignHostError,
   isBenignRequestParse,
@@ -219,6 +220,30 @@ describe('isUnresolvablePlanScopeError (resolvePlanScope float must not crash a 
   });
 });
 
+describe('isBenignBrokenPipeError (2026-07-07 — write EPIPE must not down the bg-host)', () => {
+  it('classifies the exact WriteWrap broken-pipe crash as benign', () => {
+    // The verbatim shape from the 12:36 incident journal: libuv's WriteWrap
+    // completion against a peer-closed pipe.
+    const e = Object.assign(new Error('write EPIPE'), {
+      errno: -32,
+      code: 'EPIPE',
+      syscall: 'write',
+      stack: [
+        'Error: write EPIPE',
+        '    at WriteWrap.onWriteComplete [as oncomplete] (node:internal/stream_base_commons:87:19)',
+      ].join('\n'),
+    });
+    expect(isBenignBrokenPipeError(e)).toBe(true);
+  });
+
+  it('does NOT classify other write-path errnos or unrelated errors as benign', () => {
+    expect(isBenignBrokenPipeError(Object.assign(new Error('write EACCES'), { code: 'EACCES', syscall: 'write' }))).toBe(false);
+    expect(isBenignBrokenPipeError(diskFullEnospc())).toBe(false);
+    expect(isBenignBrokenPipeError(new Error('EPIPE mentioned in prose only'))).toBe(false); // no code
+    expect(isBenignBrokenPipeError(null)).toBe(false);
+  });
+});
+
 describe('isBenignHostError (the combined fail-fast boundary)', () => {
   it('is true for every benign class', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
@@ -227,6 +252,7 @@ describe('isBenignHostError (the combined fail-fast boundary)', () => {
     expect(isBenignHostError(pgConnectTimeout())).toBe(true); // 2026-07-04 — bg-host CONNECT_TIMEOUT (PgBouncer) crash
     expect(isBenignHostError(watcherEnospc())).toBe(true); // EI-3385 — inotify exhaustion
     expect(isBenignHostError(new Error("resolvePlanScope: harness 'operator' is not registered in the harness registry"))).toBe(true); // worker-crash fix
+    expect(isBenignHostError(Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write' }))).toBe(true); // 2026-07-07 — bg-host EPIPE crash storm
   });
 
   it('is FALSE for a real host bug — the guard must still exit on these', () => {
