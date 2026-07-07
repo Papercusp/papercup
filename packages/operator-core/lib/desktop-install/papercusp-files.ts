@@ -514,21 +514,37 @@ function cliLauncherCandidates(operatorAppRoot: string, explicitRoot: boolean, n
 /**
  * Resolve the node binary a CLI shim should exec. Prefer the BUNDLED node over
  * a bare PATH `node` (end users — a macOS Terminal, a WSL distro, a fresh Linux
- * dogfood install — rarely have node on PATH). Two anchors, checked in order:
- *   1. next to the launcher: `<dirname(dirname(launcher))>/bin/node` — the
+ * dogfood install — rarely have node on PATH; bare `node` → "node not found",
+ * WI-3334). Anchors, checked in order — the first that exists wins:
+ *   1. `$PAPERCUSP_SIDECAR_BIN/node` — the explicit sidecar-bin path the app
+ *      exports to serve.mjs (and inherits to children). Canonical + cwd-independent.
+ *   2. `process.execPath` — the node binary running THIS process. On a packaged
+ *      install that IS the bundled sidecar node (Tauri spawns serve.mjs with
+ *      `sidecar/bin/node`); on a dev box it's a valid node too. Existence- and
+ *      cwd-independent.
+ *   3. next to the launcher: `<dirname(dirname(launcher))>/bin/node` — the
  *      bundled `sidecar/scripts/<launcher>` → `sidecar/bin/node` layout.
- *   2. the sidecar root: `<cwd>/bin/node`. The packaged serve.mjs runs with
- *      cwd = the sidecar dir, so this is the bundled node EVEN WHEN the launcher
- *      resolved to the extracted dev-source tree (WI-3308) — whose grandparent
- *      is `<dev-source>/apps/operator`, with no `bin/node`, so anchor 1 missed
- *      and the shim fell back to bare `node` → "node not found" (WI-3334).
- * Falls back to PATH `node` only in a dev/unbundled layout (the dev box has it).
+ *   4. the sidecar root: `<cwd>/bin/node` — a last-ditch anchor for the case
+ *      where serve.mjs's cwd happens to be the sidecar dir.
+ * Falls back to PATH `node` only when none resolve (a dev/unbundled layout).
+ *
+ * WI-3334 history: the original fix used only anchors 3+4. But when the launcher
+ * resolved to the extracted dev-source tree (`<dev-source>/apps/operator/scripts`),
+ * anchor 3's grandparent (`<dev-source>/apps/operator`) has no `bin/node`, AND
+ * installPapercuspFiles does NOT always run with cwd = the sidecar dir, so anchor
+ * 4 missed too → the shim fell back to bare `node` on a real packaged install
+ * (verified on the Linux dogfood VM). Anchors 1+2 are cwd-independent, so they hold.
  */
 export async function resolveShimNode(launcherPath: string): Promise<string> {
+  const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+  const execBase = path.basename(process.execPath).toLowerCase();
+  const execIsNode = execBase === 'node' || execBase === 'node.exe';
   const candidates = [
+    sidecarBin ? path.join(sidecarBin, 'node') : '',
+    execIsNode ? process.execPath : '',
     path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node'),
     path.join(process.cwd(), 'bin', 'node'),
-  ];
+  ].filter(Boolean);
   for (const c of candidates) {
     if (await pathExists(c)) return c;
   }

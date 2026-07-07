@@ -165,6 +165,23 @@ export function spliceCurrentLoopCheckpoint(kickoff: string, checkpoint: string 
  *  refresher; all other wakes get the short form. */
 export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
 
+/** P-008 context-burn ratchet: byte budgets for the wake template's OWN scaffolding —
+ *  everything renderLoopWakeText/renderLoopWallsBlock add BEYOND caller content
+ *  (kickoff, checkpoint note, wall claims, recipe line). The companion budget test
+ *  (loop-fire.test.ts "P-008" block) renders minimal fixtures and reds when a template
+ *  edit pushes the scaffold past these — the same catch-it-in-unit pattern as the P-011
+ *  tool prompt-weight budget. Every scaffold byte is re-injected on EVERY wake of every
+ *  loop (measured pre-diet: ~200k tokens/session of repeated boilerplate), so raise a
+ *  budget only for a deliberate trade-off, never to green a red test.
+ *  Measured 2026-07-07: shortForm 549 (stale-header case; fresh 341), fullForm 125,
+ *  wallsHeader 174, wallsPerRow 39. */
+export const LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS = {
+  shortForm: 640,
+  fullForm: 160,
+  wallsHeader: 220,
+  wallsPerRow: 56,
+} as const;
+
 /** Checkpoint staleness ceiling: older than max(3 intervals, 30min) ⇒ the note likely
  *  predates turns the agent cannot see — demote its authority instead of asserting it. */
 export function loopCheckpointStaleMs(intervalSec: number | null | undefined): number {

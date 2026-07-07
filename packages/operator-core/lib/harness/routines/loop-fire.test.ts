@@ -5,8 +5,11 @@ import {
   spliceCurrentLoopCheckpoint,
   renderLoopCheckpointBlock,
   renderLoopWakeText,
+  renderLoopWallsBlock,
   loopCheckpointStaleMs,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
+  LOOP_WAKE_CHECKPOINT_MAX_CHARS,
+  LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
   type LoopFireDeps,
 } from './loop-fire';
 
@@ -588,5 +591,83 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     expect(opts.summary).toContain('line 2 of the contract.'); // full form — no narrative checkpoint to shorten on
     expect(opts.summary).toContain('⛔ OPEN WALLS');
     expect(opts.summary).toContain('  • zombie PIDs await owner OK');
+  });
+});
+
+// ── P-008 context-burn ratchet: the wake template's scaffold stays under its byte budget ──
+//
+// Scaffold = rendered bytes MINUS caller content bytes, measured on minimal 1-byte
+// fixtures — pure template overhead, re-injected on EVERY wake of every loop. Reds
+// when a template edit grows the boilerplate past LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS
+// (the P-011 tool prompt-weight pattern). Fix by trimming the template; raise a
+// budget only as a deliberate trade-off.
+describe('P-008: wake-template scaffold byte budgets', () => {
+  const NOW = 1_800_000_000_000;
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+
+  it('short form (fresh checkpoint header) fits the shortForm budget', () => {
+    const rendered = renderLoopWakeText({
+      kickoff: 'K',
+      fireNumber: 2,
+      checkpoint: 'C',
+      checkpointUpdatedAtMs: NOW - 5_000,
+      intervalSec: 120,
+      nowMs: NOW,
+    });
+    expect(bytes(rendered) - 2).toBeLessThanOrEqual(LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.shortForm);
+  });
+
+  it('short form with a STALE checkpoint header (the biggest scaffold) fits the shortForm budget', () => {
+    const rendered = renderLoopWakeText({
+      kickoff: 'K',
+      fireNumber: 2,
+      checkpoint: 'C',
+      checkpointUpdatedAtMs: NOW - 3 * 3_600_000,
+      intervalSec: 120,
+      nowMs: NOW,
+    });
+    expect(bytes(rendered) - 2).toBeLessThanOrEqual(LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.shortForm);
+  });
+
+  it('full form adds only the checkpoint block header beyond the kickoff', () => {
+    const rendered = renderLoopWakeText({
+      kickoff: 'K',
+      fireNumber: 1,
+      checkpoint: 'C',
+      checkpointUpdatedAtMs: NOW - 5_000,
+      intervalSec: 120,
+      nowMs: NOW,
+    });
+    expect(bytes(rendered) - 2).toBeLessThanOrEqual(LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.fullForm);
+  });
+
+  it('walls block header + per-row overhead fit their budgets', () => {
+    const one = renderLoopWallsBlock([{ claim: 'W', recheck: 'R', sinceMs: NOW - 60_000 }], NOW)!;
+    const two = renderLoopWallsBlock(
+      [
+        { claim: 'W', recheck: 'R', sinceMs: NOW - 60_000 },
+        { claim: 'W', recheck: 'R', sinceMs: NOW - 60_000 },
+      ],
+      NOW,
+    )!;
+    const perRow = bytes(two) - bytes(one);
+    expect(perRow).toBeLessThanOrEqual(LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.wallsPerRow);
+    expect(bytes(one) - perRow).toBeLessThanOrEqual(LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.wallsHeader);
+  });
+
+  it('an over-cap checkpoint truncates: total short form stays bounded', () => {
+    const huge = 'x'.repeat(LOOP_WAKE_CHECKPOINT_MAX_CHARS + 5_000);
+    const rendered = renderLoopWakeText({
+      kickoff: 'K',
+      fireNumber: 2,
+      checkpoint: huge,
+      checkpointUpdatedAtMs: NOW - 5_000,
+      intervalSec: 120,
+      nowMs: NOW,
+    });
+    // scaffold + the capped note + the truncation marker — never the full note.
+    expect(bytes(rendered)).toBeLessThanOrEqual(
+      LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS.shortForm + LOOP_WAKE_CHECKPOINT_MAX_CHARS + 60,
+    );
   });
 });

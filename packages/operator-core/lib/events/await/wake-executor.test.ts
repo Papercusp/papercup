@@ -931,6 +931,11 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       heldItems: [
         { id: 'WI-3319', title: 'Shared carry-brief builder', body: null, harness: 'papercusp', checkpoint: 'watchdog wired; cold anchor next' },
       ],
+      // `walls` is a REQUIRED CarryBrief field — the real buildCarryBrief always
+      // sets it (carry-brief.ts:181). Omitting it made renderCarryBriefColdExtras
+      // throw on `brief.walls.length`, which the note-only catch swallowed → the
+      // extras were silently dropped and this assertion failed (EI-8593).
+      walls: [],
       facts: [{ key: 'zombie-pids-wall', body: '3 PIDs await owner OK' }],
       awaits: [{ eventKey: 'deploy:done:release-77', note: null }],
       fleet: { slug: 'bug-drain', role: 'leader' },
