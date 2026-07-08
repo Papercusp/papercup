@@ -82,7 +82,16 @@ export async function buildHiveRekeyBootDeps(opts: {
   harnessSlug: string;
 }): Promise<HiveRekeyBootDeps | null> {
   // 1. Flag FIRST — the cheapest off-path (cached read). Default-off ⇒ null ⇒ unchanged.
-  if (!(await getFlag(FLAGS.HIVE_REKEY, 'system'))) return null;
+  if (!(await getFlag(FLAGS.HIVE_REKEY, 'system'))) {
+    // seed-57-drop diagnostic: this bail is BEFORE the try/dbg below, so it needs its own
+    // guarded log — a flag off on the shipped build silently disables the whole decrypt gate.
+    if (process.env.PAPERCUSP_EPOCH_BOOT_DEBUG)
+      console.error('[epoch-boot]', 'GATE NOT BUILT: FLAGS.HIVE_REKEY off', {
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+      });
+    return null;
+  }
   // Steps 2-4 are wrapped fail-open (WI-755): this whole composition is BEST-EFFORT by
   // contract (see the docstring above — null always means "callers do today's plaintext
   // path, byte-for-byte"), so any resolution hiccup along the way — a transient PG error,
@@ -124,7 +133,12 @@ export async function buildHiveRekeyBootDeps(opts: {
     // No member key source AND no bundled key ⇒ this box can resolve no epoch key; return
     // null so the callers keep today's plaintext path, byte-for-byte (the cheap off-path —
     // no crypto/keychain touched below).
-    if (ident.kind !== 'ok' && !bundledProvider) return null;
+    if (ident.kind !== 'ok' && !bundledProvider) {
+      dbg('GATE NOT BUILT: no member identity AND no bundled provider (no epoch-key source)', {
+        identKind: ident.kind,
+      });
+      return null;
+    }
 
     // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
     const crypto = await resolveHiveEpochCrypto(true);
@@ -189,6 +203,14 @@ export async function buildHiveRekeyBootDeps(opts: {
     // resolved hiveHomeSlug — which is the AAD `hiveId`, so a decrypt-fail's hive=… can be
     // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
     recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
+    // seed-57-drop diagnostic: the SUCCESS path — the gate IS installed. If this prints yet the
+    // fold still drops to 57, the bug is DOWNSTREAM of gate-build (resolver key / AAD / opId),
+    // not the workspace-context bail; if it does NOT print, the gate never built (bail above).
+    dbg('GATE BUILT', {
+      hiveHomeSlug,
+      memberProvider: memberProvider != null,
+      bundledProvider: bundledProvider != null,
+    });
     return { hiveHomeSlug, epochGate, epochEncrypt, pending };
   } catch (e) {
     // Fail-open: today's behavior (plaintext path, byte-for-byte) — same silent-catch

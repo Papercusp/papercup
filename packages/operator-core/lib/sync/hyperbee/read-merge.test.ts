@@ -102,16 +102,20 @@ describe('mergeAdmittedLogs', () => {
     expect(apply.mock.calls[0][0].epoch).toBe(1);
   });
 
-  it('β: a LEGACY author-less snapshot row falls back to the snapshot op author', async () => {
+  it("β / 57-drop: a LEGACY author-less snapshot row falls back to '' (owner single-writer convention), NOT the snapshot op's log key", async () => {
     const apply = applyMock();
-    // A pre-fix snapshot: rows carry NO author_pubkey → the reader keeps prior behavior.
+    // A pre-β snapshot: rows carry NO author_pubkey. The shipped seed's 11308 encrypted
+    // snapshot rows are ALL this shape; the ciphertext was sealed under the owner
+    // single-writer author '' → the reader must feed '' (not the snapshot op's core-log
+    // KEY, which decrypts 0 of them → the 57-drop). buildSnapshotRows now embeds the
+    // author, so this legacy branch only fires for pre-β corestore snapshots.
     const legacyRows = [{ table:'harness_features_consolidated', hbKey:'F-legacy', value:{}, ts:5, schema_version:1 }];
     const snapshotOp = {
       type:'put', table:SNAPSHOT_TABLE_TAG, hbKey:'__snap__',
       value:{ coversUpTo: 1, rows: legacyRows }, ts:5, schema_version:1, author_pubkey:'CORE-LOG-KEY',
     };
     await mergeAdmittedLogs([ fakeLog('a'.repeat(64), [snapshotOp]) ], { applyImpl: apply });
-    expect(apply.mock.calls[0][0].writerPubkey).toBe('CORE-LOG-KEY'); // fallback preserved
+    expect(apply.mock.calls[0][0].writerPubkey).toBe(''); // legacy fallback = owner-log author, not the log key
   });
 
   it('del beats put on a ts tie', async () => {

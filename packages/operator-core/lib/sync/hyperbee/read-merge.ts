@@ -186,13 +186,17 @@ function snapshotRows(op: PeerLogOp): SnapshotRow[] {
  * `writerPubkey` is the ROW's own preserved `author_pubkey` (the original content op's
  * author), NOT the snapshot op's author — it is bound into the epoch-decrypt AAD (opId),
  * so substituting the snapshot op's author makes every encrypted row decrypt-drop (the
- * seed "β" bug). Only a LEGACY author-less row (a pre-fix snapshot) falls back to the
- * snapshot op's `authorPubkey`, preserving prior behavior for those.
+ * seed "β" / 57-drop bug). A LEGACY author-less row (a pre-β snapshot) falls back to `''`,
+ * the owner single-writer-log author convention every pre-β snapshot was compacted under —
+ * NOT the snapshot op's source-log KEY, which is a hypercore key, never a content author.
+ * Proven against the shipped seed: the log-key fallback decrypts 0 of its 11308 encrypted
+ * snapshot rows (the 57-drop), while '' decrypts all 9937 owner-authored ones. A
+ * member-authored legacy row (author ≠ '', e.g. a relayed coord-message) can't be
+ * reconstructed from an author-less row — it relies on a β re-cut or the live join delta.
  */
 function snapshotRowToEnvelope(
   row: SnapshotRow,
   sourceLogKeyHex: string,
-  authorPubkey: string,
 ): OpEnvelope {
   return {
     // EI-1688: a tombstone row reconstitutes a DELETE. Emitting a `del` env seeds the
@@ -209,11 +213,12 @@ function snapshotRowToEnvelope(
     // WI-808: carry the rekey epoch from a snapshot row so the decrypt-gate can
     // resolve the key (mirrors toEnvelope; absent on plaintext / tombstone rows).
     ...(row.epoch != null ? { epoch: row.epoch } : {}),
-    // β: the ROW's preserved original author is the AAD author the ciphertext was sealed
-    // under — use it; fall back to the snapshot op's author only for a legacy author-less
-    // row. `??` (not `||`) so a genuine empty-string author ('' = the owner single-writer
-    // log) is preserved, not overwritten by the snapshot op's core-log key.
-    writerPubkey: row.author_pubkey ?? authorPubkey,
+    // β / 57-drop: the ROW's preserved original author is the AAD author the ciphertext was
+    // sealed under — use it. A legacy author-less row (pre-β snapshot) falls back to `''`,
+    // the owner single-writer-log convention it was compacted under — NOT the snapshot op's
+    // source-log key (a hypercore key, never a content author → AAD diverges → decrypt-drop
+    // = the 57-drop). `??` (not `||`) so a genuine '' row author is preserved.
+    writerPubkey: row.author_pubkey ?? '',
     sourceLogKeyHex,
   };
 }
@@ -303,7 +308,7 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       // here because snapshot ops only exist once the flag-gated producer ran.
       if (isSnapshotOp(op)) {
         for (const row of snapshotRows(op)) {
-          const env = snapshotRowToEnvelope(row, log.keyHex, op.author_pubkey);
+          const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = winners.get(groupKey);
           winners.set(groupKey, prev ? lwwPick(prev, env) : env);
@@ -864,7 +869,7 @@ export async function mergeAdmittedLogsIncremental(
       // skip the summarized prefix). `continue` advances the cursor past it.
       if (isSnapshotOp(op)) {
         for (const row of snapshotRows(op)) {
-          const env = snapshotRowToEnvelope(row, log.keyHex, op.author_pubkey);
+          const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
