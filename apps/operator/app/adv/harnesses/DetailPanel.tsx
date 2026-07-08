@@ -18,7 +18,7 @@ import FeatureEditor from '../../harness/FeatureEditor';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
-import type { WorkItemRow } from './WorkItemsPanel';
+import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 
@@ -189,11 +189,16 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     [kind, issues, selectedId],
   );
   // WI-* resolves against the same `workItems.byHarness` sync query the
-  // WorkItemsPanel grid reads (one assembly, identical rows). Only subscribed
-  // while a work item is actually selected.
+  // WorkItemsPanel grid reads. The `limit` MUST match the grid's (WORK_ITEMS_PAGE)
+  // so the two share one React Query key ['sync','workItems.byHarness',args] and
+  // dedup into a single stream: the detail then reads the grid's already-loaded
+  // rows on selection instead of firing a SECOND request. A distinct limit here
+  // (was 300 vs the grid's 500) forks the key → a fresh on-click fetch that
+  // starves under the desktop's ~6-conn-per-host cap on Windows/WebView2 (the
+  // IPC bypass hides it on mac/linux), leaving the pane stuck on "Loading …".
   const workItemsQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: 300 },
+    args: { harnessSlug: slug, limit: WORK_ITEMS_PAGE },
     enabled: Boolean(slug) && kind === 'workItem',
   });
   const workItemRows = workItemsQuery.loading ? null : workItemsQuery.data;

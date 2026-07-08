@@ -1,7 +1,7 @@
 /**
  * Coverage for templates:new-app's composition (WI-3198 / local-first-party-template-
  * bundling-2026-07-07). Hermetic: a mock `inner` stands in for the in-process
- * dispatcher (harness:create + agent_chats), and `resolveSource` yields a source whose
+ * dispatcher (pot:create + agent_chats), and `resolveSource` yields a source whose
  * `acquireSourceDir` lays down a fixture template dir. The REAL materializeTemplateCore
  * + overlay run against temp dirs. Exercises: happy-path materialize + builder kickoff,
  * source-resolution passthrough, kickoffBuilder:false, and best-effort builder failure.
@@ -78,15 +78,17 @@ function baseDeps(over: Partial<NewAppDeps> = {}): NewAppDeps {
   };
 }
 
-/** A mock inner that mimics harness:create (makes the dir) + agent_chats. */
+/** A mock inner that mimics pot:create (makes the pot home dir) + agent_chats. */
 function mockInner(opts: { failCreateChat?: boolean } = {}) {
   const calls: Array<{ name: string; args: any }> = [];
   const inner = vi.fn(async (name: string, args: any) => {
     calls.push({ name, args });
-    if (name === 'harness:create') {
+    if (name === 'pot:create') {
       const path = join(scratch, 'apps', args.slug);
+      // pot:create writes the hive (coding-pot) blueprint.yaml; overlay must
+      // preserve it (PROTECTED_REL in overlayTemplateFiles).
       mkdirSync(join(path, '.papercusp'), { recursive: true });
-      writeFileSync(join(path, '.papercusp', 'blueprint.yaml'), 'id: coding\n');
+      writeFileSync(join(path, '.papercusp', 'blueprint.yaml'), 'id: my-app\nextends: hive\n');
       return { ok: true, slug: args.slug, path };
     }
     if (name === 'agent_chats:create') {
@@ -118,18 +120,18 @@ describe('composeNewApp', () => {
 
     // template files really landed on the created dir.
     expect(existsSync(join(scratch, 'apps', 'my-app', 'package.json'))).toBe(true);
-    // harness:create's blueprint.yaml survived the overlay.
+    // pot:create's blueprint.yaml survived the overlay.
     expect(existsSync(join(scratch, 'apps', 'my-app', '.papercusp', 'blueprint.yaml'))).toBe(true);
 
-    // dispatch order: create harness → create chat → send GUIDE.
+    // dispatch order: create pot → create chat → send GUIDE.
     expect(calls.map((c) => c.name)).toEqual([
-      'harness:create',
+      'pot:create',
       'agent_chats:create',
       'agent_chats:send_message',
     ]);
     const sent = calls.find((c) => c.name === 'agent_chats:send_message')!;
     expect(sent.args.content).toContain('MUST: ship a homepage.');
-    expect(calls[0].args).toMatchObject({ slug: 'my-app', blueprintId: 'coding' });
+    expect(calls[0].args).toMatchObject({ slug: 'my-app', repoRemote: 'local-only' });
   });
 
   it('passes through a source-resolution error', async () => {
@@ -155,7 +157,7 @@ describe('composeNewApp', () => {
     const payload = parse(result);
     expect(payload.ok).toBe(true);
     expect(payload.builder).toEqual({ spawned: false });
-    expect(calls.map((c) => c.name)).toEqual(['harness:create']);
+    expect(calls.map((c) => c.name)).toEqual(['pot:create']);
   });
 
   it('still succeeds when the builder kickoff fails (best-effort)', async () => {
@@ -168,11 +170,11 @@ describe('composeNewApp', () => {
     expect(payload.builder.error).toContain('denied');
   });
 
-  it('surfaces a harness:create failure as ok:false', async () => {
+  it('surfaces a pot:create failure as ok:false', async () => {
     const calls: string[] = [];
     const inner = vi.fn(async (name: string) => {
       calls.push(name);
-      if (name === 'harness:create') return { ok: false, error: 'slug already exists' };
+      if (name === 'pot:create') return { ok: false, error: 'slug already exists' };
       throw new Error(`unexpected: ${name}`);
     });
     const result = await composeNewApp(baseArgs(), inner, baseDeps());
@@ -180,15 +182,15 @@ describe('composeNewApp', () => {
     expect(payload).toMatchObject({ ok: false, status: 422 });
     expect(payload.error).toContain('slug already exists');
     // no builder dispatch after a failed create.
-    expect(calls).toEqual(['harness:create']);
+    expect(calls).toEqual(['pot:create']);
   });
 
-  it('surfaces a THROWN harness:create (handler_error plain-text envelope) instead of "unknown error"', async () => {
+  it('surfaces a THROWN pot:create (handler_error plain-text envelope) instead of "unknown error"', async () => {
     // A sub-handler throw reaches the compound via unwrap() as a PLAIN STRING
     // (`handler_error: …`) — not a { error } object. The owner-hit regression
     // (2026-07-07) reported "unknown error" and sent the agent chasing ghosts.
     const inner = vi.fn(async (name: string) => {
-      if (name === 'harness:create') return 'handler_error: ENOSPC: no space left on device';
+      if (name === 'pot:create') return 'handler_error: ENOSPC: no space left on device';
       throw new Error(`unexpected: ${name}`);
     });
     const result = await composeNewApp(baseArgs(), inner, baseDeps());

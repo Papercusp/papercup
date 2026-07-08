@@ -14,6 +14,16 @@ import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 /**
+ * Default fetch window for `workItems.byHarness`. Exported so the DetailPanel's
+ * work-item lookup uses the SAME `limit` and therefore the SAME React Query key
+ * — the two subscriptions dedup into one shared stream instead of opening a
+ * second request. A mismatch here reopens the class of bug where the on-click
+ * detail fetch starves under the desktop webview's ~6-connection-per-host cap
+ * (works over the IPC bypass on mac/linux WebKit, hangs on Windows/WebView2).
+ */
+export const WORK_ITEMS_PAGE = 500;
+
+/**
  * WorkItemsPanel — the features/issues view PORTED onto the unified `work_items`
  * surface (blueprint-aware-harness-ui-2026-06-09 P-010 / unify-work-items D-001). One
  * table across BOTH families — feature-family {feature,research-task,chunk} +
@@ -105,7 +115,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // The grid is virtualized so render cost stays bounded regardless, and the
   // true store total rides row[0]._meta (readListTotal), so the count shows the
   // DB total no matter how much is currently loaded.
-  const PAGE = 500;
+  const PAGE = WORK_ITEMS_PAGE;
   const [limit, setLimit] = useState(PAGE);
   // Reset the window when the harness changes (a different store).
   useEffect(() => {

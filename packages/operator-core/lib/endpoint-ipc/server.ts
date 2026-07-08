@@ -57,8 +57,23 @@ export type { EndpointIpcServer };
  * or `\\.\pipe\papercusp-<pid>` (Windows). The generic package defaults
  * to a neutral tmpdir path; the operator brand lives here so the Rust
  * sidecar bootstrap finds the socket where it expects.
+ *
+ * TCP-loopback (WSL2 / Windows desktop): the Windows desktop runs THIS
+ * sidecar inside WSL2, where `process.platform==='linux'` — so the Unix
+ * branch below would create a Unix socket the Windows-native webview host
+ * can't reach, and the named-pipe branch never fires. That is exactly why
+ * the endpoint-IPC bypass has been silently OFF on Windows (fact
+ * `windows-ipc-bypass-off-wsl2`): the host's guard rejects the non-pipe
+ * path → IPC disabled → `/api` falls back to WebView2 HTTP under the
+ * ~6-connection-per-host cap. The desktop launcher sets `PAPERCUSP_IPC_TCP=1`
+ * (it can't be self-detected from inside WSL2) to request a TCP-loopback
+ * endpoint instead: WSL2's localhost-forwarding makes `127.0.0.1:<port>`
+ * reachable from the Windows host — the same mechanism that exposes the
+ * operator HTTP port. Ephemeral port `0`; the server resolves + reports the
+ * real bound port in the discovery file. See WI-3395.
  */
 export function defaultSocketPath(pid: number = process.pid): string {
+  if (process.env.PAPERCUSP_IPC_TCP === '1') return 'tcp://127.0.0.1:0';
   if (process.platform === 'win32') return `\\\\.\\pipe\\papercusp-${pid}`;
   return path.join(os.homedir(), '.papercusp', 'sockets', `${pid}.sock`);
 }

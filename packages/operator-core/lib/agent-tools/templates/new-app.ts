@@ -143,24 +143,40 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
       ref: src.listing.ref,
       acquireSourceDir: src.acquireSourceDir,
       createHarness: async () => {
-        const raw = await inner('harness:create', {
+        // Create the app AS ITS OWN pot (hive home), NOT a standalone coding
+        // harness — so it is PLAN-CAPABLE from birth. Plans are Hive-scoped
+        // (resolvePlanScope), and a standalone harness can host none: the owner
+        // hit this on 2026-07-08 and an agent had to hand-run the "make a pot +
+        // add-member" workaround before it could plan the build. A pot IS the
+        // plan-capable project unit ("every created Pot is a hive"; the
+        // standalone/plain-harness path is being retired — _create.ts). We
+        // create it IDLE (wakeInSeconds omitted ⇒ no Mug/Queen wake; the builder
+        // chat below drives the build) and LOCAL-ONLY (no surprise GitHub remote
+        // per materialized app — the owner publishes later). The template
+        // overlays on top; overlayTemplateFiles protects .papercusp/blueprint.yaml
+        // so the pot's own hive blueprint survives.
+        const raw = await inner('pot:create', {
           slug: args.slug,
           parentDir,
-          folderName: args.slug,
-          blueprintId: 'coding',
+          repoRemote: 'local-only',
         });
-        const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string };
+        const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string; message?: string };
         if (!r?.ok || !r.path || !r.slug) {
           // A THROWN sub-handler arrives as the framework's `handler_error: …`
           // PLAIN-TEXT envelope (unwrap() falls back to the raw string when the
           // payload isn't JSON). Dropping it reported an opaque "unknown error"
           // to the agent while the real cause was in the string (owner-hit
-          // 2026-07-07, WI-3291 follow-up) — surface whatever we got.
+          // 2026-07-07, WI-3291 follow-up) — surface whatever we got, incl.
+          // pot:create's {error,message} shape.
           const detail =
             typeof raw === 'string'
               ? raw
-              : (r?.error ?? (raw ? JSON.stringify(raw).slice(0, 300) : 'unknown error'));
-          throw new MaterializeTemplateError(`harness:create failed: ${detail}`, 422);
+              : r?.error
+                ? `${r.error}${r.message ? `: ${r.message}` : ''}`
+                : raw
+                  ? JSON.stringify(raw).slice(0, 300)
+                  : 'unknown error';
+          throw new MaterializeTemplateError(`pot:create failed: ${detail}`, 422);
         }
         return { slug: r.slug, path: r.path };
       },
@@ -212,7 +228,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
 export default defineTool({
   name: 'templates:new-app',
   description:
-    'Materialize an app-template into a NEW coding harness and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes harness:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, builder:{spawned,chatId?} }. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
+    'Materialize an app-template into a NEW pot (its own Hive home — a plan-capable project, created IDLE + local-only) and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes pot:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, builder:{spawned,chatId?} }. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
   guidance: {
     when: 'The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.',
     notWhen:
