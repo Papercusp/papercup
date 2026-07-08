@@ -18,7 +18,7 @@
  * real-git temp-repo path; here we never touch a real branch.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
@@ -45,10 +45,19 @@ function makeExec(responses: ExecResp[]) {
 const tmpLogDir = mkdtempSync(join(tmpdir(), 'green-cp-log-'));
 afterAll(() => rmSync(tmpLogDir, { recursive: true, force: true }));
 
+// EI-8744: runGreen probes the checkpoint tree for a root package.json (the
+// nothing-to-gate short-circuit) with a REAL existsSync — a bare fake path like
+// cpTree now green-short-circuits before the injected exec is ever consulted,
+// which is the opposite of what these wiring tests assert. Give them a real
+// tree with a package.json so the full pipeline runs.
+const cpTree = mkdtempSync(join(tmpdir(), 'green-cp-tree-'));
+writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' }));
+afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
-  checkpointRoot: '/cp',
+  checkpointRoot: cpTree,
   releaseRef: 'ready',
   integrationBranch: 'main',
   checkpointLogDir: tmpLogDir,
@@ -59,32 +68,32 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('green suite + clean tree + green build → green, with the stripped checkpoint env on the green command', async () => {
     // suite green → EI-1836 conflict-marker grep (code 1 = clean) → SPA build (code 0).
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
 
     expect(r.green).toBe(true);
     expect(r.failingTests).toEqual([]);
     // (1) the green command ran in the checkpoint tree with the gate env wired.
     expect(calls[0].cmd).toBe(GREEN_CMD0);
     expect(calls[0].args).toEqual(GREEN_ARGS);
-    expect(calls[0].opts?.cwd).toBe('/cp');
+    expect(calls[0].opts?.cwd).toBe(cpTree);
     expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');
     expect(calls[0].opts?.env?.AFFECTED_BASE).toBe('base-sha');
     // (2) EI-1836: the conflict-marker grep ran second, in the same tree, before the build.
     expect(calls).toHaveLength(3);
     expect(calls[1].cmd).toBe('git');
     expect(calls[1].args).toContain('grep');
-    expect(calls[1].opts?.cwd).toBe('/cp');
+    expect(calls[1].opts?.cwd).toBe(cpTree);
     // (3) the SPA build ran third, in the same tree (P-005 — build is part of green).
     expect(calls[2].cmd).toBe('npm');
     expect(calls[2].args).toContain('@papercusp/operator-vite');
     expect(calls[2].args).toContain('build');
-    expect(calls[2].opts?.cwd).toBe('/cp');
+    expect(calls[2].opts?.cwd).toBe(cpTree);
   });
 
   it('P-005: green suite but FAILED SPA build → NOT green, build break in the failure signature', async () => {
     // suite green → marker grep clean (code 1) → SPA build fails (code 1).
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 1, stdout: 'vite: bundle failed' }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
 
     expect(r.green).toBe(false); // the key wiring: a passing suite does NOT make a broken build green
     expect(calls).toHaveLength(3); // marker grep + build WAS attempted (suite was green, tree clean)
@@ -98,7 +107,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     // build is SKIPPED, the marker folds into the @papercusp/operator-vite signature.
     const markerHit = `app/globals.css:26492:${'<'.repeat(7)} Updated upstream`;
     const { exec, calls } = makeExec([{ code: 0 }, { code: 0, stdout: markerHit }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
 
     expect(r.green).toBe(false);
     expect(calls).toHaveLength(2); // suite + grep only — the build was NOT attempted
@@ -110,7 +119,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
 
   it('red suite short-circuits — no SPA build attempted, suite failures in the signature', async () => {
     const { exec, calls } = makeExec([{ code: 1, stdout: 'FAIL lib/foo.test.ts\n' }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
 
     expect(r.green).toBe(false);
     expect(calls).toHaveLength(1); // build NOT attempted on a red suite
@@ -120,7 +129,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('no AFFECTED_BASE when base is null (full affected run)', async () => {
     // suite green → marker grep clean (code 1) → build (code 0).
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
-    await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
     expect(calls[0].opts?.env?.AFFECTED_BASE).toBeUndefined();
     expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');
   });
@@ -139,7 +148,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     // call 2: isolation re-run of file #2 (pass). No build runs (it only runs on a
     // suite that was green from the start: r.code === 0).
     const { exec, calls } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 0 }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
 
     expect(r.green).toBe(true); // absorbed: both files passed in isolation
     expect(r.flakeSuspects).toEqual([
@@ -154,7 +163,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       expect(c.cmd).toBe('npm');
       expect(c.args.slice(0, 4)).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
       expect(c.args).toContain('--no-file-parallelism');
-      expect(c.opts?.cwd).toBe('/cp');
+      expect(c.opts?.cwd).toBe(cpTree);
       expect(c.opts?.env?.VITEST_MAX_FORKS).toBe('1');
       expect(c.opts?.env?.VITEST_MAX_THREADS).toBe('1');
       expect(c.opts?.env?.GREEN_CHECKPOINT).toBe('1');
@@ -166,7 +175,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('real break: red suite where ONE file still fails in isolation → stays NOT green', async () => {
     // call 0: red suite. call 1: file #1 re-run PASSES. call 2: file #2 re-run FAILS.
     const { exec } = makeExec([{ code: 1, stdout: RED_OUTPUT }, { code: 0 }, { code: 1 }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
 
     expect(r.green).toBe(false); // a real deterministic break is NEVER hidden
     expect(r.flakeSuspects).toBeUndefined();
@@ -183,7 +192,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       if (i === 1) return { code: 1, stdout: '>>> @papercusp/x :: npm run test\n FAIL  lib/a.test.ts > c', stderr: '' };
       throw new Error('vitest spawn ENOMEM'); // the isolation re-run itself errors
     };
-    const r = await realCheckpointDeps(cfg, throwingExec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, throwingExec).runGreen(cpTree, null);
     expect(r.green).toBe(false);
     expect(r.flakeSuspects).toBeUndefined();
   });
@@ -202,7 +211,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('worker-crash: pool crash, zero per-file FAILs, workspace re-run PASSES → green + flakeSuspect, single-fork env', async () => {
     // call 0: green command crashes the pool (no FAIL files). call 1: workspace re-run passes.
     const { exec, calls } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 0 }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', 'base-sha');
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
 
     expect(r.green).toBe(true); // absorbed: the crashed workspace passed on the re-run
     expect(r.flakeSuspects).toEqual(['@papercusp/operator-core (worker-pool crash)']);
@@ -211,7 +220,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     const rerun = calls[1];
     expect(rerun.cmd).toBe('npm');
     expect(rerun.args).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
-    expect(rerun.opts?.cwd).toBe('/cp');
+    expect(rerun.opts?.cwd).toBe(cpTree);
     expect(rerun.opts?.env?.VITEST_MAX_FORKS).toBe('1'); // reduced concurrency
     expect(rerun.opts?.env?.VITEST_MAX_THREADS).toBe('1');
     expect(rerun.opts?.env?.GREEN_CHECKPOINT).toBe('1');
@@ -219,7 +228,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
 
   it('worker-crash: re-run STILL crashes the pool → stays NOT green (never blanket-green a crash)', async () => {
     const { exec } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 1, stdout: CRASH_OUTPUT }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
     expect(r.green).toBe(false);
     expect(r.flakeSuspects).toBeUndefined();
   });
@@ -227,7 +236,7 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('worker-crash: re-run reveals a REAL failure → stays NOT green', async () => {
     const realFail = '>>> @papercusp/operator-core :: npm run test\n FAIL  lib/x.test.ts > c\nAssertionError';
     const { exec } = makeExec([{ code: 1, stdout: CRASH_OUTPUT }, { code: 1, stdout: realFail }]);
-    const r = await realCheckpointDeps(cfg, exec).runGreen('/cp', null);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
     expect(r.green).toBe(false);
   });
 });
@@ -241,7 +250,7 @@ describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', (
     expect(calls[0].args).toEqual(
       // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
       // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
-      expect.arrayContaining(['--ref', 'cand123', '--integration', '/int', '--release', '/cp', '--node-modules', 'force']),
+      expect.arrayContaining(['--ref', 'cand123', '--integration', '/int', '--release', cpTree, '--node-modules', 'force']),
     );
   });
 
