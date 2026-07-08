@@ -225,3 +225,22 @@ Two findings closed this out:
    (pinned=None) is byte-identical. Binary installed to `~/.cargo/bin/pui`
    2026-07-03; live panes pick it up on the next dock relaunch — verify via
    `route_invocations` req/hr on `GET /admin/plans/:verb` afterwards.
+
+## Current-behavior note (2026-07-08) — `plans.get` is now a scoped bridge target, not full-bust
+
+The WI-840 section above (2026-07-02) says `harness_plans` bridges to "8 query names, all
+full-bust ... no scoping registered yet for this table," and the 2026-07-03 section repeats
+"once any table registers one — none do yet." **That is no longer accurate.** EI-7433
+(migration 507's plan-slug natural-key fallback) registered `plans.get` as a **scoped**
+bridge target in `table-to-query-names.ts`: `{ name: 'plans.get', scope: planSlugScope }`,
+keyed off the plan_slug carried on the `harness_plans` change event, matching the one live
+`useSyncQuery('plans.get', …)` consumer's `{ slug, mode:'full', ...harness? }` subscription
+shape. A `plans.get` write now dedupes/fans-out per-slug instead of full-busting every open
+plan-detail subscriber.
+
+This does **not** change any conclusion above about `plans:list` / `plans:attention` — those
+two (plus `.items`, `.search`, `.byHive`, `.schedule`, `.scheduledOccurrences`) remain
+bare-string full-bust entries in the same table; `plans.get` was never the dominant traffic
+this doc tracks. It only corrects the "none do yet" claim, since `resolveBridgeTarget` /
+`shouldFanout`'s scoped-vs-full-bust branch (the `WI-840` fix section above) is now exercised
+in production, not merely a code path with zero live users.

@@ -21,12 +21,12 @@
  * reuse this exact resolution + materialize path, with no first-party special case.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { papercuspPath } from '../papercusp-root';
 import type { TemplateListing } from './templates';
 import {
   bundledDirFromEnv,
+  inRepoFallbackDir,
   selfDescribingRoots,
   enumerateSelfDescribingDirs,
 } from './self-describing-store';
@@ -52,18 +52,13 @@ export interface TemplateRoot {
   layer: 'bundled' | 'user';
 }
 
-// Dev fallback for the bundled layer: the in-repo `templates/` dir. This file is
-// <repo>/packages/operator-core/lib/cupboard/template-store.ts, so four levels up
-// is the repo root. Mirrors harness-paths.ts's inRepoHarnessDir fallback so a
-// fresh checkout (no PAPERCUSP_TEMPLATES_DIR env) still resolves the templates.
-const inRepoTemplatesDir = join(
-  dirname(fileURLToPath(import.meta.url)), // <repo>/packages/operator-core/lib/cupboard
-  '..',
-  '..',
-  '..',
-  '..',
-  'templates',
-);
+// Dev fallback for the bundled layer: the in-repo `templates/` dir, resolved by
+// walking up to the monorepo root so it stays correct when this module is esbuild-
+// BUNDLED (the staging/bg host boots from apps/operator/dist-host/, a shallower dir
+// than the source lib/cupboard/ — a fixed `..` count overshot the root and returned
+// count:0, WI-3398 2026-07-08). A fresh checkout with no PAPERCUSP_TEMPLATES_DIR env
+// still resolves the first-party set.
+const inRepoTemplatesDir = inRepoFallbackDir('templates', import.meta.url);
 
 /** The bundled (read-only) templates dir: env override → in-repo dev fallback. */
 export function bundledTemplatesDir(): string {

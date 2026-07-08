@@ -27,11 +27,11 @@
  * self-describing dir into the user layer", the seam v2 user-install reuses.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { papercuspPath } from '../papercusp-root';
 import {
   bundledDirFromEnv,
+  inRepoFallbackDir,
   selfDescribingRoots,
   enumerateSelfDescribingDirs,
 } from './self-describing-store';
@@ -72,17 +72,11 @@ export interface RubricRoot {
   layer: 'bundled' | 'user';
 }
 
-// Dev fallback for the bundled layer: the in-repo `rubrics/` dir. This file is
-// <repo>/packages/operator-core/lib/cupboard/rubric-store.ts, so four levels up is
-// the repo root (mirrors template-store.ts's inRepoTemplatesDir).
-const inRepoRubricsDir = join(
-  dirname(fileURLToPath(import.meta.url)), // <repo>/packages/operator-core/lib/cupboard
-  '..',
-  '..',
-  '..',
-  '..',
-  'rubrics',
-);
+// Dev fallback for the bundled layer: the in-repo `rubrics/` dir, resolved by
+// walking up to the monorepo root so it survives esbuild bundling (a fixed `..`
+// count overshoots when the host boots from apps/operator/dist-host/ — WI-3398
+// 2026-07-08). Mirrors template-store.ts's inRepoTemplatesDir.
+const inRepoRubricsDir = inRepoFallbackDir('rubrics', import.meta.url);
 
 /** The bundled (read-only) rubrics dir: env override → in-repo dev fallback. */
 export function bundledRubricsDir(): string {

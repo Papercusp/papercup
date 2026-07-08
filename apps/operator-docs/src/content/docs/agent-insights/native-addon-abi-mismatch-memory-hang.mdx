@@ -66,8 +66,21 @@ The class is closed from four angles:
   (`withMemoryToolTimeout`) wraps every backend call in all five `memory:*` tools
   (incl. the `available()` probe, which itself hangs). A wedged mem0 now returns
   `{ ok:false, reason:'memory_timeout' }` instead of hanging — the silent-hang
-  *symptom*. Shared latch with the pre-turn inject path. Env:
-  `PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS` (default 10s).
+  *symptom*. Shares a process-level degraded latch with the pre-turn inject path
+  (`isMemoryDegraded()`) — **self-healing**, not a permanent-until-restart flag:
+  a timeout arms a rolling *cooldown* (`memoryDegradedCooldownMs`, default 60s,
+  env `PAPERCUSP_MEMORY_DEGRADED_COOLDOWN_MS`) that quiets the hot inject path
+  and auto-clears once it elapses, re-arming on each fresh timeout — so a
+  sustained outage costs at most one timed-out probe per cooldown, not one per
+  turn, and the inject path resumes on its own once the backend recovers (no
+  restart required). Env: `PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS` (default 10s).
+  A memory *write* additionally gets a bounded retry-on-timeout
+  (`withMemoryWriteRetry`, EI-6684): a transient stall on the first attempt no
+  longer silently drops the fact — up to `memoryWriteMaxAttempts()` (default 2,
+  env `PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS`) tries with a short backoff
+  (`memoryWriteRetryBackoffMs`, default 250ms), skipped when the process was
+  *already* degraded before the write started (fail fast on a known-sustained
+  wedge instead of piling on retries).
 - **A1 — deploy gate.** `npm run preflight:addons [--root <install>]`
   (`lib/native-addon-preflight.ts`) test-LOADS each required addon via its real
   package entry (NOT a raw `.node` scan — that false-alarms on the ~60 benign

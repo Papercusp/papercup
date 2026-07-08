@@ -15,7 +15,8 @@
  * generic lib if a third kind appears.)
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { papercuspPath } from '../papercusp-root';
 
 /** One resolved store root. Later roots shadow earlier ones on a ref collision. */
@@ -38,6 +39,47 @@ export function bundledDirFromEnv(envVar: string, devFallbackDir: string): strin
   const fromEnv = process.env[envVar];
   if (fromEnv && fromEnv.length > 0) return fromEnv;
   return devFallbackDir;
+}
+
+/** The monorepo root = the nearest ancestor carrying BOTH a package.json and a
+ *  `packages/` dir. Stable across the source layout AND an esbuild bundle (the
+ *  parent workspace dir has neither, so the walk stops exactly at the repo root). */
+function isMonorepoRoot(dir: string): boolean {
+  return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'packages'));
+}
+
+function walkUpToRepoRoot(start: string): string | null {
+  let dir = start;
+  for (let i = 0; i < 24; i += 1) {
+    if (isMonorepoRoot(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached the filesystem root
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve the in-repo dev-fallback dir (`<repoRoot>/<subdir>`) for a bundled content
+ * layer, ROBUST to the calling module having been esbuild-bundled.
+ *
+ * The old approach hard-coded the number of `..` from `import.meta.url` (e.g.
+ * `../../../../templates` from `packages/operator-core/lib/cupboard/`). That silently
+ * breaks under bundling: the staging/bg host boots from `apps/operator/dist-host/
+ * hono-host.mjs` (one directory SHALLOWER than the source `lib/cupboard/`), so a fixed
+ * `..×4` overshoots the repo root by one level and lands on a non-existent
+ * `<workspace>/templates` — the store enumerated an absent dir and returned count:0
+ * (`:3170` bundled staging host, WI-3398 2026-07-08; rubric-store shared the bug).
+ *
+ * Instead, WALK UP to the monorepo root (the nearest ancestor with package.json +
+ * packages/) from the caller's own module dir — always inside the repo whether the
+ * module is running as source OR bundled — then from cwd as a fallback, then append
+ * `<subdir>`. `existsSync` downstream treats a still-missing dir as an empty layer.
+ */
+export function inRepoFallbackDir(subdir: string, moduleUrl: string): string {
+  const root =
+    walkUpToRepoRoot(dirname(fileURLToPath(moduleUrl))) ?? walkUpToRepoRoot(process.cwd());
+  return join(root ?? process.cwd(), subdir);
 }
 
 /**

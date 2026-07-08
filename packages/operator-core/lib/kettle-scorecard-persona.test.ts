@@ -9,7 +9,7 @@
  * with the seeded DB rubric + capture accept-schema and only move in lockstep.)
  *
  * The owner's #1 requirement: the Kettle role MUST, EVERY turn, emit a STRUCTURED
- * SCORECARD against the (now 14-point) `hive-coordination-health` rubric (rate each criterion
+ * SCORECARD against the (now 15-point) `hive-coordination-health` rubric (rate each criterion
  * + cite evidence), IN ADDITION TO its free-form observations. That requirement lives in
  * the canonical Kettle persona (`blueprints/coding/prompts/kettle.md`) as prompt
  * instructions — there is no runtime that forces an LLM to emit a tool call, so the
@@ -25,6 +25,11 @@
  * D-001), plus `scheduler-usage` (the 14th, rubric mig 371).
  * If you change a key here you MUST change it in lockstep in the seeded rubric + the
  * capture schema, or the emitted ratings stop mapping to the rubric.
+ *
+ * (2026-07-08, EI-8769: `context-burn` added as the 15th criterion — rubric
+ * `context-burn`/soak-report contextBurn health — so the founding 13 + scheduler-usage
+ * + context-burn = 15. The persona was drifting a wake behind the live rubric, failing a
+ * capture with "missing required criterion key(s): context-burn"; this guard now pins 15.)
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -34,7 +39,8 @@ const CANONICAL = harnessPath('blueprints', 'coding', 'prompts', 'kettle.md');
 
 /** The per-characteristic criterion keys — the founding 13 (owner Q1..Q13) plus
  *  `scheduler-usage` (14th, rubric mig 371 / hybrid-bee-scheduler-work-stealing-2026-06-22
- *  P-004 — within-hive scheduler-usage health). */
+ *  P-004 — within-hive scheduler-usage health) plus `context-burn` (15th, EI-8769 —
+ *  context-injection budget + compaction cadence health). */
 const CRITERION_KEYS = [
   'end-to-end-flow', // Q1
   'ideation-quality', // Q2
@@ -50,6 +56,7 @@ const CRITERION_KEYS = [
   'coordination-utilization', // Q12
   'tool-utilization', // Q13
   'scheduler-usage', // Q14 (scheduler P-004)
+  'context-burn', // Q15 (context-burn / soak-report contextBurn health, EI-8769)
 ] as const;
 
 describe('kettle persona — the owner #1 hive-coordination-health scorecard mandate (D-002)', () => {
@@ -65,16 +72,17 @@ describe('kettle persona — the owner #1 hive-coordination-health scorecard man
     expect(persona).toMatch(/hard turn-completion step/i);
   });
 
-  it('carries all 14 criterion keys — a complete scorecard (the B1/B6/B7 shared contract)', () => {
+  it('carries all 15 criterion keys — a complete scorecard (the B1/B6/B7 shared contract)', () => {
     for (const key of CRITERION_KEYS) {
       // Each key appears as inline code (the persona lists `key` — em-dash gloss).
       expect(persona, `criterion key \`${key}\` must be listed in the persona`).toContain(
         `\`${key}\``,
       );
     }
-    // Exactly fourteen — the founding 13 + scheduler-usage (mig 371). Guards against a
-    // 15th sneaking in or one being dropped; move this in lockstep with the seeded rubric.
-    expect(CRITERION_KEYS).toHaveLength(14);
+    // Exactly fifteen — the founding 13 + scheduler-usage (mig 371) + context-burn (EI-8769).
+    // Guards against a 16th sneaking in or one being dropped; move this in lockstep with the
+    // seeded rubric.
+    expect(CRITERION_KEYS).toHaveLength(15);
   });
 
   it('pins the structured-observation emit shape (rubricRef + Record ratings via capture)', () => {
