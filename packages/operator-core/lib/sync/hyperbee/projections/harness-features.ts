@@ -101,6 +101,29 @@ function isStringOrNull(v: unknown): v is string | null { return v === null || t
 function isNumberOrNull(v: unknown): v is number | null { return v === null || (typeof v === 'number' && Number.isFinite(v)); }
 function isBoolOrNull(v: unknown): v is boolean | null { return v === null || typeof v === 'boolean'; }
 
+/**
+ * Restore the fleet-wide "unassigned ⟺ `taken_by IS NULL OR taken_by = ''`"
+ * invariant at the federation ingest boundary (EI-7939). Every claim/survey/
+ * frontier floor treats an item as unassigned ONLY when `taken_by IS NULL OR
+ * taken_by = ''` (work-items.ts `claimFloorsWhereSql`, survey.ts,
+ * wake-frontier-guard.ts). A projected/federated op that carries a non-null,
+ * non-empty placeholder — whitespace-only, or the literal string `'unassigned'`
+ * (a legacy/foreign "not taken" marker) — VIOLATES that invariant: the item is
+ * neither claimable (the claim floor treats it as taken → STARVED) nor a real
+ * dead-holder orphan, yet the P-013 orphan sweep (fleet-monitors.ts
+ * `sweepOrphanedTakenBy`) then returns it to the backlog and files an
+ * `orphaned-taken-by` incident (the false "dead holder, no live lease" signal
+ * that surfaced as EI-7939 for WI-3130). Collapse those placeholders to NULL on
+ * ingest so the invariant holds and neither the starvation nor the noise recurs.
+ * A REAL holder id (an agent owner/sid) is returned unchanged.
+ */
+export function normalizeTakenBy(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed.toLowerCase() === 'unassigned') return null;
+  return value;
+}
+
 export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow {
   if (!input || typeof input !== 'object') return false;
   const r = input as Record<string, unknown>;
@@ -218,6 +241,11 @@ async function writeToPg(
     return;
   }
   const sql = opts.sql ?? getOrgPg().sql;
+  // EI-7939: collapse an empty-ish / `'unassigned'` placeholder taken_by to NULL
+  // at ingest so the "unassigned ⟺ NULL/''" invariant every claim floor relies on
+  // holds (EXCLUDED.taken_by below — and thus the ON CONFLICT UPDATE + the LWW
+  // content digest — inherit the normalized value).
+  const takenBy = normalizeTakenBy(row.taken_by);
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
@@ -264,7 +292,7 @@ async function writeToPg(
        ${row.kind}, ${row.project_id}, ${row.expected_cost_cents},
        ${row.tags == null ? null : JSON.stringify(normalizeJsonbInput(row.tags))}::text::jsonb,
        ${row.needs_human_review},
-       ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
+       ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${takenBy},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
        ${row.last_progress_at == null ? null : sql`to_timestamp(${row.last_progress_at} / 1000.0)`},
        ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`},

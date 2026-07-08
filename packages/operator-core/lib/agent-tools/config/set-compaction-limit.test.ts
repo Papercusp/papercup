@@ -1,7 +1,8 @@
 /**
  * set-compaction-limit.test.ts — the model-aware clamp (context-trimming-tiers
  * D-001: `limit × 1.2 ≤ window − margin`, spec resolved best-effort; an
- * unresolvable spec clamps against the conservative 200k window).
+ * unresolvable spec now clamps to the fleet-default [1m] ceiling (400k), NOT the
+ * conservative 200k → 158k (WI-3383, owner directive 2026-07-08).
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/config/set-compaction-limit.test.ts
  */
@@ -35,14 +36,14 @@ beforeEach(() => {
 });
 
 describe('config:set-compaction-limit clamp', () => {
-  it('an unresolvable spec clamps against the 200k window: 900k → 158k, flagged', async () => {
+  it('an unresolvable spec now clamps to the 400k [1m] ceiling, not 158k: 900k → 400k, flagged (WI-3383)', async () => {
     specMock.mockResolvedValue(null);
     const out = (await tool.handler({ limit: 900_000 }, {} as never)) as ToolOut;
-    expect(setLimitMock).toHaveBeenCalledWith('su-test', 158_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', 400_000);
     expect(out.data.clamped).toBe(true);
     expect(out.data.requested).toBe(900_000);
-    expect(out.data.cap).toBe(158_000);
-    expect(out.data.compactionLimit).toBe(158_000);
+    expect(out.data.cap).toBe(400_000);
+    expect(out.data.compactionLimit).toBe(400_000);
   });
 
   it('a [1m] spec allows up to 825k; an in-range ask persists verbatim', async () => {

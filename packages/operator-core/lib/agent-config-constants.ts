@@ -394,12 +394,22 @@ export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 300_000;
  * instead. `opts.fleetMember` (fleet_role != 'leader' on a named-fleet
  * presence row) shapes only the [1m] leg — role never changes a real-window
  * derivation.
+ *
+ * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k, 300k member),
+ * NOT the conservative 200k → 158k (owner directive 2026-07-08, WI-3383). On
+ * this fleet the default model is opus[1m], and a genuine small-window model is
+ * ALWAYS explicitly specced (so it resolves to a real spec and derives its 158k
+ * below). A truly-unknown spec is therefore an opus[1m] session — it must seed
+ * 400k, never the haiku-sized 158k that mis-seeded manually-launched su sessions
+ * (resolveModelSpecForOwner returns null when neither a `--model` in launch_argv
+ * nor a settings.json model is found). Only null/empty lifts: a NON-null bare
+ * `opus`/`sonnet` still derives 158k (the un-normalized 200k-window hazard above).
  */
 export function defaultCompactionLimitForSpec(
   spec?: string | null,
   opts?: { fleetMember?: boolean },
 ): number {
-  if (spec?.includes('[1m]')) {
+  if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
     return opts?.fleetMember
       ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
       : COMPACTION_LIMIT_DEFAULT_1M_CAP;

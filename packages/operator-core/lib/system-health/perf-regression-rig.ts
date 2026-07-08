@@ -450,6 +450,60 @@ export async function readCoordOpenEscalations(
   }
 }
 
+// ── loop-lag hysteresis (EI-8719): suppress a single-sample spike ────────────
+//
+// The loop-lag p95 the rig reads (`currentLoopLag().p95Ms`) is a point-in-time read
+// of the lag monitor's CURRENT ≤10s histogram window (event-loop-lag-monitor.ts
+// `h.reset()`s the histogram every 10s), sampled ONCE per ~15-min rig tick. It is
+// therefore inherently spiky — a single 10-second window overlapping a GC pause /
+// compaction / one synchronous burst reads high while the loop is healthy on either
+// side (the live series oscillates 20→400→820ms with no sustained trend and a single
+// breach). Firing a `bug` watchdog signal on ONE such sample files a churning
+// auto-implement item with no sustained regression to fix (EI-8719). So the loop-lag
+// SIGNAL now requires HYSTERESIS: the breach must persist across ≥2 consecutive rig
+// snapshots (~30 min) before it emits — a genuine STANDING saturation (the EI-79
+// class: sustained CPU work, 350-630 windows/hr) survives across ticks and still
+// fires within one extra tick, while a lone spike is suppressed. This is a per-tick
+// TEMPORAL concern, so it lives in the IO wrapper (which owns the snapshot series),
+// NOT the stateless pure evaluator. The BREACH is still persisted every tick (so the
+// next tick can confirm it); only the signal EMISSION waits for confirmation. Same
+// detector-quality class as the EI-7534 orphan-numerator fix above.
+
+/** Signal keys gated by consecutive-tick hysteresis. loop-lag is the only per-tick
+ *  POINT-SAMPLE of an inherently spiky in-memory gauge; the other metrics are
+ *  aggregates over larger windows and already carry their own noise guards
+ *  (e.g. dispatch-orphan-rate's min-sample gate). */
+export const HYSTERESIS_SIGNAL_KEYS: ReadonlySet<string> = new Set(['loop-lag-p95']);
+
+/**
+ * Read the set of metric keys that breached on the IMMEDIATELY-PRIOR snapshot (from
+ * its persisted `breached` JSONB). Best-effort: any failure — missing table, read
+ * error, or no prior row — returns an EMPTY set, which fails toward NOT emitting a
+ * hysteresis-gated signal. That is the safe direction: a lone read miss merely delays
+ * a genuine sustained fire by one tick, and never floods the queue with a transient
+ * spike. Read this BEFORE inserting the current tick's row (else the new row would be
+ * its own "prior").
+ */
+export async function readPriorBreachedMetrics(sql: Sql, workspaceId: string): Promise<Set<string>> {
+  try {
+    const rows = await sql<{ breached: unknown }[]>`
+      SELECT breached
+        FROM harness_shared.perf_regression_snapshots
+       WHERE workspace_id = ${workspaceId}
+       ORDER BY captured_at DESC
+       LIMIT 1`;
+    const breached = rows[0]?.breached;
+    if (!Array.isArray(breached)) return new Set();
+    return new Set(
+      breached
+        .map((b) => (b && typeof b === 'object' ? (b as { metric?: unknown }).metric : undefined))
+        .filter((m): m is string => typeof m === 'string'),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 /**
  * THE rig entry point (the watchdog collector calls this). When the flag is ON:
  *   1. read the metrics (each fail-soft → null + a note fragment, never a throw);
@@ -531,6 +585,22 @@ export async function collectPerfRegressionSnapshot(
 
   const { signals, breaches } = evaluatePerfRegression(metrics, budgets);
 
+  // EI-8719: gate the loop-lag SIGNAL behind consecutive-tick hysteresis so a lone
+  // ≤10s point-sample spike doesn't file a churning auto-implement bug. Read the
+  // PRIOR snapshot's breached set BEFORE inserting this tick's row, then suppress a
+  // hysteresis-gated signal unless the same metric also breached last tick. The breach
+  // itself is still persisted below, so the next tick can confirm a sustained regression.
+  // Non-hysteresis signals (conn-saturation, orphan-rate, …) fire on the first sample.
+  const priorBreached = await readPriorBreachedMetrics(sql, workspaceId);
+  const emitted: WatchdogSignal[] = [];
+  for (const sig of signals) {
+    if (HYSTERESIS_SIGNAL_KEYS.has(sig.key) && !priorBreached.has(sig.key)) {
+      notes.push(`${sig.key}: breach suppressed pending sustained confirmation (single-sample hysteresis)`);
+      continue;
+    }
+    emitted.push(sig);
+  }
+
   // 2/3. Persist the snapshot (best-effort — a missing snapshot table is a note, not a
   // throw: the rig must never break the watchdog tick it rides). `breached` carries the
   // tick's breaches for the audit trail.
@@ -554,5 +624,5 @@ export async function collectPerfRegressionSnapshot(
     }
   }
 
-  return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
+  return { signals: emitted, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }

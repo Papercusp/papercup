@@ -305,6 +305,26 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
   });
 
+  // EI-8164: the doc-steward — a launch-fixer-family role that reads several whole source files
+  // per run to re-verify a batch of drifted docs — was registered late and had NO committed
+  // default, so applyRoleModel returned the base command UNCHANGED and it launched on the bare
+  // CLI default (a 200k auto-compact window — no `[1m]` marker is injected when no spec resolves).
+  // Its multi-file reads then thrashed autocompact → "Prompt is too long" (context_overflow),
+  // repeated failed spawns. The committed `sonnet` default routes it through the [1m] normalizer
+  // → the 967k window, so this regression asserts the launch command carries sonnet[1m], NOT the
+  // bare `claude -p` it produced before the fix.
+  it('doc-steward resolves to sonnet[1m] (1M window) without env — never the bare 200k CLI default', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model sonnet[1m]');
+    // the committed default still applies when AGENT_MODELS is set for OTHER roles only
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model sonnet[1m]');
+    // resolveSpawnBackendModel keys it to the sonnet[1m] bucket, not the empty (bare-default) one
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('doc-steward')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+  });
+
   it('resolveSpawnBackendModel keys release-manager to its committed opus bucket without env (RB-012)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);

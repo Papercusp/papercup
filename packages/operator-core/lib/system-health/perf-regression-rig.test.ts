@@ -403,6 +403,76 @@ describe('collectPerfRegressionSnapshot — a breach files', () => {
   });
 });
 
+// EI-8719: the loop-lag p95 the rig reads is a point-in-time ≤10s histogram window
+// sampled once per ~15-min tick — inherently spiky (the live series oscillated
+// 20→400→820ms with a single breach and no sustained trend). A lone spike must NOT
+// file a churning auto-implement bug: the loop-lag SIGNAL is gated behind
+// consecutive-tick hysteresis (it fires only when the metric ALSO breached the prior
+// snapshot), while the breach is still persisted every tick so the next tick can
+// confirm. Non-loop-lag metrics keep firing on the first sample.
+describe('collectPerfRegressionSnapshot — loop-lag hysteresis (EI-8719 single-sample spike)', () => {
+  it('suppresses a FIRST loop-lag breach (no prior breach) — the transient-spike case', async () => {
+    // No perf_regression_snapshots SELECT handler ⇒ the prior-breach read returns []
+    // ⇒ empty prior set ⇒ a first-sample loop-lag breach is suppressed.
+    const fake = fakeSql([
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
+      { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
+    ]);
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({ sql: () => fake.sql, readLoopLagP95Ms: () => 820.5 }), // the live EI-8719 value
+    );
+    expect(out.signals.some((s) => s.key === 'loop-lag-p95')).toBe(false);
+    expect(out.note).toContain('suppressed pending sustained confirmation');
+    expect(fake.inserts).toBe(1); // the breach is still persisted so the next tick can confirm
+  });
+
+  it('EMITS a loop-lag breach that ALSO breached last tick — the sustained-regression case', async () => {
+    const fake = fakeSql([
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
+      { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
+      // the prior snapshot's persisted breached JSONB names loop-lag ⇒ hysteresis satisfied
+      {
+        match: /perf_regression_snapshots/i,
+        rows: [{ breached: [{ metric: 'loop-lag-p95', value: 700, budget: 600, tier: 'warn' }] }],
+      },
+    ]);
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({ sql: () => fake.sql, readLoopLagP95Ms: () => 820.5 }),
+    );
+    const loop = out.signals.find((s) => s.key === 'loop-lag-p95');
+    expect(loop).toBeDefined();
+    expect(loop!.severity).toBe('major');
+    expect(fake.inserts).toBe(1);
+  });
+
+  it('also suppresses a CRIT loop-lag first-breach (a single ≥1000ms sample is still a point-sample)', async () => {
+    const fake = fakeSql([
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
+      { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
+    ]);
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({ sql: () => fake.sql, readLoopLagP95Ms: () => B.loopLagP95CritMs + 200 }),
+    );
+    expect(out.signals.some((s) => s.key === 'loop-lag-p95')).toBe(false);
+    expect(out.note).toContain('single-sample hysteresis');
+  });
+
+  it('does NOT gate a non-loop-lag metric — conn-saturation still fires on the first sample', async () => {
+    const fake = fakeSql([
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
+      { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
+    ]);
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({ sql: () => fake.sql, readConnSaturationPct: () => Promise.resolve(B.connSaturationCritPct) }),
+    );
+    expect(out.signals.some((s) => s.key === 'conn-saturation' && s.severity === 'critical')).toBe(true);
+  });
+});
+
 describe('collectPerfRegressionSnapshot — dormant-tolerance (missing table → note, no throw)', () => {
   it('a missing improvement_dispatches table is a note, the tick still completes', async () => {
     const fake = fakeSql([

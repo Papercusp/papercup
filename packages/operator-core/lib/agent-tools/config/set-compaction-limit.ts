@@ -10,8 +10,10 @@
  *
  * Clamped against the caller's model window (context-trimming-tiers D-001):
  * `limit × 1.2 ≤ window − margin` — the spec resolves best-effort via
- * resolveModelSpecForOwner (launch argv → session settings.json); unresolvable
- * clamps against the conservative 200k window.
+ * resolveModelSpecForOwner (launch argv → session settings.json). An
+ * UNRESOLVABLE spec clamps to the fleet-default [1m] ceiling (400k), NOT the old
+ * conservative 200k → 158k (WI-3383): on this opus[1m]-default fleet a genuine
+ * small-window model is always explicitly specced, so an unknown is a 1M session.
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -55,8 +57,9 @@ export default defineTool({
     // Clamp to the caller's model-derived ceiling (context-trimming-tiers D-001):
     // `limit × 1.2 ≤ window − margin`, i.e. limit ≤ defaultCompactionLimitForSpec(spec).
     // The spec resolves best-effort (session settings.json → launch argv); an
-    // unresolvable spec clamps against the conservative 200k window — a LOW cap
-    // on a big-window session is safe leanness, the reverse is a hard death.
+    // unresolvable spec clamps to the fleet-default [1m] ceiling (400k, WI-3383) —
+    // on this opus[1m]-default fleet a genuine small-window model is always
+    // explicitly specced, so an unknown is a 1M session, not a haiku.
     const spec = await resolveModelSpecForOwner(identity.ownerId).catch(() => null);
     const cap = defaultCompactionLimitForSpec(spec);
     const applied = clampCompactionLimit(args.limit, spec);
@@ -74,7 +77,7 @@ export default defineTool({
               clamped: true,
               requested: args.limit,
               cap,
-              note: `requested limit clamped to the model-derived ceiling (window${spec ? ` for ${spec}` : ' 200k — model spec unresolvable'} minus margin, ÷1.2 overshoot allowance)`,
+              note: `requested limit clamped to the model-derived ceiling (${spec ? `window for ${spec} minus margin, ÷1.2 overshoot allowance` : 'model spec unresolvable — fleet-default [1m] ceiling'})`,
             }
           : {}),
         ...(persisted == null ? { note: 'no live presence row for this session — limit not persisted' } : {}),

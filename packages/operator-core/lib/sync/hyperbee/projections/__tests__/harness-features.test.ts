@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildHarnessFeaturesProjection,
+  normalizeTakenBy,
   _testing,
   type HarnessFeatureRow,
 } from '../harness-features';
@@ -111,6 +112,54 @@ describe('harness_features projection', () => {
     const p = buildHarnessFeaturesProjection({ workspaceId: 'w1', harnessSlug: 'sheets' });
     expect(p.decodeValue(feature())).toEqual(feature());
     expect(p.decodeValue({})).toBeNull();
+  });
+
+  // EI-7939: the "unassigned ⟺ taken_by IS NULL OR taken_by = ''" invariant every
+  // claim floor relies on — enforced at the federation ingest boundary.
+  it('EI-7939: normalizeTakenBy collapses empty-ish / `unassigned` placeholders to NULL and preserves a real holder', () => {
+    // Placeholders → NULL (would otherwise starve the item on the claim floor AND
+    // trip the P-013 orphan sweep into a false "dead holder" incident).
+    expect(normalizeTakenBy('unassigned')).toBeNull();
+    expect(normalizeTakenBy('UNASSIGNED')).toBeNull();
+    expect(normalizeTakenBy('  unassigned  ')).toBeNull();
+    expect(normalizeTakenBy('')).toBeNull();
+    expect(normalizeTakenBy('   ')).toBeNull();
+    expect(normalizeTakenBy(null)).toBeNull();
+    expect(normalizeTakenBy(undefined)).toBeNull();
+    // A real holder id passes through untouched.
+    expect(normalizeTakenBy('su-6c0b54c0')).toBe('su-6c0b54c0');
+    expect(normalizeTakenBy('improvement-runner')).toBe('improvement-runner');
+  });
+
+  it('EI-7939: writeToPg normalizes a `unassigned` placeholder taken_by to NULL on ingest (never persists the invariant-violating string)', async () => {
+    const sql = Object.assign(vi.fn(async (..._a: unknown[]) => [] as unknown[]), {
+      json: vi.fn((x: unknown) => ({ __json: x })),
+    });
+    const p = buildHarnessFeaturesProjection({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'sheets', // own-slug op — member-content guard short-circuits to 'apply'
+      sql: sql as never,
+    });
+    await p.writeToPg(feature({ taken_by: 'unassigned' }), { origin: 'remote' });
+    expect(sql).toHaveBeenCalledTimes(1);
+    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    // The invariant-violating placeholder never reaches the bound INSERT values —
+    // EXCLUDED.taken_by (and thus the ON CONFLICT UPDATE + LWW digest) inherit NULL.
+    expect(values).not.toContain('unassigned');
+  });
+
+  it('EI-7939: writeToPg preserves a REAL holder id on ingest', async () => {
+    const sql = Object.assign(vi.fn(async (..._a: unknown[]) => [] as unknown[]), {
+      json: vi.fn((x: unknown) => ({ __json: x })),
+    });
+    const p = buildHarnessFeaturesProjection({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'sheets',
+      sql: sql as never,
+    });
+    await p.writeToPg(feature({ taken_by: 'su-real-agent-7f3a' }), { origin: 'remote' });
+    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    expect(values).toContain('su-real-agent-7f3a');
   });
 
   it('WI-1612: writeToPg ALWAYS binds workspace_id explicitly on the INSERT — never left NULL for the incomplete fill_ws_features_trg fallback', async () => {

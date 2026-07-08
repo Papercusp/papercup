@@ -98,7 +98,18 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     // floor((200_000 - 10_000) / 1.2 / 1000) * 1000 = 158_000
     expect(defaultCompactionLimitForSpec('haiku')).toBe(158_000);
     expect(defaultCompactionLimitForSpec('claude-sonnet-4-6')).toBe(158_000);
-    expect(defaultCompactionLimitForSpec(null)).toBe(158_000);
+  });
+  it('an UNRESOLVABLE spec (null / empty) seeds the [1m] policy default, NOT 158k (WI-3383, owner 2026-07-08)', () => {
+    // On this opus[1m]-default fleet a truly-unknown spec is an opus[1m] session:
+    // seed 400k (300k member), never the haiku-sized 158k that mis-seeded a
+    // manually-launched su session. Only null/empty lifts — a NON-null bare
+    // `opus`/`sonnet` still derives 158k (asserted above).
+    expect(defaultCompactionLimitForSpec(null)).toBe(400_000);
+    expect(defaultCompactionLimitForSpec(undefined)).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('   ')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(300_000);
+    expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(300_000);
   });
 });
 
@@ -116,6 +127,13 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
   });
   it('clamps a bare-family request to the 158k derived ceiling (the real 200k window)', () => {
     expect(clampCompactionLimit(500_000, 'sonnet:medium')).toBe(158_000);
+  });
+  it('an unresolvable spec (null) clamps to the 400k [1m] ceiling now, not 158k (WI-3383)', () => {
+    // config:set-compaction-limit on a session whose spec did not resolve is no
+    // longer forced down to 158k — the fleet default is opus[1m], so 400k holds.
+    expect(clampCompactionLimit(400_000, null)).toBe(400_000);
+    expect(clampCompactionLimit(900_000, null)).toBe(400_000);
+    expect(clampCompactionLimit(250_000, null)).toBe(250_000);
   });
   it('floors any request at MIN_COMPACTION_LIMIT_TOKENS', () => {
     expect(clampCompactionLimit(1_000, 'opus[1m]')).toBe(MIN_COMPACTION_LIMIT_TOKENS);

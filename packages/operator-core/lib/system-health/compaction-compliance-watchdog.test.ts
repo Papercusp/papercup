@@ -141,7 +141,7 @@ beforeEach(() => {
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
-  it('seeds the model-derived default for limit-less live sessions: fable [1m] → 400k cap, unresolvable → 158k', async () => {
+  it('seeds the model-derived default for limit-less live sessions: fable [1m] → 400k cap, unresolvable → 400k (WI-3383)', async () => {
     specMock.mockImplementation(async (owner: string) =>
       owner === 'su-wide' ? 'claude-fable-5[1m]' : null,
     );
@@ -150,7 +150,9 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     );
     expect(out.seeded).toEqual(['su-wide', 'su-narrow']);
     expect(setLimitMock).toHaveBeenCalledWith('su-wide', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 158_000);
+    // WI-3383: an UNRESOLVABLE spec no longer mis-seeds the haiku-sized 158k — on this
+    // opus[1m]-default fleet a truly-unknown spec is an opus[1m] session ⇒ the 400k policy.
+    expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 400_000);
   });
 
   it('shapes the [1m] default by fleet role: member → 300k, leader/solo → 400k (owner directive 2026-07-03)', async () => {
@@ -177,13 +179,13 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
-    specMock.mockResolvedValue(null); // resolver would give the 158k fallback
+    specMock.mockResolvedValue(null); // resolver unresolvable ⇒ the 400k [1m] fallback (WI-3383)
     const out = await checkCompactionCompliance(
       fakeSql({
         unseeded: [
           { owner_id: 's-tier' }, // spawn record names tier "deep" → explicit 120k
           { owner_id: 's-spec' }, // spawn record carries only a fable [1m] spec → 400k cap
-          { owner_id: 's-none' }, // no spawn record → resolver fallback → 158k
+          { owner_id: 's-none' }, // no spawn record → unresolvable resolver fallback → 400k (WI-3383)
         ],
         spawnRecords: {
           's-tier': { model_spec: 'opus:high', model_tier: 'deep' },
@@ -194,7 +196,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     expect(out.seeded).toEqual(['s-tier', 's-spec', 's-none']);
     expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000);
     expect(setLimitMock).toHaveBeenCalledWith('s-spec', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('s-none', 158_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-none', 400_000);
     // the fs/argv resolver only ran for the record-less owner
     expect(specMock).toHaveBeenCalledTimes(1);
     expect(specMock).toHaveBeenCalledWith('s-none');

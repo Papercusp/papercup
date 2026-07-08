@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783297138622
+updated_at: 1783514466711
 _body: "content"
 ---
 
@@ -22,3 +22,6 @@ _body: "content"
 [2026-07-05T09:36:00Z] worker EI-7539: orphaned-dispatch EIs are dominated by exit-143 (SIGTERM) worker deaths at ~40min that fall THROUGH the WI-2162 timeout classifier — isWorkerTimeoutExit requires runtime ≥ configuredTimeout−10s (2690s for the 45-min implementTimeoutMs), so a SIGTERM BEFORE the 45-min clock gets the generic `worker-exit-backedge` tag → isLaneBreakageOrphan()=true → a false "lane broken" EI. Also exit-0-no-resolve (worker ran, exited 0, never called improvements:resolve) is DESIGNED to signal as lane breakage. Any fix is a design call on self-improvement-loop protected surfaces (orphaned-dispatch.ts / implement-worker-exit.ts / spawn.ts) → needs-human.
 [2026-07-05T20:20:00Z] worker EI-7312: loop-su-*@* "chronic autoloop failure red N fires" EIs filed BEFORE 2026-07-05 12:10 (commit 34ab1dc348) are phantoms — that commit added isLoopArmOwnerRole() (autoloop-chronic-failure.ts), a join-independent guard suppressing any autoloop_state.role starting with `loop-` (loop:arm owner loops are owner-witnessed + auto-terminated by the reconcile dead-owner guard). Verify a phantom: autoloop_state row gone (0) + routine active=false + no coord_presence for the su owner ⇒ resolve fixed. Each real incident gets its own pinned selectChronicFailures test even when byte-identical (house style).
 
+[2026-07-08T12:10:00Z] worker EI-8164: A spawn role with NO ROLE_MODEL_DEFAULTS entry (libs/papercusp/packages/orchestrator/src/role-models.ts) launches on the BARE CLI default → a 200k auto-compact window in CC (no `[1m]` marker is injected when no spec resolves via applyRoleModel). A file-heavy role (reads several whole source files) then thrashes autocompact → "Prompt is too long", classified context_overflow (watchdog "config" class). Fix = add a committed default whose spec normalizes to `[1m]` (bare `sonnet`/`opus` match DEFAULT_1M_FAMILY_RE → normalizeModelSpec → 967k/1M window). doc-steward was the late-registered fixer role that missed this.
+
+[2026-07-08T12:40:00Z] worker EI-7939: The fleet-wide "unassigned" invariant is `taken_by IS NULL OR taken_by = ''` (work-items.ts claimFloorsWhereSql, survey.ts, wake-frontier-guard.ts). A literal `'unassigned'` (or whitespace) taken_by violates it: the claim floor treats it as TAKEN (starved) AND the P-013 orphan-sweep fires a false "dead holder" incident. Normalize empty-ish/'unassigned'→NULL at the hyperbee projection ingest boundary (projections/harness-features.ts normalizeTakenBy), not in the sweep (the sweep MUST still clean it to break starvation).

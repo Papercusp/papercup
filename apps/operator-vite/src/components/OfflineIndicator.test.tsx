@@ -21,7 +21,10 @@ vi.mock('@papercusp/sync', () => ({
 }));
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), dismiss: vi.fn() } }));
 
-import OfflineIndicator, { OFFLINE_TOAST_GRACE_MS } from './OfflineIndicator';
+import OfflineIndicator, {
+  OFFLINE_TOAST_GRACE_MS,
+  OFFLINE_TOAST_RECOVERY_HOLD_MS,
+} from './OfflineIndicator';
 
 const TOAST_ID = 'sync-offline-indicator';
 const errorMock = () => toast.error as ReturnType<typeof vi.fn>;
@@ -98,16 +101,63 @@ describe('<OfflineIndicator>', () => {
     expect(errorMock()).not.toHaveBeenCalled();
   });
 
-  it('dismisses the toast when a sustained outage recovers (offline → online)', () => {
+  it('holds a shown toast until the connection is STABLY reachable, then dismisses (WI-3307)', () => {
     H.offline = true;
     const { rerender } = render(<OfflineIndicator />);
     act(() => vi.advanceTimersByTime(OFFLINE_TOAST_GRACE_MS));
     expect(errorMock()).toHaveBeenCalledTimes(1);
     dismissMock().mockClear();
 
+    // Recovers — but a single reachable report is NOT proof; the toast is held.
     H.offline = false;
     rerender(<OfflineIndicator />);
+    expect(dismissMock()).not.toHaveBeenCalledWith(TOAST_ID);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_RECOVERY_HOLD_MS - 1));
+    expect(dismissMock()).not.toHaveBeenCalledWith(TOAST_ID);
+    // Stays reachable for the full hold → dismissed.
+    act(() => vi.advanceTimersByTime(1));
     expect(dismissMock()).toHaveBeenCalledWith(TOAST_ID);
+  });
+
+  it('a re-drop within the recovery hold keeps the ONE toast — no strobe (WI-3307)', () => {
+    H.offline = true;
+    const { rerender } = render(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_GRACE_MS));
+    expect(errorMock()).toHaveBeenCalledTimes(1); // shown once
+    dismissMock().mockClear();
+    errorMock().mockClear();
+
+    // Recovers briefly (one successful reply)...
+    H.offline = false;
+    rerender(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_RECOVERY_HOLD_MS - 1000));
+    // ...then stalls again before the hold elapses (the flapping shape).
+    H.offline = true;
+    rerender(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_GRACE_MS * 2));
+
+    // The one toast was never torn down and never re-fired: no strobe.
+    expect(dismissMock()).not.toHaveBeenCalledWith(TOAST_ID);
+    expect(errorMock()).not.toHaveBeenCalled();
+  });
+
+  it('re-alarms after a GENUINE recovery when a new outage occurs (WI-3307)', () => {
+    H.offline = true;
+    const { rerender } = render(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_GRACE_MS));
+    expect(errorMock()).toHaveBeenCalledTimes(1);
+
+    // Genuine recovery: reachable through the whole hold → dismissed.
+    H.offline = false;
+    rerender(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_RECOVERY_HOLD_MS));
+    expect(dismissMock()).toHaveBeenCalledWith(TOAST_ID);
+
+    // A brand-new sustained outage re-alarms after the grace.
+    H.offline = true;
+    rerender(<OfflineIndicator />);
+    act(() => vi.advanceTimersByTime(OFFLINE_TOAST_GRACE_MS));
+    expect(errorMock()).toHaveBeenCalledTimes(2);
   });
 
   it('does not re-fire while offline stays unchanged across re-renders (effect dep is `offline`)', () => {
