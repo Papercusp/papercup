@@ -145,3 +145,27 @@ Verify recovery, then resolve `fixed` (no manual clear needed if already null):
    (owner-escalated) — do NOT auto-fix it, and clearing the transient escalation does not mask it.
    A separate idea to debounce the improvement-watchdog's redundant recovery-window dispatch is
    filed as **EI-8671** (touches the self-improvement loop, so human-gated).
+
+### The persistentReap variant does NOT self-clear — it's the git-sync-watchdog orphan trap (EI-8614)
+
+The "self-clears within one sweep" story above assumes the stall **recovered**. It does **not** hold
+when the verdict stays `stalled` because of `persistentReap` (`reaped_count ≥ 3`) or a frozen HEAD on
+a **semi-dead / low-traffic hive** whose git-sync is permanently wedged by WI-1415 (e.g. `oddsmith`,
+2026-07-08: `reaped_count=44`, `wd_error_sweeps=74`, no successful sync in ~16h). Here
+`evaluateGitSyncStall` keeps returning `stalled=true`, so the git-sync-stall-watchdog's healthy branch
+(the self-clear) **never runs**, and its alarm is one-shot (`if (watchdogAlerted) continue`) — so the
+row sits `escalation<>'' , supervisor_notes=''` **forever** and `collectEscalationSignals` re-dispatches
+an auto-implement worker **every tick** (EI-8614 reached dispatch attempt 3). This is the exact
+orphan-loop the EI-8396 guard fixed for the two green-checkpoint phases — but **git-sync-watchdog has
+no such guard** (that gap is EI-8671, human-gated).
+
+Distinguishing it from the recovery-window phantom: check `metadata.reaped_count`/`wd_error_sweeps`
+and `last_synced_at`. If the metadata is genuinely **unhealthy** (not the "healthy, just hasn't swept"
+case in step 2), the row will not self-clear — do the **manual clear (step 3)** with a `supervisor_notes`
+that points at WI-1415, and resolve `fixed`. Leave `watchdog_alerted` alone so a genuine future
+transition re-alarms. This is a state-only cleanup on a protected root cause (WI-1415) that a worker
+cannot fix; clearing the ledger row does not mask it because WI-1415 is the authoritative tracker.
+⚠ The sanctioned write path is `POST /api/harness/:slug/escalation/resolve?phase=git-sync-watchdog`
+(`{ response, action:'clear' }`, `auth:'loopback'`) — it **appends** `supervisor_notes` and bumps
+`mtime_ms`, so probing it writes real rows (and a bumped mtime pulls the row into the escalation-spike
+6h window until you `clear` it). A non-project harness like `oddsmith` still resolves through this route.

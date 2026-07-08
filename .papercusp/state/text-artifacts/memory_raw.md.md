@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783514466711
+updated_at: 1783523923870
 _body: "content"
 ---
 
@@ -25,3 +25,5 @@ _body: "content"
 [2026-07-08T12:10:00Z] worker EI-8164: A spawn role with NO ROLE_MODEL_DEFAULTS entry (libs/papercusp/packages/orchestrator/src/role-models.ts) launches on the BARE CLI default → a 200k auto-compact window in CC (no `[1m]` marker is injected when no spec resolves via applyRoleModel). A file-heavy role (reads several whole source files) then thrashes autocompact → "Prompt is too long", classified context_overflow (watchdog "config" class). Fix = add a committed default whose spec normalizes to `[1m]` (bare `sonnet`/`opus` match DEFAULT_1M_FAMILY_RE → normalizeModelSpec → 967k/1M window). doc-steward was the late-registered fixer role that missed this.
 
 [2026-07-08T12:40:00Z] worker EI-7939: The fleet-wide "unassigned" invariant is `taken_by IS NULL OR taken_by = ''` (work-items.ts claimFloorsWhereSql, survey.ts, wake-frontier-guard.ts). A literal `'unassigned'` (or whitespace) taken_by violates it: the claim floor treats it as TAKEN (starved) AND the P-013 orphan-sweep fires a false "dead holder" incident. Normalize empty-ish/'unassigned'→NULL at the hyperbee projection ingest boundary (projections/harness-features.ts normalizeTakenBy), not in the sweep (the sweep MUST still clean it to break starvation).
+[2026-07-08T15:18:00Z] worker EI-8614: "Unresolved escalation ... git-sync-watchdog" is NOT always a self-clearing phantom. When evaluateGitSyncStall stays stalled via persistentReap (reaped_count≥3) on a WI-1415-wedged/semi-dead hive (oddsmith: reaped=44, no sync 16h), the one-shot watchdog never self-clears → collectEscalationSignals re-dispatches every tick (git-sync-watchdog has NO EI-8396-style guard; that's EI-8671, human-gated). Fix = manual clear via loopback POST /api/harness/:slug/escalation/resolve?phase=git-sync-watchdog {response,action:'clear'} (it APPENDS supervisor_notes + bumps mtime; works for non-project harnesses). Root cause is a protected surface (WI-1415), not auto-fixable — state-only cleanup, zero code diff.
+
