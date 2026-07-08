@@ -12,15 +12,49 @@
  */
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyGymSchema } from './schema';
 // eslint-disable-next-line import/no-relative-packages -- the real boot-path migration runner
 import { applyPendingMigrations } from '../../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** The migration tree, relative to the repo root. */
+const SQL_DIR_REL = join('libs', 'papercusp', 'libs', 'db', 'sql');
+
+/**
+ * Resolve the main-schema migration dir by walking UP from `startDir` to the
+ * first ancestor that actually contains `libs/papercusp/libs/db/sql`.
+ *
+ * EI-8689: the old fixed `join(__dirname, '../../../../' + SQL_DIR_REL)` was
+ * calibrated for the SOURCE layout (`packages/operator-core/lib/gym`, four
+ * levels below the repo root). But operator-core is BUNDLED into
+ * `apps/operator/dist-host/hono-host.mjs`, where `import.meta.url` — and thus
+ * `__dirname` — sits at `apps/operator/dist-host`, only THREE levels below the
+ * repo root. Up-four then overshot to `<workspace>/libs/papercusp/libs/db/sql`
+ * (the workspace parent of the repo), which does not exist, so every gym-cycle
+ * autoloop fire died with `ENOENT: scandir '.../libs/papercusp/libs/db/sql'`
+ * (chronically red — 14 consecutive fires on gymloopharness). Walking up to the
+ * real marker resolves correctly from BOTH the source and the bundled depth.
+ */
+export function resolveMainSqlDir(startDir: string): string {
+  let dir = resolve(startDir);
+  for (let i = 0; i < 16; i += 1) {
+    const candidate = join(dir, SQL_DIR_REL);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Last resort: the legacy source-relative path, so a genuinely-absent tree
+  // still yields a deterministic path for the ENOENT message.
+  return join(startDir, '..', '..', '..', '..', SQL_DIR_REL);
+}
+
 /** The main schema migration dir (000-baseline.sql + 107+). */
-export const MAIN_SQL_DIR = join(__dirname, '../../../../libs/papercusp/libs/db/sql');
+export const MAIN_SQL_DIR = resolveMainSqlDir(__dirname);
 
 const FRAMEWORK_ROLES_DDL = `
   DO $pg$ BEGIN

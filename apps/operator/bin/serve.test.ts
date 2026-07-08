@@ -227,15 +227,59 @@ describe('sweepOrphanPostgres', () => {
     expect(logs.join('\n')).toMatch(/malformed pid/);
   });
 
-  it('does NOT kill a live process that is not our postgres', async () => {
+  it('NEVER kills a live process that is not our postgres (only touches the lockfile)', async () => {
     mkdirSync(dataDir(), { recursive: true });
-    // Our own (vitest) pid: alive, but cmdline is node/vitest — not postgres
-    // pointed at dataDir. Must be left alone, file intact, and we must still
-    // be alive afterwards (trivially true if the test completes).
-    writeFileSync(pidFile(), `${process.pid}\n`);
+    // Our own (vitest) pid: alive, but cmdline is node/vitest — not postgres.
+    // The recorded port (line 4) is a live listener, so a real server may hold
+    // the dir → leave the file intact AND never signal the process (we must
+    // still be alive afterwards, trivially true if the test completes).
+    const { createServer } = await import('node:net');
+    const srv = createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as import('node:net').AddressInfo).port;
+    try {
+      writeFileSync(pidFile(), `${process.pid}\n${dataDir()}\n0\n${port}\n`);
+      await serve.sweepOrphanPostgres(dataDir(), logFn);
+      expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
+      expect(logs.join('\n')).toMatch(/is accepting.*leaving it alone/s);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+
+  it('clears a stale lockfile whose pid was reused by a non-postgres process (WI-3360)', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    // Alive pid, cmdline not postgres, and the recorded port has NO listener —
+    // i.e. the postgres that wrote this file is dead and its (low, WSL-recycled)
+    // pid now belongs to something else. Leaving the file would FATAL the next
+    // pg.start() with "lock file already exists" and crash-loop the operator, so
+    // the stale lockfile must be cleared (the process itself is never touched).
+    const { createServer } = await import('node:net');
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', () => r()));
+    const deadPort = (probe.address() as import('node:net').AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r())); // free it → nothing accepts
+    writeFileSync(pidFile(), `${process.pid}\n${dataDir()}\n0\n${deadPort}\n`);
     await serve.sweepOrphanPostgres(dataDir(), logFn);
-    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
-    expect(logs.join('\n')).toMatch(/leaving it alone/);
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeUndefined();
+    expect(logs.join('\n')).toMatch(/not accepting.*unlinking/s);
+  });
+});
+
+describe('isPortAccepting', () => {
+  it('is true for a live listener and false for a free port', async () => {
+    const { createServer } = await import('node:net');
+    const srv = createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as import('node:net').AddressInfo).port;
+    expect(await serve.isPortAccepting(port)).toBe(true);
+    await new Promise<void>((r) => srv.close(() => r()));
+    expect(await serve.isPortAccepting(port)).toBe(false);
+  });
+
+  it('is false for an invalid port', async () => {
+    expect(await serve.isPortAccepting(0)).toBe(false);
+    expect(await serve.isPortAccepting(-1)).toBe(false);
   });
 });
 

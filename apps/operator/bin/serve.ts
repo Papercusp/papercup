@@ -37,7 +37,7 @@
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, connect as netConnect } from 'node:net';
 import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
@@ -337,6 +337,32 @@ function processCommandLine(pid: number): string | null {
 }
 
 /**
+ * True if something is accepting TCP connections on 127.0.0.1:`port` within
+ * `timeoutMs`. Used by the orphan sweep as GROUND TRUTH for "is a postgres
+ * actually up on the recorded port?" — more reliable than a pid/cmdline match
+ * inside the WSL distro, where low pids get recycled fast (a dead postgres's
+ * pid can already belong to an unrelated live process) and `/proc/<pid>/cmdline`
+ * can read empty under load. Never throws.
+ */
+export async function isPortAccepting(port: number, timeoutMs = 750): Promise<boolean> {
+  if (!Number.isInteger(port) || port <= 0) return false;
+  return new Promise<boolean>((resolve) => {
+    const sock = netConnect({ host: '127.0.0.1', port });
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      sock.destroy();
+      resolve(v);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+  });
+}
+
+/**
  * Sweep an orphaned postgres process holding `dataDir` (left by a prior
  * unclean exit) before we start a fresh one. Ported from the desktop
  * embedder's Rust `sweep_orphan_postgres` (SP1 C5 — PG lifecycle ownership
@@ -387,10 +413,36 @@ export async function sweepOrphanPostgres(
   const cmdline = processCommandLine(pid) ?? '';
   const isPg = /postgres|embedded-pg/i.test(cmdline);
   if (!isPg || !cmdline.includes(dataDir)) {
+    // The pid is alive but does NOT look like our postgres. Two cases, and BOTH
+    // mean the postmaster that wrote this lockfile is gone: (a) postgres died
+    // and the WSL2 distro recycled its (low) pid to an unrelated process, or
+    // (b) `/proc/<pid>/cmdline` read empty under load. Either way, leaving the
+    // stale postmaster.pid in place is NOT harmless: embedded-postgres' next
+    // `pg.start()` FATALs on "lock file already exists", which crash-loops the
+    // operator and — on Windows — the respawn storm wedges the whole WSL distro
+    // until a manual `wsl --terminate` (VM-observed 2026-07-08, WI-3360). So
+    // clear the stale lockfile — but ONLY after confirming, via GROUND TRUTH,
+    // that no postgres is actually accepting on the recorded port. If something
+    // IS listening, a real server holds the dir (or a genuine port clash) and
+    // we must NOT unlink; surface it by leaving the start to fail loudly.
+    const recordedPort = Number((raw.split('\n')[3] ?? '').trim()) || 0;
+    if (recordedPort > 0 && (await isPortAccepting(recordedPort))) {
+      logFn(
+        `sweepOrphanPostgres: pid ${pid} is alive but not our postgres, yet :${recordedPort} ` +
+          `is accepting — a live server holds ${dataDir}; leaving it alone ` +
+          `(cmdline=${JSON.stringify(cmdline.slice(0, 200))})`,
+      );
+      return;
+    }
     logFn(
-      `sweepOrphanPostgres: pid ${pid} is alive but does not look like our postgres ` +
-        `(cmdline=${JSON.stringify(cmdline.slice(0, 200))}) — leaving it alone`,
+      `sweepOrphanPostgres: pid ${pid} alive but not our postgres and :${recordedPort || '?'} ` +
+        `not accepting — stale postmaster.pid (postgres dead, pid reused); unlinking ${pidFile}`,
     );
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      /* already gone */
+    }
     return;
   }
   logFn(`sweepOrphanPostgres: killing orphaned postgres pid=${pid} holding ${dataDir}`);

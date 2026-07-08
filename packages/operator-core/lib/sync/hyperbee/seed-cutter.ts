@@ -64,6 +64,17 @@ export interface CorestoreCutSpec {
   readonly sourceStore: Corestore;
   /** Hex keys of the admitted author logs to seed (read-only, no secrets). */
   readonly coreKeys: readonly string[];
+  /**
+   * seed-history-trim-public-builds-2026-07-07 P-004 — ship each core's
+   * current-state SUFFIX only (`[latest-snapshot-index, length)`), dropping the
+   * summarized-and-superseded history prefix (the ~2GB of churn) from the public
+   * build. Projection-equivalent (P-002); REQUIRES the snapshot reader ON in the
+   * shipped build (SUBSTRATE_LOG_SNAPSHOT — P-005). The caller SHOULD append a
+   * fresh head snapshot (produceLogSnapshot, P-003) after any large pre-cut drain
+   * so the last snapshot stays inside the reader's scan window. Omit ⇒ full ship
+   * (byte-identical to pre-P-004). See {@link CorestoreCutContext.sparse}.
+   */
+  readonly sparse?: boolean;
 }
 
 export interface HiveSeedCutInputs {
@@ -178,6 +189,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       sourceStore: corestore.sourceStore,
       coreKeys: corestore.coreKeys,
       stagingDir,
+      ...(corestore.sparse ? { sparse: true } : {}),
     });
     stores.push({ ...entry, source: { type: 'resource', path: CORESTORE_SUBDIR } });
     sizes.push({ kind: entry.kind, subdir: CORESTORE_SUBDIR, sizeBytes: entry.sizeBytes, encrypted: false });

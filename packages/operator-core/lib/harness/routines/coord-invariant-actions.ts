@@ -38,8 +38,11 @@
  *       · locks held past TTL, unswept    (expired > expiredLockGraceMin, def 60)
  *       · presence ghosts                 (heartbeat stale > presenceGhostHours,
  *                                          def 72, rows never cleaned)
- *       · wake-queue depth / age          (pending_wakes > wakeQueueDepthMax,
- *                                          def 50, or oldest > wakeQueueAgeHours)
+ *       · wake-queue depth / age          (pending_wakes > wakeQueueDepthMax, def 50,
+ *                                          or oldest past the auto-expiry deadline
+ *                                          pendingWakeStaleHours + grace — a sweep
+ *                                          failure, not the human's normal review
+ *                                          backlog; EI-8664)
  *     Each violation files ONE deduped improvement with a STABLE title (the
  *     dedup key), so a persisting violation never floods the backlog.
  *
@@ -487,11 +490,15 @@ export interface InvariantThresholds {
   expiredLockGraceMin: number;
   presenceGhostHours: number;
   wakeQueueDepthMax: number;
-  wakeQueueAgeHours: number;
-  /** WI-3097: auto-EXPIRE any staged wake (live owner or dead) past this age, separate
-   *  from wakeQueueAgeHours (the ALERT threshold). Deliberately well above the alert
-   *  window — a grace period for a busy-but-live owner to review it before it's swept,
-   *  not a race with the invariant firing. */
+  /** WI-3097: auto-EXPIRE any staged wake (live owner or dead) past this age
+   *  (sweepStalePendingWakes, run in-pass just before the invariant check). EI-8664:
+   *  this is ALSO the sole basis for the wake-queue AGE alarm — a wake aged UNDER it is
+   *  EXPECTED live-owner review backlog the sweep will reap (the pui wake board is the
+   *  owner's review surface, not a filed EI); a wake that SURVIVES past it
+   *  (+ WAKE_QUEUE_STALE_GRACE_MS) means the sweep is genuinely not keeping up, the only
+   *  real substrate leak. There is deliberately NO separate lower "alert" threshold — a
+   *  lower one fires an EI on the human's normal review backlog every hour, the EI-6910
+   *  anti-pattern (and the two knobs could silently drift apart, reopening the gap). */
   pendingWakeStaleHours: number;
 }
 
@@ -500,9 +507,20 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   expiredLockGraceMin: 60,
   presenceGhostHours: 72,
   wakeQueueDepthMax: 50,
-  wakeQueueAgeHours: 6,
   pendingWakeStaleHours: 24,
 };
+
+/**
+ * EI-8664: grace added on top of pendingWakeStaleHours before the wake-queue AGE alarm
+ * fires. The auto-expiry sweep (sweepStalePendingWakes) runs in the SAME pass immediately
+ * before the check and reaps every wake past pendingWakeStaleHours, so any wake surviving
+ * past that deadline already means the sweep is failing. This grace only absorbs the
+ * boundary/clock race (a row that was a hair under the cap at sweep time, now a hair over
+ * at measure time) so a single hourly pass never false-fires on the 24h edge — only a
+ * genuinely-stuck queue keeps a wake past the deadline + grace. One hour matches the
+ * hourly monitor cadence.
+ */
+export const WAKE_QUEUE_STALE_GRACE_MS = 60 * 60 * 1000;
 
 /** One open escalation, reduced to what the substrate-drain invariant needs to tell a
  *  genuine human decision (the human's attention queue — never a substrate leak) from an
@@ -592,10 +610,20 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
     });
   }
   const oldestH = snap.wakeQueueOldestMs == null ? 0 : (nowMs - snap.wakeQueueOldestMs) / 3_600_000;
-  if (snap.wakeQueueDepth > t.wakeQueueDepthMax || oldestH > t.wakeQueueAgeHours) {
+  // EI-8664: the AGE alarm fires on the auto-EXPIRY deadline (pendingWakeStaleHours + a
+  // small boundary grace), NOT a separate lower "alert" threshold. sweepStalePendingWakes
+  // runs in-pass immediately before this check and reaps every wake past
+  // pendingWakeStaleHours, so a wake that survives past it means that sweep is genuinely
+  // failing — a real substrate leak. A wake aged UNDER the deadline is expected live-owner
+  // review backlog (the pui wake board is the owner's review surface, not a filed EI);
+  // alarming on it is the EI-6910 anti-pattern (measuring the human's normal backlog as a
+  // leak) and re-files a non-actionable EI every hour.
+  const graceH = WAKE_QUEUE_STALE_GRACE_MS / 3_600_000;
+  const wakeAgeAlarmH = t.pendingWakeStaleHours + graceH;
+  if (snap.wakeQueueDepth > t.wakeQueueDepthMax || oldestH > wakeAgeAlarmH) {
     out.push({
       title: 'coord invariant: wake-queue depth/age growth',
-      detail: `pending_wakes depth=${snap.wakeQueueDepth} (max ${t.wakeQueueDepthMax}), oldest=${oldestH.toFixed(1)}h (max ${t.wakeQueueAgeHours}h) — staged wakes are not being released.`,
+      detail: `pending_wakes depth=${snap.wakeQueueDepth} (max ${t.wakeQueueDepthMax}), oldest=${oldestH.toFixed(1)}h (auto-expiry ${t.pendingWakeStaleHours}h + ${graceH.toFixed(0)}h grace) — the stale-wake sweep is not keeping the queue bounded.`,
       severity: 'minor',
     });
   }

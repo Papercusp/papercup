@@ -56,6 +56,11 @@
  *                          git bundles at rest (env: PAPERCUSP_SEED_KEY_HEX) — never for a real release
  *   --no-git               skip the code half (hive-state-only seed)
  *   --no-corestore         skip the federated-state half (code-only seed)
+ *   --sparse               P-004: ship only the head-snapshot span [snapshotIdx,len) of each
+ *                          corestore (drops the ~2GB history prefix → ~40MB seed). Appends a fresh
+ *                          head snapshot in the pre-cut refresh so the sparse start is in the reader
+ *                          scan window. OPT-IN: requires the shipped reader's SUBSTRATE_LOG_SNAPSHOT
+ *                          ON (P-005) — until then the default FULL cut folds from block 0.
  *   --reuse-corestore <dir> WI-3232: graft the ALREADY-CUT corestore from an existing seed dir onto this
  *                          (git-only) cut instead of re-snapshotting the live store. No operator quiesce
  *                          needed (git bundles from the checkout, not the store) — the safe way to re-cut
@@ -94,6 +99,8 @@ import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-ep
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
 import { drainOutboxOnce } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
+import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
+import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -331,6 +338,13 @@ export async function refreshCorestoreStateForSeed(inp: {
   readonly backfillImpl?: typeof backfillLocalState;
   readonly drainImpl?: (handle: BootedHarnessHandle, pg: postgres.Sql) => Promise<number>;
   readonly warn?: (msg: string) => void;
+  /**
+   * P-004 sparse cut: after the drain, append a FRESH head __snapshot__ so a sparse
+   * cut can find a compaction point within the reader's tail scan window (see below).
+   * Only meaningful for a sparse cut — a full cut ships every op and needs no snapshot.
+   */
+  readonly sparse?: boolean;
+  readonly produceSnapshotImpl?: typeof produceLogSnapshot;
 }): Promise<RefreshCorestoreStateForSeedResult> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
   const pg = inp.pg ?? getOrgPg().sql;
@@ -365,6 +379,20 @@ export async function refreshCorestoreStateForSeed(inp: {
           `(${drained} rows drained); refusing to cut a partial seed.`,
       );
     }
+  }
+
+  // P-004 sparse cut: append a FRESH head __snapshot__ compacting the just-drained state.
+  // The reader's findLatestCompleteSnapshot scans back only SNAPSHOT_SCAN_LOOKBACK ops from the
+  // tail; the drain just re-enqueued the whole pot as raw ops (≫ that window), so WITHOUT a fresh
+  // tail snapshot computeSparseFrom finds none → returns 0 → the "sparse" cut silently ships FULL.
+  // A full cut ships every block, so it needs no fresh snapshot. (seed-history-trim-2026-07-07 P-004.)
+  if (inp.sparse) {
+    const produce = inp.produceSnapshotImpl ?? produceLogSnapshot;
+    const snap = await produce(ownLog, { now: Date.now(), schemaVersion: CURRENT_SCHEMA_VERSION });
+    warn(
+      `[cut-seed] sparse: appended fresh head snapshot ` +
+        `(appended=${snap.appended} coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount}).`,
+    );
   }
 
   warn(
@@ -454,6 +482,26 @@ async function main(): Promise<void> {
   const emitEpochKey = args['emit-epoch-key'] === true;
   const wantCorestore = args['no-corestore'] !== true && !reuseCorestoreDir;
   const asJson = args['json'] === true;
+
+  // P-004 sparse cut: ship only [snapshotIndex,len) of each core (drops the ~2GB history
+  // prefix → ~40MB seed). OPT-IN: a sparse seed REQUIRES the shipped reader to have
+  // SUBSTRATE_LOG_SNAPSHOT ON (P-005) — with it OFF the restore folds from an absent block 0
+  // and fails. Release builds add --sparse once P-005 lands + is verified; until then the
+  // default full cut is the safe shippable. (seed-history-trim-public-builds-2026-07-07.)
+  const sparse = args.sparse === true;
+  if (sparse && !wantCorestore) {
+    throw new Error(
+      '--sparse applies to the corestore cut; incompatible with --no-corestore / --reuse-corestore ' +
+        '(a reused corestore is grafted as-cut).',
+    );
+  }
+  if (sparse && args['skip-corestore-refresh'] === true) {
+    console.warn(
+      '[cut-seed] --sparse with --skip-corestore-refresh: no FRESH head snapshot is appended, so the ' +
+        'sparse start may fall outside the reader scan window and the cut can silently ship FULL. ' +
+        'Drop --skip-corestore-refresh for a real sparse cut.',
+    );
+  }
 
   if (reuseCorestoreDir && args['no-corestore'] === true) {
     throw new Error('--reuse-corestore and --no-corestore are mutually exclusive (reuse IS the corestore source)');
@@ -547,7 +595,7 @@ async function main(): Promise<void> {
     store = new Corestore(storeDir);
     await store.ready();
     if (workspaceId && args['skip-corestore-refresh'] !== true) {
-      await refreshCorestoreStateForSeed({ workspaceId, hive, store });
+      await refreshCorestoreStateForSeed({ workspaceId, hive, store, sparse });
     } else if (!workspaceId) {
       console.warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
     } else {
@@ -566,7 +614,7 @@ async function main(): Promise<void> {
           '(pass --core-keys or run inside a swarm session — see plan P-007). New members still cold-catch the rest.',
       );
     }
-    corestore = { sourceStore: store, coreKeys };
+    corestore = { sourceStore: store, coreKeys, ...(sparse ? { sparse: true as const } : {}) };
   }
 
   // WI-3232 --reuse-corestore: preserve the existing corestore across the outDir wipe

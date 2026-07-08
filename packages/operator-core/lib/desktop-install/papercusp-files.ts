@@ -951,6 +951,54 @@ async function ensureAgentClisLinked(home: string, binDir: string): Promise<stri
   return linked;
 }
 
+/**
+ * The BUNDLED node, resolved cwd-independently (a subset of resolveShimNode's
+ * anchors — the two that don't depend on a launcher path). `null` when this
+ * process can't see it (an extracted dev-source operator whose env lacks
+ * PAPERCUSP_SIDECAR_BIN and whose execPath is a tsx wrapper, not plain `node`).
+ */
+export async function resolveBundledNode(): Promise<string | null> {
+  const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+  const execBase = path.basename(process.execPath).toLowerCase();
+  const execIsNode = execBase === 'node' || execBase === 'node.exe';
+  const candidates = [
+    sidecarBin ? path.join(sidecarBin, 'node') : '',
+    execIsNode ? process.execPath : '',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (await pathExists(c)) return c;
+  }
+  return null;
+}
+
+/**
+ * WI-3334 (dev-source shim gap): the psu/ptool shims `exec node` after
+ * `export PATH="$HOME/.local/bin:$PATH"`, expecting node in ~/.local/bin. But a
+ * shim written where resolveShimNode fell back to bare `node` — the extracted
+ * dev-source operator (no PAPERCUSP_SIDECAR_BIN, tsx execPath), verified on the
+ * Linux all-5-buttons dogfood VM 2026-07-08 — then dies with `exec: node: not
+ * found`. Nothing was creating the ~/.local/bin/node the shims lean on. Link the
+ * bundled node there whenever THIS run can resolve it: the primary operator's
+ * boot-time install run always can (PAPERCUSP_SIDECAR_BIN set), so the link
+ * lands regardless of which operator later rewrites the shim. Non-clobbering
+ * (leaves a user's own ~/.local/bin/node) + idempotent + best-effort.
+ */
+export async function ensureBundledNodeLinked(home: string): Promise<boolean> {
+  const dest = path.join(home, '.local', 'bin', 'node');
+  // A working node already there (user-installed binary or a live link)? Leave it.
+  if (await pathExists(dest)) return false;
+  const node = await resolveBundledNode();
+  if (!node) return false;
+  try {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.rm(dest, { force: true }); // clear a DANGLING link (pathExists=false but the link file exists)
+    await fs.symlink(node, dest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveInstallPaths(home: string): InstallPaths {
   const papercuspDir = path.join(home, '.papercusp');
   const binDir = path.join(papercuspDir, 'bin');
@@ -1285,6 +1333,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // `psu → <agent>` launches out of the box — without this, a fresh install
   // where claude lives in ~/.local/bin makes psu exit immediately (can't exec it).
   await ensureAgentClisLinked(home, paths.binDir);
+
+  // WI-3334: link the bundled node into ~/.local/bin so the psu/ptool shims'
+  // `exec node` resolves even when the shim itself fell back to bare `node`
+  // (a shim written by the dev-source operator, which can't resolve the bundled
+  // node → resolveShimNode returns bare `node`). The primary operator's install
+  // run resolves it (PAPERCUSP_SIDECAR_BIN set), so the link lands regardless.
+  await ensureBundledNodeLinked(home);
 
   // macOS Tutorial.app wrapper (WI-2197): only where it means something (darwin)
   // and only once the dispatcher it invokes actually landed — a DMG install has

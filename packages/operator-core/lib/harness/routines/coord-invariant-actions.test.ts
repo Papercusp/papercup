@@ -289,8 +289,30 @@ describe('evaluateInvariants', () => {
     expect(v[0].severity).toBe('minor');
   });
 
-  it('wake-queue fires on AGE even when depth is small', () => {
-    const snap = { ...cleanSnap, wakeQueueDepth: 1, wakeQueueOldestMs: NOW - 7 * 3_600_000 };
+  it('wake-queue fires on AGE only past the auto-expiry deadline + grace (a genuine sweep failure)', () => {
+    // pendingWakeStaleHours (24h) + WAKE_QUEUE_STALE_GRACE_MS (1h) = 25h. A wake surviving
+    // past that means sweepStalePendingWakes (which runs in-pass just before the check and
+    // reaps everything past 24h) genuinely failed — the only real substrate leak.
+    const snap = { ...cleanSnap, wakeQueueDepth: 1, wakeQueueOldestMs: NOW - 26 * 3_600_000 };
+    const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+
+  it('EI-8664: does NOT fire on a wake aging within the auto-expiry window (live-owner review backlog, not a leak)', () => {
+    // The exact false positive this fixes: a staged wake aged 12.8h — past the OLD 6h
+    // alert but well within the 24h auto-expiry sweep window. sweepStalePendingWakes reaps
+    // it at 24h; until then it is expected live-owner review backlog, NOT a substrate leak.
+    // Alarming on it is the EI-6910 anti-pattern (the human's normal backlog re-filed hourly).
+    const snap = { ...cleanSnap, wakeQueueDepth: 16, wakeQueueOldestMs: NOW - 12.8 * 3_600_000 };
+    expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    // Even a wake right at the 24h deadline (just under it) is still within the grace: no fire.
+    const atDeadline = { ...cleanSnap, wakeQueueDepth: 1, wakeQueueOldestMs: NOW - 24 * 3_600_000 };
+    expect(evaluateInvariants(atDeadline, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+  });
+
+  it('wake-queue still fires on DEPTH regardless of age (bloat backstop)', () => {
+    const snap = { ...cleanSnap, wakeQueueDepth: 51, wakeQueueOldestMs: NOW - 1_000 };
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations).toHaveLength(1);
     expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');

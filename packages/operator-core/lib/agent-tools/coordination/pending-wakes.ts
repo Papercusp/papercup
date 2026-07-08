@@ -270,14 +270,15 @@ export async function sweepDeadOwnerPendingWakes(opts: { liveGraceMin?: number }
  * root-cause follow-up to EI-7765). {@link sweepDeadOwnerPendingWakes} only reaps a
  * DEAD owner's orphaned wakes — a LIVE owner who simply never reviews their wake
  * board (releasePendingWake / clearPendingWakes, the P-008/P-009 agent-pane review
- * flow) can let a staged wake sit indefinitely, silently aging until the
- * coord-invariant watchdog's wakeQueueAgeHours ALERT threshold (default 6h) fires —
- * by which point it's already a filed violation, not a prevented one.
+ * flow) can let a staged wake sit indefinitely, silently aging. EI-8664: this auto-EXPIRY
+ * sweep IS the substrate's drain mechanism for that case, and the coord-invariant
+ * watchdog's wake-queue AGE alarm now fires on THIS deadline (pendingWakeStaleHours +
+ * grace) rather than a separate lower threshold — so a wake reaped here never trips the
+ * alarm, and the alarm fires only if this sweep genuinely fails to keep the queue bounded.
  *
  * This is the auto-EXPIRY counterpart: unconditionally drop any wake older than
- * `staleHours` (default well above the alert threshold — a genuine grace window for
- * a busy-but-live owner to review it, not a race with the alert), independent of
- * presence/heartbeat. A live owner who wants to act on an expired wake still has the
+ * `staleHours` (a genuine grace window for a busy-but-live owner to review it before it is
+ * swept), independent of presence/heartbeat. A live owner who wants to act on an expired wake still has the
  * underlying coordination event in coord:feed/coord:thread; this only bounds how long
  * an UNREVIEWED staged copy can accumulate as debris.
  *

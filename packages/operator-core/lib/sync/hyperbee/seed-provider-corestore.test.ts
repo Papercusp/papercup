@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import { createCorestoreSeedProvider, CORESTORE_SEED_KIND } from './seed-provider-corestore';
+import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -134,6 +135,74 @@ describe('corestore seed provider', () => {
     await coreB.update({ wait: true });
     expect(coreB.length).toBe(5);
     expect(await coreB.get(4, { wait: true })).toMatchObject({ hbKey: 'P-4' });
+  });
+
+  it('P-004 sparse cut ships only [snapshotIndex,len); restore materializes the suffix (no prefix, no hang)', async () => {
+    // seed-history-trim-public-builds-2026-07-07 P-004: a public build ships the
+    // current-state SUFFIX only. Build an owner log, compact it (a real
+    // __snapshot__ set at the tail), append a post-snapshot delta, then cut
+    // sparse. The seed must drop the summarized prefix [0,coversUpTo) yet stay
+    // restorable OFFLINE — proving both the byte-trim and the restore-side
+    // range-limit (a wrong restore that loops [0,len) with wait:true would HANG
+    // on the absent prefix and fail this test by timeout).
+    const dirA = tmpDir('seed-sparse-A-');
+    const storeA = makeStore(dirA);
+    await storeA.ready();
+    const logA = await openOwnLog(storeA);
+    const PRE = 12;
+    for (let i = 0; i < PRE; i++) await logA.append(op(i)); // [0,12) — the prefix to drop
+    // Compact: appends a 1-chunk __snapshot__ set at index 12 (coversUpTo=12).
+    const snap = await produceLogSnapshot(logA, { now: 1000, schemaVersion: 1 });
+    expect(snap.appended).toBe(true);
+    expect(snap.coversUpTo).toBe(PRE);
+    const snapshotIdx = snap.coversUpTo; // 12 — the seed's expected sparse-from
+    // Post-snapshot delta (still shipped, folds forward on the reader).
+    for (let i = PRE; i < PRE + 2; i++) await logA.append(op(i));
+    const fullLen = logA.length; // 12 prefix + snap.chunkCount + 2 tail
+    const keyHex = logA.keyHex;
+
+    const provider = createCorestoreSeedProvider();
+
+    // --- SPARSE cut ---
+    const sparseStage = tmpDir('seed-sparse-stage-');
+    const { entry: sEntry, payload: sPayload } = await provider.cut({
+      sourceStore: storeA,
+      coreKeys: [keyHex],
+      stagingDir: sparseStage,
+      sparse: true,
+    });
+    const meta = sEntry.meta as { coreLengths: Record<string, number>; coreSparseFrom?: Record<string, number> };
+    expect(meta.coreSparseFrom?.[keyHex]).toBe(snapshotIdx); // dropped [0,12)
+    expect(meta.coreLengths[keyHex]).toBe(fullLen); // full authenticated length recorded
+    expect(await provider.verify(sEntry, sPayload)).toEqual({ ok: true });
+
+    // --- RESTORE the sparse seed into a fresh peer B, OFFLINE ---
+    const targetStoreDir = join(tmpDir('seed-sparse-B-'), 'hyperbee');
+    await provider.restore(sEntry, sPayload, { targetStoreDir }); // must not hang
+    const storeB = makeStore(targetStoreDir);
+    await storeB.ready();
+    const coreB = storeB.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+    await coreB.ready();
+    expect(coreB.length).toBe(fullLen); // authenticated head length (whole log)
+    // PREFIX dropped: summarized blocks are absent locally (offline → null).
+    expect(await coreB.get(0, { wait: false })).toBeNull();
+    expect(await coreB.get(snapshotIdx - 1, { wait: false })).toBeNull();
+    // SUFFIX present: the snapshot op + the post-snapshot tail restored offline.
+    expect(await coreB.get(snapshotIdx, { wait: false })).toMatchObject({ table: SNAPSHOT_TABLE_TAG });
+    expect(await coreB.get(fullLen - 1, { wait: false })).toMatchObject({ hbKey: `P-${PRE + 1}` });
+
+    // --- CONTRAST: a FULL cut of the SAME log ships the prefix too ---
+    const fullStage = tmpDir('seed-full-stage-');
+    const { entry: fEntry } = await provider.cut({ sourceStore: storeA, coreKeys: [keyHex], stagingDir: fullStage });
+    expect((fEntry.meta as { coreSparseFrom?: unknown }).coreSparseFrom).toBeUndefined();
+    const fullTarget = join(tmpDir('seed-full-B-'), 'hyperbee');
+    await provider.restore(fEntry, { path: fullStage }, { targetStoreDir: fullTarget });
+    const storeC = makeStore(fullTarget);
+    await storeC.ready();
+    const coreC = storeC.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+    await coreC.ready();
+    expect(coreC.length).toBe(fullLen);
+    expect(await coreC.get(0, { wait: false })).toMatchObject({ hbKey: 'P-0' }); // prefix PRESENT on a full seed
   });
 
   it('restore works from a READ-ONLY, moved seed (packaged-install regression, WI-2902)', async () => {

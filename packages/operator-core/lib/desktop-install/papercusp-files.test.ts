@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveShimNode } from './papercusp-files';
+import { resolveShimNode, ensureBundledNodeLinked } from './papercusp-files';
 
 let tmp: string;
 let origExecPath: string;
@@ -115,5 +115,61 @@ describe('resolveShimNode', () => {
     vi.spyOn(process, 'cwd').mockReturnValue(path.join(tmp, 'no-bundle-cwd'));
 
     expect(await resolveShimNode(launcher)).toBe('node');
+  });
+});
+
+/**
+ * WI-3334 residual: even with resolveShimNode's anchors, a shim WRITTEN by the
+ * dev-source operator (no PAPERCUSP_SIDECAR_BIN, tsx execPath) still baked bare
+ * `node` — and nothing created the ~/.local/bin/node the shim's PATH leans on.
+ * ensureBundledNodeLinked closes that: the primary operator's install run links
+ * the bundled node there so bare `node` resolves regardless of which operator
+ * wrote the shim.
+ */
+describe('ensureBundledNodeLinked', () => {
+  it('links ~/.local/bin/node → the bundled node when resolvable (primary operator run)', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+
+    expect(await ensureBundledNodeLinked(home)).toBe(true);
+    const dest = path.join(home, '.local', 'bin', 'node');
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled));
+  });
+
+  it('is a no-op (false) when no bundled node is resolvable (dev-source operator context)', async () => {
+    disableBundledAnchors(); // no SIDECAR_BIN, execPath not node
+    const home = path.join(tmp, 'home');
+
+    expect(await ensureBundledNodeLinked(home)).toBe(false);
+    // nothing created
+    await expect(fs.access(path.join(home, '.local', 'bin', 'node'))).rejects.toThrow();
+  });
+
+  it('does NOT clobber an existing working node (user-installed or already linked)', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+    const existing = path.join(home, '.local', 'bin', 'node');
+    await touch(existing); // a real node already present
+
+    expect(await ensureBundledNodeLinked(home)).toBe(false);
+    const st = await fs.lstat(existing);
+    expect(st.isSymbolicLink()).toBe(false); // left the user's real file untouched
+  });
+
+  it('replaces a DANGLING link (stale from a prior app version) with a fresh one', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+    const dest = path.join(home, '.local', 'bin', 'node');
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.symlink(path.join(tmp, 'old-bundle', 'node'), dest); // dangling → old node gone
+
+    expect(await ensureBundledNodeLinked(home)).toBe(true);
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled));
   });
 });

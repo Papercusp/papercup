@@ -170,6 +170,48 @@ describe('refreshCorestoreStateForSeed', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshed corestore source'));
   });
+
+  it('P-004: does NOT append a fresh head snapshot for a FULL cut (sparse falsy)', async () => {
+    const ownLog = { keyHex: 'cd'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 0 };
+    const produceSnapshotImpl = vi.fn();
+    await refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace',
+      hive: 'papercusp',
+      store: {} as never,
+      pg: {} as never,
+      openOwnLogImpl: async () => ownLog,
+      backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 0, dropped: 0 })),
+      drainImpl: vi.fn(async () => 0),
+      produceSnapshotImpl,
+      warn: vi.fn(),
+      // sparse omitted → full cut
+    });
+    expect(produceSnapshotImpl).not.toHaveBeenCalled();
+  });
+
+  it('P-004: appends a fresh head snapshot AFTER the drain when sparse (so the sparse start is in the reader scan window)', async () => {
+    const ownLog = { keyHex: 'cd'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 0 };
+    const drainImpl = vi.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(0);
+    const produceSnapshotImpl = vi.fn(async () => ({ appended: true, coversUpTo: 42, rowCount: 10, chunkCount: 2 }));
+    const warn = vi.fn();
+    await refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace',
+      hive: 'papercusp',
+      store: {} as never,
+      pg: {} as never,
+      openOwnLogImpl: async () => ownLog,
+      backfillImpl: vi.fn(async () => ({ skipped: false, enqueued: 3, dropped: 0 })),
+      drainImpl,
+      produceSnapshotImpl,
+      warn,
+      sparse: true,
+    });
+    expect(produceSnapshotImpl).toHaveBeenCalledTimes(1);
+    expect(produceSnapshotImpl).toHaveBeenCalledWith(ownLog, expect.objectContaining({ now: expect.any(Number), schemaVersion: expect.any(Number) }));
+    // Drain fully first, THEN snapshot: the snapshot must compact the drained state.
+    expect(drainImpl).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('appended fresh head snapshot'));
+  });
 });
 
 // --- WI-3232: offline-pot cutter helpers ---
