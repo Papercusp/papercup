@@ -408,6 +408,8 @@ export default defineTool({
           ...(result.value.ok && result.value.warning ? { warning: result.value.warning } : {}),
           filePath: result.filePath,
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          // Item-parse feedback (WI-3363), computed in evaluateSetContent.
+          ...(result.value.ok ? result.value.parseFeedback : {}),
         }),
       }],
     };

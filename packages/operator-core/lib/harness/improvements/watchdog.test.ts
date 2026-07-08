@@ -1896,7 +1896,9 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
       '(ok=false, exitCode=1, timedOut=false, outLen=257; rawStdoutTail="PG bootstrap: connected; ' +
       'orchestrator running with ctx.pg active; prompt-budget role=doc-steward feature=- total=52758")';
     expect(classifySpawnError(infraLossFalse)).not.toBe('timeout');
-    expect(classifySpawnError(infraLossFalse)).toBe('other');
+    // EI-8667: a `timedOut=false` infra_loss no-turn death is now its OWN diagnosable class
+    // (infra-loss), not the generic 'other' bucket. The EI-7520 guarantee (NOT timeout) holds.
+    expect(classifySpawnError(infraLossFalse)).toBe('infra-loss');
     // A `timedOut=true` IS a genuine wall-clock kill → timeout (the diagnostic token is a
     // positive signal here, so the fix must keep classifying it).
     const infraLossTrue =
@@ -1931,11 +1933,60 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     ];
     const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
     expect(out).toHaveLength(1);
-    // Only the 5 genuine `timedOut=true` deaths are 'timeout'; the 8 `=false` ones are 'other'.
+    // Only the 5 genuine `timedOut=true` deaths are 'timeout'; the 8 `=false` no-turn deaths
+    // are 'infra-loss' (EI-8667 — their own class, no longer the generic 'other').
     expect(out[0].body).toContain('timeout: 5');
-    expect(out[0].body).toContain('other: 8');
-    // Dominant is 'other' (the gateway-stall storm), NOT a phantom 'timeout: 13'.
-    expect(out[0].key).toBe('failed-spawns:other');
+    expect(out[0].body).toContain('infra-loss: 8');
+    // Dominant is 'infra-loss' (the gateway-stall storm), NOT a phantom 'timeout: 13'.
+    expect(out[0].key).toBe('failed-spawns:infra-loss');
+  });
+
+  // EI-8667: the exact failure that re-filed "Agent spawns are failing repeatedly (other)":
+  // an invoke-outcome `infra_loss` no-turn death carrying `API Error: Request rejected` in its
+  // rawStdoutTail. With timedOut=false it matched no specific rule and landed in 'other',
+  // conflating an upstream gateway/API rejection with genuinely-unknown failures. It must now
+  // classify as its own diagnosable class, 'infra-loss'.
+  it('classifies an infra_loss no-turn / API-error death as infra-loss, not other (EI-8667)', () => {
+    // The verbatim EI-8667 sample (the `release-fixer` death, rawStdoutTail cut at the API error).
+    const apiRejected =
+      'infra_loss: papercusp/release-fixer returned HTTP 200 but the agent produced no turn ' +
+      '(ok=false, exitCode=1, timedOut=false, outLen=112; rawStdoutTail="[2026-07-08T03:43:39.747Z] ' +
+      'PG bootstrap: connected (search_path=harness_papercusp,harness_shared,public); orchestrator ' +
+      'running with ctx.pg active [2026-07-08T03:43:42.026Z] invoke release-fixer rc=1 API Error: Request rejected")';
+    expect(classifySpawnError(apiRejected)).toBe('infra-loss');
+    // A bare `API Error: Request rejected` (no infra_loss prefix / no-turn phrasing) still lands there.
+    expect(classifySpawnError('spawn child rc=1 — API Error: Request rejected')).toBe('infra-loss');
+    // The generic no-turn shape (any harness/role, no keyword tail) is infra-loss, not 'other'.
+    expect(classifySpawnError(
+      'infra_loss: dummy-pot-0707/release-fixer returned HTTP 200 but the agent produced no turn ' +
+      '(ok=false, exitCode=1, timedOut=false, outLen=89; rawStdoutTail="prompt-budget role=release-fixer")',
+    )).toBe('infra-loss');
+    // Genuinely-unknown messages STILL fall to 'other' — the class is not swallowed.
+    expect(classifySpawnError('something else entirely')).toBe('other');
+    // A genuine wall-clock timeout (timedOut=true) still wins over infra-loss (EI-7520 preserved).
+    expect(classifySpawnError(
+      'infra_loss: papercusp/release-fixer returned HTTP 200 but the agent produced no turn ' +
+      '(ok=false, exitCode=143, timedOut=true, outLen=0; rawStdoutTail="received termination signal")',
+    )).toBe('timeout');
+  });
+
+  it('keys a storm of API-error / infra_loss no-turn deaths as failed-spawns:infra-loss (EI-8667)', () => {
+    const apiError = (i: number) => ({
+      error_message:
+        'infra_loss: papercusp/release-fixer returned HTTP 200 but the agent produced no turn ' +
+        `(ok=false, exitCode=1, timedOut=false, outLen=112; rawStdoutTail="invoke rc=1 API Error: Request rejected ${i}")`,
+      started_at: '2026-07-08T03:00:00.000Z',
+    });
+    const rows = [
+      ...Array.from({ length: 6 }, (_, i) => apiError(i)),
+      { error_message: 'spawn timed out after 280s', started_at: '2026-07-08T02:00:00.000Z' },
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    expect(out[0].key).toBe('failed-spawns:infra-loss');
+    expect(out[0].title).toContain('(infra-loss)');
+    expect(out[0].body).toContain('infra-loss: 6');
+    expect(out[0].body).not.toContain('other: 6');
   });
 
   it('classifies autocompaction-thrash no-turn deaths as context-overflow, not generic other (EI-8051)', () => {

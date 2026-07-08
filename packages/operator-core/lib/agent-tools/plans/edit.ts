@@ -201,6 +201,10 @@ export default defineTool({
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            // Item-parse feedback (WI-3363), computed in evaluateSetContent — a
+            // targeted edit can silently break (or fix) an item line, so report
+            // itemsParsed + a hint when list-like lines look like unparsed items.
+            ...v.parseFeedback,
           }),
         },
       ],

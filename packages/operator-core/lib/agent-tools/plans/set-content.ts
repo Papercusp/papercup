@@ -38,6 +38,7 @@ import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts'
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan, type ParsedPlan } from './parser';
+import { summarizeItemParse, type ItemParseSummary } from './item-parse-feedback';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -78,7 +79,7 @@ const argsSchema = z.object({
 });
 
 export type SetContentValue =
-  | { ok: true; slug: string; contentHash: string; warning?: string }
+  | { ok: true; slug: string; contentHash: string; warning?: string; parseFeedback: ItemParseSummary }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
   | {
@@ -272,9 +273,22 @@ export async function evaluateSetContent(
   }
 
   const warning = shrinkWarning(currentParsed, proposed);
+  // Item-parse feedback (WI-3363) — computed here so it flows to ALL three
+  // whole-body writers that share this core (set-content, set-content-chunk,
+  // edit). hintOnZeroItems is OMITTED (false): these all edit an EXISTING plan,
+  // where a prose-only rewrite legitimately has 0 items — only genuinely
+  // unparsed item lines warrant a hint. Parsed off `body` (the exact bytes
+  // written, post frontmatter-reattach).
+  const parseFeedback = summarizeItemParse(body, { bodyProvided: true });
   return {
     newBody: body,
-    value: { ok: true, slug, contentHash: hashPlanContent(body), ...(warning ? { warning } : {}) },
+    value: {
+      ok: true,
+      slug,
+      contentHash: hashPlanContent(body),
+      ...(warning ? { warning } : {}),
+      parseFeedback,
+    },
   };
 }
 
@@ -403,6 +417,8 @@ export default defineTool({
             ...(v.warning ? { warning: v.warning } : {}),
             version: result.version,
             filePath: result.filePath,
+            // Item-parse feedback (WI-3363), computed in evaluateSetContent.
+            ...v.parseFeedback,
             // The revision row appended for this write (D-003). `null`
             // when the best-effort append failed — the file write still
             // succeeded; the gap is recoverable via P-005's backfill.

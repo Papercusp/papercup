@@ -27,6 +27,7 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance } from './parser';
+import { echoParsedItem } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -253,6 +254,8 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
     it.rationale,
     harnessSlug ? { harnessSlug } : {},
   );
+  // Capture the written body so we can echo the parsed item back (WI-3363).
+  let writtenBody: string | null = null;
   const result = await withPlanLock<AddItemValue>(
     ctx as never,
     {
@@ -273,6 +276,7 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
       const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance);
       const { newBody, createdPhase } = appendItemToBody(current, it.phase, itemLine);
       const final = bumpUpdatedDate(newBody);
+      writtenBody = final;
       return {
         newBody: final,
         value: { ok: true, itemId, createdPhase, slug: it.slug },
@@ -306,8 +310,18 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
     after: it.text.slice(0, 200),
   });
 
+  // Echo the parsed item back (WI-3363) so the caller confirms exactly what
+  // registered without a follow-up plans:get — and, in the edge where multi-line
+  // or grammar-breaking text silently corrupts the built line, the item fails to
+  // parse back and we surface a warning instead of a clean-looking success.
+  const item = writtenBody ? echoParsedItem(writtenBody, result.value.itemId) : null;
   return {
     ...result.value,
+    ...(item
+      ? { item }
+      : {
+          warning: `the added item ${result.value.itemId} did not parse back as an item — check the text for newlines or grammar-breaking characters`,
+        }),
     filePath: result.filePath,
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
   };

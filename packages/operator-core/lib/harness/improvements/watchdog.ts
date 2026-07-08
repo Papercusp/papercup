@@ -1245,6 +1245,7 @@ export type SpawnErrorClass =
   | 'reclaimed'
   | 'context-overflow'
   | 'timeout'
+  | 'infra-loss'
   | 'network'
   | 'auth'
   | 'missing-file'
@@ -1293,6 +1294,23 @@ export function classifySpawnError(message: string | null | undefined): SpawnErr
   if (/\btimed\s*out\s*=\s*true\b/i.test(m)) return 'timeout';
   const mNoTimedOutDiag = m.replace(/\btimed\s*out\s*=\s*(?:true|false)\b/gi, ' ');
   if (/timed?\s*out|timeout/i.test(mNoTimedOutDiag)) return 'timeout';
+  // EI-8667: a no-turn INFRA-LOSS death (invoke-outcome.ts `infra_loss`) — the agent
+  // reached the launcher, bootstrapped PG, then died BEFORE emitting a turn: a launcher-host
+  // loss OR (more often) an upstream gateway stall / `API Error: Request rejected` / 429-storm
+  // killing it mid-turn. invoke-outcome PREFIXES the persisted error `infra_loss:` and its
+  // detail reads "returned HTTP <n> but the agent produced no turn". These are a DISTINCT,
+  // diagnosable class — an infra/gateway problem — but with `timedOut=false` they matched NO
+  // specific rule and fell through to 'other', re-filing this bug as "(other)" and conflating a
+  // gateway-stall storm with genuinely-unknown failures (defeating the key-by-cause design).
+  // Classify them explicitly so the signal keys `failed-spawns:infra-loss` with a self-diagnosing
+  // title. Placed AFTER the timeout checks so a genuine `timedOut=true` wall-clock kill still
+  // classifies 'timeout' (EI-7520); context-overflow/auth/usage get their OWN invoke-outcome
+  // prefix (never `infra_loss:`) and are matched earlier, so nothing real is masked here.
+  if (
+    /^\s*infra_loss[\s:]/i.test(m) ||
+    /returned HTTP \d+ but the agent produced no turn/i.test(m) ||
+    /\bAPI Error:\s*Request rejected\b/i.test(m)
+  ) return 'infra-loss';
   if (/econnrefused|econnreset|enotfound|socket|network|fetch failed/i.test(m)) return 'network';
   if (/auth|credential|api.?key|401|403|unauthorized|forbidden/i.test(m)) return 'auth';
   if (/enoent|no such file|file not found/i.test(m)) return 'missing-file';

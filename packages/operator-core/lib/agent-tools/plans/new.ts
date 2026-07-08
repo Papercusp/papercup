@@ -20,7 +20,8 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
 import { listPlanIndexRows } from './source';
-import { PLAN_STATUSES, ITEM_STATUSES, parsePlan, maskFences } from './parser';
+import { PLAN_STATUSES } from './parser';
+import { summarizeItemParse } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
@@ -163,143 +164,6 @@ single id, status token, free text, optional blocked-by.)
 (Use plans:add-decision to append. Each decision is a third-level
 heading with a date line and a body paragraph.)
 `;
-}
-
-/** A parsed item, echoed back so the caller never needs a follow-up
- *  plans:get just to confirm the items registered. */
-export interface EchoedItem {
-  id: string;
-  status: string;
-  phase?: string;
-  text: string;
-}
-
-/** A body line that LOOKS like an attempted plan item but did not parse. */
-export interface UnparsedItemLine {
-  /** 1-indexed line number within the written file (frontmatter included). */
-  line: number;
-  text: string;
-}
-
-/** The parse-feedback block plans:new folds into its success payload. */
-export interface ItemParseSummary {
-  itemsParsed: number;
-  items: EchoedItem[];
-  unparsedItemLines?: number;
-  unparsedSamples?: UnparsedItemLine[];
-  hint?: string;
-}
-
-const ITEM_ECHO_CAP = 50;
-const UNPARSED_SAMPLE_CAP = 5;
-
-/** The canonical item-line grammar, phrased for a hint / error message. */
-const ITEM_GRAMMAR =
-  '`- **P-001** `todo` your text` (a bullet, the id in **bold**, a status token in `backticks` from ' +
-  ITEM_STATUSES.join('|') +
-  ', then the text)';
-
-/**
- * Detect list-like lines in a freshly-written plan body that LOOK like
- * attempted plan items but did NOT parse — the silent-drop trap this whole
- * change exists to close. Before it, plans:new accepted a body like
- * `- [ ] do X` (or `- P-001 do X`) and created a plan with ZERO items and no
- * signal; the caller only discovered it on a later plans:get.
- *
- * HIGH-PRECISION by design — a plain prose bullet in ## Background is NEVER
- * flagged. A list-like line counts as an "attempted item" only when it is a
- * `[ ]` checkbox, OR carries a `P-NNN` token, OR sits under a `## Phase`
- * heading (where content is items by convention). Lines inside fenced code
- * blocks and inside the ## Now / ## Decisions sections are ignored, matching
- * the parser. `parsedItemRawLines` is the set of lines the parser DID accept,
- * so a correctly-formatted item is never re-flagged.
- *
- * Exported for unit testing (the recurrence guard).
- */
-export function detectUnparsedItemLines(
-  writtenBody: string,
-  parsedItemRawLines: ReadonlySet<string>,
-): UnparsedItemLine[] {
-  // maskFences blanks fenced regions to spaces (line count + length preserved),
-  // so a `- **P-001**` inside a worked-example fence is never mis-flagged —
-  // exactly how the parser treats fences.
-  const maskedLines = maskFences(writtenBody).split('\n');
-  const realLines = writtenBody.split('\n');
-  const out: UnparsedItemLine[] = [];
-  let skipSection = false; // inside ## Now or ## Decisions
-  let underPhase = false; // inside a ## Phase… section
-
-  for (let i = 0; i < maskedLines.length; i++) {
-    const masked = maskedLines[i] ?? '';
-    const real = realLines[i] ?? '';
-
-    const heading = /^(#{1,2})\s+(.*)$/.exec(masked);
-    if (heading) {
-      const norm = (heading[2] ?? '').replace(/^\d+(?:\.\d+)?\.\s+/, '').trim();
-      skipSection = /^(Now|Decisions)$/i.test(norm);
-      underPhase = /^Phase\b/i.test(norm);
-      continue;
-    }
-    if (skipSection) continue;
-    // A line the parser DID accept as an item — never re-flag it.
-    if (parsedItemRawLines.has(real)) continue;
-
-    const isBullet = /^\s*[-*+]\s+/.test(masked);
-    const isOrdered = /^\s*\d+\.\s+/.test(masked);
-    if (!isBullet && !isOrdered) continue;
-
-    const isCheckbox = /^\s*[-*+]\s+\[[ xX]\]/.test(masked);
-    const hasPNN = /\bP-\d{3,}\b/.test(masked);
-    if (!(isCheckbox || hasPNN || underPhase)) continue;
-
-    out.push({ line: i + 1, text: real.trim().slice(0, 160) });
-  }
-  return out;
-}
-
-/**
- * Run the parser over the just-written plan body and produce the
- * parse-feedback block: how many items parsed, the parsed items echoed back
- * (so no follow-up plans:get is needed), and — when list-like lines look like
- * items but did not parse, OR a body was provided that yielded zero items — a
- * hint that names the exact grammar AND the real tools to fix it
- * (plans:set-content / plans:add-item).
- *
- * Pure (no I/O); exported for unit testing.
- */
-export function summarizeItemParse(
-  writtenBody: string,
-  opts: { bodyProvided: boolean },
-): ItemParseSummary {
-  const parsed = parsePlan(writtenBody);
-  const parsedRawLines = new Set(parsed.items.map((it) => it.rawLine));
-  const unparsed = detectUnparsedItemLines(writtenBody, parsedRawLines);
-
-  const items: EchoedItem[] = parsed.items.slice(0, ITEM_ECHO_CAP).map((it) => ({
-    id: it.id,
-    status: it.storedStatus,
-    ...(it.phase ? { phase: it.phase } : {}),
-    text: it.text.length > 200 ? it.text.slice(0, 200) + '…' : it.text,
-  }));
-
-  const summary: ItemParseSummary = { itemsParsed: parsed.items.length, items };
-
-  if (unparsed.length > 0) {
-    summary.unparsedItemLines = unparsed.length;
-    summary.unparsedSamples = unparsed.slice(0, UNPARSED_SAMPLE_CAP);
-    summary.hint =
-      unparsed.length +
-      ' line(s) look like plan items but did NOT parse — an item MUST be ' +
-      ITEM_GRAMMAR +
-      '. Plain `- ` or `- [ ] ` bullets are ignored. Fix the whole body with plans:set-content, or append items one at a time with plans:add-item.';
-  } else if (opts.bodyProvided && parsed.items.length === 0) {
-    summary.hint =
-      'The body parsed to 0 items. If you intended items, each MUST be ' +
-      ITEM_GRAMMAR +
-      '. Rewrite the body with plans:set-content, or append one with plans:add-item.';
-  }
-
-  return summary;
 }
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
@@ -558,6 +422,10 @@ export default defineTool({
     // like items but did not parse (the silent 0-item trap this change closes).
     const parseSummary = summarizeItemParse(writtenBody ?? '', {
       bodyProvided: args.body != null && args.body.trim().length > 0,
+      // A fresh plan whose provided body yielded 0 items is almost always a
+      // formatting miss — nudge. (set-content/-chunk pass false: a prose-only
+      // rewrite legitimately has 0 items.)
+      hintOnZeroItems: true,
     });
 
     return {
