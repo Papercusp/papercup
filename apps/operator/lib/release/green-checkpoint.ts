@@ -22,7 +22,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   revParse,
@@ -1438,6 +1438,33 @@ export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
  *  green). */
 export const WORKSPACE_RERUN_TIMEOUT_MS = 15 * 60_000;
 
+/**
+ * EI-8744: is there NOTHING the (npm) green command could gate in this tree?
+ *
+ * A codeless pot (e.g. `extends coding` but only a README + `.papercusp` state — NO
+ * `package.json`) has nothing `npm run test:affected` can run: npm dies with
+ * `Missing script: test:affected` (rc=1) BEFORE any test executes. The gate then went
+ * hard-RED with an EMPTY failing-test signature, so the release-fixer bee — dispatched
+ * hourly on that red — had no failing test to fix and could only escalate, and the red
+ * recurred every hour (wasted release-fixer churn on a codeless E2E-scaffold pot).
+ *
+ * "Nothing to gate" is GREEN, not RED — matching affected-tests.mjs's own
+ * "No affected workspaces." (exit 0) green path and the `spaBuildWorkspace===''`
+ * SPA-build skip in {@link realCheckpointDeps}. This is a PURE decision so it is unit
+ * testable without a real checkout/suite run:
+ *   - Guarded to an NPM-based greenCmd (default `npm run test:affected`): a non-npm
+ *     greenCmd (e.g. `cargo test`) can gate real code with no `package.json`, so it is
+ *     NEVER treated as nothing-to-gate.
+ *   - Fires ONLY when the tree has NO root `package.json`. The papercusp integration
+ *     tree — and every real coding pot — always commits a root `package.json`, so this
+ *     is a STRICT no-op for the fleet-critical pipeline: it can only ever flip the
+ *     degenerate codeless case (where there is genuinely nothing testable) green.
+ */
+export function isNothingToGate(greenCmd: string, treeHasPackageJson: boolean): boolean {
+  const npmGreenCmd = /^npm(\s|$)/.test(greenCmd.trim());
+  return npmGreenCmd && !treeHasPackageJson;
+}
+
 export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
@@ -1508,6 +1535,16 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'force']);
     },
     async runGreen(treeDir, base) {
+      // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
+      // can't run the npm green command — it dies with `Missing script` (rc=1) before any
+      // test, and the gate went hard-RED with an empty failing-test signature, churning the
+      // hourly release-fixer with nothing to fix. Nothing to gate ⇒ GREEN (see
+      // isNothingToGate). Strict no-op for the real pipeline (always has a root package.json).
+      if (isNothingToGate(cfg.greenCmd, existsSync(path.join(treeDir, 'package.json')))) {
+        const note = `no package.json in ${treeDir} — nothing to gate (green command \`${cfg.greenCmd}\` has no script to run); treating as green (EI-8744)`;
+        log(note);
+        return { green: true, summary: note, failingTests: [] };
+      }
       const [cmd, ...args] = cfg.greenCmd.split(' ');
       // The gate measures the COMMITTED DEFAULTS: buildGreenCheckpointEnv strips the
       // host's identity (all PAPERCUSP_* + HOST_ENV_STRIP), pins AFFECTED_BASE to the

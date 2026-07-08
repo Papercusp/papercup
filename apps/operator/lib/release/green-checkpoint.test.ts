@@ -33,7 +33,10 @@ import {
   WORKER_CRASH_MAX_WORKSPACES,
   GREEN_CHECKPOINT_MAX_FORKS,
   SELF_WATCHDOG_MS,
+  isNothingToGate,
+  realCheckpointDeps,
   type CheckpointDeps,
+  type CheckpointExec,
   type FailingFile,
   type IsolationResult,
   type WorkspaceRerunResult,
@@ -711,6 +714,78 @@ describe('summarizeSuiteOutput (de-noised held-gate tail)', () => {
 
   it('keeps only the last 2000 chars', () => {
     expect(summarizeSuiteOutput('x'.repeat(3000))).toHaveLength(2000);
+  });
+});
+
+// EI-8744: a codeless pot (extends coding, only README + .papercusp state, NO package.json)
+// can't run the npm green command — `npm run test:affected` dies with `Missing script` (rc=1)
+// BEFORE any test, so the gate went hard-RED with an EMPTY failing-test signature and the
+// hourly release-fixer churned on a red with nothing to fix. Nothing to gate ⇒ GREEN.
+describe('isNothingToGate (EI-8744: codeless pot ⇒ nothing to gate ⇒ green)', () => {
+  it('is true for an npm greenCmd when the tree has no package.json', () => {
+    expect(isNothingToGate('npm run test:affected', false)).toBe(true);
+    expect(isNothingToGate('npm test', false)).toBe(true);
+  });
+
+  it('is false when the tree HAS a package.json (the real pipeline — a strict no-op)', () => {
+    expect(isNothingToGate('npm run test:affected', true)).toBe(false);
+  });
+
+  it('is false for a non-npm greenCmd even with no package.json (it could gate real code)', () => {
+    expect(isNothingToGate('cargo test', false)).toBe(false);
+    // must NOT prefix-match a command that merely starts with the letters "npm"
+    expect(isNothingToGate('npmfoo run x', false)).toBe(false);
+  });
+});
+
+describe('realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744)', () => {
+  let tree: string;
+  let logDir: string;
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), 'gc-codeless-'));
+    logDir = mkdtempSync(join(tmpdir(), 'gc-logs-'));
+  });
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it('reports GREEN with an empty signature and NEVER spawns npm for a repo with no package.json', async () => {
+    let execCalls = 0;
+    // A fake exec that would fail exactly as the real `npm run test:affected` does on a
+    // codeless repo — proving the short-circuit returns green WITHOUT ever invoking it.
+    const exec: CheckpointExec = async () => {
+      execCalls++;
+      return { code: 1, stdout: '', stderr: 'npm error Missing script: "test:affected"' };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: 'npm run test:affected',
+      spaBuildWorkspace: '',
+    });
+    const r = await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    expect(r.green).toBe(true);
+    expect(r.failingTests).toEqual([]);
+    expect(execCalls).toBe(0); // the npm green command is never even spawned
+  });
+
+  it('still runs the suite (no short-circuit) when the repo HAS a package.json', async () => {
+    writeFileSync(join(tree, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'test:affected': 'true' } }));
+    let ran = '';
+    const exec: CheckpointExec = async (cmd, args) => {
+      ran = `${cmd} ${args.join(' ')}`;
+      return { code: 0, stdout: 'No affected workspaces.', stderr: '' };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: 'npm run test:affected',
+      spaBuildWorkspace: '',
+    });
+    const r = await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    expect(r.green).toBe(true);
+    expect(ran).toBe('npm run test:affected'); // the suite really ran — no false short-circuit
   });
 });
 

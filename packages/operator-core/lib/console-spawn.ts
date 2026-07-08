@@ -200,8 +200,8 @@ export function buildConsoleOneliner(
     buildAppearancePrelude(appearance),
     `cd ${escapedCwd}`,
     ...envExports,
-    `touch .papercup-console-active.$`,
-    `trap 'rm -f .papercup-console-active.$' EXIT`,
+    `touch .papercup-console-active.$$`,
+    `trap 'rm -f .papercup-console-active.$$' EXIT`,
   ].join(' && ');
   // Run the greeting in a subshell, then ALWAYS exec an interactive login shell
   // — `;` (not `&&`) on BOTH sides of the greeting, so a command that exits

@@ -250,8 +250,8 @@ describe('buildConsoleOneliner', () => {
 
   it('drops the sentinel + EXIT trap so the desktop side can detect shell exit', () => {
     const out = buildConsoleOneliner('/x', {}, 'true', APPEARANCE);
-    expect(out).toContain('touch .papercup-console-active.$');
-    expect(out).toContain("trap 'rm -f .papercup-console-active.$' EXIT");
+    expect(out).toContain('touch .papercup-console-active.$$');
+    expect(out).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
   });
 
   it('carries a command containing quotes as an escaped eval literal (no breakout, no mangle)', () => {
