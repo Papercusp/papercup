@@ -246,17 +246,65 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
 });
 
 describe('buildEpochKeyResolver (owner|member dispatch)', () => {
-  it('OWNER → deriveEpochKey (mints); never touches the provider', async () => {
-    const derive = vi.fn(async () => 'OWNER' as unknown as EpochKey);
-    const keyForEpoch = vi.fn(async () => 'M' as unknown as EpochKey);
+  it('OWNER with a bundled/federated provider key → uses it; NEVER mints (seed 57-drop fix)', async () => {
+    const derive = vi.fn(async () => 'MINT' as unknown as EpochKey);
+    const keyForEpoch = vi.fn(async () => 'BUNDLED' as unknown as EpochKey);
     const resolve = buildEpochKeyResolver({
       crypto: { deriveEpochKey: derive } as unknown as HiveEpochCrypto,
       provider: { keyForEpoch } as never,
       isOwner: async () => true,
     });
-    expect(await resolve(HIVE, 2)).toBe('OWNER');
-    expect(derive).toHaveBeenCalledWith(HIVE, 2);
-    expect(keyForEpoch).not.toHaveBeenCalled();
+    // A mint here would be the DIVERGENT key that silently drops the whole encrypted seed
+    // (a fresh SEEDED install adopts the shared identity → isOwner=true, but the per-device
+    // unwrap can't resolve the epoch key, so the offline reader MUST use the bundled key).
+    expect(await resolve(HIVE, 1)).toBe('BUNDLED');
+    expect(keyForEpoch).toHaveBeenCalledWith(HIVE, 1);
+    expect(derive).not.toHaveBeenCalled();
+  });
+
+  it('OWNER with a provider miss → mints (genuine epoch advance, last resort)', async () => {
+    const derive = vi.fn(async () => 'MINT' as unknown as EpochKey);
+    const keyForEpoch = vi.fn(async () => {
+      throw new Error('EpochKeyUnavailable'); // no bundled/federated key for this new epoch
+    });
+    const resolve = buildEpochKeyResolver({
+      crypto: { deriveEpochKey: derive } as unknown as HiveEpochCrypto,
+      provider: { keyForEpoch } as never,
+      isOwner: async () => true,
+    });
+    expect(await resolve(HIVE, 9)).toBe('MINT');
+    expect(keyForEpoch).toHaveBeenCalledWith(HIVE, 9);
+    expect(derive).toHaveBeenCalledWith(HIVE, 9);
+  });
+
+  it('OWNER caches the resolved key per (hive,epoch) — no repeat provider/mint call', async () => {
+    const derive = vi.fn(async () => 'MINT' as unknown as EpochKey);
+    const keyForEpoch = vi.fn(async () => 'BUNDLED' as unknown as EpochKey);
+    const resolve = buildEpochKeyResolver({
+      crypto: { deriveEpochKey: derive } as unknown as HiveEpochCrypto,
+      provider: { keyForEpoch } as never,
+      isOwner: async () => true,
+    });
+    expect(await resolve(HIVE, 1)).toBe('BUNDLED');
+    expect(await resolve(HIVE, 1)).toBe('BUNDLED'); // cached — epoch keys are immutable per epoch
+    expect(keyForEpoch).toHaveBeenCalledTimes(1);
+  });
+
+  it('MEMBER miss is NOT cached — keeps throwing so the gate defers until the key federates in', async () => {
+    let calls = 0;
+    const keyForEpoch = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new Error('EpochKeyUnavailable'); // key not arrived yet
+      return 'M' as unknown as EpochKey; // arrives on the 2nd attempt
+    });
+    const resolve = buildEpochKeyResolver({
+      crypto: { deriveEpochKey: vi.fn() } as unknown as HiveEpochCrypto,
+      provider: { keyForEpoch } as never,
+      isOwner: async () => false,
+    });
+    await expect(resolve(HIVE, 3)).rejects.toThrow('EpochKeyUnavailable');
+    expect(await resolve(HIVE, 3)).toBe('M'); // retried (miss was not cached)
+    expect(keyForEpoch).toHaveBeenCalledTimes(2);
   });
 
   it('MEMBER → provider.keyForEpoch (unwraps); never derives; caches owner-ness', async () => {

@@ -174,7 +174,9 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
         // The chat framing reached the terminal in order…
         expect(r.stdout).toContain('Welcome to papercusp'); // verbatim intro banner
         expect(r.stdout).toContain('Installing');
-        expect(r.stdout).toContain('starting the tutorial now'); // new handoff message
+        // Onboarding hands off to the unified shell on the SETUP tab, not the
+        // tutorial tab (owner 2026-07-07) — the handoff copy says so.
+        expect(r.stdout).toContain('opening your Tutorial & Setup on the Setup tab');
         // …the installer SpawnSpec actually RAN (streamed child, not prose)…
         expect(readFileSync(marker, 'utf8')).toContain('done');
         // …the DETERMINISTIC runner launched (with an empty pack it says so)…

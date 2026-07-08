@@ -101,7 +101,7 @@ export interface PublishCreatedHiveOpts {
 
 export interface PublishCreatedHiveDeps {
   saveMeta?: typeof saveOwnedHiveMeta;
-  ensureWired?: (workspaceId: string) => Promise<unknown>;
+  ensureWired?: (workspaceId: string, opts?: { force?: boolean }) => Promise<unknown>;
   resolveOwner?: () => Promise<HiveOwnerIdentity>;
   loadPubkey?: (workspaceId: string, hiveSlug: string) => Promise<string | null>;
   loadRegistry?: typeof loadHarnessRegistry;
@@ -291,8 +291,9 @@ async function publishListingForMeta(
   try {
     const ensureWired =
       deps.ensureWired ??
-      (async (ws: string) => (await import('./hive-directory-boot')).ensureHiveDirectoryWired(ws));
-    await ensureWired(opts.workspaceId);
+      (async (ws: string, wireOpts?: { force?: boolean }) =>
+        (await import('./hive-directory-boot')).ensureHiveDirectoryWired(ws, wireOpts));
+    await ensureWired(opts.workspaceId, { force: true });
   } catch {
     /* announce below degrades to registered-not-broadcast */
   }

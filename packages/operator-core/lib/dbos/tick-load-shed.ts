@@ -9,7 +9,7 @@
  *
  * operator-scalability-event-loop-2026-06-16 P5-1/P5-3.
  */
-import { loopPressure } from '../event-loop-lag-monitor';
+import { loopPressure, type LoopPressure } from '../event-loop-lag-monitor';
 import { getResourceProfile } from '../resource-profile';
 
 // P5-1: Layer-2 load-shedding. When the request event loop is under pressure,
@@ -93,4 +93,17 @@ export function shedUnderPowerSave(tickName: string): boolean {
 // OR chronic power-save (P5-3).
 export function shouldShedHeavyTick(tickName: string): boolean {
   return shedUnderLoopPressure(tickName) || shedUnderPowerSave(tickName);
+}
+
+/**
+ * The root routinesTick is the lightweight scheduler that lets due work make
+ * progress. Do not shed it on event-loop pressure: heavy periodic actions shed
+ * through shouldShedHeavyTick(), and routine bodies can self-gate. Shedding the
+ * scheduler itself strands every due routine in the exact elevated-loop regime
+ * where the heavy tick policy was meant to let it squeeze through (WI-3351).
+ */
+export function shouldShedSchedulerTickUnderLoopPressure(
+  _pressure: LoopPressure = loopPressure(),
+): boolean {
+  return false;
 }

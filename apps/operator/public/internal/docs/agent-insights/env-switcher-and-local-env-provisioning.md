@@ -14,9 +14,26 @@ macOS/Windows/Linux); `env_switch.rs` is its Rust-side plumbing (the authoritati
 probe, `/api` retargeting, persisted-target restore, and the native menu/shortcut backstop) —
 not a second visible bar.
 
-It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx`, but **self-hides
-unless ≥2 ENV operators are reachable** — so a plain single-operator install shows nothing
-until install-time provisioning brings the other envs up.
+It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx` and shows **whenever
+there is ANY env to switch to** (`barVisible = envOps.length > 0`). On the desktop the Tauri
+`list_envs` floor always supplies all four envs, so the bar **never self-hides there** — even
+if `/api` is misrouted or the HTTP enrichment 404s; unreachable envs just render greyed. Off
+the desktop (a plain browser, or a build without the endpoint) there are no envs from either
+source, so it stays hidden where the feature doesn't apply.
+
+**Source-tree-only envs are OMITTED on a packaged install (WI-3284).** `dev` (:3270, the
+working tree) and `local` (:3055, the Vite HMR frontend) carry `requiresSourceTree` in
+`DEV_OPERATORS`; `resolveDevOperators` drops them from the resolved list entirely when no
+runnable **source tree** exists (`defaultDetectSourceRoot() == null` — the SAME detection
+`launchEnvOperators` uses, so a packaged install's first-boot extracted tree
+`PAPERCUSP_DEV_SOURCE_ROOT` counts too; the earlier raw `detectPapercupRoot()` wrongly
+dropped `dev`/`local` while `local` was literally running, WI-3307 mac verify 2026-07-07) —
+a button for an env that *cannot* exist is noise, not a "disabled" state (the owner-reported
+greyed-button wall on the mac build). `prod`/`staging` always stay: a packaged install runs them from the
+**per-branch bundled sidecars** (owner directive 2026-07-06), no source needed. The Rust
+`env_switch.rs::list_envs` mirrors this — on the dev box it lists all 4 targets (the
+never-hide floor; unreachable ones render greyed), on a packaged (release) build it lists
+only the REACHABLE/self envs (`env_visible(dev_build, reachable, is_self)`).
 
 ## The contract — `GET /api/desktop/dev-operators`
 
@@ -34,9 +51,15 @@ Returns `{ ok, operators, selfPort }`. Each operator:
   `kind:'release'` entry — the **"release" button**: it switches to the **unchanged code from
   the installed release package** (the immutable bundled operator, which local edits can't
   break — the always-good escape hatch). Its origin = `PAPERCUSP_RELEASE_ORIGIN` (set by the
-  Tauri host / provisioning) and falls back to `prod :3070` on the dev box. There is **no**
-  remote-main git-reset button (the `POST /api/desktop/git/reset-to-remote-main` endpoint
-  still exists as a backend-only recovery API).
+  Tauri host / provisioning), resolved by `resolveReleaseOrigin()`. **On a packaged desktop
+  (`PAPERCUSP_DESKTOP=1`) with no explicit origin it now resolves to SELF** — the running
+  bundled primary IS the release code and its port is DYNAMIC, so the old unconditional
+  `:3070` fallback pointed at a non-existent port and rendered the escape-hatch button
+  permanently dead (WI-3284, owner-reported on the mac build 2026-07-06). The `:3070`
+  fallback is kept only on the **dev box** (its operators run without `PAPERCUSP_DESKTOP`, and
+  the green release really is `:3070` there). There is **no** remote-main git-reset button (the
+  `POST /api/desktop/git/reset-to-remote-main` endpoint still exists as a backend-only recovery
+  API).
 
 ## Enabling / disabling envs — and how an AGENT does it
 
@@ -58,37 +81,75 @@ and the prefs reader both refuse it).
 
 The launcher that brings the env operators up lives in
 `packages/operator-core/lib/harness/env-operator-launcher.ts` (owner chose full parity with
-per-env disable; D-006/D-007). It spawns each **enabled, not-yet-running** env (dev :3270 /
-prod :3070 / staging :3170) from the **cloned `papercup` source** on its fixed port, sharing the
-one embedded Postgres. `local :3055` (Vite HMR, no operator of its own) and `release` (the
-immutable bundled sidecar) are never spawned from source.
+per-env disable; D-006/D-007). It spawns each **enabled, not-yet-running** env on its fixed
+port, sharing the one embedded Postgres. `PROVISIONABLE_ENV_OPERATORS` is `dev :3270` /
+`prod :3070` / `staging :3170` / **`local :3055` (`run:'vite'`, WI-3285)** — `local` is now
+provisioned as the **Vite SPA dev server** run from the working tree (its `/api` proxies to
+THIS primary via `PAPERCUSP_API_TARGET`); the old "maps to prod or is omitted" left its button
+permanently dead. Only **`release`** (the immutable bundled sidecar — it IS the running
+package) is excluded and never spawned here.
+
+**Two spawn modes (WI-3285, owner directive 2026-07-06 — "all installs are dogfood installs"):**
+
+* **Bundled** (`spawnMode:'bundled'`) — the packaged-install path. Each env spawns from a
+  bundled **per-env `serve.mjs`** at the PINNED packaging contract (`resolveBundledSidecar`;
+  owner directive 2026-07-06, plan `env-switcher-packaged-all-platforms-2026-07-06`):
+  `<sidecarDir>/env-sidecars/<envId>/serve.mjs`, where `<sidecarDir> = dirname(PAPERCUSP_SIDECAR_BIN)`
+  (`PAPERCUSP_ENV_SIDECARS_DIR` overrides explicitly; the running `serve.mjs`'s own dir,
+  `process.argv[1]`, is the last-resort fallback). It is keyed on **`envId`**, not the branch,
+  and each env dir is a full SIDECAR-SHAPED bundle (`serve.mjs` + `spa/` + `db-sql/` …). Run with
+  the SAME node that runs the primary (`process.execPath` — always present, PATH-independent; no
+  per-env node). Needs **NO source tree and NO toolchain** — verified on the real packaged
+  Linux deb (WI-3287), whose bundle ships a bare node (no npm/npx/tsx) and an empty clone stub.
+  **V1 packaging ships exactly one extra bundle (`env-sidecars/staging/`).** PROD special case:
+  when `env-sidecars/prod/` is absent (the V1 default), `prod` resolves to the primary's own
+  `<sidecarDir>/serve.mjs` — the installed release IS green `main`, so the prod button serves the
+  same code on its fixed :3070 port.
+
+* **Source** (`spawnMode:'source'`) — `node` + the tree's own `tsx` against
+  `bin/hono-host.ts` (mirroring `bin/dev-operator-ifneeded.sh`), where a runnable source tree +
+  installed deps exist. The source root is resolved by `defaultDetectSourceRoot`
+  (`env-operator-launcher.ts`, WI-3306/WI-3308): `PAPERCUSP_DEV_SOURCE_ROOT` first — the tree the
+  serve-side first-boot extracted from the packaged `source.tar.zst` (exact-checked for marker
+  files, no walk-up) — else the dev-box walk (`detectPapercupRoot`). So source mode is **no longer
+  the dev box only**: it also runs from an EXTRACTED tree on a packaged install. Each source-spawned
+  child gets its OWN tree as `PAPERCUSP_INTEGRATION_ROOT` + the bundled node dir prepended to `PATH`
+  (`sourceChildEnv`), so its prompt/capability/git internals resolve to the tree it serves, never the
+  primary's. `run:'vite'` envs are **source-only** (the SPA dev server transforms the tree).
 
 * **Pure planner** — `planEnvOperatorLaunch(...)` decides spawn-or-skip per env with a
-  deterministic reason: `disabled` → `is-self` → `already-reachable` → `no-source-tree` →
-  `no-toolchain` → `spawn`. It is idempotent (an already-served port + this operator's own port
-  are skipped) and graceful (a missing toolchain/source tree marks the env unavailable, never an
-  error). Fully unit-tested (`env-operator-launcher.test.ts`).
+  deterministic reason: `disabled` → `is-self` → `already-reachable` → **\[bundled? spawn]** →
+  `no-source-tree` → `no-toolchain` → `spawn (source)`. A bundled per-branch sidecar spawns
+  REGARDLESS of source/toolchain; those gates apply only to an env it would otherwise run from
+  the tree. It is idempotent (an already-served port + this operator's own port are skipped) and
+  graceful (a missing toolchain/source tree marks the env unavailable, never an error). Fully
+  unit-tested (`env-operator-launcher.test.ts`).
+
 * **Effectful launcher** — `launchEnvOperators(...)` reads the enabled prefs, probes the ports,
   runs the planner, then spawns each planned operator **staggered** (default 4s, only between
   real boots) to avoid cold-boot migration contention. Probe / spawn / source-detect / toolchain
   / tree-prepare are all injected seams.
+
 * **EI-126 single-writer safety** — every spawned operator is **request-only**
   (`PAPERCUSP_BACKGROUND_WORKERS=0`, DBOS off, IPC off): only the PRIMARY runs the shared-DB
   background machinery, so the extra envs can't re-create the double-writer substrate echo. They
   are reached by top-level navigation, not the primary's IPC fast path.
 
-**Default-OFF, ships dark.** The boot integration (`apps/operator/bin/host-bootstrap.ts`) arms the
-launcher only when `PAPERCUSP_DESKTOP=1` **and** `PAPERCUSP_PROVISION_ENV_OPERATORS=1` (the idiom of
-the other boot toggles — `PAPERCUSP_DBOS_ENABLE`, `PAPERCUSP_GIT_EXPORT_COMMIT`), fire-and-forget +
-non-fatal, deferred \~20s so the primary's migrations/substrate win the boot race. A release build
-turns it on by exporting that env before the sidecar build (mirroring the `PAPERCUP_DOGFOOD_HIVE_*`
-injection in `bin/release-local.sh`). It is dark because the spawn path is toolchain-dependent and
-only **end-to-end** verifiable on a real packaged build (D-009 folds that verify into P-008/P-010).
+**DEFAULT-ON under the desktop (WI-3285).** The boot integration (`apps/operator/bin/host-bootstrap.ts`)
+runs the launcher on **every `PAPERCUSP_DESKTOP=1` boot** unless explicitly opted out
+(`PAPERCUSP_PROVISION_ENV_OPERATORS=0`); it is fire-and-forget + non-fatal, deferred \~20s so the
+primary's migrations/substrate win the boot race. It originally shipped **dark** behind an opt-IN
+`PAPERCUSP_PROVISION_ENV_OPERATORS=1`, which meant every packaged install rendered the switcher with
+all-dead buttons (owner-reported on the Windows build: "the buttons should all be operational") — the
+opt-in was flipped to opt-out. It **never** runs on a non-desktop host (the dev box's dev/prod/staging
+operators are managed by their own launchers and must not be hijacked).
 
 **Branch differentiation is built (`env-tree-prepare.ts`).** The launcher's default `prepareTree`
-gives each env its real D-006 tree: `dev` runs the working tree in place; `prod` / `staging` each get
-their own **git worktree** on `main` / `staging` under `~/.papercusp/env-trees/<id>` (outside the repo,
-so the git-sync auto-commit never sweeps it in). It is idempotent (reuses an existing worktree),
+gives each env its real D-006 tree: `dev` runs the working tree in place; a **`run:'vite'` env
+(`local`) also runs the working tree in place** (WI-3285 — the Vite SPA serves the same tree the dev
+operator runs; a separate worktree would just double the checkout); `prod` / `staging` each get their
+own **git worktree** on `main` / `staging` under `~/.papercusp/env-trees/<id>` (outside the repo, so
+the git-sync auto-commit never sweeps it in). It is idempotent (reuses an existing worktree),
 best-effort fetches the branch first (a shallow single-branch dogfood clone may not have it), and
 returns `null` on any git failure so that env is skipped gracefully (the switcher self-hides it). All
 unit-tested (`env-tree-prepare.test.ts`). What still needs a real packaged build is only the **live

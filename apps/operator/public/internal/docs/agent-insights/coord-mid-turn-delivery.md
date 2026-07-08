@@ -34,6 +34,16 @@ Current hook shape (2026-06-25): the shell hook is a dumb pipe. It calls
 Formatting, capping, and the `[coord+N]` layout live on the server side rather
 than being duplicated in `posttooluse-coord-inbox.sh`.
 
+**Context-gauge on the no-mail path (P-015).** Even when there are *no* new
+coord entries, the hook now surfaces the server-rendered `context_gauge` string
+(the ≥80% LOUD context-usage banner) as `additionalContext` — instead of the
+old pure no-op. This closes the zero-new-mail / zero-MCP-call gap: a heads-down
+session running only native Bash/Read/Edit (which never calls a coord tool)
+otherwise never sees its own context usage and can hit an auto-compaction blind
+(EI-6597, the 2026-07-02 incident). It stays a dumb pipe — the gauge is computed
+server-side; below 80% it's null and the hook no-ops exactly as before, and no
+cursor advance happens (there are no entries to mark shown).
+
 ## The cursor / dedup protocol
 
 * **Per-owner cursor.** Claude/Codex: a local file `coord-cursor-<owner>.json`
@@ -92,6 +102,19 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   raw interrupt bytes still write once immediately, while turn injections write
   text first and submit CR(s) as later ordered steps. Do not collapse this back
   to one global delay without a live Codex coord-injection check.
+* **A submit-VERIFIER backstops every injected turn (WI-2930 / WI-2975), all
+  agents.** The fixed CR plan above is best-effort; a `makeSubmitVerifier`
+  (`psu-pty-host.mjs`) then confirms the submit *actually started a turn*. After
+  injecting, it polls the pty's `lastOutputAt` for a bounded window
+  (`PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS` × `..._POLL_MS`): if output is flowing,
+  a turn is running and it stops; if the composer stays quiet past the verifier's
+  OWN threshold (`submitVerifyQuietMs`, deliberately larger than the busy-gate's
+  `OUTPUT_QUIET_MS` — an ordinary post-submit thinking/latency gap must NOT read
+  as a swallowed CR, the WI-2975 spurious-resubmit fix), it resubmits a bare `\r`,
+  up to `PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR` (default **3**) times. Any human
+  keystroke after verification starts aborts the remaining polls (never fight a
+  human editing the staged line). This is the general "text visible but
+  unsubmitted" guard the Codex two-CR plan only partially covered.
 * **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
   fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a
   real OMP turn to observe.

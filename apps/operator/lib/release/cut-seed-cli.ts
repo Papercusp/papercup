@@ -47,6 +47,11 @@
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
  *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
+ *   --skip-corestore-refresh
+ *                          release escape hatch: do NOT force-refresh local PG projection rows into the
+ *                          peer log before snapshotting the corestore. The default with --workspace-id
+ *                          is to refresh+drain, so installer seeds include all current dogfood work-items
+ *                          even when the runtime one-time backfill marker is stale.
  *   --encrypt-key-hex <h>  FIXTURE ONLY (via=seed-key-op, no joiner delivery): 32-byte hex to seal the
  *                          git bundles at rest (env: PAPERCUSP_SEED_KEY_HEX) — never for a real release
  *   --no-git               skip the code half (hive-state-only seed)
@@ -71,6 +76,8 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { rm, readFile, writeFile, rename, cp } from 'node:fs/promises';
 import Corestore from 'corestore';
+import type postgres from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   cutHiveSeed,
   enumerateOwnStoreCoreKeys,
@@ -82,11 +89,15 @@ import {
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry } from '@papercusp/seed-bundle';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
+import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
+import { drainOutboxOnce } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
+import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import type { BootedHarnessHandle, LocalWriteOp } from '@papercusp/operator-core/lib/sync/hyperbee/boot';
 
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
@@ -297,6 +308,73 @@ export function graftCorestoreEntry(gitManifest: SeedManifest, corestoreEntry: S
   return { ...gitManifest, stores: [...gitManifest.stores, corestoreEntry] };
 }
 
+export interface RefreshCorestoreStateForSeedResult {
+  readonly backfill: BackfillResult;
+  readonly drained: number;
+  readonly passes: number;
+  readonly ownLogKey: string;
+}
+
+/**
+ * Release pre-cut refresh: enqueue the current local PG projection rows and drain
+ * them into the same own log that the seed snapshots. Runtime boot's one-time
+ * `backfill_done` marker can be stale on long-lived dogfood installs; a packaged
+ * installer seed must represent the current work-items/plans/settings, not only
+ * whatever happened before that marker was written.
+ */
+export async function refreshCorestoreStateForSeed(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly store: Corestore;
+  readonly pg?: postgres.Sql;
+  readonly openOwnLogImpl?: (store: Corestore) => Promise<OwnLog>;
+  readonly backfillImpl?: typeof backfillLocalState;
+  readonly drainImpl?: (handle: BootedHarnessHandle, pg: postgres.Sql) => Promise<number>;
+  readonly warn?: (msg: string) => void;
+}): Promise<RefreshCorestoreStateForSeedResult> {
+  const warn = inp.warn ?? ((m: string) => console.warn(m));
+  const pg = inp.pg ?? getOrgPg().sql;
+  const ownLog = await (inp.openOwnLogImpl ?? openOwnLog)(inp.store);
+  const handle = {
+    workspaceId: inp.workspaceId,
+    harnessSlug: inp.hive,
+    ownLog,
+    append: (op: LocalWriteOp) => ownLog.append(op),
+    registerCloseHook: () => {},
+  } as unknown as BootedHarnessHandle;
+
+  const backfill = await (inp.backfillImpl ?? backfillLocalState)(handle, pg, {
+    force: true,
+    maxOpsPerAuthor: 0,
+  });
+
+  let drained = 0;
+  let passes = 0;
+  const drain =
+    inp.drainImpl ??
+    ((h: BootedHarnessHandle, sql: postgres.Sql) =>
+      drainOutboxOnce(h, sql, { batch: 1000, _gcMaxBatches: 0 }));
+  for (;;) {
+    const n = await drain(handle, pg);
+    passes += 1;
+    drained += n;
+    if (n === 0) break;
+    if (passes > 10_000) {
+      throw new Error(
+        `[cut-seed] corestore refresh did not drain to zero after ${passes} passes ` +
+          `(${drained} rows drained); refusing to cut a partial seed.`,
+      );
+    }
+  }
+
+  warn(
+    `[cut-seed] refreshed corestore source for ${inp.workspaceId}::${inp.hive}: ` +
+      `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped} ` +
+      `drained=${drained} ownLog=${ownLog.keyHex.slice(0, 12)}…`,
+  );
+  return { backfill, drained, passes, ownLogKey: ownLog.keyHex };
+}
+
 /** Move a dir, falling back to copy+remove across filesystems (EXDEV). */
 async function moveDir(src: string, dst: string): Promise<void> {
   try {
@@ -468,6 +546,13 @@ async function main(): Promise<void> {
     }
     store = new Corestore(storeDir);
     await store.ready();
+    if (workspaceId && args['skip-corestore-refresh'] !== true) {
+      await refreshCorestoreStateForSeed({ workspaceId, hive, store });
+    } else if (!workspaceId) {
+      console.warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
+    } else {
+      console.warn('[cut-seed] --skip-corestore-refresh: snapshotting corestore without refreshing local PG state first.');
+    }
     const own = await enumerateOwnStoreCoreKeys(store);
     const extra = (str(args, 'core-keys') ?? '')
       .split(',')

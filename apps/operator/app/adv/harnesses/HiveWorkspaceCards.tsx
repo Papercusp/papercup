@@ -1,36 +1,141 @@
 'use client';
 
-
-import { Tooltip } from '@/app/harness/Tooltip';
 /**
- * HiveWorkspaceCards — the all-mode (`?scope=all`) workspace view for the
- * Harnesses tab (harnesses-tab-hive-model-2026-06-07 P-003 / D-003).
+ * HiveWorkspaceCards — the all-mode (`?scope=all`, "All Pots") workspace view
+ * for the Working tab (harnesses-tab-hive-model-2026-06-07 P-003 / D-003).
  *
- * Under "All Pots" the tab used to keep rendering one stale single-harness
- * dock (the shell deliberately left `?slug=` holding the last harness). This
- * replaces that with a hive-grouped overview: one card per hive (root +
- * members, from `groupByHive`). Clicking a member drills in — the caller sets
- * BOTH axes (`?slug=` hive, `?harness=` member) sequentially and exits
- * all-mode (the documented nuqs same-tick collision pattern).
+ * Redesign 2026-07-07 (WI-3345, owner ask): this used to be a grid of big
+ * icon CARDS (one per hive, with a nested member list). It is now a flat,
+ * SORTABLE list rendered with the shared `RichGrid` (@papercusp/grid-core) —
+ * the same rich grid the admin / testing / evaluation / projects pages use —
+ * so All-Pots reads as a scannable table with real detail columns:
  *
- * Presentational; labels route through `useLexicon` (D-006). The liveness dot
- * reuses the `hasState` flag already in the projects/lite payload — no new
- * poller.
+ *   Pot · Kind · Hive · Description · Members · State · Shared · Spec · Path
+ *
+ * The name kept `HiveWorkspaceCards` (its import + the `hive-workspace-cards`
+ * mount oracle + the `hive-card-<slug>` / `hive-member-<slug>` row testids are
+ * relied on by HarnessesWorkspace and the adv-harness-member-axis e2e). Rows
+ * flatten `groupByHive`: each group's root (the hive/pot) is a `hive-card-*`
+ * row, followed by its member harnesses as `hive-member-*` rows; a row click
+ * drills in via `onDrill(hiveRootSlug, rowSlug)` exactly as the cards did.
+ *
+ * Description is the "best-available" brief — the first prose line of the pot's
+ * SPEC.md, plumbed through the projects-lite payload (ProjectsLiteEntry.description).
+ * Pots carry no first-class description field; SPEC.md is the one brief nearly
+ * every pot has. Blank pots show "—".
+ *
+ * Presentational; labels route through `useLexicon` (D-006). The State dot
+ * reuses the `hasState` flag already in the projects/lite payload — no new poller.
  */
 
-import { Boxes, Home, Plus, Share2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Boxes, Check, Home, Plus, Share2 } from 'lucide-react';
+import {
+  RichGrid,
+  applySort,
+  type ColumnDef,
+  type RichGridSortState,
+} from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
-import { HIVE_KIND, type HiveGroup } from './harness-hive-groups';
+import { HIVE_KIND, type HiveGroup, type HiveGroupProject } from './harness-hive-groups';
+
+/**
+ * The pot metadata a row reads. A superset of `HiveGroupProject` with the
+ * card-facing fields the projects-lite payload also carries (path / hasSpec /
+ * description). At runtime the group roots + members ARE the lite entries, so
+ * these are present; the wider type lets the columns read them.
+ */
+export type PotProject = HiveGroupProject & {
+  path?: string | null;
+  hasSpec?: boolean;
+  description?: string | null;
+};
 
 export interface HiveWorkspaceCardsProps {
   /** One group per hive (root + members), from `groupByHive`. */
   groups: readonly HiveGroup[];
-  /** The active workspace's display name — the root header above the hive cards (mirrors the selector tree). */
+  /** The active workspace's display name — the header above the list. */
   workspaceLabel?: string;
-  /** Drill into a member — caller writes `?slug=`(hive) + `?harness=`(member) and exits all-mode. */
+  /** Drill into a pot — caller writes `?slug=`(hive) + `?harness=`(member) and exits all-mode. */
   onDrill: (hiveSlug: string, memberSlug: string) => void;
   /** Open the create flow from the empty state. */
   onCreate?: () => void;
+}
+
+/** One flat row: a hive/pot root or one of its member harnesses. */
+interface PotRow {
+  /** Unique row id (slug is unique across the workspace registry). */
+  id: string;
+  slug: string;
+  /** Display kind: 'hive' | 'department' | <harness_kind> | 'harness'. */
+  kind: string;
+  /** Parent hive slug for members; '' for roots (renders '—'). Sort axis. */
+  hiveLabel: string;
+  description: string | null;
+  /** Sub-harness count for roots; null for member rows. */
+  memberCount: number | null;
+  hasState: boolean;
+  is_shared: boolean;
+  hasSpec: boolean;
+  path: string | null;
+  // ── meta (not columns) ──
+  isRoot: boolean;
+  /** The hive root to drill into (for onDrill's first arg). */
+  hiveRootSlug: string;
+}
+
+/** Display kind for a pot: hive homes read 'hive'; a declared non-default
+ *  harness_kind (department, sub, …) shows through; everything else 'harness'. */
+function displayKind(p: PotProject): string {
+  if (p.harness_kind === HIVE_KIND) return 'hive';
+  if (p.harness_kind && p.harness_kind !== 'harness') return p.harness_kind;
+  return 'harness';
+}
+
+/**
+ * Flatten `groupByHive` output into one row per DISTINCT pot: the group root
+ * (the hive/pot), then each member harness that isn't the root itself. A
+ * hive HOME (`harness_kind:'hive'`) is the root row and never also a member
+ * row — the same de-dupe the cards did so a hive + its one harness don't read
+ * as two flat siblings.
+ */
+export function flattenPotRows(groups: readonly HiveGroup[]): PotRow[] {
+  const rows: PotRow[] = [];
+  for (const g of groups) {
+    const root = g.root as PotProject;
+    const memberProjects = g.members.filter((m) => m.slug !== root.slug) as PotProject[];
+    rows.push({
+      id: root.slug,
+      slug: root.slug,
+      kind: displayKind(root),
+      hiveLabel: '',
+      description: root.description ?? null,
+      memberCount: memberProjects.length,
+      hasState: !!root.hasState,
+      is_shared: !!root.is_shared,
+      hasSpec: !!root.hasSpec,
+      path: root.path ?? null,
+      isRoot: true,
+      hiveRootSlug: root.slug,
+    });
+    for (const m of memberProjects) {
+      rows.push({
+        id: m.slug,
+        slug: m.slug,
+        kind: displayKind(m),
+        hiveLabel: root.slug,
+        description: m.description ?? null,
+        memberCount: null,
+        hasState: !!m.hasState,
+        is_shared: !!m.is_shared,
+        hasSpec: !!m.hasSpec,
+        path: m.path ?? null,
+        isRoot: false,
+        hiveRootSlug: root.slug,
+      });
+    }
+  }
+  return rows;
 }
 
 export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, onCreate }: HiveWorkspaceCardsProps) {
@@ -39,7 +144,148 @@ export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, on
   const hivesLabel = t('pot', { plural: true });
   const membersLabel = t('harness', { plural: true });
 
-  if (groups.length === 0) {
+  const baseRows = useMemo(() => flattenPotRows(groups), [groups]);
+  const [sort, setSort] = useState<RichGridSortState | null>(null);
+  const rows = useMemo(() => applySort(baseRows, sort), [baseRows, sort]);
+
+  const columns = useMemo<ColumnDef<PotRow>[]>(() => [
+    {
+      key: 'pot',
+      header: hiveLabel,
+      width: 2.4,
+      sortKey: 'slug',
+      toCopyText: (r) => r.slug,
+      render: ({ row }) => (
+        <span
+          className={`pc-pot-name${row.isRoot ? ' is-root' : ' is-member'}`}
+          title={row.path ?? row.slug}
+        >
+          {row.isRoot ? (
+            <Boxes size={14} className="pc-pot-name__icon" aria-hidden />
+          ) : (
+            <span className="pc-pot-name__branch" aria-hidden>↳</span>
+          )}
+          <span className="pc-pot-name__slug">{row.slug}</span>
+          {row.isRoot && row.memberCount === 0 && (
+            <Home size={11} className="pc-pot-name__home" aria-label={`${hiveLabel} root`} />
+          )}
+        </span>
+      ),
+    },
+    {
+      key: 'kind',
+      header: 'Kind',
+      width: 0.9,
+      sortKey: 'kind',
+      toCopyText: (r) => r.kind,
+      render: ({ row }) => (
+        <span className={`pc-pot-badge pc-pot-badge--${row.kind === 'hive' ? 'hive' : 'kind'}`}>
+          {row.kind}
+        </span>
+      ),
+    },
+    {
+      key: 'hive',
+      header: hiveLabel,
+      width: 1.2,
+      sortKey: 'hiveLabel',
+      toCopyText: (r) => r.hiveLabel || '',
+      render: ({ row }) =>
+        row.hiveLabel ? (
+          <span className="pc-pot-hive">{row.hiveLabel}</span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+    {
+      key: 'description',
+      header: 'Description',
+      width: 3,
+      sortKey: 'description',
+      toCopyText: (r) => r.description ?? '',
+      render: ({ row }) =>
+        row.description ? (
+          <span className="pc-pot-desc" title={row.description}>{row.description}</span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+    {
+      key: 'members',
+      header: membersLabel,
+      width: 0.8,
+      align: 'right',
+      sortKey: 'memberCount',
+      toCopyText: (r) => (r.memberCount != null && r.memberCount > 0 ? String(r.memberCount) : ''),
+      render: ({ row }) =>
+        row.memberCount != null && row.memberCount > 0 ? (
+          <span className="pc-pot-count" title={`${row.memberCount} ${membersLabel.toLowerCase()}`}>
+            {row.memberCount}
+          </span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      width: 0.95,
+      sortKey: 'hasState',
+      toCopyText: (r) => (r.hasState ? 'ready' : 'new'),
+      render: ({ row }) => (
+        <span className="pc-pot-state" title={row.hasState ? `${hiveLabel} has state` : 'Not set up yet'}>
+          <span className={`pc-pot-dot${row.hasState ? ' is-live' : ''}`} aria-hidden />
+          <span className="pc-pot-state__label">{row.hasState ? 'ready' : 'new'}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'shared',
+      header: 'Shared',
+      width: 0.9,
+      sortKey: 'is_shared',
+      toCopyText: (r) => (r.is_shared ? 'shared' : ''),
+      render: ({ row }) =>
+        row.is_shared ? (
+          <span className="pc-pot-shared">
+            <Share2 size={12} aria-hidden /> shared
+          </span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+    {
+      key: 'spec',
+      header: 'Spec',
+      width: 0.7,
+      align: 'center',
+      sortKey: 'hasSpec',
+      toCopyText: (r) => (r.hasSpec ? 'yes' : ''),
+      render: ({ row }) =>
+        row.hasSpec ? (
+          <span className="pc-pot-spec" title="Has SPEC.md">
+            <Check size={13} aria-hidden />
+          </span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+    {
+      key: 'path',
+      header: 'Path',
+      width: 2,
+      sortKey: 'path',
+      toCopyText: (r) => r.path ?? '',
+      render: ({ row }) =>
+        row.path ? (
+          <span className="pc-pot-path" title={row.path}>{row.path}</span>
+        ) : (
+          <span className="pc-pot-dim">—</span>
+        ),
+    },
+  ], [hiveLabel, membersLabel]);
+
+  if (baseRows.length === 0) {
     return (
       <div className="pc-hive-cards pc-hive-cards--empty" data-testid="hive-workspace-cards">
         <div>No {hivesLabel.toLowerCase()} yet.</div>
@@ -48,109 +294,68 @@ export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, on
             <Plus size={14} aria-hidden /> Create new {hiveLabel.toLowerCase()}
           </button>
         )}
-        <CardStyles />
+        <ListStyles />
       </div>
     );
   }
 
   return (
     <div className="pc-hive-cards" data-testid="hive-workspace-cards">
-      {workspaceLabel && (
-        <div className="pc-hive-cards__ws-header" title={`Workspace: ${workspaceLabel}`}>
-          <Boxes size={13} aria-hidden />
-          <span className="pc-hive-cards__ws-name">{workspaceLabel}</span>
-          <span className="pc-hive-cards__ws-count">{groups.length} {hivesLabel.toLowerCase()}</span>
-        </div>
-      )}
-      <div className="pc-hive-cards__grid">
-        {groups.map((g) => {
-          // The hive HOME (`harness_kind:'hive'`) is the card itself — its name is
-          // the header. It must NOT also render as a member row, or a hive + its
-          // one harness read as two flat siblings. List only the real member
-          // harnesses; a LEGACY root (a real harness that's its own root) stays.
-          const rootIsHiveHome = g.root.harness_kind === HIVE_KIND;
-          const memberRows = rootIsHiveHome
-            ? g.members.filter((m) => m.slug !== g.root.slug)
-            : g.members;
-          const memberCount = memberRows.length;
-          return (
-            <section
-              key={g.root.slug}
-              className="pc-hive-cards__card"
-              data-testid={`hive-card-${g.root.slug}`}
-            >
-              <Tooltip label={`Open ${g.root.slug}`}><button
-                type="button"
-                className="pc-hive-cards__card-head"
-
-                onClick={() => onDrill(g.root.slug, g.root.slug)}
-              >
-                <Boxes size={15} className="pc-hive-cards__card-icon" aria-hidden />
-                <span className="pc-hive-cards__card-name">{g.root.slug}</span>
-                {g.root.is_shared && (
-                  <Share2 size={12} className="pc-hive-cards__shared" aria-label="Shared" />
-                )}
-                <span className="pc-hive-cards__card-count" title={`${memberCount} ${membersLabel.toLowerCase()}`}>
-                  {memberCount}
-                </span>
-              </button></Tooltip>
-              <ul className="pc-hive-cards__members" role="list">
-                {memberRows.map((m) => {
-                  const isRoot = m.slug === g.root.slug;
-                  const live = !!m.hasState;
-                  return (
-                    <li key={m.slug}>
-                      <Tooltip label={m.slug}><button
-                        type="button"
-                        data-testid={`hive-member-${m.slug}`}
-                        className="pc-hive-cards__member"
-
-                        onClick={() => onDrill(g.root.slug, m.slug)}
-                      >
-                        <span
-                          className={`pc-hive-cards__dot${live ? ' is-live' : ''}`}
-                          title={live ? 'Harness has state' : 'Not set up yet'}
-                          aria-hidden
-                        />
-                        <span className="pc-hive-cards__member-name">{m.slug}</span>
-                        {isRoot && (
-                          <Home size={11} className="pc-hive-cards__root" aria-label={`${hiveLabel} root`} />
-                        )}
-                        {m.harness_kind && m.harness_kind !== 'harness' && (
-                          <span className="pc-hive-cards__kind">{m.harness_kind}</span>
-                        )}
-                      </button></Tooltip>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
+      <div className="pc-hive-cards__ws-header">
+        <Boxes size={13} aria-hidden />
+        <span className="pc-hive-cards__ws-name" title={workspaceLabel ? `Workspace: ${workspaceLabel}` : undefined}>
+          {workspaceLabel ?? 'Workspace'}
+        </span>
+        <span className="pc-hive-cards__ws-count">
+          {baseRows.length} {(baseRows.length === 1 ? hiveLabel : hivesLabel).toLowerCase()}
+        </span>
+        {onCreate && (
+          <button type="button" className="pc-hive-cards__create pc-hive-cards__create--inline" onClick={onCreate}>
+            <Plus size={13} aria-hidden /> New {hiveLabel.toLowerCase()}
+          </button>
+        )}
       </div>
-      <CardStyles />
+      <RichGrid<PotRow>
+        rows={rows}
+        columns={columns}
+        getRowId={(r) => r.id}
+        sortState={sort}
+        onSortChange={setSort}
+        onRowClick={(r) => onDrill(r.hiveRootSlug, r.slug)}
+        getRowBg={(r) =>
+          r.isRoot ? 'color-mix(in oklab, var(--accent, #38bdf8), transparent 92%)' : undefined
+        }
+        rowProps={({ row }) => ({
+          'data-testid': row.isRoot ? `hive-card-${row.slug}` : `hive-member-${row.slug}`,
+          className: row.isRoot ? 'pc-pot-row pc-pot-row--root' : 'pc-pot-row pc-pot-row--member',
+          tabIndex: 0,
+        })}
+        className="pc-pot-grid"
+        style={{ flex: 1, minHeight: 0 }}
+      />
+      <ListStyles />
     </div>
   );
 }
 
-function CardStyles() {
+function ListStyles() {
   return (
     <style>{`
       .pc-hive-cards {
         flex: 1;
         min-height: 0;
-        overflow-y: auto;
-        padding: 16px;
-      }
-      .pc-hive-cards--empty {
         display: flex;
         flex-direction: column;
+        padding: 12px 12px 0;
+      }
+      .pc-hive-cards--empty {
         align-items: center;
         justify-content: center;
         gap: 14px;
         color: var(--fg-mute, #7f9bb4);
         font-size: 13px;
         text-align: center;
+        padding: 24px;
       }
       .pc-hive-cards__create {
         display: inline-flex;
@@ -166,11 +371,16 @@ function CardStyles() {
         cursor: pointer;
       }
       .pc-hive-cards__create:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%); }
+      .pc-hive-cards__create--inline {
+        margin-left: auto;
+        padding: 4px 10px;
+        font-size: 11px;
+      }
       .pc-hive-cards__ws-header {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin-bottom: 12px;
+        margin-bottom: 8px;
         padding-bottom: 8px;
         border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
         color: var(--fg-mute, #7f9bb4);
@@ -186,53 +396,65 @@ function CardStyles() {
         white-space: nowrap;
       }
       .pc-hive-cards__ws-count {
-        margin-left: auto;
         font-weight: 600;
         text-transform: none;
-        letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
         font-variant-numeric: tabular-nums;
       }
-      .pc-hive-cards__grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
-        gap: 14px;
-        align-content: start;
-      }
-      .pc-hive-cards__card {
-        display: flex;
-        flex-direction: column;
-        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-        border-radius: 10px;
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 93%);
-        overflow: hidden;
-      }
-      .pc-hive-cards__card-head {
-        display: flex;
+
+      /* Row testids carry a class hook; make root rows read as group anchors. */
+      .pc-pot-row { cursor: pointer; }
+      .pc-pot-row--root .pc-pot-name__slug { font-weight: 700; color: var(--fg, #e7f7ff); }
+
+      .pc-pot-name {
+        display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 10px 12px;
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
-        border: none;
-        border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        color: var(--fg, #e7f7ff);
-        font-size: 13.5px;
-        font-weight: 700;
-        text-align: left;
-        cursor: pointer;
+        gap: 7px;
+        min-width: 0;
+        max-width: 100%;
       }
-      .pc-hive-cards__card-head:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 76%); }
-      .pc-hive-cards__card-icon { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
-      .pc-hive-cards__card-name {
-        flex: 1 1 auto;
+      .pc-pot-name__icon { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
+      .pc-pot-name__branch { flex: 0 0 auto; color: var(--fg-mute, #7f9bb4); padding-left: 6px; }
+      .pc-pot-name__slug {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        color: var(--fg-dim, #b9d4e8);
       }
-      .pc-hive-cards__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
-      .pc-hive-cards__card-count {
-        flex: 0 0 auto;
+      .pc-pot-name__home { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
+
+      .pc-pot-badge {
+        display: inline-block;
+        font-size: 9.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-pot-badge--hive {
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        color: var(--accent-soft, #bae6fd);
+      }
+
+      .pc-pot-hive {
+        color: var(--fg-dim, #b9d4e8);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pc-pot-desc {
+        color: var(--fg-dim, #b9d4e8);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        display: block;
+      }
+      .pc-pot-dim { color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 25%); }
+      .pc-pot-count {
         font-size: 10.5px;
         font-weight: 700;
         padding: 1px 7px;
@@ -241,33 +463,9 @@ function CardStyles() {
         color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
-      .pc-hive-cards__members {
-        list-style: none;
-        margin: 0;
-        padding: 6px;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .pc-hive-cards__member {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        width: 100%;
-        padding: 6px 8px;
-        background: transparent;
-        border: 1px solid transparent;
-        border-radius: 6px;
-        color: var(--fg-dim, #b9d4e8);
-        font-size: 12.5px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .pc-hive-cards__member:hover {
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        color: var(--fg, #e7f7ff);
-      }
-      .pc-hive-cards__dot {
+      .pc-pot-state { display: inline-flex; align-items: center; gap: 6px; }
+      .pc-pot-state__label { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-pot-dot {
         flex: 0 0 auto;
         width: 7px;
         height: 7px;
@@ -275,28 +473,26 @@ function CardStyles() {
         background: color-mix(in srgb, var(--fg-dim, #b9d4e8), transparent 72%);
         box-shadow: inset 0 0 0 1px var(--bg-3, rgba(255, 255, 255, 0.075));
       }
-      .pc-hive-cards__dot.is-live {
+      .pc-pot-dot.is-live {
         background: var(--good, #34d399);
         box-shadow: 0 0 6px color-mix(in srgb, var(--good, #34d399), transparent 40%);
       }
-      .pc-hive-cards__member-name {
-        flex: 1 1 auto;
-        min-width: 0;
+      .pc-pot-shared {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: var(--accent-soft, #7dd3fc);
+      }
+      .pc-pot-spec { display: inline-flex; color: var(--good, #34d399); }
+      .pc-pot-path {
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+        font-size: 11px;
+        color: var(--fg-mute, #7f9bb4);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-      }
-      .pc-hive-cards__root { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
-      .pc-hive-cards__kind {
-        flex: 0 0 auto;
-        font-size: 9.5px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0;
-        padding: 1px 5px;
-        border-radius: 4px;
-        background: var(--bg-3, rgba(255, 255, 255, 0.075));
-        color: var(--fg-mute, #7f9bb4);
+        display: block;
       }
     `}</style>
   );

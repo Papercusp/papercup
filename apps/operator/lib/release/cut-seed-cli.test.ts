@@ -15,6 +15,7 @@ import {
   encodeEpochKeysFile,
   collectSeedEpochKeys,
   graftCorestoreEntry,
+  refreshCorestoreStateForSeed,
   readReusableCorestore,
 } from './cut-seed-cli';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
@@ -127,6 +128,47 @@ describe('parseGitDepth', () => {
     expect(() => parseGitDepth({ depth: '0' })).toThrow(/positive integer/);
     expect(() => parseGitDepth({ depth: '2' })).toThrow(/only 1/);
     expect(() => parseGitDepth({ shallow: true, depth: '2' })).toThrow(/alias/);
+  });
+});
+
+describe('refreshCorestoreStateForSeed', () => {
+  it('force-backfills current rows and drains until empty before a corestore cut', async () => {
+    const pg = {} as never;
+    const ownLog = {
+      keyHex: 'cd'.repeat(32),
+      append: vi.fn(async () => {}),
+      appendBatch: vi.fn(async () => {}),
+      get: vi.fn(async () => null),
+      length: 0,
+    };
+    const backfillImpl = vi.fn(async () => ({ skipped: false, enqueued: 12, dropped: 0 }));
+    const drainImpl = vi.fn().mockResolvedValueOnce(7).mockResolvedValueOnce(5).mockResolvedValueOnce(0);
+    const warn = vi.fn();
+
+    const res = await refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace',
+      hive: 'papercusp',
+      store: {} as never,
+      pg,
+      openOwnLogImpl: async () => ownLog,
+      backfillImpl,
+      drainImpl,
+      warn,
+    });
+
+    expect(backfillImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', ownLog }),
+      pg,
+      { force: true, maxOpsPerAuthor: 0 },
+    );
+    expect(drainImpl).toHaveBeenCalledTimes(3);
+    expect(res).toEqual({
+      backfill: { skipped: false, enqueued: 12, dropped: 0 },
+      drained: 12,
+      passes: 3,
+      ownLogKey: ownLog.keyHex,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshed corestore source'));
   });
 });
 

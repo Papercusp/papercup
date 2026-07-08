@@ -222,7 +222,12 @@ export function buildConsoleOneliner(
   // dodged this same bug). eval-in-a-subshell also means a MALFORMED greeting
   // (unbalanced quote, trailing `#`) errors visibly inside the open window
   // instead of aborting the whole one-liner at parse time.
-  return `${prelude} ; (eval ${shellEscape(greeting)}) ; exec "\${SHELL:-/bin/bash}" -l`;
+  const banner =
+    `__papercusp_greeting_rc=$?; ` +
+    `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
+    `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"; ` +
+    `fi`;
+  return `${prelude} ; (eval ${shellEscape(greeting)}); ${banner} ; exec "\${SHELL:-/bin/bash}" -l`;
 }
 
 // ─── Desktop-env resolution + spawn verification (WI-1886) ───────────

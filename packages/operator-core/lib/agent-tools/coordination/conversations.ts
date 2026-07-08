@@ -82,12 +82,17 @@ export function conversationsScopeWorkspace(): string {
  * default chain still applies (STRAND-SAFE, EI-1460 — never pins the
  * volatile `reg.current`).
  *
- * NOT threaded: `getConversation` / `listConversations` /
- * `listConversationsWithTopics` take no `identity` (pure reads by id / filter
- * opts) and stay on the existing request-ALS resolution — they are read
- * exclusively from request-scoped UI/TUI contexts (the module header's own
- * "one shared operator sidecar doesn't leak every window's conversations"
- * rationale), which already carry a concrete request workspace.
+ * Reads (`getConversation` / `listConversations` / `listConversationsWithTopics`)
+ * take an OPTIONAL identity: the original WI-1571 fix threaded writes only, on
+ * the assumption reads came exclusively from request-scoped UI/TUI contexts —
+ * but the agent MCP tools (conversations:get/list, plans:attention) and the
+ * coord-op caps (listPosts/readAnswer, i.e. coord:ask-owner's answer poll) read
+ * from contexts with NO request ALS, so they landed on 'default' while the same
+ * caller's writes landed on identity.workspaceId. Live evidence 2026-07-07: 23
+ * conversations under (papercusp-workspace) invisible to conversations:get/list,
+ * and every coord:ask-owner bounded wait timing out because readAnswer polled
+ * the wrong partition. Identity-bearing read callers must pass their identity;
+ * UI/sync-resolver reads stay identity-less on the request-ALS chain.
  */
 export function resolveConversationsIdentityWorkspace(
   identityWorkspaceId: string | null | undefined,
@@ -266,16 +271,26 @@ export function leaveConversation(identity: AgentIdentity, conversationId: strin
   );
 }
 
-export function listConversations(input: ListConversationsOpts = {}): Promise<ConversationRow[]> {
-  return listConversationsCore(deps, input);
+// Reads: identity is OPTIONAL (see the resolver doc above) — an identity-bearing
+// caller (agent tool / coord-op cap) passes it so reader and writer resolve the
+// SAME partition; an identity-less caller (UI/sync-resolver, request-scoped)
+// keeps the request-ALS chain unchanged.
+export function listConversations(input: ListConversationsOpts = {}, identity?: AgentIdentity): Promise<ConversationRow[]> {
+  const run = () => listConversationsCore(deps, input);
+  return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
 }
 
-export function listConversationsWithTopics(input: ListConversationsWithTopicsOpts = {}): Promise<ConversationWithTopics[]> {
-  return listConversationsWithTopicsCore(deps, input);
+export function listConversationsWithTopics(
+  input: ListConversationsWithTopicsOpts = {},
+  identity?: AgentIdentity,
+): Promise<ConversationWithTopics[]> {
+  const run = () => listConversationsWithTopicsCore(deps, input);
+  return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
 }
 
-export function getConversation(id: string): Promise<ConversationDetail | null> {
-  return getConversationCore(deps, id);
+export function getConversation(id: string, identity?: AgentIdentity): Promise<ConversationDetail | null> {
+  const run = () => getConversationCore(deps, id);
+  return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
 }
 
 export function promoteConversation(

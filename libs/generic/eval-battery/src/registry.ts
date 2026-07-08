@@ -39,6 +39,8 @@ export interface TestMetrics {
   signals: string[];
   /** Judge rubric dimension names. */
   rubricDimensions: string[];
+  /** Store rubric used when a completed experiment emits a trendable scorecard. */
+  rubricRef?: string;
 }
 
 /**

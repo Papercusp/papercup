@@ -14,6 +14,7 @@ import { runGovernedReplay } from '../../replay/governed';
 import { runExperiment } from '../../experiment/run-core';
 import { experimentJudge, experimentReplayRunner } from '../../experiment/replay-ports';
 import { PgExperimentLedger } from '../../experiment/ledger';
+import { captureImprovement } from '../../harness/improvements/capture-core';
 
 export default defineTool({
   name: 'experiment:run',
@@ -118,6 +119,33 @@ export default defineTool({
         replayRunner: experimentReplayRunner(args.replayModel, args.maxOutputTokens),
         judge: await experimentJudge(),
         ledger: new PgExperimentLedger(getOrgPg().sql),
+        captureScorecard: async (scorecard) => {
+          await captureImprovement({
+            title: `Experiment scorecard: ${scorecard.testId}/${scorecard.batteryId}`,
+            kind: 'change',
+            severity: 'nit',
+            lane: 'observation',
+            foundDuring: 'experiment:run',
+            force: true,
+            createdBy: 'experiment:run',
+            filedByRole: 'experiment',
+            payloadExtra: {
+              observation: {
+                kind: 'reinforce',
+                scope: 'papercusp',
+                confidence: 'high',
+                sourceHive: 'papercusp',
+                rubricRef: scorecard.rubricRef,
+                ratings: scorecard.ratings,
+                refs: [
+                  `experiment:${scorecard.testId}`,
+                  `battery:${scorecard.batteryId}`,
+                  `tier:${scorecard.tier}`,
+                ],
+              },
+            },
+          });
+        },
       },
     );
     if (outcome.ok && outcome.result) {

@@ -101,14 +101,19 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
       return { post_id: r.post.id };
     },
 
+    // Reads pass `identity` so they resolve the SAME workspace partition the
+    // writes above land in (WI-1571 read side): without it, a workspace-scoped
+    // asker's readAnswer polled the 'default' partition — the conversation its
+    // own openThread just created was never found, so coord:ask-owner's bounded
+    // wait ALWAYS timed out with { answered:false } even when the owner answered.
     async listPosts(conversationId) {
-      const detail = await getConversation(conversationId);
+      const detail = await getConversation(conversationId, identity);
       if (!detail) return [];
       return detail.posts.map((p) => ({ id: p.id, author_id: p.author_id, body: p.body, created_ts: p.created_ts }));
     },
 
     async readAnswer({ conversationId, askerId }) {
-      const detail = await getConversation(conversationId);
+      const detail = await getConversation(conversationId, identity);
       if (!detail) return { answered: false, answer: null };
       const accepted = detail.conversation.accepted_answer;
       if (accepted) return { answered: true, answer: accepted };

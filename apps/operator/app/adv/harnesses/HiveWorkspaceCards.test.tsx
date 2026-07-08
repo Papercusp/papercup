@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// HiveWorkspaceCards — the all-mode (`?scope=all`) hive-grouped workspace view.
-// Purely presentational (props in, DOM out); the only dependency is useLexicon
-// for the hive/member labels, mocked to an identity-ish resolver. We assert the
-// EMPTY state (with/without onCreate), one card per group, the member list, the
-// root/shared/kind/liveness affordances, and that clicking a card head / member
-// fires onDrill with (hiveSlug, memberSlug).
+// HiveWorkspaceCards — the all-mode (`?scope=all`, "All Pots") workspace view,
+// redesigned as a flat, sortable RichGrid list (WI-3345). Purely presentational
+// (props in, DOM out); deps are useLexicon (mocked) + the shared RichGrid. We
+// assert the EMPTY state (with/without onCreate), one row per pot (roots +
+// members), that a hive HOME is a root row and NOT also a member row, the
+// description / shared / live-state affordances, and that clicking a root /
+// member row fires onDrill with (hiveRootSlug, rowSlug).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -20,23 +21,50 @@ vi.mock('@/lib/useLexicon', () => ({
   },
 }));
 
-import HiveWorkspaceCards, { type HiveWorkspaceCardsProps } from './HiveWorkspaceCards';
+import HiveWorkspaceCards, {
+  flattenPotRows,
+  type HiveWorkspaceCardsProps,
+  type PotProject,
+} from './HiveWorkspaceCards';
 import type { HiveGroup } from './harness-hive-groups';
 
 afterEach(() => cleanup());
 
-function proj(slug: string, over: Partial<HiveGroup['root']> = {}): HiveGroup['root'] {
-  return { slug, ...over };
+function proj(slug: string, over: Partial<PotProject> = {}): HiveGroup['root'] {
+  return { slug, ...over } as HiveGroup['root'];
 }
-function group(rootSlug: string, members: HiveGroup['members'], rootOver: Partial<HiveGroup['root']> = {}): HiveGroup {
+function group(rootSlug: string, members: HiveGroup['members'], rootOver: Partial<PotProject> = {}): HiveGroup {
   return { root: proj(rootSlug, rootOver), members };
 }
 
+describe('flattenPotRows', () => {
+  it('emits one row per distinct pot: root first, then non-root members', () => {
+    const rows = flattenPotRows([
+      group('alpha', [proj('alpha'), proj('alpha-web')]),
+      group('beta', [proj('beta')]),
+    ]);
+    expect(rows.map((r) => r.slug)).toEqual(['alpha', 'alpha-web', 'beta']);
+    // root carries the sub-harness count (non-root members); members carry null
+    expect(rows[0]).toMatchObject({ slug: 'alpha', isRoot: true, memberCount: 1, hiveRootSlug: 'alpha' });
+    expect(rows[1]).toMatchObject({ slug: 'alpha-web', isRoot: false, memberCount: null, hiveRootSlug: 'alpha', hiveLabel: 'alpha' });
+    expect(rows[2]).toMatchObject({ slug: 'beta', isRoot: true, memberCount: 0 });
+  });
+
+  it('never emits the hive HOME as a member row', () => {
+    const rows = flattenPotRows([
+      group('demo-hive', [proj('demo-hive', { harness_kind: 'hive' }), proj('demo')], { harness_kind: 'hive' }),
+    ]);
+    expect(rows.map((r) => r.slug)).toEqual(['demo-hive', 'demo']);
+    expect(rows[0]).toMatchObject({ slug: 'demo-hive', isRoot: true, kind: 'hive', memberCount: 1 });
+    expect(rows[1]).toMatchObject({ slug: 'demo', isRoot: false, hiveRootSlug: 'demo-hive' });
+  });
+});
+
 describe('<HiveWorkspaceCards /> empty state', () => {
-  it('renders the no-hives hint (pluralized, lowercased) with no grid', () => {
-    const { container } = render(<HiveWorkspaceCards groups={[]} onDrill={vi.fn()} />);
+  it('renders the no-pots hint (pluralized, lowercased) with no grid rows', () => {
+    render(<HiveWorkspaceCards groups={[]} onDrill={vi.fn()} />);
     expect(screen.getByText(/no pots yet\./i)).toBeTruthy();
-    expect(container.querySelector('.pc-hive-cards__grid')).toBeNull();
+    expect(screen.queryByTestId('hive-card-alpha')).toBeNull();
   });
 
   it('omits the Create button when no onCreate is supplied', () => {
@@ -47,78 +75,63 @@ describe('<HiveWorkspaceCards /> empty state', () => {
   it('shows the Create button and fires onCreate when supplied', () => {
     const onCreate = vi.fn();
     render(<HiveWorkspaceCards groups={[]} onDrill={vi.fn()} onCreate={onCreate} />);
-    const btn = screen.getByRole('button', { name: /create new pot/i });
-    fireEvent.click(btn);
+    fireEvent.click(screen.getByRole('button', { name: /create new pot/i }));
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('<HiveWorkspaceCards /> grid', () => {
+describe('<HiveWorkspaceCards /> list', () => {
+  // The root's own metadata (hasState/description/is_shared) lives on the ROOT
+  // override — mirroring groupByHive, where the root and its lite entry are the
+  // same object; the flat root row reads from `g.root`, not a member copy.
   const groups: HiveWorkspaceCardsProps['groups'] = [
-    group('alpha', [
-      proj('alpha', { hasState: true }),
-      proj('alpha-web', { harness_kind: 'sub', hasState: false }),
-    ], { is_shared: true }),
+    group(
+      'alpha',
+      [proj('alpha-web', { harness_kind: 'sub', hasState: false })],
+      { hasState: true, is_shared: true, description: 'The alpha pot.' },
+    ),
     group('beta', [proj('beta')]),
   ];
 
-  it('renders one card per group with the member count', () => {
-    const { container } = render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
-    expect(container.querySelectorAll('.pc-hive-cards__card')).toHaveLength(2);
+  it('renders the workspace-cards container and a row per pot', () => {
+    render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
+    expect(screen.getByTestId('hive-workspace-cards')).toBeTruthy();
     expect(screen.getByTestId('hive-card-alpha')).toBeTruthy();
+    expect(screen.getByTestId('hive-member-alpha-web')).toBeTruthy();
     expect(screen.getByTestId('hive-card-beta')).toBeTruthy();
-    // alpha has 2 members → count badge "2"
-    const alpha = screen.getByTestId('hive-card-alpha');
-    expect(alpha.querySelector('.pc-hive-cards__card-count')?.textContent).toBe('2');
   });
 
-  it('does NOT list the hive HOME (harness_kind:hive) as a member row — header only', () => {
-    // A formal hive home + one real member harness. The home is the card itself;
-    // listing it ALSO as a member row is what made a hive + its one harness read
-    // as two flat siblings (owner directive 2026-06-16).
+  it('does NOT list the hive HOME (harness_kind:hive) as a member row', () => {
     const grps: HiveWorkspaceCardsProps['groups'] = [
       group('demo-hive', [proj('demo-hive', { harness_kind: 'hive' }), proj('demo', { hasState: true })], {
         harness_kind: 'hive',
       }),
     ];
     render(<HiveWorkspaceCards groups={grps} onDrill={vi.fn()} />);
-    // the hive home is the card header…
     expect(screen.getByTestId('hive-card-demo-hive')).toBeTruthy();
-    // …but NOT a member row
     expect(screen.queryByTestId('hive-member-demo-hive')).toBeNull();
-    // the real harness IS a member row, and the count reflects members only (1)
     expect(screen.getByTestId('hive-member-demo')).toBeTruthy();
-    const card = screen.getByTestId('hive-card-demo-hive');
-    expect(card.querySelector('.pc-hive-cards__card-count')?.textContent).toBe('1');
   });
 
-  it('shows the shared icon only on a shared root', () => {
+  it('shows the shared affordance only on a shared root', () => {
+    render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
+    expect(screen.getByTestId('hive-card-alpha').querySelector('.pc-pot-shared')).toBeTruthy();
+    expect(screen.getByTestId('hive-card-beta').querySelector('.pc-pot-shared')).toBeNull();
+  });
+
+  it('marks a pot with state via the is-live dot and shows the description', () => {
     render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
     const alpha = screen.getByTestId('hive-card-alpha');
-    const beta = screen.getByTestId('hive-card-beta');
-    expect(alpha.querySelector('.pc-hive-cards__shared')).toBeTruthy();
-    expect(beta.querySelector('.pc-hive-cards__shared')).toBeNull();
+    expect(alpha.querySelector('.pc-pot-dot.is-live')).toBeTruthy();
+    expect(alpha.textContent).toContain('The alpha pot.');
+    // a pot without state → no live dot
+    expect(screen.getByTestId('hive-member-alpha-web').querySelector('.pc-pot-dot.is-live')).toBeNull();
   });
 
-  it('marks the live member with the is-live dot and a non-root kind badge', () => {
-    render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
-    const rootMember = screen.getByTestId('hive-member-alpha');
-    const subMember = screen.getByTestId('hive-member-alpha-web');
-    // alpha has hasState → live dot; the root member shows the Home marker
-    expect(rootMember.querySelector('.pc-hive-cards__dot.is-live')).toBeTruthy();
-    expect(rootMember.querySelector('.pc-hive-cards__root')).toBeTruthy();
-    // the sub member is not live and carries its non-default harness_kind
-    expect(subMember.querySelector('.pc-hive-cards__dot.is-live')).toBeNull();
-    expect(subMember.querySelector('.pc-hive-cards__kind')?.textContent).toBe('sub');
-    // the sub member is not the root → no Home marker
-    expect(subMember.querySelector('.pc-hive-cards__root')).toBeNull();
-  });
-
-  it('drills into the root when the card head is clicked (hive===member===root)', () => {
+  it('drills into the root when its row is clicked (hive===member===root)', () => {
     const onDrill = vi.fn();
     render(<HiveWorkspaceCards groups={groups} onDrill={onDrill} />);
-    const head = screen.getByTestId('hive-card-alpha').querySelector('.pc-hive-cards__card-head') as HTMLButtonElement;
-    fireEvent.click(head);
+    fireEvent.click(screen.getByTestId('hive-card-alpha'));
     expect(onDrill).toHaveBeenCalledWith('alpha', 'alpha');
   });
 

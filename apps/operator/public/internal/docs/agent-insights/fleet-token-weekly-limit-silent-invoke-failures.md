@@ -118,13 +118,26 @@ account's usage caps.
 **The inference gateway (ON since 2026-06-13) is the structural fix for exactly
 that.** With it on, bee spawns still carry `claude-token` in their env, but the
 gateway **overrides it** — `ANTHROPIC_BASE_URL` points the bee's `claude -p`
-subprocess at `127.0.0.1:8788`, which strips that auth and reinjects the bound
-pool account (`aviynw10`), so egress no longer rides `claude-token`'s weekly cap
-at all (the bee's own token is "harmlessly ignored" per `spawn-env.ts`). NOTE
-the seam: this covers **bee spawns** routed through `operator-spawn`. A
-non-spawn invoke path that does NOT get `ANTHROPIC_BASE_URL` (verify the
-specific failing path) would still ride `claude-token` directly — one more
-reason to re-probe rather than assume.
+subprocess at `127.0.0.1:8788`, and a placeholder `ANTHROPIC_AUTH_TOKEN=papercusp-gateway`
+bearer (`GATEWAY_CLIENT_AUTH_TOKEN` in `spawn-env.ts`) makes the CLI *send at all*
+without gating on its local login state; the gateway then strips that auth and
+reinjects the routed pool account's real OAuth, so egress no longer rides
+`claude-token`'s weekly cap at all (the local credential the spawn inherits is
+"harmlessly ignored" per `spawn-env.ts`).
+
+**NOTE the seam — and that it has since been CLOSED (D-011).** The routing
+decision now lives in ONE shared helper, `resolveSpawnGatewayEnv`
+(`inference-gateway/spawn-env.ts`), that BOTH spawn chokepoints apply: the bee
+path (`fleet/operator-spawn.ts`) AND the `/invoke` route
+(`endpoint-route/routes/harness/spawn.ts`). Earlier the `/invoke` path had
+DRIFTED and never routed Queen/overwatch/blueprint-run agents through the pool,
+so they egressed the single shared `~/.claude` OAuth credential and 429'd on its
+WEEKLY cap (silent 0-token wakes, the Queen placing nothing) while the 8-account
+pool sat idle — this insight's exact failure, on the one path the gateway wasn't
+covering. That drift is fixed (see the `resolveSpawnGatewayEnv` header's D-011
+note): a non-spawn invoke path is no longer a routing hole. Still verify the
+specific failing path actually egresses the gateway before assuming — any egress
+path OUTSIDE these two chokepoints would ride `claude-token` directly.
 
 ## Recovery — verify first, then switch it yourself (rarely an owner act)
 

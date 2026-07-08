@@ -144,6 +144,55 @@ describe('TMPDIR is normalized to a sandbox-writable dir (EI-5912)', () => {
   });
 });
 
+describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
+  it('rewrites an inherited direct operator URL through the resilient proxy when configured', async () => {
+    const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
+    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    try {
+      const r = await runForeground(
+        { command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"', cwd: STATE, stateDir: STATE },
+        never,
+        10_000,
+      );
+      expect(r.status).toBe('completed');
+      expect(r.output).toContain('http://127.0.0.1:9071/api/mcp');
+    } finally {
+      if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+      else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
+      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+    }
+  });
+
+  it('leaves explicit per-call env overrides intact', async () => {
+    const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
+    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    try {
+      const r = await runForeground(
+        {
+          command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"',
+          cwd: STATE,
+          stateDir: STATE,
+          env: { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9999/api/mcp' },
+        },
+        never,
+        10_000,
+      );
+      expect(r.status).toBe('completed');
+      expect(r.output).toContain('http://127.0.0.1:9999/api/mcp');
+    } finally {
+      if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+      else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
+      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+    }
+  });
+});
+
 describe('process-group kill — no orphaned descendants (capability-bash-orphan-kill-2026-06-21)', () => {
   // A timed-out / aborted / killed command MUST take its descendants with it.
   // Before the detached-process-group fix, the kill hit only the `bash -c` parent;

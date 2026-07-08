@@ -60,12 +60,12 @@ Both patterns are about decoupling "the user has accepted this" from "the next c
 If the memo never lands (user rejects, scope changes, plan deprecates), the types-only module becomes dead code. Two mitigations:
 
 1. **Cross-link the memo from the types file.** The header comment should name the memo slug. If the memo is deleted, a future cleanup pass greps the types file's references and removes the orphan.
-2. **Be honest in the commit message about the dependency.** "Per dogfood-design-memo-binding-service-api-2026-05-24.md (still 'draft for review')." Anyone reading `git log` knows the type spine is provisional.
+2. **Be honest in the commit message about the dependency.** "Per plan-store entry `dogfood-design-memo-binding-service-api-2026-05-24` (still 'draft for review')." Anyone reading `git log` knows the type spine is provisional.
 
 ## See also
 
 * `packages/operator-core/lib/harness/binding-types.ts` — the canonical example.
 * `packages/operator-core/lib/harness/binding-types.test.ts` — 15 tests; the unit-test surface for a types-only module is small but real.
-* `apps/operator/docs/plans/dogfood-design-memo-binding-service-api-2026-05-24.md` — the source memo.
+* Plan-store entry `dogfood-design-memo-binding-service-api-2026-05-24` — the source memo.
 * [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) — sister pattern for ahead-of-implementation *registrations*.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — when a memo's wire-format is awkward, the right move can be deviating with diagnosis; types-first lets the implementer make that call with a clean spine to push against.

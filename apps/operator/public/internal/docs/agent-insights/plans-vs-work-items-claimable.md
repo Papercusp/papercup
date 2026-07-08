@@ -26,14 +26,25 @@ Queen/self-selection to place. Gated by `papercusp-plan-workitem-promotion`. Thi
 started a plan but the Queen sat idle" was a bug — without promotion a started plan minted zero
 work-items.
 
-## Bridge 2 — `plan_items:convert` (convert-at-pickup, the bulk path)
+## Bridge 2 — `plan_items:convert` (convert-at-pickup, the pickup verb)
 
 `plan_items:convert` is **THE pickup verb**: it takes the policy-checked plan-item lease, mints
-(or resumes) the work\_item execution record **with the caller as assignee**, links it back to the
-plan item, and flips the plan item `todo→wip` + broadcasts the claim (via `emits:`). The
-work-item's later lifecycle **reflects back** onto the plan item
-(`plan-items/reflect-rules.ts`: `complete→done`, `release→todo`). So "working a plan item" =
-convert it first — there is no untracked self-item.
+(or resumes) the work\_item execution record **with the caller as assignee** (default `kind:'task'`),
+links it back to the plan item (an `implements` edge + a `payload.plan_item` stamp), and flips the
+plan item `todo→wip` + broadcasts the claim (via `emits:`). The work-item's later lifecycle
+**reflects back** onto the plan item (`plan-items/reflect-rules.ts`, read straight off the
+`payload.plan_item` stamp) — not a flat `complete→done`. The current mapping:
+
+* `work_items:complete` **or** a `set_state` into a **terminal** state → `done` (from
+  `passed` / `resolved` / `done`) **or** `dropped` (from `deprecated` / `closed` / `dropped`). A
+  completion that *closes*/defers the item reflects `dropped`, **not** `done` (EI-8353); a
+  completion that leaves the work-item non-terminal does **not** flip the plan item at all.
+* `set_state todo|open` → `todo` (reopened); `work_items:release` of a still-non-terminal item →
+  `todo` (back to the pool).
+* Finishing (`complete`) **or** `release` also **drops the plan-item lease** (`plan_items:release`),
+  so the lane frees immediately instead of dangling until its TTL.
+
+So "working a plan item" = convert it first — there is no untracked self-item.
 
 **Bulk API (bulk-endpoint-standardization-2026-06-21).** You can convert several items in one call:
 

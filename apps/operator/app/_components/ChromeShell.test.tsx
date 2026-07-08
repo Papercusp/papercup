@@ -7,8 +7,8 @@
  *   - chromeless path prefixes (/pi, /project-docs, /el-min) → render null
  *   - a normal route → the header + primary nav links render
  *   - onAdv branch: on /adv the OPS CTA is a non-link "current page" span
- *   - testingFlag gating: Plugins link + the web OperatorChatSidebar appear
- *     only when the TESTING flag is on
+ *   - testingFlag gating: Plugins link + the web OperatorChatSidebar + the
+ *     RES and PUI header CTAs appear only when the TESTING flag is on
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -116,6 +116,8 @@ describe('ChromeShell', () => {
     expect(screen.queryByRole('link', { name: 'Plugins' })).toBeNull();
     expect(screen.queryByTestId('op-chat')).toBeNull();
     expect(screen.queryByText('Tutorial')).toBeNull();
+    // RES CTA (RouteLink aria-label="Resources") is now TESTING-gated too.
+    expect(screen.queryByRole('link', { name: 'Resources' })).toBeNull();
   });
 
   it('shows the testing-only surfaces (Plugins link + web chat + Tutorial) when TESTING is on', () => {
@@ -125,5 +127,8 @@ describe('ChromeShell', () => {
     expect(screen.getByRole('link', { name: 'Plugins' })).toBeTruthy();
     expect(screen.getByTestId('op-chat')).toBeTruthy();
     expect(screen.getByText('Tutorial')).toBeTruthy();
+    // RES CTA appears (mock useFlag returns testingFlag for every flag, so the
+    // RES_ALLOCATION gate is satisfied too); RES RouteLink aria-label="Resources".
+    expect(screen.getByRole('link', { name: 'Resources' })).toBeTruthy();
   });
 });

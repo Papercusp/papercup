@@ -25,11 +25,17 @@ curl-able admin trigger advertised in the tool's own docstring — failed with a
    tier identity into `ctx.uiClientId`; for a superuser ctx with none it
    THROWS (attributability is a hard requirement). So any identity-resolving
    tool (`fleet:*`, `coord:*`, `plans:*` writes…) was structurally broken over
-   the client-less superuser HTTP path. Fix: an admitted superuser (the host
-   validator already proved loopback + the on-disk bearer = the machine
-   admin) with no `?client=`/`x-papercusp-client` now defaults to the stable
-   `su-loopback` id (`SUPERUSER_FALLBACK_CLIENT_ID`) — same stability class as a `?client=` machine UUID.
-   An explicit client id still wins; non-superuser callers get NO default
+   the client-less superuser HTTP path. Fix (now in TWO layers): the HTTP
+   transport's superuser block defaults a transport-level `su-http-loopback`
+   id (`http-projection.ts`), AND — the broader fix — the single L1 identity
+   primitive `resolveAgentIdentity` itself falls back to
+   `SUPERUSER_FALLBACK_CLIENT_ID` (`'su-loopback'`, in
+   `coordination/identity.ts`) for ANY admitted-superuser ctx with no
+   `uiClientId`, so EVERY transport is covered uniformly — not just the JSON
+   HTTP path — and no transport can forget it (EI-2127). The host validator
+   already proved loopback + the on-disk bearer = the machine admin, so a fixed
+   id is attributable — same stability class as a `?client=` machine UUID. An
+   explicit client id still wins; non-superuser callers get NO default
    (unattributable writes stay rejected — EI-318's forgery concern is about
    *trusting caller-supplied* ids, not about assigning a fixed one post-proof).
 

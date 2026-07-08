@@ -115,6 +115,11 @@ export function instanceResultsToExperimentResult(
       primary: 'composite',
     });
   }
+  const scorecardVariantId = comparison?.selected ?? BASELINE_ID;
+  const selected = perArm.find(({ variant }) => variant.armId === scorecardVariantId);
+  const scored = selected?.result.outcomes.filter((o) => o.status === undefined || o.status === 'scored') ?? [];
+  const meanDimension = (dimension: 'd1' | 'd2' | 'd3'): number | null =>
+    scored.length ? scored.reduce((sum, o) => sum + o[dimension], 0) / scored.length : null;
   return {
     testId: 'instance',
     tier: 'live',
@@ -124,6 +129,12 @@ export function instanceResultsToExperimentResult(
     winner: comparison?.selected ?? null,
     totalCostUsd: perArm.reduce((s, { result }) => s + beekeeperCostUsd(result), 0),
     budgetExhausted: false,
+    scorecardScores: {
+      composite: selected?.result.meanComposite ?? null,
+      d1: meanDimension('d1'),
+      d2: meanDimension('d2'),
+      d3: meanDimension('d3'),
+    },
   };
 }
 

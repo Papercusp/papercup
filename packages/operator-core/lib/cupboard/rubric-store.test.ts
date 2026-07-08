@@ -164,6 +164,10 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
     expect(existsSync(inRepo)).toBe(true);
     const shipped = listLocalRubrics([{ dir: inRepo, layer: 'bundled' }]);
     expect(shipped.map((r) => r.rubricId)).toEqual([
+      'experiment-component-quality',
+      'experiment-hive-quality',
+      'experiment-instance-quality',
+      'experiment-replay-quality',
       'fleet-execution-health',
       'hive-coordination-health',
       'su-agent-behavior',

@@ -236,7 +236,7 @@ The workspace's peer-dep tree has unresolvable conflicts that make `npm install`
 
 ## Mac VM environment quirks
 
-- **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_path_env()` builds a `PATH` with the shipped `sidecar/bin/` (node/omp/gh) prepended, and every node-based spawn (the `serve.mjs` sidecar + `code-server`) runs through it. **If you add a new spawn**, route it through the same helper.
+- **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_path_env()` builds a `PATH` with the shipped `sidecar/bin/` (node/gh) prepended, and every node-based spawn (currently the `serve.mjs` sidecar) runs through it. **If you add a new spawn**, route it through the same helper.
 - **Gatekeeper**: the DMG is unsigned. First launch will be blocked. The install-mac-dmg `/admin` command strips quarantine via `xattr -dr com.apple.quarantine /Applications/Papercusp.app`. If launching by hand, you'll need to do this too.
 
 ## Windows VM crashes routinely

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildConciergeSpec,
+  buildOnboardingSetupSpec,
   buildFrameworkInstallSpec,
   buildInstallSpec,
   resolveConciergeScript,
@@ -71,8 +71,8 @@ describe('onboarding concierge spec (P-003)', () => {
     expect(resolveConciergeScript('/mnt/c/App/sidecar', (p) => p === up)).toBe(up);
   });
 
-  it('buildConciergeSpec uses an absolute node and threads the operator origin', () => {
-    const spec = buildConciergeSpec(
+  it('buildOnboardingSetupSpec opens the unified shell on the SETUP tab (owner 2026-07-07), absolute node + threaded origin', () => {
+    const spec = buildOnboardingSetupSpec(
       '/srv/operator/scripts/onboard-launcher.mjs',
       'http://127.0.0.1:3070',
       HOME,
@@ -80,7 +80,10 @@ describe('onboarding concierge spec (P-003)', () => {
     );
     // The Tauri pty child inherits NO PATH — a bare `node` would not resolve.
     expect(spec.command).toBe('/usr/local/bin/node');
-    expect(spec.args).toEqual(['/srv/operator/scripts/onboard-launcher.mjs']);
+    // --tab=setup routes onboard-launcher straight to the unified Tutorial|Setup
+    // shell on the Setup tab (NOT the linear chat concierge) — the first thing
+    // onboarding shows is the setup checklist.
+    expect(spec.args).toEqual(['/srv/operator/scripts/onboard-launcher.mjs', '--tab=setup']);
     expect(spec.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3070');
     expect(spec.cwd).toBe(HOME);
   });

@@ -67,4 +67,22 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1' });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c404', error: 'not_found' });
   });
+
+  // WI-1571 read side: a workspace-scoped caller must read ITS OWN partition
+  // (the one its writes land in) — an identity-less read resolved 'default' and
+  // returned not_found for the caller's own conversations (live 2026-07-07).
+  it('threads the caller identity into the read so reader and writer resolve the same partition', async () => {
+    getM.mockResolvedValue(null as never);
+    await tool.handler(
+      { id: 'c1' } as never,
+      { isSuperuser: true, uiClientId: 'client-1', workspaceId: 'ws-x' } as never,
+    );
+    expect(getM).toHaveBeenCalledWith('c1', expect.objectContaining({ workspaceId: 'ws-x' }));
+  });
+
+  it('an unattributable context reads identity-less (fail-open — request-ALS chain unchanged)', async () => {
+    getM.mockResolvedValue(null as never);
+    await body({ id: 'c1' });
+    expect(getM).toHaveBeenCalledWith('c1', undefined);
+  });
 });

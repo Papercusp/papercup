@@ -2,13 +2,46 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BASELINE_ID, registerTest, resetTestRegistry } from '@papercusp/eval-battery';
 import type { ReplayBatteryResult } from '../replay/battery';
 import { _resetExperimentRegistration, registerExperimentDescriptors } from './descriptors';
-import { runExperiment, type RunExperimentDeps, type RunExperimentInput } from './run-core';
+import { runExperiment, type ExperimentScorecardCapture, type RunExperimentDeps, type RunExperimentInput } from './run-core';
 import type { ExperimentLedger, ExperimentLedgerRow } from './ledger';
 
 function canned(): ReplayBatteryResult {
   return {
     batteryId: 'b1',
-    outcomes: [],
+    outcomes: [
+      {
+        runId: 'b1:baseline:c1:r0',
+        variantId: BASELINE_ID,
+        caseId: 'c1',
+        caseRef: 'synthetic:c1',
+        repeat: 0,
+        status: 'scored',
+        d1: 5,
+        d2: 5,
+        d3: 5,
+        composite: 5,
+        divergence: null,
+        runUsd: 0,
+        judgeUsd: 0,
+        replayed: false,
+      },
+      {
+        runId: 'b1:cand:c1:r0',
+        variantId: 'cand',
+        caseId: 'c1',
+        caseRef: 'synthetic:c1',
+        repeat: 0,
+        status: 'scored',
+        d1: 8,
+        d2: 7,
+        d3: 6,
+        composite: 7,
+        divergence: null,
+        runUsd: 0.005,
+        judgeUsd: 0.005,
+        replayed: true,
+      },
+    ],
     perVariant: [
       { variantId: BASELINE_ID, label: 'historical baseline', cells: 1, scored: 1, meanComposite: 5, meanTokenJaccard: null, costUsd: 0 },
       { variantId: 'cand', label: 'terser', cells: 1, scored: 1, meanComposite: 7, meanTokenJaccard: 0.4, costUsd: 0.01 },
@@ -241,6 +274,39 @@ describe('runExperiment ledger write (P-050)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ workspaceId: 'ws', batteryId: 'b1', testId: 'replay', tier: 'offline', winner: 'cand' });
     expect(rows[0]!.arms.map((a) => a.id)).toEqual([BASELINE_ID, 'cand']);
+  });
+
+  it('emits a rubric-graded scorecard observation alongside a real result', async () => {
+    const captured: ExperimentScorecardCapture[] = [];
+    const captureScorecard: RunExperimentDeps['captureScorecard'] = async (scorecard) => {
+      captured.push(scorecard);
+    };
+    const out = await runExperiment(input(), { workspaceId: 'ws' }, deps({ captureScorecard }));
+    expect(out.ok).toBe(true);
+    expect(captured).toHaveLength(1);
+    const scorecard = captured[0]!;
+    expect(scorecard).toMatchObject({
+      workspaceId: 'ws',
+      batteryId: 'b1',
+      testId: 'replay',
+      tier: 'offline',
+      rubricRef: 'experiment-replay-quality',
+      ratings: {
+        d1: { rating: 'healthy' },
+        d2: { rating: 'healthy' },
+        d3: { rating: 'degraded' },
+      },
+    });
+    expect(scorecard.ratings.d1?.evidence).toContain('mean judge score 8.00/10');
+  });
+
+  it('does not fail the experiment when scorecard capture fails', async () => {
+    const captureScorecard: RunExperimentDeps['captureScorecard'] = async () => {
+      throw new Error('observation store down');
+    };
+    const out = await runExperiment(input(), { workspaceId: 'ws' }, deps({ captureScorecard }));
+    expect(out.ok).toBe(true);
+    expect(out.result?.winner).toBe('cand');
   });
 
   it('a ledger write failure never fails the run (best-effort)', async () => {

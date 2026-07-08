@@ -46,11 +46,46 @@ export function buildEpochKeyResolver(deps: {
   isOwner: () => Promise<boolean>;
 }): EpochKeyResolver {
   let ownerCache: boolean | undefined;
+  // Epoch keys are IMMUTABLE per (hive, epoch) — a re-key advances the epoch NUMBER, it
+  // never rotates an existing epoch's key. So a successfully-resolved key can be cached
+  // for the resolver's lifetime: this keeps the per-op gate cost O(1) even though the
+  // owner path now consults the provider (a PG/bundled lookup) before falling back to
+  // deriveEpochKey. Only SUCCESSES are cached — a member miss must keep throwing so the
+  // gate DEFERS and retries once the epoch-key row federates in.
+  const keyCache = new Map<string, EpochKey>();
   return async (hiveId, epoch) => {
+    const cacheKey = `${hiveId}:${epoch}`;
+    const cached = keyCache.get(cacheKey);
+    if (cached) return cached;
     if (ownerCache === undefined) ownerCache = await deps.isOwner();
-    return ownerCache
-      ? deps.crypto.deriveEpochKey(hiveId, epoch)
-      : deps.provider.keyForEpoch(hiveId, epoch);
+    let key: EpochKey;
+    if (!ownerCache) {
+      key = await deps.provider.keyForEpoch(hiveId, epoch);
+    } else {
+      // OWNER. Resolve the AUTHORITATIVE distributed key FIRST — the provider chain
+      // (federated `hive_epoch_keys` rows / the BUNDLED seed key) — and mint via
+      // deriveEpochKey ONLY as the fallback for a genuinely NEW epoch this owner is
+      // advancing to. `deriveEpochKey` is get-or-CREATE, correct ONLY for the epoch
+      // ADVANCER; calling it to READ an already-existing epoch on a box that never minted
+      // it — a fresh SEEDED install that adopts the shared hive identity
+      // (DOGFOOD_PAPERCUSP_HIVE_SHARE → isOwner=true) but boots with an EMPTY epoch
+      // keychain — MINTS a fresh-random DIVERGENT key that cannot decrypt the seed's
+      // existing epoch-ciphertext. That is the WI-1981 epoch-poison class and the seed
+      // "57-drop": the seed's epoch-1 content decrypts ONLY under the bundled key, never a
+      // freshly-minted one, so a mint-at-read silently drops every encrypted row (the
+      // gate's decrypt-fail is `return false`, no throw). Provider-FIRST also makes this
+      // ROBUST to a keychain already poisoned by a prior mis-mint: the authoritative
+      // bundled/federated key wins over a stale local `deriveEpochKey` residue. On a real
+      // owner/advancer box (no bundled seed, no self-wrapped row) the provider simply
+      // misses and we fall through to deriveEpochKey — its own minted key — unchanged.
+      try {
+        key = await deps.provider.keyForEpoch(hiveId, epoch);
+      } catch {
+        key = await deps.crypto.deriveEpochKey(hiveId, epoch);
+      }
+    }
+    keyCache.set(cacheKey, key);
+    return key;
   };
 }
 

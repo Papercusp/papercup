@@ -10,7 +10,7 @@ still hold). But the specific claim that **`audit:list` reliably arrives as
 TOON** (in "The lossless guarantee", below) is now **false**:
 
 * `audit:list` is registered as a **Tier-3 headerless-CSV** tool
-  (`read: 'csv'`) in `packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts:52`.
+  (`read: 'csv'`) in `packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts:77`.
   Its summary mode returns exactly `{id,ts,actor,action,subject}` (flat), so in
   compact mode it self-presents as **headerless CSV** — `format: csv\n[N]\n…rows`
   — not TOON.

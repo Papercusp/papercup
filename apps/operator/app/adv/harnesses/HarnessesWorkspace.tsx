@@ -30,6 +30,8 @@ export interface AdvProjectEntry {
   parent_slug?: string | null;
   harness_kind?: string | null;
   is_shared?: boolean;
+  /** One-line brief (SPEC.md first prose line) — powers the All-Pots list Description column. */
+  description?: string | null;
 }
 
 /**

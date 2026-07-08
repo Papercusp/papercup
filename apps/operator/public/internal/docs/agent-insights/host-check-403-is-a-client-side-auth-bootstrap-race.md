@@ -47,10 +47,10 @@ client-side; the route's trust tier was correct all along. (Docstring now
 updated to say so explicitly.)
 
 The second trap: assuming the fix must be per-callsite. It doesn't need to
-touch `apps/auth/me.ts`'s cookie logic or `require-principal.ts` at all —
-those are correct. The only thing missing was *ordering*, at the one
-call site that actually needed the cookie without also being the thing
-that mints it.
+touch `packages/operator-core/lib/endpoint-route/routes/auth/me.ts`'s cookie
+logic or `require-principal.ts` at all — those are correct. The only thing
+missing was *ordering*, at the one call site that actually needed the cookie
+without also being the thing that mints it.
 
 ## The adjacent, easy-to-miss gap: "the flood is already handled" is sometimes only PARTLY true
 

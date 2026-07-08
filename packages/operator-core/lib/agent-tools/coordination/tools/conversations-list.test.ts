@@ -50,4 +50,20 @@ describe('conversations:list handler', () => {
     await call({ topic: 'arch' });
     expect(listM.mock.calls[0]![0]).toMatchObject({ scope: undefined, topic: 'arch' });
   });
+
+  // WI-1571 read side: a workspace-scoped caller must browse ITS OWN partition
+  // (the one its writes land in), not 'default'. Live evidence 2026-07-07: 23
+  // papercusp-workspace conversations were invisible to this tool.
+  it('threads the caller identity into the read so reader and writer resolve the same partition', async () => {
+    await tool.handler(
+      { kind: 'question' } as never,
+      { isSuperuser: true, uiClientId: 'client-1', workspaceId: 'ws-x' } as never,
+    );
+    expect(listM.mock.calls[0]![1]).toMatchObject({ workspaceId: 'ws-x' });
+  });
+
+  it('an unattributable context reads identity-less (fail-open — request-ALS chain unchanged)', async () => {
+    await call({ kind: 'question' });
+    expect(listM.mock.calls[0]![1]).toBeUndefined();
+  });
 });

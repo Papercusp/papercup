@@ -50,6 +50,18 @@ export interface SnapshotRow {
   /** The winning op's HLC (P-010), preserved verbatim. */
   hlc?: string;
   /**
+   * The winning op's ORIGINAL `author_pubkey`, preserved verbatim. This is part of the
+   * epoch-decrypt AEAD associated data (`opId = sha256([table, hbKey, author_pubkey])`,
+   * hive-epoch-serving.deriveOpId), so it MUST survive compaction for an encrypted row to
+   * decrypt after snapshotting. Without it the reader fell back to the SNAPSHOT op's
+   * author (its source-log key, NOT the content op's author) → the AAD opId diverged from
+   * what sealed the ciphertext → every encrypted row silently decrypt-dropped on a
+   * snapshot-seeded read (the seed "β" bug: on the owner's single-writer log content ops
+   * carry author='' while the snapshot op carries the core-log key). Absent on legacy
+   * pre-fix snapshots (the reader then falls back to the snapshot op's author).
+   */
+  author_pubkey?: string;
+  /**
    * EI-1688 — a TOMBSTONE row: the key's latest op is a `del`, so it reconstitutes
    * as DELETED (the reader's `snapshotRowToEnvelope` emits a `del` env, seeding the
    * merge winner with the del's HLC so a later-arriving stale lower-clock PUT loses
@@ -156,6 +168,12 @@ export function buildSnapshotRows(
         // WI-808: preserve the rekey epoch so a snapshot-seeded joiner can decrypt
         // an encrypted content row (a `del` tombstone is never encrypted → omitted).
         ...(op.epoch != null ? { epoch: op.epoch } : {}),
+        // β (seed 57-drop sibling): preserve the ORIGINAL author_pubkey — it is bound
+        // into the epoch-decrypt AAD (opId), so a snapshot-seeded reader must reconstruct
+        // it EXACTLY, not substitute the snapshot op's author. Kept even when '' (the
+        // owner single-writer log) so the reader distinguishes "author was ''" from a
+        // legacy author-less row. Undefined ⇒ omitted (a peer on a pre-author build).
+        ...(op.author_pubkey != null ? { author_pubkey: op.author_pubkey } : {}),
       });
     } else if (op.type === 'del') {
       // EI-1688: reconstitute the delete as a tombstone (carry the del's ts/hlc),

@@ -193,8 +193,11 @@ export default function ChromeShell() {
           )}
           {/* RES — the workspace-scoped Resources section: hand account pools +
               local GPUs to the fleets in the hive tree. Sits next to OPS.
-              Gated by FLAGS.RES_ALLOCATION (default on). */}
-          {resFlag ? (
+              A TESTING-only surface (owner ask 2026-07-07): gated behind
+              FLAGS.TESTING (default off) IN ADDITION to FLAGS.RES_ALLOCATION
+              (which also gates the /res route), so the button hides in normal
+              use and only appears when the testing flag is on. */}
+          {testingFlag && resFlag ? (
             onRes ? (
               <span
                 className="pc-header-cta pc-header-cta--mission is-current"
@@ -216,8 +219,11 @@ export default function ChromeShell() {
             )
           ) : null}
           {/* Terminal-launch CTA: opens the pui workbench (apps/tui) in an OS
-              terminal via a server-side spawn. Sits next to OPS. (Brief 26) */}
-          <PuiLauncherButton />
+              terminal via a server-side spawn. Sits next to OPS. (Brief 26)
+              A TESTING-only surface (owner ask 2026-07-07): gated behind
+              FLAGS.TESTING (default off), so it only appears when the testing
+              flag is on. */}
+          {testingFlag ? <PuiLauncherButton /> : null}
           {/* Native-console + psu superuser-session launcher (WI-3093). The
               owner reported "I don't see the psu button in the Windows app" —
               ConsoleLauncherButton existed but was never rendered anywhere. It

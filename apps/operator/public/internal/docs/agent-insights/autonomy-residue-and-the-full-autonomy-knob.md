@@ -30,10 +30,12 @@ to `critical` does nothing to them:
 
 This set is **the residue**: the actions that stay owner-gated even with every
 ceiling maxed. The live `papercusp-workspace` policy already has all 14 categories
-(`categories.ts` — the 14th, `schedule-arm`, landed
-scheduled-recurring-plans-2026-06-16 D-017, after this insight was first written)
-at `ceiling:critical, locked:false` — yet `deploy:harness`, `accounts:register`,
-`flags:set` (authority:owner), and `graduation:*` still gate, because of the
+(`categories.ts` — the two newest are `schedule-arm`
+(scheduled-recurring-plans-2026-06-16 D-017) and the protected `system-control`
+(now the 14th/last row), both added after this insight was first written) at
+their ceilings — yet `deploy:harness`, `accounts:register`, `flags:set`
+(authority:owner **and**, via the capability-category map, the protected
+`system-control` category), and `graduation:*` still gate, because of the
 residue, not the ceiling. **Always `autonomy:policy_get` first** — don't assume
 `protected == locked` (the owner may have unlocked them) and don't assume a maxed
 ceiling means full autonomy.

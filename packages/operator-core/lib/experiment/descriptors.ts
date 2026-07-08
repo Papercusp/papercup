@@ -63,6 +63,11 @@ export function armToReplayVariant(arm: KnobArm): ReplayVariant {
 /** Normalize a ReplayBatteryResult → the common ExperimentRunResult. Exported for
  *  the experiment:run path (run-core). */
 export function replayResultToExperimentResult(r: ReplayBatteryResult): ExperimentRunResult {
+  const scorecardVariantId = r.comparison?.selected ?? BASELINE_ID;
+  const meanDimension = (dimension: 'd1' | 'd2' | 'd3'): number | null => {
+    const scored = r.outcomes.filter((o) => o.status === 'scored' && o.variantId === scorecardVariantId);
+    return scored.length ? scored.reduce((sum, o) => sum + o[dimension], 0) / scored.length : null;
+  };
   return {
     testId: 'replay',
     tier: 'offline',
@@ -79,6 +84,11 @@ export function replayResultToExperimentResult(r: ReplayBatteryResult): Experime
     winner: r.comparison?.selected ?? null,
     totalCostUsd: r.totalCostUsd,
     budgetExhausted: r.budgetExhausted,
+    scorecardScores: {
+      d1: meanDimension('d1'),
+      d2: meanDimension('d2'),
+      d3: meanDimension('d3'),
+    },
   };
 }
 
@@ -94,6 +104,7 @@ export function replayDescriptor(deps: ExperimentDescriptorDeps = defaultDeps): 
     metrics: {
       signals: ['divergence.tokenJaccard'],
       rubricDimensions: Object.keys(DEFAULT_REPLAY_RUBRIC.dimensions),
+      rubricRef: 'experiment-replay-quality',
     },
     async run(request, ctx) {
       if (!ctx.replayRunner) throw new Error('replay descriptor requires ctx.replayRunner (the offline runner)');
@@ -175,7 +186,11 @@ export function gymDescriptor(): ExperimentDescriptor {
     fidelityTier: 'live',
     costClass: 'high',
     knobSlice,
-    metrics: { signals: ['regressionsFromTests', 'plantedBugCaught', 'cost'], rubricDimensions: ['d1', 'd2', 'd3'] },
+    metrics: {
+      signals: ['regressionsFromTests', 'plantedBugCaught', 'cost'],
+      rubricDimensions: ['d1', 'd2', 'd3'],
+      rubricRef: 'experiment-component-quality',
+    },
     async run(request, ctx) {
       for (const arm of request.arms) {
         const v = validateArm(arm, knobSlice);
@@ -209,7 +224,11 @@ export function instanceDescriptor(): ExperimentDescriptor {
       fidelityTier: 'live',
       costClass: 'high',
       knobSlice: ['genome', 'model'],
-      metrics: { signals: ['status', 'tokens', 'escalation'], rubricDimensions: ['composite'] },
+      metrics: {
+        signals: ['status', 'tokens', 'escalation'],
+        rubricDimensions: ['composite'],
+        rubricRef: 'experiment-instance-quality',
+      },
     },
     async (request, ctx) => {
       const { instanceRunCore } = await import('./instance-run-core');
@@ -237,7 +256,11 @@ export function hiveDescriptor(): ExperimentDescriptor {
       fidelityTier: 'live',
       costClass: 'high',
       knobSlice: ['genome', 'model'],
-      metrics: { signals: ['outcome', 'efficiency', 'speed'], rubricDimensions: ['outcome', 'efficiency', 'speed'] },
+      metrics: {
+        signals: ['outcome', 'efficiency', 'speed'],
+        rubricDimensions: ['outcome', 'efficiency', 'speed'],
+        rubricRef: 'experiment-hive-quality',
+      },
     },
     async (request, ctx) => {
       const { hiveRunCore } = await import('./hive-run-core');

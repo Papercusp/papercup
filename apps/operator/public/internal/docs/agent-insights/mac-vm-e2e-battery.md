@@ -1,7 +1,7 @@
 # Mac desktop E2E battery — repeatable scripts homed in papercusp-desktop/bin
 URL: /internal/docs/agent-insights/mac-vm-e2e-battery
 
-WI-3133's standing Mac-app E2E effort. 13 verified bash scripts (fresh-install, lifecycle/gateway, relaunch-crash regression, log-scan, gateway-sidecar probes, seed-runtime check, credential-precedence check, working-set functional roundtrip, code-server IDE health) live in papercusp-desktop/bin/mac-vm-*.sh. Run them over SSH against the Mac build VM — no GPU on the VM, so pixel/visual checks still need real Mac hardware.
+WI-3133's standing Mac-app E2E effort. Verified bash scripts (fresh-install, lifecycle/gateway, relaunch-crash regression, log-scan, gateway-sidecar probes, seed-runtime check, credential-precedence check, working-set functional roundtrip) live in papercusp-desktop/bin/mac-vm-*.sh. Run them over SSH against the Mac build VM — no GPU on the VM, so pixel/visual checks still need real Mac hardware.
 
 ## What this is
 
@@ -25,7 +25,6 @@ papercusp-desktop/bin/mac-vm-seed-runtime-test.sh   isolated fresh-user PGDATA-s
 papercusp-desktop/bin/mac-vm-reqb-fileprec.sh       does `claude` honor $CLAUDE_CONFIG_DIR/.credentials.json (file) vs Keychain-only
 papercusp-desktop/bin/mac-vm-verify-build.sh        cut a real x86_64 fast-iter build + scp DMGs back (drives mac-vm-build.sh remotely)
 papercusp-desktop/bin/mac-vm-working-set-roundtrip.sh dimension 7: working-set write -> Hyperbee projection -> read -> clear
-papercusp-desktop/bin/mac-vm-codeserver-health.sh     dimension 8: bundled code-server sidecar health (HTTP 200 + workbench HTML + /healthz + env-wiring + log scan)
 ```
 
 All verified against the QEMU macOS 14.8.5 x86\_64 build VM
@@ -65,15 +64,8 @@ passthrough) — track that gap separately, don't assume this battery covers it.
    /api/harness/papercusp/working-set` until the Hyperbee append projects into PG, then `clear-active`s and verifies the
    row disappears. Prior manual pass observed \~3-8s projection lag, so the script polls instead of asserting immediate
    read-after-write visibility.
-8. code-server bundled IDE health — `mac-vm-codeserver-health.sh` now covers this (2026-07-06): confirms the
-   `spawn_code_server()` sidecar (main.rs) is alive, listening on its `--bind-addr` port, serves the
-   workbench HTML + `/healthz` 200, `PAPERCUSP_CODE_SERVER_URL` is correctly wired into the running
-   `serve.mjs` env (what the optional `@papercupai/vscode-server` dashboard plugin's `iframeUrlConfigKey`
-   resolves to), and the log is free of startup errors. Note: the `vscode-server` dashboard-tab *plugin*
-   itself is opt-in (per `/internal/docs/spec/plugins-marketplace` §14.6 — vscode is a PLUGIN, not core)
-   and is not installed by default on the build VM, so `/api/plugins/<harness>/contributions` correctly
-   returns no `vscode` tab there — that is expected, not a defect; this script verifies the underlying
-   sidecar the plugin would iframe, not the plugin-install state.
+8. code-server bundled IDE health — retired 2026-07-07 with the code-server bundle and vscode-server plugin.
+   There is no bundled browser IDE sidecar to probe now; keep this dimension retired unless a new IDE surface ships.
 9. Resource/stability over time (no leak/crash-loop) — partially covered by repeated `mac-vm-inspect-running.sh` runs.
 10. Onboarding first-run completion.
 11. Run the full fresh-install E2E (`mac-vm-fresh-install-e2e.sh`) on each NEW build — don't run it in a tight loop (it's destructive: wipes `/Applications` and reinstalls).

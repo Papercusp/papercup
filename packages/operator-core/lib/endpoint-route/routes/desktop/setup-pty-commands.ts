@@ -277,14 +277,24 @@ export function resolveConciergeScript(
 }
 
 /**
- * Spawn spec for the Onboarding Console's concierge (P-003). Pure given its
- * inputs — exported for tests. `origin` is the operator base URL the WEBVIEW
- * reached us on (derived from the request), threaded to the concierge via
- * PAPERCUSP_OPERATOR_URL so it polls the same server. `nodeBin` defaults to
- * this process's node — the Tauri pty child inherits NO PATH, so a bare
+ * Spawn spec for the Onboarding Console — the FIRST thing first-run onboarding
+ * launches. Owner 2026-07-07: onboarding must open the unified Tutorial & Setup
+ * CLI **on the SETUP tab** as the first surface — NOT the linear chat concierge
+ * that only reached the unified shell at its very end (the handoff). So we launch
+ * `onboard-launcher.mjs --tab=setup`, which routes straight to the unified
+ * Tutorial|Setup shell (tutorial-runner) opened on the Setup tab. That setup tab
+ * IS the concierge folded into a re-entrant checklist — it drives the SAME
+ * server-side stage machine + pty specs, so the framework pick → sign-in → mem0
+ * flow still happens there, with the tutorial one Tab away. (The original linear
+ * chat concierge stays reachable via `papercusp onboard`.)
+ *
+ * Pure given its inputs — exported for tests. `origin` is the operator base URL
+ * the WEBVIEW reached us on (derived from the request), threaded via
+ * PAPERCUSP_OPERATOR_URL so the shell polls the same server. `nodeBin` defaults
+ * to this process's node — the Tauri pty child inherits NO PATH, so a bare
  * `node` would not resolve.
  */
-export function buildConciergeSpec(
+export function buildOnboardingSetupSpec(
   scriptPath: string,
   origin: string,
   home: string,
@@ -292,7 +302,7 @@ export function buildConciergeSpec(
 ): SpawnSpec {
   return {
     command: nodeBin,
-    args: [scriptPath],
+    args: [scriptPath, '--tab=setup'],
     cwd: home,
     env: { PAPERCUSP_OPERATOR_URL: origin },
   };
@@ -352,11 +362,12 @@ export default defineTool({
     const installFramework = Object.fromEntries(
       allowedFrameworks(os).map((f) => [f, buildFrameworkInstallSpec(f, os, home)]),
     ) as Partial<Record<OnboardingFramework, SpawnSpec>>;
-    // Onboarding Console concierge (P-003): null when the script can't be
-    // located — the console component falls back to the GUI wizard.
+    // Onboarding Console (P-003): the unified Tutorial & Setup shell opened on the
+    // SETUP tab (owner 2026-07-07) — null when the script can't be located, in which
+    // case the console component falls back to the GUI wizard.
     const conciergeScript = resolveConciergeScript();
     const onboardConcierge = conciergeScript
-      ? buildConciergeSpec(conciergeScript, new URL(req.url).origin, home)
+      ? buildOnboardingSetupSpec(conciergeScript, new URL(req.url).origin, home)
       : null;
     return Response.json({
       installRuntime: buildInstallSpec(os, home),

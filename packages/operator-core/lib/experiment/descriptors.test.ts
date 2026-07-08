@@ -23,7 +23,40 @@ const historicalCase: ReplayCase = {
 function cannedResult(): ReplayBatteryResult {
   return {
     batteryId: 'b1',
-    outcomes: [],
+    outcomes: [
+      {
+        runId: 'b1:baseline:c1:r0',
+        variantId: BASELINE_ID,
+        caseId: 'c1',
+        caseRef: 'synthetic:c1',
+        repeat: 0,
+        status: 'scored',
+        d1: 5,
+        d2: 5,
+        d3: 5,
+        composite: 5,
+        divergence: null,
+        runUsd: 0,
+        judgeUsd: 0,
+        replayed: false,
+      },
+      {
+        runId: 'b1:cand:c1:r0',
+        variantId: 'cand',
+        caseId: 'c1',
+        caseRef: 'synthetic:c1',
+        repeat: 0,
+        status: 'scored',
+        d1: 8,
+        d2: 7,
+        d3: 6,
+        composite: 7,
+        divergence: null,
+        runUsd: 0.005,
+        judgeUsd: 0.005,
+        replayed: true,
+      },
+    ],
     perVariant: [
       { variantId: BASELINE_ID, label: 'historical baseline', cells: 1, scored: 1, meanComposite: 5, meanTokenJaccard: null, costUsd: 0 },
       { variantId: 'cand', label: 'terser policy', cells: 1, scored: 1, meanComposite: 7, meanTokenJaccard: 0.4, costUsd: 0.01 },
@@ -61,7 +94,11 @@ describe('descriptor metadata + catalog', () => {
     const replay = entries.find((e) => e.id === 'replay')!;
     expect(replay).toMatchObject({ kind: 'replay', fidelityTier: 'offline', costClass: 'free' });
     expect(replay.knobSlice).toEqual(['overlay.systemOverlay', 'overlay.systemReplace', 'model']);
+    expect(replay.metrics.rubricRef).toBe('experiment-replay-quality');
+    expect(entries.find((e) => e.id === 'gym')!.metrics.rubricRef).toBe('experiment-component-quality');
+    expect(entries.find((e) => e.id === 'hive')!.metrics.rubricRef).toBe('experiment-hive-quality');
     expect(listTests().find((e) => e.id === 'instance')!.knobSlice).toEqual(['genome', 'model']);
+    expect(listTests().find((e) => e.id === 'instance')!.metrics.rubricRef).toBe('experiment-instance-quality');
   });
 
   it('registerExperimentDescriptors is idempotent (no duplicate-id throw)', () => {
@@ -100,6 +137,7 @@ describe('replay descriptor.run', () => {
     expect(out.winner).toBe('cand');
     expect(out.arms.map((a) => a.meanScore)).toEqual([5, 7]);
     expect(out.totalCostUsd).toBe(0.01);
+    expect(out.scorecardScores).toEqual({ d1: 8, d2: 7, d3: 6 });
   });
 
   it('maps a model knob to the variant policy.model (model-per-arm, P-063)', async () => {

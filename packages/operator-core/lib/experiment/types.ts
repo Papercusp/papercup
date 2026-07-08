@@ -39,6 +39,8 @@ export interface ExperimentArmResult {
   costUsd: number;
 }
 
+export type ExperimentScorecardScores = Record<string, number | null>;
+
 /** The normalized result every Subject maps to — the one shape the ledger,
  *  the scoreboard, and Scout meta-learning read. */
 export interface ExperimentRunResult {
@@ -53,6 +55,12 @@ export interface ExperimentRunResult {
   winner: string | null;
   totalCostUsd: number;
   budgetExhausted: boolean;
+  /**
+   * Optional per-rubric-criterion scores preserved from the subject's native judge
+   * dimensions. `experiment:run` maps these onto the descriptor's store `rubricRef`
+   * and emits a rubric-graded observation after the verdict is recorded.
+   */
+  scorecardScores?: ExperimentScorecardScores;
 }
 
 /**

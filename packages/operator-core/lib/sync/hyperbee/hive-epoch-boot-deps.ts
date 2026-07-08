@@ -93,15 +93,28 @@ export async function buildHiveRekeyBootDeps(opts: {
   // which wraps the SAME `hiveHomeSlugForHarness` call in an identical fail-open try/catch
   // for the identical reason.
   try {
+    // seed-57-drop diagnostic (env-gated, off by default): the gate keys on the
+    // workspace-resolved hiveHomeSlug — a fresh packaged install booting under the
+    // 'default' workspace while the hive lives in 'papercusp-workspace' resolves null →
+    // NO gate → encrypted content never decrypts → only plaintext rows project (the 57).
+    // Set PAPERCUSP_EPOCH_BOOT_DEBUG=1 to dump the exact branch to stderr/serve.log.
+    const dbg = process.env.PAPERCUSP_EPOCH_BOOT_DEBUG
+      ? (msg: string, o?: unknown) => console.error('[epoch-boot]', msg, o ?? '')
+      : () => {};
     // 2. The re-key applies only to a hive harness.
     const hiveHomeSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-    if (!hiveHomeSlug) return null;
+    dbg('resolved', { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, hiveHomeSlug });
+    if (!hiveHomeSlug) {
+      dbg('GATE NOT BUILT: hiveHomeSlugForHarness → null (harness not a registered hive in this workspace)');
+      return null;
+    }
     // WI-3232 (offline pot): a BUNDLED seed epoch key is an OFFLINE key source needing NO
     // device identity / PG-wrapped row. Attached (as the chain's FALLBACK) whenever a seed
     // ships this hive's key, so a fresh NO-ADMISSION install decrypts the restored corestore
     // content through this SAME gate. Null on dev boxes + non-seed installs ⇒ the chain is
     // member-only, byte-for-byte today's behavior.
     const bundledProvider = tryBuildBundledSeedProvider();
+    dbg('bundledProvider', { present: bundledProvider != null });
 
     // 3. This device's identity — the FIRST real LocalDevice (same keypair the announce
     //    uses). No local GitHub identity ⇒ no MEMBER (PG-wrapped) provider on this box; that

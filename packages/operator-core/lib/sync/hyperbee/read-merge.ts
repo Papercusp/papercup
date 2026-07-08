@@ -180,8 +180,14 @@ function snapshotRows(op: PeerLogOp): SnapshotRow[] {
 /**
  * P-007 (design A): map one snapshot row to an `OpEnvelope` (a put), preserving
  * its original ts/hlc so it folds + LWW-compares exactly as the original write
- * did. `writerPubkey` / `sourceLogKeyHex` come from the snapshot op's source log,
- * so provenance + origin resolution are identical to a normal op from that peer.
+ * did. `sourceLogKeyHex` comes from the snapshot op's source log, so origin
+ * resolution is identical to a normal op from that peer.
+ *
+ * `writerPubkey` is the ROW's own preserved `author_pubkey` (the original content op's
+ * author), NOT the snapshot op's author — it is bound into the epoch-decrypt AAD (opId),
+ * so substituting the snapshot op's author makes every encrypted row decrypt-drop (the
+ * seed "β" bug). Only a LEGACY author-less row (a pre-fix snapshot) falls back to the
+ * snapshot op's `authorPubkey`, preserving prior behavior for those.
  */
 function snapshotRowToEnvelope(
   row: SnapshotRow,
@@ -203,7 +209,11 @@ function snapshotRowToEnvelope(
     // WI-808: carry the rekey epoch from a snapshot row so the decrypt-gate can
     // resolve the key (mirrors toEnvelope; absent on plaintext / tombstone rows).
     ...(row.epoch != null ? { epoch: row.epoch } : {}),
-    writerPubkey: authorPubkey,
+    // β: the ROW's preserved original author is the AAD author the ciphertext was sealed
+    // under — use it; fall back to the snapshot op's author only for a legacy author-less
+    // row. `??` (not `||`) so a genuine empty-string author ('' = the owner single-writer
+    // log) is preserved, not overwritten by the snapshot op's core-log key.
+    writerPubkey: row.author_pubkey ?? authorPubkey,
     sourceLogKeyHex,
   };
 }

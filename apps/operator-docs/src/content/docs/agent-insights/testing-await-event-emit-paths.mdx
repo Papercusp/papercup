@@ -1,6 +1,6 @@
 ---
-title: "Testing code that calls emitAwaitedEvent: two traps that read as 'the wake never queued'"
-description: "(1) The await-event store pins EVERY row to DEFAULT_COORD_WORKSPACE — registerAwait/fireAwaitsForKey accept a workspaceId arg but eventsWs() ignores it, so a PG assertion filtered by YOUR workspace_id finds zero rows even though the wake queued fine; drop the workspace predicate. (2) The real emit kicks an async wake pump (setImmediate) whose executor console.warns 'dead waiter' for fake test subscribers, and vitest-fail-on-console RE-PATCHES console per test — a beforeAll spy gets wrapped and the test still fails; install the console.warn spy in beforeEach (or the test body), never beforeAll."
+title: "Testing code that calls emitAwaitedEvent: three traps that read as 'the wake never queued'"
+description: "(1) The await-event store pins EVERY row to DEFAULT_COORD_WORKSPACE — registerAwait/fireAwaitsForKey accept a workspaceId arg but eventsWs() ignores it, so a PG assertion filtered by YOUR workspace_id finds zero rows even though the wake queued fine; drop the workspace predicate. (2) The real emit kicks an async wake pump (setImmediate) whose executor console.warns 'dead waiter' for fake test subscribers, and vitest-fail-on-console RE-PATCHES console per test — a beforeAll spy gets wrapped and the test still fails; install the console.warn spy in beforeEach (or the test body), never beforeAll. (3) A blanket sql stub can leak a malformed row into the pattern-await branch; use query-shaped rows or the real migrated org PG fixture."
 discovered: 2026-06-11
 tags: [await-event, events, testing, vitest, fail-on-console, workspace, wake, integration-tests]
 status: active

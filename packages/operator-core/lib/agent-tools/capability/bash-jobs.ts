@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand } from './exec-sandbox';
 import { stripHostX } from '../computer/desktop-driver';
+import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
 
 /** Inline output cap (chars). Output beyond this spills to the scratch log and
  *  the inline result carries head+tail + the log path. Mirrors the native
@@ -100,6 +101,7 @@ function spawnShell(
   sandboxEnabled = false,
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
+  const inheritedEnv = normalizeInheritedOperatorUrl(stripHostX(process.env));
   const decision = buildCapabilitySandboxCommand(
     { cmd: [resolveBin('bash', spawnPath), '-c', command], cwd },
     { enabled: sandboxEnabled },
@@ -119,7 +121,7 @@ function spawnShell(
     // stripHostX (which keeps the inherited, possibly-ephemeral TMPDIR) but BEFORE
     // the caller's explicit `env`, so a deliberate caller override still wins.
     env: {
-      ...stripHostX(process.env),
+      ...inheritedEnv,
       TMPDIR: CAPABILITY_SANDBOX_TMPDIR,
       TMP: CAPABILITY_SANDBOX_TMPDIR,
       TEMP: CAPABILITY_SANDBOX_TMPDIR,
@@ -138,6 +140,19 @@ function spawnShell(
     detached: true,
   });
   return child;
+}
+
+function normalizeInheritedOperatorUrl(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const raw = env.PAPERCUSP_OPERATOR_URL?.trim();
+  if (!raw) return env;
+  const hadMcpSuffix = /\/api\/mcp\/?$/.test(raw);
+  const base = raw.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+  const routedBase = resolveAgentMcpBaseUrl(base);
+  if (routedBase === base) return env;
+  return {
+    ...env,
+    PAPERCUSP_OPERATOR_URL: hadMcpSuffix ? `${routedBase}/api/mcp` : routedBase,
+  };
 }
 
 /**

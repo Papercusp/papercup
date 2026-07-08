@@ -122,6 +122,15 @@ describe('readAnswer — "is it answered?" branches', () => {
     } as never);
     expect(await caps().readAnswer({ conversationId: 'x', askerId: 'u1' })).toEqual({ answered: false, answer: null });
   });
+
+  // WI-1571 read side: the answer poll must read the SAME workspace partition
+  // openThread wrote to — identity-less it resolved 'default', so a
+  // workspace-scoped coord:ask-owner NEVER saw its answer and always timed out.
+  it('threads the caps identity into the read (same partition as the ask that was written)', async () => {
+    getConv.mockResolvedValue(null as never);
+    await caps().readAnswer({ conversationId: 'x', askerId: 'u1' });
+    expect(getConv).toHaveBeenCalledWith('x', expect.objectContaining({ ownerId: 'u1', workspaceId: 'default' }));
+  });
 });
 
 describe('listPosts', () => {

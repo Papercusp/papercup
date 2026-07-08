@@ -100,7 +100,17 @@ Two failures, both avoidable with signals that ALREADY existed:
    `intentStale` right next to `intent`; `fleet:assignments` carries `holderAlive`
    next to `holderIntent`. Re-READ the live signal at the moment you rely on it — a
    13h-old "alive" is not "alive now." `fleet:assignments { agent }` returning **0
-   rows** is the loudest possible "not on it."
+   rows** is the loudest possible "not on it." As of **2026-07-07**
+   (`fleet-liveness-zombie-await`) the live signal itself force-ends a decayed holder:
+   `reconcileWakeability` (`agent-tools/fleet/assignments.ts`) runs `isHardStale` and
+   pins any holder whose heartbeat is cold beyond the 30-min DEAD ceiling
+   (`PRESENCE_DEAD_MS`, `presence-wakeability.ts`) to `sessionState:'ended'` /
+   `holderAlive:false` — **even if a lingering wake-await from an abrupt death
+   (reboot/OOM/SIGKILL) would otherwise make it read `parked`/wakeable**. So an
+   hour-cold "alive" no longer masquerades as a live member (the invisible-dead-fleet
+   twin of this doc's root cause); see
+   [coordinator-dispatch-and-wake](/agent-insights/coordinator-dispatch-and-wake) for
+   the full DEAD-ceiling model.
 
 2. **`woken:0` is a MISS, not a note — and `optimistic` hides it on purpose.**
    `coord:send` is honest by mode: `wake:'required'` escalates a miss to

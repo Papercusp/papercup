@@ -18,12 +18,17 @@ edge that cost an hour:
   user@127.0.0.1`. SPICE viewer on `:5931` for pixels.
 * **Build**: `papercusp-desktop/bin/build-windows-on-vm.sh` does the whole
   lane — pack (D-006 exclusions live in its tar step) → scp → clean extract →
-  `npm install` + `npx tauri build --bundles nsis` under vcvars64 → collect →
-  **host-side** `tauri signer sign`. The in-VM build is deliberately keyless
-  and exits 1 with "A public key has been found, but no private key" AFTER
-  the bundle finishes — that exact failure is the sanctioned outcome
-  (Windows cannot hold an empty env var, so an empty-passphrase key makes
-  tauri-cli hang on an ssh stdin prompt forever).
+  `npm install` + `npx tauri build --no-bundle` + **ISCC (Inno Setup 6.5.2+)**
+  under vcvars64 → collect → **host-side** `tauri signer sign` (updater `.sig`).
+  It builds BOTH roles (Papercusp GUI + Papercusp Server) and packs each with
+  Inno (template `src-tauri/windows/inno/papercusp.iss`, output collected to
+  `src-tauri/target/windows-vm/bundle/inno/`), NOT Tauri's bundler. **(Changed
+  2026-07-06, WI-3172: cut over from Tauri's NSIS bundle to Inno Setup — see
+  sharp edge §5 for why.)** Authenticode signing is in-VM via
+  `WINDOWS_SIGN_*` / `WINDOWS_CERT_*` env (D-004; unset ⇒ unsigned dev/dogfood
+  build); the minisign updater `.sig` is still minted host-side (the private
+  key never leaves this box), though the Windows auto-updater itself is PENDING
+  REWORK post-Inno-cutover — it expected the NSIS artifact (WI-3172).
 * **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList /S -Wait`.
 * **Launch with logs**: `schtasks /run /tn papercusp-e2e` — an
   *Interactive-only* scheduled task running `papercusp-launch.cmd`, which
@@ -66,10 +71,22 @@ edge that cost an hour:
    impossible without the metadata mount option; PG data goes on ext4 inside
    the distro (D-007). Consequence: `wsl --unregister` deletes the database.
 
-5. **NSIS datablock caps at \~2 GiB** — the full payload dies in makensis
-   with "error mmapping datablock". Windows v1 ships without
-   `sidecar/code-server` and `sidecar/bin/omp` (D-006), compression zlib via
-   `tauri.windows.conf.json`.
+5. **NSIS datablock caps at \~2 GiB → this is WHY the build cut over to Inno
+   Setup (WI-3172, 2026-07-06).** The owner-mandated full offline seed (git
+   `super.bundle` + hive corestore) puts the payload at \~3.4 GB and makensis
+   dies packaging it — "Internal compiler error … error mmapping file … out of
+   range" at the signed-32-bit \~2 GiB datablock offset (the corestore alone is
+   > 2 GiB, so no slimming rescues NSIS; MSI caps lower, a 7z-SFX combined `.exe`
+   > hits the \~2 GB PE-loader limit). **Inno Setup 6.5.2+ builds a single \~4 GB
+   > `setup.exe`** — hence the cutover. *NSIS-era history (preserved):* the old
+   > `--bundles nsis` lane shipped without `sidecar/code-server` and
+   > `sidecar/bin/omp` (D-006) with zlib compression via
+   > `tauri.windows.conf.json`, and that in-VM build was deliberately keyless — it
+   > exited 1 with "A public key has been found, but no private key" AFTER the
+   > bundle finished (the sanctioned outcome; Windows cannot hold an empty env
+   > var, so an empty-passphrase key hung tauri-cli on an ssh stdin prompt
+   > forever). The current `--no-bundle` Inno lane no longer produces that
+   > failure.
 
 6. **Job objects kill `app.restart()`** — an installer-spawned app (NSIS
    "run after install") lives in a job; the relaunched child dies with the
@@ -225,7 +242,8 @@ edge that cost an hour:
 
 * VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration
   dir; `papercup-build-release` = the clean lane dir).
-* Collected host-side: `papercusp-desktop/src-tauri/target/windows-vm/bundle/nsis/`.
+* Collected host-side: `papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/`
+  (was `bundle/nsis/` pre-WI-3172).
 * Installed app: `C:\Users\User\AppData\Local\Papercusp\`.
 * Boot log: `C:\Users\user\papercusp-bk.log`.
 

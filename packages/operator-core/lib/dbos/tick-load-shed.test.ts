@@ -34,7 +34,12 @@ vi.mock('../resource-profile', () => ({
   getResourceProfile: () => ({ backgroundCadenceMultiplier: ctl.cadenceMult }),
 }));
 
-import { shedUnderLoopPressure, shedUnderPowerSave, shouldShedHeavyTick } from './tick-load-shed';
+import {
+  shedUnderLoopPressure,
+  shedUnderPowerSave,
+  shouldShedHeavyTick,
+  shouldShedSchedulerTickUnderLoopPressure,
+} from './tick-load-shed';
 
 let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -180,5 +185,19 @@ describe('shouldShedHeavyTick (P5-1 || P5-3)', () => {
     // were broken and the counter had advanced to 2, this would instead be n=3 -> fire.
     ctl.pressure = 'ok';
     expect(shedUnderPowerSave('heavy-shortcircuit')).toBe(true);
+  });
+});
+
+describe('shouldShedSchedulerTickUnderLoopPressure (WI-3351)', () => {
+  it('does not shed the root routinesTick scheduler under ELEVATED loop pressure', () => {
+    ctl.pressure = 'elevated';
+    expect(shouldShedSchedulerTickUnderLoopPressure()).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not shed the root routinesTick scheduler under CRITICAL loop pressure', () => {
+    ctl.pressure = 'critical';
+    expect(shouldShedSchedulerTickUnderLoopPressure()).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

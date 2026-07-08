@@ -1237,7 +1237,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   'facts:assert', 'facts:list',
   // loop:arm joins loop:checkpoint (2026-07-05): checkpoint was in the spine while the
   // verb that CREATES the loop was not (253 fallback reaches/7d).
-  'work_items:checkpoint', 'loop:arm', 'loop:checkpoint',
+  // loop:status + loop:end join (2026-07-07, EI-8597 canonical-core catch-up): the
+  // wind-down half of the loop lifecycle — discovery can miss them, so a seeded worker
+  // must be able to inspect/stop its own loop without depending on tools:find.
+  'work_items:checkpoint', 'loop:arm', 'loop:checkpoint', 'loop:status', 'loop:end',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',

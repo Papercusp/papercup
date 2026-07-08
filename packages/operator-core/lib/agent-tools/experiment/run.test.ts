@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import runTool from './run';
 import { runExperiment } from '../../experiment/run-core';
 import { notifySyncInvalidate } from '../../sync-sse';
+import { captureImprovement } from '../../harness/improvements/capture-core';
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = (await orig()) as Record<string, unknown>;
@@ -24,9 +25,11 @@ vi.mock('../../experiment/replay-ports', () => ({
 }));
 vi.mock('../../replay/governed', () => ({ runGovernedReplay: vi.fn() }));
 vi.mock('../../experiment/ledger', () => ({ PgExperimentLedger: vi.fn() }));
+vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn(async () => ({ ok: true, created: true })) }));
 
 const mockRun = vi.mocked(runExperiment);
 const mockInvalidate = vi.mocked(notifySyncInvalidate);
+const mockCapture = vi.mocked(captureImprovement);
 
 const baseArgs = {
   testId: 'replay',
@@ -68,5 +71,35 @@ describe('experiment:run tool — scoreboard invalidation gate', () => {
     mockRun.mockResolvedValue({ ok: false, refused: { reason: 'flag off' } });
     await callTool();
     expect(mockInvalidate).not.toHaveBeenCalled();
+  });
+
+  it('wires run-core scorecard captures into the observation lane', async () => {
+    mockRun.mockImplementation(async (_input, _ctx, deps) => {
+      await deps.captureScorecard?.({
+        workspaceId: 'ws',
+        batteryId: 'b1',
+        testId: 'replay',
+        tier: 'offline',
+        rubricRef: 'experiment-replay-quality',
+        ratings: { d1: { rating: 'healthy', evidence: 'score 8/10' } },
+      });
+      return { ok: true, result: { winner: 'cand', arms: [] } as never };
+    });
+    await callTool();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(mockCapture.mock.calls[0]![0]).toMatchObject({
+      title: 'Experiment scorecard: replay/b1',
+      lane: 'observation',
+      foundDuring: 'experiment:run',
+      payloadExtra: {
+        observation: {
+          kind: 'reinforce',
+          scope: 'papercusp',
+          rubricRef: 'experiment-replay-quality',
+          ratings: { d1: { rating: 'healthy', evidence: 'score 8/10' } },
+          refs: ['experiment:replay', 'battery:b1', 'tier:offline'],
+        },
+      },
+    });
   });
 });

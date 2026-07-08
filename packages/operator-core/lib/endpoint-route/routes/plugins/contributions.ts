@@ -96,9 +96,7 @@ async function resolveIframeUrl(
     const k = tab.iframeUrlConfigKey;
     const fromConfig = harnessConfig?.[k];
     const fromDefault = manifest.configSchema?.properties?.[k]?.default;
-    const fromEnv = k === 'codeServerUrl' ? process.env.PAPERCUSP_CODE_SERVER_URL : undefined;
     if (typeof fromConfig === 'string' && fromConfig.length > 0) url = fromConfig;
-    else if (typeof fromEnv === 'string' && fromEnv.length > 0) url = fromEnv;
     else if (typeof fromDefault === 'string' && fromDefault.length > 0) url = fromDefault;
   }
   if (!url && typeof tab.iframeUrl === 'string' && tab.iframeUrl.length > 0) {

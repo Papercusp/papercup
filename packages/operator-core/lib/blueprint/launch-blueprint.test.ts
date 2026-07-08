@@ -1,4 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import {
   BUILTIN_LAUNCH_BLUEPRINTS,
   resolveLaunchTarget,
@@ -30,6 +34,47 @@ describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
     const resolve = (id: string) => (id === 'pretend-installed' ? builtinBlueprintPath('coding') : builtinBlueprintPath(id));
     const bp = await installedAwareLaunchResolver(() => resolve)('pretend-installed');
     expect(bp.id).toBe('coding');
+  });
+
+  it('loads an installed-tier child that extends the built-in base blueprint', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-launch-blueprint-'));
+    try {
+      const installedDir = join(dir, 'blueprints');
+      const childDir = join(installedDir, 'pretend-installed-program');
+      mkdirSync(childDir, { recursive: true });
+      writeFileSync(
+        join(childDir, 'blueprint.yaml'),
+        [
+          'id: pretend-installed-program',
+          'extends: base',
+          'version: 0.1.0',
+          'description: Installed program blueprint that inherits the built-in base.',
+          'workItem:',
+          '  kind: pretend-run',
+          '  idPrefix: PR',
+          'spine:',
+          '  steps:',
+          '    - id: tick',
+          '      op: pretend:tick',
+          '      bind: tick',
+          'dependencies:',
+          '  tools: []',
+          '  plugins: []',
+          '',
+        ].join('\n'),
+      );
+
+      const resolver = installedAwareLaunchResolver(() =>
+        makeComposedResolveExtends({ installedDir }),
+      );
+      const bp = await resolver('pretend-installed-program');
+
+      expect(bp.id).toBe('pretend-installed-program');
+      expect(bp.spine).toMatchObject({ steps: [{ id: 'tick', op: 'pretend:tick' }] });
+      expect(bp.knobs).toBeDefined(); // inherited from built-in base
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('falls back to the built-in loader (preserves the throw) for a truly-unknown id', () => {

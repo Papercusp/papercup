@@ -5,6 +5,7 @@ import {
   FRAMEWORK_DESCRIPTIONS,
   INTRO_BANNER,
   buildHandoffArgs,
+  buildTutorialRunnerArgs,
   mapFrameworkToAgent,
   parseArgs,
 } from '../onboard-launcher.mjs';
@@ -34,6 +35,35 @@ describe('buildHandoffArgs', () => {
     expect(args).toContain('--agent=codex');
     expect(args).toContain('--harness=my-pot');
     expect(args).toContain('--launch-context=/tmp/tutor.md');
+  });
+});
+
+describe('buildTutorialRunnerArgs', () => {
+  const RUNNER = '/x/tutorial-runner.mjs';
+
+  it('first-run handoff opens the unified shell on the SETUP tab (owner 2026-07-07)', () => {
+    const args = buildTutorialRunnerArgs(RUNNER, {
+      agent: 'claude',
+      operatorUrl: 'http://127.0.0.1:3170',
+    });
+    expect(args).toEqual([
+      RUNNER,
+      '--agent=claude',
+      '--operator-url=http://127.0.0.1:3170',
+      '--tab=setup',
+    ]);
+    // Never the tutorial tab for a first-run handoff.
+    expect(args).not.toContain('--tutorial');
+  });
+
+  it('a `papercusp tutorial` re-entry keeps the tutorial-intent flag instead of --tab=setup', () => {
+    const args = buildTutorialRunnerArgs(RUNNER, {
+      agent: 'codex',
+      operatorUrl: 'http://127.0.0.1:3070',
+      tutorialOnly: true,
+    });
+    expect(args).toContain('--tutorial');
+    expect(args).not.toContain('--tab=setup');
   });
 });
 

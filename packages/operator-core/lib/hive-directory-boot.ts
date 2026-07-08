@@ -340,10 +340,13 @@ let _lastWireAttemptMs = 0;
  * instantly when already joined; otherwise re-attempts at most once per minute
  * (identity resolution is the expensive/failing part). Best-effort → null.
  */
-export async function ensureHiveDirectoryWired(workspaceId: string): Promise<HiveDirectoryWiring | null> {
+export async function ensureHiveDirectoryWired(
+  workspaceId: string,
+  opts: { force?: boolean } = {},
+): Promise<HiveDirectoryWiring | null> {
   if (_wiring) return _wiring;
   const now = Date.now();
-  if (now - _lastWireAttemptMs < 60_000) return null;
+  if (!opts.force && now - _lastWireAttemptMs < 60_000) return null;
   _lastWireAttemptMs = now;
   return wireHiveDirectoryForWorkspace(workspaceId);
 }

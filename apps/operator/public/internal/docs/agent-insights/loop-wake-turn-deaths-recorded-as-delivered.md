@@ -331,3 +331,23 @@ Two more robustness gaps in the SAME re-arm module this doc analyzes (`completio
   preserving that path's original contract). A circuit-open-but-not-yet-guard-breached loop
   that hasn't reached the stuck-park dwell is left alone — the fire-gate's own backoff owns
   its cadence; reconcile no longer fights it by re-arming early.
+
+## Also since this doc (2026-07-07) — the OPEN-WALLS wake block (P-006, new file `loop-wall-nag.ts`)
+
+`loop-fire.ts` and `loop-turn-outcome.ts` gained a **carry-note "walls"** feature (new module
+`harness/routines/loop-wall-nag.ts`) that is orthogonal to the turn-death failure mode this doc
+analyzes — noted here only so those two anchors stay precise. It is a wake-diet correctness fix,
+not part of the rate-limit robustness thread:
+
+* `fireLoopWake` now `splitCarryNoteWalls(note)` — open owner-gated commitments ("walls") are
+  parsed OUT of the truncatable checkpoint body and rendered by `renderLoopWallsBlock` as their
+  own **un-truncatable `⛔ OPEN WALLS` block** in EVERY wake form (full and short), so a capped
+  note can never clip a standing commitment off the end. An agent clears a resolved wall via
+  `loop:checkpoint { walls }`.
+* `loop-turn-outcome.ts` `detectOwnerAsk` + `stashLoopWallNag`: when a loop turn ends on a
+  row-less owner-ask, a one-shot **turn-settle nag line** (`renderWallNagLine`, read-and-cleared
+  by `takeLoopWallNag` on the next fire) rides the following wake. Both hang off the same
+  `target_owner_id` scope the carry-note uses.
+
+None of this touches the delivered-vs-survived accounting, the resume-exit observer, or the
+autoloop circuit — the warm-turn-death analysis above is unchanged.

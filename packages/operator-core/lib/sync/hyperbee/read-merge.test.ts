@@ -78,6 +78,42 @@ describe('mergeAdmittedLogs', () => {
     expect(apply.mock.calls[0][0].epoch).toBe(3); // snapshotRowToEnvelope preserves it
   });
 
+  // β (REGRESSION GUARD, seed 57-drop sibling): the ORIGINAL author_pubkey is bound into
+  // the epoch-decrypt AAD (opId = sha256([table, hbKey, author_pubkey])). A snapshot-seeded
+  // reader must reconstruct THAT author, not the snapshot op's author (its source-log key).
+  // On the owner's single-writer log content ops carry author='' while the snapshot op
+  // carries the core-log key — so substituting the snapshot author makes every encrypted
+  // row's AAD diverge → silent decrypt-drop. (The old WI-808 test masked this by using the
+  // SAME author 'A' for both the content op and the snapshot op.)
+  it('β: a snapshot row reconstructs the ORIGINAL author (AAD opId), not the snapshot op author', async () => {
+    const apply = applyMock();
+    const ops: PeerLogOp[] = [
+      { type:'put', table:'harness_features_consolidated', hbKey:'F-b', value:{ __rekey:'eHl6' }, ts:5, schema_version:1, author_pubkey:'', epoch:1 },
+    ];
+    const rows = buildSnapshotRows(ops);
+    expect(rows[0].author_pubkey).toBe(''); // build seam preserves the original author (even '')
+    const snapshotOp = {
+      type:'put', table:SNAPSHOT_TABLE_TAG, hbKey:'__snap__',
+      value:{ coversUpTo: 1, rows }, ts:5, schema_version:1, author_pubkey:'CORE-LOG-KEY',
+    };
+    await mergeAdmittedLogs([ fakeLog('a'.repeat(64), [snapshotOp]) ], { applyImpl: apply });
+    // The ORIGINAL author '' — NOT the snapshot op's 'CORE-LOG-KEY'.
+    expect(apply.mock.calls[0][0].writerPubkey).toBe('');
+    expect(apply.mock.calls[0][0].epoch).toBe(1);
+  });
+
+  it('β: a LEGACY author-less snapshot row falls back to the snapshot op author', async () => {
+    const apply = applyMock();
+    // A pre-fix snapshot: rows carry NO author_pubkey → the reader keeps prior behavior.
+    const legacyRows = [{ table:'harness_features_consolidated', hbKey:'F-legacy', value:{}, ts:5, schema_version:1 }];
+    const snapshotOp = {
+      type:'put', table:SNAPSHOT_TABLE_TAG, hbKey:'__snap__',
+      value:{ coversUpTo: 1, rows: legacyRows }, ts:5, schema_version:1, author_pubkey:'CORE-LOG-KEY',
+    };
+    await mergeAdmittedLogs([ fakeLog('a'.repeat(64), [snapshotOp]) ], { applyImpl: apply });
+    expect(apply.mock.calls[0][0].writerPubkey).toBe('CORE-LOG-KEY'); // fallback preserved
+  });
+
   it('del beats put on a ts tie', async () => {
     const apply = applyMock();
     const logs = [

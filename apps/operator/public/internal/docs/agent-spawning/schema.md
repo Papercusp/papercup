@@ -7,7 +7,7 @@ The two PG tables that back the spawn primitive — `spawned_agents` (the durabl
 
 One row per spawn launch — the durable nursery. Written by the spawn engine (`recordSpawn` / `finishSpawn`); read by `fleet:tree`, the concurrency-ceiling count, and the Intel panel.
 
-The table is defined in `000-baseline.sql`; `146-fleet-supervision.sql` added the supervision columns (`session_owner` … `cancelled_at`) and `174-spawned-agents-heartbeat-reclaim.sql` the durability `heartbeat_at`. Several **later migrations** keep extending it — `203` (`session_id`), `213` (a column-targeted change-notify trigger), `219` (`idempotency_key`), `228` (`pid` / `launcher_host`), `229` (`model_spec` / `model_tier`), `230` (`brief`), `233` (`last_output_at`) — so the live table is wider than the baseline. The full set of columns the engine reads is in `SELECT_COLS` (`pg-stores.ts`).
+The table is defined in `000-baseline.sql`; `146-fleet-supervision.sql` added the supervision columns (`session_owner` … `cancelled_at`) and `174-spawned-agents-heartbeat-reclaim.sql` the durability `heartbeat_at`. Several **later migrations** keep extending it — `203` (`session_id`), `213` (a column-targeted change-notify trigger), `219` (`idempotency_key`), `228` (`pid` / `launcher_host`), `229` (`model_spec` / `model_tier`), `230` (`brief`), `233` (`last_output_at`), `339` (`launcher_boot_id`), `475` (`fleet_slug`) — so the live table is wider than the baseline. The full set of columns the engine reads is in `SELECT_COLS` (`pg-stores.ts`).
 
 ```sql
 CREATE TABLE harness_shared.spawned_agents (
@@ -49,7 +49,9 @@ CREATE TABLE harness_shared.spawned_agents (
   model_spec            TEXT NULL,          -- 229: per-spawn resolved model spec, if overridden
   model_tier            TEXT NULL,          -- 229: tier the spec resolved from
   brief                 TEXT NULL,          -- 230: queen-authored situational brief (QUEEN_BRIEF)
-  last_output_at        TIMESTAMPTZ NULL    -- 233: last stdout/stderr the supervisor observed (wedge signal)
+  last_output_at        TIMESTAMPTZ NULL,   -- 233: last stdout/stderr the supervisor observed (wedge signal)
+  launcher_boot_id      TEXT NULL,          -- 339: launcher's boot id — reclaim disambiguation across a host restart (a pid is not stable across reboot; EI-2186)
+  fleet_slug            TEXT NULL           -- 475: named-fleet slug stamped at spawn → reliable per-fleet bee count (WI-1813)
 );
 ```
 
@@ -69,6 +71,7 @@ spawned_agents_session_owner_idx    -- (workspace_id, session_owner) — owner�
 spawned_agents_active_heartbeat_idx -- (heartbeat_at) WHERE status IN ('running','restarting') — orphan-reclaim sweep (174)
 spawned_agents_session_id_idx       -- (session_id) WHERE session_id IS NOT NULL — native-resume lookup (203)
 spawned_agents_idempotency_key_uq   -- UNIQUE (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL — spawn dedupe (219)
+spawned_agents_fleet_slug_running_idx -- (workspace_id, fleet_slug) WHERE fleet_slug IS NOT NULL AND child_role='bee' AND status IN ('running','restarting') — deterministic per-fleet bee count (475)
 ```
 
 A check constraint (`spawned_agents_restart_strategy_chk`, added by migration 146) restricts `restart_strategy` to `one_for_one | one_for_all | rest_for_one`.
@@ -104,7 +107,7 @@ A `running`/`restarting` row whose launching operator host dies would otherwise 
 2. A row un-heartbeated past `RECLAIM_STALE_MS` (5 min) is a reclaim *candidate* (launching host presumed dead).
 3. The reclaim sweep — opportunistic on each spawn + periodic — flips qualifying candidates to `status='failed'` with a reason and frees the ceiling slot (and wakes the dead child's parent).
 
-The sweep is **not** purely heartbeat-driven. Migrations 228 + the `pid` / `launcher_host` columns feed a liveness check (EI-85): for a **same-host** stale candidate, `reclaimOrphanedSpawns` runs `isSpawnProcessAlive(pid)` — a Linux `/proc/<pid>` probe (cmdline-hardened against PID reuse) — and **only reclaims a child it proves dead**. A child that is still alive (its host was merely paused for GC or a restart) is left alone and re-heartbeated. A different-host or pid-less candidate can't be probed, so it falls back to the heartbeat-stale reclaim. This is a liveness gate, not a SIGTERM-by-pid watcher: nothing signals the child by pid — the reclaim only edits the row.
+The sweep is **not** purely heartbeat-driven. Migrations 228 + the `pid` / `launcher_host` columns feed a liveness check (EI-85): for a **same-host** stale candidate, `reclaimOrphanedSpawns` runs `isSpawnProcessAlive(pid)` — a Linux `/proc/<pid>` probe (cmdline-hardened against PID reuse) — and **only reclaims a child it proves dead**. A child that is still alive (its host was merely paused for GC or a restart) is left alone and re-heartbeated. A different-host or pid-less candidate can't be probed, so it falls back to the heartbeat-stale reclaim. **Ahead of the pid probe**, migration 339's `launcher_boot_id` (EI-2186) short-circuits the cross-restart case: a same-host candidate whose `launcher_boot_id` is present but **differs from the current process's boot id** survived a host/operator restart, so its `pid` was reassigned by the reboot and the `/proc` probe would falsely read it ALIVE — it is *provably orphaned* and reclaimed **without** the pid check (`sameHost && c.launcher_boot_id != null && c.launcher_boot_id !== LAUNCHER_BOOT_ID`). Rows predating the column (`launcher_boot_id IS NULL`) fall back to the pid probe. This is a liveness gate, not a SIGTERM-by-pid watcher: nothing signals the child by pid — the reclaim only edits the row.
 
 `cancel_requested` survives in the schema but is informational; it is the reclaim path (heartbeat + pid liveness), not a pid watcher, that frees the ceiling cross-restart.
 

@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
+import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { getConversation } from '../conversations';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
@@ -41,12 +42,23 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
+    // Read scoped to the CALLER's workspace partition (WI-1571 read side): a
+    // workspace-scoped agent's asks land under identity.workspaceId, so an
+    // identity-less read here resolved 'default' and returned not_found for
+    // the caller's own conversations. Fail-open: an unattributable context
+    // keeps the request-ALS chain (glance.ts selfOwnerId pattern).
+    let identity: AgentIdentity | undefined;
+    try {
+      identity = resolveAgentIdentity(ctx);
+    } catch {
+      identity = undefined;
+    }
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
       ids,
       async (id) => {
-        const detail = await getConversation(id);
+        const detail = await getConversation(id, identity);
         if (!detail) return { ok: false as const, id, error: 'not_found' };
         const { conversation: c, topics, posts, subscriber_count } = detail;
         return {

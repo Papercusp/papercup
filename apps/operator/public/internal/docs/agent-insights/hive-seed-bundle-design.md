@@ -48,6 +48,24 @@ exercising the real thing end-to-end (invite → owner announce → admission �
 keys → live tail). If a seed is absent, stale, corrupt, or fails verification, the
 system degrades to today's cold path (D-007).
 
+> **Update (2026-07 — WI-3232 "Full pot, plaintext seed"): admission is no longer
+> the ONLY keys path.** For alpha (no users yet, owner-authorised), the installer
+> can ship the hive **epoch key readable inside the seed** as `epoch-keys.json`
+> (emitted by `cut-seed-cli --emit-epoch-key`). `bundled-epoch-key-provider.ts`
+> resolves that key **offline**, so a FRESH packaged install decrypts the seed —
+> both the encrypted git bundles and the epoch-encrypted corestore content
+> (`HIVE_REKEY` default-ON) — with **no federation join / admission at all**. This
+> is wired live in `bootstrap-papercusp-hive.ts` via `epoch-key-provider-chain.ts`,
+> which tries the FEDERATED member provider first (PG-wrapped `hive_epoch_keys`,
+> holds all granted epochs `[0..cur]`, stays correct after a re-key) and falls back
+> to the bundled provider — so an online member is unchanged while a cold install
+> self-admits. It remains fail-closed: a missing/wrong bundled key throws
+> `EpochKeyUnavailableError` and the op defers exactly as before. The design below
+> (admission-delivered `SeedKeyRef.via: "seed-key-op"` / epoch-key, D-004) is the
+> **v1 federated** key path and still holds for a real multi-member hive; the
+> bundled path is the additive alpha self-admit layer on the SAME `EpochKeyProvider`
+> seam. Runbook: the seed-bundle runbook + WI-3232.
+
 This is **not** a revival of `_retired/snapshot-system/` (D-006). That was a
 monolithic-era harness-tarball *distribution* mechanism whose jobs were re-homed to
 blueprints (distribution), git+PG (backup), and `InstanceSpec` (reproducible clone).

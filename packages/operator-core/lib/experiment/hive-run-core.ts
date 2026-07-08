@@ -127,6 +127,10 @@ export function hiveResultsToExperimentResult(
       primary: 'composite',
     });
   }
+  const scorecardVariantId = comparison?.selected ?? BASELINE_ID;
+  const scored = (resultsByArm.get(scorecardVariantId) ?? []).filter((c) => c.status === 'scored' && c.score);
+  const meanDimension = (dimension: 'd1' | 'd2' | 'd3'): number | null =>
+    scored.length ? scored.reduce((sum, c) => sum + (c.score?.[dimension] ?? 0), 0) / scored.length : null;
   return {
     testId: 'hive',
     tier: 'live',
@@ -136,6 +140,11 @@ export function hiveResultsToExperimentResult(
     winner: comparison?.selected ?? null,
     totalCostUsd: arms.reduce((s, a) => s + a.costUsd, 0),
     budgetExhausted: false,
+    scorecardScores: {
+      outcome: meanDimension('d1'),
+      efficiency: meanDimension('d2'),
+      speed: meanDimension('d3'),
+    },
   };
 }
 

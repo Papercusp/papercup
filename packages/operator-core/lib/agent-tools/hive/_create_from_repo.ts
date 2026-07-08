@@ -425,7 +425,10 @@ export async function createHiveFromRepo(
 
   // 3 — clone the member checkout.
   mark('clone', 'running');
-  const cloned = await clone(opts.githubUrl, { ...(opts.shallow !== undefined ? { shallow: opts.shallow } : {}) });
+  const cloned = await clone(opts.githubUrl, {
+    destName: memberSlug,
+    ...(opts.shallow !== undefined ? { shallow: opts.shallow } : {}),
+  });
   if (isCloneError(cloned)) {
     mark('clone', 'error');
     return { ok: false, error: `clone_${cloned.code}`, message: cloned.message };

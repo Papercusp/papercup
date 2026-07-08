@@ -234,15 +234,17 @@ describe('buildConsoleOneliner', () => {
   it('cds, evals the greeting in a subshell, then execs an interactive login shell', () => {
     const out = buildConsoleOneliner('/proj', {}, 'npm run dev', APPEARANCE);
     expect(out).toContain("cd '/proj'");
-    expect(out).toContain("(eval 'npm run dev')");
+    expect(out).toContain("(eval 'npm run dev'); __papercusp_greeting_rc=$?");
     expect(out).toContain('exec "${SHELL:-/bin/bash}" -l');
   });
 
-  it('always drops to the shell after the greeting (`;` not `&&`) so a failing command keeps the window open', () => {
+  it('always drops to the shell after the greeting and prints a failure banner for non-zero greetings', () => {
     const out = buildConsoleOneliner('/x', {}, 'false', APPEARANCE);
-    // `) ; exec` — the post-greeting separator must be ';' so exit-non-zero
+    // The post-greeting separator must be ';' so exit-non-zero
     // does not short-circuit the interactive shell (matches native_console.rs).
-    expect(out).toContain(') ; exec "${SHELL:-/bin/bash}" -l');
+    expect(out).toContain('); __papercusp_greeting_rc=$?');
+    expect(out).toContain('initial terminal command exited with status %s');
+    expect(out).toContain('; exec "${SHELL:-/bin/bash}" -l');
     expect(out).not.toContain(') && exec');
   });
 

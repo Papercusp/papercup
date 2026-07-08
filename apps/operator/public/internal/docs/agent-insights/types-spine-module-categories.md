@@ -108,6 +108,6 @@ Some modules naturally span. `contributor-file-types.ts` is **both** a wire type
 * [`pure-decision-functions-pulled-from-daemons`](/internal/docs/agent-insights/pure-decision-functions-pulled-from-daemons/) — deep-dive on category 2.
 * [`jcs-canonical-form-for-signed-json`](/internal/docs/agent-insights/jcs-canonical-form-for-signed-json/) — the canonical-form spec for signed wire types in category 1.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — when a PG-mirror category type doesn't match the design memo, deviating with diagnosis can be the right call.
-* `apps/operator/docs/plans/overnight-session-2026-05-24-su.md` — the wrap doc that catalogs all 18 modules with phase + test counts.
+* Plan-store entry `overnight-session-2026-05-24-su` — the wrap doc that catalogs all 18 modules with phase + test counts.
 
 A category-1 (wire) module with no structural predicate isn't a wire type — it's a type alias. Add the predicate. Reading "what the wire sends" is the contract; if you trust the wire, you don't need the type. The predicate is the load-bearing piece.

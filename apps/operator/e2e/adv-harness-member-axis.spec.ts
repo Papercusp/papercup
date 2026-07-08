@@ -180,15 +180,18 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     await expect.poll(() => lanesSlugs.has(MEMBER_MKT), { timeout: 15_000 }).toBe(true);
   });
 
-  test('P-003 all-mode: clicking a member card drills in, setting both ?slug= and ?harness= and exiting all-mode', async ({ page }) => {
+  test('P-003 all-mode: clicking a member row drills in, setting both ?slug= and ?harness= and exiting all-mode', async ({ page }) => {
     await stubAndRecord(page);
-    // All-mode renders the hive-grouped cards (no dock / no "Add panel"), so
-    // the mount oracle is the cards container.
+    // All-mode renders the flat, sortable pot LIST (RichGrid, WI-3345) — no
+    // dock / no "Add panel" — so the mount oracle is the list container.
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'hive-workspace-cards' });
     test.skip(!mounted, SKIP_MSG);
 
-    // Drill into the R&D member of the e2e-hive card.
-    await page.getByTestId(`hive-card-${HIVE}`).getByTestId(`hive-member-${MEMBER_RD}`).click();
+    // Drill into the R&D member. The list is flat: each pot (hive root + member
+    // harnesses) is its own row, so the member row is a sibling of the hive
+    // root row (no longer nested inside hive-card-<HIVE>). Each slug is unique
+    // across the workspace registry, so the member testid is unambiguous.
+    await page.getByTestId(`hive-member-${MEMBER_RD}`).click();
 
     await expect
       .poll(

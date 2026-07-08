@@ -60,6 +60,8 @@ import {
 import { readTriageByWorkspace } from "../../attention/triage-store";
 import { shapePlansAttention } from "./attention-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { conversationsScopeWorkspace } from "../coordination/conversations";
+import { runWithWorkspace } from "../../workspace-als";
 
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
@@ -157,13 +159,29 @@ export default defineTool({
     const harnessFilter = args.harnessSlug ?? null;
     const includeArchived = args.includeArchived === true;
 
+    // WI-3348: which workspace partition the open-questions source (#9) reads.
+    // coord:ask/ask-owner rows land under the ASKER's identity.workspaceId
+    // (WI-1571), so an identity-less read here resolved 'default' and the feed
+    // missed every current ask. Resolve the viewed workspace ONCE, up front:
+    // the request's workspace (ctx.workspaceId — set for both UI and agent MCP
+    // calls; same field the delta-read `scope` above keys on), else the ambient
+    // request-ALS/env chain. Captured pre-cachedRead and closure-passed so an
+    // SWR background refresh (which runs OUTSIDE the request ALS) still reads
+    // the SAME partition the key names.
+    const ctxWs = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
+    const conversationsWorkspace =
+      ctxWs && ctxWs !== "*" ? ctxWs : conversationsScopeWorkspace();
+
     // Cache the expensive ~10-source attention aggregation (cache-expensive-tool-reads
     // P-003). The feed is NON-principal-scoped: it always builds the HUMAN's attention
     // view (readInbox('human'), workspace/harness-level escalations/smoke/reports/etc.),
     // never anything keyed to ctx.role/ctx.principal — so the key omits the caller
     // (D-001: no per-caller dimension exists to leak). The output-determining dims are
     // the resolved harness SCOPE (which harness's plans are read), the harnessFilter,
-    // and includeArchived. Tags are ONLY the trigger-covered plan tables; the other
+    // includeArchived, and the conversations workspace partition (WI-3348 — a
+    // WORKSPACE dimension, not a caller one: two callers viewing the same workspace
+    // share the entry; without it in the key one workspace's feed would be served to
+    // another from cache). Tags are ONLY the trigger-covered plan tables; the other
     // sources (coord_event_log escalations/messages — append-heavy, the coord:inbox
     // D-006 problem) are deliberately un-tagged and bounded by the short SWR softTtl.
     const { groups, tierCounts, itemCount } = await cachedRead(
@@ -174,6 +192,7 @@ export default defineTool({
           harnessScope: (opts as { harnessSlug?: string }).harnessSlug ?? null,
           harnessFilter,
           includeArchived,
+          conversationsWorkspace,
         },
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
@@ -420,11 +439,16 @@ export default defineTool({
             try {
               const { listConversationsWithTopics } =
                 await import("../coordination/conversations");
-              const convs = await listConversationsWithTopics({
-                kind: "question",
-                state: "open",
-                ...(harnessFilter ? { harness_slug: harnessFilter } : {}),
-              });
+              // Pinned to the workspace resolved up front (and named in the cache
+              // key) — NOT the ambient ALS, which is absent on agent MCP calls and
+              // on SWR background refreshes and would fall to 'default' (WI-3348).
+              const convs = await runWithWorkspace(conversationsWorkspace, () =>
+                listConversationsWithTopics({
+                  kind: "question",
+                  state: "open",
+                  ...(harnessFilter ? { harness_slug: harnessFilter } : {}),
+                }),
+              );
               for (const c of convs as unknown as Array<
                 Record<string, unknown>
               >) {

@@ -14,7 +14,7 @@ import { _resetExperimentRegistration } from '../../experiment/descriptors';
 
 const CTX = { log() {}, workspaceId: 'ws', role: 'operator' } as never;
 
-type Entry = { id: string; kind: string; fidelityTier: string };
+type Entry = { id: string; kind: string; fidelityTier: string; metrics: { rubricRef?: string } };
 const run = async (args: Record<string, unknown> = {}): Promise<{ ok: boolean; count: number; tests: Entry[] }> =>
   JSON.parse(
     (
@@ -37,6 +37,7 @@ describe('experiment:catalog', () => {
     expect(r.count).toBe(4);
     expect(r.count).toBe(r.tests.length);
     expect(r.tests.map((t) => t.id).sort()).toEqual(['gym', 'hive', 'instance', 'replay']);
+    expect(r.tests.find((t) => t.id === 'replay')?.metrics.rubricRef).toBe('experiment-replay-quality');
   });
 
   it('kind:replay narrows to only the replay test', async () => {

@@ -101,7 +101,9 @@ function expand(ops: readonly PeerLogOp[]): PeerLogOp[] {
                   value: r.value,
                   ts: r.ts,
                   schema_version: r.schema_version,
-                  author_pubkey: 'x',
+                  // β: preserve the row's own author so re-expansion mirrors
+                  // buildSnapshotRows (which keeps the row verbatim), not a stamped 'x'.
+                  author_pubkey: r.author_pubkey ?? 'x',
                   ...(r.hlc ? { hlc: r.hlc } : {}),
                 },
           );
@@ -133,6 +135,8 @@ function oracle(ops: readonly PeerLogOp[]): SnapshotRow[] {
         ts: op.ts,
         schema_version: op.schema_version,
         ...(op.hlc ? { hlc: op.hlc } : {}),
+        // β: buildSnapshotRows preserves the put op's author_pubkey on the row.
+        ...(op.author_pubkey != null ? { author_pubkey: op.author_pubkey } : {}),
       });
     } else {
       // EI-1688: a key whose latest op is a del → a tombstone row (value null), NOT omitted.
@@ -299,7 +303,7 @@ describe('buildSnapshotRows — additional edge cases (P-004)', () => {
     const bad1: PeerLogOp = { type: 'put', table: SNAPSHOT_TABLE_TAG, hbKey: 'snapshot/0', value: undefined, ts: 1, schema_version: 1, author_pubkey: 'me' };
     const bad2: PeerLogOp = { type: 'put', table: SNAPSHOT_TABLE_TAG, hbKey: 'snapshot/0', value: { coversUpTo: 0, rows: 'nope' }, ts: 1, schema_version: 1, author_pubkey: 'me' };
     expect(buildSnapshotRows([bad1, put('queue', 'F-1', { v: 1 })])).toEqual([
-      { table: 'queue', hbKey: 'F-1', value: { v: 1 }, ts: 1, schema_version: 1 },
+      { table: 'queue', hbKey: 'F-1', value: { v: 1 }, ts: 1, schema_version: 1, author_pubkey: 'me' },
     ]);
     expect(buildSnapshotRows([bad2])).toEqual([]);
   });
@@ -318,9 +322,9 @@ describe('buildSnapshotRows — additional edge cases (P-004)', () => {
       del('presence', 'dev', 3),
     ]);
     expect(rows).toEqual([
-      { table: 'coord', hbKey: 'msg', value: 'c1', ts: 1, schema_version: 1 },
+      { table: 'coord', hbKey: 'msg', value: 'c1', ts: 1, schema_version: 1, author_pubkey: 'me' },
       { table: 'presence', hbKey: 'dev', value: null, ts: 3, schema_version: 1, deleted: true },
-      { table: 'queue', hbKey: 'F-1', value: 'q2', ts: 2, schema_version: 1 },
-    ]); // presence/dev del'd → tombstone (EI-1688); sorted (coord < presence < queue)
+      { table: 'queue', hbKey: 'F-1', value: 'q2', ts: 2, schema_version: 1, author_pubkey: 'me' },
+    ]); // presence/dev del'd → tombstone (EI-1688, no author); sorted (coord < presence < queue)
   });
 });

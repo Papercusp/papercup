@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
+import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { listConversationsWithTopics } from '../conversations';
 
 export default defineTool({
@@ -34,15 +35,28 @@ export default defineTool({
     topic: z.string().optional().describe('Restrict to conversations tagged with this topic slug.'),
     limit: z.number().int().min(1).max(200).optional(),
   }),
-  async handler(args) {
-    const rows = await listConversationsWithTopics({
-      kind: args.kind,
-      state: args.state,
-      scope: args.harness ? 'harness' : undefined,
-      harness_slug: args.harness,
-      topic: args.topic,
-      limit: args.limit,
-    });
+  async handler(args, ctx) {
+    // Read scoped to the CALLER's workspace partition (WI-1571 read side) —
+    // without it a workspace-scoped agent browses the 'default' partition and
+    // never sees its own workspace's conversations. Fail-open on an
+    // unattributable context (glance.ts selfOwnerId pattern).
+    let identity: AgentIdentity | undefined;
+    try {
+      identity = resolveAgentIdentity(ctx);
+    } catch {
+      identity = undefined;
+    }
+    const rows = await listConversationsWithTopics(
+      {
+        kind: args.kind,
+        state: args.state,
+        scope: args.harness ? 'harness' : undefined,
+        harness_slug: args.harness,
+        topic: args.topic,
+        limit: args.limit,
+      },
+      identity,
+    );
     return {
       content: [{
         type: 'text' as const,

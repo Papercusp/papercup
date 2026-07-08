@@ -63,6 +63,13 @@ export function abResultToExperimentResult(r: AbResult, variants: AbVariant[]): 
       primary: 'composite',
     });
   }
+  const scorecardVariantId = comparison?.selected ?? BASELINE_ID;
+  const meanDimension = (dimension: 'd1' | 'd2' | 'd3'): number | null => {
+    const scored = r.outcomes.filter(
+      (o) => (o.status === undefined || o.status === 'scored') && o.variantId === scorecardVariantId,
+    );
+    return scored.length ? scored.reduce((sum, o) => sum + o[dimension], 0) / scored.length : null;
+  };
   return {
     testId: 'gym',
     tier: 'live',
@@ -72,6 +79,11 @@ export function abResultToExperimentResult(r: AbResult, variants: AbVariant[]): 
     winner: comparison?.selected ?? null,
     totalCostUsd: r.cost.totalUsd,
     budgetExhausted: false,
+    scorecardScores: {
+      d1: meanDimension('d1'),
+      d2: meanDimension('d2'),
+      d3: meanDimension('d3'),
+    },
   };
 }
 

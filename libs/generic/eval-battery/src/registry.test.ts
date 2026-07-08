@@ -17,7 +17,7 @@ function fakeDescriptor(over: Partial<TestDescriptor> = {}): TestDescriptor {
     fidelityTier: 'offline',
     costClass: 'free',
     knobSlice: ['genome.prompts', 'overlay'],
-    metrics: { signals: ['divergence'], rubricDimensions: ['fidelity'] },
+    metrics: { signals: ['divergence'], rubricDimensions: ['fidelity'], rubricRef: 'experiment-replay-quality' },
     run: async () => ({ ok: true }),
     ...over,
   };
@@ -54,6 +54,7 @@ describe('TestRegistry', () => {
     expect(entries.map((e) => e.id)).toEqual(['gym', 'instance']);
     expect(entries[0]).not.toHaveProperty('run');
     expect(entries[0]).toMatchObject({ id: 'gym', kind: 'component', fidelityTier: 'offline' });
+    expect(entries[0].metrics.rubricRef).toBe('experiment-replay-quality');
   });
 
   it('the opaque run adapter delegates unchanged', async () => {

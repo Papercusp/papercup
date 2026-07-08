@@ -32,9 +32,16 @@ The enforcement is **risk-tier classification by file path**, in
   graduation. That orthogonality is the whole safety property.
 
 Already covered by broad globs (don't re-add): `dbos/**` (the durable executor +
-`spawnInvokeOnce`), `harness/routines/**` (the cadence layer), `release/**`,
-`learning-governor/**`, `change-ledger/**`, `**/auth/**`, `**/credentials/**`,
-`libs/papercusp/libs/db/sql/**`, `libs/flags/**`.
+`spawnInvokeOnce`), `harness/routines/**` (the cadence layer), `release/**` (the
+deploy machinery), `git-sync/**` + `libs/papercusp/packages/locks/**` (the
+commit/push routine + the lock authority), `learning-governor/**`,
+`change-ledger/**`, `**/auth/**`, `**/credentials/**`,
+`libs/papercusp/libs/db/sql/**`, `libs/flags/**`, and the loop's **own** code —
+`harness/improvements/**` + `agent-tools/improvements/**` (so a pin can't be
+un-made by auto-editing the policy that enforces it). Two co-located TCB
+constant modules are also spread in wholesale — `DETERMINISTIC_EXECUTOR_TCB_PATTERNS`
+(the spine executor) and `CAPABILITY_DISPATCH_TCB_PATTERNS` (the capability
+dispatch gate); see the worked examples below.
 
 ## How to pin a component
 
@@ -56,11 +63,20 @@ Already covered by broad globs (don't re-add): `dbos/**` (the durable executor +
    * and a clean off-component path still graduates to `auto` (the pin isn't
      vacuously blocking everything).
 
-Worked example: `deterministic-blueprints-migration-2026-06-13` P-141 pinned the
-program-mode spine executor + deterministic-step runner
-(`packages/operator-core/lib/coord-ops/**`, `.../blueprint-steps/**`,
-`libs/generic/step-program/**`, the blueprint validator) — see
-`blueprint-steps/tcb.ts` + `tcb-invariants.test.ts`.
+Worked examples — two components now use this exact co-located-constant pattern:
+
+* `deterministic-blueprints-migration-2026-06-13` P-141 pinned the program-mode
+  spine executor + deterministic-step runner
+  (`packages/operator-core/lib/coord-ops/**`, `.../blueprint-steps/**`,
+  `libs/generic/step-program/**`, the blueprint validator) — see
+  `blueprint-steps/tcb.ts` + `tcb-invariants.test.ts`.
+* `agent-capability-confinement-2026-06-13` (P-030 / D-007) pinned the capability
+  dispatch gate — the PDP (`capability-envelope/**`), the decision-ledger
+  (`decision-ledger/**`), the host wiring (`projected-tool-deps.ts`), the generic
+  dispatch stack (`libs/generic/tooldef/src/dispatch-stack.ts`), and the gated
+  capability tool surface (`agent-tools/capability/**`) — declared in
+  `capability-envelope/tcb.ts` (`CAPABILITY_DISPATCH_TCB_PATTERNS`) and pinned by
+  `capability-envelope/tcb-invariants.test.ts`.
 
 ## Gotcha: verify new `.ts` test files with direct `tsc`, not just vitest
 

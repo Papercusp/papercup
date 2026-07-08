@@ -20,7 +20,7 @@
  * A winning arm is only ever a PROPOSAL — applying it to live prompts/policy rides
  * commit→reproject + the change ledger + trust graduation, never this verb (D-006).
  */
-import { BASELINE_ID, type FidelityTier, requireTest, type TestDescriptor } from '@papercusp/eval-battery';
+import { BASELINE_ID, type FidelityTier, requireTest, type TestDescriptor, type TestMetrics } from '@papercusp/eval-battery';
 import { REPLAY_BASELINE_VARIANT, type ReplayBatteryDeps } from '../replay/battery';
 import { runGovernedReplay, type ReplayGlueDeps } from '../replay/governed';
 import type { ReplayCase, ReplayRunner, ReplayVariant } from '../replay/types';
@@ -93,7 +93,19 @@ export interface RunExperimentDeps {
     instance?: ExperimentRunCtx['instance'];
     hive?: ExperimentRunCtx['hive'];
   };
+  /** Optional sink for rubric-graded experiment result scorecards. Best-effort. */
+  captureScorecard?: (input: ExperimentScorecardCapture) => Promise<unknown>;
 }
+
+export interface ExperimentScorecardCapture {
+  workspaceId: string;
+  batteryId: string;
+  testId: string;
+  tier: FidelityTier;
+  rubricRef: string;
+  ratings: Record<string, { rating: string; evidence: string }>;
+}
+type ExperimentScorecardDraft = Omit<ExperimentScorecardCapture, 'workspaceId'>;
 
 /** The expansion a dry-run returns — what WOULD run, with no spend. */
 export interface RunExperimentPlan {
@@ -227,7 +239,7 @@ export async function runExperiment(
     );
 
     if (!result) return { ok: false, refused: { reason: verdict.reason } };
-    return await writeLedgerAndReturn(replayResultToExperimentResult(result), input, ctx, deps);
+    return await writeLedgerAndReturn(replayResultToExperimentResult(result), input, ctx, deps, descriptor.metrics);
   }
 
   // ---- live tiers (gym/instance/hive) — fail-closed governor gate, then delegate ----
@@ -263,7 +275,7 @@ export async function runExperiment(
     // A staged descriptor (gym without abDeps; instance/hive) refuses here — no spend.
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-  return await writeLedgerAndReturn(result, input, ctx, deps);
+  return await writeLedgerAndReturn(result, input, ctx, deps, descriptor.metrics);
 }
 
 /** Lazy-load the real governor preflight only when a live run reaches it. */
@@ -278,6 +290,7 @@ async function writeLedgerAndReturn(
   input: RunExperimentInput,
   ctx: { workspaceId: string },
   deps: RunExperimentDeps,
+  metrics?: TestMetrics,
 ): Promise<RunExperimentOutcome> {
   if (deps.ledger) {
     try {
@@ -297,5 +310,87 @@ async function writeLedgerAndReturn(
       // Best-effort: never lose a finished experiment result to a ledger write.
     }
   }
+  await emitScorecard(normalized, input, ctx, deps, metrics);
   return { ok: true, result: normalized };
+}
+
+function normalizedJudgeScore(score: number | null | undefined): number | null {
+  if (score === null || score === undefined || !Number.isFinite(score)) return null;
+  return score >= 0 && score <= 1 ? score * 10 : score;
+}
+
+function ratingForScore(score: number | null | undefined): string {
+  const s = normalizedJudgeScore(score);
+  if (s === null) return 'unknown';
+  if (s >= 7) return 'healthy';
+  if (s >= 4) return 'degraded';
+  return 'broken';
+}
+
+function evidenceForScore(input: {
+  batteryId: string;
+  result: ExperimentRunResult;
+  dimension: string;
+  selectedArmId: string | null;
+  score: number | null | undefined;
+}): string {
+  const selected = input.selectedArmId ? input.result.arms.find((a) => a.id === input.selectedArmId) : undefined;
+  const baseline = input.result.arms.find((a) => a.id === input.result.baselineId);
+  const score = normalizedJudgeScore(input.score);
+  const scoreText = score === null ? 'no per-dimension score available' : `mean judge score ${score.toFixed(2)}/10`;
+  const selectedText = selected
+    ? `selected arm ${selected.id} (${selected.scored}/${selected.cells} scored, mean=${selected.meanScore ?? 'null'})`
+    : 'no selected arm';
+  const baselineText = baseline ? `baseline ${baseline.id} mean=${baseline.meanScore ?? 'null'}` : 'baseline missing';
+  return [
+    `experiment ${input.result.testId}/${input.batteryId} dimension ${input.dimension}: ${scoreText}`,
+    selectedText,
+    baselineText,
+    `winner=${input.result.winner ?? 'none'} totalCostUsd=${input.result.totalCostUsd}`,
+  ].join('; ');
+}
+
+function buildExperimentScorecard(
+  normalized: ExperimentRunResult,
+  input: RunExperimentInput,
+  metrics?: TestMetrics,
+): ExperimentScorecardDraft | null {
+  const rubricRef = metrics?.rubricRef;
+  const dimensions = metrics?.rubricDimensions ?? [];
+  if (!rubricRef || dimensions.length === 0) return null;
+  const selectedArmId = normalized.winner ?? normalized.comparison?.selected ?? normalized.baselineId ?? null;
+  const selected = selectedArmId ? normalized.arms.find((a) => a.id === selectedArmId) : undefined;
+  const ratings: Record<string, { rating: string; evidence: string }> = {};
+  for (const dimension of dimensions) {
+    const score = normalized.scorecardScores?.[dimension] ?? selected?.meanScore ?? null;
+    ratings[dimension] = {
+      rating: ratingForScore(score),
+      evidence: evidenceForScore({ batteryId: input.batteryId, result: normalized, dimension, selectedArmId, score }),
+    };
+  }
+  return {
+    batteryId: input.batteryId,
+    testId: normalized.testId,
+    tier: normalized.tier,
+    rubricRef,
+    ratings,
+  };
+}
+
+async function emitScorecard(
+  normalized: ExperimentRunResult,
+  input: RunExperimentInput,
+  ctx: { workspaceId: string },
+  deps: RunExperimentDeps,
+  metrics?: TestMetrics,
+): Promise<void> {
+  if (!deps.captureScorecard) return;
+  const scorecard = buildExperimentScorecard(normalized, input, metrics);
+  if (!scorecard) return;
+  try {
+    await deps.captureScorecard({ workspaceId: ctx.workspaceId, ...scorecard });
+  } catch {
+    // Best-effort: never lose or fail an experiment verdict because its observation
+    // scorecard could not be written.
+  }
 }

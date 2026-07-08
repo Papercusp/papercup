@@ -66,6 +66,12 @@ away"). Don't assume it'll be there.
   ```bash
   psql "$(jq -r .url ~/.papercusp/embedded-pg.json)"
   ```
+  This works on dev machines AND in the packaged app: builds since 2026-07-07
+  bundle real, self-contained client tools at `sidecar/bin/`
+  (`psql`/`pg_dump`/`pg_dumpall`/`pg_restore`, wired to the embedded libpq).
+  If psql dies with `Can't locate PgCommon.pm` you are on an older install
+  that shipped a broken `pg_wrapper` shim — reinstall, or use the node+pg
+  fallback in the `linux-vm-desktop-testing-workflow` insight.
 * **Never write a config file** that bakes a PG port at install time.
   Resolve at runtime.
 * If embedded-pg.json doesn't exist, the desktop hasn't been booted

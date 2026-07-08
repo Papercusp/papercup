@@ -69,6 +69,25 @@ export function buildHandoffArgs(framework, env = process.env) {
   return args;
 }
 
+/**
+ * argv for the unified Tutorial|Setup shell (tutorial-runner.mjs) that the
+ * concierge handoff spawns after pick → install → login → embeddings.
+ *
+ * Onboarding hands off to the SETUP tab, NOT the tutorial tab (owner 2026-07-07:
+ * "Onboarding should take them to our tutorial & setup cli in the terminal on the
+ * setup tab"). Passing `--tab=setup` makes the shell open Setup-first regardless
+ * of whether the fresh setup already reads complete — tutorial-runner's own
+ * defaultTab would otherwise fall through to the Tutorial tab once setup is done.
+ * A `papercusp tutorial` re-entry keeps its tutorial-intent flag (`--tutorial`),
+ * which preserves the re-entry's progress/section semantics. Pure; exported for
+ * tests.
+ */
+export function buildTutorialRunnerArgs(runnerPath, { agent, operatorUrl, tutorialOnly = false } = {}) {
+  const args = [runnerPath, `--agent=${agent}`, `--operator-url=${operatorUrl}`];
+  args.push(tutorialOnly ? '--tutorial' : '--tab=setup');
+  return args;
+}
+
 /** Exec the unified Tutorial|Setup shell (tutorial-runner.mjs) in THIS terminal —
  *  the `papercusp setup` / `papercusp tutorial` entry (#4). Returns the child's code. */
 function execTutorialShell(base, extraArgs = []) {
@@ -351,8 +370,8 @@ async function main() {
         say(
           args.tutorialOnly
             ? `Re-opening the tutorial — right here in this window.`
-            : `You're all set — starting the tutorial now. ` +
-                dim("(same window; I'll walk you through it and you can ask questions any time)"),
+            : `You're all set — opening your Tutorial & Setup on the Setup tab. ` +
+                dim('(same window; press Tab to switch to the tutorial and ask questions any time)'),
         );
         // deterministic-onboarding-tutorial-2026-07-04 P-006: the tutorial is now a
         // DETERMINISTIC scripted walkthrough (tutorial-runner.mjs) — it prints the
@@ -361,12 +380,14 @@ async function main() {
         // exits abnormally.
         const runnerPath = fileURLToPath(new URL('./tutorial-runner.mjs', import.meta.url));
         if (existsSync(runnerPath)) {
-          const runnerArgs = [
-            runnerPath,
-            `--agent=${mapFrameworkToAgent(session.chosen)}`,
-            `--operator-url=${liveBase ?? base}`,
-          ];
-          if (args.tutorialOnly) runnerArgs.push('--tutorial');
+          // Hand off to the unified shell on the SETUP tab, not the Tutorial tab
+          // (owner 2026-07-07): buildTutorialRunnerArgs adds --tab=setup for the
+          // first-run handoff (--tutorial only for a `papercusp tutorial` re-entry).
+          const runnerArgs = buildTutorialRunnerArgs(runnerPath, {
+            agent: mapFrameworkToAgent(session.chosen),
+            operatorUrl: liveBase ?? base,
+            tutorialOnly: args.tutorialOnly,
+          });
           const rc = await new Promise((resolve) => {
             const child = spawn(process.execPath, runnerArgs, { stdio: 'inherit' });
             child.on('exit', (c) => resolve(c ?? 0));

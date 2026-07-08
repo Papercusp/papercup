@@ -471,16 +471,16 @@ The principle: **a tab is core if every harness — coding, research-org,
 content-pipeline, marketing-bot, anything — would benefit from it**. A tab is
 a plugin if it's specific to one template family or external integration.
 
-| Tab           | Today's content                                          | Recommended                              | Rationale                                                                                                                                                                                                   |
-| ------------- | -------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **dashboard** | Feature queue, agents, logs, issues — the main canvas    | **CORE**                                 | This IS the harness UI. Every harness has features+agents+logs. Plugins contribute INTO it via `dashboardTabs`/`sidebarItems`. If this were a plugin, harnesses with no plugins would have nothing to show. |
-| **summary**   | High-level changelog of what's been built                | **CORE**                                 | Generic across all templates. A research-org harness wants "what got researched"; a content-pipeline wants "what got published"; coding wants "what features shipped". Same primitive.                      |
-| **insights**  | Features count, cost, tokens, iterations                 | **CORE**                                 | Universal harness metrics. Every harness pays for tokens; every harness has iterations.                                                                                                                     |
-| **config**    | Per-instance configuration                               | **CORE**                                 | Every harness needs config. Plugins contribute their own config sections via `configSchema`.                                                                                                                |
-| **proposals** | AI-generated scope expansion suggestions for the SPEC.md | **CORE for v1**, defer extraction        | See §14.6 — proposals isn't a UI tab extraction, it's an authorization-model question.                                                                                                                      |
-| **docs**      | iframe of project docs (fumadocs on :4325)               | **PLUGIN** (`@papercupai/fumadocs`)      | Optional integration with an external docs server. Templates that don't generate docs shouldn't see this tab.                                                                                               |
-| **vscode**    | iframe of code-server on the project dir                 | **PLUGIN** (`@papercupai/vscode-server`) | Code-server is heavyweight + only useful when there's code to edit. Research, marketing, support harnesses don't need it.                                                                                   |
-| **pi**        | iframe of the pi (omp) interactive coding agent          | **PLUGIN** (`@papercupai/pi-companion`)  | Pi is one specific external tool. Would be like baking "ChatGPT side panel" into Slack.                                                                                                                     |
+| Tab           | Today's content                                          | Recommended                                          | Rationale                                                                                                                                                                                                   |
+| ------------- | -------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **dashboard** | Feature queue, agents, logs, issues — the main canvas    | **CORE**                                             | This IS the harness UI. Every harness has features+agents+logs. Plugins contribute INTO it via `dashboardTabs`/`sidebarItems`. If this were a plugin, harnesses with no plugins would have nothing to show. |
+| **summary**   | High-level changelog of what's been built                | **CORE**                                             | Generic across all templates. A research-org harness wants "what got researched"; a content-pipeline wants "what got published"; coding wants "what features shipped". Same primitive.                      |
+| **insights**  | Features count, cost, tokens, iterations                 | **CORE**                                             | Universal harness metrics. Every harness pays for tokens; every harness has iterations.                                                                                                                     |
+| **config**    | Per-instance configuration                               | **CORE**                                             | Every harness needs config. Plugins contribute their own config sections via `configSchema`.                                                                                                                |
+| **proposals** | AI-generated scope expansion suggestions for the SPEC.md | **CORE for v1**, defer extraction                    | See §14.6 — proposals isn't a UI tab extraction, it's an authorization-model question.                                                                                                                      |
+| **docs**      | iframe of project docs (fumadocs on :4325)               | **PLUGIN** (`@papercupai/fumadocs`)                  | Optional integration with an external docs server. Templates that don't generate docs shouldn't see this tab.                                                                                               |
+| **vscode**    | iframe of code-server on the project dir                 | **RETIRED plugin** (was `@papercupai/vscode-server`) | Retired 2026-07-07 with the bundled code-server surface. Keep this as historical context for why IDE tabs belong outside core.                                                                              |
+| **pi**        | iframe of the pi (omp) interactive coding agent          | **PLUGIN** (`@papercupai/pi-companion`)              | Pi is one specific external tool. Would be like baking "ChatGPT side panel" into Slack.                                                                                                                     |
 
 ### Where this proposal disagrees with the maintainer's initial take
 
@@ -523,12 +523,12 @@ component in `apps/papercusp/app/harness/`. Each plugin extraction is:
 
 Per-tab effort estimate (post-Phase-P2):
 
-| Tab → Plugin                                | Lines                     | Capabilities                                                 | Est              | Status         |
-| ------------------------------------------- | ------------------------- | ------------------------------------------------------------ | ---------------- | -------------- |
-| `vscode` → `@papercupai/vscode-server`      | \~10 (iframe)             | `ui:harness-tab:vscode` + config `code_server_url`           | 30 min           | **Pilot — P5** |
-| `docs` → `@papercupai/fumadocs`             | \~10 (iframe)             | `ui:harness-tab:docs` + config `docs_url`                    | 30 min           | P7             |
-| `pi` → `@papercupai/pi-companion`           | \~150 (PiPanel)           | `ui:harness-tab:pi` + typed-services for child-process needs | 1.5h             | P7             |
-| `proposals` → `@papercupai/scope-proposals` | substrate-protocol change | New: plugin authorization to mutate harness-canonical state  | DEFERRED to v1.5 | See note       |
+| Tab → Plugin                                | Lines                     | Capabilities                                                 | Est              | Status                 |
+| ------------------------------------------- | ------------------------- | ------------------------------------------------------------ | ---------------- | ---------------------- |
+| `vscode` → `@papercupai/vscode-server`      | \~10 (iframe)             | `ui:harness-tab:vscode` + config `code_server_url`           | 30 min           | **Retired 2026-07-07** |
+| `docs` → `@papercupai/fumadocs`             | \~10 (iframe)             | `ui:harness-tab:docs` + config `docs_url`                    | 30 min           | P7                     |
+| `pi` → `@papercupai/pi-companion`           | \~150 (PiPanel)           | `ui:harness-tab:pi` + typed-services for child-process needs | 1.5h             | P7                     |
+| `proposals` → `@papercupai/scope-proposals` | substrate-protocol change | New: plugin authorization to mutate harness-canonical state  | DEFERRED to v1.5 | See note               |
 
 **Why proposals is deferred to v1.5**: proposals isn't a UI panel extraction.
 The blocker is **the write side** — today `apply_proposal_to_spec` is
@@ -669,10 +669,12 @@ action history view inside the drill-down drawer, retry-from-drawer).
 * Failure UX: persistent audit row + a banner on the action's surface
 * Routine that failed-action: backoff per spec §9 (existing routine retry policy applies)
 
-### Phase P5 — `@papercupai/vscode-server` reference plugin (\~1h) ✅ shipped
+### Phase P5 — `@papercupai/vscode-server` reference plugin (\~1h) ✅ shipped, retired 2026-07-07
 
 **Pilot the smallest existing tab first**, so the new primitives get exercised
-against real production code before we build greenfield on top.
+against real production code before we build greenfield on top. This pilot was
+later removed with the bundled code-server surface; the plugin extraction
+lesson remains, but the package is no longer shipped.
 
 * Migrate vscode iframe (\~10 LOC) into a plugin
 * Capability: `ui:harness-tab:vscode` + config `code_server_url`
@@ -851,6 +853,6 @@ in the closure.
 | `apps/papercusp/content/docs/spec/meta.json`                           | Register this page in sidebar                                        | ✅ shipped                          |
 | `packages/papercusp-plugin-sdk/src/index.ts`                           | Add `ActionDefinition`, `kind`, `requires`, `recommends`, `uiSchema` | open (Phase P2)                    |
 | `libs/papercusp-marketplace/sql/007-package-kind.sql`                  | DB migration                                                         | open (Phase P1)                    |
-| `libs/papercusp-marketplace/seeds/papercupai/vscode-server/`           | First reference plugin (pilot)                                       | open (Phase P5)                    |
+| `libs/papercusp-marketplace/seeds/papercupai/vscode-server/`           | First reference plugin (pilot)                                       | retired 2026-07-07                 |
 | `libs/papercusp-marketplace/seeds/papercupai/cloudflare-pages/`        | Reference server-runtime plugin                                      | open (Phase P6)                    |
 | `apps/papercusp/content/docs/implementation/plugins.mdx`               | New "Plugin marketplace impl status" page                            | open (parallel to marketplace.mdx) |

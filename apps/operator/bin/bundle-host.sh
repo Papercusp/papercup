@@ -106,3 +106,53 @@ npx --yes esbuild@0.25.0 "$ENTRY" \
   "${HOST_EXTERNALS[@]}"
 
 echo "✓ bundled: $(du -h "$OUTFILE" | cut -f1) $OUTFILE"
+
+# @papercusp/locks is bundled into the host graph, so its su-lock-store resolves
+# package-owned migrations relative to the bundle's import.meta.url:
+#   dirname(dist-host/hono-host.mjs)/sql
+# esbuild only emits JS, never sibling src/sql/*.sql assets. Keep this in sync
+# with papercusp-desktop/bin/build-desktop-sidecar.sh's sidecar/sql copy.
+OUTDIR="$(dirname "$OUTFILE")"
+
+# @papercusp/harness is bundled into the host graph too. Its built-in blueprint
+# resolver derives the package root from import.meta.url, so a plain-node bundle
+# must carry the blueprint YAML/prompts beside the entry or an installed child
+# blueprint such as oddsmith-prospector can resolve itself but fail its
+# `extends: base` parent.
+HARNESS_BLUEPRINTS_SRC="${PAPERCUSP_HARNESS_BLUEPRINTS_DIR:-../../libs/papercusp/packages/harness/blueprints}"
+if [[ ! -d "$HARNESS_BLUEPRINTS_SRC" ]]; then
+  echo "ERROR: harness blueprints dir not found at $HARNESS_BLUEPRINTS_SRC"
+  exit 1
+fi
+
+echo "→ bundling @papercusp/harness blueprints → $OUTDIR/blueprints"
+rm -rf "$OUTDIR/blueprints"
+mkdir -p "$OUTDIR/blueprints"
+cp -R "$HARNESS_BLUEPRINTS_SRC"/. "$OUTDIR/blueprints/"
+if [[ ! -f "$OUTDIR/blueprints/base/blueprint.yaml" ]]; then
+  echo "ERROR: bundled $OUTDIR/blueprints is missing base/blueprint.yaml"
+  exit 1
+fi
+echo "    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml"
+
+LOCKS_SQL_SRC="${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}"
+if [[ ! -d "$LOCKS_SQL_SRC" ]]; then
+  echo "ERROR: @papercusp/locks SQL dir not found at $LOCKS_SQL_SRC"
+  exit 1
+fi
+
+echo "→ bundling @papercusp/locks DDL → $OUTDIR/sql"
+rm -rf "$OUTDIR/sql"
+mkdir -p "$OUTDIR/sql"
+cp "$LOCKS_SQL_SRC/"*.sql "$OUTDIR/sql/"
+
+_locks_sql_max="$(ls "$LOCKS_SQL_SRC/"*.sql 2>/dev/null | xargs -n1 basename | grep -oE '^[0-9]+' | sort -n | tail -1)"
+_locks_sql_count="$(ls "$LOCKS_SQL_SRC/"*.sql 2>/dev/null | wc -l | tr -d ' ')"
+_bundled_locks_sql_max="$(ls "$OUTDIR/sql/"*.sql 2>/dev/null | xargs -n1 basename | grep -oE '^[0-9]+' | sort -n | tail -1)"
+_bundled_locks_sql_count="$(ls "$OUTDIR/sql/"*.sql 2>/dev/null | wc -l | tr -d ' ')"
+if [[ -z "$_locks_sql_max" || "$_locks_sql_max" != "$_bundled_locks_sql_max" || "$_locks_sql_count" != "$_bundled_locks_sql_count" ]]; then
+  echo "ERROR: bundled $OUTDIR/sql/ (highest=$_bundled_locks_sql_max, count=$_bundled_locks_sql_count) does not match"
+  echo "       source $LOCKS_SQL_SRC (highest=$_locks_sql_max, count=$_locks_sql_count)"
+  exit 1
+fi
+echo "    ✓ bundled @papercusp/locks DDL matches the tree (highest migration $_locks_sql_max, $_locks_sql_count files)"

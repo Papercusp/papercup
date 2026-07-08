@@ -93,8 +93,11 @@ export function nextTab(active) {
  *   - the user ran `papercusp tutorial` (`--tutorial`) — per the owner it must show the
  *     Setup screen first even on a set-up box (the tour is one Tab away, and the Setup tab
  *     just reads all ✓).
- * Only the first-run concierge handoff (setup just completed, no `--tutorial`) lands
- * directly on the Tutorial tab. Pure.
+ * The first-run concierge handoff now passes `--tab=setup` (owner 2026-07-07:
+ * "onboarding should take them to our tutorial & setup cli … on the setup tab"),
+ * so onboarding also opens Setup-first. The Tutorial-tab fall-through below is only
+ * reached by a bare runner invocation on an already-set-up box (no `--tab` /
+ * `--tutorial`) — no production entry point lands there anymore. Pure.
  */
 export function defaultTab(args, { setupComplete = false } = {}) {
   if (!setupComplete) return 'setup';

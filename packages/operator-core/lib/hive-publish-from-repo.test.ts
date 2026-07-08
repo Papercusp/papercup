@@ -131,6 +131,15 @@ describe('publishCreatedHive (P-007)', () => {
     expect(calls.localBindings[0]).toMatchObject({ harness_slug: 'shop', privacy: 'shared-public' });
   });
 
+  it('publish forces lazy directory wiring so a recent failed list/read probe cannot strand the announce', async () => {
+    const ensureWired = async (_workspaceId: string, opts?: { force?: boolean }) => {
+      expect(opts).toEqual({ force: true });
+      return null;
+    };
+    const { deps } = fakes({ ensureWired });
+    await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+  });
+
   it('invite: announces on the secret topic, returns the secret, NO Cupboard rows (D-003)', async () => {
     const { deps, calls } = fakes();
     const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);

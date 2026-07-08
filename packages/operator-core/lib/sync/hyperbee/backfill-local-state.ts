@@ -72,6 +72,13 @@ const BACKFILL_MARKER_KEY = 'backfill_done';
 
 export interface BackfillOptions {
   /**
+   * Ignore the `backfill_done` marker and enqueue the current local projection
+   * rows again. This is for explicit maintenance/release refreshes (for example
+   * cutting a complete installer seed after historical rows were missed by an
+   * older backfill). Runtime boot keeps the default marker-guarded behavior.
+   */
+  force?: boolean;
+  /**
    * Hard ceiling on rows enqueued, aligned with the Model B per-author ingest
    * cap (a peer won't read beyond it anyway). Default `DEFAULT_MAX_OPS_PER_AUTHOR`
    * (50k). Set 0 to disable the cap. When the local row count exceeds the cap,
@@ -106,14 +113,16 @@ export async function backfillLocalState(
   const { workspaceId, harnessSlug } = handle;
 
   // Marker check FIRST — a second boot must not re-enqueue the whole table.
-  const marker = await pg<{ key: string }[]>`
-    SELECT key FROM harness_shared.substrate_meta
-     WHERE workspace_id = ${workspaceId}
-       AND harness_slug = ${harnessSlug}
-       AND key = ${BACKFILL_MARKER_KEY}
-     LIMIT 1`;
-  if (marker.length > 0) {
-    return { skipped: true, enqueued: 0, dropped: 0 };
+  if (!opts.force) {
+    const marker = await pg<{ key: string }[]>`
+      SELECT key FROM harness_shared.substrate_meta
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND key = ${BACKFILL_MARKER_KEY}
+       LIMIT 1`;
+    if (marker.length > 0) {
+      return { skipped: true, enqueued: 0, dropped: 0 };
+    }
   }
 
   const now = opts.now ?? Date.now();

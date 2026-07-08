@@ -41,7 +41,7 @@ The shipped coding blueprints: coding (the kind:'hive' Hive operator), coding-fa
 
 Plugin
 A package that extends one or more harness instances with new capabilities — actions (buttons), routes, lifecycle hooks, DB schemas, custom UI tabs. Plugins are installed once globally and mounted into harness instances at runtime; their behaviour is gated by capability tiers (§10).
-@papercupai/cloudflare-pages contributes a "Publish" button; @papercupai/vscode-server contributes a code-server tab; @papercupai/slack-notifier sends a Slack message on mission-done. Multiple plugins compose per instance.
+@papercupai/cloudflare-pages contributes a "Publish" button; @papercupai/slack-notifier sends a Slack message on mission-done. The retired @papercupai/vscode-server pilot used to contribute a code-server tab; IDE tabs remain plugin-shaped, not core. Multiple plugins compose per instance.
 
 Marketplace package kind
 The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (LISTING\_KINDS in packages/operator-core/lib/cupboard/types.ts): harness (the repo→Hive lookup index), blueprint (a GitHub-repo-backed harness recipe — the term that superseded the original template), plugin, tool-pack (the runtime-less code-tool pack — renamed from pack by migration 008; the legacy pack value still parses as an alias), and learning-pack (a distributable set of curated hive learnings).

@@ -140,7 +140,9 @@ curl -X POST http://localhost:3070/api/admin/spawn-signing/rotate \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Rotates the PG row **and** bumps the operator's in-process cache. Every in-flight signed URL fails its next call with `invalid_signature`. The orchestrator must re-spawn affected workers. Wrapper script: `bun run rotate:spawn-key`.
+Rotates the PG row **and** bumps the operator's in-process cache. Every in-flight signed URL fails its next call with `invalid_signature`. Wrapper script: `bun run rotate:spawn-key`.
+
+Since WI-3190/WI-3194, `rotateSpawnSigningKey()` returns a **blast-radius report** (and logs it loudly) so a rotate is an *accounted-for* revocation, not a silent one — the admin route surfaces it to whoever triggered the rotate. The report distinguishes an operational `rotation_strand` (a previously-authenticated spawn whose key was rotated out from under it — must be re-spawned) from an `unverified` first-seen/malformed/escalation attempt, because a rotation and a forged-URL attack both surface as `invalid_signature` on the next verify. To tell them apart the process remembers the spawns it has successfully verified (`verifiedSpawns`, capped at 4000), so a later signature failure for one of them is definitively a strand, not an attack. The route can also **opt into active remediation** (`RotateSpawnSigningKeyOptions`, WI-3194): stop/relaunch eligible nursery spawns whose verified URL was just invalidated, capped at `ROTATION_REMEDIATION_CAP` (25). Direct unit callers keep the historical rotate-only behavior; the orchestrator re-spawns anything the remediation didn't cover.
 
 ### Read the verification audit log
 

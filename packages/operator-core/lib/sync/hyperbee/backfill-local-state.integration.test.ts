@@ -321,6 +321,23 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     expect((await outboxRows(db.sql)).length).toBe(2);
   });
 
+  it('force ignores the marker and re-enqueues the current local rows for release seed refreshes', async () => {
+    await seedFeature(db.sql, 'F-1');
+    const first = await backfillLocalState(fakeHandle(), db.sql);
+    expect(first).toMatchObject({ skipped: false, enqueued: 1 });
+
+    await seedFeature(db.sql, 'F-2');
+    const forced = await backfillLocalState(fakeHandle(), db.sql, { force: true, maxOpsPerAuthor: 0 });
+    expect(forced).toMatchObject({ skipped: false, enqueued: 2, dropped: 0 });
+
+    const rows = await outboxRows(db.sql);
+    expect(rows.filter((r) => r.table_name === 'harness_features_consolidated').map((r) => r.key).sort()).toEqual([
+      'F-1',
+      'F-1',
+      'F-2',
+    ]);
+  });
+
   it('per-author cap (maxOpsPerAuthor): enqueues up to the cap and warns about the rest', async () => {
     // 5 local features; cap of 3.
     await seedFeature(db.sql, 'F-1');

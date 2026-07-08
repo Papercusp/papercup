@@ -96,6 +96,17 @@ seal key is delivered by the **existing epoch-key path** — not a bespoke chann
 > key. Cutting in the wrong keychain context seals the seed under a key **no member
 > can unwrap**. Verify `accounts:status` / the epoch keychain before a release cut.
 
+### Corestore completeness refresh
+
+With `--workspace-id`, `cut-seed-cli` now refreshes the corestore source **before**
+snapshotting it: it force-runs `backfillLocalState(..., { force:true,
+maxOpsPerAuthor:0 })`, then drains the queued rows with `drainOutboxOnce()` until
+the outbox is empty. This is release-only repair for long-lived dogfood hives whose
+runtime `backfill_done` marker predates later local rows: without it, the seed can
+ship a large corestore that still materializes only a small subset of work-items on
+an offline install. The escape hatch is `--skip-corestore-refresh`, for diagnostic
+cuts only; release builds should leave the refresh on.
+
 ## The kill-switch — `FLAGS.HIVE_SEED_BUNDLE`
 
 - Key `papercusp-hive-seed-bundle`, **DEFAULT ON** (not in `KNOWN_DARK_FLAGS` —

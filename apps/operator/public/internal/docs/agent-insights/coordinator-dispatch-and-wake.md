@@ -29,9 +29,21 @@ primitive, and a reclaim lane that stops dead sessions from masquerading as live
 * **`wakeable`** — a live `coord:inbox-wake:<id>` standing await exists, so a wake **will**
   be delivered. This is the authoritative woken:1-vs-woken:0 signal.
 * **`sessionState`** — `live` (a turn is running now) · `parked` (wakeable but idle — **the
-  ideal dispatch target**, a wake resumes it) · `ended` (NOT wakeable — a dead/zombie row;
-  it needs a **relaunch**, never a wake) · `recorded` (authoritatively live per the session
-  log but not yet coord-wakeable).
+  ideal dispatch target**, a wake resumes it) · `ended` (a dead/zombie row; it needs a
+  **relaunch**, never a wake) · `recorded` (authoritatively live per the session log but not
+  yet coord-wakeable).
+
+  A row is `ended` for **either** of two reasons (`deriveSessionState` in
+  `presence-wakeability.ts`): it is **NOT wakeable** (no standing await), **OR** its heartbeat
+  is cold beyond the **DEAD ceiling** — `PRESENCE_DEAD_MS = 3 × PRESENCE_STALE_MS` (**30 min**),
+  added 2026-07-07. The hard-stale check runs **FIRST**, so an hour-cold heartbeat is
+  authoritative-dead even if a **lingering wake-await** would otherwise read `wakeable:true`.
+  This closes the invisible-dead-fleet hole: an **abrupt death** (host reboot, OOM kill,
+  SIGKILL) skips `cancelInboxWakeAwaits`, so the await outlives the process and *used to* pin a
+  dead session to `parked` forever. Both `coord:presence` (`presence-snapshot.ts`) and
+  `fleet:assignments` (`reconcileWakeability`) apply this ceiling via `isHardStale`, so the
+  live signal itself now force-ends a 30-min-cold zombie. (A `recorded` row is classified
+  before this path, so a session-log-authoritative session is never force-ended by heartbeat.)
 
 So: **before dispatching, find a `parked` (or `live`) target. An `ended` target cannot be
 woken — relaunch/resume it instead.** Read `summary.wakeable`, not the `active` count.
@@ -127,6 +139,18 @@ await-polluted.)
 So if a coordinator sees a stale "parked" pile, the reclaim sweep — fired by the
 `system:idle-session-reaper` routine — converges it to honest `ended`, and reclaim "fires on dead
 sessions" as designed.
+
+**Two layers now guard the zombie-await, not one.** The reclaim lane above *cancels the dangling
+await* (the durable cleanup), but it runs on the reaper's schedule. As of 2026-07-07 there is also
+an **immediate read-time backstop**: `deriveSessionState` force-ends any row whose heartbeat is
+cold beyond `PRESENCE_DEAD_MS` (3 × `PRESENCE_STALE_MS` = 30 min) **regardless** of a still-live
+await (see the `sessionState` rule above). So a coordinator reading `coord:presence` /
+`fleet:assignments` sees an abruptly-killed session as `ended` **within 30 min of its last
+heartbeat**, even before the reclaim sweep has cancelled its await. The 30-min ceiling matches the
+parked-claim reclaim grace (`STALE_CLAIM_PARKED_GRACE_MS`): past 30 min a parked holder's *claims*
+are already reclaimed, so treating its *session* as `ended` at the same threshold is consistent
+policy. The asymmetry favours it — a needless relaunch costs one spawn; a mis-`parked` zombie costs
+an invisible dead fleet.
 
 Two more sessions are now HARD-EXEMPT from reaping regardless of heartbeat age (owner decision
 2026-06-29), folded into the same `protectedOwners` set as the live/claim/wake check:

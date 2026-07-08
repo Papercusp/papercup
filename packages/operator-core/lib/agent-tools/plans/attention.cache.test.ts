@@ -17,6 +17,8 @@ import { setFlagOverridesForTest } from "@papercusp/flags/test";
 const M = vi.hoisted(() => ({
   readAllPlans: vi.fn(async () => [] as unknown[]),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
+  // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
+  seenConversationsWs: [] as Array<string | undefined>,
 }));
 
 vi.mock("./source", () => ({ readAllPlans: M.readAllPlans }));
@@ -33,9 +35,18 @@ vi.mock("../../attention/sources", async (orig) => {
 vi.mock("../coordination/escalations", () => ({
   listEscalations: vi.fn(async () => []),
 }));
-vi.mock("../coordination/conversations", () => ({
-  listConversationsWithTopics: vi.fn(async () => []),
-}));
+vi.mock("../coordination/conversations", async () => {
+  const { currentRequestWorkspaceId } = await import("../../workspace-als");
+  return {
+    // Records the ALS workspace in effect at CALL time (WI-3348: the handler must
+    // pin the read to the resolved workspace, not the caller's ambient ALS).
+    listConversationsWithTopics: vi.fn(async () => {
+      M.seenConversationsWs.push(currentRequestWorkspaceId());
+      return [];
+    }),
+    conversationsScopeWorkspace: vi.fn(() => "default"),
+  };
+});
 vi.mock("../coordination/messages", () => ({
   readInbox: vi.fn(async () => []),
   readAckedMsgIds: vi.fn(async () => new Set()),
@@ -163,5 +174,15 @@ describe("plans:attention — cache wiring", () => {
     await run({});
     await run({});
     expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+  });
+
+  // WI-3348: coord:ask rows land under the asker's identity workspace (WI-1571),
+  // so the open-questions source must read the VIEWED workspace's partition. An
+  // agent MCP call carries NO request ALS — before the fix the read fell to
+  // 'default' and the feed missed every current ask.
+  it("open-questions source is PINNED to ctx.workspaceId, not the ambient ALS (WI-3348)", async () => {
+    M.seenConversationsWs.length = 0;
+    await run({}, ctx("ws-attn")); // no surrounding runWithWorkspace = agent context
+    expect(M.seenConversationsWs).toEqual(["ws-attn"]);
   });
 });

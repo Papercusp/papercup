@@ -20,7 +20,7 @@ const NONE_LOOKUP: RepoHiveLookup = {
 
 function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
   const calls = {
-    cloned: [] as string[],
+    cloned: [] as Array<{ url: string; opts: Record<string, unknown> }>,
     hiveCreated: [] as string[],
     memberCreated: [] as { slug: string; hive: string; path: string; workspaceId: string }[],
     removedDirs: [] as string[],
@@ -32,10 +32,10 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
   };
   const deps: CreateHiveFromRepoDeps = {
     lookup: async () => NONE_LOOKUP,
-    clone: async (url: string) => {
-      calls.cloned.push(url);
+    clone: async (url: string, opts?: Record<string, unknown>) => {
+      calls.cloned.push({ url, opts: opts ?? {} });
       return {
-        path: '/clones/shop',
+        path: `/clones/${String(opts?.destName ?? 'shop')}`,
         parsed: { owner: 'acme', repo: 'shop', cloneUrl: 'https://github.com/acme/shop.git' },
         defaultBranch: 'develop',
       };
@@ -237,6 +237,17 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(r.created.hiveSlug).toBe('shop-2-hive');
     expect(r.bindingUnverified).toBe(true);
     expect(calls.hiveCreated).toEqual(['shop-2-hive']);
+  });
+
+  it('clone destination follows the derived member slug, so force/collision retries do not reuse the raw repo dir', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () => ({ projects: [{ slug: 'shop', path: '/old' }] as never }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, force: true, workspaceId: 'ws' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.created.memberSlug).toBe('shop-2');
+    expect(r.created.memberPath).toBe('/clones/shop-2');
+    expect(calls.cloned[0]).toMatchObject({ url: URL, opts: { destName: 'shop-2' } });
   });
 
   it('force creates past an existing hive, flagged duplicateOf (P-008)', async () => {

@@ -117,8 +117,9 @@ describe('installPapercuspFiles', () => {
     expect(result.psuPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu'));
     const psu = await fs.readFile(result.psuPath, 'utf8');
     expect(psu).toMatch(/^#!\/usr\/bin\/env bash\n/);
-    // No bundled node beside the dev launcher in the fixture → falls back to PATH `node`.
-    expect(psu).toContain(`exec "node" ${JSON.stringify(result.psuLauncherSource)} "$@"`);
+    expect(psu).toContain(
+      `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(result.psuLauncherSource)} "$@"`,
+    );
     // WI-2149: the shim prepends ~/.local/bin so the launcher's pty.spawn('claude')
     // resolves the agent installed by claude.ai/install.sh — the WSL2 distro's login
     // PATH omits ~/.local/bin, which otherwise made a console-launched psu fail with
@@ -145,9 +146,15 @@ describe('installPapercuspFiles', () => {
     expect(cli).toMatch(/^#!\/usr\/bin\/env bash\n/);
     // `setup` + `tutorial` open the unified shell on their tab (#4); `onboard` is the
     // back-compat linear concierge.
-    expect(cli).toContain(`setup)    shift; exec "node" ${JSON.stringify(launcher)} --tab=setup "$@" ;;`);
-    expect(cli).toContain(`tutorial) shift; exec "node" ${JSON.stringify(launcher)} --tutorial "$@" ;;`);
-    expect(cli).toContain(`onboard)  shift; exec "node" ${JSON.stringify(launcher)} "$@" ;;`);
+    expect(cli).toContain(
+      `setup)    shift; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} --tab=setup "$@" ;;`,
+    );
+    expect(cli).toContain(
+      `tutorial) shift; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} --tutorial "$@" ;;`,
+    );
+    expect(cli).toContain(
+      `onboard)  shift; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} "$@" ;;`,
+    );
     expect(cli).toContain('usage: papercusp <setup|tutorial>');
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
   });
@@ -221,19 +228,29 @@ describe('installPapercuspFiles', () => {
     expect(psu).toContain(path.join(tmpAppRoot, 'scripts', 'psu.mjs'));
   });
 
-  it('shim execs the BUNDLED node (absolute path) when present beside the launcher (A2)', async () => {
-    // A packaged sidecar has bin/node next to scripts/<launcher>. The shim MUST
-    // use it by absolute path — an end user's plain Terminal has no `node` on
-    // PATH, so a bare `exec node …` fails with "command not found: node".
+  it('shim execs the BUNDLED sidecar node (absolute path) when PAPERCUSP_SIDECAR_BIN points at it (A2)', async () => {
+    // A packaged sidecar exports PAPERCUSP_SIDECAR_BIN so the shim can use the
+    // bundled Node by absolute path — an end user's plain Terminal has no `node`
+    // on PATH, so a bare `exec node …` fails with "command not found: node".
     await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'psu.mjs'), '// bundled psu\n');
-    await fs.mkdir(path.join(tmpAppRoot, 'bin'), { recursive: true });
-    await fs.writeFile(path.join(tmpAppRoot, 'bin', 'node'), '#!/bin/sh\n', { mode: 0o755 });
-    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
-    const psu = await fs.readFile(result.psuPath, 'utf8');
     const bundledNode = path.join(tmpAppRoot, 'bin', 'node');
-    const launcher = path.join(tmpAppRoot, 'scripts', 'psu.mjs');
-    expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} ${JSON.stringify(launcher)} "$@"`);
-    expect(psu).not.toContain('exec "node"'); // not the PATH fallback
+    await fs.mkdir(path.dirname(bundledNode), { recursive: true });
+    await fs.writeFile(bundledNode, '#!/bin/sh\n', { mode: 0o755 });
+    const priorSidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+    process.env.PAPERCUSP_SIDECAR_BIN = path.dirname(bundledNode);
+    try {
+      const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      const psu = await fs.readFile(result.psuPath, 'utf8');
+      const launcher = path.join(tmpAppRoot, 'scripts', 'psu.mjs');
+      expect(psu).toContain(`exec ${JSON.stringify(bundledNode)} ${JSON.stringify(launcher)} "$@"`);
+      expect(psu).not.toContain('exec "node"'); // not the PATH fallback
+    } finally {
+      if (priorSidecarBin === undefined) {
+        delete process.env.PAPERCUSP_SIDECAR_BIN;
+      } else {
+        process.env.PAPERCUSP_SIDECAR_BIN = priorSidecarBin;
+      }
+    }
   });
 
   it('missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)', async () => {

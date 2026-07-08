@@ -84,18 +84,48 @@ thin `setup`/`tutorial` onboarding wrapper — not the app.
 
 ### Querying the guest's embedded Postgres
 
-No `psql` client is shipped (the `bin/psql` is a Debian `pg_wrapper` that fails
-without `PgCommon.pm`; the embedded native bin has only `initdb/pg_ctl/postgres`).
-Query via the bundled `node` + `pg` module instead:
+**Builds since 2026-07-07 ship real, self-contained client tools** at
+`/usr/lib/Papercusp GUI/sidecar/bin/` — `psql`, `pg_dump`, `pg_dumpall`,
+`pg_restore`, wrapper-wired to the embedded libpq (+ its own openssl), so they
+run on a clean machine with no host PostgreSQL packages. Just use them
+(`fed.sh <a|b> sql` does automatically):
+
+```
+"/usr/lib/Papercusp GUI/sidecar/bin/psql" \
+  'postgresql://harness_admin:harness_admin_pwd@127.0.0.1:<port>/papercusp'
+# conn URL is in ~/.papercusp/embedded-pg.json
+```
+
+**Installs from builds BEFORE 2026-07-07** shipped a broken `bin/psql` (a
+Debian `pg_wrapper` perl shim that dies with `Can't locate PgCommon.pm` — root
+cause below). On those, reinstall a fresh .deb, or fall back to the bundled
+`node` + `pg` module:
 
 ```
 NODE="/usr/lib/Papercusp GUI/sidecar/bin/node"
 PG="/usr/lib/Papercusp GUI/sidecar/node_modules/@papercusp/embedded-postgres-server/node_modules/pg"
-# conn URL is in ~/.papercusp/embedded-pg.json, e.g.
-#   postgresql://harness_admin:harness_admin_pwd@127.0.0.1:<port>/papercusp
 ```
 
 Write a tiny `.cjs` that `require(PG)`, connect with that URL, run your SELECTs.
+
+**Root cause of the old breakage (traced + FIXED 2026-07-07):**
+`papercusp-desktop/bin/build-desktop-sidecar.sh` needs client tools for the
+snapshot subsystem, but embedded-postgres ships server-only — so it fell back
+to copying whatever `command -v psql` resolved to on the **build host**. On
+Debian/Ubuntu that is `/usr/bin/psql` = postgresql-common's **perl
+`pg_wrapper` dispatcher**, not a real binary. It works on the build host
+(wrapper + versioned client both installed there), so every build-time probe
+passed — then died on any clean machine. All FOUR tools shipped as the same
+\~9.5K wrapper (see `sidecar/bin/.pg-tools-source`), which also silently
+disabled the PG half of the **snapshot subsystem** —
+`packages/backup/src/hook.ts` degrades to a dump-less snapshot on spawn
+failure, so backups "succeeded" with no DB state. The fix vendors the real
+`/usr/lib/postgresql/<major>/bin/` binaries (major matched to the embedded
+server) behind LD\_LIBRARY\_PATH wrappers pointing at the bundled libpq, and
+the build now hard-fails if any vendored tool is a `#!`-script or fails a
+`--version` probe as-installed. The lesson that generalizes: **a tool copied
+off the build host can be a dispatcher/shim that only works there — verify
+what a copied binary IS, not just that it runs on the host that built it.**
 
 ## Seed-cut identity rule (do not violate)
 
@@ -131,7 +161,13 @@ What the seeded Linux GUI .deb actually does on a clean first boot:
   db-seed snapshot and the shipped migration SQL are internally *consistent* (both
   503\) — this is **staleness, not a runtime migration bug**. **Cut releases from a
   tree that includes every intended migration**, and treat the on-VM sweep log as
-  a schema-freshness check.
+  a schema-freshness check. **Now guarded (WI-3047):** `release-local.sh` fetches
+  and compares the `libs/papercusp` submodule against `origin/<branch>` before
+  cutting — a stale (behind-remote) submodule **fails the build on stable/beta**
+  and **warns on alpha** (mirroring the dirty-tree channel split). That closes the
+  exact root cause here: `build-desktop-sidecar.sh` bakes `db-seed.tar.gz` from
+  whatever is checked out under `libs/papercusp/libs/db/sql/`, so a lagging
+  submodule pointer silently shipped pre-505/506 SQL.
 * ⚠️ **`native-terminal: could not establish X11 glue session`** → the ghostty
   terminal floats as a separate window instead of embedding in the webview.
   Suspected to be a VM-environment artifact: this barebones test VM runs an Xorg
@@ -147,13 +183,28 @@ What the seeded Linux GUI .deb actually does on a clean first boot:
 
 * The deb already uses **gzip** (`data.tar.gz`), not xz — that lever is pulled;
   Tauri 2's deb bundler exposes no compression knob to tune further.
+
 * The dominant, **re-incurred** cost is `cut_release_seed()` (runs
   *unconditionally* at every build, line \~224): full-history git bundle
   (superproject + \~40 submodules) + 1.8GB corestore snapshot + chacha20 encryption
   of the \~1.86GB git half. For **iterative rebuilds where HEAD/seed is unchanged**,
   `PAPERCUSP_SKIP_SEED_CUT=1` reuses the existing `src-tauri/seed` and is the single
   biggest time saver. (A real *release* cut still needs a fresh seed matching HEAD.)
+
 * `PAPERCUSP_BUILD_ROLES="gui"` builds only the GUI role (skips the server bundle);
   cargo incremental compile is \~3 min. The AppImage is built separately via
   `bin/build-appimage.sh` (Tauri's appimage target crashes linuxdeploy on the
-  sidecar tree — WI-2918).
+  sidecar tree — WI-2918). That script also **overwrites linuxdeploy's compiled
+  `AppRun` with a robust shell `AppRun`** (WI-2902): the ELF AppRun NULL-derefs in
+  libc on some hosts (`segfault at 0 … in libc.so.6`) and crashes the launch
+  before the app starts, even though the binary runs fine given `LD_LIBRARY_PATH`
+  * the WebKitGTK env; the shell AppRun sets that env off `$APPDIR` (pixbuf/gio/
+    gstreamer/webkit helper paths) and execs `usr/bin/papercusp-desktop`.
+
+* `scripts/linux-test-vm/boot-vm.sh` now guards the `reset→up` / port-collision
+  race (WI-2902): qemu treats a SPICE **or** hostfwd bind failure as FATAL and
+  boots no VM. It waits (bounded) for a just-killed VM to release the deterministic
+  SSH/SPICE ports, and **drops just the operator hostfwd** (`host:$OP_PORT →
+  guest:3070`) when that port is held by a live host service, booting anyway — the
+  in-guest tests (SSH + in-guest curl + screendump) never use the forward. Set
+  `VM_OP_BASE` to a free base to reclaim it; `VM_VGA` overrides the default `qxl`.

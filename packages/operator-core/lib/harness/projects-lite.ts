@@ -28,7 +28,42 @@ export interface ProjectsLiteEntry {
   is_shared: boolean;
   hasState: boolean;
   hasSpec: boolean;
+  /**
+   * A one-line "brief" for the pot — the first human-meaningful line of its
+   * SPEC.md (headings/blank/list markers skipped, capped). Powers the
+   * Description column on the All-Pots Working list (HiveWorkspaceCards). Null
+   * when the pot has no SPEC.md or no usable prose line. This is the
+   * "best-available" description: pots carry no first-class description field,
+   * and SPEC.md is the one brief nearly every pot has.
+   */
+  description: string | null;
   harnessDir: string;
+}
+
+/**
+ * First human-meaningful line of a pot's SPEC.md — a "brief description" for the
+ * All-Pots list. Skips markdown headings (`#`), blank lines, and list / quote /
+ * code-fence markers; strips light emphasis; caps length. Returns null when the
+ * file is unreadable or has no usable prose line. Cheap: scans only until the
+ * first hit (SPEC files are small; the lite payload is cached).
+ */
+async function readPotBrief(specPath: string): Promise<string | null> {
+  try {
+    const txt = await readFile(specPath, 'utf8');
+    for (const raw of txt.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue; // blank
+      if (line.startsWith('#')) continue; // markdown heading
+      if (line.startsWith('<!--')) continue; // html comment
+      if (/^[-*>|]|^```/.test(line)) continue; // list / quote / table / code fence
+      const clean = line.replace(/^\*\*(.*)\*\*$/, '$1').replace(/`/g, '').trim();
+      if (!clean) continue;
+      return clean.length > 200 ? `${clean.slice(0, 197)}…` : clean;
+    }
+  } catch {
+    /* ignore — unreadable spec = no description */
+  }
+  return null;
 }
 
 export interface ProjectsLitePayload {
@@ -80,6 +115,11 @@ export async function buildProjectsLitePayload(
       }
     } catch { /* ignore — bad config = no parent */ }
     const isShared = existsSync(join(p.path, '.papercusp', 'shared.json'));
+    const specPath = join(p.path, 'SPEC.md');
+    const hasSpec = existsSync(specPath);
+    // Best-available one-line brief for the All-Pots list (SPEC.md first prose
+    // line). Read only when a SPEC exists; cheap + parallel with the config read.
+    const description = hasSpec ? await readPotBrief(specPath) : null;
     return {
       slug: p.slug,
       path: p.path,
@@ -91,7 +131,8 @@ export async function buildProjectsLitePayload(
       parent_slug: parentSlug,
       is_shared: isShared,
       hasState: existsSync(hDir),
-      hasSpec: existsSync(join(p.path, 'SPEC.md')),
+      hasSpec,
+      description,
       harnessDir: hDir,
     };
   }));
