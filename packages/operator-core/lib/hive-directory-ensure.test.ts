@@ -24,11 +24,17 @@ afterEach(() => {
   vi.doUnmock('./identity/hive-keypair');
   vi.doUnmock('./hive-member-repos');
   vi.doUnmock('./sync/hyperbee/swarm');
+  vi.restoreAllMocks();
 });
 
 describe('ensureHiveDirectoryWired', () => {
   it('force retries immediately after a failed unforced attempt', async () => {
     vi.resetModules();
+    // The unforced attempt drives the identity-resolution failure path, whose
+    // best-effort catch in wireHiveDirectoryForWorkspace legitimately logs a skip
+    // warning. Spy on it so vitest-fail-on-console doesn't red the run AND so we
+    // assert the expected warning was emitted.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resolveLocalAnnounceIdentity = vi
       .fn()
       .mockRejectedValueOnce(new Error('gh auth not ready'))
@@ -51,6 +57,9 @@ describe('ensureHiveDirectoryWired', () => {
 
     await expect(ensureHiveDirectoryWired('ws')).resolves.toBeNull();
     expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[hive-directory] boot-join skipped for workspace ws'),
+    );
 
     await expect(ensureHiveDirectoryWired('ws')).resolves.toBeNull();
     expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(1);
