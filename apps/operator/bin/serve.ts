@@ -213,6 +213,31 @@ export async function resolveStickyPort(
 }
 
 /**
+ * Re-export the RESOLVED operator port into every env var that names it, so
+ * in-process consumers never see the launcher's stale cold-start hint.
+ *
+ * The desktop launcher spawns this sidecar with `PAPERCUSP_HONO_PORT` and
+ * `PAPERCUSP_OPERATOR_BASE` set to a fresh random port hint; when
+ * `resolveStickyPort` re-binds the remembered port instead (every boot after
+ * the first), those envs silently diverge from the port actually bound. The
+ * worst consumer was the endpoint-IPC `sys:http` bridge, whose upstream base
+ * prefers `PAPERCUSP_OPERATOR_BASE`: every IPC-bridged `/api/*` call (all
+ * sync SSE + REST) hit the dead hint port and ECONNREFUSED'd forever — the
+ * packaged desktop's permanent "Operator connection lost" banner (WI-3385),
+ * on every launch after the first, on all 3 platforms. `endpoint-ipc.json`'s
+ * `port` field (PAPERCUSP_HONO_PORT) carried the same lie. One write here,
+ * before `runBootstrap()` imports any consumer, fixes the whole class.
+ */
+export function exportResolvedPortEnv(
+  port: number,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  env.PORT = String(port); // selfUrl() origin (mirrors hono-host.ts)
+  env.PAPERCUSP_HONO_PORT = String(port);
+  env.PAPERCUSP_OPERATOR_BASE = `http://127.0.0.1:${port}`;
+}
+
+/**
  * Cold-start singleton guard. Atomically create the lockfile (O_EXCL) with our
  * pid. Returns true if acquired. If a *live* owner holds it, returns false.
  * A stale lock (owner dead) is reclaimed and re-attempted once.
@@ -725,11 +750,16 @@ async function main(): Promise<void> {
 
     // Import AFTER env is set: host-handler builds the Hono app at module load
     // (reading PAPERCUSP_SERVE_UI), and bootstrap/handler resolve the admin URL.
+    // Correct every port-naming env to the RESOLVED port BEFORE the imports
+    // below: host-handler/bootstrap read env at module load, and a stale
+    // launcher hint here is the WI-3385 offline-banner root cause (see
+    // exportResolvedPortEnv).
+    exportResolvedPortEnv(port);
+
     const { runBootstrap } = await import('./host-bootstrap');
     const { handler } = await import('./host-handler');
     const { serve } = await import('@hono/node-server');
 
-    process.env.PORT = String(port); // selfUrl() origin (mirrors hono-host.ts)
     runBootstrap();
 
     server = serve({ fetch: handler, port, hostname }, async (info) => {

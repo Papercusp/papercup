@@ -354,3 +354,39 @@ describe('sticky operator port (stale-port-pin class fix, 2026-07-07)', () => {
     expect(await serve.resolveStickyPort(19999, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' })).toBe(19999);
   });
 });
+
+// WI-3385 recurrence guard: the launcher spawns serve with PORT /
+// PAPERCUSP_HONO_PORT / PAPERCUSP_OPERATOR_BASE all naming its cold-start
+// port HINT; when resolveStickyPort re-binds the remembered port instead
+// (every desktop boot after the first), any consumer reading those envs —
+// worst: the endpoint-IPC sys:http upstream base, i.e. ALL bridged sync
+// SSE + REST — dialed the dead hint port forever (the permanent "Operator
+// connection lost" banner). The resolved port must overwrite ALL of them
+// before the host modules load.
+describe('exportResolvedPortEnv (stale launcher-hint env class fix, WI-3385)', () => {
+  it('overwrites every port-naming env var with the RESOLVED port', () => {
+    const env: NodeJS.ProcessEnv = {
+      PORT: '17183', // the launcher's hint — nothing listens here after re-bind
+      PAPERCUSP_HONO_PORT: '17183',
+      PAPERCUSP_OPERATOR_BASE: 'http://localhost:17183',
+    };
+    serve.exportResolvedPortEnv(17366, env);
+    expect(env.PORT).toBe('17366');
+    expect(env.PAPERCUSP_HONO_PORT).toBe('17366');
+    expect(env.PAPERCUSP_OPERATOR_BASE).toBe('http://127.0.0.1:17366');
+  });
+
+  it('seeds the vars even when the launcher never set them (first boot / bare env)', () => {
+    const env: NodeJS.ProcessEnv = {};
+    serve.exportResolvedPortEnv(3070, env);
+    expect(env.PORT).toBe('3070');
+    expect(env.PAPERCUSP_HONO_PORT).toBe('3070');
+    expect(env.PAPERCUSP_OPERATOR_BASE).toBe('http://127.0.0.1:3070');
+  });
+
+  it('is a loopback-IP base (127.0.0.1, never localhost — no resolver/IPv6 ambiguity)', () => {
+    const env: NodeJS.ProcessEnv = {};
+    serve.exportResolvedPortEnv(17366, env);
+    expect(env.PAPERCUSP_OPERATOR_BASE).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+});
