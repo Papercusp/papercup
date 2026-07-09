@@ -16,7 +16,13 @@ import {
   isP2pGranteeKind,
   normalizeCapabilities,
 } from './capabilities';
-import { resolveP2pGrantWorkspace, setPeerGrant, revokePeerGrant, checkP2pCapability } from './grant-store';
+import {
+  resolveP2pGrantWorkspace,
+  setPeerGrant,
+  revokePeerGrant,
+  checkP2pCapability,
+  currentGrantorEpoch,
+} from './grant-store';
 import type { OrgSql } from '../work-items';
 
 /** A sql stub that FAILS the test if any query executes. */

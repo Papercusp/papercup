@@ -29,27 +29,22 @@
 # filed from WI-3210.
 #
 # P-502 (p2p-git-live-activation-2026-07-09, 2026-07-09): the bare
-# `lib/**/*federation*.test.ts` keyword glob below ALSO silently caught
-# lib/harness/git-sync/code-plane-federation.test.ts — a healthy (8/8 green),
-# safety-critical git-sync test (the S0 no-direct-push joiner invariant) that
-# has nothing to do with the p2p/hyperbee substrate this quarantine targets;
-# hive-git/git-sync IS in v1 scope for p2p-git-live-activation. Every other
-# file the old glob matched is enumerated explicitly below (behavior-identical
-# for all of them — the hyperbee ones are also independently covered by the
-# bare `lib/sync/hyperbee/**` line further down) so ONLY that one file's gate
-# status changes. A hive-git-gate-quarantine-guard.test.ts recurrence guard
-# (apps/operator/lib/release/) now fails loudly if a future edit re-catches
-# any lib/sync/hive-git/** or lib/harness/git-sync/** test file here.
-@papercusp/operator-core::lib/agent-tools/coordination/federation-scope.test.ts
-@papercusp/operator-core::lib/endpoint-route/routes/discovery/federation-status.test.ts
-@papercusp/operator-core::lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts
-@papercusp/operator-core::lib/hive-federation.test.ts
-@papercusp/operator-core::lib/identity/p079-live-federation.live.test.ts
-@papercusp/operator-core::lib/plan-parts/federation.test.ts
-@papercusp/operator-core::lib/scout/federation-reputation.test.ts
-@papercusp/operator-core::lib/scout/federation-rollout.test.ts
-@papercusp/operator-core::lib/work-items-federation-detector-exclusion.integration.test.ts
-@papercusp/operator-core::lib/sync/hyperbee/**/*federation*.test.ts
+# `lib/**/*federation*.test.ts` keyword glob below ALSO silently caught 10
+# files that have nothing to do with the p2p/hyperbee substrate this
+# quarantine targets — a git-sync safety test plus 9 more scattered across
+# agent-tools/endpoint-route/harness/identity/plan-parts/scout/work-items.
+# code-plane-federation.test.ts (git-sync) was fixed first (WI-3508). The
+# other 9 were standalone-audited (WI-3587, leader su-63834d42 sign-off,
+# 2026-07-09): 8/8 green, 1 intentional describe.skipIf(!P079_LIVE) skip
+# (p079-live-federation.live.test.ts — needs 2 real GitHub identities, same
+# pattern as other *.live.test.ts files repo-wide). None flaky/red — all 10
+# were incidental *federation*-keyword collateral, never part of WI-3210's
+# actual ~31-red-test set. Dropped from quarantine entirely (the hyperbee
+# federation tests this glob ALSO matched stay quarantined independently via
+# the bare `lib/sync/hyperbee/**` line below). A hive-git-gate-quarantine-
+# guard.test.ts recurrence guard (apps/operator/lib/release/) fails loudly if
+# a future edit re-catches any lib/sync/hive-git/** or lib/harness/git-sync/**
+# test file here.
 @papercusp/operator-core::lib/**/*p2p*.test.ts
 @papercusp/operator-core::lib/**/dogfood-substrate*.test.ts
 @papercusp/operator-core::lib/**/substrate*.test.ts

@@ -463,17 +463,33 @@ ship-with-limitation rows, each with an accountable tracker:
 * **Usage-events metering is machine-local (G2, WI-1858)** — the
   `contributor_usage_events` capture trigger is deliberately deferred to the GA
   migration (completeness-guard exemption until then).
-* **From-repo joiner incremental federation (WI-971) — tracker state is `resolved` but
-  UNVERIFIED, active re-verification in flight (p2p-rest-lanes-2026-07-09 P-005).**
-  The outbox drain is never wired for joined/created hive harnesses (WI-259 was
-  closed as its duplicate); the WI's own checkpoint carries a detailed execution
-  plan (registry persistence + direct `ensureSendSideWired` call at join/create,
-  hermetic pin, then a deb-rebuild GATE\_FORCE live verify) but the state flip to
-  `resolved` carries **no recorded completion evidence** (`terminalCompletionRef`/
-  `terminalCompletionEvidence` are both null) — the same stale-state-flip pattern
-  seen on WI-1684 before its 2026-07-09 re-verification. Do not treat this row as
-  fixed until P-005 lands real evidence. If from-repo joins are v1 public scope this
-  stays release-critical, not a limitation row — P-014 makes that scope call.
+* **From-repo joiner incremental federation (WI-971) — RE-VERIFIED 2026-07-09
+  (p2p-rest-lanes-2026-07-09 P-005, WI-3542).** The outbox drain is never wired for
+  joined/created hive harnesses (WI-259 was closed as its duplicate); the fix
+  (join-hive.ts step "2c/2c′" — re-key the home-VIEW and every joined member onto
+  the Hive-pubkey topic right after the registry view/identity materialize,
+  instead of waiting for a process restart) was already unit-tested with mocked
+  deps (`join-hive.test.ts`'s "2c′ home-view boot/rekey" block), but the earlier
+  `resolved` state-flip carried no recorded completion evidence. New evidence:
+  `packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts`
+  drives `joinHiveAsView` against a REAL, migrated Postgres (env-routed `getOrgPg`,
+  the `owner-content-to-joiner-faithful.repro.integration.test.ts` pattern) with
+  `mutateHarnessRegistry`/`loadHarnessRegistry` UNMOCKED, and a `rekeyHarness` stub
+  that itself performs a real registry read at call time — proving (1) the
+  home-view + member registry rows genuinely commit to Postgres, not an in-memory
+  fake, and (2) the 2c′/2c rekey calls fire, in order (home view first, then every
+  member), strictly AFTER that commit is visible — the exact ordering bug WI-971
+  closed. Green: `npx vitest run --config vitest.integration.config.ts
+  packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts`
+  → 1 passed (1), 1292ms.
+  **Scope note (fallback path, deliberate):** this proof is registry+ordering
+  only — it stubs the from-repo `joinLink` (GitHub clone/attestation, unrelated
+  to WI-971) and does not boot two REAL substrate peers through
+  `joinHiveAsView` end-to-end to show a post-join content write federates
+  incrementally with zero process restart. That remaining live-two-peer
+  content-roundtrip proof is tracked separately — see the follow-up work item
+  filed alongside this test (search `work_items` for "WI-971 live two-peer
+  from-repo content roundtrip").
 
 ***
 

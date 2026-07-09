@@ -41,6 +41,10 @@ export interface ClusterWorkerLike {
   readonly id: number;
   readonly process: { pid?: number };
   kill(signal?: string): void;
+  /** IPC send to this worker (structurally satisfied by the real `cluster.Worker`).
+   *  EI-8816: the PRIMARY-side half of the booted-handles push-sync — see
+   *  `ClusterHandle.broadcast` + `sync/hyperbee/cluster-booted-handles-sync.ts`. */
+  send(message: unknown): void;
 }
 
 export interface StartClusterOpts {
@@ -92,6 +96,12 @@ export interface ClusterHandle {
    *  supervisor (cluster-lag-watchdog, EI-1598/1608) can SIGKILL a wedged worker and let
    *  the respawn handler recover it. Undefined in worker/single roles. */
   workerById?: (id: number) => ClusterWorkerLike | undefined;
+  /** PRIMARY only: IPC-send `message` to every currently-LIVE forked worker (best-effort;
+   *  a worker mid-exit is silently skipped rather than throwing). EI-8816: lets the primary
+   *  push its `listBootedHandles()` snapshot to request-only workers, which otherwise read an
+   *  always-empty process-local map (the substrate boot state lives only on the primary) —
+   *  see `sync/hyperbee/cluster-booted-handles-sync.ts`. Undefined in worker/single roles. */
+  broadcast?: (message: unknown) => void;
 }
 
 /**
@@ -247,5 +257,14 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
       }
     },
     workerById: (id) => byId.get(id),
+    broadcast(message) {
+      for (const w of byId.values()) {
+        try {
+          w.send(message);
+        } catch {
+          /* worker gone / channel closed — best-effort */
+        }
+      }
+    },
   };
 }

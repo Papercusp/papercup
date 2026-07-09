@@ -211,10 +211,17 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   'coding/operator/events:emit',
   // base/documenter.md — names the doc-record verb in prose for the documenter pipeline role.
   'coding-factory/documenter/harness_docs:record',
-  // base/bee.base.md + base/queen.base.md — fleet:leave is NAMED, not called: the bee is
-  // "told to drop the work" and the Queen tells a PEER to `fleet:leave` (a routed action).
-  // The role never calls it itself; its concrete fleet-membership tools are in deps.
-  // (gate-greening 2026-06-30)
+  // base/cup.base.md — tools the cup RECEIVES / a surface it's described against, never calls:
+  //   turn:interrupt — "the Mug or operator ISSUED a turn:interrupt" (the cup is the target).
+  //   pot:status    — "invisible to Pause/pot:status" (describing the Mug's visibility surface).
+  'cup/cup/turn:interrupt',
+  'cup/cup/pot:status',
+  // base/cup.base.md + base/mug.base.md — fleet:leave is NAMED, not called: the cup is
+  // "told to drop the work" and the Mug tells a PEER to `fleet:leave` (a routed action).
+  // Neither role calls it itself; their concrete fleet-membership tools are in deps.
+  // (gate-greening 2026-06-30; restored 2026-07-09 after the cup-lexicon rename bulk flip
+  // had accidentally dropped the cup/cup entries and merged bee/bee+coding/queen into one key)
+  'cup/cup/fleet:leave',
   'coding/mug/fleet:leave',
 ]);
 

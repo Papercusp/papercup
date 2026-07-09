@@ -285,10 +285,13 @@ function failAllSessions(state: ChannelState): void {
 }
 
 function handleReq(state: ChannelState, v: ReqFrame): void {
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] handleReq invoked', v);
   const refuse = (reason: string): void => {
+    if (process.env.HGDEBUG) console.error('[HGDEBUG] refusing', reason);
     try {
       state.messages?.refuse.send({ id: v.id, reason });
-    } catch {
+    } catch (e) {
+      if (process.env.HGDEBUG) console.error('[HGDEBUG] refuse send threw', e);
       /* best-effort */
     }
   };
@@ -335,6 +338,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
 }
 
 function handleRefuse(state: ChannelState, v: RefuseFrame): void {
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] handleRefuse invoked', v);
   const d = state.clientSessions.get(v.id);
   if (!d) return;
   state.clientSessions.delete(v.id);
@@ -366,12 +370,20 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] ensureChannel: calling createChannel', { topicHex });
   const channel = mux.createChannel({
     protocol: HIVE_GIT_PROTOCOL,
     id: topic,
-    onopen: () => markOpened(state!),
-    onclose: () => failAllSessions(state!),
+    onopen: () => {
+      if (process.env.HGDEBUG) console.error('[HGDEBUG] onopen fired', { topicHex });
+      markOpened(state!);
+    },
+    onclose: () => {
+      if (process.env.HGDEBUG) console.error('[HGDEBUG] onclose fired', { topicHex });
+      failAllSessions(state!);
+    },
   });
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] createChannel returned', { topicHex, channel: !!channel });
   if (!channel) {
     // Defensive: a (protocol,id) collision on this muxer from outside this
     // module (shouldn't happen — HIVE_GIT_PROTOCOL is private to it). Leave
@@ -388,6 +400,7 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     endToClient: channel.addMessage<EndFrame>({ encoding: endEncoding, onmessage: (v) => handleEndToClient(state!, v) }),
   };
   channel.open();
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] channel.open() called', { topicHex });
   return state;
 }
 
@@ -412,11 +425,15 @@ function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<un
  */
 export function wireHiveGitServe(socket: unknown, topic: Buffer, config: HiveGitServeConfig): void {
   try {
+    if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe called');
     const { mux, opened } = resolveMuxStream(socket);
+    if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe resolved mux', { hasOpened: !!opened });
     const register = (): void => {
       try {
+        if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe register() running');
         ensureChannel(mux, topic).serverConfig = config;
-      } catch {
+      } catch (e) {
+        if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe register() threw', e);
         /* best-effort */
       }
     };
@@ -443,9 +460,12 @@ export async function openHiveGitFetchDuplex(
   topic: Buffer,
   req: { repoKey: string; peerGithubUserId?: number },
 ): Promise<Duplex> {
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex called');
   const { mux, opened } = resolveMuxStream(socket);
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex resolved mux', { hasOpened: !!opened });
   if (opened && typeof opened.then === 'function') await opened.catch(() => {});
   const state = ensureChannel(mux, topic);
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex got state', { hasChannel: !!state.channel });
   if (!state.channel || !state.messages) {
     const d = new FrameDuplex(
       () => {},
@@ -454,7 +474,9 @@ export async function openHiveGitFetchDuplex(
     d.destroy(new Error('hive-git: could not open the serve channel'));
     return d;
   }
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex awaiting waitOpened...');
   await waitOpened(state);
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex waitOpened resolved, sending req');
   const messages = state.messages;
   const id = state.nextClientId++;
   const duplex = new FrameDuplex(

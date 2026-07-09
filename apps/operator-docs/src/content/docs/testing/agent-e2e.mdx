@@ -293,6 +293,18 @@ stale — `rm -rf apps/operator-vite/node_modules/.vite` and restart the
 Tauri dev shell. (Next.js is retired; there is no longer an
 `apps/operator/.next` cache.)
 
+**Source edits don't hot-reload into the shell — the webview serves a
+BUILT bundle.** The dev-operator Hono host serves operator-vite's build
+output (`/assets/index-*.css|js`), not a live Vite dev server, so an
+edit to e.g. `apps/operator/app/globals.css` is invisible to the
+running shell no matter how many times you `location.reload()`. To see
+a frontend edit: `cd apps/operator-vite && npm run build` (~30s), then
+reload the webview. Symptom that bit a real verification (2026-07-09):
+a freshly added CSS custom property read back as empty from
+`getComputedStyle` while the on-disk file plainly had it. Check which
+stylesheet the page actually loaded (`[...document.styleSheets]` hrefs)
+before doubting your edit.
+
 ### 1.5 First-run paths — clear stored state
 
 Onboarding tests need a clean slate:

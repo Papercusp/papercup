@@ -17,12 +17,16 @@ import {
 
 class MockWorker implements ClusterWorkerLike {
   killed: string | undefined;
+  sent: unknown[] = [];
   readonly process: { pid?: number };
   constructor(readonly id: number) {
     this.process = { pid: 1000 + id };
   }
   kill(signal = 'SIGTERM'): void {
     this.killed = signal;
+  }
+  send(message: unknown): void {
+    this.sent.push(message);
   }
 }
 
@@ -106,6 +110,27 @@ describe('startCluster (P3-2)', () => {
     expect(cl.workers.every((w) => w.killed === 'SIGTERM')).toBe(true);
     cl.emitExit(cl.workers[0]); // draining ⇒ no respawn
     expect(cl.forks).toBe(2);
+  });
+
+  it('broadcast (EI-8816) IPC-sends to every LIVE worker, skipping exited ones', () => {
+    const cl = new MockCluster(true);
+    const h = startCluster({ workers: 3, onWorker: () => {}, cluster: cl, log: () => {} });
+    cl.emitExit(cl.workers[1]); // worker 2 exits → respawned as worker 4; worker 2 must NOT receive
+    h.broadcast?.({ hello: 'world' });
+    expect(cl.workers[0]?.sent).toEqual([{ hello: 'world' }]);
+    expect(cl.workers[1]?.sent).toEqual([]); // exited — pruned from byId, never sent to
+    expect(cl.workers[2]?.sent).toEqual([{ hello: 'world' }]);
+    expect(cl.workers[3]?.sent).toEqual([{ hello: 'world' }]); // the respawn
+  });
+
+  it('broadcast is undefined outside the primary role (worker/single)', () => {
+    const workerCl = new MockCluster(false);
+    const workerHandle = startCluster({ workers: 3, onWorker: () => {}, cluster: workerCl, log: () => {} });
+    expect(workerHandle.broadcast).toBeUndefined();
+
+    const singleCl = new MockCluster(true);
+    const singleHandle = startCluster({ workers: 1, onWorker: () => {}, cluster: singleCl, log: () => {} });
+    expect(singleHandle.broadcast).toBeUndefined();
   });
 });
 

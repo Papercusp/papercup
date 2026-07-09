@@ -20,7 +20,9 @@
  * existing `_setHandleForTests` / `_setNowForTests` seams.
  */
 
-import { listBootedHandles } from './boot-all';
+import nodeCluster from 'node:cluster';
+import { listBootedHandles, type BootedHandleSummary } from './boot-all';
+import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
 import { listBootstrapProgress } from './bootstrap-progress';
 import {
   assessHarnessSubstrateHealth,
@@ -69,6 +71,16 @@ export interface InProcessSubstrateStatus {
   bootedCount: number;
   summary: WorkspaceSubstrateSummary;
   harnesses: InProcessHarnessHealth[];
+  /**
+   * EI-8816: was this read able to reach the substrate-owning process's actual boot
+   * state? `true` when this process IS the owner (the primary, or single-process mode)
+   * OR a genuine cluster worker had a fresh cached broadcast from the primary. `false`
+   * means the read is a BLIND SPOT, not a true "nothing booted" — a worker with no (or
+   * a stale) cached snapshot. Distinguishes the EI-8816 blind spot from the legitimate
+   * idle-ground-state `bootedCount: 0`; callers should surface this explicitly rather
+   * than let a `false` render identically to a genuinely-empty substrate.
+   */
+  reachedSubstrateOwner: boolean;
   /**
    * Per-harness log-growth + new-joiner replay-cost (substrate-peer-log-compaction
    * P-001/P-002). Surfaces the unbounded-growth signal P-009 flagged: `replayCostOps`
@@ -130,10 +142,67 @@ export interface GetInProcessStatusOpts {
    * "handlePresent hardcoded true even for a dead sidecar" bug this closes.
    */
   resolveSidecarLive?: () => boolean | null;
+  /**
+   * EI-8816 — resolve the primary's latest CACHED booted-handles broadcast (see
+   * `cluster-booted-handles-sync.ts`'s `getCachedRemoteBootedHandles`). Only consulted
+   * when this process is NOT the substrate owner (a genuine forked cluster worker);
+   * defaulted to a no-op (`undefined` ⇒ always `null`) because this module is pure (no
+   * IPC). Production callers (dogfood-substrate-status/-health) pass the real cache reader.
+   */
+  resolveRemoteBootedHandles?: () => RemoteBootedHandlesSnapshot | null;
+  /**
+   * TEST SEAM ONLY — overrides the real `node:cluster`-derived "is this process the
+   * substrate owner" check (`nodeCluster.isPrimary`: true for the primary AND for
+   * single-process/non-clustered hosts; false only inside a genuine forked worker).
+   * Production never sets this.
+   */
+  isSubstrateOwnerProcessForTest?: boolean;
 }
 
 const ZERO_STATS = { total: 0, won: 0, lost: 0, error: 0 } as const;
 const ZERO_DRAIN = { undrainedCount: 0, oldestUndrainedAgeMs: null } as const;
+/** How stale a cached remote broadcast may be before a worker stops trusting it (3x the
+ *  broadcaster's default 5s interval — generous for one missed beat, not so generous that
+ *  a wedged/dead primary keeps rendering as "reached" for minutes). */
+const DEFAULT_REMOTE_BOOTED_HANDLES_MAX_AGE_MS = 15_000;
+
+/**
+ * EI-8816: decide which booted-handles list this read should trust, and whether the
+ * read actually reached the substrate-owning process's real state.
+ *
+ *   - This process IS the owner (primary, or single-process mode — `nodeCluster.isPrimary`)
+ *     ⇒ trust `local` directly; it's a direct read of the same process-local map the
+ *     substrate boot itself populated. Always `reachedSubstrateOwner: true`, INCLUDING a
+ *     legitimate zero-booted idle state (nothing has booted yet) — that is real data, not
+ *     a blind spot.
+ *   - This process is a genuine forked WORKER (never boots anything itself, so `local` is
+ *     always `[]`) ⇒ fall back to the cached broadcast from the primary, if one exists and
+ *     is fresh (`now - receivedAt <= maxAgeMs`). Stale/missing ⇒ `reachedSubstrateOwner: false`
+ *     with an empty list — an explicit blind-spot marker, never silently identical to
+ *     "nothing booted".
+ *
+ * Pure + exported for direct unit testing without mocking `node:cluster`.
+ */
+export function resolveEffectiveBootedHandles(
+  local: BootedHandleSummary[],
+  opts: {
+    isSubstrateOwnerProcess: boolean;
+    resolveRemote?: () => RemoteBootedHandlesSnapshot | null;
+    now?: number;
+    maxAgeMs?: number;
+  },
+): { booted: BootedHandleSummary[]; reachedSubstrateOwner: boolean } {
+  if (opts.isSubstrateOwnerProcess) {
+    return { booted: local, reachedSubstrateOwner: true };
+  }
+  const remote = opts.resolveRemote?.() ?? null;
+  const now = opts.now ?? Date.now();
+  const maxAgeMs = opts.maxAgeMs ?? DEFAULT_REMOTE_BOOTED_HANDLES_MAX_AGE_MS;
+  if (remote && now - remote.receivedAt <= maxAgeMs) {
+    return { booted: remote.handles, reachedSubstrateOwner: true };
+  }
+  return { booted: [], reachedSubstrateOwner: false };
+}
 
 export function getInProcessSubstrateStatus(
   opts: GetInProcessStatusOpts = {},
@@ -142,7 +211,11 @@ export function getInProcessSubstrateStatus(
   // at runtime. `forceDisabledForTest` is a TEST-ONLY seam for exercising the
   // disabled-rendering path — production never passes it.
   const substrateActive = !opts.forceDisabledForTest;
-  const booted = listBootedHandles();
+  const isSubstrateOwnerProcess = opts.isSubstrateOwnerProcessForTest ?? nodeCluster.isPrimary;
+  const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
+    isSubstrateOwnerProcess,
+    resolveRemote: opts.resolveRemoteBootedHandles,
+  });
   const progress = listBootstrapProgress();
   const progressByKey = new Map<
     string,

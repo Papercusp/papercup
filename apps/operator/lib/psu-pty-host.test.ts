@@ -32,6 +32,7 @@ import {
   turnCoalesceKey,
   renderCoalescedTurn,
   makeTurnCoalescer,
+  makeInjectMutex,
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
@@ -833,6 +834,121 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       expect(delivered).toContain('details for wake #9'); // newest wins
       expect(delivered).toContain('8 duplicate queued wakes were coalesced');
     });
+  });
+});
+
+/**
+ * makeInjectMutex (EI-8822): serializes the GATED-inject critical section within a
+ * host so two injects freed at the same clean boundary — a coord wake `turn` and a
+ * session:request-compaction `/compact` — can never both pass the at-prompt gate
+ * and interleave their bytes into one pty input line (which concatenates the
+ * second's text after the first, so the CLI reads "<wake…>/compact <focus>" as
+ * prose, not a command, and the compaction silently never runs).
+ */
+describe('makeInjectMutex (EI-8822 — gated-inject serialization)', () => {
+  it('the second acquirer does NOT enter its critical section until the first releases', async () => {
+    const m = makeInjectMutex();
+    const events: string[] = [];
+
+    const r1 = await m.acquire(); // holder 1 has the lock
+    events.push('1:enter');
+
+    // Holder 2 tries to acquire while holder 1 still holds it.
+    let entered2 = false;
+    const p2 = m.acquire().then((r2) => {
+      entered2 = true;
+      events.push('2:enter');
+      return r2;
+    });
+
+    // Let any pending microtasks flush — holder 2 must STILL be blocked.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(entered2).toBe(false);
+    expect(events).toEqual(['1:enter']);
+
+    events.push('1:release');
+    r1(); // free the lock → holder 2 unblocks
+    const r2 = await p2;
+    expect(entered2).toBe(true);
+    r2();
+    // The critical sections never overlapped: 1 fully done before 2 began.
+    expect(events).toEqual(['1:enter', '1:release', '2:enter']);
+  });
+
+  it('the two gated injects (a wake turn + a /compact) run write-sequences that never interleave', async () => {
+    // Model the exact race: both injects are released at the same clean boundary
+    // and each writes its bytes as a short sequence. Without the mutex, the two
+    // sequences interleave into one line ("<wake>/compact"); with it, one whole
+    // sequence completes before the other starts.
+    const m = makeInjectMutex();
+    const line: string[] = [];
+    // A gated inject writes its text, yields (a paste-settle delay), then its CR.
+    const gatedInject = async (label: string, text: string) => {
+      const release = await m.acquire();
+      try {
+        line.push(`${label}:${text}`);
+        await Promise.resolve(); // the delay between text and submit CR
+        await Promise.resolve();
+        line.push(`${label}:CR`);
+      } finally {
+        release();
+      }
+    };
+    // Fire both "at the same time" (same clean boundary).
+    await Promise.all([gatedInject('wake', 'do X'), gatedInject('compact', '/compact focus')]);
+    // Each inject's text and CR are adjacent — never split by the other's write.
+    const wakeText = line.indexOf('wake:do X');
+    const wakeCr = line.indexOf('wake:CR');
+    const compactText = line.indexOf('compact:/compact focus');
+    const compactCr = line.indexOf('compact:CR');
+    expect(wakeCr).toBe(wakeText + 1); // wake text immediately followed by its CR
+    expect(compactCr).toBe(compactText + 1); // compact text immediately followed by its CR
+    // And one whole inject completes before the other begins (no interleave).
+    const wakeFirst = wakeText < compactText;
+    expect(line).toEqual(
+      wakeFirst
+        ? ['wake:do X', 'wake:CR', 'compact:/compact focus', 'compact:CR']
+        : ['compact:/compact focus', 'compact:CR', 'wake:do X', 'wake:CR'],
+    );
+  });
+
+  it('preserves FIFO order across three waiters', async () => {
+    const m = makeInjectMutex();
+    const order: number[] = [];
+    const run = async (n: number) => {
+      const release = await m.acquire();
+      order.push(n);
+      await Promise.resolve();
+      release();
+    };
+    // Enqueue in order; each acquire() chains onto the prior tail (FIFO).
+    const p1 = run(1);
+    const p2 = run(2);
+    const p3 = run(3);
+    await Promise.all([p1, p2, p3]);
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  it('a throwing critical section still releases the lock (the finally contract) — the queue never wedges', async () => {
+    const m = makeInjectMutex();
+    const order: string[] = [];
+    // Holder 1 throws AFTER acquiring but releases in its finally (as the handler does).
+    const p1 = (async () => {
+      const release = await m.acquire();
+      try {
+        order.push('1');
+        throw new Error('inject blew up (child exited mid-inject)');
+      } finally {
+        release();
+      }
+    })();
+    await expect(p1).rejects.toThrow('inject blew up');
+    // The next inject must still be able to acquire — no permanent wedge.
+    const release2 = await m.acquire();
+    order.push('2');
+    release2();
+    expect(order).toEqual(['1', '2']);
   });
 });
 

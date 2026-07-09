@@ -695,6 +695,42 @@ export function makeTurnCoalescer() {
   };
 }
 
+/**
+ * A minimal FIFO async mutex serializing the GATED-inject critical section within
+ * a single host (EI-8822). Each control-socket connection runs its OWN async
+ * handler, and a gated inject waits at the idle + agent-busy gates before it
+ * writes. Without this, two gated injects freed at the SAME clean boundary — a
+ * coord wake `turn` and a session:request-compaction `/compact`, both released the
+ * instant the agent returns to its prompt — both pass the at-prompt gate and
+ * interleave their bytes into the SAME pty input line. The second's text lands
+ * CONCATENATED after the first ("<wake payload>…/compact <focus>"), so the CLI
+ * reads it as one prose message, not a command, and the compaction silently never
+ * runs (the agent keeps working at 90%+ context believing it compacted). The
+ * coalescer above only folds SAME-source turns; it gives no mutual exclusion
+ * between a wake and a compact. Holding this mutex across the whole
+ * gate-wait-through-write sequence guarantees every gated inject is written as an
+ * isolated, uninterrupted input line. Ungated raw/osc injects never acquire it (a
+ * force-interrupt byte must land immediately, mid-turn; an osc recolor targets the
+ * terminal display, not the agent's input line). `acquire()` resolves to a
+ * `release` fn once the lock is free; the holder MUST call it (a `finally`). A
+ * throwing/deferred critical section still releases via that finally, so one
+ * inject's failure never wedges the queue. Pure factory; exported for tests. */
+export function makeInjectMutex() {
+  let tail = Promise.resolve();
+  return {
+    /** Resolve to a release() fn once the lock is free (FIFO). Caller MUST call it. */
+    async acquire() {
+      const prev = tail;
+      let release;
+      tail = new Promise((resolve) => {
+        release = resolve;
+      });
+      await prev; // block until the previous holder releases
+      return release; // caller releases → frees the next FIFO waiter
+    },
+  };
+}
+
 /** The ordered write STEPS the host performs against the pty for a decoded
  *  message. raw → ONE immediate verbatim write (force-interrupt byte). turn →
  *  TWO writes: the line text, then the submit Enter (CR) as a SEPARATE keystroke
@@ -1203,6 +1239,11 @@ export function hostThroughPty(o) {
   // injects that stack up at the gates while the agent is busy — see the
   // makeTurnCoalescer doc block for the measured 9× duplication this kills.
   const turnCoalescer = makeTurnCoalescer();
+  // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
+  // session:request-compaction `/compact` freed at the SAME clean boundary can't
+  // both pass the at-prompt gate and interleave their bytes into one pty input
+  // line (the "/compact swallowed as prose" race). See makeInjectMutex.
+  const injectMutex = makeInjectMutex();
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
@@ -1231,6 +1272,13 @@ export function hostThroughPty(o) {
         }
         return;
       }
+      // EI-8822: hold the per-host inject mutex across the ENTIRE gated
+      // critical section (gate wait → pty write → submit verify) so a wake
+      // `turn` and a session:request-compaction `/compact` freed at the SAME
+      // clean boundary run one-at-a-time and never interleave into one input
+      // line. Ungated raw/osc bypass it — a force-interrupt byte must land
+      // immediately (mid-turn), and osc writes the display, not the input line.
+      const releaseInject = msg.gated ? await injectMutex.acquire() : null;
       try {
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
@@ -1385,6 +1433,11 @@ export function hostThroughPty(o) {
         // idempotent — a no-op when the delivery already claimed it above).
         if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
         /* child may have exited mid-inject */
+      } finally {
+        // EI-8822: always free the inject mutex — on success, an early return
+        // (defer/recycle/compact), OR a throw — so one inject never wedges the
+        // queue behind an unreleased lock.
+        if (releaseInject) releaseInject();
       }
     });
   });

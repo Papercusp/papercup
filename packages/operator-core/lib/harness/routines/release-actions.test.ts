@@ -45,6 +45,7 @@ import {
   shouldBackOff,
   gateStallEscalationBody,
   decideReleaseFixerDispatch,
+  shouldDispatchReleaseFixer,
   classifyGateStallStatus,
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
@@ -482,6 +483,34 @@ describe('annotateFailingTestsWithFlakeStats (EI-7443)', () => {
     expect(out).toContain('flaky.test.ts: 12F/53P over 7d, 4 commit(s)');
     expect(out).toContain('flake_rate=0.185');
     expect(out).not.toContain('regression.test.ts');
+  });
+});
+
+describe('shouldDispatchReleaseFixer (EI-8740: no fixer for a held gate with nothing to fix)', () => {
+  it('dispatches on not-green with real failing tests', () => {
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', ['a.test.ts'])).toBe(true);
+  });
+
+  it('dispatches on advanced-prefix with real failing tests (P-016 red-tip case)', () => {
+    expect(shouldDispatchReleaseFixer('advanced-prefix', 'cafe1234', ['@papercusp/operator-vite'])).toBe(true);
+  });
+
+  it('does NOT dispatch on not-green with EMPTY failingTests (the EI-8740 no-op-churn case)', () => {
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', [])).toBe(false);
+  });
+
+  it('does NOT dispatch when failingTests is undefined', () => {
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', undefined)).toBe(false);
+  });
+
+  it('does NOT dispatch without a candidate', () => {
+    expect(shouldDispatchReleaseFixer('not-green', undefined, ['a.test.ts'])).toBe(false);
+  });
+
+  it('does NOT dispatch on other statuses (advanced, up-to-date, error, ...) even with failing tests', () => {
+    for (const status of ['advanced', 'up-to-date', 'error', 'create-failed', 'not-fast-forward', 'skipped-locked']) {
+      expect(shouldDispatchReleaseFixer(status, 'cafe1234', ['a.test.ts'])).toBe(false);
+    }
   });
 });
 

@@ -108,6 +108,51 @@ export async function getHivePolicy(
 }
 
 /**
+ * EI-8685 (p2p-perf `merge.delta-tick` regression — deltaTick1Ms 0.137ms →
+ * 33ms, +24340%): a short-TTL in-memory cache in front of {@link getHivePolicy}
+ * for TIGHT hot-path callers (the merge pass — `boot.ts`'s `mergeOnePass`).
+ *
+ * `getHivePolicy` is a raw, uncached PG round-trip. `mergeOnePass` reads it
+ * ONCE per non-idle merge pass — correct in isolation (the comment there says
+ * "an idle / un-policed harness pays NOTHING", true for an IDLE pass, but a
+ * pass with new ops always pays this query, EVEN when un-policed / the result
+ * is null) — but a bg-host driving back-to-back ticks (P-013's whole point is
+ * O(k) cheap ticks) now pays a full PG round-trip on EVERY one, which is
+ * exactly the added-per-pass overhead the perf regression measures.
+ *
+ * A Hive policy changes RARELY (an explicit owner-signed author op) and
+ * already propagates async over federation — federation lag is already
+ * seconds+, so a `ttlMs` (default 2s) cache adds a bounded, negligible extra
+ * staleness window in exchange for collapsing N merge-pass queries/sec down
+ * to ~1 every `ttlMs`. Deliberately NOT applied inside {@link getHivePolicy}
+ * itself: several OTHER callers (the policy-authoring write path / admin
+ * routes wanting read-your-write) may need the uncached read, and this keeps
+ * their behavior byte-for-byte unchanged — only a caller that explicitly asks
+ * for the cached variant accepts the staleness tradeoff.
+ */
+const hivePolicyCache = new Map<string, { at: number; value: ResolvedHivePolicy | null }>();
+
+export async function getHivePolicyCached(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  opts?: { ttlMs?: number; sql?: Sql },
+): Promise<ResolvedHivePolicy | null> {
+  const ttlMs = opts?.ttlMs ?? 2000;
+  const key = `${workspaceId}::${hiveHomeSlug}`;
+  const cached = hivePolicyCache.get(key);
+  const now = Date.now();
+  if (cached && now - cached.at < ttlMs) return cached.value;
+  const value = await getHivePolicy(workspaceId, hiveHomeSlug, opts?.sql);
+  hivePolicyCache.set(key, { at: now, value });
+  return value;
+}
+
+/** Test seam — forget every cached policy (and reset the cache entirely). */
+export function _resetHivePolicyCacheForTests(): void {
+  hivePolicyCache.clear();
+}
+
+/**
  * Raw LOCAL upsert of a signed policy row. Sets only the signed/federated subset +
  * created_at/updated_at; the stamp_local_federated_write trigger (migration 317) owns
  * fed_ts/fed_hlc/origin so the change federates. Used by hive-policy-author.ts AFTER

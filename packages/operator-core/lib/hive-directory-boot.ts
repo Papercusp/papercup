@@ -194,12 +194,27 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
       const unlist = isHiveUnlistFrame(frame);
       const res = unlist ? await dir.ingestUnlist(frame) : await dir.ingestAnnounce(frame);
       if (res.accepted) {
-        void import('./sync-sse')
-          .then((m) => {
-            void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
-            void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
-          })
-          .catch(() => {});
+        // EI-8696: this push is fire-and-forget (never awaited by design — see
+        // above) so it can OUTLIVE the caller's own await. Under vitest, none of
+        // hive-directory's plain unit tests wire a real `./sync-sse` (no PG, no
+        // SSE subscribers), so this chain's real `notifySyncInvalidate` throws
+        // and its bus.onError logs a bare `console.error('[sync-sse] ... failed')`
+        // — swallowed by the OUTER .catch here, but only AFTER it already fired
+        // vitest-fail-on-console. Because the promise is untracked, that log can
+        // land after the delivering test's `it()` has returned — inside a LATER
+        // test's (or even a later FILE's, same worker) console-spy window, which
+        // is exactly the "a different single test reds each hour" cross-test
+        // contamination the green-checkpoint flake tracked. The push is a pure
+        // UI-freshness nicety with no test ever asserting on it, so skip it
+        // hermetically in test env — unchanged in every real deployment.
+        if (!process.env.VITEST) {
+          void import('./sync-sse')
+            .then((m) => {
+              void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
+              void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
+            })
+            .catch(() => {});
+        }
         // WI-1585 defect B: a late canonical announce re-fires the auto-join
         // (no-op when already joined / non-canonical / debounced — see above).
         if (!unlist) void maybeTriggerCanonicalJoinOnIngest(frame as SignedHiveAnnounce).catch(() => {});

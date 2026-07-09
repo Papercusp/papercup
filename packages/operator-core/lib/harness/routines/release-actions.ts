@@ -317,11 +317,8 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
   // release-fixer agent to diagnose + fix the failing test — the test-failure
   // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
-  // P-016 (D-010): on 'advanced-prefix' the longest-green PREFIX was promoted but the
-  // batch TIP is still red — `candidate` is that red tip + `failingTests` its failures,
-  // so the fixer dispatch is identical to a full hold (it must still fix the red tip).
-  if ((status === 'not-green' || status === 'advanced-prefix') && candidate) {
-    await dispatchReleaseFixer(ctx, candidate, failingTests).catch((e) =>
+  if (shouldDispatchReleaseFixer(status, candidate, failingTests)) {
+    await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
       console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -704,6 +701,33 @@ export interface ReleaseFixerRecord {
   runId?: string | null;
   /** When the human was last notified for this signature (notify cooldown, separate from dispatch). */
   notifiedAt?: number;
+}
+
+/**
+ * EI-8740: should a held (`not-green`/`advanced-prefix`) gate verdict dispatch a
+ * release-fixer at all?
+ *
+ * P-016 (D-010): on 'advanced-prefix' the longest-green PREFIX was promoted but the
+ * batch TIP is still red — `candidate` is that red tip + `failingTests` its failures,
+ * so the fixer dispatch is identical to a full hold (it must still fix the red tip).
+ *
+ * A verdict with an EMPTY `failingTests` means there is no failing TEST to fix —
+ * either a setup/tooling failure before any test ran (e.g. a pot with a `package.json`
+ * but no `test:affected` script — "Missing script", distinct from the no-`package.json`
+ * case EI-8744 already flips to vacuously-green) or a phantom candidate from a stalled
+ * advance. A release-fixer's contract is to fix a failing test; dispatching it with
+ * nothing to reproduce is a guaranteed no-op that only classifies-and-escalates —
+ * observed as hourly wasted-spawn churn on codeless E2E-scaffold pots (dummy-pot-0707,
+ * spoon-knife-hive). `trackGateStall` (the caller's sibling step) still fires the
+ * human-facing "held too long" alert regardless of this gate, so a genuinely-stuck gate
+ * is never silently dropped — this only spares the pointless fixer spawn.
+ */
+export function shouldDispatchReleaseFixer(
+  status: string,
+  candidate: string | undefined,
+  failingTests: string[] | undefined,
+): candidate is string {
+  return (status === 'not-green' || status === 'advanced-prefix') && !!candidate && !!failingTests && failingTests.length > 0;
 }
 
 export interface ReleaseFixerDecision {

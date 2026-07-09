@@ -256,6 +256,33 @@ default-off flag; see `libs/flags/src/types.ts` comment above
 ON) is a secondary instant off-switch for the bridge leg specifically, on top
 of the mode.
 
+## Live-rig diagnostic gotchas (from the 2026-07-06→09 fed-plane outage)
+
+Hard-won during the WI-1729 root-cause hunt (su-4dc3befd + su-63834d42, 2026-07-09);
+three STACKED environmental root causes (Mac zombie stack, ufw drop, wedged DHT
+bootstrap) meant no single fix showed green — verify each layer independently:
+
+- **hyperswarm is UDX/UDP** — `ss -tnp` / TCP socket lists NEVER show its
+  connections. Absence there is not evidence of no connectivity; probe the swarm
+  itself.
+- **The isolated DHT bootstrap can wedge across a host reboot while the unit stays
+  `active`** (`papercup-isolated-dht.service`, 172.31.44.1:49838, wedged from the
+  tower's 2026-07-06 23:02 reboot). `systemctl status` is not a health check —
+  verify with a RAW hyperswarm announce+lookup probe (two fresh instances, fresh
+  topic, tower-local). A wedged bootstrap = zero connections fleet-wide.
+- **`dev:dogfood_substrate_status` lies on clustered hosts** — it can hit a
+  non-substrate-owner cluster worker and report `bootedCount:0` (EI-8816). Don't
+  trust a zero from it.
+- **Mac server logs** live at `~/.papercusp/logs/serve.log` (launchd
+  `StandardOutPath` was `/dev/null` until 2026-07-09 — older incidents have no
+  Mac-side logs at all).
+- **Fed-plane liveness watermark** (the discriminant for "arrivals dead"):
+  `SELECT origin, count(*), max(ts) FROM harness_shared.coord_event_log GROUP BY
+  origin` — `origin='remote'` max(ts) is the tower←peer arrival watermark; local
+  advancing while remote is pinned = the inbound leg is dead. After a
+  DHT/bootstrap fix, allow one periodic swarm re-announce cycle (~10–15 min)
+  before judging the fix red.
+
 ## Refs
 
 Plan `p2p-git-live-activation-2026-07-09`; design doc
