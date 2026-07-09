@@ -96,13 +96,29 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   grep returns ZERO: `grep -rnE "var\(--(ok|success|danger|error-bg)[,)]"
   apps/operator/app apps/operator-vite/src --include=*.tsx --include=*.ts
   --include=*.css | grep -v _retired | grep -v '\.test\.'`.
-- **P-005** status single-source: replace local maps with harness/theme.ts
-  tables/pills — AcceptancePanel STATUS_TONE; admin/dbos/DbosClient statusColor;
-  AgentInspectorModal inline hexes; settings/user/memory KIND_COLORS;
-  operator-vite LearningTab GYM_STATUS_COLOR; dock/Real*+Pinned* panels ONLY if
-  P-008 doesn't retire them first. Extend central tables for missing keys
-  (dbos/gym). Add warn-first lint (warnOrFail enforce:false) for local
-  STATUS_*/SEVERITY_*/KIND_COLORS maps.
+- **P-005** [DONE 2026-07-09] status single-source. As shipped: harness/theme.ts
+  gained `TONE` (good/warn/bad/accent/neutral/fg → bare var() forms) +
+  `statusToneColor(status, fallback)` (one-color lookups; covers VAL, DBOS
+  (incl. MAX_RECOVERY* contains-match), gym, stream-step vocabularies) +
+  `MEMORY_KIND_COLOR`/`MEMORY_KIND_FALLBACK`. Migrated: AcceptancePanel
+  STATUS_TONE, DbosClient statusColor (still exported, delegates; tests
+  unchanged 10/10), settings/user/memory KIND_COLORS, vite LearningTab
+  GYM_STATUS_COLOR (37/37), + BONUS StructuredStreamView STATUS_COLOR (4/4).
+  SKIPPED deliberately: AgentInspectorModal + dock/Real*+Pinned* +
+  insights/BootHistoryTable — all on P-008's retire list (migrating
+  soon-retired surfaces is waste); they show in the lint warn output instead.
+  Warn-first lint added to design-primitives.test.ts (`unexpectedLocalStatusColorMaps`,
+  enforce:false, central-files allowlist = theme.ts): 10 offenders logged — 8
+  P-008-bound, 2 categorical (AdvConversationsTab KIND_COLOR, CupboardClient
+  KIND_TONES → P-016 territory). Flip enforce:true after P-008+P-016 land.
+  ⚠ Fixed en route: warnOrFail's warn path used console.warn, which
+  vitest-fail-on-console turns into a hard fail — warn-first NEVER actually
+  worked for a real offender; now writes process.stdout.write (self-tests
+  updated). Behavior deltas (deliberate): DBOS CANCELLED now fg-mute (was fg);
+  gym unknown-status fallback now var(--fg-mute) (was #94a3b8). Verified:
+  _lints 19/19 + css-tokens, DbosClient 10/10, LearningTab 37/37,
+  StructuredStreamView 4/4, `npm run test:affected` exit 0 (2713 files green;
+  su-ba914 confirmed the nuqs red fixed on their side).
 - **P-006** theme-contract sweep: (a) globals.css ~28 lines rgba(103,232,249)/
   #67e8f9 in .pc-voice-btn.is-wake-detected + .operator-panel → color-mix over
   --accent-strong (add cyan-300 row to tokens.mdx migration table);

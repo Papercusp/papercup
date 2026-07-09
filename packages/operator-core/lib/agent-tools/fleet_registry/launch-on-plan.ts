@@ -695,6 +695,17 @@ export default defineTool({
           'leader gets around to calling scheduler:set_claim_spec by hand. A member\'s own later per-bee ' +
           'spec still overrides this fleet default. Omit to leave scheduling exactly as before (no spec set).',
       ),
+    overrideCapacityClamp: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-8807 owner-override: FORCE all requested members to launch even when the gateway capacity ' +
+          'clamp would zero/reduce the top-up. The clamp is still COMPUTED + reported (for transparency), ' +
+          'but it does NOT reduce openCount. Use ONLY when you have confirmed the pool is actually healthy ' +
+          '(accounts:status shows an available account) and the clamp\'s gateway health read is stale/wrong — ' +
+          'e.g. healthyAccounts=0 while accounts:status shows an available account. Recorded in the result ' +
+          '(capacityClampOverridden) as the audit trail. Replaces the hand-rolled capability:terminal fallback.',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);

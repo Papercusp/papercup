@@ -227,7 +227,6 @@ OPERATOR_DEV_PORT=3370 \
 OPERATOR_DEV_PTY_PORT=3374 \
 PAPERCUSP_DEV_API_TARGET=3370 \
 PAPERCUSP_NATIVE_TERMINAL=0 \
-PAPERCUSP_CLUSTER_WORKERS=1 \
 npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:3370"}}'
 ```
 
@@ -236,16 +235,37 @@ display, launch that command under the §15.4 Xvfb + VirtualGL recipe;
 `PAPERCUSP_NATIVE_TERMINAL=0` is the load-bearing part that prevents a
 duplicate `pui chat`/Queen/Sentinel dock from joining the live fleet.
 
-Without it, `hono-host.ts`'s cluster-fork logic (`resolveClusterWorkers`,
-`packages/operator-core/lib/cluster-fork.ts`) can fork one HTTP worker
-**per CPU core** for this throwaway instance — on a large shared dev box
-that's a dozen-plus extra Node processes each pegged near 100% CPU,
-which drove host load past 1000 and knocked over the shared
-`papercup-dev-api`/`papercup-staging-api` systemd services (they
-auto-restarted, but it degraded the whole fleet, including causing the
-live-federation-gate's load-based skip, for several minutes). Always
-pin `PAPERCUSP_CLUSTER_WORKERS=1` for an isolated verification instance
-— it never needs more than one request worker.
+`npm run tauri -- dev` runs Tauri's `beforeDevCommand`
+(`papercusp-desktop/bin/dev-operator-ifneeded.sh`), which **already pins
+`PAPERCUSP_CLUSTER=0`** for exactly this reason (WI-3556): an agent shell
+inherits the release host's `PAPERCUSP_CLUSTER=16`-ish env, and without the
+wrapper's pin a `tauri dev` launch forks one HTTP request worker **per CPU
+core** — a dozen-plus extra Node processes each near 100% CPU, driving
+shared-box load past 1000 and knocking over the systemd-owned
+`papercup-dev-api`/`papercup-staging-api` services (they auto-restart, but
+it degrades the whole fleet, including tripping the live-federation-gate's
+load-based skip).
+
+⚠ **Do not "helpfully" pass `PAPERCUSP_CLUSTER_WORKERS=<anything>` in your
+own launch env.** `resolveClusterWorkers()` (`packages/operator-core/lib/cluster-fork.ts`)
+resolves `env.PAPERCUSP_CLUSTER_WORKERS ?? env.PAPERCUSP_CLUSTER` — so a
+`PAPERCUSP_CLUSTER_WORKERS` set in *your* shell (even to a value you intend
+as "off") is inherited into the child **before** the wrapper's own
+`PAPERCUSP_CLUSTER=0` runs, and because `??` checks `CLUSTER_WORKERS`
+first, it **silently shadows the wrapper's safety pin** — the wrapper never
+gets a chance to apply it. This is exactly how an earlier revision of this
+very doc, which added `PAPERCUSP_CLUSTER_WORKERS=1` "to fix it", instead
+**reproduced the incident within minutes** of the first fix landing (`=1`
+is additionally its own footgun — see below). The correct fix already
+lives in the wrapper script; this recipe needs **no cluster env var at
+all**. Verify after boot: `ss -tlnp | grep 3370` must show exactly **ONE**
+listener PID.
+
+Separately, if you ever DO need to pass this var directly to `hono-host.ts`
+(bypassing the Tauri wrapper), know that `'1'` does **not** mean "one
+worker" — `resolveClusterWorkers` treats `'1'` the same as `'auto'`/`'on'`/`'true'`
+(clustering **ON** at the host's recommended, often worker-per-core, count).
+Only `'0'`/`'off'`/`'false'` force single-process.
 
 ### 1.4 Stale Vite cache
 
@@ -1572,14 +1592,22 @@ DISPLAY=:90 openbox &                            echo $! > /tmp/openbox90.pid
 DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
 # Launch the app UNDER vglrun so WebKitGTK composites on the GPU:
 ( cd papercusp-desktop && env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 \
-    PAPERCUSP_CLUSTER_WORKERS=1 \
     vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &  echo $! > /tmp/tauri-xvfb.pid
 # ⚠ Wayland trap: without `env -u WAYLAND_DISPLAY GDK_BACKEND=x11` GTK may pick
 # the live Wayland seat and open the window on the OWNER'S desktop, ignoring :90.
-# ⚠ PAPERCUSP_CLUSTER_WORKERS=1 is REQUIRED (WI-3556, 2026-07-09): without it the
-# operator sidecar's cluster-fork logic can fork one HTTP worker PER CPU CORE for
-# this throwaway instance, driving shared-box load past 1000 and knocking over the
-# systemd-owned papercup-dev-api/papercup-staging-api services. Never omit it.
+# ⚠ Do NOT add PAPERCUSP_CLUSTER_WORKERS=<anything> to this env block (WI-3556,
+# 2026-07-09 + its same-day recurrence). `npm run dev` runs Tauri's
+# beforeDevCommand (dev-operator-ifneeded.sh), which ALREADY pins
+# PAPERCUSP_CLUSTER=0 for exactly this reason: an agent shell inherits the
+# release host's PAPERCUSP_CLUSTER=16-ish env, and without that pin the launch
+# forks one HTTP worker PER CPU CORE, driving shared-box load past 1000 and
+# knocking over the systemd-owned papercup-dev-api/papercup-staging-api
+# services. Setting PAPERCUSP_CLUSTER_WORKERS yourself (to ANY value, even 0)
+# SHADOWS that wrapper pin (resolveClusterWorkers checks CLUSTER_WORKERS
+# before CLUSTER) — an earlier revision of this doc added =1 "to fix it" and
+# reproduced the incident within minutes ('1' also isn't "one worker" — it
+# means clustering ON at the recommended multi-core count, same as 'auto').
+# Verify after boot: `ss -tlnp | grep 3370` must show exactly ONE listener.
 # ⚠ On the shared dev box prefer the BARE binary over `npm run dev` — the tauri-dev
 # watcher restarts/kills your app whenever the fleet edits src-tauri/** (see §15):
 #   env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 vglrun -d egl0 \
