@@ -1089,3 +1089,83 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
     expect(payload.promotionFailsafe).toBeNull();
   });
 });
+
+// EI-8807: the overrideCapacityClamp ARG must thread through the HANDLER to
+// clampFleetTopUpToCapacity({ override }) so an owner-ordered launch is NOT zeroed by a
+// stale/wrong gateway health read (the live incident: count:4, healthyAccounts:0 while
+// accounts:status showed an available account, dispatchBudget:13 free slots → opened:[] with
+// no override arg, forcing a hand-rolled capability:terminal fallback). This pins the
+// end-to-end arg-threading the pure-function tests above (clampFleetTopUpToCapacity/override)
+// do not cover.
+describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads through (EI-8807)', () => {
+  // The exact repro headroom: gateway reachable, ZERO healthy accounts, but a full bee-tier
+  // dispatchBudget of free slots (beeTier=3). With account:'auto' the members are gateway-routed,
+  // so healthyAccounts:0 zero-gates the top-up — the clamp the owner needed to override.
+  const zeroHealthyFullSlots = {
+    reachable: true,
+    utilization: 0.61,
+    utilizationPct: 61,
+    paused: false,
+    rejected: false,
+    inFlight: 0,
+    queueDepth: 0,
+    priorityTiers: {
+      healthyAccounts: 0,
+      tier1Reserve: 0,
+      tiers: [{ tier: 3, cap: 13, inFlight: 0, queued: 0 }],
+    },
+  };
+
+  beforeEach(async () => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue(zeroHealthyFullSlots);
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockReset();
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it('WITHOUT override: a gateway-routed launch is zeroed by healthyAccounts:0 (the repro — opened:[])', async () => {
+    const res = await tool.handler(
+      { name: 'Override Fleet', plan: 'my-plan', harness: 'papercusp', count: 4, account: 'auto' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toEqual([]);
+    expect(payload.capacitySuppressed).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    // The clamp recommended 0 and was NOT overridden.
+    expect(payload.capacityClamp).toMatchObject({ openCount: 0, clamped: true, overridden: false, recommendedOpenCount: 0 });
+  });
+
+  it('WITH overrideCapacityClamp:true: all 4 members launch despite healthyAccounts:0, and the override is legible', async () => {
+    const res = await tool.handler(
+      {
+        name: 'Override Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 4,
+        account: 'auto',
+        overrideCapacityClamp: true,
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    // The owner-ordered launch actually opens — the exact consequence the bug reported (a
+    // 4→0 clamp with no override arg) no longer strands it.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(4);
+    expect(payload.opened).toHaveLength(4);
+    expect(payload.capacitySuppressed).toBeUndefined();
+    // The recommendation stays REPORTED — an override is never invisible (audit trail).
+    expect(payload.capacityClamp).toMatchObject({
+      openCount: 4,
+      overridden: true,
+      recommendedOpenCount: 0,
+      healthyAccounts: 0,
+    });
+    expect(payload.capacityClamp.reason).toMatch(/OVERRIDDEN/);
+  });
+});

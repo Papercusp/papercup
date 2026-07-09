@@ -77,6 +77,9 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       presence: async () => null,
       alive: () => false,
       spawnDetached: () => 4242, // pretend a headless resume spawned
+      // Hermetic by default (P-001): a dead-waiter degrade never reaches the
+      // real sendMessage (which touches PG/coordLog) unless a test overrides it.
+      sendCoordMessage: async () => ({}) as never,
       ...over,
     };
   }
@@ -104,17 +107,34 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park');
   });
 
-  it('no handle + no socket + presence STALE → drop (dead waiter)', async () => {
+  it('no handle + no socket + presence STALE → DEGRADES to a coord inbox notification (P-001), not a drop', async () => {
     const s = tb.session('A');
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
-    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ stale: true }) }));
-    expect(out.kind).toBe('drop');
+    const sendCoordMessage = async () => ({}) as never;
+    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ stale: true }), sendCoordMessage }));
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'inbox' });
   });
 
-  it('no handle + no socket + presence REVOKED → drop', async () => {
+  it('no handle + no socket + presence REVOKED → DEGRADES to a coord inbox notification (P-001), not a drop', async () => {
     const s = tb.session('A');
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
-    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ revoked: true }) }));
+    const sendCoordMessage = async () => ({}) as never;
+    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ revoked: true }), sendCoordMessage }));
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'inbox' });
+  });
+
+  it('no handle + no socket + presence gone AND the inbox send itself fails → still drops, visibly', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        presence: async () => presenceRec({ stale: true }),
+        sendCoordMessage: async () => {
+          throw new Error('log write failed');
+        },
+      }),
+    );
     expect(out.kind).toBe('drop');
   });
 
@@ -278,7 +298,7 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park');
   });
 
-  it('adv-session exited + not resumable + presence GONE → drop', async () => {
+  it('adv-session exited + not resumable + presence GONE → DEGRADES to a coord inbox notification (P-001), not a drop', async () => {
     const s = tb.session('A');
     const d = makeDelivery({
       subscriberId: s.ownerId,
@@ -291,7 +311,7 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
         presence: async () => null,
       }),
     );
-    expect(out.kind).toBe('drop');
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'inbox' });
   });
 
   it('resume spawn FAILS → error outcome (the pump retries with backoff)', async () => {

@@ -139,6 +139,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the hive-fresh-wake fire is stubbed so a hive-labelled
     // session never reaches the real default (which lazy-imports + touches PG).
     fireHiveWake: vi.fn(async () => true) as never,
+    // Hermetic by default: the degrade-to-inbox send is stubbed so a dead-waiter
+    // drop path never reaches the real sendMessage (which touches PG/coordLog).
+    sendCoordMessage: vi.fn(async () => ({}) as never) as never,
     ...over,
   };
 }
@@ -347,10 +350,64 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toMatchObject({ kind: 'park' });
   });
 
-  it('no handle + stale presence → drop, visibly (dead waiter)', async () => {
-    const out = await executeWake(work({ wakeHandle: null }), deps({ presence: vi.fn(async () => stalePresence) as never }));
+  it('no handle + stale presence (headless waiter) → DEGRADES to a coord inbox notification, not a drop (P-001)', async () => {
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({ presence: vi.fn(async () => stalePresence) as never, sendCoordMessage: sendCoordMessage as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [identity, opts] = sendCoordMessage.mock.calls[0] as unknown as [
+      { workspaceId: string },
+      { to: string[]; summary: string; body: string },
+    ];
+    expect(identity.workspaceId).toBe('ws');
+    expect(opts.to).toEqual(['su-abc']);
+    expect(opts.summary).toContain('dead waiter');
+    expect(opts.body).toContain('lock:grant:t-1');
+  });
+
+  it('no handle + stale presence, but even the inbox send FAILS → still drops, visibly (no resolvable owner)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({
+        presence: vi.fn(async () => stalePresence) as never,
+        sendCoordMessage: vi.fn(async () => {
+          throw new Error('no such owner');
+        }) as never,
+      }),
+    );
     expect(out).toMatchObject({ kind: 'drop' });
     expect((out as { reason: string }).reason).toContain('dead waiter');
+    expect((out as { reason: string }).reason).toContain('no such owner');
+  });
+
+  it('live waiter still gets a pty wake (the inbox degrade never shadows a live inject)', async () => {
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const write = vi.fn(() => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ findPty: vi.fn(() => ({ id: 'pty-7' })) as never, write: write as never, sendCoordMessage: sendCoordMessage as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+  });
+
+  it('session ended, not resumable, presence gone → DEGRADES to a coord inbox notification, not a drop (P-001)', async () => {
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ sessionId: null, ompThreadId: null }), payload: null }),
+      deps({
+        getSession: vi.fn(async () =>
+          session({ endedAt: new Date().toISOString(), pid: null, sessionId: null, ompThreadId: null }),
+        ) as never,
+        presence: vi.fn(async () => stalePresence) as never,
+        sendCoordMessage: sendCoordMessage as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
   });
 
   it('no handle BUT a live psu-host socket → inject via the socket, not park (EI-152)', async () => {

@@ -103,14 +103,16 @@ C, transparent N%)` resolves to *exactly* `C` at alpha `(1 − N/100)` (premulti
 mix with `transparent`), so it's **byte-identical** to the old rgba in frost and
 goes monochrome in black. Pick the token whose frost value equals the sky shade:
 
-| Old literal                                        | Replace with                                                                             |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)` |
-| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                      |
-| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                          |
-| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                          |
-| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                          |
-| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                        |
+| Old literal                                        | Replace with                                                                                                                                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)`                                                                                   |
+| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                                                                                                        |
+| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                                                                                                            |
+| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                                                                                                            |
+| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                                                                                                            |
+| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                                                                                                          |
+| `#67e8f9` (cyan-300), `rgba(103,232,249,a)`        | `--accent-strong` / `rgb(from var(--accent-strong) r g b / a)` (nearest sky shade; also `--accent-strong-rgb` for `rgba(var(--accent-strong-rgb), a)` triplet composition) |
+| `#22d3ee` (cyan-400), `rgba(34,211,238,a)`         | `--accent` / `rgb(from var(--accent) r g b / a)` (nearest sky shade; `--accent-rgb` for triplet composition)                                                               |
 
 (`in oklab` is fine for *new* washes; use `in srgb` when you're replacing an
 existing rgba and need the frost render to stay pixel-for-pixel identical.)

@@ -3257,6 +3257,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         refreshMs: opts.swarmRefreshMs,
         fastWindowMs: opts.swarmFastWindowMs,
         slowRefreshMs: opts.swarmSlowRefreshMs,
+        // P-201 (p2p-git-live-activation-2026-07-09): register the hive-git
+        // serve plane only for a harness actually bound to a hive home — a
+        // non-hive harness (hiveHomeProjectionSlug null) never wires it, so it
+        // stays byte-for-byte unchanged. Per-request mode gating (legacy vs
+        // bridged/p2p-only) happens live inside the wiring itself.
+        ...(hiveHomeProjectionSlug
+          ? { hiveGitServe: { hiveHomeSlug: hiveHomeProjectionSlug, workspaceId: opts.workspaceId } }
+          : {}),
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
            

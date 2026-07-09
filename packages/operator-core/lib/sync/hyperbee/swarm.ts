@@ -33,6 +33,7 @@ import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
 import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
+import { wireHiveGitServe, type HiveGitServeConfig } from '../hive-git/serve-wiring';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -180,6 +181,15 @@ export interface JoinHarnessSwarmOpts {
   /** Steady-state keepalive cadence once the fast window lapses (ms).
    *  Default `DEFAULT_SUBSTRATE_SLOW_REFRESH_MS`. */
   slowRefreshMs?: number;
+  /**
+   * P-201 (p2p-git-live-activation-2026-07-09): register this harness's
+   * connections to SERVE `papercusp/hive-git` fetch requests (a peer member
+   * fetching our namespace) — omitted for a non-hive harness (the common
+   * case), so byte-for-byte unchanged when not set. Actual serving is further
+   * mode-gated PER REQUEST inside the wiring (a legacy-mode hive always
+   * refuses, re-checked live — no re-seed needed on a mode flip).
+   */
+  hiveGitServe?: HiveGitServeConfig;
 }
 
 /**
@@ -865,6 +875,10 @@ export async function joinHarnessSwarm(
         buildOurAnnounce: opts.buildOurAnnounce,
         onAnnounce: opts.onAnnounce,
       });
+      // P-201: register the hive-git serve plane on the SAME connection/muxer
+      // the announce channel just rode — additive, never-throwing, no-op when
+      // `hiveGitServe` is omitted (every non-hive-git harness, unchanged).
+      if (opts.hiveGitServe) wireHiveGitServe(socket, opts.topic, opts.hiveGitServe);
     } catch {
       // Replication failures shouldn't crash the swarm handler; the
       // peer will reconnect if relevant. Diagnostic counters could

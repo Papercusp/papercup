@@ -224,13 +224,15 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
     const b = tb.session('B');
     // Only B has a live socket. A's wake must NOT be injected into B.
     const hostB = await tb.spawnSocketHost(b.ownerId);
+    const sendCoordMessage = async () => ({}) as never;
 
     const out = await executeWake(
       makeDelivery({ subscriberId: a.ownerId, wakeHandle: null }),
-      { findPsuHost: tb.findPsuHostDep(), presence: async () => null },
+      { findPsuHost: tb.findPsuHostDep(), presence: async () => null, sendCoordMessage },
     );
-    // No socket for A, no presence → drop (NOT delivered onto B).
-    expect(out.kind).toBe('drop');
+    // No socket for A, no presence → degrades to a coord inbox notification
+    // for A (P-001), NEVER onto B's socket.
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
     expect(hostB.received).toHaveLength(0);
   });
 });

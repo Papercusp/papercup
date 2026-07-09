@@ -1,0 +1,478 @@
+/**
+ * hive-git/serve-wiring.ts — wires `serveUploadPack` (fetch-transport.ts, G-2)
+ * onto the shared per-harness Hyperswarm connection, so a peer member can
+ * fetch this device's namespace over the `papercusp/hive-git` Protomux channel
+ * (P-201, p2p-git-live-activation-2026-07-09). Until this module, the channel
+ * was documented (fetch-transport.ts's header) but had no live caller — every
+ * fetch ran over a plain test socket pair.
+ *
+ * WHY A NEW MODULE (not just calling serveUploadPack from the connection
+ * handler directly): Protomux channels are MESSAGE-based, not a raw byte
+ * duplex — `addMessage({ encoding, onmessage })` sends/receives one discrete
+ * frame at a time. `serveUploadPack`/`fetchOverDuplex` need a `node:stream`
+ * `Duplex` to pipe a `git upload-pack`/`git fetch` child process's stdio
+ * through. So this module MULTIPLEXES many concurrent logical fetch duplexes
+ * over ONE Protomux channel per (muxer, hive topic) — mirroring the announce
+ * channel's per-(muxer,topic) uniqueness (swarm.ts's `openAnnounceChannel`)
+ * but framing REQUEST / DATA / END / REFUSE messages keyed by a per-fetch id
+ * instead of one flat gossip frame.
+ *
+ * Wire shape — SIX message slots on ONE channel (compact-encoding, not JSON:
+ * a git pack is binary and can run tens of MB; JSON/base64 would double the
+ * bytes on the wire). Both peers construct the channel with these `addMessage`
+ * calls in this EXACT order so the wire `type` indices line up (protomux
+ * assigns `type` by call order, per-channel):
+ *   0 req          { id, repoKey, peerGithubUserId } — open a logical fetch (requester → server)
+ *   1 refuse        { id, reason }                    — server refused a req (server → requester)
+ *   2 dataToServer  { id, chunk }                      — requester's outgoing bytes (client → server)
+ *   3 dataToClient  { id, chunk }                      — server's response bytes (server → client)
+ *   4 endToServer   { id, code }                       — requester's write side ended
+ *   5 endToClient   { id, code }                       — server's write side ended
+ *
+ * Every message type is scoped to exactly one role's usage (e.g. `dataToServer`
+ * always means "bytes flowing INTO whoever is serving id"), so ids only need to
+ * be unique within each PEER's own outgoing-request set — no cross-peer id
+ * coordination, and no ambiguity if both peers happen to pick the same id for
+ * unrelated requests.
+ *
+ * SERVER side ({@link wireHiveGitServe}): on `req`, re-checks `hiveGit.mode`
+ * (S-5: NEVER cached, so a mode flip needs no re-seed — mirrors
+ * git-sync-action's per-tick re-consult of the same setting) and resolves the
+ * repo path for `(hiveHomeSlug, repoKey)`. A legacy-mode hive always REFUSEs —
+ * no bytes are ever served, so legacy hives are byte-for-byte unchanged. Scope
+ * (`scopes/`) repos also refuse for now: authorizeScopeRepoServe needs a
+ * roster-VERIFIED peer identity (scope-serve-gate.ts's contract), and no
+ * caller here yet threads the announce-verified identity through this
+ * transport layer — serving them unauthenticated would be worse than not
+ * serving them (a follow-on wires `scopeServeGrant` once that identity binding
+ * lands).
+ *
+ * CLIENT side ({@link openHiveGitFetchDuplex}): sends `req`, returns a Duplex
+ * the caller drives with `fetchOverDuplex` — the SAME `openDuplex: () =>
+ * Promise<Duplex>` seam every downstream consumer already expects
+ * (worktree-bridge.ts, github-bridge-tick via the integrator). A `refuse` or a
+ * channel/connection loss destroys the duplex with an error; `fetchOverDuplex`
+ * never throws on that (fail-soft: a broken fetch resolves nonzero).
+ *
+ * Fail-soft throughout: every handler is defensive (a throwing peer frame, a
+ * missing session, a wiring failure) and NEVER crashes the shared swarm
+ * connection handler — same contract as `openAnnounceChannel`.
+ */
+import { Duplex } from 'node:stream';
+import Protomux, { type ProtomuxChannel } from 'protomux';
+import c, { type CompactEncoding, type CompactEncodingState } from 'compact-encoding';
+import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-git-mode';
+import { hiveGitRepoPath } from './storage';
+import { isScopeRepoFamilyPath } from './scope-repo';
+import { HIVE_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
+
+export { HIVE_GIT_PROTOCOL };
+
+/** Config registered by {@link wireHiveGitServe} — what this connection may serve. */
+export interface HiveGitServeConfig {
+  /** The hive this connection's swarm topic belongs to (repos are resolved
+   *  under it — `hiveGitRepoPath(hiveHomeSlug, repoKey)`). */
+  hiveHomeSlug: string;
+  workspaceId: string;
+  /** Per-fetch wall-clock ceiling forwarded to `serveUploadPack` (default
+   *  DEFAULT_FETCH_TIMEOUT_MS — see fetch-transport.ts). */
+  timeoutMs?: number;
+}
+
+// ─── wire frames ─────────────────────────────────────────────────────────
+
+interface ReqFrame {
+  id: number;
+  repoKey: string;
+  peerGithubUserId: number;
+}
+interface RefuseFrame {
+  id: number;
+  reason: string;
+}
+interface DataFrame {
+  id: number;
+  chunk: Buffer;
+}
+interface EndFrame {
+  id: number;
+  code: number;
+}
+
+const reqEncoding: CompactEncoding<ReqFrame> = {
+  preencode(state, v) {
+    c.uint.preencode(state, v.id);
+    c.string.preencode(state, v.repoKey);
+    c.uint.preencode(state, v.peerGithubUserId);
+  },
+  encode(state, v) {
+    c.uint.encode(state, v.id);
+    c.string.encode(state, v.repoKey);
+    c.uint.encode(state, v.peerGithubUserId);
+  },
+  decode(state) {
+    const id = c.uint.decode(state);
+    const repoKey = c.string.decode(state);
+    const peerGithubUserId = c.uint.decode(state);
+    return { id, repoKey, peerGithubUserId };
+  },
+};
+
+const refuseEncoding: CompactEncoding<RefuseFrame> = {
+  preencode(state, v) {
+    c.uint.preencode(state, v.id);
+    c.string.preencode(state, v.reason);
+  },
+  encode(state, v) {
+    c.uint.encode(state, v.id);
+    c.string.encode(state, v.reason);
+  },
+  decode(state) {
+    const id = c.uint.decode(state);
+    const reason = c.string.decode(state);
+    return { id, reason };
+  },
+};
+
+const dataEncoding: CompactEncoding<DataFrame> = {
+  preencode(state, v) {
+    c.uint.preencode(state, v.id);
+    c.buffer.preencode(state, v.chunk);
+  },
+  encode(state, v) {
+    c.uint.encode(state, v.id);
+    c.buffer.encode(state, v.chunk);
+  },
+  decode(state) {
+    const id = c.uint.decode(state);
+    const chunk = c.buffer.decode(state);
+    return { id, chunk };
+  },
+};
+
+const endEncoding: CompactEncoding<EndFrame> = {
+  preencode(state, v) {
+    c.uint.preencode(state, v.id);
+    c.int.preencode(state, v.code);
+  },
+  encode(state, v) {
+    c.uint.encode(state, v.id);
+    c.int.encode(state, v.code);
+  },
+  decode(state) {
+    const id = c.uint.decode(state);
+    const code = c.int.decode(state);
+    return { id, code };
+  },
+};
+
+// ─── the per-fetch Duplex adapter ───────────────────────────────────────
+
+/** One logical fetch stream, framed over the shared channel. Default
+ *  `allowHalfOpen: true` (node's Duplex default) is load-bearing: ending our
+ *  WRITE side must not also end our READ side — a git pack negotiation is
+ *  asymmetric (the requester's write side legitimately ends well before the
+ *  server's response finishes), exactly mirroring `fetchOverDuplex`'s own
+ *  `allowHalfOpen` socket-pair contract. */
+class FrameDuplex extends Duplex {
+  constructor(
+    private readonly sendChunk: (chunk: Buffer) => void,
+    private readonly onLocalEnd: (code: number) => void,
+  ) {
+    super();
+  }
+  override _write(chunk: Buffer, _enc: string, cb: (e?: Error | null) => void): void {
+    try {
+      this.sendChunk(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      cb();
+    } catch (e) {
+      cb(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+  override _read(): void {
+    /* push-driven from inbound frames — nothing to pull here */
+  }
+  override _final(cb: (e?: Error | null) => void): void {
+    try {
+      this.onLocalEnd(0);
+    } catch {
+      /* best-effort — a dropped connection must not throw out of _final */
+    }
+    cb();
+  }
+  override _destroy(err: Error | null, cb: (e?: Error | null) => void): void {
+    cb(err);
+  }
+  /** Deliver an inbound DATA frame's bytes to the readable side. */
+  pushChunk(chunk: Buffer): void {
+    this.push(chunk);
+  }
+  /** Deliver an inbound END frame — EOF on the readable side (half-open: the
+   *  writable side is untouched). */
+  pushEnd(): void {
+    this.push(null);
+  }
+}
+
+// ─── per-(muxer, topic) channel state ───────────────────────────────────
+
+interface ChannelMessages {
+  req: { send(v: ReqFrame): void };
+  refuse: { send(v: RefuseFrame): void };
+  dataToServer: { send(v: DataFrame): void };
+  dataToClient: { send(v: DataFrame): void };
+  endToServer: { send(v: EndFrame): void };
+  endToClient: { send(v: EndFrame): void };
+}
+
+interface ChannelState {
+  channel: ProtomuxChannel | null;
+  messages: ChannelMessages | null;
+  opened: boolean;
+  openedWaiters: Array<() => void>;
+  /** Set by `wireHiveGitServe` — null means "not registered to serve on this
+   *  connection" (an inbound req refuses `not-serving`, never crashes). */
+  serverConfig: HiveGitServeConfig | null;
+  /** Sessions where WE are the server (id allocated by the peer's req). */
+  serverSessions: Map<number, FrameDuplex>;
+  /** Sessions where WE are the requester (id allocated by us). */
+  clientSessions: Map<number, FrameDuplex>;
+  nextClientId: number;
+}
+
+const stateByMuxer = new WeakMap<object, Map<string, ChannelState>>();
+
+function statesFor(mux: object): Map<string, ChannelState> {
+  let m = stateByMuxer.get(mux);
+  if (!m) {
+    m = new Map();
+    stateByMuxer.set(mux, m);
+  }
+  return m;
+}
+
+function newState(): ChannelState {
+  return {
+    channel: null,
+    messages: null,
+    opened: false,
+    openedWaiters: [],
+    serverConfig: null,
+    serverSessions: new Map(),
+    clientSessions: new Map(),
+    nextClientId: 1,
+  };
+}
+
+function markOpened(state: ChannelState): void {
+  state.opened = true;
+  const waiters = state.openedWaiters.splice(0);
+  for (const w of waiters) w();
+}
+
+function waitOpened(state: ChannelState): Promise<void> {
+  return state.opened ? Promise.resolve() : new Promise((resolve) => state.openedWaiters.push(resolve));
+}
+
+/** A dropped/closed connection fails every in-flight session loudly (destroy,
+ *  never a silent hang) — `fetchOverDuplex`/`serveUploadPack` both treat a
+ *  destroyed duplex as a failed (nonzero) result, never a thrown exception. */
+function failAllSessions(state: ChannelState): void {
+  for (const d of state.serverSessions.values()) d.destroy(new Error('hive-git: serve channel closed'));
+  for (const d of state.clientSessions.values()) d.destroy(new Error('hive-git: serve channel closed'));
+  state.serverSessions.clear();
+  state.clientSessions.clear();
+}
+
+function handleReq(state: ChannelState, v: ReqFrame): void {
+  const refuse = (reason: string): void => {
+    try {
+      state.messages?.refuse.send({ id: v.id, reason });
+    } catch {
+      /* best-effort */
+    }
+  };
+  void (async () => {
+    const cfg = state.serverConfig;
+    if (!cfg) return refuse('not-serving');
+    let mode: HiveGitMode;
+    try {
+      mode = await getHiveGitMode(cfg.workspaceId, cfg.hiveHomeSlug);
+    } catch {
+      mode = 'legacy';
+    }
+    if (mode === 'legacy') return refuse('mode-legacy');
+    let repoPath: string;
+    try {
+      repoPath = hiveGitRepoPath(cfg.hiveHomeSlug, v.repoKey);
+    } catch {
+      return refuse('bad-repo-key');
+    }
+    if (isScopeRepoFamilyPath(repoPath)) {
+      // §5.3 needs a roster-verified peer identity this transport doesn't yet
+      // carry (see module header) — refuse rather than serve unauthenticated.
+      return refuse('scope-repo-unsupported');
+    }
+    const duplex = new FrameDuplex(
+      (chunk) => state.messages?.dataToClient.send({ id: v.id, chunk }),
+      (code) => {
+        try {
+          state.messages?.endToClient.send({ id: v.id, code });
+        } catch {
+          /* best-effort */
+        }
+      },
+    );
+    state.serverSessions.set(v.id, duplex);
+    try {
+      await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs });
+    } finally {
+      state.serverSessions.delete(v.id);
+    }
+  })().catch(() => {
+    /* best-effort: a bad/hostile request must never crash the shared channel */
+  });
+}
+
+function handleRefuse(state: ChannelState, v: RefuseFrame): void {
+  const d = state.clientSessions.get(v.id);
+  if (!d) return;
+  state.clientSessions.delete(v.id);
+  d.destroy(new Error(`hive-git serve refused: ${v.reason}`));
+}
+function handleDataToServer(state: ChannelState, v: DataFrame): void {
+  state.serverSessions.get(v.id)?.pushChunk(v.chunk);
+}
+function handleDataToClient(state: ChannelState, v: DataFrame): void {
+  state.clientSessions.get(v.id)?.pushChunk(v.chunk);
+}
+function handleEndToServer(state: ChannelState, v: EndFrame): void {
+  state.serverSessions.get(v.id)?.pushEnd();
+}
+function handleEndToClient(state: ChannelState, v: EndFrame): void {
+  const d = state.clientSessions.get(v.id);
+  if (!d) return;
+  d.pushEnd();
+  state.clientSessions.delete(v.id);
+}
+
+/** Get-or-create the channel + its six message slots for (mux, topic).
+ *  Idempotent per muxer (both `wireHiveGitServe` and `openHiveGitFetchDuplex`
+ *  share the SAME channel via this). */
+function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
+  const states = statesFor(mux as unknown as object);
+  const topicHex = topic.toString('hex');
+  let state = states.get(topicHex);
+  if (state) return state;
+  state = newState();
+  states.set(topicHex, state);
+  const channel = mux.createChannel({
+    protocol: HIVE_GIT_PROTOCOL,
+    id: topic,
+    onopen: () => markOpened(state!),
+    onclose: () => failAllSessions(state!),
+  });
+  if (!channel) {
+    // Defensive: a (protocol,id) collision on this muxer from outside this
+    // module (shouldn't happen — HIVE_GIT_PROTOCOL is private to it). Leave
+    // `channel`/`messages` null so callers fail soft instead of throwing.
+    return state;
+  }
+  state.channel = channel;
+  state.messages = {
+    req: channel.addMessage<ReqFrame>({ encoding: reqEncoding, onmessage: (v) => handleReq(state!, v) }),
+    refuse: channel.addMessage<RefuseFrame>({ encoding: refuseEncoding, onmessage: (v) => handleRefuse(state!, v) }),
+    dataToServer: channel.addMessage<DataFrame>({ encoding: dataEncoding, onmessage: (v) => handleDataToServer(state!, v) }),
+    dataToClient: channel.addMessage<DataFrame>({ encoding: dataEncoding, onmessage: (v) => handleDataToClient(state!, v) }),
+    endToServer: channel.addMessage<EndFrame>({ encoding: endEncoding, onmessage: (v) => handleEndToServer(state!, v) }),
+    endToClient: channel.addMessage<EndFrame>({ encoding: endEncoding, onmessage: (v) => handleEndToClient(state!, v) }),
+  };
+  channel.open();
+  return state;
+}
+
+/** Resolve the shared Protomux for a connection socket — corestore attaches it
+ *  at `socket.noiseStream`, not always the outer Hyperswarm socket (mirrors
+ *  `openAnnounceChannel`'s identical resolution in swarm.ts). */
+function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<unknown> } {
+  const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
+    opened?: Promise<unknown>;
+  };
+  return { mux: Protomux.from(muxStream as never), opened: muxStream.opened };
+}
+
+// ─── public API ──────────────────────────────────────────────────────────
+
+/**
+ * SERVER side (P-201): register this connection to serve `hiveGitServe`
+ * requests for `topic`. Call once per connection alongside
+ * `openAnnounceChannel` (same connection handler, same muxer) — a no-op-safe,
+ * fire-and-forget, NEVER-throwing registration (mirrors `openAnnounceChannel`'s
+ * contract so a wiring bug can't crash the shared swarm handler).
+ */
+export function wireHiveGitServe(socket: unknown, topic: Buffer, config: HiveGitServeConfig): void {
+  try {
+    const { mux, opened } = resolveMuxStream(socket);
+    const register = (): void => {
+      try {
+        ensureChannel(mux, topic).serverConfig = config;
+      } catch {
+        /* best-effort */
+      }
+    };
+    if (opened && typeof opened.then === 'function') {
+      void opened.then(register, register);
+    } else {
+      register();
+    }
+  } catch {
+    /* best-effort — hive-git serve is additive, never breaks the swarm connection */
+  }
+}
+
+/**
+ * CLIENT side (consumed by P-202's announce→fetch driver + worktree-bridge's
+ * `openDuplex` seam): request a fetch duplex for `repoKey` from the peer on
+ * the other end of `socket`'s connection, on `topic`'s hive-git channel.
+ * Resolves a Duplex immediately after the request is sent (never rejects —
+ * a refusal/drop destroys the returned duplex instead, matching
+ * `fetchOverDuplex`'s fail-soft "never throws" contract).
+ */
+export async function openHiveGitFetchDuplex(
+  socket: unknown,
+  topic: Buffer,
+  req: { repoKey: string; peerGithubUserId?: number },
+): Promise<Duplex> {
+  const { mux, opened } = resolveMuxStream(socket);
+  if (opened && typeof opened.then === 'function') await opened.catch(() => {});
+  const state = ensureChannel(mux, topic);
+  if (!state.channel || !state.messages) {
+    const d = new FrameDuplex(
+      () => {},
+      () => {},
+    );
+    d.destroy(new Error('hive-git: could not open the serve channel'));
+    return d;
+  }
+  await waitOpened(state);
+  const messages = state.messages;
+  const id = state.nextClientId++;
+  const duplex = new FrameDuplex(
+    (chunk) => messages.dataToServer.send({ id, chunk }),
+    (code) => {
+      try {
+        messages.endToServer.send({ id, code });
+      } catch {
+        /* best-effort */
+      }
+    },
+  );
+  state.clientSessions.set(id, duplex);
+  try {
+    messages.req.send({ id, repoKey: req.repoKey, peerGithubUserId: req.peerGithubUserId ?? 0 });
+  } catch (e) {
+    state.clientSessions.delete(id);
+    duplex.destroy(e instanceof Error ? e : new Error(String(e)));
+  }
+  return duplex;
+}

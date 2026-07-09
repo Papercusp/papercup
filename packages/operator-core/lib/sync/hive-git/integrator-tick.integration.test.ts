@@ -56,6 +56,18 @@ async function commit(repo: string, files: Record<string, string>, parent?: stri
   }
 }
 
+/** A minimal fake `postgres.Sql` for the ratify-queue leg (`listRatifiedStates` /
+ *  `queueIntegrationRequest`): no rows ever ratified, every insert/delete is a
+ *  no-op. Needs `.array` too — `listRatifiedStates` calls `sql.array(...)` to
+ *  build its `UNNEST` clause. */
+function fakeSql(): never {
+  const fn = (async (strings: TemplateStringsArray) => {
+    return strings.join('?').includes('SELECT') ? [] : [];
+  }) as unknown as { (): Promise<unknown[]>; array: (a: unknown[]) => unknown[] };
+  fn.array = (a: unknown[]) => a;
+  return fn as never;
+}
+
 describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)', () => {
   let root: string;
   let repo: string;
@@ -105,7 +117,7 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
       priorSeq: 0,
       sign: integrator.sign,
       resolveTier: () => 'steer',
-      deps: { isIntegrator: async () => true },
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
     });
 
     expect(out.ran).toBe(true);
@@ -134,8 +146,9 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
       priorSeq: 1,
       sign: integrator.sign,
       resolveTier: () => 'steer',
-      deps: { isIntegrator: async () => true },
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
     });
+    expect(out.gated).toEqual({ integrated: 1, queued: 0, errors: 0 });
     expect(out.integration?.advanced).toBe(false);
     expect(out.announcement).toBeNull();
   });
@@ -143,7 +156,6 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
   it('below-steer-tier heads QUEUE instead of integrating (never silently merged)', async () => {
     const head = await commit(repo, { 'below.txt': 'x' });
     await writeNamespaceRef(repo, devB.pubBase64, WORK_REF, head);
-    const queued: unknown[] = [];
 
     const out = await runIntegratorTick({
       hiveHomeSlug: 'hive-i',
@@ -154,22 +166,13 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
       epoch: 1,
       priorSeq: 1,
       sign: integrator.sign,
+      // devA stays steer-tier (already contained in staging — a no-op re-admit);
+      // devB is below-steer, so ONLY its head queues instead of integrating.
       resolveTier: (dev) => (dev === devB.pubBase64 ? 'message' : 'steer'),
-      deps: {
-        isIntegrator: async () => true,
-        // Fake the PG-backed ratify-queue writer/reader so this test needs no
-        // database: no row is ever ratified, so devB's head always queues.
-        sql: (async (strings: TemplateStringsArray, ...vals: unknown[]) => {
-          void vals;
-          const text = strings.join('?');
-          if (text.includes('SELECT')) return [];
-          queued.push(text);
-          return [];
-        }) as never,
-      },
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
     });
 
-    expect(out.gated).toEqual({ integrated: 0, queued: 1, errors: 0 });
+    expect(out.gated).toEqual({ integrated: 1, queued: 1, errors: 0 });
     expect(out.integration?.advanced).toBe(false);
     expect(out.announcement).toBeNull();
   });

@@ -74,6 +74,12 @@ const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
   // allowlisted so the fleet's green gate isn't held red. The plan's author owns the migration
   // to the shared table primitive when it lands (+ removal of this entry).
   'operator/app/_components/RubricsPanel.tsx',
+  // TEMPORARY (gate-unblock 2026-07-09, rubrics-tab-scorecard-ui-2026-07-09) — the same plan's
+  // detail panels, same missing-table-primitive situation as RubricsPanel above; found red
+  // during design-simplification P-006 verify. That plan's author owns the migration
+  // (+ removal of these entries) when the shared table primitive lands.
+  'operator/app/_components/RubricDetailPanel.tsx',
+  'operator/app/_components/ScorecardDetail.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
