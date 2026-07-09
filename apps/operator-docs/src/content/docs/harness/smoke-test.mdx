@@ -33,12 +33,12 @@ demand: `POST /api/harness/:slug/smoke-test/run`
 (`packages/operator-core/lib/endpoint-route/routes/harness/orchestration-actions.ts`,
 loopback-auth; flattened into the route table at `routes/index.ts`) spawns
 `service-smoke-test.sh`, which writes the `smoke-pass.md` / `smoke-failure.md`
-sentinels (clearing the failure sentinel on pass). It is also reachable
+papercups (clearing the failure papercup on pass). It is also reachable
 through the device-tier shim `POST /api/device/harnesses/:slug/smoke-test`
 (`routes/device/harnesses.ts`). The script then POSTs its aggregated result
 to `POST /api/internal/smoke-test-event`, which upserts the
 `harness_shared.harness_smoke_test` row and — on a pass→fail *transition*
-only — pushes a high-importance `smoke-fail` attention item. So the sentinels
+only — pushes a high-importance `smoke-fail` attention item. So the papercups
 `smoke_test_clean` reads are exactly what this live endpoint writes; they are
 not only "earlier engines / out-of-band".
 
@@ -46,7 +46,7 @@ not only "earlier engines / out-of-band".
 composite checks with **different data sources**: `smoke_test_clean` (the
 harness-readers composite health in
 `packages/operator-core/lib/harness-readers.ts`) fails when the
-`smoke-failure.md` FS sentinel exists in the harness state dir; `smoke_passing`
+`smoke-failure.md` FS papercup exists in the harness state dir; `smoke_passing`
 (the operator-UI `HealthBadge`) fails when the latest PG `harness_smoke_test`
 row has `status: 'fail'` (the "see smoke-failure.md" text it shows is only a
 label, not its source). That same `harness_smoke_test` row (written by the
@@ -79,7 +79,7 @@ DONE. The runner call site passes the gate explicitly off
 — `smokeEnabled: false, smokePassed: null`). Because the finalizer always hands
 the gate `smokeEnabled: false`, the DONE-gate machinery — which *would* block on
 `smokeEnabled && smokePassed === false` — never trips on the automatic path. A
-smoke run that fails today still records its sentinel + PG row + attention item,
+smoke run that fails today still records its papercup + PG row + attention item,
 but it cannot, on its own, stop a pipeline from completing until that Phase F
 follow-up wires the finalizer to invoke and consume the runner.
 

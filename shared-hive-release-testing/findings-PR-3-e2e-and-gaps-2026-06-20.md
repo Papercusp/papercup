@@ -12,7 +12,7 @@ PR-3 was already built by a peer (PrsTab/PrRow + `prs.ts` report+WI enrichment +
 auto-toggle). I verified it:
 
 - **Unit/route (green):** `PrRow.test.tsx` (ReportPanel: summary/recommendation/risks/checksObserved),
-  `PrsTab.component.test.tsx` (auto-toggle gating), `prs-hive-scope` + `pr-reviewer-settings` route tests.
+  `PrsTab.component.test.tsx` (auto-toggle gating), `prs-pot-scope` + `pr-reviewer-settings` route tests.
 - **Live GUI E2E (PASS)** — isolated Tauri instance on Xvfb `:90` via VirtualGL (`vglrun -d egl0`,
   real RTX 3090 GL), driven through the `tauri-agent-tools` bridge, **owner's window untouched**,
   all resources torn down. Evidence:

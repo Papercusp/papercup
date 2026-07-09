@@ -7,21 +7,21 @@ documents:
   - libs/papercusp/packages/orchestrator/src/blueprint/schema.ts
 plans:
   - legacy-docs-audit-revival-2026-06-06
-  - domain-generic-hive-architecture-2026-06-18
+  - domain-generic-pot-architecture-2026-06-18
   - autoloop-pot-operator-rebuild-2026-06-05
   - harness-blueprint-orchestration-2026-06-03
-  - local-hive-orchestration-2026-06-06
+  - local-pot-orchestration-2026-06-06
   - blueprint-role-bundling-2026-06-15
 ---
 
 Runtime terms, alphabetical, each pointing at its defining code. For
 spec-level/product vocabulary (Install, Goal, Plugin, marketplace `kind`, …)
 see [Vocabulary](/internal/docs/spec/vocabulary); for the user-facing brand
-lexicon (Hive/Queen/bee display strings) see the `papercusp-the-hive`
+lexicon (Pot/Mug/cup display strings) see the `papercusp-the-hive`
 [flag](/internal/docs/posthog/feature-flags) — those are presentation-layer
 names over the code terms below.
 
-**Bee** · The generic "do this task" agent of the hive blueprint — carries no
+**Cup** · The generic "do this task" agent of the pot blueprint — carries no
 pipeline spine and no chunk requirement, unlike `worker`. —
 `packages/agent-mcp/src/role-config.ts`
 
@@ -47,11 +47,11 @@ live lease with a dead holder is an *orphaned claim*, surfaced by
 **spine** — scoper → architect → worker → validator → documenter → curator
 (+ opt-in tester / security / crosscheck / ui-qa; reviewer = the PR gate) —
 over one `feature` (`F-NNN`). The 2026-06-18 rename moved this spine off the
-`coding` id (now the Hive) and onto `coding-factory`; it remains the active
+`coding` id (now the Pot) and onto `coding-factory`; it remains the active
 fallback pipeline and the `extends` base for repo-detected harnesses.
-Contrast the **Hive blueprint** (orchestration, *no* spine): different layers,
+Contrast the **Pot blueprint** (orchestration, *no* spine): different layers,
 not flavors. — `blueprints/coding-factory/blueprint.yaml`,
-[hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
+[pot-vs-coding](/internal/docs/agent-insights/pot-vs-coding-blueprint)
 
 **Curator** · The memory-compaction pipeline role; the only role that deletes
 harness memory. Its persona, like every role's, resolves under the owning
@@ -99,15 +99,15 @@ verb; tracked as a rate and a health signal (`low_ghost_rate`). —
 **Harness** · One managed work pipeline (repo + work queue + runs),
 instantiated from a blueprint; slug-identified.
 
-**Hive blueprint** · The *orchestration* layer (`kind:'hive'`, `id: coding`,
-root-only, **never nested**): a **Queen** surveys the work frontier and *places*
-ranked `work_items` onto generic **bees** — **no spine**, self-declared wake
-(`hive:declare-wake`) — and can create coding/research harnesses. The 2026-06-18
-rename moved this blueprint from `hive` to `coding`; the legacy `hive` id
-survives only as a runtime alias (`BLUEPRINT_ID_ALIASES = { hive: 'coding' }`).
+**Pot blueprint** · The *orchestration* layer (`kind:'pot'`, `id: coding`,
+root-only, **never nested**): a **Mug** surveys the work frontier and *places*
+ranked `work_items` onto generic **cups** — **no spine**, self-declared wake
+(`pot:declare-wake`) — and can create coding/research harnesses. The 2026-06-18
+rename moved this blueprint from `pot` to `coding`; the legacy `pot` id
+survives only as a runtime alias (`BLUEPRINT_ID_ALIASES = { pot: 'coding' }`).
 Contrast the **Coding blueprint** (one pipeline it runs). —
 `blueprints/coding/blueprint.yaml`,
-[hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
+[pot-vs-coding](/internal/docs/agent-insights/pot-vs-coding-blueprint)
 
 **Hook** · An out-of-band shell script at `.papercusp/hooks/<name>.sh` run at
 pipeline boundaries. — [Lifecycle hooks](/internal/docs/harness/hooks)
@@ -124,7 +124,7 @@ is deprecated and not read. — `libs/papercusp/packages/orchestrator/src/effect
 `debuggerThreshold: 3`). — `blueprints/coding-factory/blueprint.yaml`
 
 **Overwatch** · The autonomous system-health *supervisor* (a sibling to the
-Queen): runs a sense → decide → act loop over the whole running system, but
+Mug): runs a sense → decide → act loop over the whole running system, but
 nudges / observes / escalates *only* — it never re-places work and its role
 envelope denies `capability:fs-write` + `capability:bash`. A built-in
 `AGENT_ROLES` id, but it ships dark behind the `papercusp-overwatch` flag
@@ -141,9 +141,9 @@ path), `testing`, `production` (sibling `<path>--<phase>` checkouts). —
 **Planner** · An interactive plan-authoring session role (drafts one plan via
 `plans:*`); not the spec-level Planner pipeline role. — `role-config.ts`
 
-**Queen** · The steering intelligence of a hive/Pot — schedules, places, and
-prioritizes work (the role the lexicon surfaces as "Queen"); distinct from
-the watching `sentinel`. — `role-config.ts :: AGENT_ROLES` (`queen` entry)
+**Mug** · The steering intelligence of a pot/Pot — schedules, places, and
+prioritizes work (the role the lexicon surfaces as "Mug"); distinct from
+the watching `papercup`. — `role-config.ts :: AGENT_ROLES` (`mug` entry)
 
 **Redundancy / replica** · BOINC-style multi-dispatch of one work item to
 independent replicas with a judge step
@@ -161,7 +161,7 @@ runtime registry is `AGENT_ROLES`. —
 + harness + role + work item + signed MCP URL), the run is the execution;
 tracked in `harness_shared.spawned_agents`.
 
-**Sentinel** · The read-mostly fleet watcher (stuck spawns, lock hogs, coord
+**Papercup** · The read-mostly fleet watcher (stuck spawns, lock hogs, coord
 staleness); its only writes are alarms. — `role-config.ts`
 
 **Spine** · The blueprint's declared role-routing model; the `deriveNext`
@@ -175,10 +175,10 @@ interpreter maps (state, decision verb) → next action. —
 **Task** · An issue-family work-item kind recording delegated work; excluded
 from the default `issues:*` listing. — `work-items.ts`
 
-**Work blueprint** · The non-coding work Hive (`kind:'hive'`, `id: work`,
-`extends: coding`): the same Queen + bees orchestration as the coding Hive but
-for non-code work. Renamed from `generic-hive` by the 2026-06-18 rename
-(`BLUEPRINT_ID_ALIASES = { 'generic-hive': 'work' }`). —
+**Work blueprint** · The non-coding work Pot (`kind:'pot'`, `id: work`,
+`extends: coding`): the same Mug + cups orchestration as the coding Pot but
+for non-code work. Renamed from `generic-pot` by the 2026-06-18 rename
+(`BLUEPRINT_ID_ALIASES = { 'generic-pot': 'work' }`). —
 `blueprints/work/blueprint.yaml`
 
 **Work item** · The unified unit of work, one type discriminated by `kind`:

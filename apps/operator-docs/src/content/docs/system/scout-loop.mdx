@@ -1,10 +1,10 @@
 ---
 title: The Scout loop — autonomous generative ideation
-description: The Hive's generative-exploration engine — a directed, corpus-grounded ideation cycle that produces novel, bettable proposals and routes them into the existing rails. The "missing third mode" of self-improvement.
+description: The Pot's generative-exploration engine — a directed, corpus-grounded ideation cycle that produces novel, bettable proposals and routes them into the existing rails. The "missing third mode" of self-improvement.
 sidebar:
   order: 5
 plans:
-  - hive-creative-ideation-2026-06-08
+  - pot-creative-ideation-2026-06-08
   - scout-loop-test-plan-2026-06-11
   - turn-end-reflection-observations-2026-06-14
 documents:
@@ -19,7 +19,7 @@ documents:
 
 # The Scout loop
 
-The **Scout loop** is the Hive's *generative-exploration* engine — the deliberate
+The **Scout loop** is the Pot's *generative-exploration* engine — the deliberate
 creative **leap** (analogy, reframing, recombination, first-principles) that
 produces broad-scope novel ideas. It is the "missing third mode" of
 self-improvement: the idea queue (`improvements:capture`) is **reactive capture**
@@ -30,26 +30,26 @@ pattern.
 Scout extends [self-learning-central](/internal/docs/system/) pillar 2 (the
 generative source it gestured at but never built) and routes its output into the
 **existing** rails rather than forking the loop. Source:
-`packages/operator-core/lib/scout/`. Plan: `hive-creative-ideation-2026-06-08`.
+`packages/operator-core/lib/scout/`. Plan: `pot-creative-ideation-2026-06-08`.
 
-> Named for the hive metaphor: **scout** bees explore for *new* nectar sources and
-> waggle-dance the colony toward them, vs **forager** (gym) bees who exploit known
+> Named for the pot metaphor: **scout** cups explore for *new* nectar sources and
+> waggle-dance the colony toward them, vs **forager** (gym) cups who exploit known
 > sources.
 
 ## The cycle
 
 A periodic, **prompt-free** pass — the corpus digest is the trigger, the lenses
-are the divergence, the critics are the filter, and the **Queen** (not the owner)
+are the divergence, the critics are the filter, and the **Mug** (not the owner)
 is the autonomy gate:
 
 ```
 corpus synthesis → divergent generation → adversarial critics
-   → debate + recombine → routing → (Queen-triage cadence)
+   → debate + recombine → routing → (Mug-triage cadence)
 ```
 
 | Stage | What it does | Module |
 |---|---|---|
-| **1. Corpus synthesis** | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-hive, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can't do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
+| **1. Corpus synthesis** | Roll up cross-corpus *meta-patterns* over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth **`rubric-rating`** lane folding in structured rubric measurements grouped by `(rubric, source-pot, criterion)` (rubric-driven-observations-2026-06-20), so ideators leap from *measurements*, not just free-text clusters — the introspection the idea queue can't do (D-003). | `corpus-digest.ts` (`synthesizeStateOfHive`, `buildRubricRatings`) + `corpus-digest-deps.ts` |
 | **2. Divergent generation** | N ideators, each a *distinct* `CreativeLens` (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one "be creative" prompt (D-004). Each call has a 180s wall-clock cap (`DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS`); a cycle-level `signal` propagates parent cancellation. When ALL ideators fail their LLM call and produce zero ideas, the cycle adapter raises `ScoutIdeatorsTransportError` (total transport death — distinct from a healthy "no ideas" cycle). Partial failures never throw. | `ideators.ts` (`runIdeators`) + `lenses.ts` |
 | **3. Adversarial critics** | A **novelty** critic (search-first vs the corpus — reject the already-tried) and a **feasibility** critic, in tension, plus a high-novelty/low-feasibility **moonshot bucket** so leaps survive (D-005). | `critics.ts` (`critiqueIdeas`) + `critique-core.ts` (the pure spine) |
 | **4. Debate + recombine** | Merge surviving critiques (A's mechanism + B's framing) into proposals, each carrying a **required, structured cheap experiment** — the anti-bullshit gate (D-006). | `recombine.ts` (`recombineProposals`) |
@@ -112,7 +112,7 @@ Three behaviours the composition owns:
   `timeTokenSinks` / `chronicDeferrals` / `capabilityGaps` only — it does *not*
   inspect the `rubricRatings` lane, so a digest carrying only rubric measurements
   still reads as empty) early-exits `stop: 'empty-digest'` before the first costed
-  step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
+  step — a fresh/quiet pot spends $0 instead of paying the full ideator roster
   to reach `no-ideas`. `headline`/`generatedAt` don't count; only patterns ground
   ideas.
 - **Transport-death guard.** `ScoutIdeatorsTransportError` (defined in `ideators.ts`, raised
@@ -159,7 +159,7 @@ there.
 > **Scout runs as a deterministic blueprint, not a bespoke action (P-130,
 > deterministic-blueprints-migration-2026-06-13).** The old `system:scout-cycle`
 > system action is **retired** — nothing self-registers for Scout anymore. The
-> per-hive seed fires `system:blueprint-run {blueprintId:'scout'}` → the
+> per-pot seed fires `system:blueprint-run {blueprintId:'scout'}` → the
 > `scout:cycle` deterministic step → `runScoutCycleTick` → `productionScoutRunner`,
 > which is what calls `buildScoutCycleDeps(...) → runScoutCycle(deps)`.
 > `register-scout-action.ts` stays only as the home of `productionScoutRunner`.
@@ -176,17 +176,17 @@ rail" predates that inversion and is stale prose, not current behavior.
 
 ## Autonomy + the gym reframe
 
-- **Queen-gated, prompt-free (D-002/D-010).** Scout *proposes* → the Queen *gates*
+- **Mug-gated, prompt-free (D-002/D-010).** Scout *proposes* → the Mug *gates*
   → agents *build* → the owner gets a *report*. Broad-scope proposals route to
-  draft plans (owner/Queen-visible, not auto-active); the Queen greenlights by
+  draft plans (owner/Mug-visible, not auto-active); the Mug greenlights by
   promoting the draft. Cadence is **idle-capacity + friction-triggered** (a
   self-gating `shouldRunScoutCycle` gate, not a bare cron) — `cadence.ts` /
   `scheduler.ts` / `budget.ts`.
-- **Queen revision loop (queen-scout-feedback-loop).** The cadence gate also fires
-  **out-of-cadence**, preempting idle/friction: a pending Queen revision request
+- **Mug revision loop (mug-scout-feedback-loop).** The cadence gate also fires
+  **out-of-cadence**, preempting idle/friction: a pending Mug revision request
   (`queenWakePending`) bypasses the min-interval floor and fires `reason:
-  'queen-feedback'` immediately. Scout then iterates the routed draft via
-  `runScoutRevisionCycle` and notifies the Queen (`queen-notify.ts` —
+  'mug-feedback'` immediately. Scout then iterates the routed draft via
+  `runScoutRevisionCycle` and notifies the Mug (`mug-notify.ts` —
   `notifyQueenDraftRouted` / `notifyQueenRevised`). The revision loop's runaway
   bound is the per-cycle Scout budget + the autoloop fire-gate, **not** the
   cadence interval.
@@ -198,7 +198,7 @@ rail" predates that inversion and is stale prose, not current behavior.
   + `scout/gym-bridge.ts`.
 - **Outcome feedback (D-009).** The routed-idea ledger
   (`harness_shared.scout_routed_ideas`) tracks which generated ideas panned out via
-  the change feed → weights the lenses that win for this Hive. Owner/Queen **idea
+  the change feed → weights the lenses that win for this Pot. Owner/Mug **idea
   grades** (`scout-idea-grading`, C-4/C-5) layer on top: a present 1–5 grade
   **dominates** the change-feed-derived outcome in the per-lens weighting, and
   recently-graded ideas **prime** the next cycle's ideators

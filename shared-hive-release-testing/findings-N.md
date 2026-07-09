@@ -41,14 +41,14 @@ clears the release" — it clears the **scale dimension**.
 >   integration suite (48 files) green, unit 878 pass; AND a live split-brain skew
 >   inversion on the shipped binary converged to the HLC-winner on both peers. S0
 >   closed.
-> - **A-002 (Brief H/dc9db): leg done** (2-hive collision path, no stall).
+> - **A-002 (Brief H/dc9db): leg done** (2-pot collision path, no stall).
 > - **A-003 (Brief I/su-d2230): RED** (corrected — my earlier note said "fix
 >   landed"; d2230 then finalized it RED). The receive-side rebind is correct +
->   teeth-verified but **moot**: the dominant blocker is SEND-side — a hive-HOME
->   (`kind:'hive'`) harness never joins the topic / drains its own
+>   teeth-verified but **moot**: the dominant blocker is SEND-side — a pot-HOME
+>   (`kind:'pot'`) harness never joins the topic / drains its own
 >   `hive_members`/`hive_settings` outbox, so that content never federates off the
->   owner. Overlaps A-002 / the Move-1 hive-home-federation work.
-> - **C-001 (owner decision): RE-KEY.** The owner ruled shared-hive MUST cut READ
+>   owner. Overlaps A-002 / the Move-1 pot-home-federation work.
+> - **C-001 (owner decision): RE-KEY.** The owner ruled shared-pot MUST cut READ
 >   access on member-remove / go-private (epoch group key + content encryption —
 >   "Move 2") — now the **critical-path-to-public-release** build, subsuming A-003's
 >   revocation enforcement + E-001. (Not scale-related; out of Brief N's lane.)
@@ -131,7 +131,7 @@ the projection→real-PG hop is covered per-table by
 ## §live — Live 2-peer backfill-at-size, real binary (su-9140a, attributed) 🟢
 
 On the fresh-boot real-binary pair (`Papercusp_0.0.2` .deb, A=papercupai owner /
-B=aviynw joiner, single PUBLIC hive `hello-world-hive`, real testnet DHT, Xvfb
+B=aviynw joiner, single PUBLIC pot `hello-world-pot`, real testnet DHT, Xvfb
 :154), **300 distinct feature rows** were seeded on A (raw PG INSERT origin='local'
 → capture trigger → substrate outbox → drain). B backfilled the **FULL set**
 origin='remote' in **~6 s** (t=0 s:0 → t=3 s:200 → t=6 s:300/300), with **300
@@ -153,7 +153,7 @@ New file:
 Two tests, both green + teeth-verified:
 
 1. **3-peer content fan-out matrix.** 3 real `bootHarnessSubstrate` Swarms of one
-   Hive (the `federatePeerSet(3)` backbone), each authoring a coord-message.
+   Pot (the `federatePeerSet(3)` backbone), each authoring a coord-message.
    Asserts the full fan-out **matrix**: every peer's PG holds every peer's message,
    its OWN `origin='local'` and every other's `origin='remote'` (the origin column
    = it genuinely crossed the wire, not a local artifact), plus pre-merge negative

@@ -96,12 +96,12 @@ x-should-retry:true, yet `pausedUntil` was ~7h). Fix (governor.ts `penalize`): a
 ~2 min instead of parking for hours. A genuine usage cap (no `rateLimited`) still parks uncapped — the
 sustained/scale-out signal keys off penalty COUNT, not pause length, so it's unaffected.
 
-**Auto-wake coverage.** The stall-waker (`stall-waker.ts` + `ensureStallWakerLoop`) re-wakes an IDENTIFIED bee's
+**Auto-wake coverage.** The stall-waker (`stall-waker.ts` + `ensureStallWakerLoop`) re-wakes an IDENTIFIED cup's
 turn when its account recovers — *let them wait, then go through when capacity returns*. BUT `recordStall` only
 fired on the rare fast-shed exit, so the dominant failures (egress-exhausted 503, forwarded upstream-429)
-recorded nothing → `/admin/stalls` sat EMPTY while the whole pool was throttled → no bee was ever re-woken. Fix
-(gateway.ts): `recordStall` now fires on every bee-facing retryable exit (egress-exhausted 503, token-stall 503,
-forwarded 429/529) for a bee carrying `x-papercusp-owner`. **Caveat:** the waker only re-wakes a RESUMABLE
+recorded nothing → `/admin/stalls` sat EMPTY while the whole pool was throttled → no cup was ever re-woken. Fix
+(gateway.ts): `recordStall` now fires on every cup-facing retryable exit (egress-exhausted 503, token-stall 503,
+forwarded 429/529) for a cup carrying `x-papercusp-owner`. **Caveat:** the waker only re-wakes a RESUMABLE
 session (a watching coord wake-key); a one-shot turn whose process exited can't be woken (re-spawn-on-stall is
 future scope). Verify it's working: `curl :8788/admin/stalls` should be non-empty when the pool is throttled.
 
@@ -129,7 +129,7 @@ bounded so a request can never hang:
   wait to `retryDeadlineAt`, so a deadline-gated absorb would essentially never run; (2) gated on `transient`
   (short reset) so a multi-hour USAGE CAP is forwarded/switched, never absorbed; (3) the re-acquire waits up to
   the REMAINING ABSORB budget, NOT `maxQueueWaitMs` — the whole point is to out-wait the penalty pause (a 429
-  paces the account `BARE_429_FAILOVER_BACKOFF_MS` = 15 s). Size `maxQueueWaitMs + requestAbsorbMs` < the bee
+  paces the account `BARE_429_FAILOVER_BACKOFF_MS` = 15 s). Size `maxQueueWaitMs + requestAbsorbMs` < the cup
   CLI's ~10-min SDK request timeout.
 
 The HONEST CEILING: under a SUSTAINED throttle/overload longer than the absorb budget with zero free capacity,
@@ -143,16 +143,16 @@ get re-woken by the autowake, never held.
 
 ## The autowake (and the whole call path) is ROLE-AGNOSTIC (2026-06-22)
 
-The rate-limit/retry/autowake machinery must behave the SAME for ANY caller — a harness bee, an su/psu engineer
-session, anything holding a coord wake-key — not just bee spawns. The one role-specific gate was the waker's
+The rate-limit/retry/autowake machinery must behave the SAME for ANY caller — a harness cup, an su/psu engineer
+session, anything holding a coord wake-key — not just cup spawns. The one role-specific gate was the waker's
 idle-check (`StallWakerDeps.ownerIsIdle`, formerly `beeIsIdle`): it read ONLY `harness_shared.spawned_agents`
-(bee spawns), so an su/psu session RECORDED a stall but was never confirmed-idle → never re-woken (the gap
-su-b813f hit). Fix (stall-waker-loop.ts): `ownerIsIdle` now takes the most-recent activity from EITHER the bee
+(cup spawns), so an su/psu session RECORDED a stall but was never confirmed-idle → never re-woken (the gap
+su-b813f hit). Fix (stall-waker-loop.ts): `ownerIsIdle` now takes the most-recent activity from EITHER the cup
 nursery's stream output (`spawned_agents`) OR `coord_presence.last_active_at` (EVERY coord agent has one, any
 role). Everything else was already caller-agnostic: the wake (`forceEndTurn`/`wakeRecipients`) keys off the
 coord owner-id, `recordStall` off the `x-papercusp-owner` header, `capacityBack` off the account. (The OTHER
-`spawned_agents` readers — placement-gather, spawn-reclaim, spawn-tree — are correctly bee-FLEET operations, NOT
-the call path, and stay bee-scoped.)
+`spawned_agents` readers — placement-gather, spawn-reclaim, spawn-tree — are correctly cup-FLEET operations, NOT
+the call path, and stay cup-scoped.)
 
 ## What's genuinely external (not a gateway bug)
 

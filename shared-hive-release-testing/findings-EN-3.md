@@ -1,6 +1,6 @@
 # Findings EN-3 — Owner-enforcement: membership admission (P-MEMBER) + moderation (P-MOD)
 
-**Status: LANDED + GREEN (code/suite/structural).** Plan `shared-hive-owner-enforcement-2026-06-19`,
+**Status: LANDED + GREEN (code/suite/structural).** Plan `shared-pot-owner-enforcement-2026-06-19`,
 Phase EN-3. Builds on EN-1 (the owner-signed federated policy) and is ENFORCED through the
 EN-4 `policy-admission` seam (findings-EN-4.md). Continued + completed 2026-06-19 (su-328af):
 the EN-3 modules + 7 agent-tools were authored earlier but were **unwired** — federation
@@ -22,23 +22,23 @@ taken down / who gets banned (P-MOD). Two enforcement substrates:
 
 ## What shipped (modules — authored earlier)
 
-- `hive-membership-policy.ts` — pure deciders: `isBannedGithubId` (stable numeric id),
+- `pot-membership-policy.ts` — pure deciders: `isBannedGithubId` (stable numeric id),
   `isAllowlisted` (case-insensitive login), `evaluateMembershipAdmission` (open/approval/allowlist).
-- `hive-membership-admission.ts` — `approvePendingJoin` / `denyPendingJoin` (owner decisions;
+- `pot-membership-admission.ts` — `approvePendingJoin` / `denyPendingJoin` (owner decisions;
   approve → `upsertHiveMember` + status='approved').
-- `hive-moderation.ts` — `takedownContent` / `restoreContent` (append/remove a ref on the
+- `pot-moderation.ts` — `takedownContent` / `restoreContent` (append/remove a ref on the
   owner-signed `moderation.takedownList`, re-signed), `banMember` / `unbanMember` (on
   `moderation.bannedGithubIds`), and the PURE predicates `isContentTakenDown(policy, ref)` +
   `filterTakenDownContent(rows, policy, refOf)`.
-- `hive-pending-joins-store.ts` + `hive-reports-store.ts` — PG access to the two federated tables.
+- `pot-pending-joins-store.ts` + `pot-reports-store.ts` — PG access to the two federated tables.
 - **Migration 318** (`318-en3-membership-moderation-tables.sql`) — `hive_pending_joins` +
   `hive_reports`, both with the full federation bookkeeping (`stamp_local_federated_write`
   BEFORE trigger + `capture_substrate_outbox` AFTER triggers, `fed_hlc` LWW, `origin`
-  echo-guard), scope column `harness_slug` = the Hive home (rides the Hive-pubkey topic).
-- Hyperbee→PG projections `projections/hive-reports.ts` + `projections/hive-pending-joins.ts`
-  (mirror `hive-settings`; HLC LWW so the owner's later decision/resolution wins over the
+  echo-guard), scope column `harness_slug` = the Pot home (rides the Pot-pubkey topic).
+- Hyperbee→PG projections `projections/pot-reports.ts` + `projections/pot-pending-joins.ts`
+  (mirror `pot-settings`; HLC LWW so the owner's later decision/resolution wins over the
   request/report; per-projection `harness_slug` demux).
-- 7 agent-tools under `agent-tools/hive/`: `membership_pending`, `membership_decide`,
+- 7 agent-tools under `agent-tools/pot/`: `membership_pending`, `membership_decide`,
   `report`, `moderation_queue`, `moderation_resolve`, `takedown`, `ban_member`.
 
 ## What this pass WIRED (the gap that made EN-3 dead)
@@ -46,12 +46,12 @@ taken down / who gets banned (P-MOD). Two enforcement substrates:
 The SQL capture + the projection modules existed, but the **connective TS federation layer
 and the tool registration were missing** — so reports/pending-joins captured to the outbox
 but could not drain/serve/apply, and no owner verb was callable. Completed, mirroring EN-1's
-`hive-policy` exactly:
+`pot-policy` exactly:
 
 1. **`table-registry.ts`** — `hive_reports` + `hive_pending_joins` added to
    `PEER_LOG_WORKSPACE_OWNED` (→ `PEER_LOG_TABLES`, sync:'peer-log').
-2. **`feature-issue-op-keys.ts`** — tableTag map (`hive_reports`→`hive-reports`,
-   `hive_pending_joins`→`hive-pending-joins`) + value-mappers `toHiveReportValue` /
+2. **`feature-issue-op-keys.ts`** — tableTag map (`hive_reports`→`pot-reports`,
+   `hive_pending_joins`→`pot-pending-joins`) + value-mappers `toHiveReportValue` /
    `toHivePendingJoinValue` + the dispatch cases + the `value` union types. (This auto-bumped
    `CDC_CAPTURED_TABLES` 14→16.)
 3. **`projection-engine.ts`** — `PEER_LOG_TAG_TO_TABLE` entries for both tags.
@@ -69,17 +69,17 @@ but could not drain/serve/apply, and no owner verb was callable. Completed, mirr
   matches the op's content ref = `op.hbKey`, the feature/work-item id) → a taken-down content
   op is dropped before merge on every honest peer (no resurrection: an old signed policy
   lacking the ref loses on `policy_version`/`fed_hlc`).
-- **report:** `hive:report` (gated on `moderation.reportable`) writes `hive_reports` origin=local
-  → federates to the owner's `hive:moderation_queue` → owner `hive:moderation_resolve` /
-  `hive:takedown` / `hive:ban_member`; the resolution federates back.
+- **report:** `pot:report` (gated on `moderation.reportable`) writes `hive_reports` origin=local
+  → federates to the owner's `pot:moderation_queue` → owner `pot:moderation_resolve` /
+  `pot:takedown` / `pot:ban_member`; the resolution federates back.
 - **approval mode:** a joiner's request writes `hive_pending_joins` → federates to the owner →
-  `hive:membership_decide` (approve → `upsertHiveMember`) → the decision federates back. NOT
+  `pot:membership_decide` (approve → `upsertHiveMember`) → the decision federates back. NOT
   re-decided per-op at the EN-4 seam (that would wrongly drop already-approved authors — the
   join gate owns approval; stated honestly in `policy-admission.ts`).
 
 ## Revocation teeth (the hard cut) — DEPENDS on the C-001 re-key
 
-`hive:ban_member` records the ban on the signed policy (soft cut: honest peers drop the
+`pot:ban_member` records the ban on the signed policy (soft cut: honest peers drop the
 banned author's ops) AND is designed to drive `substrate:revoke_contributor` → the **C-001
 re-key (Move 2)** epoch advance, which cuts the abuser's READ+WRITE at the next epoch (the
 ultimate teeth). The signed-policy drop is live now; the cryptographic read-cut rides the
@@ -88,9 +88,9 @@ until the re-key lands, ban is a write-admission drop on honest peers, not a rea
 
 ## Teeth (GREEN this pass)
 
-- `hive-membership-admission.test.ts`, `hive-moderation.test.ts` — pure deciders + owner
+- `pot-membership-admission.test.ts`, `pot-moderation.test.ts` — pure deciders + owner
   actions (part of the 100-test EN-1..EN-4 unit pass).
-- `agent-tools/hive/tools.test.ts` 26/26 — tool registry intact after registering the 7 tools.
+- `agent-tools/pot/tools.test.ts` 26/26 — tool registry intact after registering the 7 tools.
 - Structural federation guards GREEN with the 2 new tables:
   - `capture-coverage.test.ts` 9/9 — every PEER_LOG table has exactly one producer
     (CDC + LOG_FIRST + ACCEPTED == PEER_LOG_TABLES; balance held at +2/+2).
@@ -105,7 +105,7 @@ until the re-key lands, ban is a write-admission drop on honest peers, not a rea
 ## Honest residuals / not-yet
 
 - **Live witness:** federation is suite + structural + column-grain GREEN, and rides the
-  A-003 hive-home seam that just hit its first green LIVE witness (owner→joiner on the real
+  A-003 pot-home seam that just hit its first green LIVE witness (owner→joiner on the real
   .deb). A dedicated live report→queue→takedown round-trip on a .deb is the remaining
   release-grade proof (rides the EN-4 enforcement live-witness, findings-EN-4).
 - **Ban's hard read-cut** waits on the C-001 re-key (above).
@@ -117,5 +117,5 @@ until the re-key lands, ban is a write-admission drop on honest peers, not a rea
 ✅ The claimed owner can set membership mode + ban/takedown via the signed policy and the
 report/approval flow federates member↔owner; a banned/non-allowlisted author's ops and
 taken-down content are dropped by an honest peer at the EN-4 seam; reporting is off by default
-(no behavior change for existing hives). REMAINING for full release: the live .deb round-trip
+(no behavior change for existing pots). REMAINING for full release: the live .deb round-trip
 witness + the C-001 re-key for ban's cryptographic read-cut.

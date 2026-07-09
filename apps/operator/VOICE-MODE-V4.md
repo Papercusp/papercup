@@ -1,11 +1,11 @@
 # Voice mode (v4) — PARTIALLY SUPERSEDED
 
-> **2026-07-01 (voice-unified-sentinel-pipeline):** the architecture has moved
-> substantially since this doc. The current design is ONE Sentinel pipeline —
-> the pane Sentinel is the single brain for text AND voice; ElevenLabs Conv-AI
+> **2026-07-01 (voice-unified-papercup-pipeline):** the architecture has moved
+> substantially since this doc. The current design is ONE Papercup pipeline —
+> the pane Papercup is the single brain for text AND voice; ElevenLabs Conv-AI
 > is a relay front-end; pane answers are synthesized server-side and fanned over
 > the voice bus; hard thinking is delegated to ephemeral background agents. Read
-> `/internal/docs/agent-insights/one-sentinel-voice-pipeline` FIRST. The engine
+> `/internal/docs/agent-insights/one-papercup-voice-pipeline` FIRST. The engine
 > catalog below (STT/TTS adapters, keys, spend, commands) is still broadly
 > accurate, but the code moved from `apps/operator/lib/voice-*` to
 > `packages/operator-core/lib/voice-*` (engines, voice-node, prefs, spend).

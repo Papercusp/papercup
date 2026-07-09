@@ -1,6 +1,6 @@
 ---
 title: Adding a column to ISSUE_COLS/FEATURE_COLS breaks minimal-schema integration testbeds — patch every 131-applier, not just your own suite
-description: A shared fixture (test/_work-items-schema.ts) now centralizes the engineer_issues/harness_features_consolidated DDL for ~60 integration suites — add a new ISSUE_COLS/FEATURE_COLS column there ONCE. Only composition-rig.ts (the hermetic shared-hive-loop rig) still hand-rolls its own schema and needs the old per-file patch.
+description: A shared fixture (test/_work-items-schema.ts) now centralizes the engineer_issues/harness_features_consolidated DDL for ~60 integration suites — add a new ISSUE_COLS/FEATURE_COLS column there ONCE. Only composition-rig.ts (the hermetic shared-pot-loop rig) still hand-rolls its own schema and needs the old per-file patch.
 discovered: 2026-06-12
 tags: [testing, integration-tests, migrations, work-items, operator-core]
 status: superseded
@@ -68,7 +68,7 @@ composition-rig.ts is).
 
 `npm run test:affected:integration` goes red with 10+ tests across suites you
 never touched — `delegated-tasks`, `plan-items/plan-item-convert`, the four
-`shared-hive-loop` suites — all with the same error:
+`shared-pot-loop` suites — all with the same error:
 
 ```
 PostgresError: column "signal_origin" of relation "engineer_issues" does not exist
@@ -90,9 +90,9 @@ These suites do not provision through the full migration chain. They build a
 - `lib/plan-items/plan-item-convert.integration.test.ts` (beforeAll,
   `readMigration('131-engineer-issues.sql')` + selected others)
 - `lib/delegated-tasks.integration.test.ts` (same pattern)
-- `lib/shared-hive-loop/composition-rig.ts` (a file list around line 270 —
+- `lib/shared-pot-loop/composition-rig.ts` (a file list around line 270 —
   shared by composition-happy-path, fleet-monitors, redundancy-two-swarm,
-  split-brain-queen)
+  split-brain-mug)
 
 So any migration that adds a column **the engine reads or writes
 unconditionally** must also be applied in every one of these setups. This has

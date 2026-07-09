@@ -201,11 +201,26 @@ export function buildHivePeerApply(sql: postgres.Sql, ownLogKeyHex: string): (op
   return (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex });
 }
 
+/** Optional self-heal re-peer cadence overrides (WI-1534/WI-3593) — forwarded
+ *  verbatim to `bootHarnessSubstrate`'s `swarmRefreshMs`/`swarmFastWindowMs`/
+ *  `swarmSlowRefreshMs`. Omitted ⇒ production defaults (existing callers are
+ *  byte-identical). `refreshMs: 0` disables the self-heal loop entirely (the
+ *  pre-WI-752 control case). */
+export interface SwarmTimingOverride {
+  refreshMs?: number;
+  fastWindowMs?: number;
+  slowRefreshMs?: number;
+}
+
 export interface HivePeer {
   handle: BootedHarnessHandle;
   pg: postgres.Sql;
   identity: ReturnType<typeof makeIdentity>;
   drain: () => Promise<number>;
+  /** The REAL Hyperswarm instance backing this peer (test-only escape hatch —
+   *  e.g. to force a real socket disconnect via `[...rawSwarm.connections]`,
+   *  simulating a network partition without any owner-side write). */
+  rawSwarm: HyperswarmLike & { connections: Set<unknown> };
 }
 
 async function bootHivePeer(opts: {
@@ -214,8 +229,10 @@ async function bootHivePeer(opts: {
   identity: ReturnType<typeof makeIdentity>;
   pg: postgres.Sql;
   verify: (userId: number) => 'verified' | 'pending' | 'fail';
+  swarmTiming?: SwarmTimingOverride;
 }): Promise<HivePeer> {
   const root = makeWorkspaceRoot(opts.rootPrefix);
+  const rawSwarm = makeSwarm(opts.testnetBootstrap) as HyperswarmLike & { connections: Set<unknown> };
   let handle: BootedHarnessHandle | undefined;
   let apply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
   handle = await bootHarnessSubstrate({
@@ -223,7 +240,7 @@ async function bootHivePeer(opts: {
     workspaceId: WORKSPACE_ID,
     harnessSlug: HIVE_SLUG,
     swarmBinding: BINDING,
-    swarmOverride: makeSwarm(opts.testnetBootstrap),
+    swarmOverride: rawSwarm,
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
     applyOverride: (op) => {
       apply ??= buildHivePeerApply(opts.pg, handle!.ownLog.keyHex);
@@ -234,12 +251,15 @@ async function bootHivePeer(opts: {
     reverifyIntervalMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: opts.identity.override,
+    swarmRefreshMs: opts.swarmTiming?.refreshMs,
+    swarmFastWindowMs: opts.swarmTiming?.fastWindowMs,
+    swarmSlowRefreshMs: opts.swarmTiming?.slowRefreshMs,
   });
   cleanups.push(async () => {
     await handle?.close();
     await closeHarnessStore({ workspaceRoot: root, harnessSlug: HIVE_SLUG });
   });
-  return { handle, pg: opts.pg, identity: opts.identity, drain: () => drainOutboxOnce(handle!, opts.pg) };
+  return { handle, pg: opts.pg, identity: opts.identity, drain: () => drainOutboxOnce(handle!, opts.pg), rawSwarm };
 }
 
 /** Insert the Hive identity row (FK parent for hive_members) into a peer's DB. */
@@ -280,7 +300,7 @@ export async function settingValue(sql: postgres.Sql, key: string, slug = HIVE_S
  * both. Returns both peers + DBs. The Hive members / settings are seeded by the
  * caller (each gap seeds what it needs), then federated via drainBoth + mergeBoth.
  */
-export async function bootTwoHivePeers() {
+export async function bootTwoHivePeers(opts?: { swarmTiming?: SwarmTimingOverride }) {
   const dbA: FreshPgDb = await createFreshPgDb('hiveFedA');
   cleanups.push(() => dbA.cleanup());
   const dbB: FreshPgDb = await createFreshPgDb('hiveFedB');
@@ -314,6 +334,7 @@ export async function bootTwoHivePeers() {
     identity: idB,
     pg: dbB.sql,
     verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
+    swarmTiming: opts?.swarmTiming,
   });
   const peerA = await bootHivePeer({
     testnetBootstrap: testnet.bootstrap,
@@ -321,6 +342,7 @@ export async function bootTwoHivePeers() {
     identity: idA,
     pg: dbA.sql,
     verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
+    swarmTiming: opts?.swarmTiming,
   });
 
   expect(peerA.handle.swarm).not.toBeNull();

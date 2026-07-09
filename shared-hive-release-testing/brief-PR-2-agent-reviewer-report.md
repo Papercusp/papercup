@@ -6,7 +6,7 @@ agent half of the owner's "human OR agent review" model. Depends on PR-1 (trigge
 
 ## Build
 1. **The agent-reviewer task.** Triggered by the poll daemon (PR-1) for a new/updated PR: a
-   Queen/Bee task that reads the PR **diff** + its **WI/feature context** (which work-item it
+   Mug/Cup task that reads the PR **diff** + its **WI/feature context** (which work-item it
    satisfies — via PR-4's `harness_feature_prs`) + the repo conventions, and produces a
    **structured review report**:
    `{ summary: string, recommendation: 'approve' | 'request_changes' | 'reject',
@@ -22,7 +22,7 @@ agent half of the owner's "human OR agent review" model. Depends on PR-1 (trigge
    is traceable (who/what reviewed, on what diff).
 
 ## Reuses
-- The hive's existing agent/Bee task machinery; `harness_feature_prs` (PR-4) for WI context;
+- The pot's existing agent/Cup task machinery; `harness_feature_prs` (PR-4) for WI context;
   `pr_check_status_cache` (PR-1) for the checks signal.
 
 ## Tests (teeth-verified)

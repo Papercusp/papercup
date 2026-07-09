@@ -36,9 +36,9 @@ export interface ScorecardRow {
  */
 export function ratingTone(rating: string): 'good' | 'mid' | 'bad' | 'unknown' {
   const r = rating.toLowerCase();
-  if (['pass', 'healthy', 'good', 'yes', 'green'].includes(r)) return 'good';
+  if (['exemplary', 'exceptional', 'pass', 'healthy', 'good', 'yes', 'green'].includes(r)) return 'good';
   if (['partial', 'degraded', 'mixed', 'warn'].includes(r)) return 'mid';
-  if (['fail', 'broken', 'bad', 'no', 'red'].includes(r)) return 'bad';
+  if (['severe', 'fail', 'broken', 'bad', 'no', 'red'].includes(r)) return 'bad';
   return 'unknown';
 }
 
@@ -127,7 +127,7 @@ export default function ScorecardDetail({
           </>
         )}
         <dt style={{ opacity: 0.65 }}>Score</dt>
-        <dd title="Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded) — grading stays categorical">
+        <dd title="Read-time 0–10 projection (scale-aware: 3-level pass=10/partial=5/fail=0; extended exemplary=10/pass=8/partial=5/fail=2/severe=0; unknown excluded) — grading stays categorical">
           {scorecard.score10 !== null ? `${scorecard.score10} / 10` : '— (no mappable ratings)'}
         </dd>
         <dt style={{ opacity: 0.65 }}>Completeness</dt>

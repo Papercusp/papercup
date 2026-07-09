@@ -33,8 +33,8 @@ DEFERRED-BY-DESIGN · BLOCKED · DEPLOY-GATE.
    and both daily re-check daemons are absent. `status: shipped` overstates reality.
 4. **Phase 4 P-026 blocked by a real code bug.** `resolveProject(slug)` (`harness-core.ts`)
    loads the registry with NO workspaceId → reads the *active* workspace, but papercup is
-   registered ONLY in the `papercusp-workspace` sentinel (never sets `registry.current`),
-   so `/api/harness/papercup/*` 404s unless the active workspace happens to be the sentinel.
+   registered ONLY in the `papercusp-workspace` papercup (never sets `registry.current`),
+   so `/api/harness/papercup/*` 404s unless the active workspace happens to be the papercup.
    Real data: papercup has 19 features, all `todo`, 0 attempts — nothing has ever run e2e.
 5. **Phase 8 Insights/Contributors built but not mounted.** The live `HarnessDashboard` has
    NO Contributors tab and NO Phase-8 Insights tab (its "insights" tab is the old analytics
@@ -64,7 +64,7 @@ Items are P-001..P-005 + D-001 (each with a/b/c sub-items).
 - **Verdict:** spike is honestly "Linux-x64 smoke-only"; the substrate-stability questions the gate exists to answer are unbuilt. macOS gate skipped by user direction. ACTION: none required (spike, accepted-risk) — but carry sleeping-peer + disk-growth as risks into 5a/11.
 
 ### Phase 1a — workspace + classifier + create-harness UI (`phase1a`)  — IMPLEMENTED, 2 failing tests
-P-006 sentinel workspace, P-007 5-rule classifier, P-013 dogfood PG schema, P-010 Entry1/3 backend, P-012 picker UI: **all IMPLEMENTED + live** (classifier consumed by the projects route; picker rendered in AdvShell + installed page; `init-local-dir` runs real `git init`).
+P-006 papercup workspace, P-007 5-rule classifier, P-013 dogfood PG schema, P-010 Entry1/3 backend, P-012 picker UI: **all IMPLEMENTED + live** (classifier consumed by the projects route; picker rendered in AdvShell + installed page; `init-local-dir` runs real `git init`).
 - **BUGS:** 2 tests FAIL on stale hardcoded counts — `apps/operator/lib/harness/classify-tree.test.ts` (asserts 9 submodules; `.gitmodules` now 11) and `ensure-schema-dogfood-binding.test.ts` (asserts `DOGFOOD_REACTIVE_TABLES.length === 13`; now 16). Plan file-paths are stale (route lives in endpoint-route system, not `app/api/.../route.ts`; P-012 consolidated 7 claimed files → 1; Entry 4 is fully functional, not a stub). ACTION: fix the 2 stale test assertions.
 
 ### Phase 1b — OAuth + clone + attestation + binding + verifier (`phase1b`)  — real modules, NOT connected
@@ -82,9 +82,9 @@ P-006 sentinel workspace, P-007 5-rule classifier, P-013 dogfood PG schema, P-01
 - **Verdict:** schema+verifier+UI shipped at file level; the phase's *purpose* (status anchored to a real commit) is NOT wired end-to-end. ACTION (high value): add the writer — stamp `completion_ref` on PR merge / feature ship.
 
 ### Phase 4 — single-engineer dogfood on papercup (`phase4`)  — P-026 BLOCKED (real code bug)
-- P-024 register papercup `state:private`: IMPLEMENTED (boot-wired; `register-papercup.ts` writes the sentinel-workspace registry; `0010_harness_state.sql` adds `state`). NOTE: the wave's first guess of a `scripts/register-papercup-harness.ts` was wrong — that file doesn't exist; the real helper is `register-papercup.ts`.
+- P-024 register papercup `state:private`: IMPLEMENTED (boot-wired; `register-papercup.ts` writes the papercup-workspace registry; `0010_harness_state.sql` adds `state`). NOTE: the wave's first guess of a `scripts/register-papercup-harness.ts` was wrong — that file doesn't exist; the real helper is `register-papercup.ts`.
 - P-025 seed features: PARTIAL (CRUD real; **P-025a is FALSE in code** — `created_by_github_user_id` has no writer anywhere).
-- P-026 run a feature e2e: **BLOCKED** — concrete code blocker: `resolveProject(slug)` (`harness-core.ts:203`) calls `loadHarnessRegistry()` with NO workspaceId → reads the *active* workspace; papercup is registered ONLY in `papercusp-workspace` and `register-papercup` deliberately never sets `registry.current` → `/api/harness/papercup/{launch,spawn,features,spec}` returns 404 `unknown project` unless active workspace is the sentinel. Secondary: no always-on PG-only orchestrator claim loop (claim machinery needs `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`, off by default). Real data: papercup = 19 features, all `todo`, 0 attempts → nothing has ever run.
+- P-026 run a feature e2e: **BLOCKED** — concrete code blocker: `resolveProject(slug)` (`harness-core.ts:203`) calls `loadHarnessRegistry()` with NO workspaceId → reads the *active* workspace; papercup is registered ONLY in `papercusp-workspace` and `register-papercup` deliberately never sets `registry.current` → `/api/harness/papercup/{launch,spawn,features,spec}` returns 404 `unknown project` unless active workspace is the papercup. Secondary: no always-on PG-only orchestrator claim loop (claim machinery needs `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`, off by default). Real data: papercup = 19 features, all `todo`, 0 attempts → nothing has ever run.
 - P-027 observe / P-028 gate: MISSING (gated behind P-026). D-005 (private, no Hyperbee): honored.
 - **Verdict:** P-024/P-025 done; P-026 is the key uncompleted dogfood milestone — needs the workspace-resolution fix **and** an actual owner-driven run (running real agents is an owner/operational action per playbook, not something I should `orchestrator.spawn` from a shell).
 

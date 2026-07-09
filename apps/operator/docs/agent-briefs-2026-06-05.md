@@ -55,7 +55,7 @@
 
 ## Brief 9 — PUI P2: POTS selector, Cupboard tab, create/share-pot 〔PUI, L〕
 **Plan:** `pui-completion-and-polish-2026-06-05` (D-003/D-010/D-011).
-**Mission:** (a) the **global Pot selector** with "All Pots" — mirror the desktop's two-axis model (`?slug` + `?scope=all`; never an "all" sentinel in the slug); selector overlay + ViewState persistence; thread the filter through the global tabs (plans carry a slug → client-side; roster/attention may need a backend `?harness=` param). (b) a **Cupboard tab** — kind-filter row / search / list / detail / per-kind actions (join·fork·install) — entirely against the existing `/api/cupboard/*` + `/api/snapshots/*` routes (zero backend). (c) **`:create <slug> <path>`** and **`:share <slug>`** palette commands → `POST /api/harness/projects` and the share-finalize + cupboard-publish sequence.
+**Mission:** (a) the **global Pot selector** with "All Pots" — mirror the desktop's two-axis model (`?slug` + `?scope=all`; never an "all" papercup in the slug); selector overlay + ViewState persistence; thread the filter through the global tabs (plans carry a slug → client-side; roster/attention may need a backend `?harness=` param). (b) a **Cupboard tab** — kind-filter row / search / list / detail / per-kind actions (join·fork·install) — entirely against the existing `/api/cupboard/*` + `/api/snapshots/*` routes (zero backend). (c) **`:create <slug> <path>`** and **`:share <slug>`** palette commands → `POST /api/harness/projects` and the share-finalize + cupboard-publish sequence.
 **Verify:** filter narrows every tab; a plugin installs from the Cupboard tab; `:create` produces a registered pot.
 
 ## Brief 10 — Memory backend generalization 〔platform, M〕

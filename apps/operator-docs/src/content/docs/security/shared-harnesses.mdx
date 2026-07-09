@@ -5,9 +5,9 @@ sidebar:
   order: 1
 plans:
   - papercusp-trust-model-2026-05-31
-  - shared-hive-hardening-2026-06-13
+  - shared-pot-hardening-2026-06-13
   - non-collaborator-join-fork-pr-2026-06-02
-  - shared-hive-federation-2026-06-08
+  - shared-pot-federation-2026-06-08
 documents:
   - packages/operator-core/lib/sync/hyperbee/read-admission.ts
   - packages/operator-core/lib/harness/binding-service.ts
@@ -31,7 +31,7 @@ target.
 **per-log admission** (signed announce + GitHub-anchored `verifyBinding` attestation),
 **revocation** (`revoked_pubkeys` projection drop-list, gated on a live GitHub repo-admin
 check), and **identity attestation** (`verifyAttestation`) are all wired. Crucially, a
-confirmation audit (P-017, plan `shared-hive-hardening-2026-06-13`) verified that the
+confirmation audit (P-017, plan `shared-pot-hardening-2026-06-13`) verified that the
 model's load-bearing invariant — **every decision-bearing fact re-derives from GitHub at
 the point of action** — holds across all current call sites. See
 [The advisory-vs-trusted boundary](#the-advisory-vs-trusted-boundary) for the verified
@@ -44,9 +44,9 @@ why the GitHub re-derivation invariant is what actually carries the safety.
 repo-collaborator permission gate. The pure decider in
 `sync/hyperbee/read-admission.ts` admits a log only after announce signature
 verification, GitHub-gist attestation verification, and the `revoked_pubkeys`
-veto. Boot adds two Hive-specific scope wideners: an already-known Hive member
+veto. Boot adds two Pot-specific scope wideners: an already-known Pot member
 can be admitted from the local `hive_members` projection via
-`trustedHiveMemberDeviceAdmission`, and a same-Hive cross-member announce whose
+`trustedHiveMemberDeviceAdmission`, and a same-Pot cross-member announce whose
 membership has not federated yet is buffered as `pending` and retried within the
 boot grace window. GitHub collaborator/admin permission remains the authority
 for repo binding, revocation actions, push/PR/merge, and shipped verification;
@@ -60,7 +60,7 @@ the **feature queue, pull-request status, the contributor list, and feature "cla
 syncs peer-to-peer over the Holepunch stack and is projected into each peer's local
 Postgres:
 
-- **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**. `gh:<repository_id>` is only one of several topic bindings: the shipped multi-engineer (**Hive**) substrate is keyed by **`hive:<hive_pubkey>`**, which *replaces* the per-repo slug as the top-level federation unit (a Hive's Swarms all join this one topic), with `local:<workspace_id>/<slug>` for pre-binding/private dev and an explicit `topic:<hex>` carrier so a link-joiner lands on the owner's exact Hive topic rather than re-deriving a `gh:` topic that wouldn't match.
+- **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**. `gh:<repository_id>` is only one of several topic bindings: the shipped multi-engineer (**Pot**) substrate is keyed by **`pot:<hive_pubkey>`**, which *replaces* the per-repo slug as the top-level federation unit (a Pot's Swarms all join this one topic), with `local:<workspace_id>/<slug>` for pre-binding/private dev and an explicit `topic:<hex>` carrier so a link-joiner lands on the owner's exact Pot topic rather than re-deriving a `gh:` topic that wouldn't match.
 - **Hypercore** — one Ed25519-signed append-only log per device.
 - **Model B peer-log** — one single-writer Ed25519 log per device + a read-merge over the others (`sync/hyperbee/peer-log.ts`). This **replaced** the earlier multi-writer **Autobase** design; Autobase mentions below are the historical survey/analysis, not the shipped substrate (P-024 truth fix).
 
@@ -135,7 +135,7 @@ that true deletion is impossible in an append-only log.**
 | **Sigstore / SLSA / in-toto** | short-lived **OIDC** identity (Fulcio) | keyless sig + **Rekor transparency log**; in-toto/DSSE | no revocation (short-lived certs); compromise caught by **monitoring** | **Partial — provenance pattern**: a signature proves *authenticated-at-a-time*, **not** authorization or "good." Confirms "shipped" must be **GitHub-derived** |
 | **AT Proto `did:plc`** | hybrid: self-cert keys + a directory | signed repo commits | **rotation-key priority list + 72h recovery window** | **Partial — recovery lesson**: for us, GitHub *is* the recovery anchor |
 | **Nostr NIP-05** | pubkey ↔ `name@domain` via a `.well-known` file | per-event Schnorr sig | — | **Partial** — a GitHub-hosted well-known file is a lighter binding variant |
-| **Secure Scuttlebutt** | per-identity signed append-only feed (≈ Hypercore) | every message signed | **invite + follow-graph** bounds replication & Sybils | **Partial — admission analog**: Hive membership + revocation bounds shared-hive replication; GitHub permission is reserved for decision-bearing actions |
+| **Secure Scuttlebutt** | per-identity signed append-only feed (≈ Hypercore) | every message signed | **invite + follow-graph** bounds replication & Sybils | **Partial — admission analog**: Pot membership + revocation bounds shared-pot replication; GitHub permission is reserved for decision-bearing actions |
 
 ### The decisive constraints
 
@@ -210,7 +210,7 @@ is a deferred upgrade **only if** a concrete requirement emerges for state that 
    *defense-in-depth / UX integrity*, not the authority of record. **Sign sequence +
    freshness, not just content** (Radicle's 2026 replay-CVE lesson).
 4. **GitHub-anchored log admission** — signed announce + GitHub gist attestation
-   verifies the device identity; `revoked_pubkeys` denies known-bad devices. Hive
+   verifies the device identity; `revoked_pubkeys` denies known-bad devices. Pot
    scope is then narrowed/widened by signed `harness_slug`, local `hive_members`,
    and pending retry for membership propagation. This is not a collaborator
    permission gate.
@@ -225,9 +225,9 @@ is a deferred upgrade **only if** a concrete requirement emerges for state that 
    transparency log — GitHub already is the authority and stores attestations. (This also
    means the `completion_ref` "shipped" signal should be GitHub-derived, not a self-reported
    peer receipt.)
-8. **Sybil/admission = verified GitHub identity plus Hive membership/revocation.**
+8. **Sybil/admission = verified GitHub identity plus Pot membership/revocation.**
    The swarm topic is public, so unauthenticated devices are filtered by signed
-   announce + gist attestation; shared-Hive cross-member scope is filtered by
+   announce + gist attestation; shared-Pot cross-member scope is filtered by
    `hive_members`; and `revoked_pubkeys` is the hard local blocklist. The GitHub
    collaborator graph is still consulted at decision points that need repo
    authority, but it is not the read-admission allow-list.
@@ -253,7 +253,7 @@ The shipped substrate uses **per-log** admission: a peer is admitted on a verifi
 signed-announce + GitHub-anchored attestation, after which its ops are trusted **wholesale**
 into the projection (no per-op authz — the accepted equivocation tradeoff). That is safe
 **iff** every decision-bearing fact re-derives from GitHub at the point of action. A
-call-site audit (plan `shared-hive-hardening-2026-06-13`, P-017) confirmed this invariant
+call-site audit (plan `shared-pot-hardening-2026-06-13`, P-017) confirmed this invariant
 holds across **all** authorization-bearing consumers of peer-synced state — there is **no
 gap**. The federated tables are `contributors`, `queue` / `features-by-id`
 (→ `harness_features_consolidated`), `working-set`/`claims`, `presence`, plans, and
@@ -270,7 +270,7 @@ object from a live GitHub poll, not from a federated row.)
 | `harness/binding-service.ts` · `supersedeBinding` | supersede a binding (needs admin) | local cache + **live** `getRepoPermission` | **Yes** — live permission check, admin required |
 | `harness/binding-service.ts` · claimant re-verify sweep | demote a claimant who lost write access | cached claimants | **Yes** — per-claimant live permission check |
 | `sync/hyperbee/revoke-contributor.ts` | revoke a contributor's device key | `contributors` row | **Yes** — `repos.get → permissions.admin` gate before any write |
-| `sync/hyperbee/read-admission.ts` (+ `boot.ts`) | admit a peer's log to the substrate | signed announce + local Hive membership projection | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto; same-Hive scope uses `hive_members` / pending retry, not repo collaborator permission |
+| `sync/hyperbee/read-admission.ts` (+ `boot.ts`) | admit a peer's log to the substrate | signed announce + local Pot membership projection | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto; same-Pot scope uses `hive_members` / pending retry, not repo collaborator permission |
 | `harness/fork-pr-on-feature-pass.ts` | fork-PR vs direct-push mode on feature pass | local pipeline pass event | **Yes** — **live** `getPermission` (fork iff `read`/`none`) |
 | `pr-host/auto-merge.ts` · `tryAutoMerge` → `host.merge` | merge a PR | `Pr` object from **GitHub** poll (`PrHost`/`github.ts`) | **Yes** — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection |
 | `pr-host/auto-approve.ts` · `tryAutoApprove` | post an approving review | **local** `trusted_authors` + GitHub PR author | **N/A** — trust list is local config (not federated); approval still doesn't bypass GitHub's merge authority |
@@ -284,7 +284,7 @@ object from a live GitHub poll, not from a federated row.)
 But no authorization decision acts on it: a forged `status='shipped'` does not earn the
 verified ✓ badge (that re-derives via `git ls-remote`), and `reconcileDoneStatus` only
 closes the `validating`/`in_progress`→`passed` loop (the `in_progress` case was added
-2026-06-17 for coding-harness bees that skip the validator step) as the **local** pipeline's
+2026-06-17 for coding-harness cups that skip the validator step) as the **local** pipeline's
 own terminal verdict on a feature it actually executed — it cannot be driven by a
 peer-supplied row; terminal-failure states (failing/deprecated) are left untouched. The real "did it
 ship" authority remains GitHub's merge state, and code only lands through GitHub's
@@ -299,7 +299,7 @@ re-derivation invariant is universal. No remediation needed; P-017 closed `done`
 Two revocation mechanisms are wired beyond the `revoked_pubkeys` admission drop-list:
 
 - **PR auto-approve and auto-merge refuse a revoked contributor's PR up front.** A PR whose
-  author is a revoked Hive contributor is denied (action `skipped_revoked`) **before** the
+  author is a revoked Pot contributor is denied (action `skipped_revoked`) **before** the
   trust / checks / approval gates — the strongest deny, **overriding the trust list** (it
   holds even for an author otherwise in `trusted_authors`). The live chokepoint resolves it
   via `isHiveContributorRevoked` and passes it into both `tryAutoApprove` and `tryAutoMerge`.
@@ -319,14 +319,14 @@ Under this model we **deliberately accept**:
 1. **Public, discoverable topic** — swarm spam/DoS is *mitigated* (firewall + admission),
    not prevented.
 2. **Advisory rows can be injected by an admitted identity** — read admission proves
-   identity and Hive membership, not truth. An admitted-then-malicious writer can
+   identity and Pot membership, not truth. An admitted-then-malicious writer can
    still inject signed-but-false advisory rows (equivocation). Mitigation:
    nothing decision-bearing acts on it without GitHub re-derivation.
 3. **No true removal / no post-compromise security** in the append-only log — revocation is
    best-effort projection filtering; the data persists and replicates.
-4. **Sybil resistance is mostly delegated to GitHub identity plus Hive membership** —
+4. **Sybil resistance is mostly delegated to GitHub identity plus Pot membership** —
    identity = GitHub account, bounded by the gist attestation and GitHub's
-   account-creation friction; cross-member shared-Hive writes also require a
+   account-creation friction; cross-member shared-Pot writes also require a
    current `hive_members` device row or they remain pending/dropped.
 5. **Per-op signatures don't defeat a signed equivocator** (Kleppmann) — accepted because
    state is advisory and GitHub-re-derived; we explicitly do not build a BFT-CRDT ACL.

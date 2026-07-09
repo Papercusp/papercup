@@ -1,5 +1,5 @@
 # Impartial Benchmark Methodology + Reproducer
-## Papercusp Hive — the reproducible evaluation guide
+## Papercusp Pot — the reproducible evaluation guide
 
 > **Status:** Methodology skeleton + reproducer procedures. Finalize numerical results after mini-swe-agent baseline completes. Author: WI-191 (P-016). Published: no (D-005 hard gate: owner sign-off required before external publication).
 
@@ -9,14 +9,14 @@
 
 ## I. Executive Summary
 
-This document specifies the **reproducible methodology** for the Papercusp Hive benchmark suite — the framework by which we demonstrate that the Hive (the Queen + bee fleet + coordination substrate) solves real software engineering tasks more effectively, faster, and per dollar than existing single-agent and multi-agent baselines.
+This document specifies the **reproducible methodology** for the Papercusp Pot benchmark suite — the framework by which we demonstrate that the Pot (the Mug + cup fleet + coordination substrate) solves real software engineering tasks more effectively, faster, and per dollar than existing single-agent and multi-agent baselines.
 
 **The thesis under test:**
-> Given a real backlog under a fixed budget, the same model embedded in the Papercusp Hive delivers **more value, faster, per dollar** — with **dramatically lower coordination-failure rates** — than the same fleet with the Queen ablated (naive FIFO), and than other multi-agent frameworks.
+> Given a real backlog under a fixed budget, the same model embedded in the Papercusp Pot delivers **more value, faster, per dollar** — with **dramatically lower coordination-failure rates** — than the same fleet with the Mug ablated (naive FIFO), and than other multi-agent frameworks.
 
 **The control framework:**
-- **Treatment**: Papercusp Hive (Queen + fleet + coordination substrate)
-- **Primary baseline**: Same fleet with Queen ablated (naive FIFO placement)
+- **Treatment**: Papercusp Pot (Mug + fleet + coordination substrate)
+- **Primary baseline**: Same fleet with Mug ablated (naive FIFO placement)
 - **Secondary baselines**: 
   - **A** (internal ablation): per-task single-agent worker vs multi-agent spine
   - **B** (native harness floor): same model in its provider's native harness (Claude Code)
@@ -24,8 +24,8 @@ This document specifies the **reproducible methodology** for the Papercusp Hive 
 
 **The benchmark suite** (layered):
 - **L1 — competence floor**: SWE-bench Pro, Terminal-Bench 2.0 (per-task, baseline = single agent)
-- **L2 — throughput / cost**: same backlog handed to the Hive; wall-clock speedup, tasks/$, backlog-drain time, autonomy (% with zero human gate); baseline = Queen-ablated fleet
-- **L3 — value-capture**: SWE-Lancer $-weighted backlog under a fixed budget; $ captured by Queen placement; baseline = naive scheduler
+- **L2 — throughput / cost**: same backlog handed to the Pot; wall-clock speedup, tasks/$, backlog-drain time, autonomy (% with zero human gate); baseline = Mug-ablated fleet
+- **L3 — value-capture**: SWE-Lancer $-weighted backlog under a fixed budget; $ captured by Mug placement; baseline = naive scheduler
 - **L4 — coordination-quality**: MAST taxonomy (duplication, coordination-breakdown, misalignment) vs published 41–86% MAS baseline
 - **L5 — long-horizon / dependency**: SWE-EVO, RoadmapBench (sequencing + multi-step)
 
@@ -62,17 +62,17 @@ Each baseline proves a distinct property. Running only one leaves a hole a skept
 
 **Setup**: Papercusp framework, identical tools/model/infra/budget — **only difference: the multi-agent spine is collapsed to a single worker agent** (no scoper, no architect review, no hand-offs; one agent runs the entire feature to DONE).
 
-**What it proves**: if Baseline A and the Hive are identical except orchestration, any delta in **A** is purely the effect of the multi-agent spine and coordination substrate (locks, `work_items`, peer hand-offs, async review). Causal isolation.
+**What it proves**: if Baseline A and the Pot are identical except orchestration, any delta in **A** is purely the effect of the multi-agent spine and coordination substrate (locks, `work_items`, peer hand-offs, async review). Causal isolation.
 
 **Implementation**: use the existing `gym` A/B ablation machinery (`libs/papercusp/packages/external-bench/coding-solo.ts` blueprint, spine-collapsed; run as an internal experiment).
 
-**Cost**: same as the Hive arm (both run the same total token budget).
+**Cost**: same as the Pot arm (both run the same total token budget).
 
 ---
 
 ### Baseline B — Native Harness (Baseline Competence Floor)
 
-**Hypothesis**: the Hive beats the provider's *own* shipped agent — the real purchase decision for a buyer.
+**Hypothesis**: the Pot beats the provider's *own* shipped agent — the real purchase decision for a buyer.
 
 **Setup**: the model (e.g., Claude) in its *native harness* (e.g., Claude Code on the same Opus), NOT a deliberately weak toy scaffold. **Apply the same per-task problem statement, run to DONE, extract final diff, grade by the same official grader.**
 
@@ -88,15 +88,15 @@ Each baseline proves a distinct property. Running only one leaves a hole a skept
 
 ### Baseline C — Best-of-N at Matched Token Budget
 
-**Hypothesis**: the extra tokens the Hive spends (on coordination overhead) are *justified* by the improvement.
+**Hypothesis**: the extra tokens the Pot spends (on coordination overhead) are *justified* by the improvement.
 
-**Setup**: a **single agent** sampled **N times** with a **test-verifier** (independent samples run in parallel; after all N finish, a validator runs the visible tests on each; best-passing solution is selected) — all at the **same total token budget as the Hive arm**.
+**Setup**: a **single agent** sampled **N times** with a **test-verifier** (independent samples run in parallel; after all N finish, a validator runs the visible tests on each; best-passing solution is selected) — all at the **same total token budget as the Pot arm**.
 
-**What it proves**: (1) a strong, cheap baseline (repeated sampling + verification is simple and effective); (2) if the Hive doesn't beat it, the orchestration overhead isn't earning its tokens.
+**What it proves**: (1) a strong, cheap baseline (repeated sampling + verification is simple and effective); (2) if the Pot doesn't beat it, the orchestration overhead isn't earning its tokens.
 
 **Implementation**: `external-bench/baseline-best-of-n*.ts`, with `runBestOfNPilotTask`. Uses the same external-bench spine (for fairness), but N independent runs instead of 1. Test-verifier selects best passing result.
 
-**Cost**: total tokens capped to match the Hive's iso-budget spend, divided across N samples.
+**Cost**: total tokens capped to match the Pot's iso-budget spend, divided across N samples.
 
 ---
 
@@ -106,8 +106,8 @@ Each baseline proves a distinct property. Running only one leaves a hole a skept
 
 **Every arm runs under the same total token budget (or $)**, to ensure no "we win because we spent 7×" claims.
 
-- **Hive arm**: full fleet orchestration cost (Queen placement, bee coordination, locks, hand-offs, roll-up) **counted in our own token total**.
-- **Queen-ablated arm** (L2 baseline): same fleet, same coordination substrate, but naive FIFO placement (no Queen intelligence).
+- **Pot arm**: full fleet orchestration cost (Mug placement, cup coordination, locks, hand-offs, roll-up) **counted in our own token total**.
+- **Mug-ablated arm** (L2 baseline): same fleet, same coordination substrate, but naive FIFO placement (no Mug intelligence).
 - **Native harness arm** (Baseline B): single agent, serial throughput.
 - **Best-of-N arm** (Baseline C): N samples at same total-token budget, test-verifier selects.
 
@@ -115,9 +115,9 @@ Each baseline proves a distinct property. Running only one leaves a hole a skept
 
 ### Cost/Accuracy Pareto
 
-Report a **Pareto scatter**: x-axis = tokens/$ spent, y-axis = pass@1 (or % resolved). Show **every arm on the same plot**. The Hive should occupy a **strictly better point** (higher accuracy, lower cost) than other arms.
+Report a **Pareto scatter**: x-axis = tokens/$ spent, y-axis = pass@1 (or % resolved). Show **every arm on the same plot**. The Pot should occupy a **strictly better point** (higher accuracy, lower cost) than other arms.
 
-- If the Hive is lower-left (cheaper, worse), it's not a win.
+- If the Pot is lower-left (cheaper, worse), it's not a win.
 - If it's right (expensive, better), we spent more tokens to win — which is fine if the delta is large enough to justify it, but the Pareto makes the trade-off transparent.
 
 ### Statistics + Confidence
@@ -135,7 +135,7 @@ Report a **Pareto scatter**: x-axis = tokens/$ spent, y-axis = pass@1 (or % reso
 The **gym** (internal self-referential loop) must **NEVER** tune on any set this suite reports on. Optimize-on and report-on sets stay strictly disjoint.
 
 - **Report-on sets**: SWE-bench Pro, Terminal-Bench 2.0, SWE-Lancer, SWE-EVO, MAST (D-012 in code + CI guard: `report-set-firewall.ts`).
-- **Gym optimize-on sets**: internal iq-battery, hive-eval, ablation_report (self-authored, not third-party).
+- **Gym optimize-on sets**: internal iq-battery, pot-eval, ablation_report (self-authored, not third-party).
 
 **Enforcement**: pre-registered config in git before the run (no post-hoc tuning).
 
@@ -189,13 +189,13 @@ For each task in the benchmark set:
 
 Run each arm **independently**:
 
-- **Hive arm**: `startHive(harnessBlueprintId='external-bench', ...); waitForDone()`
-  - The Queen orchestrates the bee fleet over the backlog.
-  - Bees run per-task `coding` pipelines to DONE.
+- **Pot arm**: `startHive(harnessBlueprintId='external-bench', ...); waitForDone()`
+  - The Mug orchestrates the cup fleet over the backlog.
+  - Cups run per-task `coding` pipelines to DONE.
   - Measure: wall-clock time, tokens (from `agent_usage_samples`), final diff.
 
-- **Queen-ablated arm**: `startHive(harnessBlueprintId='external-bench', planner=fifoPlacement, ...)` (or equivalent: no Queen agent, just FIFO placement).
-  - Identical harness + bee fleet + coordination substrate.
+- **Mug-ablated arm**: `startHive(harnessBlueprintId='external-bench', planner=fifoPlacement, ...)` (or equivalent: no Mug agent, just FIFO placement).
+  - Identical harness + cup fleet + coordination substrate.
   - Only change: placement strategy.
 
 - **Baseline A (spine-OFF)**: `startHive(blueprintId='coding-solo', ...)` (or internal ablation mode).
@@ -216,7 +216,7 @@ For each arm's per-task result:
 #### Phase 4: Analysis + Reporting
 
 1. **Per-seed results**: average pass@1 over ≥3 seeds, compute 95% CIs.
-2. **Cost/accuracy Pareto**: scatter plot (tokens vs pass@1), highlight the Hive arm.
+2. **Cost/accuracy Pareto**: scatter plot (tokens vs pass@1), highlight the Pot arm.
 3. **Throughput metrics** (L2): wall-clock speedup vs serial, tasks/$, tasks/hour, backlog-drain time, autonomy.
 4. **MAST coordination scores** (L4): duplication, coordination-breakdown, misalignment vs 41–86% baseline.
 5. **Value-captured** (L3): $ captured under fixed budget (SWE-Lancer arm).
@@ -262,25 +262,25 @@ A third party should be able to reproduce the result by following the runbook + 
 
 **Resolution (choose one before publishing)**:
 1. **Source the claim** (find the paper/blog post that states 1.8–3.7× speedup).
-2. **Replace with measured Hive data** (P-025 measured throughput delta from the full run).
+2. **Replace with measured Pot data** (P-025 measured throughput delta from the full run).
 3. **Reframe the claim** (cite OpenHands accuracy gains, or MAST coordination-failure reductions).
 
 **Current status**: This methodology doc leaves the citation placeholder. Finalize after mini-swe-agent baseline + first full run complete.
 
-### Hive-Level Concurrency Cap
+### Pot-Level Concurrency Cap
 
-Early benchmark runs showed placement contention only manifests when **backlog ≫ fleet** (e.g., 11+ tasks, fleet cap 4–5 concurrent bees). The Queen's ranking/eviction/warm-inject only become differentiated under saturation.
+Early benchmark runs showed placement contention only manifests when **backlog ≫ fleet** (e.g., 11+ tasks, fleet cap 4–5 concurrent cups). The Mug's ranking/eviction/warm-inject only become differentiated under saturation.
 
-**Design implication**: configure benchmarks with **long backlogs** (≥30 tasks) and **tight fleet caps** (≤6 concurrent bees) to exercise the Queen's placement value.
+**Design implication**: configure benchmarks with **long backlogs** (≥30 tasks) and **tight fleet caps** (≤6 concurrent cups) to exercise the Mug's placement value.
 
 ---
 
 ## IX. Definitions + Terminology
 
-- **Hive**: Queen + bee fleet + coordination substrate (locks, work_items, coord:*, messages:*).
-- **Bee fleet**: collection of autonomous agents placed by the Queen.
-- **Queen**: the orchestration agent (autonomous placement / ranking / eviction / warm-inject / adaptive wake).
-- **Queen-ablated**: the same bee fleet running under naive FIFO scheduling (no Queen intelligence).
+- **Pot**: Mug + cup fleet + coordination substrate (locks, work_items, coord:*, messages:*).
+- **Cup fleet**: collection of autonomous agents placed by the Mug.
+- **Mug**: the orchestration agent (autonomous placement / ranking / eviction / warm-inject / adaptive wake).
+- **Mug-ablated**: the same cup fleet running under naive FIFO scheduling (no Mug intelligence).
 - **Baseline A** (spine-OFF): single-agent worker, same tools/model/budget — isolates orchestration effect.
 - **Baseline B** (native harness): the model in its provider's native harness (e.g., Claude Code).
 - **Baseline C** (best-of-N): single agent sampled N times with test-verifier, matched token budget.
@@ -319,7 +319,7 @@ Early benchmark runs showed placement contention only manifests when **backlog �
 
 1. **Await mini-swe-agent baseline completion** (~2026-06-18): finalize Phase 4 numerical results.
 2. **Fix D-011 speedup citation** (source it or replace with measured data).
-3. **Run full pilot** (P-032): Hive vs Queen-ablated vs Baseline B/C, ≥3 seeds, official grading.
+3. **Run full pilot** (P-032): Pot vs Mug-ablated vs Baseline B/C, ≥3 seeds, official grading.
 4. **Compile rollout records** (configs, raw outputs, runbook).
 5. **Owner review + sign-off** (D-005 gate).
 6. **Submit to third-party index** (Artificial Analysis Coding Agent Index).

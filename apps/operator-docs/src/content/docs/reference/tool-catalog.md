@@ -59,7 +59,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `decision_ledger` | 2 | `list` `summary` | `intel:read` |
 | `deploy` | 6 | `await` `harness` `pot` `status` `teardown` `teardown_pot` | `coord:write` `harness:read` `harness:write` |
 | `dev` | 30 | `activity` `audit` `build_status` `claude_session` `code_run_adoption` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `limit_failure_rate` `omp_session` `orient_dedup_rate` `pg_active_queries` `pg_health` `pg_query` `pg_table_sizes` `pipeline_position` `processes` `rate_governor_status` `resolve_owner` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` `tool_cooccurrence` `why` `worker_chunk_loop_metrics` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
-| `discovery` | 2 | `hives` `set_hive` | `discovery:read` `discovery:write` |
+| `discovery` | 2 | `pots` `set_hive` | `discovery:read` `discovery:write` |
 | `docs` | 4 | `author` `get` `outline` `search` | `docs:read` `docs:write` |
 | `events` | 6 | `await` `cancel` `catalog` `emit` `graph` `status` | `coord:read` `coord:write` `events:read` |
 | `exec_sandbox` | 1 | `set_policy` | `operator:write` |

@@ -21,7 +21,7 @@ safe" phase.
    statement (a `agent-insights/` MDX or the plan's trust section): what an owner policy DOES
    guarantee (honest peers drop violations; forged policy rejected; revocation cuts abusers)
    and what it does NOT (a colluding malicious clique can maintain a divergent fork among
-   themselves — but they're cut from the owner's canonical hive + repo). No silent
+   themselves — but they're cut from the owner's canonical pot + repo). No silent
    over-claiming (the honesty discipline from Brief G).
 
 ## Depends on / reuses

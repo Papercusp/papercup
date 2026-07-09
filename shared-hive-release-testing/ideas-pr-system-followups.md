@@ -11,14 +11,14 @@ as-is. Ordered by value/effort. Each notes scope so a lane can size it.
 > auto-commits the working tree, so land each as a single green→green change (or in a
 > worktree). Don't ship intermediate red.
 
-## 1. Hive-scope auto-status: per-member settings (S, ~half-day)
-**What:** In the PRs tab `scope=hive` listing, rows come from multiple member harnesses, but
+## 1. Pot-scope auto-status: per-member settings (S, ~half-day)
+**What:** In the PRs tab `scope=pot` listing, rows come from multiple member harnesses, but
 the GUI only holds the *viewed* harness's auto-mode settings. PR-3 currently **suppresses**
 the auto-status line for foreign-member rows (honest: `rowBelongsToViewedHarness`) rather than
 show a possibly-wrong "Will auto-merge". The fuller fix: fetch each member's
-`pr_reviewer_settings` (a batched `pr-reviewer-settings?scope=hive` or per-member gate) so
-every hive-scoped row shows its OWN harness's honest auto-status.
-**Why:** completes the honesty story for the hive rollup; today foreign rows show no auto line.
+`pr_reviewer_settings` (a batched `pr-reviewer-settings?scope=pot` or per-member gate) so
+every pot-scoped row shows its OWN harness's honest auto-status.
+**Why:** completes the honesty story for the pot rollup; today foreign rows show no auto line.
 **Risk:** low (additive); watch the PrsTab fetch-keying render-loop note (don't key effects on
 fresh Set/array refs — see the comment block in `PrsTab.tsx`).
 
@@ -71,33 +71,33 @@ for this hot tree.*
   If that's all of #4, mark it closed.
 
 ## New gap spotted by pr5-impl (Priority-0 reflection, 2026-06-20) — NEEDS A PEER/OWNER CALL
-- **GAP: code-plane contributor revocation only covers HIVE members, not per-harness contributors.**
-  `isPrAuthorRevoked` (PR-5) resolves harness→hive via the registry `hive_slug` and checks
-  `hive_members.revoked_pubkeys`. A SHARED HARNESS that is NOT a hive member (`hive_slug` null) uses the
+- **GAP: code-plane contributor revocation only covers POT members, not per-harness contributors.**
+  `isPrAuthorRevoked` (PR-5) resolves harness→pot via the registry `hive_slug` and checks
+  `hive_members.revoked_pubkeys`. A SHARED HARNESS that is NOT a pot member (`hive_slug` null) uses the
   legacy `harness_shared.contributors.revoked_pubkeys` (substrate read-admission) — and the code-plane
   auto-flow (`tryAutoApprove`/`tryAutoMerge`, the daemon, the manual reviewPr route) does NOT consult it.
-  So a revoked per-harness (non-hive) contributor's fork→PR could still be auto-approved/merged.
-  **Unclear if this path is still live** (system moved to the hive model; non-hive shared harnesses may
+  So a revoked per-harness (non-pot) contributor's fork→PR could still be auto-approved/merged.
+  **Unclear if this path is still live** (system moved to the pot model; non-pot shared harnesses may
   be legacy). Security-adjacent → wants a peer/owner decision before a fix: (a) extend the code-plane
-  gate to per-harness `contributors`, or (b) confirm non-hive shared harnesses are deprecated + document
+  gate to per-harness `contributors`, or (b) confirm non-pot shared harnesses are deprecated + document
   the boundary. Not fixing unilaterally given the ambiguity.
 
   ### pr3-impl peer vote (2026-06-20) — toward consensus: **(b) document + a cheap observability guard; NOT (a)**
   I dug the code-plane (I built PR-3 on top of this gate). Evidence:
-  - The **supported** revoke tool `revokeHiveContributor` is HIVE-ONLY — it throws "owner has no
-    hive_members row — join the Hive before revoking" and writes `hive_members.revoked_pubkeys`,
+  - The **supported** revoke tool `revokeHiveContributor` is POT-ONLY — it throws "owner has no
+    hive_members row — join the Pot before revoking" and writes `hive_members.revoked_pubkeys`,
     which the code-plane gate (`isPrAuthorRevoked` → `isHiveContributorRevoked`) DOES consult.
   - The fork→PR contribution path (`platform:contribute kind:'pr'`, `fork-pr-on-feature-pass`) and
-    the share/create flows (`_create_from_repo`, `create-hive-membership`, `hive-publish-from-repo`)
-    are hive/self-hive-centric and set `hive_slug` — so a CONTRIBUTABLE shared harness has a hive.
+    the share/create flows (`_create_from_repo`, `create-pot-membership`, `pot-publish-from-repo`)
+    are pot/self-pot-centric and set `hive_slug` — so a CONTRIBUTABLE shared harness has a pot.
   - `contributors.revoked_pubkeys` is the SUBSTRATE/device read-admission plane (boot.ts,
     load-revoked-pubkeys) — it gates content FEDERATION reads, a DIFFERENT layer from "should this
     GitHub PR merge to canonical." Wiring it into the code/PR plane (option a) risks a category
-    error: the PR-merge decision is governed by the hive membership/trust model, not the substrate
+    error: the PR-merge decision is governed by the pot membership/trust model, not the substrate
     device-revocation set.
-  - **Net:** the gap looks THEORETICAL (no live non-hive contributable harness in the current hive
+  - **Net:** the gap looks THEORETICAL (no live non-pot contributable harness in the current pot
     model), and (a) could be the wrong layering. Recommend **(b)**: document the boundary in
-    `contribution-admission.ts` (the code-plane gate keys on hive membership BY DESIGN; non-hive
+    `contribution-admission.ts` (the code-plane gate keys on pot membership BY DESIGN; non-pot
     shared harnesses are not a supported fork→PR contribution path).
   - **BUT no silent rot:** add a cheap FAIL-SAFE OBSERVABILITY line — when `isPrAuthorRevoked`
     resolves `hive_slug=null` for a harness that nonetheless has a non-empty
@@ -108,12 +108,12 @@ for this hot tree.*
   - **Decision owner:** pr5-impl owns `contribution-admission.ts` (security surface) — your call to
     land (b)+log or escalate to the owner. I won't edit your security file unilaterally; this is my
     vote. If you concur, I'm happy to pair on the doc/log wording. One residual to confirm: is there
-    any LEGACY non-hive shared harness that can still receive fork→PRs? If yes, (a) re-opens.
+    any LEGACY non-pot shared harness that can still receive fork→PRs? If yes, (a) re-opens.
 
   ### pr5-impl resolution (2026-06-20) — CONSENSUS REACHED → (b)+log LANDED ✅
   I concur with (b). **Residual answered:** `fork-pr-on-feature-pass` gates only on
-  `loadSharedConfig` (a `github_remote`) — NO hive requirement — and the daemon polls any harness
-  with `pr_reviewer_role_enabled`. So a non-hive shared harness *can* technically receive fork→PRs +
+  `loadSharedConfig` (a `github_remote`) — NO pot requirement — and the daemon polls any harness
+  with `pr_reviewer_role_enabled`. So a non-pot shared harness *can* technically receive fork→PRs +
   be substrate-revoked → the path is not purely theoretical, which makes the observability log the
   right move (vs. silently nothing). But (a) stays **deferred**, not reopened: substrate
   device-revocation ≠ PR-merge authority (your category-error point holds), and the trust gate
@@ -121,7 +121,7 @@ for this hot tree.*
   them from `trusted_authors`. **Landed in `contribution-admission.ts`:** the design-boundary doc +
   `probeLegacyRevocationObservability` — when `hive_slug=null` AND the harness has a non-empty
   `contributors.revoked_pubkeys` (substrate), a LOUD warn fires; decision unchanged (fail-safe). 3
-  new teeth tests (suite 13→16 green), tsc clean. **GAP CLOSED via (b).** If a live non-hive
+  new teeth tests (suite 13→16 green), tsc clean. **GAP CLOSED via (b).** If a live non-pot
   contributable harness ever appears, the log surfaces it and we revisit (a) with data.
 
   ### pr5-impl re #3 (2026-06-20) — KEPT as COMPLEMENTARY, not a duplicate
@@ -141,7 +141,7 @@ for this hot tree.*
   keeping — nice catch on the assembleReport-downgrade→veto path. **Closing my side.**
   One linkage to carry forward for whoever owns **EI-1623 / AH-G2** (link-join seed-failure →
   no `hive_slug`): it shares this gap's root cause. Your residual confirms `hive_slug=null` +
-  contributable is a REAL state (not just seed-failure — any `github_remote` harness without a hive).
+  contributable is a REAL state (not just seed-failure — any `github_remote` harness without a pot).
   So the clean root-cause fix — **link-join/reconcile stamps `hive_slug` unconditionally** — would
   shrink the surface your observability log watches (fewer legit `hive_slug=null` contributable
   harnesses). Not blocking; just connecting the two filed items so the EI-1623 owner sees the whole.

@@ -55,7 +55,7 @@ is the same restart-cursor-reset seam I flagged in the A-003 option-(b) analysis
 
 ### Test plan (next step — teeth-verified integration)
 - Integration test (real PG via the value mappers + the real projection writers, pattern
-  from `register-all-hive-home-binding.integration.test.ts` / `createOrgTestDb`): for each
+  from `register-all-pot-home-binding.integration.test.ts` / `createOrgTestDb`): for each
   mutable type — apply DEL(hlc=high) → assert row gone → apply PUT(hlc=low) **through a
   FRESH cursor** (models the restart) → assert row **STILL GONE** (no resurrection).
 - Expected: **RED today** (resurrects — no tombstone) for at least the simple put path →

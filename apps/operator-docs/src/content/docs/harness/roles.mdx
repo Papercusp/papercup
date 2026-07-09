@@ -27,8 +27,8 @@ The built-ins, grouped as the file orders them:
 |---|---|
 | Pipeline | `scoper` · `architect` · `worker` · `validator` · `reviewer` · `debugger` · `documenter` · `curator` |
 | Chat surfaces | `operator` · `oracle` |
-| Hive | `bee` (the generic "do this task" agent — no pipeline spine, no chunk requirement) · `queen` (the Hive's placement decider — the `coding`/`work` Hive blueprint's `spine.decider`; steer-don't-dispatch placement) · `overwatch` (read-everything system-health supervisor; nudge/observe/escalate only — its role envelope **denies** `fs-write` + `bash`) · `planner` (interactive plan-authoring session) |
-| Cross-cutting | `orchestrator` · `promote` · `security-reviewer` · `infra-reviewer` · `crosscheck` · `ui-qa` · `auditor` (read-only adversarial screen for remote-authored features) · `merge-resolver` (git-sync conflict resolution) · `content-fixer` (git-sync content-guard repairer — fixes quarantined files so they pass the content detector, leaves the tree clean, does **not** push) · `release-manager` (deploy go/no-go) · `release-fixer` (green-checkpoint gate fixer — reproduces a failing test, then fixes the code or quarantines a proven flake) · `sentinel` (read-mostly fleet watcher) |
+| Pot | `cup` (the generic "do this task" agent — no pipeline spine, no chunk requirement) · `mug` (the Pot's placement decider — the `coding`/`work` Pot blueprint's `spine.decider`; steer-don't-dispatch placement) · `overwatch` (read-everything system-health supervisor; nudge/observe/escalate only — its role envelope **denies** `fs-write` + `bash`) · `planner` (interactive plan-authoring session) |
+| Cross-cutting | `orchestrator` · `promote` · `security-reviewer` · `infra-reviewer` · `crosscheck` · `ui-qa` · `auditor` (read-only adversarial screen for remote-authored features) · `merge-resolver` (git-sync conflict resolution) · `content-fixer` (git-sync content-guard repairer — fixes quarantined files so they pass the content detector, leaves the tree clean, does **not** push) · `release-manager` (deploy go/no-go) · `release-fixer` (green-checkpoint gate fixer — reproduces a failing test, then fixes the code or quarantines a proven flake) · `papercup` (read-mostly fleet watcher) |
 
 Two adjacent ids that are *not* agent roles: **`brain`**
 (`BRAIN_PRINCIPAL_ROLE`) is an RBAC role on the operator's own *principal* —
@@ -38,7 +38,7 @@ carried by a spawned agent — and the per-feature **director** is a persona
 (`NEXT_WORKER` / `NEXT_ARCHITECT` / `NEXT_VALIDATOR` / `DONE` / `ESCALATE`;
 see [Decision telemetry](/internal/docs/harness/decisions-timeline)) rather
 than an `AGENT_ROLES` entry. (The director is the **coding-factory** spine's
-decider; the Hive's deciders are real `AGENT_ROLES` entries — `queen` for
+decider; the Pot's deciders are real `AGENT_ROLES` entries — `mug` for
 placement automation, `operator` for decision-tree wakes.)
 
 ## Personas and layered resolution
@@ -75,8 +75,8 @@ by `packages/operator-core/lib/prompt-assembly.ts` from
 The pipeline spine lives in the **`coding-factory`** blueprint
 (`libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml`) —
 *not* `coding`. (The 2026-06-18 rename moved the strict spine `coding` →
-`coding-factory` and **reused** the `coding` id for the Hive blueprint:
-`kind: hive`, `spine.decider: queen`, with only `DONE` / `ESCALATE` / `IDLE`
+`coding-factory` and **reused** the `coding` id for the Pot blueprint:
+`kind: pot`, `spine.decider: mug`, with only `DONE` / `ESCALATE` / `IDLE`
 edges and no `scoper → … → curator` spine.) The `coding-factory` blueprint
 declares the wiring:
 
@@ -131,5 +131,5 @@ Verified in the current persona files:
 
 The first-generation "role design rules" — one job per role, read-mostly
 where possible, default-skeptical gates — are visible throughout the current
-registry (the `auditor` and `sentinel` are explicitly read-only/read-mostly
+registry (the `auditor` and `papercup` are explicitly read-only/read-mostly
 by design, per their `role-config.ts` entries).

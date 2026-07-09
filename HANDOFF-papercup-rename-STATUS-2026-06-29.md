@@ -61,7 +61,7 @@ would break retirement. → mark **dropped/obsolete** (matches the plan's `## No
 
 ### phase5 P-001 / P-007 (repo dir rename) — DONE via symlink bridge (already in place)
 `papercupai-workspace/papercup` is now a **symlink → papercusp**; real dir is `papercusp`;
-hive registry `path` already `…/papercusp`. Non-breaking. Residual = remove the symlink, which
+pot registry `path` already `…/papercusp`. Non-breaking. Residual = remove the symlink, which
 is coupled to the systemd rename (P-008) — keep it until 0 refs to the old path remain.
 
 ### phase5 P-006 (monorepo rename + grep gate) — rename DONE; grep-zero gate BLOCKED
@@ -107,7 +107,7 @@ files) which the 06-24 runbook §4 explicitly scopes OUT as a separate deliberat
 
 ## Plan-status writes still pending — dispatched to a capable su (2026-06-30 update)
 **Why not done directly:** after the session restart the MCP reconnected, but this Claude session's
-principal is now **`system:sentinel`** (the always-on read/coordinate persona), which by RBAC design
+principal is now **`system:papercup`** (the always-on read/coordinate persona), which by RBAC design
 **lacks `plans:write`** (and `audit:read`) — `plans:set-status` returns `missing_capability`. This is a
 *different* wall than the 06-29 trust-gate finding: it's the principal's capability set, not loopback
 trust. An **su** principal holds both `plans:write` and verified trust, so the correct non-circumventing

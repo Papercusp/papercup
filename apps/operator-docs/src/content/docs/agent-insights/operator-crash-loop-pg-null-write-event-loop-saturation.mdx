@@ -93,7 +93,7 @@ uptime                                                                # is the b
 sudo -u postgres psql -p 5432 -tAc "select count(*),current_setting('max_connections') from pg_stat_activity"  # confirm PG is NOT exhausted
 ```
 
-If the box is overloaded by fleet activity, that load is the hive's domain (it
+If the box is overloaded by fleet activity, that load is the pot's domain (it
 holds benchmark runs until the box quiets) — let it recede rather than
 double-intervening. The resilience patch keeps the operator alive through the
 spike.

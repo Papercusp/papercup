@@ -85,5 +85,5 @@ shared gateway account is fleet-exhausted, pin a fresh one: `makeLiveGaiaLlm({ a
 
 - **P-006** (test-set leaderboard submission, 301 tasks → the Gradio Space): manual + later;
   iterate on validation first.
-- **P-007** (optional hive-decomposition arm on L3): after P-005; compares hive multi-hop
+- **P-007** (optional pot-decomposition arm on L3): after P-005; compares pot multi-hop
   decomposition to the single-opus baseline on the same L3 tasks.

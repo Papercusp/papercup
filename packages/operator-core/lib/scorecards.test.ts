@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, ratingScore10, scorecardScore10 } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { CriterionTrend } from './scorecards';
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
@@ -246,5 +246,53 @@ describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / 
     expect(computeTrendDirection(s('pass', 'pass'))).toBe('stable');
     // mixed-vocabulary series still works (both are ordinal 0..2)
     expect(computeTrendDirection(s('healthy', 'fail'))).toBe('worsening');
+  });
+});
+
+describe('extended 5-level scale (exemplary / pass / partial / fail / severe)', () => {
+  it('default map: extended words are additive — pass/fail unchanged for 3-level rubrics', () => {
+    expect(ratingScore10('exemplary')).toBe(10);
+    expect(ratingScore10('severe')).toBe(0);
+    expect(ratingScore10('pass')).toBe(10); // 3-level ceiling stays 10
+    expect(ratingScore10('fail')).toBe(0);
+  });
+
+  it('scoreOverridesForScale: extended vocabulary → mid-level re-map; plain scale → undefined', () => {
+    expect(scoreOverridesForScale(['pass', 'partial', 'fail', 'unknown'])).toBeUndefined();
+    expect(scoreOverridesForScale(['healthy', 'degraded', 'broken'])).toBeUndefined();
+    expect(scoreOverridesForScale(null)).toBeUndefined();
+    expect(scoreOverridesForScale([])).toBeUndefined();
+    const ov = scoreOverridesForScale(['exemplary', 'pass', 'partial', 'fail', 'severe', 'unknown']);
+    expect(ov).toEqual({ pass: 8, fail: 2 });
+    // case-insensitive detection
+    expect(scoreOverridesForScale(['Exemplary', 'Pass', 'Fail'])).toEqual({ pass: 8, fail: 2 });
+  });
+
+  it('five levels spread monotonically under the extended overrides', () => {
+    const ov = scoreOverridesForScale(['exemplary', 'pass', 'partial', 'fail', 'severe'])!;
+    expect(ratingScore10('exemplary', ov)).toBe(10);
+    expect(ratingScore10('pass', ov)).toBe(8);
+    expect(ratingScore10('partial', ov)).toBe(5);
+    expect(ratingScore10('fail', ov)).toBe(2);
+    expect(ratingScore10('severe', ov)).toBe(0);
+    expect(ratingScore10('unknown', ov)).toBeNull(); // still excluded
+  });
+
+  it('scorecardScore10 means over the extended scale', () => {
+    const ov = scoreOverridesForScale(['exemplary', 'pass', 'partial', 'fail', 'severe'])!;
+    // (10 + 8 + 2) / 3 = 6.7
+    expect(
+      scorecardScore10(
+        { a: { rating: 'exemplary' }, b: { rating: 'pass' }, c: { rating: 'fail' }, d: { rating: 'unknown' } },
+        ov,
+      ),
+    ).toBe(6.7);
+  });
+
+  it('computeTrendDirection orders the extended endpoints (exemplary best, severe worst)', () => {
+    expect(computeTrendDirection(s('pass', 'exemplary'))).toBe('improving');
+    expect(computeTrendDirection(s('exemplary', 'pass'))).toBe('worsening');
+    expect(computeTrendDirection(s('fail', 'severe'))).toBe('worsening');
+    expect(computeTrendDirection(s('severe', 'partial', 'pass'))).toBe('improving');
   });
 });

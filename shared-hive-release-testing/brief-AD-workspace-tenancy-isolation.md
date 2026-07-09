@@ -3,7 +3,7 @@
 **Priority: S0/S1 lane.** Integration. Tenancy isolation is a security+correctness boundary.
 
 ## Objective
-Prove **workspace/tenancy isolation** holds across federation: a hive in workspace A
+Prove **workspace/tenancy isolation** holds across federation: a pot in workspace A
 never leaks to workspace B, writes route to the CORRECT workspace (no 'default'
 mis-route), and the workspace ALS context stays correct under concurrency.
 
@@ -17,7 +17,7 @@ privacy/correctness failure, and the mis-route class silently breaks federation 
 balloons storage. Neither is systematically tested.
 
 ## Scope / scenarios
-1. **Cross-workspace hive isolation:** a hive/harness in ws-A and a hive in ws-B on the
+1. **Cross-workspace pot isolation:** a pot/harness in ws-A and a pot in ws-B on the
    same box → assert NO content crosses workspaces (different swarm topics derive per
    workspace — `derive-swarm-topic` cross-workspace isolation), no PG row visible across
    workspace schemas.
@@ -27,7 +27,7 @@ balloons storage. Neither is systematically tested.
 3. **ALS workspace context under concurrency:** `runWithWorkspace` (ALS) — interleaved
    operations across workspaces in one process don't bleed context (the
    pending-wakes-sweep `reg.current` drift class from the prior pass). Property/fuzz.
-4. **Multi-workspace per box:** several workspaces each with hives, federating
+4. **Multi-workspace per box:** several workspaces each with pots, federating
    simultaneously → each stays isolated + correct; resource scaling.
 5. **Workspace switch / move:** moving a harness between workspaces (if supported) →
    the substrate re-routes cleanly, old workspace's outbox drains/GCs, no orphan.
@@ -46,5 +46,5 @@ balloons storage. Neither is systematically tested.
   mis-route/orphan (S1), the ALS-concurrency verdict, the default-workspace guard.
 
 ## Done / verdict
-GREEN only when hives are provably isolated across workspaces, writes route to the
+GREEN only when pots are provably isolated across workspaces, writes route to the
 correct workspace (never silent-default), and the ALS context holds under concurrency.

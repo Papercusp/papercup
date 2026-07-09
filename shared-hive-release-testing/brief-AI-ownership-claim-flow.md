@@ -1,4 +1,4 @@
-# Brief AI — Shared-hive ownership: provisional → claimed authority
+# Brief AI — Shared-pot ownership: provisional → claimed authority
 
 **Priority: S0/S1 lane.** Integration + GUI + live. Owner-requested (2026-06-19). The
 provisional/claimed model is BUILT but NOT in the systematic release-test program.
@@ -9,15 +9,15 @@ secure, and honest end-to-end: only the true repo owner can claim, the status is
 everywhere, and the authority transitions (claim / supersede / stale) are sound.
 
 ## Why it matters
-This is the **authority root** of a public shared hive — it decides who is allowed to set
-hive policy (the owner-enforcement layer, `PLAN-owner-enforcement-layer.md`, builds on it).
+This is the **authority root** of a public shared pot — it decides who is allowed to set
+pot policy (the owner-enforcement layer, `PLAN-owner-enforcement-layer.md`, builds on it).
 It's fully implemented (`binding-service.ts`, `shared_repo_binding_cache.claim_status`, the
 claim API + GUI) but has only piece-level tests — no release-grade end-to-end + adversarial
 pass. If a non-owner could claim, or claim-status mis-rendered, the whole spam/abuse-control
 story collapses.
 
 ## Scope / scenarios
-1. **Create → provisional → unclaimed (the default):** creating a shared hive sets
+1. **Create → provisional → unclaimed (the default):** creating a shared pot sets
    `claim_status='unclaimed'`, records the creator as `provisional_owner_github_user_id`,
    and the GUI shows the `ProvisionalOwnerExplainer` modal. Assert the binding + the
    provisional-owner identity.
@@ -35,9 +35,9 @@ story collapses.
 6. **Claim status FEDERATES + is honest everywhere:** does `claim_status` reach a joiner
    (so a member sees claimed/unclaimed correctly)? Assert the 4-state badge renders correctly
    in `/adv` harness header, Cupboard, Insights `ProjectCard`, profiles — no surface lies
-   (an unclaimed hive never shows "claimed").
+   (an unclaimed pot never shows "claimed").
 7. **Edge/adversarial:** re-claim is idempotent (no dup claimant); two maintainers race to
-   claim (deterministic, both recorded or first-wins, no corruption); claim a hive whose repo
+   claim (deterministic, both recorded or first-wins, no corruption); claim a pot whose repo
    was renamed/deleted (resolves or fails honestly); a forged claim request (wrong identity).
 8. **GUI E2E (Tauri, headless, never :0):** drive the real Claim CTA — `HarnessClaimHeader`
    shows "Claim this harness" only when `unclaimed && viewerCanClaim`; clicking → POST →
@@ -46,7 +46,7 @@ story collapses.
 ## Method
 - Integration (real PG + the binding-service + a mocked/recorded GitHub permission API) for
   scenarios 1–7; reuse `binding-claim.test.ts` + `claim-status-resolver.test.ts` as prior art,
-  extend to the adversarial + federation cases. GUI E2E via the Tauri shell + `adv-hive-from-
+  extend to the adversarial + federation cases. GUI E2E via the Tauri shell + `adv-pot-from-
   github-url.spec.ts` prior art. Teeth-verify the S0 gates (non-owner-claim reject, stale flip).
 
 ## Deliverables

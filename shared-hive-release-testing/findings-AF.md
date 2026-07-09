@@ -1,18 +1,18 @@
 # Findings — WAVE 5 Brief AF: Directory mechanics (+ the invite-beacon-capture bug)
 
-Owner: su-ed300 (Brief L hive-directory/discovery context). This pass: fixed the concrete
+Owner: su-ed300 (Brief L pot-directory/discovery context). This pass: fixed the concrete
 beacon-capture bug dc9db found live, swept for siblings, and noted directory-mechanics
 coverage.
 
 ---
 
-## AF-1 — Invite/hive beacon capture crashes live (S2 observability) — ✅ FIXED
+## AF-1 — Invite/pot beacon capture crashes live (S2 observability) — ✅ FIXED
 
 **Found by dc9db (live, integrated .deb):** `inst-b.log` repeatedly logs
-`[hive-directory] beacon capture failed for spoon-knife-hive: The "string" argument must
+`[pot-directory] beacon capture failed for spoon-knife-pot: The "string" argument must
 be of type string ... Received an instance of Object`. The beacon-history capture is
-best-effort (caught + warned at `hive-directory.ts:329`), so federation is unharmed — but
-the **cross-hive beacon HISTORY (tier-4 dossier) is silently never written** on the live
+best-effort (caught + warned at `pot-directory.ts:329`), so federation is unharmed — but
+the **cross-pot beacon HISTORY (tier-4 dossier) is silently never written** on the live
 binary. S2 (a feature silently doesn't work + a noisy log), not a blocker.
 
 **Root cause:** `captureBeaconSnapshot` (`network-board/beacon-history-pg.ts`) bound the
@@ -52,14 +52,14 @@ The core directory mechanics (discover accuracy, announce crossing, withdraw/unl
 topic one-wayness, negative-isolation, the joiner-resolves-own-topic path) are **already
 covered** by Brief L (G-001/G-002/G-003 + the live re-verify on the fix-`.deb`:
 from-repo + invite reach=0 + withdrawn-drops-in-~3s) and the existing
-`hive-directory*.test.ts` / `directory-swarm.test.ts` suites (151 green). No new directory
+`pot-directory*.test.ts` / `directory-swarm.test.ts` suites (151 green). No new directory
 gap surfaced this pass beyond the beacon-capture bug.
 
 ---
 
 ## Verdict (dimension): 🟢 GREEN (the one live AF bug is fixed; mechanics covered)
 
-The invite/hive beacon-capture crash — the concrete AF defect — is fixed (insight-aligned,
+The invite/pot beacon-capture crash — the concrete AF defect — is fixed (insight-aligned,
 integration-verified) and isolated (no siblings). Directory mechanics are covered by Brief L
 + the existing suites. Open AF depth (announce-flood / churn-under-load directory behavior)
 is unexercised but no known blocker.

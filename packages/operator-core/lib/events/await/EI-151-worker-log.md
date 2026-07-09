@@ -17,7 +17,7 @@ live session via `findLiveHost(ownerId)` in
 liveness check — but **never verified the file's recorded `ownerId` matched the
 requested one**. `sanitizeKey` is lossy (maps every char outside
 `[a-zA-Z0-9._-]` to `_`, truncates to 200), so two distinct coord owner ids can
-resolve to the **same** discovery file (a structured hive-Scout id vs a colliding
+resolve to the **same** discovery file (a structured pot-Scout id vs a colliding
 one; a stale file left at a reused key during a `/loop` re-host). Whoever wrote
 last owns the filename; a wake/interrupt for the *other* agent then resolved to
 that host → cross-agent injection. Exactly the EI-151 symptom.

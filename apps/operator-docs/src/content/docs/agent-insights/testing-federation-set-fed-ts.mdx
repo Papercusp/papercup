@@ -1,15 +1,15 @@
 ---
-title: Testing shared-hive/substrate federation via direct PG? Set fed_ts, not just ts
+title: Testing shared-pot/substrate federation via direct PG? Set fed_ts, not just ts
 description: The federated last-writer-wins merge is guarded by the fed_ts column, not ts/updated_ts. writeToPg upserts with ON CONFLICT DO UPDATE WHERE EXCLUDED.fed_ts >= table.fed_ts, so a raw PG INSERT/UPDATE that sets ts and updated_ts but leaves fed_ts stale gives the merge inconsistent ordering keys. The visible symptom is a FALSE convergence bug — two peers concurrently updating the same federated row appear to diverge permanently, and rows can look internally inconsistent (vanished row, author/title mismatch). It is the test write that is wrong, not the merge. Set fed_ts to the intended LWW timestamp on every direct write to a federated consolidated table (harness_features_consolidated, harness_issues_consolidated) and concurrent conflicts converge in seconds, as the real app does (its projection writeToPg sets fed_ts for you).
 discovered: 2026-06-16
-tags: [hyperbee, federation, shared-hive, lww, fed_ts, testing, false-bug, read-merge]
+tags: [hyperbee, federation, shared-pot, lww, fed_ts, testing, false-bug, read-merge]
 status: active
 documents:
   - packages/operator-core/lib/sync/hyperbee/projections/register-all.ts
   - packages/operator-core/lib/sync/hyperbee/capture-coverage.ts
 ---
 
-When you exercise shared-hive federation by writing directly to the consolidated
+When you exercise shared-pot federation by writing directly to the consolidated
 PG tables (a fast way to drive two live instances without the UI), the merge can
 look badly broken: two peers that update the **same row** at the **same time**
 diverge and never reconcile, and the row state can go internally inconsistent.

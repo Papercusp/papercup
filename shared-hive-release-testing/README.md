@@ -1,6 +1,6 @@
-# Shared-Hive Public-Release Test Program
+# Shared-Pot Public-Release Test Program
 
-**Goal:** reach the point where we can *confidently* say the shared-hive (P2P
+**Goal:** reach the point where we can *confidently* say the shared-pot (P2P
 federated) feature set is ready for a **public release** — not "the existing
 suites are green" (they are), but "we have actively tried to break it across
 correctness, data-completeness, security, concurrency, resilience, and UX, and
@@ -18,7 +18,7 @@ all 11 packages, all libs, all apps, operator-core integration) and fixed 5 real
 bugs this session:
 
 1. **Topic-split** (the major federation bug) — owner federated on
-   `hive:<pubkey>`, a joiner re-derived `gh:<repo_id>` → different swarm topic →
+   `pot:<pubkey>`, a joiner re-derived `gh:<repo_id>` → different swarm topic →
    incremental writes never crossed. Fixed in `boot-all.ts` (`defaultResolveSwarmBinding`
    now honors the link topic), `derive-swarm-topic.ts` (explicit `topic` carrier),
    verified across `derive-swarm-topic.test.ts` + `default-swarm-binding-p007.test.ts`.
@@ -47,11 +47,11 @@ rigs cover it.
 
 - **Federation substrate:** `packages/operator-core/lib/sync/hyperbee/` —
   `boot.ts` (`bootHarnessSubstrate`), `boot-all.ts` (`defaultResolveSwarmBinding`),
-  `derive-swarm-topic.ts` (topic derivation: `gh:` / `local:` / `hive:<pubkey>` /
+  `derive-swarm-topic.ts` (topic derivation: `gh:` / `local:` / `pot:<pubkey>` /
   explicit `topic:`), `swarm.ts`, `corestore.ts`, `wire-presence.ts`, `wire-outbox`.
-- **Hive lifecycle:** `lib/hive-*.ts` — `hive-create*`, `hive-publish*`,
-  `hive-set-listing.ts`, `hive-directory*.ts`, `hive-federation.ts`
-  (`resolveHiveSwarmBinding`), `identity/hive-keypair.ts` (`hiveKeychainId`).
+- **Pot lifecycle:** `lib/pot-*.ts` — `pot-create*`, `pot-publish*`,
+  `pot-set-listing.ts`, `pot-directory*.ts`, `pot-federation.ts`
+  (`resolveHiveSwarmBinding`), `identity/pot-keypair.ts` (`hiveKeychainId`).
 - **Join:** `lib/harness/join-shared-harness.ts` (synthesizes `shared.json` with
   the link topic at line ~582).
 - **Authority/locks:** `lib/authority/`.
@@ -59,7 +59,7 @@ rigs cover it.
   triggers (migration 102 family). **Projections (apply side):**
   `lib/sync/.../projections` (`build*Projection`, `tableTag`).
 - **Coordination stores:** `lib/agent-tools/coordination/`, `packages/coordination`.
-- **Desktop app:** `papercusp-desktop/` (Tauri). Shared-hive UI:
+- **Desktop app:** `papercusp-desktop/` (Tauri). Shared-pot UI:
   `apps/operator/app/harness/ShareHiveDialog.tsx`, `apps/operator-vite`.
 
 ---
@@ -81,7 +81,7 @@ scripts** (CI lint P-038 fails the build).
 
 **2-peer / N-peer test rigs (reuse these):**
 `lib/sync/hyperbee/__tests__/_cross-peer-rig.ts` (`pollUntil`, `buildPeerApply`),
-`_hive-substrate-rig.ts`, `lib/shared-hive-loop/composition-rig.ts`
+`_hive-substrate-rig.ts`, `lib/shared-pot-loop/composition-rig.ts`
 (`bootCompositionRig`). Real local DHT via `createTestnet` from
 `hyperdht/testnet.js`, or `PAPERCUSP_DHT_BOOTSTRAP=127.0.0.1:<port>`.
 
@@ -110,7 +110,7 @@ Desktop UI verification: follow `/internal/docs/testing` + `testing/agent-e2e`
 ## Deliverables (every brief)
 
 1. **New tests** (in the right framework, teeth-verified) closing the gaps in scope.
-2. **A findings report** `shared-hive-release-testing/findings-<brief>.md`: every
+2. **A findings report** `shared-pot-release-testing/findings-<brief>.md`: every
    bug (with repro + severity), every gap closed, every gap left open (with why).
 3. **A release-readiness verdict for your dimension**: GREEN (ready) / YELLOW
    (ready with caveats — list them) / RED (blockers — list them).
@@ -130,4 +130,4 @@ Desktop UI verification: follow `/internal/docs/testing` + `testing/agent-e2e`
 Lanes overlap at the edges. Before deep work, `coord:declare-intent` with your
 brief letter + the files/areas you'll touch. The **live-instance lanes (A, E, G)**
 share the 2-instance harness — coordinate launches (one fixed-`.deb` pair at a
-time) via a `locks:*` lock named `shared-hive-live-instances`.
+time) via a `locks:*` lock named `shared-pot-live-instances`.

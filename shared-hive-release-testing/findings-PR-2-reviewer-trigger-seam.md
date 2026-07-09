@@ -14,7 +14,7 @@ Gap 1 is now wired (option B, in-process fallback). Changes to `poll-daemon.ts`:
 - `triggerReviewer` dep signature gained `reviewerGithubId: number`; the call site passes
   `viewer.id` (the authenticated operator).
 - `defaultTriggerReviewer`: if a `pr:review` blueprint target exists → loopback POST as before
-  (heavyweight Bee path, unchanged); **else** → `runPrReviewTask(...)` fire-and-forget
+  (heavyweight Cup path, unchanged); **else** → `runPrReviewTask(...)` fire-and-forget
   (deterministic + safety-guarded reviewer, in-process). Fires once per new/changed PR (the
   last-seen guard), so no re-review churn.
 - `runPrReviewTask` (`pr-host/agent-reviewer.ts`) is the shared callee for both paths.
@@ -54,9 +54,9 @@ the PR, and runs the full review→store→audit flow. Self-contained, injectabl
 (no live host/model/DB). Whatever wiring we pick calls this.
 
 ### Options to make it live (pick one — needs consensus)
-- **A. Blueprint-Bee** (matches the brief's "Queen/Bee task"): declare a `pr:review` launch
+- **A. Blueprint-Cup** (matches the brief's "Mug/Cup task"): declare a `pr:review` launch
   blueprint whose spawned task parses `--pr-review` and calls `runPrReviewTask`. Heavyweight
-  (a full agent session per PR), but lets a hive use a richer agent reviewer.
+  (a full agent session per PR), but lets a pot use a richer agent reviewer.
 - **B. In-process fallback** (recommended default): when no blueprint target exists, have
   `defaultTriggerReviewer` call `runPrReviewTask(...)` fire-and-forget. Cheap, already built,
   runs the deterministic + safety-guarded path. Keep A as an opt-in override.
@@ -64,7 +64,7 @@ the PR, and runs the full review→store→audit flow. Self-contained, injectabl
   blueprint target = that URL. Useful if PR-3's GUI also wants a manual "re-review" button.
 
 **PR-2's recommendation:** B as the default (zero new infra, uses the guarded path), with A
-available for hives that opt into a full-agent reviewer. Owner of the change: PR-1 daemon author
+available for pots that opt into a full-agent reviewer. Owner of the change: PR-1 daemon author
 (it's their `defaultTriggerReviewer`); PR-2's `runPrReviewTask` is the callee, done.
 
 ## Gap 2 — first-sight race bypasses the gate even once Gap 1 is fixed

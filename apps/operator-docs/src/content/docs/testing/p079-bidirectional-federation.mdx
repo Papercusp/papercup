@@ -169,15 +169,15 @@ what makes "data crossed the wire" verifiable.
 
 <Steps>
 
-1. **Alice shares the harness.** Sharing is now **hive-level**: in Alice's Tauri
-   shell, share the hive via the **Share-Hive** form (`PublishHiveCard` /
+1. **Alice shares the harness.** Sharing is now **pot-level**: in Alice's Tauri
+   shell, share the pot via the **Share-Pot** form (`PublishHiveCard` /
    `ShareHiveDialog` — the old per-harness `ShareWizard` and its
    share-finalize/binding-resolve/cupboard-publish routes were retired in
    `comb-retire-per-harness-sharing-2026-06-11`). This **publishes Alice's
    attestation gist** (no shared-repo contributor file is written — the gist id
    rides Alice's signed announce), boots Alice's substrate (joins the swarm topic
-   derived from the repo id) and announces. Note the **hive invite**
-   (`papercusp://hive` link) to send to contributors.
+   derived from the repo id) and announces. Note the **pot invite**
+   (`papercusp://pot` link) to send to contributors.
 
 2. **Confirm Alice's binding: an owned attestation gist (the admission gate).**
    There is **no** `user/<id>` contributor branch under the write-free model — the
@@ -198,10 +198,10 @@ what makes "data crossed the wire" verifiable.
 3. **Bob joins via the link.** In Bob's shell, paste Alice's link to join. The
    create-harness picker has **no discrete "harness link" entry** — its entries are
    New local directory, Existing local repo, Search GitHub or enter URL, Start a
-   work hive, Search the Comb (blueprint), Browse the Comb, and Hive invite
-   (`papercusp://hive`). Harness-link join (`POST /api/harness/join-link`) is reached
-   through the GitHub-search / Comb hive flow (`EntryGithubUrlForm`); a
-   `papercusp://hive` invite goes through the Hive-invite card. Bob's identity is
+   work pot, Search the Comb (blueprint), Browse the Comb, and Pot invite
+   (`papercusp://pot`). Harness-link join (`POST /api/harness/join-link`) is reached
+   through the GitHub-search / Comb pot flow (`EntryGithubUrlForm`); a
+   `papercusp://pot` invite goes through the Pot-invite card. Bob's identity is
    resolved server-side from his `gh` auth (no creds typed). Watch the join progress
    through the 6 steps: `oauth_attest → clone_repo → publish_binding → boot_federate
    → await_admission_merge → route_insights`. `publish_binding` performs **no repo

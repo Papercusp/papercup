@@ -10,7 +10,7 @@ documents:
 
 ## What
 
-If you add a **best-effort** `useSyncQuery` resolver (`packages/operator-core/lib/sync-resolver/index.ts`) that reads a table which is **not in the generated drizzle schema** — i.e. a table that lives in raw SQL and only exists after its migration boot-applies (the gym/apiary/hive-eval-style sibling slices) — do **not** `console.warn` in the catch on the missing-table case. A warn there reddens the green gate.
+If you add a **best-effort** `useSyncQuery` resolver (`packages/operator-core/lib/sync-resolver/index.ts`) that reads a table which is **not in the generated drizzle schema** — i.e. a table that lives in raw SQL and only exists after its migration boot-applies (the gym/apiary/pot-eval-style sibling slices) — do **not** `console.warn` in the catch on the missing-table case. A warn there reddens the green gate.
 
 ## Why it bites
 

@@ -161,7 +161,7 @@ Acted on the review (1 iteration):
   negation-of-shipped phrasings (`NOT built|done|…`, `was/is NOT …`). A correction like "NOT built" is
   still suppressed; a legit shipped line that merely contains "NOT" (e.g. "handles the NOT-found case")
   is now correctly CHECKED. +2 teeth. Suite: core 11 + active-plans 6 = 17 green, tsc clean.
-- **Allowlist grown** to 6 (added verified-clean owner-enforcement / hive-from-url / federation plans).
+- **Allowlist grown** to 6 (added verified-clean owner-enforcement / pot-from-url / federation plans).
 - **Recorded the (A) preflight design** (pr1-impl's churn-proof upgrade): the `plans:set-status`
   preflight should verify a CITED ARTIFACT (merged-PR URL / commit SHA / a named test that
   resolves+passes), NOT a file path — captured in the active-plans test header for when coord is back.

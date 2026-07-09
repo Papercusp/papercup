@@ -302,50 +302,32 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner-live');
       const idJoiner = makeIdentityOverride('joiner', 7, 'kc-joiner-live');
 
-      // ── Seed the hive identity + BOTH members (realistic post-membership-federation
-      //    state) — same shape as owner-content-to-joiner-faithful. ──
+      // ── The Hive identity pubkey. NOTE: unlike the "faithful" test this file's
+      //    intro comment references, we deliberately do NOT seed a
+      //    `harness_shared.hives` row for HIVE_HOME under this same pubkey here.
+      //    In production the owner and the joiner are two SEPARATE physical
+      //    devices with two SEPARATE local Postgres databases — the owner's own
+      //    `hives` row (home_slug=HIVE_HOME) never coexists, in one database,
+      //    with the joiner's remote-view row (home_slug=potSlug) for the SAME
+      //    pubkey, because `hives.public_key` is GLOBALLY unique (184-hives-table.sql:
+      //    "a pubkey identifies one Hive everywhere") — exactly one row per real
+      //    Hive identity, whichever role (owner or joiner) a given device plays.
+      //    This test's single shared `orgDb` stands in for BOTH devices' PG at
+      //    once (so the post-join registry/hives/features reads below all land
+      //    in one place), so seeding the owner's row here would recreate a
+      //    same-DB collision that can never happen for real (two real devices,
+      //    two real databases) and would incorrectly fail the REAL
+      //    `upsertRemoteHiveIdentity` insert this test exists to exercise
+      //    (`hives_public_key_key` unique-violation). The owner's
+      //    `bootHarnessSubstrate` call below is given its swarm binding directly
+      //    (`swarmBinding: { kind: 'hive', hive_pubkey: hivePubkeyB64 }`), so it
+      //    never needs a `hives` row to resolve its own topic, and neither
+      //    `verifyBindingOverride`/`loadRevokedOverride` (both stubbed for owner
+      //    and joiner) nor `resolveOwnerDevicePubkey`/`getLocalHive` (both
+      //    stubbed in the `joinHiveAsView` call below) ever reads
+      //    `harness_shared.hive_members`, so that table needs no seed rows either.
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
-      await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
-        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
-                'kc-owner-live-home', 'Owner Live Home', null, 1, 1)
-      `;
-      await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
-           device_attestations, revoked_pubkeys, binding_status)
-        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner',
-                ${JSON.stringify([
-                  {
-                    device_pubkey: idOwner.devicePubkey,
-                    gist_id: 'gist-owner',
-                    gist_url: 'https://gist.github.com/owner',
-                    device_label: 'owner-dev',
-                    created_at: 1,
-                    signature_by_device: 'sig',
-                  },
-                ])}::text::jsonb,
-                '{}'::text[], 'verified')
-      `;
-      await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
-           device_attestations, revoked_pubkeys, binding_status)
-        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idJoiner.userId}, 'joiner',
-                ${JSON.stringify([
-                  {
-                    device_pubkey: idJoiner.devicePubkey,
-                    gist_id: 'gist-joiner',
-                    gist_url: 'https://gist.github.com/joiner',
-                    device_label: 'joiner-dev',
-                    created_at: 1,
-                    signature_by_device: 'sig',
-                  },
-                ])}::text::jsonb,
-                '{}'::text[], 'verified')
-      `;
 
       // ── The OWNER's own throwaway content-origin DB + real boot (author side —
       //    unrelated to the fix under test, mirrors the faithful test exactly). ──

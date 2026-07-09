@@ -12,7 +12,7 @@ documents:
 
 ## Symptom
 
-A hive federation integration test (the `_hive-substrate-rig` / `CONTENT_AND_KEY_DDL` family) fails with a decrypted content op that reaches the decrypt gate’s `epoch_applied` trace **but the row is never in the joiner PG**, and `drainQueuedEpochContent` reports N-1 of N reapplied. It *looks* like a crypto / epoch / decrypt-gate bug. It usually is not.
+A pot federation integration test (the `_hive-substrate-rig` / `CONTENT_AND_KEY_DDL` family) fails with a decrypted content op that reaches the decrypt gate’s `epoch_applied` trace **but the row is never in the joiner PG**, and `drainQueuedEpochContent` reports N-1 of N reapplied. It *looks* like a crypto / epoch / decrypt-gate bug. It usually is not.
 
 ## Root cause: a swallowed INSERT throw
 

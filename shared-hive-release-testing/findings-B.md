@@ -50,8 +50,8 @@ prevented. The remaining risk is finer-grained (B-001/B-002).
 | 7 | `coord_threads` | `coord-threads` | 149 | `coord-thread-federation` (2-peer A↔B) | ✅ |
 | 8 | `coord_thread_posts` | `coord-thread-posts` | 149 | `coord-thread-federation` | ✅ |
 | 9 | `plan_item_assignments` | `item-assignments` | 140/145 | `plan-item-assignment-two-peer-federation` (FULL, bidir) | ✅ |
-| 10 | `hive_settings` | `hive-settings-by-key` | 186 | `cross-hive-grant-federation` G25/G26 (2-peer, LWW converge) | ✅ |
-| 11 | `hive_members` | `hive-members` | 189 | `hive-members-federation-trigger` + `…teardown…` (2-peer + tombstone) | ✅ |
+| 10 | `hive_settings` | `pot-settings-by-key` | 186 | `cross-pot-grant-federation` G25/G26 (2-peer, LWW converge) | ✅ |
+| 11 | `hive_members` | `pot-members` | 189 | `pot-members-federation-trigger` + `…teardown…` (2-peer + tombstone) | ✅ |
 | 12 | `engineer_issues` | `engineer-issues` | 197 | `engineer-issues-federation-trigger` (2-peer, scope-derived slug) | ✅ |
 | 13 | `harness_plan_parts` | `plan-parts` | 271 (flag-gated) | `plan-part-federation-cutover` (partial) | ✅ mapper; **federation DARK until `papercusp-plan-part-federation`** |
 
@@ -126,7 +126,7 @@ acceptably local. **Owner call required.**
 **Claim:** Unlike issues (which federate every content column) and every other
 federated table, the **feature** mapper (`toFeatureValue`) carries ~27 of ~45
 columns. After excluding legitimately-local columns (verifier state, `_search`,
-`working_users` derived from `feature_working_set`, per-bee `*_rank` ordering,
+`working_users` derived from `feature_working_set`, per-cup `*_rank` ordering,
 scheduling `schedule*`/`tzid`/`template_slug`/`run_seq`, `requeue_count` retry
 counter, provenance), the following **content-looking** columns are currently
 **silently not federated** — a feature created on peer A lands on peer B with each
@@ -151,7 +151,7 @@ it to `toFeatureValue` + the `harness-features` projection INSERT/UPSERT + the
 `feature-content-federation` real-schema assertion, then drop its `REVIEW` tag. For
 each confirmed-local: keep the allow-list entry, drop the `REVIEW` tag. Not a
 crash/corruption blocker, so it does not by itself hold release — but "a federated
-feature loses its design + plan lineage on a real hive" should be a conscious choice
+feature loses its design + plan lineage on a real pot" should be a conscious choice
 before public release, not a silent gap.
 
 ### B-003 — Log-first federated tables lacked a real 2-peer crossing test (S2 — NOW FULLY CLOSED this pass)
@@ -184,7 +184,7 @@ exercise the loop with a *fake* pipeline, not these tables' real apply.)
 To build them I added a small **additive, backward-compatible seam** to `_cross-peer-rig.ts`
 (`buildPeerApply`/`bootPresencePeer`/`federateTwoPeerPresence` now take optional
 `extraProjections`), verified safe by re-running the rig's existing consumers
-(`cross-peer-coordination` 9/9 + `leave-hive-tombstone` 1/1).
+(`cross-peer-coordination` 9/9 + `leave-pot-tombstone` 1/1).
 
 **`feature_queue` + `feature_working_set` closed (the last two):**
 `feature-queue-workingset-two-peer-federation.integration.test.ts` — one real two-peer
@@ -211,7 +211,7 @@ peer too (a minimal real-shape features table is present). Teeth: no-op the queu
 ### B-005 — `trusted_authors` local-only is INTENTIONAL and CORRECT (not a gap)
 
 The brief flagged this as the hardest question: should an owner's trust/untrust
-decision federate so admission is hive-consistent? **No — federating it would be an
+decision federate so admission is pot-consistent? **No — federating it would be an
 S0 security hole.** `trusted_authors` is the owner's LOCAL grant that a verified
 author's remote work may **auto-run (execute code)** on the owner's install bypassing
 per-item screening (`trust:add` is documented "owner-scoped, local-only, never
@@ -220,7 +220,7 @@ on another member's machine — supply-chain/privilege escalation. Crucially, th
 **admission-consistency** the brief worried about is already handled by a *different,
 federated* table: `hive_members` (carries `device_attestations` + `revoked_pubkeys` +
 `binding_status`) DOES federate, so cryptographic membership and **revocation** are
-hive-consistent. Trust (the auto-run privilege) is a deliberately separate, per-owner
+pot-consistent. Trust (the auto-run privilege) is a deliberately separate, per-owner
 layer **on top of** federated admission. Correct separation; no change recommended.
 
 ---
@@ -265,7 +265,7 @@ path. Flagged so it is not assumed covered.
   `writeToPg` → RED; restore → GREEN). 1/1 green. **→ B-003 fully closed.**
 - Additive seam on `_cross-peer-rig.ts` (`extraProjections`) — backward-compatible;
   verified by re-running its consumers (`cross-peer-coordination` 9/9,
-  `leave-hive-tombstone` 1/1).
+  `leave-pot-tombstone` 1/1).
 - Re-ran + confirmed green: the two structural guards `capture-coverage.test.ts` +
   `projection-engine.test.ts` (18/18).
 - No production source semantics changed: `feature-issue-op-keys.ts` and

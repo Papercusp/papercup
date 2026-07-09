@@ -20,7 +20,7 @@ plans:
   - await-event-primitive-2026-06-05
   - unify-watch-primitive-2026-06-06
   - presence-v2-2026-06-14
-  - local-hive-orchestration-2026-06-06
+  - local-pot-orchestration-2026-06-06
   - papercusp-worker-integration-2026-06-04
   - token-efficient-coord-injection-2026-06-06
 ---
@@ -58,7 +58,7 @@ You no longer have to *remember* to make yourself wakeable. The operator now
 **arms your inbox-wake watch automatically at SessionStart** — server-side, in the
 lifecycle endpoint that `~/.papercusp/hooks/cc/lifecycle-report.sh` already POSTs to
 (`activity:report`, `kind:lifecycle`). It is client-agnostic (claude / omp / codex)
-and armed for the whole session, not just between turns. So every psu/Queen-launched
+and armed for the whole session, not just between turns. So every psu/Mug-launched
 agent is re-invokable on a `coord:send {wake:'required'}` (legacy `wake:true`)
 **even when it has no idea it will ever be woken**.
 
@@ -149,7 +149,7 @@ A wake / `turn:interrupt` resolves a peer's LIVE interactive session via
 `findLiveHost(ownerId)`, which reads a discovery file at
 `~/.papercusp/psu-pty/<sanitizeKey(ownerId)>.json`. `sanitizeKey` is **lossy**
 (every char outside `[a-zA-Z0-9._-]` → `_`, truncated to 200), so two *distinct*
-coord owner ids can resolve to the **same** filename (a structured hive id vs a
+coord owner ids can resolve to the **same** filename (a structured pot id vs a
 colliding one; a stale file left at a reused key during a `/loop` re-host). The
 filename alone is therefore NOT proof of ownership: `findLiveHost` also requires
 the file's **recorded `ownerId`** to equal the one asked for, else it returns

@@ -25,7 +25,7 @@ re-key (later)? Recovery from persistent disk is asserted nowhere live.
 3. **Box restart (the real one):** restart BOTH instances (or the box) mid-federation
    → on reboot, do they re-boot the substrate, re-join the topic, re-drain, and
    converge? (This is the session's actual failure — make it a test.) Note: post-A-003
-   the OWNER must re-boot the hive-home harness onto the topic on restart too.
+   the OWNER must re-boot the pot-home harness onto the topic on restart too.
 4. **Partial write / torn op:** simulate a half-written outbox row / interrupted
    projection apply → assert idempotent recovery (no double-apply, no skip).
 5. **Recovery after long downtime:** A down for a long window while B writes → A back

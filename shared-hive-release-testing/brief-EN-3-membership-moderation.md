@@ -12,7 +12,7 @@ takedown-for-repeat-abuse legs). The authority-with-teeth phase.
 2. **Enforcement** at the join / add-member path + topic admission: under `approval`, a
    joiner enters a `pending` state (federated request to the owner) and is NOT trust-admitted
    until the owner approves; under `allowlist`, a non-listed joiner is refused. Reuse the
-   `hive:add-member` / join path + the trust registry (`trust_add`).
+   `pot:add-member` / join path + the trust registry (`trust_add`).
 3. **Owner approve/deny surface** (GUI + API) gated on claimed-owner authority (EN-1).
 
 ### P-MOD — moderation: report + takedown

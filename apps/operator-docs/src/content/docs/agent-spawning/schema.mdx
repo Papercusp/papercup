@@ -54,16 +54,16 @@ CREATE TABLE harness_shared.spawned_agents (
   -- 174-spawned-agents-heartbeat-reclaim: orphan reclaim
   heartbeat_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- later migrations (ALTER TABLE ADD COLUMN, all NULL-able)
-  session_id            TEXT NULL,          -- 203: native resume id for a CLAUDE bee (claude --resume)
+  session_id            TEXT NULL,          -- 203: native resume id for a CLAUDE cup (claude --resume)
   idempotency_key       TEXT NULL,          -- 219: caller key → (workspace_id, key) dedupes retried spawns
   pid                   INT NULL,           -- 228: child OS pid (reclaim /proc liveness)
   launcher_host         TEXT NULL,          -- 228: host that launched it (same-host liveness gate)
   model_spec            TEXT NULL,          -- 229: per-spawn resolved model spec, if overridden
   model_tier            TEXT NULL,          -- 229: tier the spec resolved from
-  brief                 TEXT NULL,          -- 230: queen-authored situational brief (QUEEN_BRIEF)
+  brief                 TEXT NULL,          -- 230: mug-authored situational brief (QUEEN_BRIEF)
   last_output_at        TIMESTAMPTZ NULL,   -- 233: last stdout/stderr the supervisor observed (wedge signal)
   launcher_boot_id      TEXT NULL,          -- 339: launcher's boot id — reclaim disambiguation across a host restart (a pid is not stable across reboot; EI-2186)
-  fleet_slug            TEXT NULL           -- 475: named-fleet slug stamped at spawn → reliable per-fleet bee count (WI-1813)
+  fleet_slug            TEXT NULL           -- 475: named-fleet slug stamped at spawn → reliable per-fleet cup count (WI-1813)
 );
 ```
 
@@ -83,7 +83,7 @@ spawned_agents_session_owner_idx    -- (workspace_id, session_owner) — owner�
 spawned_agents_active_heartbeat_idx -- (heartbeat_at) WHERE status IN ('running','restarting') — orphan-reclaim sweep (174)
 spawned_agents_session_id_idx       -- (session_id) WHERE session_id IS NOT NULL — native-resume lookup (203)
 spawned_agents_idempotency_key_uq   -- UNIQUE (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL — spawn dedupe (219)
-spawned_agents_fleet_slug_running_idx -- (workspace_id, fleet_slug) WHERE fleet_slug IS NOT NULL AND child_role='bee' AND status IN ('running','restarting') — deterministic per-fleet bee count (475)
+spawned_agents_fleet_slug_running_idx -- (workspace_id, fleet_slug) WHERE fleet_slug IS NOT NULL AND child_role='cup' AND status IN ('running','restarting') — deterministic per-fleet cup count (475)
 ```
 
 A check constraint (`spawned_agents_restart_strategy_chk`, added by migration 146) restricts `restart_strategy` to `one_for_one | one_for_all | rest_for_one`.
@@ -94,7 +94,7 @@ A check constraint (`spawned_agents_restart_strategy_chk`, added by migration 14
 
 ### Change-notify trigger (migration 213)
 
-`emit_change_notify_trg` fires the `sync_invalidate` NOTIFY the SSE bridge listens on, but it's **column-targeted on purpose**: `AFTER INSERT OR DELETE OR UPDATE OF status, exit_code, error_message, session_id`. A running bee takes a `heartbeat_at` write every minute; a bare row trigger would re-fire the joined sync queries on every beat. Scoping the UPDATE leg to the outcome columns the projection actually reads keeps invalidation volume at one-per-lifecycle-transition instead of one-per-heartbeat.
+`emit_change_notify_trg` fires the `sync_invalidate` NOTIFY the SSE bridge listens on, but it's **column-targeted on purpose**: `AFTER INSERT OR DELETE OR UPDATE OF status, exit_code, error_message, session_id`. A running cup takes a `heartbeat_at` write every minute; a bare row trigger would re-fire the joined sync queries on every beat. Scoping the UPDATE leg to the outcome columns the projection actually reads keeps invalidation volume at one-per-lifecycle-transition instead of one-per-heartbeat.
 
 ### RLS
 
@@ -125,10 +125,10 @@ The sweep is **not** purely heartbeat-driven. Migrations 228 + the `pid` / `laun
 
 ### Wedged vs generating — `last_output_at` (migration 233)
 
-A fresh `heartbeat_at` only proves the *supervisor* is alive, not that the bee is making progress. Migration 233 adds `last_output_at`; `heartbeatSpawns` stamps it in the same tick as `heartbeat_at` whenever the supervisor observes the child emit stdout/stderr. That distinguishes:
+A fresh `heartbeat_at` only proves the *supervisor* is alive, not that the cup is making progress. Migration 233 adds `last_output_at`; `heartbeatSpawns` stamps it in the same tick as `heartbeat_at` whenever the supervisor observes the child emit stdout/stderr. That distinguishes:
 
-- a **generating** bee — heartbeat fresh **and** `last_output_at` moving; and
-- a **wedged** bee — heartbeat fresh but `last_output_at` stale past `WEDGE_SILENT_MS` (10 min), i.e. alive-but-silent (hung network call, stuck rate-limit loop).
+- a **generating** cup — heartbeat fresh **and** `last_output_at` moving; and
+- a **wedged** cup — heartbeat fresh but `last_output_at` stale past `WEDGE_SILENT_MS` (10 min), i.e. alive-but-silent (hung network call, stuck rate-limit loop).
 
 `isPossiblyWedged` flags the latter for display/triage. A flag-gated **wedge-reaper** (`reapWedgedLocalSpawns`, `PAPERCUSP_WEDGE_REAP_MS`, default 30 min) cancels such a spawn — it routes through `cancelSubtree`, so the row lands at `status='cancelled'` (claims + locks released), not `'failed'`. A spawn that has emitted **no** output is never flagged — absence of signal is not evidence of a wedge.
 
@@ -225,7 +225,7 @@ When a spawn fires, the orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.j
 | `parent_spawn` | optional | parent's `spawnId` | The lineage edge — this is what makes the spawn-tree work |
 | `client` | optional | UI client id / spawn owner | Default `ui:dispatch` target when invoked from a browser tab |
 
-(The signature also covers an `exp` expiry param.) Required vs optional is enforced by `parseRequestContext`, which throws `InvalidRequestContextError` only when `workspace`, `role`, `run`, or `spawn` is missing. `harness` is **optional** on the receiver: a missing `harness` defaults to the `'*'` unscoped sentinel (a workspace-level role session — operator/planner launched without a harness). The orchestrator always sends it, but the receiver does not require it.
+(The signature also covers an `exp` expiry param.) Required vs optional is enforced by `parseRequestContext`, which throws `InvalidRequestContextError` only when `workspace`, `role`, `run`, or `spawn` is missing. `harness` is **optional** on the receiver: a missing `harness` defaults to the `'*'` unscoped papercup (a workspace-level role session — operator/planner launched without a harness). The orchestrator always sends it, but the receiver does not require it.
 
 The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework parses them with `parseRequestContext` (`packages/agent-mcp/src/spawn-context.ts`), which takes the request `URL`, populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row. (The HTTP transport has a sibling helper, `buildHttpSpawnContext` from `@papercusp/tooldef-http`, which reads the same context from `{ headers, searchParams }` — a different function in a different package, not an alias of `parseRequestContext`.)
 

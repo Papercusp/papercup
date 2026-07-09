@@ -6,7 +6,7 @@ ENFORCEMENT teeth.
 
 ## Build
 1. **Per-member op rate-limiter at write-admission.** A counter keyed by
-   `(hive, author_github_user_id)` over sliding windows: `opsPerMin`, content `rowsPerHour`,
+   `(pot, author_github_user_id)` over sliding windows: `opsPerMin`, content `rowsPerHour`,
    `prsPerDay` (from `hive_policy.rate`). Enforced in the substrate **write/op admission**
    path (the seam C's identity-admission + A-003's slug-filter already hook) on EVERY honest
    peer: an op from a member over their cap is DROPPED (not merged), with a conclusive,
@@ -36,5 +36,5 @@ ENFORCEMENT teeth.
 
 ## Done
 GREEN when an owner-set per-member rate cap causes honest peers to drop over-cap ops (member
-can't spam the canonical hive), with no effect when no policy is set, proven under an
+can't spam the canonical pot), with no effect when no policy is set, proven under an
 adversarial flood.

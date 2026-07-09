@@ -30,7 +30,7 @@ from:
 - `enable-platform-mode.ts` (when the owner first enables platform mode — it
   flips the `PLATFORM_IMPROVEMENT_LOOPS` flag ON **first**, then calls
   `materializeLearningSingletons` so Class-C singletons actually get written), and
-- `harness:create` / `hive:create` (for that harness's own blueprint, not the
+- `harness:create` / `pot:create` (for that harness's own blueprint, not the
   workspace singletons).
 
 **P-070 deployment-mode gate (added 2026-06-14):** `materializeLearningSingletons`

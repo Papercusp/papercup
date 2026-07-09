@@ -19,7 +19,7 @@ plans:
   - harness-blueprint-orchestration-2026-06-03
   - coordination-ops-as-blueprint-primitives-2026-06-04
   - official-blueprints-cupboard-publish-2026-06-05
-  - local-hive-orchestration-2026-06-06
+  - local-pot-orchestration-2026-06-06
   - harness-blueprint-distribution-2026-06-03
 sidebar:
   order: 61

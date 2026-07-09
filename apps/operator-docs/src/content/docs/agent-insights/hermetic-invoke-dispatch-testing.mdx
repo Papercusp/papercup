@@ -10,7 +10,7 @@ documents:
   - packages/operator-core/lib/spawnable-templates.ts
   - packages/operator-core/lib/harness/git-sync/two-peer-convergence.integration.test.ts
 plans:
-  - git-sync-any-hive-2026-06-12
+  - git-sync-any-pot-2026-06-12
 ---
 
 ## The problem
@@ -21,7 +21,7 @@ Code that dispatches agents through the invoke route — `spawnMergeResolver` in
 dispatch is a `loopbackFetch` POST at `operatorApiBase()`, which defaults to
 `http://localhost:3070`. On the dev box **that port is the LIVE green
 operator** — a test that lets the POST through would invoke a *real*
-merge-resolver agent. `seed-any-hive.integration.test.ts` S4 therefore parked a
+merge-resolver agent. `seed-any-pot.integration.test.ts` S4 therefore parked a
 fake `last_resolver: dispatched` marker to keep the dispatch path from ever
 running, leaving `spawnMergeResolver` (blueprint resolution, the observe loop,
 `merge_resolver` pipeline events) uncovered.
@@ -56,7 +56,7 @@ N member slugs in ONE process + ONE test PG, each slug owning its own checkout
 of one shared bare origin: peers share *nothing* but the origin — exactly the
 real multi-stack topology — while every race interleaving becomes
 deterministic and scriptable. That is how the P-010 two-peer convergence
-verification (plan `git-sync-any-hive-2026-06-12` D-007) replaced a "stand up
+verification (plan `git-sync-any-pot-2026-06-12` D-007) replaced a "stand up
 a second isolated operator stack" manual run with a permanent regression
 suite. Check which state is actually per-slug before reusing this: anything
 keyed on a process-global singleton (one workspace pin, one registry) is

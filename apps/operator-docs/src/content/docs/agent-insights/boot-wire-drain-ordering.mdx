@@ -2,7 +2,7 @@
 title: "peer_connected ✓ but federation dead: the boot→wire-drain ordering trap (EI-521)"
 description: Why a joined member's writes never federate even though the swarm connected — bootSingleHarness cached the handle before wiring the outbox drain, a swallowed wiring failure + the already-booted short-circuit left it drainless forever, and every test masked it by draining manually.
 discovered: 2026-06-15
-tags: [federation, hyperbee, boot-all, outbox-drain, hive, EI-521, testing]
+tags: [federation, hyperbee, boot-all, outbox-drain, pot, EI-521, testing]
 status: active
 documents:
   - "packages/operator-core/lib/sync/hyperbee/boot-all.ts :: bootSingleHarness"
@@ -12,18 +12,18 @@ documents:
   - packages/operator-core/lib/sync/hyperbee/__tests__/wire-outbox-drain-online.integration.test.ts
 plans:
   - papercusp-feature-content-federation-2026-06-01
-  - hive-federation-cross-machine-merge-2026-06-14
+  - pot-federation-cross-machine-merge-2026-06-14
   - papercusp-phase1b-bidirectional-federation-2026-06-01
   - papercusp-phase1b-bidirectional-federation-impl-2026-06-01
   - perf-sweep-outbox-bloat-write-storm-2026-06-08
   - named-resource-locks-drain-2026-06-02
-  - shared-hive-federation-2026-06-08
+  - shared-pot-federation-2026-06-08
   - plan-federation-regrain-2026-06-13
 ---
 
 ## Symptom
 
-Cross-machine hive federation **merge** is dead: a joined member's local write
+Cross-machine pot federation **merge** is dead: a joined member's local write
 (feature / issue / coord) is captured into `harness_shared.substrate_outbox` but
 **never drains** to the replicated log, so the peer never receives it — while
 `[swarm] peer_connected` fires normally. The tell on a live frame:
@@ -96,4 +96,4 @@ loop actually start, or did a swallowed wiring failure leave a cached-but-drainl
 handle? On a live joined member, `SELECT id, table_name, harness_slug,
 workspace_id, drained_at FROM harness_shared.substrate_outbox` + whether a drain
 loop is counted pins it. Cross-machine confirmation needs `deb-hetzner-federation.sh`
-(the hive flow + `fed_hive_merge_probe`), not a single-box run.
+(the pot flow + `fed_hive_merge_probe`), not a single-box run.

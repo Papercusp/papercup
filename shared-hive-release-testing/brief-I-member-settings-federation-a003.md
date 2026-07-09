@@ -10,12 +10,12 @@ confirm the **revocation admission union now reaches joiners**. Live-witness it 
 the pair.
 
 ## Why it matters for release
-A-003 was **re-reproduced live this session** (2026-06-19): `hive-settings`
-(outbox 3–4) and `hive-members` (outbox 1) never cross to the joiner — in backfill
+A-003 was **re-reproduced live this session** (2026-06-19): `pot-settings`
+(outbox 3–4) and `pot-members` (outbox 1) never cross to the joiner — in backfill
 AND both incremental directions. The outbox IS populated (capture works), the
 joiner just never applies. Beyond stale member-list/settings, this **breaks member
 revocation for joiners**: the revoke-member action writes
-`hive_members.revoked_pubkeys` (`hive-revoke-contributor.ts:8`), and the joiner's
+`hive_members.revoked_pubkeys` (`pot-revoke-contributor.ts:8`), and the joiner's
 admission union reads it (`boot.ts:586` `loadRevokedHivePubkeys` ← `hive_members`).
 If `hive_members` never reaches the joiner, the joiner's revoked-set is ∅ → it keeps
 admitting a revoked member's writes. Combined with C-001 (Brief K) revocation is
@@ -23,15 +23,15 @@ broken on **both planes** for joiners.
 
 ## Root cause (pinned — EI-1591 post 46430, su-963ee)
 The `hive_members`/`hive_settings` projection guard
-(`hive-members.ts:94` `if (row.hive_home_slug !== opts.harnessSlug) return`) only
+(`pot-members.ts:94` `if (row.hive_home_slug !== opts.harnessSlug) return`) only
 applies an op when the projection's bound slug == the op's `hive_home_slug`.
 `register-all.ts` builds these projections with the **booted harness slug**; a
-joiner boots the **member** harness, not the hive-home, so every hive-home-scoped
-op is dropped. The joiner never wires a hive-home-scoped apply ("MULTI-SWARM ONLY
+joiner boots the **member** harness, not the pot-home, so every pot-home-scoped
+op is dropped. The joiner never wires a pot-home-scoped apply ("MULTI-SWARM ONLY
 by design" — but the design then can't deliver member revocation to joined peers).
 
 ## Scope / scenarios
-1. **Fix (pick one, justify):** (a) wire a **hive-home-scoped**
+1. **Fix (pick one, justify):** (a) wire a **pot-home-scoped**
    `hive_members`/`hive_settings` projection-apply on join (general — both tables
    reach the joiner), OR (b) route **member-revocation** through the member-scoped
    `contributors` log-first seam that already federates (revocation-only, narrower).
@@ -41,8 +41,8 @@ by design" — but the design then can't deliver member revocation to joined pee
 3. **Revocation propagation test:** owner revokes member M
    (`hive_members.revoked_pubkeys`) → the joiner's admission union now contains M →
    the joiner **rejects** M's subsequent writes. (Read-cutoff is Brief K.)
-4. **Live witness:** on the running pair, after the fix, `hive-settings` /
-   `hive-members` cross to B (`origin=remote`) — the inverse of today's RED line.
+4. **Live witness:** on the running pair, after the fix, `pot-settings` /
+   `pot-members` cross to B (`origin=remote`) — the inverse of today's RED line.
 
 ## Method
 - Integration (`vitest.integration.config.ts`) for the crossing + revocation tests;

@@ -115,7 +115,7 @@ under `install_slug='papercusp'`, so the hardcoded `'papercup'` lookup no longer
 matched anything and the collision guard / `--retire-legacy` pass silently found
 nothing to act on. `seed-learning-singletons.ts` now resolves the slug via
 `operatorHomeHarnessSlug()` (`packages/operator-core/lib/harness/operator-home-harness.ts`)
-instead — the single pointer for "which hive is the workspace's operator home,"
+instead — the single pointer for "which pot is the workspace's operator home,"
 defaulting to `papercusp` and overridable via `PAPERCUSP_HIVE_HOME_SLUG`. So when
 arming today, read the legacy row under the **current** home-harness slug
 (`papercusp` on this install), not the literal string `papercup` — the 2026-06-14
@@ -124,11 +124,11 @@ time.
 
 **Scout has an additional workspace-level gate (P-051, added 2026-06-14):**
 `checkScoutWorkspaceCeiling` (`learning-governor/core.ts`) sums every
-`scout:<hive>` registrant's ledgered spend in the workspace and refuses a NEW
+`scout:<pot>` registrant's ledgered spend in the workspace and refuses a NEW
 cycle once the total crosses `DEFAULT_SCOUT_WORKSPACE_CEILING_USD` ($10).
 This is NOT the triple-gate (scout seeds `singletonActive:true`, so it's
 always-on, not a dark frontier loop), but it matters if scout cycles stop firing
-unexpectedly: the workspace aggregate may be exhausted even when each per-hive
+unexpectedly: the workspace aggregate may be exhausted even when each per-pot
 cap looks fine. Tune via `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD`.
 
 ## The general lesson

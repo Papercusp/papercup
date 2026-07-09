@@ -164,7 +164,6 @@ export default function TerminalDivider() {
         type="button"
         onClick={toggleCollapsed}
         aria-label={layout.collapsed ? 'Show terminal' : 'Hide terminal'}
-        title={layout.collapsed ? 'Show terminal' : 'Hide terminal'}
         style={{
           position: 'fixed',
           left: 0,
@@ -181,7 +180,7 @@ export default function TerminalDivider() {
           borderTopRightRadius: 8,
           borderBottomRightRadius: 8,
           background: 'var(--pc-surface-2, rgba(20,26,34,0.92))',
-          color: 'var(--pc-fg-muted, #9db4c4)',
+          color: 'var(--fg-mute, #9db4c4)',
           cursor: 'pointer',
           fontSize: 13,
           lineHeight: 1,

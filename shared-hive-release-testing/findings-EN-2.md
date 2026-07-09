@@ -33,7 +33,7 @@ PG read per op is a non-starter). `resolveAuthorId` = `admittedIdentities.get(sr
 
 ## The core design — why it is convergent, bounded, and Date.now-free
 
-**The hard constraint** of a P2P hive: honest peers must CONVERGE on the same
+**The hard constraint** of a P2P pot: honest peers must CONVERGE on the same
 canonical state, so the drop decision must be a deterministic function of the op
 STREAM, not of local wall-clock arrival timing (two peers receiving a flood at
 different instants must drop the same excess or they diverge).
@@ -64,16 +64,16 @@ sidecar/worker paths where `Date.now` is unavailable, AND deterministic (a real
 clock would make the fixpoint host-dependent).
 
 **Default-off.** `currentCaps()` null (no policy / no rate axis) ⇒ pure
-passthrough, **zero behavior change** for an un-policed hive — proven both at the
+passthrough, **zero behavior change** for an un-policed pot — proven both at the
 limiter (`size()===0`, no state) and the wrapper (every op applies).
 
 ## Scope boundaries (stated honestly)
 
 - **`opsPerMin` + `rowsPerHour` are substrate-enforced.** `ops` = every applied
   non-ephemeral, non-governance op; `rows` = content-table PUTs (the rows a flood
-  lands in the canonical hive). Classification:
+  lands in the canonical pot). Classification:
   - NEVER limited: `presence`, `usage` (ephemeral telemetry churn) + `contributors`,
-    `hive-members`, `hive-settings-by-key` (identity/governance — and hive-settings
+    `pot-members`, `pot-settings-by-key` (identity/governance — and pot-settings
     carries the owner's signed policy itself; throttling it could choke propagation).
   - CONTENT (`ops`+`rows`): coord-messages/threads/thread-posts/conversations,
     issues, engineer-issues, features-by-id, plans-by-slug, plan-parts.
@@ -147,7 +147,7 @@ re-admits the whole flood — proven at the limiter, wrapper, AND merge levels).
 ## Done bar
 
 🟢 An owner-set per-member rate cap causes an honest peer to DROP a member's
-over-cap ops at op admission (the member can't spam the canonical hive), with NO
+over-cap ops at op admission (the member can't spam the canonical pot), with NO
 effect when no policy is set, proven under an adversarial flood + cross-peer
 convergence + anti-OOM — at the merge level. Remaining for full release: EN-4's
 `policy-admission` boot wiring (in flight) + EN-1's GUI panel reading

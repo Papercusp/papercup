@@ -1,7 +1,7 @@
 # Brief A — Live multi-peer end-to-end federation (the real proof)
 
 **Priority: S0 lane.** Owner of the live-instance harness. Coordinate via the
-`shared-hive-live-instances` lock.
+`shared-pot-live-instances` lock.
 
 ## Objective
 Prove the FULL cycle on **real packaged instances** (the `.deb`, not a test rig):
@@ -18,19 +18,19 @@ lived in. If this lane is GREEN, the headline feature genuinely works.
 
 ## Scope / scenarios
 For harnesses A (owner) and B, C (joiners):
-1. **Owner create + publish** a hive (public, then a separate invite hive). Confirm
-   the member/invite link carries the hive topic.
+1. **Owner create + publish** a pot (public, then a separate invite pot). Confirm
+   the member/invite link carries the pot topic.
 2. **Join** from B via the **current** share/join flow (NOT the retired
    `two-instance-interactive.sh` share step). Confirm B's `shared.json` gets the
    owner's topic and B lands on the **same swarm topic** (`derive-swarm-topic`
    hex equal — check both peers' logs / `[swarm]` events).
 3. **Incremental sync, A→B and B→A**, for EACH: features/work-items,
    conversations, messages, threads, plans, plan-parts, plan-item assignments,
-   presence, hive-members, hive-settings. Assert the row appears on the peer with
+   presence, pot-members, pot-settings. Assert the row appears on the peer with
    `origin=remote` within a bounded poll.
 4. **3rd peer C** joins late → gets full backfill of pre-existing content (not
    just new writes).
-5. **Negative:** a peer that did NOT join must NOT receive the hive's content
+5. **Negative:** a peer that did NOT join must NOT receive the pot's content
    (no topic, no rows) — confirms isolation.
 
 ## Method

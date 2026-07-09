@@ -12,7 +12,7 @@ documents:
 
 ## Context
 
-Shared-hive release-testing Brief S (substrate durability & crash/restart
+Shared-pot release-testing Brief S (substrate durability & crash/restart
 recovery). Two layers: a deterministic integration test for the drain/merge
 recovery LOGIC (`crash-recovery-drain.integration.test.ts`), and a LIVE cycle on
 the real packaged `.deb` pair to prove it on the binary. The live cycle has three
@@ -80,9 +80,9 @@ Then verify recovery via the embedded PG `origin` column (federation is confirme
 when a write on A lands `origin='remote'` on B):
 
 1. **No loss:** the restarted A's PG still holds its pre-crash rows (WAL recovery).
-2. **Topic re-join:** `inst-a.log` shows `[swarm] joined topic … harness=<hive>-hive`
-   **AND** `harness=<member-slug>` — i.e. the hive-HOME harness re-joins on
-   restart, not just the member (post-A-003 the owner must re-boot the hive-home
+2. **Topic re-join:** `inst-a.log` shows `[swarm] joined topic … harness=<pot>-pot`
+   **AND** `harness=<member-slug>` — i.e. the pot-HOME harness re-joins on
+   restart, not just the member (post-A-003 the owner must re-boot the pot-home
    harness onto the topic — assert both).
 3. **Resume:** a FRESH post-restart write on A crosses to B `origin='remote'` (the
    outbox drained + the topic round-trips again). Expect ~2 s.

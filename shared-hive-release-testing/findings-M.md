@@ -1,6 +1,6 @@
 # Brief M — Desktop UI: share flow + the G-004 live status surface — findings
 
-Owner: su-d53bf (Claude). Lane: desktop UI shared-hive journey + **G-004** (the
+Owner: su-d53bf (Claude). Lane: desktop UI shared-pot journey + **G-004** (the
 missing live peer/sync status surface). Continuation of Brief G (desktop UX/honesty).
 
 **Headline:** G-004 (the gap Brief G named — *the desktop has no live federation
@@ -60,7 +60,7 @@ honest about **SYNC**, not just boot/reach:
   sync-stall row that renders ONLY when stalled ("⚠ not syncing — N harness(es) with
   content captured but not federating…"), down dot; **never** a positive "synced"
   claim (silence = the honest healthy state). Scope note updated (sync-health is
-  install-wide; per-hive content-sync peer counts still not surfaced). Test: 15 (was 10;
+  install-wide; per-pot content-sync peer counts still not surfaced). Test: 15 (was 10;
   +5) — teeth-verified (neuter `drainLabel` to claim "synced" → 3 RED).
 - **Verification:** loader 6/6, route 7/7, component 15/15, neighbors (HivesTab,
   WorkbenchHiveDirectoryPanel) 12/12 — all GREEN; touched files tsc-clean (operator-core
@@ -74,10 +74,10 @@ honest about **SYNC**, not just boot/reach:
   reconcile / self-check)** is a separate proactive mechanism, not part of the on-read
   surface — carried forward as a follow-up (the on-READ silent-stall is now visible;
   an active periodic reconcile that auto-detects without a reader is the residual).
-- **EI-1599** (per-hive content-replication peer count): **PARTIALLY** addressed — the
+- **EI-1599** (per-pot content-replication peer count): **PARTIALLY** addressed — the
   desktop can now honestly show install-wide "not syncing" when an outbox stalls. The
-  full ask (a TRUE per-hive content-peer count + last-merge timestamp) still needs Brief
-  H's per-hive swarm/topic connection accounting — EI-1599 stays OPEN for that, scope
+  full ask (a TRUE per-pot content-peer count + last-merge timestamp) still needs Brief
+  H's per-pot swarm/topic connection accounting — EI-1599 stays OPEN for that, scope
   note unchanged.
 
 ---
@@ -85,28 +85,28 @@ honest about **SYNC**, not just boot/reach:
 ## What shipped (G-004 — the live federation status surface)
 
 The brief's G-004 directive: *"design + implement a minimal peer/sync indicator
-(peer count for the active hive, last-sync/drained state) — OR document the absence
+(peer count for the active pot, last-sync/drained state) — OR document the absence
 honestly + an EI."* **Implemented**, with the honest signals that actually exist
 today (see M-001 for why the naive version would lie).
 
 ### Backend — `GET /api/discovery/federation-status` (read-only, loopback)
 `packages/operator-core/lib/endpoint-route/routes/discovery/federation-status.ts`
-(new) + registered in `routes/index.ts`. Mirrors the `GET /api/discovery/hives`
+(new) + registered in `routes/index.ts`. Mirrors the `GET /api/discovery/pots`
 pattern (`defineTool({ method:'GET', path:'/discovery/federation-status', auth:'loopback' })`).
 Returns:
-- `hives[]` — per **owned** hive: `{ hiveId, title, visibility, memberCount,
+- `pots[]` — per **owned** pot: `{ hiveId, title, visibility, memberCount,
   reachablePeers }`. `reachablePeers` = `HiveDirectory.reachablePeersForHive(hiveId)`
-  — peers on **that hive's announce/discovery topic** (who can find + join it). Owned,
+  — peers on **that pot's announce/discovery topic** (who can find + join it). Owned,
   non-private only; the directory `owned` map is registry-hydrated at boot
   (`ensureHiveDirectoryWired` → `listOwnedHiveMeta`), so it is accurate once wired. A
-  private hive is `0` by construction (never announces) — the route short-circuits it
+  private pot is `0` by construction (never announces) — the route short-circuits it
   rather than asking the seam, so it can never accidentally report a non-zero "reach"
-  for a hive that doesn't announce.
+  for a pot that doesn't announce.
 - `substrate` — install-wide local boot health from `getInProcessSubstrateStatus()`:
   `{ active, bootedHarnesses, healthy, booting, degraded }`. "Is my federation
   infrastructure up", **not** a per-peer sync claim.
 
-### UI — `HiveFederationStatus` mounted in the always-visible Hives tab
+### UI — `HiveFederationStatus` mounted in the always-visible Pots tab
 `apps/operator-vite/src/components/left-sidebar/HiveFederationStatus.tsx` (new),
 mounted in `HivesTab.tsx` (gated on `active` so it polls only while the tab is open;
 10s cadence). Renders the honest copy:
@@ -119,21 +119,21 @@ mounted in `HivesTab.tsx` (gated on `active` so it polls only while the tab is o
   reach).
 - substrate line → **"substrate active · N harnesses booted · M healthy · ⚠ K
   degraded"** (down dot when degraded), labeled install-wide.
-- a permanent scope note: **"Reach = peers who can discover this hive on its announce
-  topic. Per-hive content-sync peer counts are not yet surfaced."**
+- a permanent scope note: **"Reach = peers who can discover this pot on its announce
+  topic. Per-pot content-sync peer counts are not yet surfaced."**
 
 ### Tests — teeth-verified at BOTH layers (the honesty is genuinely enforced)
 - `…/routes/discovery/federation-status.test.ts` (4 tests, GREEN). **Teeth:** neutered
   the reach mapping to a constant `0` → the reach-mapping test went RED
   (`reachablePeers 3 → 0`) → restored → GREEN. Covers reach mapping, private→0,
-  empty-list, and the loopback 403 gate (mirrors `hives.test.ts`).
+  empty-list, and the loopback 403 gate (mirrors `pots.test.ts`).
 - `…/left-sidebar/HiveFederationStatus.test.tsx` (10 tests, GREEN). Pure
   `reachLabel`/`substrateLabel` honesty fns + rendered-DOM assertions. **Teeth:**
   neutered `reachLabel` to return `'synced'` for the 0-peer case → **2 tests went RED**
   (the pure-fn honesty assertion AND the rendered stranded-DOM test both caught the
   lie: `expected 'synced' to be 'no peers connected yet — broadcasting into the void'`)
-  → restored → GREEN. The assertions are honesty-shaped: a 0-peer hive must NOT read
-  "synced"/"connected"; a private hive must NOT read "0 peers".
+  → restored → GREEN. The assertions are honesty-shaped: a 0-peer pot must NOT read
+  "synced"/"connected"; a private pot must NOT read "0 peers".
 - No regressions: `HivesTab.test.tsx` (7) + `WorkbenchHiveDirectoryPanel.test.tsx` (5)
   still GREEN after mounting the new surface. My touched files are tsc-clean
   (operator-core + operator-vite); the only `routes/index.ts` tsc errors are
@@ -145,29 +145,29 @@ mounted in `HivesTab.tsx` (gated on `active` so it polls only while the tab is o
 ## M-001 — the honesty constraint that shaped the surface (an architectural finding)
 
 **Why the surface is scoped to "directory reach + install health," not "synced to N
-peers."** I deliberately did NOT build a "peers: N / synced" per-hive indicator, because
-**no clean per-hive content-substrate peer count exists** — and inventing one would be
+peers."** I deliberately did NOT build a "peers: N / synced" per-pot indicator, because
+**no clean per-pot content-substrate peer count exists** — and inventing one would be
 the exact dishonesty this surface exists to prevent (the brief: "the UI never lies").
 
 Evidence:
-1. **`reachablePeersForHive` is OWNED-ONLY + directory-scoped.** `hive-directory.ts:235`
-   reads `this.owned.get(hiveId)` → returns 0 for a *joined* hive. It counts peers on
+1. **`reachablePeersForHive` is OWNED-ONLY + directory-scoped.** `pot-directory.ts:235`
+   reads `this.owned.get(hiveId)` → returns 0 for a *joined* pot. It counts peers on
    the **announce/discovery** topic (`openChannelCount(topicHex)`), NOT content
    replication. A naive "peers connected: reachablePeersForHive" would show **0 for
-   every joined hive** (a lie — the joiner IS connected) and would conflate
+   every joined pot** (a lie — the joiner IS connected) and would conflate
    discoverability with sync.
 2. **The content substrate uses a SHARED swarm.** `swarm.ts` replicates via a single
-   shared Hyperswarm (`connections` is process-global across all hives/harnesses — the
-   same singleton Brief H/A-002 is fixing). There is no exposed per-hive
+   shared Hyperswarm (`connections` is process-global across all pots/harnesses — the
+   same singleton Brief H/A-002 is fixing). There is no exposed per-pot
    content-peer count, only a process-wide connection iterable.
-3. **The honest signals that DO exist** are what I surfaced: per-owned-hive **announce
+3. **The honest signals that DO exist** are what I surfaced: per-owned-pot **announce
    reach** (precise: "discoverable to N", not "synced") + install-wide **substrate
    health**. Both are labeled for exactly what they are.
 
-→ **EI filed: a true per-hive content-replication peer count + last-merge timestamp.**
-That is the signal a full "is hive X syncing with peer Y" surface needs; it requires
-either per-hive swarm/topic connection accounting or a replication-progress probe, and
-it composes naturally onto Brief H's per-hive swarm work. Until then, the shipped
+→ **EI filed: a true per-pot content-replication peer count + last-merge timestamp.**
+That is the signal a full "is pot X syncing with peer Y" surface needs; it requires
+either per-pot swarm/topic connection accounting or a replication-progress probe, and
+it composes naturally onto Brief H's per-pot swarm work. Until then, the shipped
 surface is honest about its scope (the permanent scope note + the EI), not silently
 partial.
 
@@ -177,12 +177,12 @@ partial.
 
 (Not re-litigated here — see findings-G. Confirmed in code as the baseline this lane
 builds on:)
-- **G-001** `reachablePeers` count-by-topic — `hive-publish.ts:125`
+- **G-001** `reachablePeers` count-by-topic — `pot-publish.ts:125`
   `dir.reachablePeersForHive(meta.hiveId)`. ✅ present.
 - **G-002** honest invite-join copy — `CreateHarnessPicker.tsx:605-608` "✓ Subscribed
   to this invite … won't appear if the invite was withdrawn or the link is wrong". ✅
 - **G-003** discover-panel poll + Refresh — `WorkbenchHiveDirectoryPanel.tsx:59`
-  `DIRECTORY_REFRESH_MS = 30_000` + `data-testid="hive-directory-refresh"`. ✅
+  `DIRECTORY_REFRESH_MS = 30_000` + `data-testid="pot-directory-refresh"`. ✅
 - **ShareHiveForm** honest 0-peer copy — `ShareHiveDialog.tsx:371` "no peers are
   connected yet — it becomes discoverable once peers come online". ✅
 
@@ -193,9 +193,9 @@ builds on:)
 | # | Scenario | State | Evidence |
 |---|---|---|---|
 | 1 | **ShareHiveDialog** honest reach (public + invite) | ✅ code-honest + **BACKEND-LIVE-PROVEN by Brief L** | Brief L (su-ed300, findings-L): G-001 invite publish `reachablePeers=0` (was 1) on the fix-`.deb`, real 2-peer. Component copy teeth-tested (`ShareHiveDialog.test.tsx`). GUI pixel render = pending. |
-| 2 | **Discover panel** drops withdrawn hives on poll/Refresh | ✅ code-present (G-003) + **BACKEND-LIVE-PROVEN by Brief L** | Brief L: withdrawn hive drops from discover ~3s on the real binary. Component-tested. |
+| 2 | **Discover panel** drops withdrawn pots on poll/Refresh | ✅ code-present (G-003) + **BACKEND-LIVE-PROVEN by Brief L** | Brief L: withdrawn pot drops from discover ~3s on the real binary. Component-tested. |
 | 3 | **Invite-join** honest-failure copy | ✅ code-present (G-002) + **BACKEND-LIVE-PROVEN by Brief L** | Brief L: dead secret → `joined:false/found:false/subscribed:true` (was `joined:true`) on the real binary + a route-level fix (`confirmInviteAnnounce`). Component copy teeth-tested. |
-| 4 | **G-004** live status surface | ✅ **SHIPPED + teeth-verified + LIVE-PROVEN** | route+component tests (14, teeth-verified both layers); CONFIRMED bundled in the real `.deb` (route in `serve.mjs`, component in the `HivesTab` SPA chunk); **route LIVE on the real integrated `.deb`** — A's 2 owned hives `reachablePeers:1` == B (the 1 peer that discovered exactly those 2). GUI pixel screenshot = optional bonus last-mile. |
+| 4 | **G-004** live status surface | ✅ **SHIPPED + teeth-verified + LIVE-PROVEN** | route+component tests (14, teeth-verified both layers); CONFIRMED bundled in the real `.deb` (route in `serve.mjs`, component in the `HivesTab` SPA chunk); **route LIVE on the real integrated `.deb`** — A's 2 owned pots `reachablePeers:1` == B (the 1 peer that discovered exactly those 2). GUI pixel screenshot = optional bonus last-mile. |
 
 ---
 
@@ -209,7 +209,7 @@ builds on:)
     `discovery/federation-status` ×3 (sanity: `reachablePeersForHive` ×4). My route
     esbuild-bundles from the working-tree operator-core source.
   - **component** — `usr/lib/Papercusp/sidecar/spa/.../HivesTab-Bo1MV5ob.js` contains
-    `broadcasting into the void` + `hive-federation-status` + `fed-scope-note` (my
+    `broadcasting into the void` + `pot-federation-status` + `fed-scope-note` (my
     component bundles into the HivesTab chunk it mounts in; prod vite preserves the
     string literals + data-testids).
 
@@ -223,18 +223,18 @@ builds on:)
   Papercusp_integrated.deb`, A=papercupai :18754 / B=aviynw :23498, real embedded-PG +
   live Hyperswarm federation). Evidence (preserved in-tree — the pair was torn down
   after the witnesses, so the raw curl output is captured durably here):
-  `shared-hive-release-testing/evidence-M-g004-backend-live.txt`.
+  `shared-pot-release-testing/evidence-M-g004-backend-live.txt`.
   - **A (owner)** `GET /api/discovery/federation-status` →
-    `substrate {active, bootedHarnesses:2, healthy:2}` + 2 owned public hives
-    (`spoon-knife-hive`, `hello-world-hive`) each **`reachablePeers: 1`**.
-  - **B (joiner)** → `substrate {active, healthy:1}`, `hives: []` (owns none — honest
+    `substrate {active, bootedHarnesses:2, healthy:2}` + 2 owned public pots
+    (`spoon-knife-pot`, `hello-world-pot`) each **`reachablePeers: 1`**.
+  - **B (joiner)** → `substrate {active, healthy:1}`, `pots: []` (owns none — honest
     empty, not a fake).
-  - **GROUND-TRUTH MATCH:** B's `/api/discovery/hives` discovered **exactly those 2
-    hives** → so A's `reachablePeers: 1` per hive == B, the single connected peer. The
+  - **GROUND-TRUTH MATCH:** B's `/api/discovery/pots` discovered **exactly those 2
+    pots** → so A's `reachablePeers: 1` per pot == B, the single connected peer. The
     reach number is exactly correct against the live federation. A's own
-    `/api/discovery/hives` = 0 (an owner doesn't re-discover its own published hives —
+    `/api/discovery/pots` = 0 (an owner doesn't re-discover its own published pots —
     correct). This is the L-equivalent backend-live proof, now for G-004: the route
-    returns honest, ground-truth-correct per-hive reach + substrate health on the real
+    returns honest, ground-truth-correct per-pot reach + substrate health on the real
     packaged binary.
 - ✅ **Tests** — 14 new, teeth-verified at both layers; neighbors green; tsc-clean.
 - ⏳ **Live GUI render of the new surface** — pending a build with G-004 (a `npm run
@@ -265,8 +265,8 @@ surface refuses a sync claim it can't back — M-001), and the corrective surfac
 - **Scenario 4 (G-004)** — (a) route + component **teeth-verified** at both layers (14
   tests; neutering each → RED); (b) **CONFIRMED BUNDLED** in the real shipped `.deb`
   (route in `serve.mjs` ×3, component in the `HivesTab` SPA chunk); (c) **route
-  LIVE-PROVEN on the real integrated `.deb`** — A's 2 owned hives show `reachablePeers:1`
-  == B (the single peer that discovered exactly those 2 hives), B's owned-list empty +
+  LIVE-PROVEN on the real integrated `.deb`** — A's 2 owned pots show `reachablePeers:1`
+  == B (the single peer that discovered exactly those 2 pots), B's owned-list empty +
   honest, substrate health live + accurate. The reach matches the live federation
   exactly.
 
@@ -287,5 +287,5 @@ than lane G shipped at, since G-004 now has the live route-vs-ground-truth proof
 real packaged binary, not just component tests.)
 
 **Landed this lane (low-risk, in-lane, GUI-free):** the `discovery:federation-status`
-read + the `HiveFederationStatus` surface in the Hives tab + 14 teeth-verified tests;
-M-001 (the per-hive content-peer-count honesty constraint) + its EI.
+read + the `HiveFederationStatus` surface in the Pots tab + 14 teeth-verified tests;
+M-001 (the per-pot content-peer-count honesty constraint) + its EI.

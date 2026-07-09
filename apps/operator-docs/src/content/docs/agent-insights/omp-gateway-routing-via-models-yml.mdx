@@ -116,7 +116,7 @@ interactive OMP session reaches real Claude:
    silently to local ollama; an `omp` re-login restores it.
 2. **Managed gateway:** a persistent `papercusp-gateway` provider in `~/.omp/agent/models.yml`
    carrying **`x-papercusp-priority: interactive`** and **no account pin** — so the gateway
-   picks an available pool account and admits at **tier-1**, ahead of the bee fleet. Selected
+   picks an available pool account and admits at **tier-1**, ahead of the cup fleet. Selected
    as `papercusp-gateway/claude-sonnet-4-6`. (When the fleet has saturated the whole pool,
    even a tier-1 interactive request gets a `rate_limit_error`; that is a transient pool
    condition, not a routing fault — the native/direct path or local ollama is the fallback.)

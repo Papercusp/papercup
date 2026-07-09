@@ -9,6 +9,23 @@ import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/sr
 import { insertHiveIfAbsent } from '../../hive-store';
 import { setHiveGitMode } from '../../harness/git-sync/hive-git-mode';
 import { wireHiveGitServe, openHiveGitFetchDuplex } from './serve-wiring';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const ProtomuxCtor = require('protomux');
+const __origOnOpenSession = ProtomuxCtor.prototype._onopensession;
+ProtomuxCtor.prototype._onopensession = function patchedOnOpenSession(state: unknown) {
+  console.log('[PMX] _onopensession called, buffered bytes remaining approx', (state as { end: number; start: number }).end - (state as { end: number; start: number }).start);
+  try {
+    return __origOnOpenSession.call(this, state);
+  } catch (e) {
+    console.log('[PMX] _onopensession THREW', e);
+    throw e;
+  }
+};
+const __origRequestSession = ProtomuxCtor.prototype._requestSession;
+ProtomuxCtor.prototype._requestSession = async function patchedRequestSession(protocol: string, id: unknown, info: unknown) {
+  console.log('[PMX] _requestSession called', { protocol, hasId: !!id, pairing: (info as { pairing: number }).pairing, incomingLen: (info as { incoming: unknown[] }).incoming.length });
+  return __origRequestSession.call(this, protocol, id, info);
+};
 
 describe('timing repro', () => {
   it('raw byte trace', async () => {

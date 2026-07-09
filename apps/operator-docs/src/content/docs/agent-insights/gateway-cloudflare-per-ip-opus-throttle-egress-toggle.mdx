@@ -35,7 +35,7 @@ un-framed request — not a per-IP egress throttle.
 
 > **⚠ Scope of the "red herring" (added 2026-06-30 pm — do not over-read it):** that conclusion is only for
 > the **UN-framed** case tested here (the Scout in-process opus path). It does **NOT** mean the per-IP egress
-> throttle is fictional. For **already-framed** callers (the `claude`-CLI / psu bees, framed since the
+> throttle is fictional. For **already-framed** callers (the `claude`-CLI / psu cups, framed since the
 > `buildSystemParam` fix) a bare-burst 429 under concentrated opus load **IS** a genuine Cloudflare per-IP
 > edge throttle: an account with a single egress IP and no `egressPool` then whole-account-pauses (the
 > `BARE-429 CIRCUIT`) because there is no sibling IP to rotate to — the exact reason a heavily-pinned account

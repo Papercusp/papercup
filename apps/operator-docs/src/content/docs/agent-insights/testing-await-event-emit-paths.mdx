@@ -8,12 +8,12 @@ documents:
   - packages/operator-core/lib/events/await/store.ts
   - packages/operator-core/lib/cross-hive-reply-events.integration.test.ts
 plans:
-  - hive-network-surface-2026-06-11
+  - pot-network-surface-2026-06-11
 ---
 
 ## The mistake this prevents
 
-Wiring the cross-Hive reply path (hive-network-surface-2026-06-11 B-03) to the
+Wiring the cross-Pot reply path (pot-network-surface-2026-06-11 B-03) to the
 real `emitAwaitedEvent` and asserting "a wake delivery row exists" burned two
 debugging cycles on failures that looked like the emit was broken. It wasn't —
 both were test-harness traps.

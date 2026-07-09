@@ -1,8 +1,8 @@
 ---
-title: "Overwatch (and Queen/hive) flag ON ≠ running — the 'started' control-bit is a separate, persisted switch"
+title: "Overwatch (and Mug/pot) flag ON ≠ running — the 'started' control-bit is a separate, persisted switch"
 description: "Owner flips the papercusp-overwatch flag ON, but overwatch never runs: the routine fires yet produces zero runs. The flag is only the GATE; overwatch:start sets a SEPARATE persisted control-bit (operator_settings KV) that the launch handler also requires. Flag-on without start = gated-open-but-not-armed = a silent no-op. How to spot it, why dev:sessions hides it, and the durable fix."
 discovered: 2026-06-22
-tags: [overwatch, queen, hive, feature-flags, control-state, autoloop, silent-no-op, dark-flag, system-health, diagnosis]
+tags: [overwatch, mug, pot, feature-flags, control-state, autoloop, silent-no-op, dark-flag, system-health, diagnosis]
 status: current
 documents:
   - packages/operator-core/lib/overwatch/control-state.ts
@@ -18,7 +18,7 @@ plans:
 The `papercusp-overwatch` flag is **ON**, an `overwatch-wake` routine is **active with a next
 fire** — yet overwatch never runs. `coord:presence` shows no overwatch agent, `dev:sessions` shows
 **zero** overwatch sessions, and the routine's `lastFired` may even be advancing. Everything looks
-enabled; nothing happens. (Same shape for the Queen / `hive_started`.)
+enabled; nothing happens. (Same shape for the Mug / `hive_started`.)
 
 ## The gotcha: a flag and a "started" bit are TWO independent off-switches
 
@@ -50,7 +50,7 @@ paused, or was orphaned when the workspace got re-keyed), the wake fires, the ha
 
 When overwatch *does* launch, it goes through the **loopback invoke route**
 (`defaultOverwatchFire` → `POST /api/harness/<slug>/invoke?role=overwatch&bpkind=overwatch`), which
-records a **tracked invoke session** — **not** a durable-spawn. `dev:sessions` lists spawn/bee
+records a **tracked invoke session** — **not** a durable-spawn. `dev:sessions` lists spawn/cup
 sessions, so a *running* overwatch shows **0 sessions** there. Don't conclude "not running" from
 `dev:sessions` for overwatch (or any invoke-route role).
 

@@ -1,13 +1,13 @@
 ---
 title: Voice mode v4
-description: "Current Papercusp voice architecture: local STT/TTS, hosted full-agent sessions, the operator voice host, Sentinel pane routing, wake-word engines, and the shared one-brain voice pipeline."
+description: "Current Papercusp voice architecture: local STT/TTS, hosted full-agent sessions, the operator voice host, Papercup pane routing, wake-word engines, and the shared one-brain voice pipeline."
 sidebar:
   order: 35
 plans:
   - voice-realtime-tui-2026-06-05
   - universal-voice-interface-2026-06-05
   - sentinel-as-claude-tui-2026-06-22
-  - voice-unified-sentinel-pipeline-2026-07-01
+  - voice-unified-papercup-pipeline-2026-07-01
 documents:
   - packages/operator-core/lib/voice-prefs.ts
   - apps/operator/app/_components/voice/voice-mode.ts
@@ -24,13 +24,13 @@ documents:
 
 Voice mode is the operator's audio surface. As of **July 1, 2026**, the live
 system is no longer "one brain per surface." Typed text, hosted voice sessions,
-and the docked Sentinel all converge on **one conversational brain**: the
-Sentinel pane. The operator voice host owns the transport; the pane owns the
+and the docked Papercup all converge on **one conversational brain**: the
+Papercup pane. The operator voice host owns the transport; the pane owns the
 thinking.
 
 This page is the current architecture reference. The filename stayed
 `voice-mode-v4` for continuity, but the content here tracks the shipped
-`voice-unified-sentinel-pipeline-2026-07-01` topology, not the older
+`voice-unified-papercup-pipeline-2026-07-01` topology, not the older
 `lib/voice-*` split-brain path.
 
 ## The two live voice paths
@@ -40,10 +40,10 @@ There are two distinct runtime modes:
 | Path | When it runs | Where STT/TTS happen | Who is the brain |
 |---|---|---|---|
 | **Local browser voice mode** | `fullAgentEngine === 'off'` | Browser + local/cloud adapters selected in prefs | The local dispatch path in `voice-mode.ts` / `VoiceAppBridge.tsx` |
-| **Hosted full-agent session** | `fullAgentEngine !== 'off'` | Operator voice host + attached desktop/TUI/mobile clients | **The Sentinel pane** (relayed through the host) |
+| **Hosted full-agent session** | `fullAgentEngine !== 'off'` | Operator voice host + attached desktop/TUI/mobile clients | **The Papercup pane** (relayed through the host) |
 
 The second path is now the dominant one. It is what powers the shared desktop +
-TUI voice session, the Herald/Sentinel voice, and the deep-delegation answer
+TUI voice session, the Herald/Papercup voice, and the deep-delegation answer
 loop.
 
 ## One-brain architecture
@@ -54,10 +54,10 @@ The important invariant is:
 user speech
   -> transport capture
   -> operator voice host
-  -> Sentinel pane stdin (writeToSentinelPane)
-  -> Sentinel thinks / may delegate
-  -> Sentinel answers via voice:say
-  -> sentinel-says PG FIFO
+  -> Papercup pane stdin (writeToSentinelPane)
+  -> Papercup thinks / may delegate
+  -> Papercup answers via voice:say
+  -> papercup-says PG FIFO
   -> operator voice host pump
   -> attached clients render + speak the same answer
 ```
@@ -74,7 +74,7 @@ That is implemented by:
 ### Why this replaced the old model
 
 The retired architecture let a voice surface answer through a local
-`${role}:converse` path while typed text and Sentinel-pane traffic followed a
+`${role}:converse` path while typed text and Papercup-pane traffic followed a
 different route. That created a split-brain system:
 
 - typed text and voice could disagree
@@ -99,7 +99,7 @@ singleton `OperatorVoiceSession` in the operator host. That host:
 - opens the provider session
 - elects exactly one active player/mic holder via `voice-lease.ts`
 - broadcasts state, transcripts, tags, and audio to every attached client
-- relays final user transcripts to the Sentinel pane
+- relays final user transcripts to the Papercup pane
 - pumps `voice:say` output back into the same shared session
 
 ### Provider contract
@@ -128,17 +128,17 @@ Desktop and TUI are peers on the same operator-voice bus:
 Only the elected player renders playout and captures mic; non-elected clients
 remain receive/display/control peers.
 
-## Sentinel pane ingress and egress
+## Papercup pane ingress and egress
 
 ### Voice-in
 
-`POST /api/operator/sentinel-input` is the local text-to-pane seam.
+`POST /api/operator/papercup-input` is the local text-to-pane seam.
 
 - browser STT or host-side full-agent relay hands text to this route
 - the route calls `writeToSentinelPane()`
 - the target pane is discovered through the dock registration file managed by
-  `psu-sentinel`
-- warm-up and exited-pane guards live in `sentinel-pane-input.ts`
+  `psu-papercup`
+- warm-up and exited-pane guards live in `papercup-pane-input.ts`
 
 This is a **local app user** surface, not the P2P voice-channel system.
 
@@ -148,11 +148,11 @@ The pane speaks by calling `voice:say`.
 
 That no longer pushes into a process-local array. It lands in the shared
 Postgres FIFO described in
-[The Sentinel's voice-out crosses processes](/internal/docs/agent-insights/sentinel-voice-out-is-cross-process).
+[The Papercup's voice-out crosses processes](/internal/docs/agent-insights/papercup-voice-out-is-cross-process).
 
 Two consumers exist, but never at the same time:
 
-- **full-agent session live**: `sentinel-says-pump.ts` drains the FIFO
+- **full-agent session live**: `papercup-says-pump.ts` drains the FIFO
   server-side and broadcasts transcript + synthesized audio on the shared voice
   bus
 - **no full-agent session live**: the webview's local-mode
@@ -169,8 +169,8 @@ There are now three kinds of "voice action":
 
 | User intent | Mechanism | Result |
 |---|---|---|
-| Ask for an immediate answer | Sentinel answers directly | Spoken + written in the same pane/session |
-| Ask for buildable work | `<handoff_to_queen>` | Work item for the Queen to place |
+| Ask for an immediate answer | Papercup answers directly | Spoken + written in the same pane/session |
+| Ask for buildable work | `<handoff_to_queen>` | Work item for the Mug to place |
 | Ask for sustained analysis | `<delegate_deep>` / `voice:delegate_deep` | Background deep-analysis worker returns `[deep-answer WI-NNN] …` into the same pane |
 
 The deep lane is implemented by:
@@ -180,15 +180,15 @@ The deep lane is implemented by:
 
 Its contract is:
 
-1. Sentinel stays conversational and acks quickly.
+1. Papercup stays conversational and acks quickly.
 2. A durable `research-task` work item is created.
 3. An ephemeral background analysis worker investigates.
 4. The worker completes the item with `completion.summary`.
-5. That answer is injected back into the Sentinel pane and spoken through the
+5. That answer is injected back into the Papercup pane and spoken through the
    same voice-out path.
 
 Deep thinking therefore returns to the user as an **answer**, not as placement
-work for the Queen.
+work for the Mug.
 
 ## Local browser voice mode (`fullAgentEngine === 'off'`)
 
@@ -253,7 +253,7 @@ The local browser runtime also still carries the historical string wake phrase
 
 ## Voice channels and the generic voice-node
 
-Do not confuse the **local Sentinel voice pipeline** with the generic P2P voice
+Do not confuse the **local Papercup voice pipeline** with the generic P2P voice
 channel system.
 
 `libs/generic/p2p-voice/src/voice-node.ts` is the reusable channel core:
@@ -264,10 +264,10 @@ channel system.
 - per-peer frame taps
 - optional video frame fan-out on the same peer connection
 
-That system backs operator voice-channel / relay work. The Sentinel voice-in/out
+That system backs operator voice-channel / relay work. The Papercup voice-in/out
 surfaces documented on this page are different:
 
-- `sentinel-input` is local loopback-to-pane
+- `papercup-input` is local loopback-to-pane
 - `voice:say` / `sentinel_says` is local shared FIFO
 - neither is an `operator_voice_channels` channel
 
@@ -289,10 +289,10 @@ settings model. Important fields:
   - `porcupineKeyword`
   - `openwakewordKeyword`
 - human-facing persona switch:
-  - `humanFacingRole: 'operator' | 'sentinel'`
+  - `humanFacingRole: 'operator' | 'papercup'`
 
 `humanFacingRole` is the switch that repoints the full-agent voice brain between
-the legacy operator persona and the Sentinel persona.
+the legacy operator persona and the Papercup persona.
 
 ## Desktop and TUI transport seams
 
@@ -324,7 +324,7 @@ packages/operator-core/lib/
 │   ├── porcupine.ts
 │   └── whisper.ts
 ├── endpoint-route/routes/
-│   ├── operator/sentinel-input.ts
+│   ├── operator/papercup-input.ts
 │   └── desktop/voice-config.ts
 ├── voice-node/
 │   ├── desktop-voice-ws.ts
@@ -332,15 +332,15 @@ packages/operator-core/lib/
 │   ├── operator-voice-session.ts
 │   ├── operator-voice-session-deps.ts
 │   ├── operator-voice-bus.ts
-│   └── sentinel-says-pump.ts
-└── sentinel/
-    ├── sentinel-deep-delegate.ts
-    └── sentinel-pane-input.ts
+│   └── papercup-says-pump.ts
+└── papercup/
+    ├── papercup-deep-delegate.ts
+    └── papercup-pane-input.ts
 
 apps/operator/app/_components/voice/
 ├── voice-mode.ts
 ├── stt-voicemode.ts
-├── voice-sentinel-bridge.ts
+├── voice-papercup-bridge.ts
 ├── operator-voice-runtime.ts
 └── desktop-operator-voice-client.ts
 
@@ -352,12 +352,12 @@ libs/generic/p2p-voice/src/voice-node.ts
 
 - The desktop runtime discovers its loopback bridge through
   `/api/desktop/voice-config`; never hardcode `:3076`.
-- `sentinel-input` and desktop voice transport are local-only surfaces; do not
+- `papercup-input` and desktop voice transport are local-only surfaces; do not
   model them as bearer-authenticated harness APIs.
 - If voice-out is silent during a hosted session, inspect the shared
   `sentinel_says` path and the server-side pump before debugging local TTS.
 - If a question needs minutes of analysis, the correct lane is
-  `voice:delegate_deep`, not handing cognition to the Queen.
+  `voice:delegate_deep`, not handing cognition to the Mug.
 
 ## Tests
 
@@ -376,6 +376,6 @@ cd libs/generic/p2p-voice && npx vitest run src/voice-node.test.ts
 
 See also:
 
-- [The Sentinel's voice-out crosses processes](/internal/docs/agent-insights/sentinel-voice-out-is-cross-process)
-- [Sentinel voice-in needs a single dock](/internal/docs/agent-insights/sentinel-voice-in-needs-a-single-dock)
+- [The Papercup's voice-out crosses processes](/internal/docs/agent-insights/papercup-voice-out-is-cross-process)
+- [Papercup voice-in needs a single dock](/internal/docs/agent-insights/papercup-voice-in-needs-a-single-dock)
 - [Voice modality](/internal/docs/endpoint-system/voice-modality)

@@ -9,7 +9,7 @@ plans:
   - dbos-retire-legacy-orchestrator-2026-05-31
   - dbos-system-completion-2026-06-01
   - harness-state-storage-unification-2026-06-01
-  - plugin-system-hive-port-2026-06-11
+  - plugin-system-pot-port-2026-06-11
   - plans-central-harness-ux-2026-05-26
   - un-hardcode-plan-2026-05-10
 ---
@@ -118,7 +118,7 @@ live system no longer has. Until the prose below is rewritten, trust this list:
    `libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md`, and there is
    a whole **blueprints catalog** (`base`, `coding`, `coding-factory`, `research`,
    `audit`, `review`, `gym`, `migration`, `dist-*`, … ~46 dirs). New roles also exist
-   (`director`, `queen`, `bee`, `auditor`, `planner`, `overwatch`, `sentinel`, …).
+   (`director`, `mug`, `cup`, `auditor`, `planner`, `overwatch`, `papercup`, …).
    Every `prompts/<role>.md` path citation below is stale.
 8. **There is no `fumadocs` plugin.** The live docs-tab plugin is **`starlight`**
    (`libs/papercusp/plugins/starlight`); the fumadocs→starlight migration replaced
@@ -532,7 +532,7 @@ Prompt-file paths in this catalogue are stale. The
 `libs/papercusp/packages/harness/prompts/` directory no longer exists — role prompts
 moved to **`libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md`** (and
 phase/department overrides under the blueprints tree). New roles also exist
-(`director`, `queen`, `bee`, `auditor`, `planner`, `overwatch`, `sentinel`, …). The
+(`director`, `mug`, `cup`, `auditor`, `planner`, `overwatch`, `papercup`, …). The
 "When invoked" descriptions referencing `main-loop.ts` / `run.sh` describe the
 archived loop; the live decider is the per-feature `director`.
 </Aside>
@@ -619,7 +619,7 @@ The orchestrator emits `DONE` when every feature in `harness_features` has statu
 3. **Documenter** — `invoke('documenter', TRIGGER=done, FEATURE_ID=-)` — generates user-facing docs for the project.
 4. **(Optional, bash only) Scoper in proposal mode** — if `config.proposals.enabled` AND `config.proposals.afterDone` (or legacy `product.enabled` / `product.triggerOnDone`): `invoke('scoper', MODE=proposal)` to propose next-phase features. Reviewer can auto-approve via `proposals.autoApply` (default true). The TS port skips this — see `main-loop.ts:390` ("Skipping optional scoper-on-done + archive-on-done — minor polish.").
 5. **(Optional, bash only) Archive-on-done** — if `config.archiveOnDone=true`: `tar czf .papercusp/archives/<unix-ts>-done.tar.gz -C $STATE_DIR --exclude=archives .`. TS port skips this.
-6. **Plugin lifecycle** — *(updated 2026-06-12, plugin-system-hive-port P-006)* the DBOS finalizer fires the in-process typed hook `firePluginLifecycle('afterDone', …)` and emits the `pipeline:done:<slug>:<feature>` event; the old `firePluginHook` shell-out via the `papercusp-fire-hook` CLI is retired, as is the addAction/addFilter event bus — plugins subscribe via event-reaction rules (`reactions` in the manifest/SDK).
+6. **Plugin lifecycle** — *(updated 2026-06-12, plugin-system-pot-port P-006)* the DBOS finalizer fires the in-process typed hook `firePluginLifecycle('afterDone', …)` and emits the `pipeline:done:<slug>:<feature>` event; the old `firePluginHook` shell-out via the `papercusp-fire-hook` CLI is retired, as is the addAction/addFilter event bus — plugins subscribe via event-reaction rules (`reactions` in the manifest/SDK).
 
    Live plugin set in `libs/papercusp/plugins/` and their event subscriptions:
 
@@ -652,7 +652,7 @@ Any of these can short-circuit the happy path:
 | **Plan rejected** | reviewer writes `VERDICT: reject` in plan-review.md | Pre-loop exits 7 with reason "plan-rejected"; user must edit SPEC.md and re-launch |
 | **Stuck feature** | feature `attempts >= debugger.threshold` (default 3); after debugger fires once, further failures lead to architect/escalate | Orchestrator emits `NEXT_ARCHITECT` for replan, or eventually `ESCALATE` |
 | **ESCALATE** | orchestrator decision after exhausting options | LLM writes `.papercusp/escalation.md` (per orchestrator.md §E), then prints `ESCALATE <reason>`. handleEscalate fires `on-escalate` hook, runs curator (`TRIGGER=escalate`), notify_event, exits 3. The **supervisor cron** (`bin/supervisor.sh`, suggested `0 */6 * * *`; user owns the actual crontab) wakes periodically, reads escalation.md + recent logs, decides: unblock / expand spec / ping human. *Note: escalation.md is also written system-side by run.sh:1620 / pre-loop.ts:87 on plan-reviewer reject — that path exits 7, not 3.* |
-| **Cost cap exceeded** | `cost-cap.ts` (or `run.sh:check_cost_cap`) sums each `.jsonl`'s last `total_cost_usd` per iteration; exceeds `config.maxCostUsd` | Clean **exit 6** (not SIGTERM); `notify_event cost-cap` fires. Soft warn at `config.maxCostUsdWarnThreshold` * cap (default 0.8, dedup'd by `.papercusp/.cost-warn-fired` sentinel). Optional `config.maxCostUsdAutoPause=true` SIGSTOPs the process at warn threshold; `/api/harness/<slug>/unpause` SIGCONTs it. |
+| **Cost cap exceeded** | `cost-cap.ts` (or `run.sh:check_cost_cap`) sums each `.jsonl`'s last `total_cost_usd` per iteration; exceeds `config.maxCostUsd` | Clean **exit 6** (not SIGTERM); `notify_event cost-cap` fires. Soft warn at `config.maxCostUsdWarnThreshold` * cap (default 0.8, dedup'd by `.papercusp/.cost-warn-fired` papercup). Optional `config.maxCostUsdAutoPause=true` SIGSTOPs the process at warn threshold; `/api/harness/<slug>/unpause` SIGCONTs it. |
 | **Timeout** | per-role `config.timeouts.<role>` exceeded | invoke() returns rc=124; orchestrator treats as failure |
 | **Smoke test fails on done** | `smokeTest.onDone` script exits non-zero | Feature reopens, loop continues |
 | **Manual stop** | user kills the process or hits "Stop" in UI | `POST /:slug/stop` walks `/proc`, matches processes whose cwd starts with `project.path` AND whose cmdline contains `autonomous-harness/run.sh` or `/harness/run.sh`, then SIGTERMs each |
@@ -730,7 +730,7 @@ The `.papercusp/config.json` notes the phase/dept/models/timeouts/smokeTest/bran
 **File-only by design (legitimate file usage per the storage policy):**
 
 - `events/<eventName>.log` — append-only log per event-kind (`done`, `escalate`, `cost-cap`, `cost-warn`, `checkpoint`, `max-iter`, etc.). Written by `notifyEvent`/`notify_event`. Per-event files keep the body separately from `logs/run.log` so a downstream supervisor can grep for events of one kind without scanning the full log.
-- `.cost-warn-fired` — sentinel file (zero-byte) created the first time the soft cost-cap warn fires this mission; prevents duplicate warns on subsequent iterations. (O_EXCL-style sentinel — file existence is the contract.)
+- `.cost-warn-fired` — papercup file (zero-byte) created the first time the soft cost-cap warn fires this mission; prevents duplicate warns on subsequent iterations. (O_EXCL-style papercup — file existence is the contract.)
 - `experts/runs/<safeName>-ua-<userActionId>.log` — expert run output. `safeName` is the role id with `:`, `/`, and `@` replaced by `_` (matters for plugin-contributed roles like `@scope/role:variant`); `userActionId` is the row id from `user_actions` created at dispatch time (`expert-dispatcher.ts:158`).
 - `logs/run.log` — plain-text append-only iteration log written by `log()` in both run.sh + orchestrator's `log.ts`. The legacy SSE `/:slug/stream` endpoint tails this; the dashboard does not.
 - `logs/run.log.jsonl` — structured-event log written by run.sh (path defined at run.sh:143 as `LOG_JSONL`). The dashboard's run-log panel tails this via `/:slug/log/stream` (harness.ts:1809). Rotated to `run.log.jsonl.<N>.gz` at `PAPERCUSP_LOG_ROTATE_BYTES` threshold.
@@ -832,7 +832,7 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
   For harnesses that lean on `NEXT_EXPERT` etc., TS will silently drop those decisions — backend choice matters.
 - **`claude-code` is the default backend**, not `omp` (`DEFAULT_CONFIG.backend` in `packages/operator-core/lib/agent-config.ts`; defaulting to `omp` was reverted per Owner ask 2026-06-18). `effectiveBackend()` returns the configured backend as-is and only resolves the explicit `'auto'` setting to `omp`; the dead legacy `launchRun` stub still defaults `AGENT_CMD` to `'omp -p'`. A third backend, **`codex`**, also exists. `/settings/agent` lets you flip per-workspace (`claude-code` / `omp` / `codex` / `auto`).
 - **Doc files in this tree may be stale.** Several mention `features.json` as the canonical source — that's no longer true. Trust this lifecycle doc + the code over older specs.
-- **Storage policy supersedes earlier "files everywhere" wording.** As of 2026-05-07, durable mutable state defaults to Postgres; files remain only for bootstrap, code/contracts, locks/sentinels, append-only logs, and substrate-read contracts (where the orchestrator subprocess needs to read directly). See `/internal/docs/system/storage-policy` for the full rule.
+- **Storage policy supersedes earlier "files everywhere" wording.** As of 2026-05-07, durable mutable state defaults to Postgres; files remain only for bootstrap, code/contracts, locks/papercups, append-only logs, and substrate-read contracts (where the orchestrator subprocess needs to read directly). See `/internal/docs/system/storage-policy` for the full rule.
 - **Voice tool aliasing.** `delegate_to_claude` and `delegate_to_agent` both map to the same handler (Wave 3 of the omp migration); EL agents may reference either name.
 
 For a one-page summary of recent migrations and their commit hashes, see

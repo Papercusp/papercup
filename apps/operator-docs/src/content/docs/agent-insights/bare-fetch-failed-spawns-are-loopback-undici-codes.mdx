@@ -1,6 +1,6 @@
 ---
 title: "Bare \"fetch failed\" spawn failures = loopback retry swallowing undici UND_ERR_* codes during restarts"
-description: "A queen/spawn that fails with a contentless `fetch failed` (null output_tail, parent_role=operator) is NOT credential exhaustion (that classifies as 'auth') — it is the operator's loopbackFetch to its OWN invoke route failing during a deploy restart. loopbackFetch retries transient errors, but isTransientNetworkError early-returned false on undici's UND_ERR_SOCKET/UND_ERR_CONNECT_TIMEOUT codes (a server-closed socket mid-request), so no retry → bare 'fetch failed'. Fix: recognize UND_ERR_* connection codes + fall through to the message heuristic, and record the cause code via describeFetchError so the watchdog sample is self-diagnosing."
+description: "A mug/spawn that fails with a contentless `fetch failed` (null output_tail, parent_role=operator) is NOT credential exhaustion (that classifies as 'auth') — it is the operator's loopbackFetch to its OWN invoke route failing during a deploy restart. loopbackFetch retries transient errors, but isTransientNetworkError early-returned false on undici's UND_ERR_SOCKET/UND_ERR_CONNECT_TIMEOUT codes (a server-closed socket mid-request), so no retry → bare 'fetch failed'. Fix: recognize UND_ERR_* connection codes + fall through to the message heuristic, and record the cause code via describeFetchError so the watchdog sample is self-diagnosing."
 discovered: 2026-06-13
 tags: [spawn, loopback, undici, fetch-failed, watchdog, EI-390, network, retry, deploy, debugging]
 status: active
@@ -27,16 +27,16 @@ distinct, real bug.
 ## What it actually is
 
 Trace the rows (`harness_shared.spawned_agents WHERE status='failed'`): the
-`network` class is exclusively `child_role=queen`, `parent_role=operator`
+`network` class is exclusively `child_role=mug`, `parent_role=operator`
 autonomous launches with **null `output_tail`** — they fail *before the child
 runs*, and span before AND after any credential event. That points at the
 **launch fetch itself**, not the LLM call.
 
-Path: `launch-blueprint.ts` fires the queen launch via
+Path: `launch-blueprint.ts` fires the mug launch via
 `loopbackFetch(url, POST)` to the operator's **own** `/invoke` route, and its
 `.catch` records `status='failed', errorMessage=e.message`. So these are the
 operator's loopback POST to itself failing during a **restart/deploy window**
-(release `:3070` redeploys every ≤15min; the autoloop fires the queen hourly).
+(release `:3070` redeploys every ≤15min; the autoloop fires the mug hourly).
 
 `loopback-fetch.ts` *already* retries transient network errors (400/800/1200ms)
 to ride over the no-hot-reload restart — but the classifier had a gap:

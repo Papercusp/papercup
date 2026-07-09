@@ -12,11 +12,11 @@ the team (EI-382, the silent link-join-no-sync, was found by audit not use). Sta
 up as its own forked member makes the team eat the exact dog food external users will.
 
 ## Build / stand-up
-1. **Enable platform mode internally.** Stand up `papercup` as a `kind:'hive'` self-hive via the
+1. **Enable platform mode internally.** Stand up `papercup` as a `kind:'pot'` self-pot via the
    EXISTING `platform:enable` (`enable-platform-mode.ts`, `PLATFORM_SELF_HIVE_SLUG=
    'papercusp-platform'`, canonical `github.com/Papercusp/papercup.git`) — the packaged-but-never-
-   internally-run feature. Add the `papercusp-platform` flag/hive that's currently absent.
-2. **Route REAL contribution through fork→PR.** A Bee (or a designated dogfood lane) contributes
+   internally-run feature. Add the `papercusp-platform` flag/pot that's currently absent.
+2. **Route REAL contribution through fork→PR.** A Cup (or a designated dogfood lane) contributes
    a real change to papercup AS A MEMBER without canonical write → `fork-pr-on-feature-pass` →
    fork under the operator's account → PR → PR-1 daemon notices → PR-2 agent-reviews → PR-3 owner
    mode (start MANUAL) → merge to canonical. Validate the WHOLE loop end-to-end, live.
@@ -28,14 +28,14 @@ up as its own forked member makes the team eat the exact dog food external users
    admission — composes with the owner-enforcement EN-3 revoke + the C-001 re-key.
 
 ## Tests (teeth-verified + LIVE)
-- The full internal loop round-trips: a Bee's real change → fork→PR → agent-review → (manual)
+- The full internal loop round-trips: a Cup's real change → fork→PR → agent-review → (manual)
   owner-approve → merged to canonical papercup main; the WI shows shipped + linked PR (PR-4).
 - A non-collaborator can NOT direct-push canonical (the S0 invariant — composes with Brief AH).
 - Revocation: a revoked contributor's new PRs are refused admission (teeth: pre-fix → no-op = RED).
 - Fork GC: an abandoned fork is collected without touching active ones.
 
 ## Done
-GREEN when papercup is live as its own forked self-hive, a real internal contribution round-trips
-Bee→fork→PR→agent-review→merge to canonical, revocation has teeth, and forks don't accumulate —
+GREEN when papercup is live as its own forked self-pot, a real internal contribution round-trips
+Cup→fork→PR→agent-review→merge to canonical, revocation has teeth, and forks don't accumulate —
 the team now continuously eats the exact fork→PR path external members will, so member-path bugs
 become ones the team hits first.

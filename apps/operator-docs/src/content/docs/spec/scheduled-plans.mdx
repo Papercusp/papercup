@@ -88,14 +88,14 @@ returns to cadence — missed slots collapse to one. Overlap policy
 ### Run-scoping (D-016)
 
 A run's work items are minted into the harness frontier by `system:plan-run`, stamped
-with `source_plan_slug` = the **template** (so the Queen's frontier filter works
+with `source_plan_slug` = the **template** (so the Mug's frontier filter works
 unchanged) and `payload.plan_run` = the run (`runId` / `runSeq` / `instancePlanSlug` /
 `templateSlug`). The Runs-tab rollup reads `payload.plan_run.runId` (indexed). This
 avoided surgery on the `work_items` union view + INSTEAD-OF trigger.
 
 ### Calendar & occurrence expansion
 
-The Calendar tab and the Queen's eligible-routines pane are driven by **backend-computed
+The Calendar tab and the Mug's eligible-routines pane are driven by **backend-computed
 occurrences** — one source of truth in `harness/routines/scheduled-occurrences.ts`
 (`listPlanSchedules` / `gatherScheduledOccurrences`), which expands the RRULE set over a
 window via `expandOccurrences` (`schedule-next.ts`). The calendar UI lib stays swappable
@@ -104,7 +104,7 @@ because it consumes the expanded list, not the rules. `expires_at` takes effect 
 
 Expansion is **capped** (default 500 occurrences per plan per window) to bound a
 pathological sub-minute cadence, complementing the author-time sub-15-min frequency
-warning — the warning catches the cost at authoring; the cap protects the calendar/Queen
+warning — the warning catches the cost at authoring; the cap protects the calendar/Mug
 expansion at render.
 
 ## Authoring & lifecycle tools
@@ -122,9 +122,9 @@ expansion at render.
 ## Arming is autonomy-gated
 
 Authoring a schedule is harmless; **arming** it starts autonomous recurring spend +
-action, so it routes through the Queen autonomy policy. A 14th, NON-protected category
+action, so it routes through the Mug autonomy policy. A 14th, NON-protected category
 `schedule-arm` (seeded `never-auto`, but graduatable — distinct from the permanently
-protected `system-control`) gates `plans:arm-schedule`: the Queen escalates to the owner
+protected `system-control`) gates `plans:arm-schedule`: the Mug escalates to the owner
 until that category graduates; the owner arms directly (D-010 / D-017).
 
 ## Self-governance & safety
@@ -160,7 +160,7 @@ lever, and the autonomy gate already holds the line.)
 - Engine: `packages/operator-core/lib/harness/routines/{schedule-next, claim, materialize-plan-schedule, plan-run-action, arm-plan-schedule, reconcile-plan-runs, gc-plan-runs}.ts`.
 - Tools: `packages/operator-core/lib/agent-tools/plans/{set-schedule, run-now, arm-schedule, disarm-schedule}.ts`;
   the `plans:runs` tool is `runs-list.ts`, over the enriched `runs.ts` DAL (`computePlanRunRollup` / `listPlanRuns`).
-- Calendar/occurrences: `packages/operator-core/lib/harness/routines/scheduled-occurrences.ts` (the Calendar + Queen pane source).
+- Calendar/occurrences: `packages/operator-core/lib/harness/routines/scheduled-occurrences.ts` (the Calendar + Mug pane source).
 - Autonomy: `packages/operator-core/lib/autonomy/{categories, action-surface, capability-category-map}.ts`.
 
 See also [Routines](/internal/docs/spec/routines) (the engine this rides) and

@@ -78,7 +78,7 @@ withPreamble(body, meta)          → '# title\nURL: ...\n\n' + body
 Three tools (`outline`, `get`, `search`). Each takes an optional `harness` arg. Before the adapter is picked, the handler runs it through the shared **explicit-scope gate** — `resolveHarnessScope(args.harness, ctx)` in `packages/operator-core/lib/agent-tools/_harness-scope.ts` (the same helper `plans:*` and other harness-scoped tools use) — and only then hands the resolved scope to each tool's own `resolveAdapter()`.
 
 `resolveHarnessScope` returns one of three outcomes, in this precedence:
-1. an explicit `harness: 'all'` (or the raw `'*'` sentinel) arg → `{ kind: 'all' }` — deliberate operator/cross-harness scope, regardless of session.
+1. an explicit `harness: 'all'` (or the raw `'*'` papercup) arg → `{ kind: 'all' }` — deliberate operator/cross-harness scope, regardless of session.
 2. an explicit concrete `harness: '<slug>'` arg → `{ kind: 'harness', slug }` — always wins over the session's own scope.
 3. no arg, and the session's `ctx.harnessSlug` is a **concrete** slug → `{ kind: 'harness', slug }` (a worker/scoper/validator etc. spawned with `?harness=<slug>`).
 4. no arg, and `ctx.harnessSlug` is unset **or** the operator/SU auto-default `'*'` → `{ kind: 'none' }`.

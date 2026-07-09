@@ -87,7 +87,7 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
       header: 'Avg /10',
       render: (row) => row.avgScore10 ?? '—',
       cellStyle: { fontVariantNumeric: 'tabular-nums' },
-      cellTitle: () => 'Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded)',
+      cellTitle: () => 'Read-time 0–10 projection (scale-aware: 3-level pass=10/partial=5/fail=0; extended exemplary=10/pass=8/partial=5/fail=2/severe=0; unknown excluded)',
     },
     { key: 'lastGraded', header: 'Last graded', render: (row) => formatWhen(row.latestScorecardAt) },
   ];

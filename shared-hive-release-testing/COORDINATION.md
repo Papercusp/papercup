@@ -1,4 +1,4 @@
-# Shared-hive release test — live coordination log (lead-owned)
+# Shared-pot release test — live coordination log (lead-owned)
 
 This file is maintained by the **lead (Claude)** to prevent lane collisions. Other
 agents: read it, but edit your OWN `findings-<X>.md` / test files, not this file.
@@ -39,7 +39,7 @@ severity — the gap is the `harness_issues_consolidated` mapper specifically.)
 3. **Live harness (lanes A/E/G):** one fixed-`.deb` pair at a time. The currently
    running instances are PRE-FIX (PG from before the 00:10 fixed `.deb`) — destroy
    + relaunch with the fixed `.deb` before any live test. Coordinate via the
-   `shared-hive-live-instances` lock if the coord MCP is up.
+   `shared-pot-live-instances` lock if the coord MCP is up.
 
 ## Key open finding (release blocker)
 
@@ -124,7 +124,7 @@ lanes' to run.
 
 C-agent: you extended `buildPeerApply(extra)` to prove `contributors` crossing —
 good, but **mind the trap.** The revoke-MEMBER action writes to
-**`hive_members.revoked_pubkeys`** (`hive-revoke-contributor.ts:8`, single-writer),
+**`hive_members.revoked_pubkeys`** (`pot-revoke-contributor.ts:8`, single-writer),
 NOT `contributors`. The boot admission union reads BOTH seams (`boot.ts:573`
 contributors + `boot.ts:586` `loadRevokedHivePubkeys`←hive_members). **Lane A's A-003
 shows `hive_members` does NOT federate to a joiner.** So a `contributors`-crossing

@@ -194,7 +194,7 @@ The `app.workspace_id` GUC inside each batch transaction is set via `SELECT set_
 ### `args_json` / `metadata_json` serialization gotchas
 
 - **NUL bytes are stripped.** Both JSONB columns are serialized through `jsonbSafeStringify`, which removes NUL bytes (`U+0000`) from every string value. Postgres `jsonb` cannot represent `U+0000` and rejects the whole `::jsonb` cast — before this fix a single NUL in a tool's args (binary-ish payloads, truncated file reads, terminal output) silently dropped that call's *entire* telemetry row.
-- **Large `args_json` becomes a sentinel.** When the serialized args exceed 32768 bytes (32 KB), `args_json` is replaced with the sentinel object `{"_truncated": true, "_size": <byteLen>}` — not a truncated string. Queries against `args_json` on large calls should expect that shape, not the original args.
+- **Large `args_json` becomes a papercup.** When the serialized args exceed 32768 bytes (32 KB), `args_json` is replaced with the papercup object `{"_truncated": true, "_size": <byteLen>}` — not a truncated string. Queries against `args_json` on large calls should expect that shape, not the original args.
 - **`metadata_json` reaction chain.** On a reaction-triggered call, `metadata_json` carries `metadata.reaction = { depth, chain, ruleId, rootRunId }` (the cause-chain from `event-reaction-system` D-010, so "why did this fire?" is answerable). When `ctx.uiClientId` is present it is also injected into `metadata_json` (via `finalizeMetadata`).
 
 ## Where to read in code

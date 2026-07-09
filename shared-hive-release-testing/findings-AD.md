@@ -17,9 +17,9 @@ PG-row isolation, multi-ws-per-box) is **integration** and is deferred to a calm
 ## Coverage map — already-covered ↔ added ↔ deferred
 
 **Already covered (verified, not duplicated):**
-- `derive-swarm-topic.test.ts` — determinism, 32-byte length, gh/local/hive **domain
+- `derive-swarm-topic.test.ts` — determinism, 32-byte length, gh/local/pot **domain
   separation** (prefix collision impossible), explicit-topic-verbatim (the join-vs-owner
-  split fix), distinct hive pubkeys → distinct topics.
+  split fix), distinct pot pubkeys → distinct topics.
 - `workspace-als.test.ts` — `runWithWorkspace` exposes the id, preserves it across an
   `await`, **"isolates concurrent scopes (no cross-talk)"** (the ALS-under-concurrency
   property AD scenario 3 asks for), nested-scope restore, and

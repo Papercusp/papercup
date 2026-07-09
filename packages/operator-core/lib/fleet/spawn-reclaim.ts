@@ -644,19 +644,48 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null }): b
  * has NEVER streamed is unproven either way and is left alone (its true
  * liveness stays the job of the heartbeat/`/proc`-liveness sweeps and, for a
  * genuinely wedged process, the flag-gated {@link reclaimWedgedSpawns}). Net
- * effect while the streaming gap is open: this sweep reclaims nothing — a
- * disclosed, deliberate regression to "wait for the boot reconcile" for THIS
- * narrow signal, preferred over actively destroying live work. Re-enables
- * itself automatically once the streaming wiring is fixed and real rows start
- * carrying a non-null `last_output_at`.
+ * effect while the streaming gap is open: this sweep reclaims nothing FROM THE
+ * STREAM SIGNAL — a disclosed, deliberate regression to "wait for the boot
+ * reconcile" for THIS narrow signal, preferred over actively destroying live
+ * work. Re-enables the stream path automatically once the streaming wiring is
+ * fixed and real rows start carrying a non-null `last_output_at`.
+ *
+ * EI-8839 SECOND SIGNAL (2026-07-09): because the streaming gap left the sweep
+ * reclaiming NOTHING for a never-streamed row, an ORPHANED admission debit —
+ * a `running` row whose recorded child process actually DIED (host/process
+ * restart, or the child exited) — jammed the ceiling full with ~nothing alive
+ * until the next operator restart cleared it via {@link
+ * reconcileSpawnAdmissionOnBoot}. The periodic {@link reclaimOrphanedSpawns}
+ * misses it too: a reused-pid false-alive on a long-lived operator keeps its
+ * heartbeat fresh, so it never becomes that sweep's stale-heartbeat candidate.
+ * So for a never-streamed row that is old enough, SAME-HOST, and has a recorded
+ * pid, we now consult a second, unfakeable signal — is the recorded child
+ * process still alive on this host (`isSpawnProcessAlive`)? A /proc-confirmed
+ * DEAD child proves the debit is stale regardless of the missing stream →
+ * reclaim it, closing the jam WITHOUT a restart. A LIVE child (the EI-8528 case
+ * — a genuinely-working cup whose 'invoke-once' process still exists) reads
+ * alive → never reclaimed, so the EI-8528 protection is fully preserved. A row
+ * we cannot liveness-check locally (a different host, or no recorded pid) is
+ * left to the orphan sweep / boot reconcile exactly as before — never reclaimed
+ * on a guess. The residual gap (a dead child whose pid was REUSED by another
+ * live 'invoke-once' bee → false-alive → not reclaimed until the boot reconcile)
+ * is the same, narrow false-alive limitation {@link reclaimOrphanedSpawns}
+ * already carries, and is strictly no worse than the prior "reclaim nothing".
  */
 export async function reclaimCeilingJamDebits(
   sql: Db,
-  opts: { minAgeMs?: number; silentMs?: number; now?: number } = {},
+  opts: {
+    minAgeMs?: number;
+    silentMs?: number;
+    now?: number;
+    isAlive?: (pid: number, kind?: 'spawn' | 'launch') => boolean;
+  } = {},
 ): Promise<ReclaimResult> {
   const minAgeMs = opts.minAgeMs ?? CEILING_JAM_MIN_AGE_MS;
   const silentMs = opts.silentMs ?? CEILING_JAM_SILENT_MS;
   const now = opts.now ?? Date.now();
+  const isAlive = opts.isAlive ?? isSpawnProcessAlive; // injectable for tests
+  const me = hostname();
 
   const candidates = await sql<
     {
@@ -665,39 +694,72 @@ export async function reclaimCeilingJamDebits(
       run_id: string | null;
       started_at: string;
       last_output_at: string | null;
+      launcher_host: string | null;
+      pid: number | null;
     }[]
   >`
-    SELECT spawn_id, workspace_id, run_id, started_at, last_output_at
+    SELECT spawn_id, workspace_id, run_id, started_at, last_output_at, launcher_host, pid
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
      ORDER BY started_at ASC
      LIMIT 500`;
   if (candidates.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
 
-  const jammed: string[] = [];
+  const streamSilent: string[] = []; // DID stream then went silent (the original EI-7204 signal)
+  const procDead: string[] = []; // never streamed, but /proc-confirmed dead on THIS host (EI-8839)
   for (const c of candidates) {
     if (!isSupervisedBeeRow({ spawn_id: c.spawn_id, run_id: c.run_id })) continue;
     const startedMs = new Date(c.started_at).getTime();
     if (isNaN(startedMs) || now - startedMs <= minAgeMs) continue; // not old enough to judge
     const outAt = c.last_output_at ? new Date(c.last_output_at).getTime() : null;
-    if (outAt == null) continue; // EI-8528: no signal is not evidence of a jam — never flag it
+    if (outAt == null) {
+      // EI-8528: absence of a stream signal is NOT jam evidence on its own — every
+      // supervised cup in this deployment currently has NULL last_output_at (a
+      // separate stdout-stream-wiring gap), so an age-only reclaim here would kill
+      // genuinely-alive, mid-task cups. But there is a SECOND, unfakeable signal for
+      // a SAME-HOST row: whether its recorded child process is actually still alive.
+      // EI-8839 — an ORPHANED admission debit whose child DIED (host/process restart,
+      // or the child simply exited) leaves a `running` row that reads full against the
+      // ceiling forever: reclaimOrphanedSpawns can't see it (a reused-pid false-alive
+      // keeps its heartbeat fresh on a long-lived operator), and the boot reconcile
+      // only clears it at the NEXT operator restart — the exact "no bee can be placed"
+      // jam this reclaims. A /proc-confirmed-DEAD child proves the debit is stale
+      // REGARDLESS of the missing stream, so reclaim it now instead of waiting for a
+      // restart. A LIVE child (the EI-8528 case — its 'invoke-once' process still
+      // exists) reads alive → left untouched, no regression. A row we can't
+      // liveness-check locally (a different host, or no recorded pid) is left to the
+      // orphan sweep / boot reconcile exactly as before — never reclaimed on a guess.
+      if (c.launcher_host === me && c.pid != null && !isAlive(c.pid, 'spawn')) {
+        procDead.push(c.spawn_id);
+      }
+      continue;
+    }
     if (isNaN(outAt)) continue; // unparseable timestamp — never trust a jam call to bad data
     const streamedRecently = now - outAt <= silentMs;
     if (streamedRecently) continue; // genuinely live — proved by real stream output
-    jammed.push(c.spawn_id);
+    streamSilent.push(c.spawn_id);
   }
+  const jammed = [...streamSilent, ...procDead];
   if (jammed.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };
 
-  const reason =
+  const streamReason =
     `reclaimed: spawn-ceiling-jam — no stream activity for > ${Math.round(silentMs / 60_000)}min despite ` +
     'an apparently-fresh heartbeat (reused-pid false-alive, EI-7204/EI-7197) — periodic admission-debit ' +
     'reconcile freed the concurrency-ceiling slot; any held work-item claim is released by the next stale-claim sweep';
+  const deadReason =
+    'reclaimed: spawn-ceiling-jam — recorded child process confirmed dead on this host with no stream ' +
+    'activity (orphaned admission debit, EI-8839) — periodic admission-debit reconcile freed the ' +
+    'concurrency-ceiling slot without waiting for the next operator restart; any held work-item claim is ' +
+    'released by the next stale-claim sweep';
   const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
     UPDATE harness_shared.spawned_agents
        SET status = 'failed',
            finished_at = now(),
            duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
-           error_message = COALESCE(error_message, ${reason})
+           error_message = COALESCE(
+             error_message,
+             CASE WHEN spawn_id = ANY(${procDead}::text[]) THEN ${deadReason} ELSE ${streamReason} END
+           )
      WHERE status IN ('running', 'restarting')
        AND spawn_id = ANY(${jammed}::text[])
     RETURNING spawn_id, workspace_id`;

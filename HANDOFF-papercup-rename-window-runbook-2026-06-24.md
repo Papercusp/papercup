@@ -103,7 +103,7 @@ Then update refs to the REAL `…/papercusp` path (keep the symlink until 0 refs
 - `apps/operator/.env.local` `PAPERCUSP_INTEGRATION_ROOT` (line ~140). **NOT**
   `RELEASE_ROOT=…/papercup-release` (a different artifact, out of scope).
 - 2 build-script `ExecStart`/`WorkingDirectory`
-- the `path` of the `papercusp` hive in the registry
+- the `path` of the `papercusp` pot in the registry
 - `daemon-reload` + restart services (Step C); drop the symlink only after grep shows 0 refs to the old path.
 
 ### Step C — P-008 SERVICES (11 units; dev-api LAST)
@@ -128,7 +128,7 @@ already satisfied; the dir rename does not change it.)
   **`LEGACY_DEFAULT_HOME_HARNESS='papercusp'`**, **`@papercupai/papercusp-monorepo`** — all already in code (verified 0 literal refs).
 - **`PAPERCUP_ROOT`** last ref (a doc-comment) → `PAPERCUSP_ROOT`. **0 left in code.**
 - **`embedded-postgres-server/src/index.js`** `papercup_shared`→`papercusp_shared` (the missed D-001 codemod file; required before CONTRACT — see §0).
-- Live spine 100% re-homed to papercusp; papercup-hive cleaned; 43 work_items re-homed (migration P-002/P-003, done earlier).
+- Live spine 100% re-homed to papercusp; papercup-pot cleaned; 43 work_items re-homed (migration P-002/P-003, done earlier).
 
 ## 4. What remains AFTER the window (cleanup, then grep-zero gate)
 

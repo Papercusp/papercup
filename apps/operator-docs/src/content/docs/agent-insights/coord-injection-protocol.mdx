@@ -67,18 +67,18 @@ self-correct a schema mismatch (no inline header), so this is load-bearing.
    advances the cursor from `summary.newest_ts`. All formatting/capping/collapse
    is server-side — one edit re-tunes every client.
 
-## Control-cue authority tag (queen-fleet-authority-boundary P-003)
+## Control-cue authority tag (mug-fleet-authority-boundary P-003)
 
-A CONTROL cue (a hive-wide Queen pause, a fleet leader's drain/steer) can carry a
+A CONTROL cue (a pot-wide Mug pause, a fleet leader's drain/steer) can carry a
 structured `cueAuthority` stamp (`{ authority, authorityRef, scope, scopeRef? }`)
 on the coord envelope — set by the emit site via `sendMessage.extra`, read back
 with `readCueAuthority`/`renderCueAuthorityTag` (`agent-tools/coordination/cue-authority`).
 When present and well-formed, `renderInjection` prefixes the line with a scope
-tag so the reader can tell a hive-wide directive from a narrower one at a
+tag so the reader can tell a pot-wide directive from a narrower one at a
 glance, e.g.:
 
 ```
-# ab533 [hive-queen(papercusp)→hive-wide] the hive is being paused
+# ab533 [pot-mug(papercusp)→pot-wide] the pot is being paused
 # lead1 [fleet-leader(windows-parity)→fleet-members(windows-parity)] release your slot
 ```
 
@@ -95,7 +95,7 @@ reader's answer outranks their own in-flight work, so they should finish only
 the atomic step in hand and reply (or ACK-with-ETA) before continuing their
 own task. This text is a **sourced-once twin** of
 `PEER_REPLY_PRIORITY_NOTE` in `libs/papercusp/packages/orchestrator/src/prompt-build.ts`
-(the spawned-bee/orchestrator prompt path) — the two are meant to say the
+(the spawned-cup/orchestrator prompt path) — the two are meant to say the
 same thing to two different prompt-assembly pipelines (psu via
 `coord-schema.ts`, role agents via the orchestrator), so if you reword one,
 reword the other to match. It has no `[coord+N]` wire representation; it

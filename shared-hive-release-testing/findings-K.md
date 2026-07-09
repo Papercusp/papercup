@@ -5,7 +5,7 @@ Status: **member-remove leg WITNESSED LIVE** on the real binary (closing the leg
 Brief E left open) + two new findings (K-1, K-2) + one observation (K-3). Re-key
 (Move 2) is **product-gated**; the owner has already chosen **option (d)** for this
 release (document honestly; re-key is roadmap — see `threat-model-C.md`,
-`DESIGN-hive-federation-long-term.md`).
+`DESIGN-pot-federation-long-term.md`).
 
 ---
 
@@ -24,7 +24,7 @@ This lane's contribution over the prior A–G pass:
    (E hit a 403; the superuser bearer elevates past it — §Method).
 2. **Witnessed the member-remove read-persistence LIVE** with a *genuine production
    revoke of the member's real device key* (§Witness).
-3. **Two new defects** the prior pass had not isolated: the Hive-scope revoke is a
+3. **Two new defects** the prior pass had not isolated: the Pot-scope revoke is a
    no-op beyond a local PG write (K-1), and it never federates to the joiner (K-2).
 
 ---
@@ -55,14 +55,14 @@ prevents from arriving) — see §Witness step 2. The *removal itself* then runs
 the genuine production lever, unmodified.
 
 ### Pair under test
-`~/.papercusp-shared-hive-retest` (su-9140a's fresh-boot pair, real
+`~/.papercusp-shared-pot-retest` (su-9140a's fresh-boot pair, real
 `Papercusp_0.0.2_amd64.deb`, luxon-bundled, Xvfb `:154`):
-- **A = owner** `papercupai` (gh `279242982`), holds the Hive keypair
-  (`keypair-hive_default_hello-world-hive.enc`) → recognized as the Hive owner.
+- **A = owner** `papercupai` (gh `279242982`), holds the Pot keypair
+  (`keypair-hive_default_hello-world-pot.enc`) → recognized as the Pot owner.
   sidecar `:23788`, embedded PG `17692`.
 - **B = joiner** `aviynw` (gh `1567022`), real device pubkey
   `Z2LOLc/QCz84xIin8yUXgedmgJu7nBgW3bgmErFyZoY=`. sidecar `:16553`, PG `22267`.
-- Hive `hello-world-hive`; content harness `hello-world`; content topic `75e49c5c…`.
+- Pot `hello-world-pot`; content harness `hello-world`; content topic `75e49c5c…`.
 - Federation verified via each peer's embedded-PG `origin` column
   (`harness_shared.harness_features_consolidated`).
 
@@ -84,7 +84,7 @@ device key is B's authentic one (extracted from B's keychain).
 superuser bearer:
 ```
 POST :23788/api/admin/substrate/revoke-contributor?superuser=1
-  { workspaceId:"default", hiveSlug:"hello-world-hive", githubUserId:1567022 }
+  { workspaceId:"default", hiveSlug:"hello-world-pot", githubUserId:1567022 }
 → { ok:true, revokedPubkeys:["Z2LOLc/QCz84xIin8yUXgedmgJu7nBgW3bgmErFyZoY="], live:false }
 ```
 A's owner row `revoked_pubkeys` then contained B's real device key. **The removal
@@ -106,22 +106,22 @@ revoking B's real device key — and B still reads.
 
 ## Findings
 
-### K-1 (NEW, S1) — Hive-scope revoke is a no-op beyond a local PG write (`live:false`)
+### K-1 (NEW, S1) — Pot-scope revoke is a no-op beyond a local PG write (`live:false`)
 
-`revokeHiveContributor` (`hive-revoke-contributor.ts`, the Hive-scope "remove member"
+`revokeHiveContributor` (`pot-revoke-contributor.ts`, the Pot-scope "remove member"
 the desktop/Pots path uses) returns **`live:false`**: its `realPublishRevocation` only
 calls `addRevokedHivePubkeys` (a PG `UPDATE` of the owner's own row) and comments *"the
-Hive peer-log publish that replicates it to peers is wired by the P-004 substrate
+Pot peer-log publish that replicates it to peers is wired by the P-004 substrate
 re-key"* — i.e. **not wired**. Contrast the harness-scope lever
 (`sync/hyperbee/revoke-contributor.ts:324`) which does `for (const pk of pubkeys) await
-h.revoke(pk)` for immediate local effect. So a Hive member "removed" via the Hive path:
+h.revoke(pk)` for immediate local effect. So a Pot member "removed" via the Pot path:
 - is **not live-revoked** on the booted handle (no `h.revoke`) — write-plane cutoff is
   deferred to the next admission-union reload, not immediate;
 - and (K-2) the revocation **never leaves the owner's box**.
 
-Net: the Hive-scope "remove member" is weaker than the harness-scope one — effectively
+Net: the Pot-scope "remove member" is weaker than the harness-scope one — effectively
 a local bookkeeping write until a reboot/re-admission. Severity **S1** (a removal the
-UI presents as effective is, on the Hive path, inert live and non-propagating).
+UI presents as effective is, on the Pot path, inert live and non-propagating).
 
 ### K-2 (NEW, S1) — Revocation never federates to the joiner
 
@@ -136,7 +136,7 @@ fix; K-2 is the same root surfaced from the revocation path.
 
 > **UPDATE (Brief I fix landed, su-d2230, 2026-06-19):** Move 1 (mechanical, no product
 > decision) now binds a joiner's member-harness `hive_members`/`hive_settings`
-> projections to the **hive-home slug** (register-all), so the owner's `hive_members`
+> projections to the **pot-home slug** (register-all), so the owner's `hive_members`
 > row — *including its `revoked_pubkeys`* — should now federate to a joiner. That is
 > exactly the delivery K-2 was missing — and su-d2230 **confirmed** it closes the
 > revocation half "for free" (`loadRevokedHivePubkeys` now finds the federated
@@ -152,13 +152,13 @@ fix; K-2 is the same root surfaced from the revocation path.
 > **UPDATE 2 (live re-witness path — su-9140a, 2026-06-19):** on su-9140a's integrated
 > fix-`.deb` (`/tmp/integrated-witness/Papercusp_integrated.deb`, carries Brief I's
 > `joinerHiveHomeSlug`), A-003 came back **inconclusive on the content-matrix** — B had
-> **0** `hive_members`/`hive_settings` rows and **0** rekey log lines: the hive-home
+> **0** `hive_members`/`hive_settings` rows and **0** rekey log lines: the pot-home
 > binding engages on the **from-repo join** (`join-shared-harness.ts`
 > stepBootFederate→bootSingleHarness), **not** the lighter **discovery-join**
-> (`POST /api/discovery/join-hive`) the content-matrix uses. This also explains why my
+> (`POST /api/discovery/join-pot`) the content-matrix uses. This also explains why my
 > `:154` witness had to *seed* A's `hive_members` (discovery-join never populates them).
 > ⇒ **K-2's LIVE re-witness must use the FROM-REPO join flow**
-> (`two-instance-hive-from-repo-smoke.sh`), not the content-matrix. K-2 is code-/unit-
+> (`two-instance-pot-from-repo-smoke.sh`), not the content-matrix. K-2 is code-/unit-
 > verified (d2230's teeth-verified test) but its live confirmation is **pending the
 > from-repo pass** (coordinated with su-9140a; recipe sent). Open question for d2230:
 > does the Brief I fix hook discovery-join too, or only the from-repo join?
@@ -186,15 +186,15 @@ ambiguity does not affect the C-001 conclusion (which is about READS).
 |---|----------|--------|
 | 1 | Member-remove live witness (read persists) | ✅ **DONE** — genuine revoke of B's real device key; B still reads `F-KWIT-POST` (`origin=remote`). |
 | 2 | Rejoin-after-link / non-member-with-link reads | ✅ **structurally shown** — the content topic = `hash(immutable pubkey)`; B never left it, so reads continue by construction. The post-revoke read *is* a link-holder-keeps-reading demonstration. A standalone "B leaves → rejoins → reads" drive was not run (the immutable-topic root is already proven; low marginal value). |
-| 3 | Re-key prototype (cut reads) | ⛔ **product-gated, deferred** — owner chose option (d) for this release; re-key is `DESIGN-hive-federation-long-term.md` **Move 2** (per-epoch group key / TreeKEM + content-core encryption), roadmap. Not built into this release. See §Re-key. |
+| 3 | Re-key prototype (cut reads) | ⛔ **product-gated, deferred** — owner chose option (d) for this release; re-key is `DESIGN-pot-federation-long-term.md` **Move 2** (per-epoch group key / TreeKEM + content-core encryption), roadmap. Not built into this release. See §Re-key. |
 
 ---
 
 ## Re-key (Move 2) — the only real fix, and why it is NOT in this release
 
-Per `DESIGN-hive-federation-long-term.md`, the read-plane gap (C-001 + E-001) is one of
+Per `DESIGN-pot-federation-long-term.md`, the read-plane gap (C-001 + E-001) is one of
 two architectural problems and the **only** fix that actually cuts reads is **Move 2**:
-an immutable-identity hive with unencrypted cores and `content topic = hash(pubkey)`
+an immutable-identity pot with unencrypted cores and `content topic = hash(pubkey)`
 *structurally cannot* cut a reader — the principled answer is a **per-epoch group key**
 (MLS/TreeKEM-style) + content-core encryption, where member-remove / public→private
 advances the epoch and re-keys to the remaining members so a removed peer cannot
@@ -223,9 +223,9 @@ The read-plane gap is already codified + teeth-verified at the integration layer
 ("C-001 (release gap): a removed member can no longer WRITE, but STILL READS new
 content") — asserts the read crosses post-revoke and is written to FLIP when read-plane
 revocation lands, so it is a live regression guard for the fix.
-This lane adds a unit guard for **K-1** (`hive-revoke-contributor`'s `live:false` /
+This lane adds a unit guard for **K-1** (`pot-revoke-contributor`'s `live:false` /
 PG-only behavior) so the no-op-beyond-PG property can't silently change without a test
-going red — see `hive-revoke-contributor.*test*`. (teeth-verified: green → neuter the
+going red — see `pot-revoke-contributor.*test*`. (teeth-verified: green → neuter the
 invariant → RED → restore → GREEN.)
 
 ## State left on the pair (for su-9140a / Brief M)
@@ -245,17 +245,17 @@ invariant → RED → restore → GREEN.)
 
 The §"Re-key (Move 2) … NOT in this release" verdict above is **superseded**: the owner
 re-confirmed and chose to **build Move 2** this session. It is now implemented end-to-end,
-**flag-dark behind `papercusp-hive-rekey`** (default off → zero production behavior change
+**flag-dark behind `papercusp-pot-rekey`** (default off → zero production behavior change
 until the witness is green + the owner flips the flag), committed + pushed to
 `origin/staging`. Full hyperbee backbone **1085** green with the whole stack together.
 
 **What landed (all flag-dark):**
-- **A-003 seam** — the hive-home→joiner path the epoch/key rows ride; first GREEN live
+- **A-003 seam** — the pot-home→joiner path the epoch/key rows ride; first GREEN live
   witness on the real binary (`findings-A003-GREEN-witness-2026-06-19.md`) + re-landed +
   pinned. EI-1688 (snapshot delete-resurrection, the revocation-durability prereq) fixed.
-- **Per-epoch content crypto** (`hive-epoch-op-gate.ts`) — encrypt-on-capture (7dcd8) +
+- **Per-epoch content crypto** (`pot-epoch-op-gate.ts`) — encrypt-on-capture (7dcd8) +
   apply-side decrypt gate + owner|member key resolver (su-ee7e9). AEAD bound to
-  (hive, epoch, op-identity); decrypt wraps the enforcement stack OUTERMOST
+  (pot, epoch, op-identity); decrypt wraps the enforcement stack OUTERMOST
   (decrypt → EN-4 → EN-2 → scopedApply; 328af-reviewed). Boot thread + `buildHiveRekeyBootDeps`.
 - **`hive_epoch_keys` distribution** — federated projection + CDC serializer (su-ee7e9).
 - **Boundary trigger** (`advanceEpochOnHiveBoundary`) — member-remove + go-private advance
@@ -273,7 +273,7 @@ until the witness is green + the owner flips the flag), committed + pushed to
   `boot.ts` admit), dual-reviewed (su-ee7e9 + 328af).
 
 **P-008 live cut-off witness — DESIGN (run pending, folded with 328af's AK in one flag-on
-.deb rig):** extend `two-instance-hive-from-repo-smoke.sh`, flag-on via env
+.deb rig):** extend `two-instance-pot-from-repo-smoke.sh`, flag-on via env
 `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1`. K0 B's `hive_epoch_keys` count ≥ 1 (origin=remote,
 member-add grant federated) → K1 CONTROL A writes F-CTRL → B reads it (decrypts) → K2 A
 revokes B via `substrate:revoke_contributor` (→ `revokeHiveContributor` → epoch advance) →
@@ -282,13 +282,13 @@ member can. The 2-peer CUT (B read F-CTRL, can't read F-CUT) = the release-grade
 proof; 3rd-instance remaining-member-reads-F-CUT = non-regression follow-up.
 **Result: ⏳ pending the run.** Ship gate, NOT a correctness gate — implementation proven
 hermetically (backbone 1085 + 7dcd8 68/22 + 328af compose 6/6 + helper 8/8 + seam tests).
-Plan: `shared-hive-rekey-2026-06-19`.
+Plan: `shared-pot-rekey-2026-06-19`.
 
 ## P-008 live witness — the KEY-LEVEL reframe + the live diagnosis (2026-06-20, su-ee7e9 + su-9140a + 328af + c2a63)
 
 The content-based K1/K3 design above (B reads F-CTRL → can't read F-CUT) was **re-designed mid-run**: on the live binary it false-RED'd — not on the cut, but on **WI-259** (the D-021 scopedApply `harness_slug` guard silently drops a *cross-member* content op, so A's member-slug F-CTRL never crosses to B regardless of the re-key). WI-259 is an orthogonal content-federation bug; conflating it with the cut made the witness un-passable.
 
-**The reframe (the key insight):** a read-revocation cut lives in the CREDENTIAL plane, not the data plane — so prove it there. The C-001 cut = *the removed member's device gets no post-revoke epoch key*. `hive_epoch_keys` is HIVE-HOME-grained, so it federates A→B (A-003-proven) regardless of WI-259. The witness therefore probes the epoch-key plane, **content-free**:
+**The reframe (the key insight):** a read-revocation cut lives in the CREDENTIAL plane, not the data plane — so prove it there. The C-001 cut = *the removed member's device gets no post-revoke epoch key*. `hive_epoch_keys` is POT-HOME-grained, so it federates A→B (A-003-proven) regardless of WI-259. The witness therefore probes the epoch-key plane, **content-free**:
 - **B_DEV** (the cut-off device set) = `member_device_pubkey @ epoch=CUR EXCEPT @ epoch=NEW` on A (A stays a member ⇒ in both ⇒ excluded; the diff is exactly B's device) — authoritative, no hive_members JSON parse.
 - **K0** B's device has wrapped keys origin=remote — the member-add grant federated.
 - **K1 control** B's device has the CUR-epoch key (could decrypt pre-revoke).
@@ -302,13 +302,13 @@ With the flag flipped (`/api/flags/set`) + a fresh build + a successful join, th
 - ✗ `getHiveEpoch` assumed `=-1` (empty `[0..-1]` loop). DISPROVEN: it coerces unset→`BASELINE_EPOCH=0`; the loop runs.
 - ✗ `sodium-native` assumed "unresolvable in the sidecar → the grant throws." DISPROVEN AT RUNTIME: it ships (in `NATIVE_PKGS` since June 1, with its linux-x64 `.node`) AND loads — `node -e "import('sodium-native')"` in the actual witness sidecar → **LOADED**, full crypto API. (3 agents had started a sidecar-build "fix" + 1 a native-addon-preflight change before the 30-second runtime load test killed the whole hypothesis.)
 - ✗ the `PAPERCUSP_FLAG_*` env layer assumed unwired. DISPROVEN: `getFlag` (libs/flags/src/server.ts:211) calls `resolveEnvOverride` FIRST (highest precedence), and the env name it computes is *exactly* `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY` — what the rig sets. (I made this one myself, ~10 min after writing the mem0 note warning against it — the trap bites everyone.)
-- ✓ **VERIFIED ROOT** (c2a63's durable `rekey_grant_skipped` reason-trace + 328af's runtime): the grant early-returns `'flag-disabled'` — `getFlag(HIVE_REKEY,'system')` returns **false** in the admit-grant context. The re-key CODE is correct; the witness simply can't get the flag ON in the sidecar process. Both flag paths fail: the per-instance `PAPERCUSP_FLAG_*` env isn't reaching serve.mjs's `process.env` in `HIVE_SMOKE_MODE=sidecar` (the rig spawns serve.mjs directly), and the `/api/flags/set` fallback persists a **workspace-partitioned** PG override (flag-bus.ts:94-99) that the hive-boot's `getFlag` reads under a different workspace.
+- ✓ **VERIFIED ROOT** (c2a63's durable `rekey_grant_skipped` reason-trace + 328af's runtime): the grant early-returns `'flag-disabled'` — `getFlag(HIVE_REKEY,'system')` returns **false** in the admit-grant context. The re-key CODE is correct; the witness simply can't get the flag ON in the sidecar process. Both flag paths fail: the per-instance `PAPERCUSP_FLAG_*` env isn't reaching serve.mjs's `process.env` in `HIVE_SMOKE_MODE=sidecar` (the rig spawns serve.mjs directly), and the `/api/flags/set` fallback persists a **workspace-partitioned** PG override (flag-bus.ts:94-99) that the pot-boot's `getFlag` reads under a different workspace.
 
 **Enforcement is live (separately):** AK owner-ban = **PASS** on the same run — the binary + moderation path work; only the re-key key-mint is gated (by the flag not being ON, not by any defect).
 
 **The fix is the witness harness, not the re-key code:** forward the per-instance `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY` into the sidecar serve.mjs spawn so `getFlag` sees it (su-9140a's rig — one line, per-instance + workspace-agnostic, satisfying the owner's "per-instance safe, never a global PostHog flip" constraint). Durable supporting work that landed regardless: c2a63's `rekey_grant_skipped` reason-trace (the 3 silent early-returns now name themselves — flag-disabled / no-fresh-members / no-author), 328af's `rekey_grant_failed` loud boot event (a throw is no longer swallowed), EI-1814 (a native-dep boot self-check guardrail).
 
-**Result: ⏳ pending the witness flag-plumbing fix.** The grant logic, the crypto (`sodium-native` loads), the flag-gate, and the device-filtered witness are ALL verified-correct — the re-key implementation needed **zero** fixes. Once the per-instance flag reaches `getFlag` ON, the witness flips to a **green device-filtered K-CUT** in one run → findings-K green → the owner flips `papercusp-hive-rekey`. Net lesson for the next reader: hours of "the re-key is broken" dissolved into "the test harness couldn't set the flag," each wrong turn an inferred-not-verified root — when a root looks like "X can't load / Y throws", RUN it before fixing it.
+**Result: ⏳ pending the witness flag-plumbing fix.** The grant logic, the crypto (`sodium-native` loads), the flag-gate, and the device-filtered witness are ALL verified-correct — the re-key implementation needed **zero** fixes. Once the per-instance flag reaches `getFlag` ON, the witness flips to a **green device-filtered K-CUT** in one run → findings-K green → the owner flips `papercusp-pot-rekey`. Net lesson for the next reader: hours of "the re-key is broken" dissolved into "the test harness couldn't set the flag," each wrong turn an inferred-not-verified root — when a root looks like "X can't load / Y throws", RUN it before fixing it.
 
 ### WI-280 CORRECTED — the real root was MEMBERSHIP-POPULATION, not flag-plumbing (2026-06-20, su-ee7e9 + the principal/role + 328af + dc9db)
 
@@ -318,11 +318,11 @@ The flag-plumbing diagnosis above was a *fifth* inferred-not-fully-verified root
 
 **THE FIX** (su-ee7e9 — 4 edits, type-clean, 19 hermetic tests green):
 1. `_create.ts` step-6b: owner self-row via `upsertHiveMember` (raw-base64 devicePubkey, wrap-consistent).
-2. `boot.ts` Seam-2: open-mode admit → `upsertHiveMember(joiner-from-frame)`, **plus** a `loadHivePubkey` FK gate — `hive_members` FKs `hives(workspace_id, home_slug)`, and the admit also fires on the MEMBER topic (no parent row) → gate to the hive-home owner box only (same self-gate the grant uses).
-3. `hive-membership-store.ts`: the loud-signal superset — `rekey_grant_failed` (grant catch) **and** `rekey_grant_skipped` (result-check, `no-author` skip) emit from the single upsertHiveMember seam (a strict superset of the part-B admit-seam event: now fires on admit AND approve).
+2. `boot.ts` Seam-2: open-mode admit → `upsertHiveMember(joiner-from-frame)`, **plus** a `loadHivePubkey` FK gate — `hive_members` FKs `pots(workspace_id, home_slug)`, and the admit also fires on the MEMBER topic (no parent row) → gate to the pot-home owner box only (same self-gate the grant uses).
+3. `pot-membership-store.ts`: the loud-signal superset — `rekey_grant_failed` (grant catch) **and** `rekey_grant_skipped` (result-check, `no-author` skip) emit from the single upsertHiveMember seam (a strict superset of the part-B admit-seam event: now fires on admit AND approve).
 
-**PROVEN LIVE (de-confounding signal, GREEN):** a fresh-sidecar witness with the fix shows **A `members=1 epoch_keys=1` (was 0/0)** — the owner self-row mints **epoch-0 at CREATE** (getHiveEpoch=BASELINE_EPOCH=0 → loop `[0..0]`), exactly as the supervisor predicted; **K0-join-keys=PASS** (B has 1 wrapped key, via the approve path). The loud signal even caught a bug in its own author's edit — the member-topic FK violation surfaced as `[hive-rekey] open-mode admit upsertHiveMember failed`, loud not silent (now gated).
+**PROVEN LIVE (de-confounding signal, GREEN):** a fresh-sidecar witness with the fix shows **A `members=1 epoch_keys=1` (was 0/0)** — the owner self-row mints **epoch-0 at CREATE** (getHiveEpoch=BASELINE_EPOCH=0 → loop `[0..0]`), exactly as the supervisor predicted; **K0-join-keys=PASS** (B has 1 wrapped key, via the approve path). The loud signal even caught a bug in its own author's edit — the member-topic FK violation surfaced as `[pot-rekey] open-mode admit upsertHiveMember failed`, loud not silent (now gated).
 
-**K2 REVOKE — RESOLVED (the joiner never landed under the HIVE-HOME slug):** the live revoke returned `no_target` because B wasn't in `hive_members` under the hive-home slug. Root: the open-mode admit upserted under `opts.harnessSlug` — the MEMBER slug B joins via (the open-mode hive auto-admits, no pending-join, so the open-mode admit is B's SOLE registration path). The first redirect (`hiveHomeProjectionSlug`) was UNDEFINED at admit time (the owner's member boots on the gh topic *before* the hive rebind) → silently skipped → B unregistered (verified live: members stayed 1). Fix: resolve the hive-home via `hiveHomeSlugForHarness` (a fresh REGISTRY read: member → its hive_slug), so B lands under the hive-home → `loadHiveMemberDevicePubkeys(HIVE_SLUG, B)` finds it → `advanceEpochOnHiveBoundary` fires. (Also EI-1874: the owner self-row's best-effort FK-warn at create tripped vitest-fail-on-console — suppressed for the expected parent-missing case.)
+**K2 REVOKE — RESOLVED (the joiner never landed under the POT-HOME slug):** the live revoke returned `no_target` because B wasn't in `hive_members` under the pot-home slug. Root: the open-mode admit upserted under `opts.harnessSlug` — the MEMBER slug B joins via (the open-mode pot auto-admits, no pending-join, so the open-mode admit is B's SOLE registration path). The first redirect (`hiveHomeProjectionSlug`) was UNDEFINED at admit time (the owner's member boots on the gh topic *before* the pot rebind) → silently skipped → B unregistered (verified live: members stayed 1). Fix: resolve the pot-home via `hiveHomeSlugForHarness` (a fresh REGISTRY read: member → its hive_slug), so B lands under the pot-home → `loadHiveMemberDevicePubkeys(HIVE_SLUG, B)` finds it → `advanceEpochOnHiveBoundary` fires. (Also EI-1874: the owner self-row's best-effort FK-warn at create tripped vitest-fail-on-console — suppressed for the expected parent-missing case.)
 
-**Result: ✅ GREEN K-CUT — the C-001 device-filtered read-revocation cut is PROVEN end-to-end (witness v3, 2026-06-20).** A `members=2 epoch_keys=2` (was 0/0); **K0-join=PASS(2) · K2-REVOKE=PASS (epoch 0→1) · K1-CONTROL=PASS · K3-CUT=PASS** (B's device has 0 epoch-1 keys = the cut; remaining-on-B=1 = remaining member crossed; A-new=1 = A holds the new epoch). Full WI-280 chain: owner self-row mints epoch-0 at create → joiner lands under the hive-home via the open-mode admit redirect → revoke advances → device-filtered cut. **Ready for the owner to flip `papercusp-hive-rekey`.** Two SEPARATE planes are still INCOMPLETE in the witness OVERALL but are NOT the cut: **AK-ban** (write-plane moderation — B's banned op still lands on A; B *is* now in hive_members, so this is its own write-plane enforcement bug, file separately) + **federate-A→B** (WI-259 content federation — the orthogonal scopedApply guard; c2a63's P-002 membership-aware guard is the fix). Net lesson — the *sixth-through-eighth* roots, each verified by RUNNING the witness + reading the DB rows, never inferred: `'flag-disabled'` masked the empty-wrap-set; the empty-wrap-set was two membership-population gaps; the joiner gap needed the REGISTRY resolver, not the boot-time projection. Verify to the BOTTOM — the minted-key count, the populated rows, AND the slug they're under — not the first plausible early-return.
+**Result: ✅ GREEN K-CUT — the C-001 device-filtered read-revocation cut is PROVEN end-to-end (witness v3, 2026-06-20).** A `members=2 epoch_keys=2` (was 0/0); **K0-join=PASS(2) · K2-REVOKE=PASS (epoch 0→1) · K1-CONTROL=PASS · K3-CUT=PASS** (B's device has 0 epoch-1 keys = the cut; remaining-on-B=1 = remaining member crossed; A-new=1 = A holds the new epoch). Full WI-280 chain: owner self-row mints epoch-0 at create → joiner lands under the pot-home via the open-mode admit redirect → revoke advances → device-filtered cut. **Ready for the owner to flip `papercusp-pot-rekey`.** Two SEPARATE planes are still INCOMPLETE in the witness OVERALL but are NOT the cut: **AK-ban** (write-plane moderation — B's banned op still lands on A; B *is* now in hive_members, so this is its own write-plane enforcement bug, file separately) + **federate-A→B** (WI-259 content federation — the orthogonal scopedApply guard; c2a63's P-002 membership-aware guard is the fix). Net lesson — the *sixth-through-eighth* roots, each verified by RUNNING the witness + reading the DB rows, never inferred: `'flag-disabled'` masked the empty-wrap-set; the empty-wrap-set was two membership-population gaps; the joiner gap needed the REGISTRY resolver, not the boot-time projection. Verify to the BOTTOM — the minted-key count, the populated rows, AND the slug they're under — not the first plausible early-return.

@@ -45,7 +45,7 @@ The reliable proc↔DB join is **`adv_sessions.session_id` = the `claude --resum
 1. Count: `ps -eo comm | grep -c '^claude$'`.
 2. For each live `claude --resume <uuid>` proc, look up `adv_sessions` by
    `session_id = <uuid>`. **`ended_at IS NOT NULL` ⇒ zombie** — safe to kill: the
-   session is done (`exit_code = 0`), it holds no claim/wake/running-bee, and it
+   session is done (`exit_code = 0`), it holds no claim/wake/running-cup, and it
    is **not** any live agent's current session (a live session has `ended_at IS
    NULL` — a disjoint set).
 
@@ -93,7 +93,7 @@ await m.reapZombieResumeProcs({ dryRun: false, deps: { isFlagOn: async () => tru
 ## Slice 4 — dangling inbox-wake await GC (P-004)
 
 `reclaimDanglingInboxWakeAwaits()` (rides the slice-1 master flag — non-destructive,
-no second gate). The bug: every idle psu/Queen-launched agent arms a standing
+no second gate). The bug: every idle psu/Mug-launched agent arms a standing
 `coord:inbox-wake:<self>` await (turn-lifecycle-control always-arm). A clean session
 end cancels it, but a process that DIES never runs that hygiene — the await row persists
 forever. `coord:presence/fetchWakeability` reads these rows to derive `wakeable`/`parked`,
@@ -103,7 +103,7 @@ as alive — these dangling rows also PROTECT their ghost `adv_sessions` from be
 Measured live (2026-06-24): 334 inbox-wake awaits, 236 on dead owners.
 
 Fix: cancel an inbox-wake await whose owner is NOT live or resumable. "Live or resumable"
-= fresh presence heartbeat, running bee, in-flight wake delivery, OR an OPEN `adv_session`
+= fresh presence heartbeat, running cup, in-flight wake delivery, OR an OPEN `adv_session`
 (a parked session the wake-executor can `--resume`). A parked-but-resumable session keeps
 its await; only a truly dead session loses it → flips from false `parked` to honest `ended`.
 

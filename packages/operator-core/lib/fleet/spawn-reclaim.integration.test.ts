@@ -1141,6 +1141,65 @@ describe('reclaimCeilingJamDebits (EI-7204/EI-7197 — periodic ceiling-debit re
     const second = await reclaimCeilingJamDebits(db.sql, WINDOW);
     expect(second.reclaimed).toBe(0);
   });
+
+  // EI-8839 — the SECOND signal for never-streamed rows: a same-host row whose
+  // recorded child process is /proc-confirmed DEAD is an orphaned admission debit
+  // (host/process restart, or the child exited) and must be reclaimed periodically,
+  // not left jamming the ceiling until the next operator restart's boot reconcile.
+  // Preserves EI-8528: a never-streamed row whose child is still ALIVE (a genuine
+  // mid-task cup) is never reclaimed.
+  const ME = hostname();
+
+  it('EI-8839: reclaims a never-streamed same-host row whose child process is CONFIRMED DEAD', async () => {
+    // Exactly the reported jam shape: running, fresh heartbeat (a reused-pid
+    // false-alive keeps it fresh so the orphan sweep never sees it), > min-age,
+    // NULL last_output_at (this deployment's reality), but its recorded child pid
+    // is gone. 9999 is not in alivePids → the injected liveness check reports dead.
+    await insertSpawn('orphan-debit', 'running', 5, { startedAgoSec: 20 * 60, pid: 9999, host: ME });
+    const r = await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['orphan-debit']);
+    expect(r.workspaces).toEqual([WS]);
+    expect(await statusOf('orphan-debit')).toBe('failed');
+    const [row] = await db.sql<{ error_message: string }[]>`
+      SELECT error_message FROM harness_shared.spawned_agents WHERE spawn_id = 'orphan-debit'`;
+    expect(row.error_message).toMatch(/confirmed dead on this host/);
+    expect(row.error_message).toMatch(/EI-8839/);
+  });
+
+  it('EI-8839 preserves EI-8528: a never-streamed same-host row whose child is ALIVE is NOT reclaimed', async () => {
+    await insertSpawn('live-cup', 'running', 5, { startedAgoSec: 20 * 60, pid: 4242, host: ME });
+    alivePids.add(4242); // /proc says the 'invoke-once' child is genuinely still working
+    const r = await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('live-cup')).toBe('running');
+  });
+
+  it('EI-8839: leaves a never-streamed DIFFERENT-host dead-pid row alone (cannot liveness-check locally)', async () => {
+    // Even though pid 9999 is not locally alive, this row belongs to another host —
+    // its live operator owns the verdict (deferred to the orphan sweep / boot reconcile).
+    await insertSpawn('remote-debit', 'running', 5, { startedAgoSec: 20 * 60, pid: 9999, host: 'some-other-box' });
+    const r = await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('remote-debit')).toBe('running');
+  });
+
+  it('EI-8839: leaves a never-streamed same-host row with NO recorded pid alone (unprovable — no guessing)', async () => {
+    await insertSpawn('no-pid', 'running', 5, { startedAgoSec: 20 * 60, host: ME });
+    const r = await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('no-pid')).toBe('running');
+  });
+
+  it('EI-8839: frees the concurrency ceiling — a dead-child never-streamed debit stops counting', async () => {
+    await insertSpawn('orphan-debit', 'running', 5, { startedAgoSec: 20 * 60, pid: 9999, host: ME });
+    await insertSpawn('live-cup', 'running', 5, { startedAgoSec: 20 * 60, pid: 4242, host: ME });
+    alivePids.add(4242);
+    expect(await runningCount()).toBe(2);
+    await reclaimCeilingJamDebits(db.sql, { ...WINDOW, isAlive: fakeAlive });
+    expect(await runningCount()).toBe(1); // only the genuinely-alive cup still holds a slot
+    expect(await statusOf('live-cup')).toBe('running');
+  });
 });
 
 // ————————————————————————————————————————————————————————————————————————————

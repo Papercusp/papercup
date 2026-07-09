@@ -57,7 +57,7 @@ import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolve
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
-import { matchRoutingGateHint } from '../../routing-gate-hints';
+import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
 import { getOrgPg, getLegacyClient } from '@papercusp/db-org';

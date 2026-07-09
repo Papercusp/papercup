@@ -1,7 +1,7 @@
 ---
 title: WI-101 — holepunch-voice-channels follow-through (owner-ack'd 2026-06-10)
 date: 2026-06-12
-author: bee-WI-101-su-xxxx
+author: cup-WI-101-su-xxxx
 status: in-progress
 ---
 

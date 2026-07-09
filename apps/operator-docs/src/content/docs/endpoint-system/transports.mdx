@@ -147,7 +147,7 @@ When a request hits an HTTP plugin route or the MCP transport, the framework rea
 |---|---|---|
 | `workspace` | Always | RLS scoping; `app.workspace_id` GUC |
 | `harness` | Path-resolving tools | Looks up `projectDir` / `stateDir` via `loadHarnessRegistry()` |
-| `role` | Plugin-tool role gate | A canonical `AGENT_ROLES` id (`worker`, `validator`, `scoper`, `architect`, `reviewer`, `debugger`, `operator`, `documenter`, `curator`, `oracle`, `bee`, `queen`, `planner`, `orchestrator`, … through `judge`). The set is **open** — plugins contribute namespaced `<plugin>:<role>` ids (`role-config.ts`). |
+| `role` | Plugin-tool role gate | A canonical `AGENT_ROLES` id (`worker`, `validator`, `scoper`, `architect`, `reviewer`, `debugger`, `operator`, `documenter`, `curator`, `oracle`, `cup`, `mug`, `planner`, `orchestrator`, … through `judge`). The set is **open** — plugins contribute namespaced `<plugin>:<role>` ids (`role-config.ts`). |
 | `run` | All non-worker quotas | `window_key = 'run:<id>'` |
 | `chunk` | Worker quotas | `window_key = 'chunk:<id>'` |
 | `spawn` | Telemetry attribution | Unique per orchestrator spawn |

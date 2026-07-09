@@ -2,7 +2,7 @@
 
 **Author:** su-c9577 (continuing session 10ce449f → EN-2 task-7 verification).
 **For:** su-68c96 (EN-2, holds the boot.ts wiring standby) + su-328af (owns findings-EN-4.md / EN-3).
-**Plan:** `shared-hive-owner-enforcement-2026-06-19` (EN-1/EN-2/EN-4).
+**Plan:** `shared-pot-owner-enforcement-2026-06-19` (EN-1/EN-2/EN-4).
 **Status:** ✅ **APPLIED + VERIFIED BINARY-GREEN** (2026-06-19 ~21:19). The wiring is now
 landed in `boot.ts` (imports 96-100, `rateLimiter` @619, once-per-pass `getHivePolicy` @1098
 past the `!changed` guard, `enforcedApply` @1109, `applyImpl` @1132) and committed. Verified:
@@ -47,7 +47,7 @@ Composed stack, OUTER→INNER: **policy (ban/allowlist/content/takedown) → rat
   accumulate over the op STREAM — must persist across passes).
 - Owner policy is read **once per merge pass** (`getHivePolicy`), NOT per op (a pass applies up to
   `maxOpsPerPass` ops; an async PG read per op is a non-starter).
-- `null` policy ⇒ permissive ⇒ pure passthrough (zero behavior change for an un-policed hive).
+- `null` policy ⇒ permissive ⇒ pure passthrough (zero behavior change for an un-policed pot).
 - Both wrappers skip local (own-log) ops; rate gate fail-closes on an unattributable author when a
   cap is in force.
 
@@ -56,7 +56,7 @@ every ingredient in scope: `ownLog.keyHex`, `admittedIdentities`, `scopedApply` 
 `hiveHomeProjectionSlug`, `opts.workspaceId`, `opts.harnessSlug`.
 
 Confirmed source facts:
-- `getHivePolicy(workspaceId, hiveHomeSlug): Promise<ResolvedHivePolicy|null>` — `lib/hive-policy-store.ts`.
+- `getHivePolicy(workspaceId, hiveHomeSlug): Promise<ResolvedHivePolicy|null>` — `lib/pot-policy-store.ts`.
   `.policy: HivePolicy`, `.policy.rate?: HivePolicyRate` (= EN-2 `RateCaps`).
 - `RateDropInfo = { authorId: number|null; cls: RateClass|'unattributable'; cap: number|null; ... }`.
 - `PolicyEnforcedDropInfo = { reason: PolicyDropReason; author: number|null; ... }`.
@@ -76,7 +76,7 @@ Confirmed source facts:
 import { MemberRateLimiter } from './rate-limiter';
 import { makeRateLimitedApply } from './rate-limit-admission';
 import { makePolicyEnforcedApply } from './policy-admission';
-import { getHivePolicy } from '../../hive-policy-store';
+import { getHivePolicy } from '../../pot-policy-store';
 ```
 
 ### (b) One limiter per booted harness — add right after the `let scopedApply = ...` init (~line 603) / the `admittedIdentities` decl (it just needs to be in the boot fn scope)
@@ -97,7 +97,7 @@ const rateLimiter = new MemberRateLimiter();
 // maxOpsPerPass ops; an async PG read per op is a non-starter — EN-2 contract). Runs
 // only on passes with new ops (past the `!changed` early-return), so an idle harness
 // does zero extra PG work. null ⇒ permissive ⇒ pure passthrough (zero behavior change
-// for an un-policed hive). Scope = the same hive-home slug hive_settings/hive_policy
+// for an un-policed pot). Scope = the same pot-home slug hive_settings/hive_policy
 // demux on (rekey-updated `hiveHomeProjectionSlug`).
 const passPolicy = await getHivePolicy(
   opts.workspaceId,
@@ -113,7 +113,7 @@ const enforcedApply = makePolicyEnforcedApply({
     return id ? { githubUserId: id.githubUserId, githubUsername: id.githubLogin } : null;
   },
   ownLogKeyHex: ownLog.keyHex,
-  // isContentTakenDown: <- wire EN-3's hive-moderation predicate here once it lands.
+  // isContentTakenDown: <- wire EN-3's pot-moderation predicate here once it lands.
   apply: makeRateLimitedApply({
     limiter: rateLimiter,
     ownLogKeyHex: ownLog.keyHex,
@@ -163,9 +163,9 @@ const enforcedApply = makePolicyEnforcedApply({
    a flag (P-007 etc.). Recommend: land UN-gated (inert without an owner policy) **or** behind
    a one-line kill-switch flag for first-land safety. Either is a 1-line change.
 2. **Per-pass PG read** is placed after the `!changed` early-return → idle harnesses pay
-   nothing; an active policed hive pays one indexed PK `SELECT` per ~1s poll. Negligible, but
+   nothing; an active policed pot pays one indexed PK `SELECT` per ~1s poll. Negligible, but
    confirm it matches intent (could cache with a short TTL if a profile ever flags it).
-3. **EN-3 takedown** — `isContentTakenDown` left unset until `hive-moderation.ts` (su-328af's
+3. **EN-3 takedown** — `isContentTakenDown` left unset until `pot-moderation.ts` (su-328af's
    EN-3) lands; wire it then. P-CONTENT (`parseContentPolicy`/`contentAdmits`) already flows
    through `decidePolicyOp`, so it activates automatically when an owner sets `policy.content`.
 

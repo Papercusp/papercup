@@ -1,7 +1,7 @@
 # Brief I — A-003: hive_members / hive_settings reach a joiner (+ revocation)
 
 Owner: su-d2230 (Claude). Lane: substrate fix — the joiner projection binding.
-Disjoint area: `register-all.ts` (binding) · `hive-federation.ts` (gate) · `boot.ts`
+Disjoint area: `register-all.ts` (binding) · `pot-federation.ts` (gate) · `boot.ts`
 (boot + rekey wiring). Coordinated with J (su-46b7a, fed_hlc/D-001) + H (su-dc9db,
 swarm.ts) — no source overlap realized.
 
@@ -28,46 +28,46 @@ story. The complete path is now **landed + teeth-verified via approach (a′)**:
 - **d2230 boot.ts half:** populate `harness_slug` in `buildAnnounce`; a slug-aware
   `onAnnounce` filter (`announceSlugInScope` — admit iff own-slug / rebind-home /
   legacy-absent; new `out_of_scope` reason) so one topic can carry many harnesses'
-  logs WITHOUT cross-merge; re-applied the hive-home re-key (now safe).
+  logs WITHOUT cross-merge; re-applied the pot-home re-key (now safe).
 - **d2230 receive-side rebind** (`register-all` `hiveHomeSlug` + `joinerHiveHomeSlug`
-  + boot rekey) — committed; lands the admitted hive-home ops under the home.
+  + boot rekey) — committed; lands the admitted pot-home ops under the home.
 
 Verification: full hyperbee suite **935 green / 1 skip**; every component teeth-
 verified (announceSlugInScope 6 cases neuter→3 reject RED; the rebind RED/GREEN; the
 re-key 21-test RED-on-neuter); + a **durable in-suite composition proof**
-(`register-all-hive-home-binding.integration.test.ts`: slug-filter gate ↔ rebind apply
+(`register-all-pot-home-binding.integration.test.ts`: slug-filter gate ↔ rebind apply
 over the real apply + full PG). Typecheck clean.
 
 **⚠ UPDATE — the live witness came back RED, not green.** su-9140a's content-matrix on
 a fix-`.deb` (verified to carry my code) shows 28 member-scoped types federate but
 `hive_settings`/`hive_members` still cross in ZERO directions. The code is correct in
 isolation + integration + the binary, but a live runtime gap remains in the
-announce→admit→apply of A's hive-home log. **See the "Live-RED debug log" at the end of
+announce→admit→apply of A's pot-home log. **See the "Live-RED debug log" at the end of
 this file** for the full ruled-out list + the prime suspect. Do NOT mark A-003 green
-until `origin=remote` hive rows appear on the joiner live.
+until `origin=remote` pot rows appear on the joiner live.
 
 ---
 
 ## Root cause (pinned EI-1591 su-963ee; live-confirmed this session)
 
 A joiner boots the **member** harness. The `hive_members`/`hive_settings` projection
-guards demux on the **hive-HOME** slug (`hive-members.ts:94`
-`row.hive_home_slug !== opts.harnessSlug`; `hive-settings.ts:66` likewise), but
+guards demux on the **pot-HOME** slug (`pot-members.ts:94`
+`row.hive_home_slug !== opts.harnessSlug`; `pot-settings.ts:66` likewise), but
 `register-all.ts` built those projections with the **member** slug — so every
-home-grained op the member's merge reads off the shared Hive topic was **dropped**.
+home-grained op the member's merge reads off the shared Pot topic was **dropped**.
 
 **Live confirmation (read-only psql on the running pair, A=17692 owner / B=22267
-joiner):** A's `hive_members`(`hive_home_slug=hello-world-hive`, origin=local) +
-4 `hive_settings`(`harness_slug=hello-world-hive`, origin=local) — and B has only its
+joiner):** A's `hive_members`(`hive_home_slug=hello-world-pot`, origin=local) +
+4 `hive_settings`(`harness_slug=hello-world-pot`, origin=local) — and B has only its
 OWN local rows; **zero `origin=remote`** hive_members/hive_settings on either side.
-Decisively: **both peers use the SAME slug `hello-world-hive`** for these rows — so it
+Decisively: **both peers use the SAME slug `hello-world-pot`** for these rows — so it
 is NOT a slug mismatch, it is the member-vs-home projection binding. The member's
 merge crosses everything else (8/11 types) but drops these two.
 
 **Why the registered remote_hive HOME view doesn't save it:** the join flow
-(`join-hive.ts`) materializes the `remote_hive` home view + re-keys the MEMBERS
+(`join-pot.ts`) materializes the `remote_hive` home view + re-keys the MEMBERS
 (steps 2/2b/2c) but never boots/binds a home-slug apply; the member harness is the
-only thing on the Hive topic reading A's home-log ops, and it was member-bound.
+only thing on the Pot topic reading A's home-log ops, and it was member-bound.
 
 **Revocation half (the S0 escalation):** `boot.ts` seeds/refreshes the joiner's
 admission union from `loadRevokedHivePubkeys(<home>)` ← `hive_members`. With
@@ -78,9 +78,9 @@ is never refused. So A-003 breaks member revocation for joiners (compounds C-001
 
 ## The fix (Move 1 — mechanical, no product decision)
 
-Bind ONLY the two hive-home-grained projections (`hive_members` +
-`hive_settings`) to the **hive-HOME slug** when — and only when — the harness is a
-**joiner's** member (its Hive home is a `remote_hive` view). The already-running
+Bind ONLY the two pot-home-grained projections (`hive_members` +
+`hive_settings`) to the **pot-HOME slug** when — and only when — the harness is a
+**joiner's** member (its Pot home is a `remote_hive` view). The already-running
 member merge then lands the ops it currently drops; `loadRevokedHivePubkeys(<home>)`
 then finds the federated `revoked_pubkeys`, so revocation reaches joiners **for
 free** (no extra code — the existing boot seed/refresh reads the now-present rows).
@@ -94,35 +94,35 @@ Three surgical edits:
    for testing. Both `registerAllHarnessProjections` + `buildHarnessProjectionApply`
    derive from it, so they never drift.
 
-2. **`hive-federation.ts`** — `joinerHiveHomeSlug(ws, slug)`: returns the home slug
-   iff the Hive home is a `remote_hive` (joined) view (the joiner topology), else
+2. **`pot-federation.ts`** — `joinerHiveHomeSlug(ws, slug)`: returns the home slug
+   iff the Pot home is a `remote_hive` (joined) view (the joiner topology), else
    `null`. Uses the SAME `remote_hive` registry signal `resolveHiveSwarmBinding`
    keys the joiner topic on — so the rebind triggers exactly when the joiner topic
-   does. Returns `null` for an OWNED hive's member (the owner home owns the write
+   does. Returns `null` for an OWNED pot's member (the owner home owns the write
    side → an owned member must NOT rebind, or it would double-apply the owner's own
-   rows as `origin='remote'`) and for a non-hive harness.
+   rows as `origin='remote'`) and for a non-pot harness.
 
-3. **`boot.ts`** — resolve the joiner hive-home slug (gated on a `hive` swarm
-   binding so non-hive boots skip the read; fail-open) and thread it into the
+3. **`boot.ts`** — resolve the joiner pot-home slug (gated on a `pot` swarm
+   binding so non-pot boots skip the read; fail-open) and thread it into the
    projection wiring. Resolved at boot **AND re-resolved on `rekey`** — a FIRST join
    boots the member on the gh topic (no `hive_slug` yet → `null`) then re-keys onto
-   the Hive topic AFTER join stamps `hive_slug` + the remote_hive home
-   (`join-hive.ts` 2/2b precede the 2c re-key), so the re-key is where the rebind
-   actually engages; a later restart boots straight onto the Hive topic and engages
+   the Pot topic AFTER join stamps `hive_slug` + the remote_hive home
+   (`join-pot.ts` 2/2b precede the 2c re-key), so the re-key is where the rebind
+   actually engages; a later restart boots straight onto the Pot topic and engages
    it at boot. `scopedApply` became a `let` so `rekey` can rebuild it
    (`mergeOnePass` reads the CURRENT `scopedApply` each pass); an `applyOverride`
    (the rigs) is never rebuilt.
 
 ### Why not route revocation through the `contributors` seam (option b)?
 Narrower (revocation-only) but leaves the member-list/settings gap; option (a)
-closes both with one change and matches the design doc's Move 1 ("finish *hive is
+closes both with one change and matches the design doc's Move 1 ("finish *pot is
 the top-level federation unit*"). Chosen.
 
 ---
 
 ## Tests (teeth-verified: green → neuter → RED → restore → green)
 
-1. **`projections/register-all-hive-home-binding.integration.test.ts`** (real
+1. **`projections/register-all-pot-home-binding.integration.test.ts`** (real
    full-schema PG via `createOrgTestDb`; drives the REAL `buildHarnessProjectionApply`
    dispatch with federated `origin=remote` ops — NOT a hand-bound projection):
    - **RED/GREEN pair:** a member-slug apply with NO `hiveHomeSlug` DROPS the
@@ -130,18 +130,18 @@ the top-level federation unit*"). Chosen.
      `hiveHomeSlug=HOME` the same ops LAND under the home slug.
    - **Revocation:** a federated `revoked_pubkeys` lands where
      `loadRevokedHivePubkeys(<home>)` reads — ∅ without the fix, `['bad-pk']` with it.
-   - **Surgical:** the rebind still demuxes — an op for a DIFFERENT hive home is
+   - **Surgical:** the rebind still demuxes — an op for a DIFFERENT pot home is
      dropped (not blindly accepted).
    - Teeth: neutering `register-all`'s `hiveScoped` → exactly the two GREEN
      assertions go red; the bug + surgical stay green. Confirmed.
 
-2. **`hive-federation.test.ts`** (+3 cases, PG-free, mocked reads) — the rebind
-   GATE: a JOINED (remote_hive) member → the home slug; an OWNED hive's member (even
-   published) → null; a non-hive harness → null. Teeth: neutering the `remote_hive`
+2. **`pot-federation.test.ts`** (+3 cases, PG-free, mocked reads) — the rebind
+   GATE: a JOINED (remote_hive) member → the home slug; an OWNED pot's member (even
+   published) → null; a non-pot harness → null. Teeth: neutering the `remote_hive`
    check (always return home) → the owned-member case goes red. Confirmed.
 
 **Coverage boundary (honest):** every rig (`composition-rig`, `_cross-peer-rig`,
-`hive-two-peer-federation`) boots with `applyOverride` + a `kind:'local'` binding,
+`pot-two-peer-federation`) boots with `applyOverride` + a `kind:'local'` binding,
 so NONE exercise the real boot/rekey→`joinerHiveHomeSlug`→binding wiring (the brief
 flags this: rigs bypass `defaultResolveSwarmBinding`). The binding mechanism and the
 gate are each teeth-verified directly; the WIRING that joins them in boot/rekey is
@@ -152,7 +152,7 @@ proven end-to-end only by the **live witness** (deploy-gated, below).
 - `lib/sync/hyperbee/projections/*` unit: **180/180** green (incl. `register-all.test.ts`).
 - `cross-peer-coordination.integration`: **9/9** green (boot.ts change is rig-safe —
   `applyOverride` + `kind:'local'` skip both the boot gate and the rekey rebind).
-- `hive-members.integration` + `hive-settings-store.integration`: green.
+- `pot-members.integration` + `pot-settings-store.integration`: green.
 - `tsc --noEmit`: my 5 files clean (the repo has many PRE-EXISTING unrelated errors).
 - **NOTE (not mine):** `federated-column-completeness.integration.test.ts` is RED for
   all 12 tables — `Dropped: fed_hlc`. That is **J's mig `314-d001-hlc-ordering-key.sql`**
@@ -171,55 +171,55 @@ it is NOT the receive-side binding.
 B's `inst-b.log`:
 ```
 [A-003] boot hello-world:  swarmBinding.kind=topic  hiveHomeProjectionSlug=<none>
-[A-003] resolve hello-world: joinerHiveHomeSlug=hello-world-hive
-[A-003] rekey hello-world: binding.kind=hive next=hello-world-hive prev=<none> rebind=true
+[A-003] resolve hello-world: joinerHiveHomeSlug=hello-world-pot
+[A-003] rekey hello-world: binding.kind=pot next=hello-world-pot prev=<none> rebind=true
 ```
 `joinerHiveHomeSlug` resolves the right slug (no null, no throw); the rekey rebind
-**fires** and rebuilds the scoped apply with a `hive-members`/`hive-settings`
-projection bound to `hello-world-hive` (verifiable: `buildScopedApply` →
+**fires** and rebuilds the scoped apply with a `pot-members`/`pot-settings`
+projection bound to `hello-world-pot` (verifiable: `buildScopedApply` →
 `buildHarnessProjections({hiveHomeSlug})` → re-registered; `mergeOnePass` re-reads
 `scopedApply` each pass). So the receive-side is correct. (The boot binding is
 `kind=topic` from the stored shared.json topic — the boot-time hook correctly skips
 and the **rekey** path is the one that engages.)
 
 ### The SEND side is broken — the ops never leave the owner (decisive PG evidence, A=19494)
-- A wrote `hive_members`(1) + `hive_settings`(4) under `hello-world-hive`, origin=local. ✓
+- A wrote `hive_members`(1) + `hive_settings`(4) under `hello-world-pot`, origin=local. ✓
 - **A's outbox rows for those tables are `drained_at = NULL` (NEVER drained)** — while
   every MEMBER-slug content table (features/coord/plans under `hello-world`) is
   `drained=t`. The outbox-drain runs `WHERE harness_slug = handle.harnessSlug` per
-  **booted** harness; `drained_at=NULL` ⇒ the `hello-world-hive` harness's drain never ran.
-- **A's hive-HOME harness `hello-world-hive` is NOT on the hive topic** —
+  **booted** harness; `drained_at=NULL` ⇒ the `hello-world-pot` harness's drain never ran.
+- **A's pot-HOME harness `hello-world-pot` is NOT on the pot topic** —
   `inst-a.log` `joined topic` shows only `hello-world` (member) + `spoon-knife` (the
-  2nd hive's member). NEITHER hive-HOME harness federates; only members do.
+  2nd pot's member). NEITHER pot-HOME harness federates; only members do.
 
 ### Root cause (pinned)
-`hive_members`/`hive_settings` are captured to the outbox scoped to the **hive-HOME**
-slug, but **hive-HOME harnesses (`kind:'hive'`) do not federate their own content** —
-they neither drain their outbox nor join the Hive topic; only member harnesses do. So
-hive-home-scoped content **never enters federation**, regardless of any receive-side
-binding. This is su-963ee's DESIGN-doc **Move 1 "increment 2"** (the Hive's
-non-member harnesses draining onto the Hive's peer-log) — declared but unbuilt.
+`hive_members`/`hive_settings` are captured to the outbox scoped to the **pot-HOME**
+slug, but **pot-HOME harnesses (`kind:'pot'`) do not federate their own content** —
+they neither drain their outbox nor join the Pot topic; only member harnesses do. So
+pot-home-scoped content **never enters federation**, regardless of any receive-side
+binding. This is su-963ee's DESIGN-doc **Move 1 "increment 2"** (the Pot's
+non-member harnesses draining onto the Pot's peer-log) — declared but unbuilt.
 
 ### Fix direction (architecture decision — coordinated)
-The precise gap is **EI-681 hitting the hive-HOME harness**: the publish flow
-(`hive-publish-from-repo.ts` `publishListingForMeta` step 7) re-keys each **member**
-onto the Hive topic via `rekeyHarness` (so members federate) but **never the
-hive-HOME harness** (it's repo-less → not in the `members` set). So the hive-home
+The precise gap is **EI-681 hitting the pot-HOME harness**: the publish flow
+(`pot-publish-from-repo.ts` `publishListingForMeta` step 7) re-keys each **member**
+onto the Pot topic via `rekeyHarness` (so members federate) but **never the
+pot-HOME harness** (it's repo-less → not in the `members` set). So the pot-home
 substrate never joins the topic / drains its outbox.
 
-- **(a) Re-key the hive-home in the publish flow** — ATTEMPTED + teeth-verified
+- **(a) Re-key the pot-home in the publish flow** — ATTEMPTED + teeth-verified
   (mirror the member re-key for `meta.hiveId`), but **REVERTED**: dc9db (A-002) found
   the announce channel is keyed by **topic** (`pair({protocol, id: topic})`), so
-  member + hive-home on one topic **collide** (last-writer-wins → risks regressing
-  the *member's* announce, not just stalling the hive-home). (a) cannot ship until →
+  member + pot-home on one topic **collide** (last-writer-wins → risks regressing
+  the *member's* announce, not just stalling the pot-home). (a) cannot ship until →
 - **(a′) Re-key the A-002 announce channel by `(topic, harness)`** [dc9db's domain]
-  → the hive-home can share the member's topic → (a) works → the hive-home federates
+  → the pot-home can share the member's topic → (a) works → the pot-home federates
   epoch/membership content = the **foundation the C-001 RE-KEY (Move 2) depends on**
   (su-9140a). Bigger, but pays off twice.
 - **(b) Re-scope the CAPTURE** (the `capture_substrate_outbox` trigger) so
   hive_members/hive_settings ride a MEMBER harness's log (which already federates +
   which B's member reads). Faster, but a stopgap the re-key undoes; "which member" is
-  ambiguous for multi-member hives; overlaps J's op_hlc outbox work.
+  ambiguous for multi-member pots; overlaps J's op_hlc outbox work.
 
 The (a′ vs b) decision is surfaced to su-9140a (lead) / dc9db (A-002) / su-963ee
 (Move-1). **My receive-side rebind is a required component of EITHER path** and stays
@@ -229,10 +229,10 @@ RE-KEY decision (Move 2)** per su-9140a.
 ## Done / verdict
 **RED — two-sided, send-side dominant.** Receive-side (the joiner projection rebind)
 is **landed + teeth-verified + fires live** — necessary, but insufficient alone. The
-dominant blocker is the **send-side**: hive-HOME harnesses don't federate their
+dominant blocker is the **send-side**: pot-HOME harnesses don't federate their
 content, so hive_members/hive_settings never leave the owner. That is an architecture
 fix (Move 1 "increment 2"), overlapping A-002/su-963ee's Move 1 — handed to the
-hive-federation architecture coordination with the precise spec above. GREEN requires
+pot-federation architecture coordination with the precise spec above. GREEN requires
 the send-side fix + a re-witness (A's rows present on B `origin='remote'`).
 
 ---
@@ -240,27 +240,27 @@ the send-side fix + a re-witness (A's rows present on B `origin='remote'`).
 ## Live-RED debug log (in progress — the green-rig/red-binary gap)
 
 The integrated `.deb` content-matrix is RED: 28 member-scoped content types federate,
-but **hive_settings/hive_members never cross A→B** (the hive-home log). Reframed by
-su-9140a + dc9db: the hive-home **boots + joins the topic + peer_connects + drains its
+but **hive_settings/hive_members never cross A→B** (the pot-home log). Reframed by
+su-9140a + dc9db: the pot-home **boots + joins the topic + peer_connects + drains its
 outbox (6/6)** — so the send side is up; the gap is **announce→admit→apply of A's
-hive-home log on the shared topic**.
+pot-home log on the shared topic**.
 
 **What's RULED OUT (verified):**
 - MY code is correct in the tested binary (bundle grep: `announceSlugInScope`=`(e==null?
   true:e===t||n!=null&&e===n)`; the onAnnounce slug-filter; the rekey is **resolve-then-
   join** — my re-order landed). The re-order did NOT close the RED → not the bug.
 - MY receive-side rebind resolves at runtime: traces show `resolve hello-world:
-  joinerHiveHomeSlug=hello-world-hive` → `rekey hello-world: next=hello-world-hive
+  joinerHiveHomeSlug=hello-world-pot` → `rekey hello-world: next=hello-world-pot
   rebind=true`. So on B's member `home` is correct → the slug-filter would ADMIT A's
-  hive-home frame (`origin==home`). The admit step is NOT the (sole) break.
-- The apply/rebind is integration-GREEN (register-all-hive-home-binding: hive_settings/
+  pot-home frame (`origin==home`). The admit step is NOT the (sole) break.
+- The apply/rebind is integration-GREEN (register-all-pot-home-binding: hive_settings/
   members land under the home origin=remote).
 
-**Prime suspect:** A's hive-home log announce not actually reaching B's member's
+**Prime suspect:** A's pot-home log announce not actually reaching B's member's
 onAnnounce on the live wire (dc9db's (a′) multi-log accumulation), OR a timing race from
-the FIRE-AND-FORGET re-key (A's hive-home joins the topic asynchronously relative to the
+the FIRE-AND-FORGET re-key (A's pot-home joins the topic asynchronously relative to the
 A↔B connection). The added per-frame `[A-003] slug-filter <h>: origin=.. → ADMIT/REJECT`
-trace splits it: if B's member NEVER logs `origin=hello-world-hive`, the announce never
+trace splits it: if B's member NEVER logs `origin=hello-world-pot`, the announce never
 arrived (dc9db); if it logs `→ ADMIT`, the break is downstream (live merge/cursor).
 **Next:** su-9140a's traced re-run (PAPERCUSP_A003_TRACE=1) → read B's slug-filter lines.
 
@@ -270,7 +270,7 @@ Checked the prime suspect: `joinHarnessSwarm` (swarm.ts:442-459) ALREADY handles
 shared-swarm late-join — after `swarm.on('connection', handler)` it iterates
 `swarm.connections` and calls `handler(socket)` for every EXISTING socket, which runs
 `openAnnounceChannel` → registers the harness's entry on the existing muxer's topic
-state + `if (state.opened) flushTopicAnnounces`. So A's hive-home, even joining the topic
+state + `if (state.opened) flushTopicAnnounces`. So A's pot-home, even joining the topic
 LATE (after the A↔B connection), DOES register + flush its announce on the existing
 connection. The comment names this exact case. **So a late-join is not the gap.**
 
@@ -279,12 +279,12 @@ verified) → B's slug-filter ADMITs (home resolves, verified via runtime traces
 opens the remote log → shared-muxer cross-corestore replication (same mechanism the 28
 member types use successfully) → rebind apply (integration-green). The ONE thing not
 yet observed live is **whether B's member's onAnnounce actually receives + ADMITs A's
-hive-home frame** — the `[A-003] slug-filter` trace answers it directly. Reduced
-hypotheses, in order: (1) B never receives the hive-home announce despite the late-join
-handling (a runtime/timing reason the static read can't see — e.g. the hive-home joins
+pot-home frame** — the `[A-003] slug-filter` trace answers it directly. Reduced
+hypotheses, in order: (1) B never receives the pot-home announce despite the late-join
+handling (a runtime/timing reason the static read can't see — e.g. the pot-home joins
 the topic but A↔B never re-pairs the announce channel for the 2nd log; or the fire-and-
-forget re-key boots the hive-home AFTER the matrix has already sampled); (2) B receives
-but the merge doesn't replicate the hive-home's separate corestore log. BLOCKED on
+forget re-key boots the pot-home AFTER the matrix has already sampled); (2) B receives
+but the merge doesn't replicate the pot-home's separate corestore log. BLOCKED on
 su-9140a's traced re-run (coord down + not in /tmp); staying armed.
 
 ---
@@ -310,24 +310,24 @@ buffer+replay fix already resolves:
 3454 [swarm] peer_connected harness=hello-world peer=fb1254fe…
 3455 [swarm] joined topic 3c7255181c2d8a55… harness=hello-world
 3456 [A-003] slug-filter hello-world: origin=hello-world      own=hello-world home=<none> → ADMIT
-3457 [A-003] slug-filter hello-world: origin=hello-world-hive own=hello-world home=<none> → REJECT
-3458 [A-003] resolve hello-world: joinerHiveHomeSlug=hello-world-hive
-3459 [A-003] rekey  hello-world: binding.kind=hive next=hello-world-hive prev=<none> rebind=true
+3457 [A-003] slug-filter hello-world: origin=hello-world-pot own=hello-world home=<none> → REJECT
+3458 [A-003] resolve hello-world: joinerHiveHomeSlug=hello-world-pot
+3459 [A-003] rekey  hello-world: binding.kind=pot next=hello-world-pot prev=<none> rebind=true
 3460 [swarm] peer_connected harness=hello-world peer=fb1254fe…
 3461 [swarm] joined topic 3c7255181c2d8a55… harness=hello-world      ← SAME topic hex as 3455
 ```
 
 **What this rules OUT (previously open suspects):**
-- **dc9db's announce delivery** — `origin=hello-world-hive` DOES appear on B (3457).
-  A's hive-home announce reaches the joiner. Delivery works. ✅ not the gap.
+- **dc9db's announce delivery** — `origin=hello-world-pot` DOES appear on B (3457).
+  A's pot-home announce reaches the joiner. Delivery works. ✅ not the gap.
 - **My admission gate** — the not-in-scope path correctly BUFFERS the frame as
   `pending` (boot.ts:1447, `home==null && origin!=own`), not a hard reject. ✅ correct.
 - **My home resolution** — `resolve` (3458) + `rekey` (3459) both fire and compute
-  `hello-world-hive` correctly. ✅ correct.
+  `hello-world-pot` correctly. ✅ correct.
 
-**The old failure mode (pre-fix):** the joiner boots **directly onto the Hive topic**
-`3c72…` (joiner-resolves-own-topic), receives + buffers A's hive-home announce, then
-join-hive's 2c re-key calls `handle.rekey()` with a `hive` binding deriving **the SAME
+**The old failure mode (pre-fix):** the joiner boots **directly onto the Pot topic**
+`3c72…` (joiner-resolves-own-topic), receives + buffers A's pot-home announce, then
+join-pot's 2c re-key calls `handle.rekey()` with a `pot` binding deriving **the SAME
 topic** `3c72…`, and the rekey `close()`s + re-joins. On THIS pre-fix capture the frame
 was hard-rejected and never replayed. **At HEAD this is already handled**: onAnnounce
 BUFFERS the unresolved-home frame (`pending`) and `retryPendingOnce` (run synchronously
@@ -341,7 +341,7 @@ witnessed GREEN twice on the binary. So the crossing works; nothing here is open
 While analyzing the stale trace I noticed the rekey **unconditionally `close()`s + re-joins
 the swarm even when the derived topic is UNCHANGED** (`3c72…` at both boot-join 3455 and
 rekey-join 3461). That churns a live connection — dropping the in-flight replication of
-A's hive-home core — and forces the buffered frame's core to re-replicate over a fresh
+A's pot-home core — and forces the buffered frame's core to re-replicate over a fresh
 connection. The buffer+replay fix at HEAD compensates (hence GREEN), but su-9140a's note
 that A-003 green needs `DISCOVERY_RETRIES=100` on a loaded box hints the green is
 **timing-fragile**, and this needless same-topic churn is a plausible contributor.
@@ -349,7 +349,7 @@ that A-003 green needs `DISCOVERY_RETRIES=100` on a loaded box hints the green i
 **Proposed (NOT applied):** in `handle.rekey`, when `deriveSwarmTopic(binding)` equals the
 current topic, skip the `previous.close()` + `joinForBinding` and only re-resolve home +
 rebuild `scopedApply` + `retryPendingOnce()` in place (keeps the connection + replication
-alive). A genuine topic change (EI-681 gh→hive) keeps today's close+rejoin. This is
+alive). A genuine topic change (EI-681 gh→pot) keeps today's close+rejoin. This is
 EI-681-aligned ("re-key in place; never tear down replication streams").
 
 **Why I did NOT land it:** (1) A-003 is already green — no live-RED justifies touching

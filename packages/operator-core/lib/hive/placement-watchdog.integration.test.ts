@@ -219,6 +219,21 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(summary.items).toEqual([]);
   });
 
+  it('mig 529: hive_placements accepts the watchdog parked status `blocked` (EI-6563 write path)', async () => {
+    // The parked decision (WI-1439/EI-6563) upserts status 'blocked'. Migration 263's
+    // check constraint did not allow it, so ONE parked unit aborted its hive's WHOLE
+    // reconcile sweep with a constraint violation and reclaimed items were never
+    // re-placed (observed live 2026-07-09, plan pot-auto-loop-working-2026-07-09).
+    // 529 extends the enum; this guards the constraint against drifting out from
+    // under the code's status vocabulary again.
+    await expect(sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-PARKED-BLOCKED-STATUS', ${HIVE}, ${QUEEN},
+              'bee-1', 'blocked', 0, now(), now(), now())`).resolves.toBeDefined();
+  });
+
   it('EI-6650: summarizeOpenPlacements excludes a stale recovering placement once the unit is deliberately parked (blocked/needs-human)', async () => {
     // Mirrors the live-observed bug: a placement row frozen at `recovering` from
     // BEFORE the reconcile-side isUnitParked fix (or simply not yet revisited by a

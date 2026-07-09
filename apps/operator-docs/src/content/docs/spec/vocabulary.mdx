@@ -8,8 +8,8 @@ plans:
   - official-blueprints-cupboard-publish-2026-06-05
   - harness-blueprint-orchestration-2026-06-03
   - blueprint-role-bundling-2026-06-15
-  - hive-blueprint-generalization-2026-06-15
-  - harness-to-hive-ui-terminology-2026-06-15
+  - pot-blueprint-generalization-2026-06-15
+  - harness-to-pot-ui-terminology-2026-06-15
   - autoloop-pot-operator-rebuild-2026-06-05
 ---
 
@@ -28,29 +28,29 @@ plans:
             <td>The role substrate in <code>libs/papercusp/packages/harness/</code>.</td>
           </tr>
           <tr>
-            <td><strong>Hive</strong></td>
-            <td>An operator over a fleet — a root install minted from a <code>kind:&apos;hive&apos;</code> blueprint. Its single judgment layer (the Queen) surveys the blackboard, decides with agency, creates/supervises harnesses, and declares its own next wake. Distinct from a <code>kind:&apos;harness&apos;</code> blueprint, which is a feature pipeline the Hive creates.</td>
-            <td>A coding Hive from the <code>coding</code> blueprint, placing work onto Bees and spinning up <code>coding-factory</code> harnesses per feature.</td>
+            <td><strong>Pot</strong></td>
+            <td>An operator over a fleet — a root install minted from a <code>kind:&apos;pot&apos;</code> blueprint. Its single judgment layer (the Mug) surveys the blackboard, decides with agency, creates/supervises harnesses, and declares its own next wake. Distinct from a <code>kind:&apos;harness&apos;</code> blueprint, which is a feature pipeline the Pot creates.</td>
+            <td>A coding Pot from the <code>coding</code> blueprint, placing work onto Cups and spinning up <code>coding-factory</code> harnesses per feature.</td>
           </tr>
           <tr>
             <td><strong>Blueprint</strong></td>
-            <td>The recipe that superseded <em>template</em> — a declared spine of roles, models, dispatch/triggers, and recommended plugins. <code>kind:&apos;hive&apos;</code> blueprints mint a Hive operator; <code>kind:&apos;harness&apos;</code> blueprints mint a feature pipeline.</td>
-            <td><code>coding</code> (hive), <code>coding-factory</code> (default pipeline harness), <code>coding-solo</code> (single-worker baseline), <code>research</code>.</td>
+            <td>The recipe that superseded <em>template</em> — a declared spine of roles, models, dispatch/triggers, and recommended plugins. <code>kind:&apos;pot&apos;</code> blueprints mint a Pot operator; <code>kind:&apos;harness&apos;</code> blueprints mint a feature pipeline.</td>
+            <td><code>coding</code> (pot), <code>coding-factory</code> (default pipeline harness), <code>coding-solo</code> (single-worker baseline), <code>research</code>.</td>
           </tr>
           <tr>
-            <td><strong>Bee</strong></td>
-            <td>The generic operator-world worker the Queen places ranked work + a brief onto. Carries no pipeline spine and no chunk requirement (decoupled from the pipeline <code>worker</code> guards); the pipeline roles apply only when a Bee explicitly spins up a coding harness.</td>
-            <td>The Queen places a work item onto a Bee, which does the task or spins up a <code>coding-factory</code> harness for it.</td>
+            <td><strong>Cup</strong></td>
+            <td>The generic operator-world worker the Mug places ranked work + a brief onto. Carries no pipeline spine and no chunk requirement (decoupled from the pipeline <code>worker</code> guards); the pipeline roles apply only when a Cup explicitly spins up a coding harness.</td>
+            <td>The Mug places a work item onto a Cup, which does the task or spins up a <code>coding-factory</code> harness for it.</td>
           </tr>
           <tr>
-            <td><strong>Queen</strong></td>
-            <td>The Hive blueprint&apos;s placement-specialist decider — the operator role tuned toward placement: <code>bee:spawn</code>/<code>drain</code> and work-list shaping. Same judgment layer as the operator, dial turned toward fleet management.</td>
-            <td>The Queen decides which Bees run, drains idle ones, and shapes the ranked work list each wake.</td>
+            <td><strong>Mug</strong></td>
+            <td>The Pot blueprint&apos;s placement-specialist decider — the operator role tuned toward placement: <code>cup:spawn</code>/<code>drain</code> and work-list shaping. Same judgment layer as the operator, dial turned toward fleet management.</td>
+            <td>The Mug decides which Cups run, drains idle ones, and shapes the ranked work list each wake.</td>
           </tr>
           <tr>
             <td><strong>Install</strong></td>
             <td>A specific configured harness — its goal, its plugins, its UI, its DB schema. An install is what users actually run.</td>
-            <td>A coding Hive spun up from the <code>coding</code> blueprint. (The original Papercup 5-director autonomous-AI-company demo is retired — preserved-not-active in <code>_retired/papercup</code>; migration 192 dropped the org-simulation tables.)</td>
+            <td>A coding Pot spun up from the <code>coding</code> blueprint. (The original Papercup 5-director autonomous-AI-company demo is retired — preserved-not-active in <code>_retired/papercup</code>; migration 192 dropped the org-simulation tables.)</td>
           </tr>
           <tr>
             <td><strong>Role</strong></td>
@@ -60,7 +60,7 @@ plans:
           <tr>
             <td><strong>Harness template</strong></td>
             <td>A reusable recipe for spinning up a harness. One template → many concrete harness <em>instances</em>; each instance has its own goal, project dir, state. Templates declare their roles, default models, and the plugins they recommend.</td>
-            <td>The shipped coding blueprints: <code>coding</code> (the <code>kind:&apos;hive&apos;</code> Hive operator), <code>coding-factory</code> (the default per-feature pipeline harness), and <code>coding-solo</code> (the single-worker baseline). One user spins up one <em>instance</em> per project. (The retired <code>papercup-org</code> 5-department company is no longer a spinnable template.)</td>
+            <td>The shipped coding blueprints: <code>coding</code> (the <code>kind:&apos;pot&apos;</code> Pot operator), <code>coding-factory</code> (the default per-feature pipeline harness), and <code>coding-solo</code> (the single-worker baseline). One user spins up one <em>instance</em> per project. (The retired <code>papercup-org</code> 5-department company is no longer a spinnable template.)</td>
           </tr>
           <tr>
             <td><strong>Plugin</strong></td>
@@ -69,7 +69,7 @@ plans:
           </tr>
           <tr>
             <td><strong>Marketplace package <code>kind</code></strong></td>
-            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (the repo&rarr;Hive lookup index), <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original <code>template</code>), <code>plugin</code>, <code>tool-pack</code> (the runtime-less code-tool pack — renamed from <code>pack</code> by migration 008; the legacy <code>pack</code> value still parses as an alias), and <code>learning-pack</code> (a distributable set of curated hive learnings).</td>
+            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a five-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (the repo&rarr;Pot lookup index), <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original <code>template</code>), <code>plugin</code>, <code>tool-pack</code> (the runtime-less code-tool pack — renamed from <code>pack</code> by migration 008; the legacy <code>pack</code> value still parses as an alias), and <code>learning-pack</code> (a distributable set of curated pot learnings).</td>
             <td>All five go through the same publish + signing + retraction infrastructure; only the install handler differs. <code>blueprint</code> + <code>learning-pack</code> listings publish pending and surface only after operator approval.</td>
           </tr>
           <tr>

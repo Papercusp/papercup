@@ -114,9 +114,11 @@ export interface ScorecardRow {
  * A rubric wanting different weights passes `overrides` (per-rubric map).
  */
 export const DEFAULT_RATING_SCORE10: Record<string, number> = {
+  exemplary: 10, exceptional: 10,
   pass: 10, healthy: 10, good: 10, yes: 10, green: 10,
   partial: 5, degraded: 5, mixed: 5, warn: 5,
   fail: 0, broken: 0, bad: 0, no: 0, red: 0,
+  severe: 0,
 };
 
 /** Project one categorical rating to 0–10 (null = unmapped/excluded). */
@@ -124,6 +126,29 @@ export function ratingScore10(rating: string, overrides?: Record<string, number>
   const key = rating.toLowerCase();
   const v = overrides?.[key] ?? DEFAULT_RATING_SCORE10[key];
   return v === undefined ? null : v;
+}
+
+/**
+ * The extended-scale re-map: a rubric whose ratingScale carries the EXTENDED
+ * vocabulary (exemplary above pass / severe below fail) spreads its five levels
+ * monotonically — exemplary 10 / pass 8 / partial 5 / fail 2 / severe 0.
+ * A plain pass/partial/fail rubric keeps pass=10/fail=0: pass IS its ceiling,
+ * so its historical projections never shift when OTHER rubrics adopt the
+ * extended scale.
+ */
+export const EXTENDED_SCALE_OVERRIDES: Record<string, number> = { pass: 8, fail: 2 };
+
+/**
+ * Derive the per-rubric score overrides from the rubric's own ratingScale
+ * (scale-aware read-time projection): extended vocabulary present → the
+ * {@link EXTENDED_SCALE_OVERRIDES} re-map; otherwise undefined (default map fits).
+ */
+export function scoreOverridesForScale(
+  ratingScale: readonly string[] | null | undefined,
+): Record<string, number> | undefined {
+  if (!ratingScale?.length) return undefined;
+  const s = ratingScale.map((r) => r.toLowerCase());
+  return s.includes('exemplary') || s.includes('severe') ? EXTENDED_SCALE_OVERRIDES : undefined;
 }
 
 /**
@@ -200,8 +225,9 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
      ORDER BY created_at DESC
      LIMIT ${limit}`;
 
-  // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics).
-  const rubricCriteriaKeys = new Map<string, string[] | null>();
+  // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):
+  // its criterion keys (completeness) + its scale-aware score overrides (projection).
+  const rubricMeta = new Map<string, { keys: string[] | null; overrides?: Record<string, number> }>();
   const out: ScorecardRow[] = [];
 
   for (const row of rows) {
@@ -212,14 +238,15 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     const ratings = observation.ratings;
     const ratedKeys = new Set(Object.keys(ratings));
 
-    if (!rubricCriteriaKeys.has(observation.rubricRef)) {
+    if (!rubricMeta.has(observation.rubricRef)) {
       const rubric = await getRubric(observation.rubricRef);
-      rubricCriteriaKeys.set(
-        observation.rubricRef,
-        rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
-      );
+      rubricMeta.set(observation.rubricRef, {
+        keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
+        overrides: scoreOverridesForScale(rubric?.ratingScale),
+      });
     }
-    const criteriaKeys = rubricCriteriaKeys.get(observation.rubricRef) ?? null;
+    const meta = rubricMeta.get(observation.rubricRef)!;
+    const criteriaKeys = meta.keys;
     const rubricResolved = criteriaKeys !== null;
     const missingKeys = rubricResolved ? criteriaKeys!.filter((k) => !ratedKeys.has(k)) : [];
     // Read the synthesized marker from the RAW payload (not the parsed observation,
@@ -238,7 +265,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       missingKeys,
       rubricResolved,
       synthesized,
-      score10: scorecardScore10(ratings),
+      score10: scorecardScore10(ratings, meta.overrides),
     });
   }
 
@@ -270,8 +297,10 @@ export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'unknown';
  *  are NOT ordered (returns null → excluded from the direction calc) — only the
  *  shared default vocabularies have a meaningful order. */
 const TREND_SEVERITY: Record<string, number> = {
+  exemplary: -1, exceptional: -1,
   healthy: 0, degraded: 1, broken: 2,
   pass: 0, partial: 1, fail: 2,
+  severe: 3,
 };
 function trendSeverity(rating: string): number | null {
   const s = TREND_SEVERITY[rating.toLowerCase()];
@@ -516,6 +545,10 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...rows].reverse();
 
+  // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
+  const trendRubric = await getRubric(filter.rubricRef);
+  const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
+
   const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
@@ -534,7 +567,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       const distribution: Record<string, number> = {};
       for (const s of series) distribution[s.rating] = (distribution[s.rating] ?? 0) + 1;
       const nums = series
-        .map((s) => ratingScore10(s.rating))
+        .map((s) => ratingScore10(s.rating, scoreOverrides))
         .filter((n): n is number => n !== null);
       return {
         criterion,

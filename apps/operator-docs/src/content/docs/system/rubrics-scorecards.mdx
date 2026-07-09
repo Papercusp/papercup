@@ -18,7 +18,7 @@ a rubric.
    noticing a cluster of free-text observations about one characteristic with
    no rubric covering it. Status `proposed`; idempotent on `rubric_id`
    (re-propose updates content).
-2. **Ratify** — `rubrics:ratify` (the Queen/owner gate). An `active` rubric
+2. **Ratify** — `rubrics:ratify` (the Mug/owner gate). An `active` rubric
    becomes the standard every agent grades against.
 3. **Grade** — a rubric-graded observation is an `improvements:capture` with
    `rubricRef` + per-criterion `{ rating, evidence }` — never a bare score.
@@ -50,7 +50,7 @@ A stale scorecard is itself a finding — ideation passes treat it as a prompt
 
 Rubric-graded signal is the quantitative backbone of the
 [observations pipeline](/internal/docs/system/observations) and the
-[scout loop](/internal/docs/system/scout-loop): trends tell the Queen where to
+[scout loop](/internal/docs/system/scout-loop): trends tell the Mug where to
 aim work, and graded evidence makes "this improved" a claim with data behind
 it. Grading **enriches** ideation but never gates it — a low self-grade is
 context for the owner, not a reason to withhold a proposal.

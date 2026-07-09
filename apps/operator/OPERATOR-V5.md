@@ -32,7 +32,7 @@ alias operator='npx tsx ~/papercupai-workspace/papercup/apps/operator/scripts/op
 operator status              # budget, trigger-state fingerprint, top candidates
 operator stats               # 7-day KPIs (JSON, same as the settings panel)
 operator scan [--background] # trigger a scan, stream the SSE result
-operator pause | resume      # toggle background scanning (sentinel-file based)
+operator pause | resume      # toggle background scanning (papercup-file based)
 operator budget [N]          # show or set the daily cap (USD)
 operator candidates          # list standing-approval candidates
 operator approve <cap> <target>  # promote a candidate to STANDING-APPROVE

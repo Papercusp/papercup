@@ -2,7 +2,7 @@
 
 Provider-agnostic deployment abstraction. "Deploying" a harness moves its
 **execution plane** onto a **frame** (a machine the driver controls) that joins
-the harness/Hive as a headless federated peer.
+the harness/Pot as a headless federated peer.
 
 ```ts
 import {

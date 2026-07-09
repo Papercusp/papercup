@@ -9,13 +9,13 @@
 
 > ⚠️ **Draft — numbers pending the pilots.** The protocol and commands below are real;
 > published *results* do not exist until the pilots run (`P-009` per-task floor;
-> `P-032` hive-backlog layer) and the owner signs off (`P-017`). Items that depend on
+> `P-032` pot-backlog layer) and the owner signs off (`P-017`). Items that depend on
 > peer-owned code still shipping are marked **[provisional — confirm against code]**.
 
-> ☕ **What we benchmark (D-010): the Hive, not the per-task harness.** The subject is
-> the **Queen + bee fleet** draining a whole backlog. The per-task `coding` run is the
+> ☕ **What we benchmark (D-010): the Pot, not the per-task harness.** The subject is
+> the **Mug + cup fleet** draining a whole backlog. The per-task `coding` run is the
 > **L1 competence floor** and the atomic unit the fleet places. The **headline baseline
-> is the Queen-ablated fleet** (same fleet, naive FIFO scheduler) — *not* the native
+> is the Mug-ablated fleet** (same fleet, naive FIFO scheduler) — *not* the native
 > harness, which is now the serial floor.
 
 ---
@@ -34,10 +34,10 @@ the comparison is void. Preserve this when you re-run.
 | Layer | Metric | Headline comparison | Pilot |
 |---|---|---|---|
 | **L1 competence** | pass@1 (≥3 seeds, CIs) | papercusp spine vs native / ablation / best-of-N | `P-009` |
-| **L2 throughput** | tasks/\$, wall-clock speedup, drain time, autonomy | Hive vs Queen-ablated fleet | `P-032` |
-| **L3 value-capture** | \$ captured under fixed budget | Hive vs Queen-ablated fleet | `P-032` |
-| **L4 coordination** | MAST duplication / breakdown / misalignment rates | Hive vs published MAS baseline + competitors | `P-032` |
-| **L5 long-horizon** | multi-step sequencing | Hive vs Queen-ablated fleet | follow-on |
+| **L2 throughput** | tasks/\$, wall-clock speedup, drain time, autonomy | Pot vs Mug-ablated fleet | `P-032` |
+| **L3 value-capture** | \$ captured under fixed budget | Pot vs Mug-ablated fleet | `P-032` |
+| **L4 coordination** | MAST duplication / breakdown / misalignment rates | Pot vs published MAS baseline + competitors | `P-032` |
+| **L5 long-horizon** | multi-step sequencing | Pot vs Mug-ablated fleet | follow-on |
 
 ---
 
@@ -102,7 +102,7 @@ Three PG tables back this (`benchmark_run_result`, `benchmark_rollout`,
 
 Both vocabularies are **LOCKED** in `@papercusp/bench-metrics`. L1 (on `TaskRunResult`):
 `papercusp` · `baseline-a-ablation` · `baseline-b-native` · `baseline-c-bestofn`. Fleet
-(on `FleetRunSummary`): `hive` · `queen-ablated` · `native-serial` · `openhands-async` ·
+(on `FleetRunSummary`): `pot` · `mug-ablated` · `native-serial` · `openhands-async` ·
 `crewai` · `langgraph`.
 
 ### L1 per-task arms
@@ -127,12 +127,12 @@ Both vocabularies are **LOCKED** in `@papercusp/bench-metrics`. L1 (on `TaskRunR
 
 | Arm | What it is | Owner |
 |---|---|---|
-| `hive` (treatment) | A **fleet driver** hands the whole task SET to a Hive (Queen places/ranks/evicts; bees run the L1 unit), bound at the pilot via `setBenchHarnessDriver` | `P-022` |
-| `queen-ablated` (**headline baseline**) | Same fleet + same per-task unit, **naive FIFO/round-robin** in place of the Queen | `P-023` |
+| `pot` (treatment) | A **fleet driver** hands the whole task SET to a Pot (Mug places/ranks/evicts; cups run the L1 unit), bound at the pilot via `setBenchHarnessDriver` | `P-022` |
+| `mug-ablated` (**headline baseline**) | Same fleet + same per-task unit, **naive FIFO/round-robin** in place of the Mug | `P-023` |
 | `native-serial` (floor) | One Claude Code session draining the whole backlog serially — the speedup denominator | `P-024` |
 | `openhands-async` / `crewai` / `langgraph` | Competitor orchestrators over the same backlog + grader | `P-028` |
 
-The **`hive` − `queen-ablated`** delta is the Queen's value, measured apples-to-apples.
+The **`pot` − `mug-ablated`** delta is the Mug's value, measured apples-to-apples.
 Each fleet arm emits one **`FleetRunSummary`** per backlog run (`runId`, `suite`, `arm`,
 `tasks`, `resolved`, `wallClockMs`, `costUsd`, `tokensTotal`, `tasksZeroHumanGate`,
 `peakConcurrency?`); the per-task unit it places still emits the locked `TaskRunResult`.
@@ -208,7 +208,7 @@ inter-agent-misalignment · task-verification) and score it with our own judge. 
 
 Report both against the **published MAST baseline** (`MastReport.masBaselineBand` =
 `[0.41, 0.86]` — re-confirm the exact figures verbatim against arXiv 2503.13657 before
-publishing) + the `queen-ablated` fleet + competitors. `P-010` captures the
+publishing) + the `mug-ablated` fleet + competitors. `P-010` captures the
 `CoordEvent[]` into the rollout; `P-026` scores it.
 
 ### M2-local — Harness-Bench (`clawbench_v2`)
@@ -257,7 +257,7 @@ defined in `libs/generic/bench-metrics/src/schema.ts`, imported from the package
 `packages/operator-core/lib/external-bench/reproducibility/` (`P-010`); migration
 `291-benchmark-reproducibility.sql`. The **L2 fleet layer** adds `emitFleetRun` /
 `emitCoordEvents` / `fleetRunIdFor` (`reproducibility/fleet.ts`, migration
-`292-benchmark-hive-layer.sql`); fleet runs read via `evals.fleet` / `evals.coordTrace`.
+`292-benchmark-pot-layer.sql`); fleet runs read via `evals.fleet` / `evals.coordTrace`.
 **Do not redefine.**
 
 ---
@@ -265,7 +265,7 @@ defined in `libs/generic/bench-metrics/src/schema.ts`, imported from the package
 ## Cost accounting (don't cheat this)
 
 Each arm's `tokens_total` (and so `cost_usd`) includes **every** token the system
-spends — every Queen decision, every bee, every hand-off, every coordination message
+spends — every Mug decision, every cup, every hand-off, every coordination message
 (and for best-of-N, all N candidates + the verifier). Under-counting coordination
 overhead is the single easiest way to fake a win; the suite counts it all and reports
 *"net of all coordination overhead, better per dollar."* `cost_usd` is **derived** from
@@ -298,6 +298,6 @@ raw tokens at a pinned `price_table_version`.
 - **Ownership:** `external-bench` blueprint (`P-019`), grader adapter (`P-005`),
   Baseline A (`P-006`), Baseline B (`P-007`), Baseline C (`P-008`), cost/scoring +
   schema (`P-011`), reproducibility + pre-registration (`P-010`), gym firewall (`P-012`),
-  hive-backlog runner (`P-022`), Queen-ablation (`P-023`), native serial floor (`P-024`),
+  pot-backlog runner (`P-022`), Mug-ablation (`P-023`), native serial floor (`P-024`),
   fleet metrics (`P-025`), MAST (`P-026`), SWE-Lancer value (`P-027`), competitors
   (`P-028`), eval views (`P-030`).

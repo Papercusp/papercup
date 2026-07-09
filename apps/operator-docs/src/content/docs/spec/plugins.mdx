@@ -3,7 +3,7 @@ title: 7. Plugin extension points & runtime
 sidebar:
   order: 9
 plans:
-  - plugin-system-hive-port-2026-06-11
+  - plugin-system-pot-port-2026-06-11
   - event-reaction-system-2026-06-04
   - revive-plugin-system-2026-06-04
 documents:
@@ -22,7 +22,7 @@ documents:
       <table>
         <thead><tr><th>Extension point</th><th>What it adds</th><th>Plugin SDK type</th></tr></thead>
         <tbody>
-          <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)</td><td>`PluginHooks`</td></tr>
+          <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-pot-port D-003)</td><td>`PluginHooks`</td></tr>
           <tr><td><strong>Event-reaction rules</strong></td><td>Declarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)</td><td>`PluginReactionRule`</td></tr>
           <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
           <tr><td><strong>API routes</strong></td><td>A Hono sub-app the runtime mounts at `/api/plugins/&lt;name&gt;/`</td><td>`PluginApiRoutes`</td></tr>
@@ -31,7 +31,7 @@ documents:
       </table>
 
       <p>
-        <strong>Retired axes (2026-06-12, plugin-system-hive-port D-004):</strong> <strong>Roles</strong> (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and <strong>Routines</strong> (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
+        <strong>Retired axes (2026-06-12, plugin-system-pot-port D-004):</strong> <strong>Roles</strong> (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and <strong>Routines</strong> (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
       </p>
 
       <p>
@@ -43,7 +43,7 @@ documents:
 ### 7.0 Hooking the pipeline — event-reaction rules
 
       <p>
-        <strong>The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):</strong>
+        <strong>The hybrid hook model (plugin-system-pot-port-2026-06-11 D-003, ratified 2026-06-12):</strong>
         the typed <code>PluginHooks</code> fire-points that survived the run-loop retirement
         (<code>beforeMissionStart</code>, <code>onFeaturePassed</code>, <code>afterDone</code>) are
         <strong>FROZEN</strong> — they keep firing in-process for back-compat but no new typed fire-point will

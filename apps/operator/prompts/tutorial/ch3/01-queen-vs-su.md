@@ -1,9 +1,9 @@
 ---
-id: ch3-01-queen-vs-su
+id: ch3-01-mug-vs-su
 chapter: 3
 order: 1
 title: Automatic work — the Mug vs SU agents
-docSlugs: agent-insights/two-dispatch-models-queen-bee-vs-coding-factory, agent-insights/driving-the-autonomous-hive-loop
+docSlugs: agent-insights/two-dispatch-models-mug-cup-vs-coding-factory, agent-insights/driving-the-autonomous-pot-loop
 ---
 
 ## Brief

@@ -1,8 +1,8 @@
 ---
-title: "Inference admission control loop — gateway priority tiers (sink) + Queen capacity dispatch (source)"
-description: "Under inference scarcity the platform runs a TWO-SIDED admission control loop sharing ONE capacity oracle (the gateway /stats). SINK side (gateway-priority-tiers, GATEWAY_PRIORITY_TIERS): per-tier admission caps + a reserved tier-1 floor so the interactive/Queen/Scout lane is never crowded out by batch bees — it ALLOCATES scarce capacity fairly. SOURCE side (queen-capacity-dispatch, QUEEN_CAPACITY_DISPATCH): the Queen clamps fresh-bee placement to what the pool can sustain (read from the same gateway /stats) so it stops FLOODING a saturated pool with requests that just park/fail — it REDUCES the inflow. Neither CREATES capacity (the durable lever is more accounts); they make scarce capacity go to the right work. Both flag-gated, fail-safe (gateway-unreachable ⇒ no change), byte-identical off."
+title: "Inference admission control loop — gateway priority tiers (sink) + Mug capacity dispatch (source)"
+description: "Under inference scarcity the platform runs a TWO-SIDED admission control loop sharing ONE capacity oracle (the gateway /stats). SINK side (gateway-priority-tiers, GATEWAY_PRIORITY_TIERS): per-tier admission caps + a reserved tier-1 floor so the interactive/Mug/Scout lane is never crowded out by batch cups — it ALLOCATES scarce capacity fairly. SOURCE side (mug-capacity-dispatch, QUEEN_CAPACITY_DISPATCH): the Mug clamps fresh-cup placement to what the pool can sustain (read from the same gateway /stats) so it stops FLOODING a saturated pool with requests that just park/fail — it REDUCES the inflow. Neither CREATES capacity (the durable lever is more accounts); they make scarce capacity go to the right work. Both flag-gated, fail-safe (gateway-unreachable ⇒ no change), byte-identical off."
 discovered: 2026-06-22
-tags: [inference-gateway, admission-control, priority-tiers, queen, capacity-dispatch, placement, backpressure, scarcity, fleet, runbook]
+tags: [inference-gateway, admission-control, priority-tiers, mug, capacity-dispatch, placement, backpressure, scarcity, fleet, runbook]
 status: active
 documents:
   - libs/papercusp-shared/src/resilience/priority-admission.ts
@@ -22,8 +22,8 @@ pool can't serve. Those are the two ends of one control loop, and they read the 
 
 | Side | Flag | Where | What it does |
 |---|---|---|---|
-| **SINK** (allocate) | `GATEWAY_PRIORITY_TIERS` | gateway admission | per-tier in-flight caps + a reserved **tier-1 floor** — queen/scout/overwatch/interactive (tier 1) are never fully crowded out by batch bees (tier 3) |
-| **SOURCE** (reduce inflow) | `QUEEN_CAPACITY_DISPATCH` | Queen `fleet:place_batch` | clamp FRESH-bee placement to what the pool can sustain, so the Queen stops flooding a saturated gateway with bee requests that just park/fail |
+| **SINK** (allocate) | `GATEWAY_PRIORITY_TIERS` | gateway admission | per-tier in-flight caps + a reserved **tier-1 floor** — mug/scout/overwatch/interactive (tier 1) are never fully crowded out by batch cups (tier 3) |
+| **SOURCE** (reduce inflow) | `QUEEN_CAPACITY_DISPATCH` | Mug `fleet:place_batch` | clamp FRESH-cup placement to what the pool can sustain, so the Mug stops flooding a saturated gateway with cup requests that just park/fail |
 
 **Neither creates capacity.** Under total exhaustion even tier-1 gets little; the durable lever is more
 accounts / window resets (an owner action). These just stop the waste and protect the important lane.
@@ -33,13 +33,13 @@ accounts / window resets (an owner action). These just stop the waste and protec
 `PriorityAdmissionQueue` (priority-admission.ts) gains an optional tier layer: per-tier in-flight `caps` + a
 `tier1Reserve` (tier > 1 is refused once `running ≥ maxConcurrent − reserve`, holding that many slots open for
 tier 1). `launch.ts resolvePriorityTiers` reads `GATEWAY_PRIORITY_TIERS`, builds the role→tier map
-(`queen/scout/overwatch/interactive=1, su=2, bee=3, default=4`) + caps + reserve (`ceil(slots × 0.15)`) from
+(`mug/scout/overwatch/interactive=1, su=2, cup=3, default=4`) + caps + reserve (`ceil(slots × 0.15)`) from
 the live AIMD cap, and passes them to the gateway. Requests carry their role in `x-papercusp-priority`
 (stamped at the spawn by `spawn-env`, flag-gated). **Two-process deploy caveat:** the gateway reads the flag
 at startup (needs a restart); the spawn-env tagging rides the OPERATOR deploy — until BOTH are live, requests
 are untagged → tier-4 and the reserve sits idle (harmless when account-limited, not slot-limited).
 
-## SOURCE side — Queen capacity dispatch
+## SOURCE side — Mug capacity dispatch
 
 `fleet/capacity-dispatch.ts`: `computeCapacityHeadroom(beeHeadroom, signal, config)` is PURE — it clamps the
 fresh-spawn headroom by `factor = min(budgetLeg, queueLeg)`, forced to 0 when the pool is `paused`/`rejected`,
@@ -58,7 +58,7 @@ Never strand the fleet on a missing/stale signal.
 
 Gateway `/stats` read `utilization:1, paused:true, rejected:true` (all 8 accounts capped/throttled). The
 oracle threw the right verdict: `headroom 20 → 2` (throttle to the floor — place only a couple of
-high-priority bees instead of flooding the paused pool), `8 → 2`, `2 → 2` (already at floor). With the flag
+high-priority cups instead of flooding the paused pool), `8 → 2`, `2 → 2` (already at floor). With the flag
 OFF or the gateway unreachable it returns the raw headroom unchanged.
 
 ## Gotcha: the two flags activate on DIFFERENT processes

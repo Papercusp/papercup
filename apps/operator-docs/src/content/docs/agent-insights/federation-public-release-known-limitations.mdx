@@ -1,8 +1,8 @@
 ---
 title: "Federation public-release: known limitations + release-criteria gate"
-description: "The honest release calibration for cross-machine p2p shared-hive federation — what is proven LIVE vs proven IN-PROCESS ONLY, the standing known limitations (multi-device identity, coord control-plane local-only, revocation read-cut, LWW divergence, NAT, bg-host leak, 2-server cap), the forceReFold mechanism + its cost, and the explicit public-release checklist (which hardening briefs must be green to ship)."
+description: "The honest release calibration for cross-machine p2p shared-pot federation — what is proven LIVE vs proven IN-PROCESS ONLY, the standing known limitations (multi-device identity, coord control-plane local-only, revocation read-cut, LWW divergence, NAT, bg-host leak, 2-server cap), the forceReFold mechanism + its cost, and the explicit public-release checklist (which hardening briefs must be green to ship)."
 discovered: 2026-06-30
-tags: [federation, shared-hive, p2p, hyperbee, release, known-limitations, release-gate, forceReFold, multi-device, coordination, NAT, rekey, calibration]
+tags: [federation, shared-pot, p2p, hyperbee, release, known-limitations, release-gate, forceReFold, multi-device, coordination, NAT, rekey, calibration]
 status: active
 documents:
   - packages/operator-core/lib/sync/hyperbee/boot.ts
@@ -17,15 +17,15 @@ documents:
   - papercusp-desktop/bin/deb-hetzner-coord-controlplane.sh
   - libs/papercusp/libs/db/sql/446-capture-outbox-wire-ts-from-row-fed-ts.sql
 plans:
-  - shared-hive-public-release-2026-06-22
-  - shared-hive-member-content-federation-2026-06-20
-  - shared-hive-rekey-2026-06-19
+  - shared-pot-public-release-2026-06-22
+  - shared-pot-member-content-federation-2026-06-20
+  - shared-pot-rekey-2026-06-19
 sidebar:
   order: 74
 ---
 
 This is the **honest release calibration** for cross-machine peer-to-peer
-shared-hive federation: what is proven **live** (over real, separate machines on
+shared-pot federation: what is proven **live** (over real, separate machines on
 the public DHT), what is proven **in-process only**, the standing **known
 limitations**, the **`forceReFold` mechanism + its cost**, and the explicit
 **public-release checklist** — which of the federation-release-hardening briefs
@@ -71,8 +71,8 @@ public DHT, three consecutive green runs (run33/34/35):
 - It is a **controlled** result: run32 (production, *no* fix) A→B = FAIL; run33
   (production, *with* fix) A→B = PASS — the only difference was the fix.
 - The working stack: `connection.ts` PG-port crash fix + boot-enum (D-040/D-057)
-  + D-007 link-seed + reader-merge + join-hive rekey (the rig joins via
-  `POST /api/discovery/join-hive`, **not** `/api/harness/join-link`) +
+  + D-007 link-seed + reader-merge + join-pot rekey (the rig joins via
+  `POST /api/discovery/join-pot`, **not** `/api/harness/join-link`) +
   recv-during-rekey owner-admit + the `forceReFold` re-fold.
 
 This is the strongest evidence we have, and it is genuine. But it is a **thin
@@ -106,9 +106,9 @@ scenarios needs a live VM reproduction before it gates a release claim (Briefs
 **Root cause.** The joiner (B) bootstrap-admits the owner's (A's) log during the
 `home=<none>` boot window. It folds A's `hive_members` op through the
 **member-slug-bound** projection, so A's roster row is **dropped** at
-`projections/hive-members.ts` (`row.hive_home_slug !== member slug`) and the merge
+`projections/pot-members.ts` (`row.hive_home_slug !== member slug`) and the merge
 cursor marks the op done. When the rekey rebinds the projections to the
-**hive-home** slug, `retryPendingOnce` only re-*admits* still-pending peers — it
+**pot-home** slug, `retryPendingOnce` only re-*admits* still-pending peers — it
 does **not** re-apply an already-admitted-and-folded op. Result: empty roster →
 A's content defers forever.
 
@@ -117,10 +117,10 @@ A's content defers forever.
 1. A one-shot `let forceReFold = false` flag.
 2. Set `forceReFold = true` in `rekey()`'s rebind block, *after* the
    `hive_members`/`hive_settings` projections rebind from the member slug to the
-   hive-home slug.
+   pot-home slug.
 3. Consumed at the top of the merge pass, under the merge gate: it resets the
    merge cursor (`mergeCursor = createMergeCursor()`) and clears the flag, so the
-   next pass **re-folds every admitted log** through the now-hive-home-bound
+   next pass **re-folds every admitted log** through the now-pot-home-bound
    projection — A's roster row re-applies and the deferred content drains.
 4. Driven by a terminal `mergeNow()` at the end of `rekey()` (this is what makes
    it deterministic, rather than depending on the 5s periodic tick — the latency
@@ -157,13 +157,13 @@ cap). No cliff/leak has been attributed to it yet.
 
 ## Known limitations (standing, document-honestly)
 
-### 1. Coordination control plane — BRIDGED for hive-scoped sends (updated 2026-07-01)
+### 1. Coordination control plane — BRIDGED for pot-scoped sends (updated 2026-07-01)
 The original Brief-7 finding ("a wake fired on A does not wake a live agent on
 B") is **no longer the architecture** — it was the send-side gates, and
 `cross-machine-coord-parity-and-trust-2026-07-01` closed them (Phases 0–2):
-hive-scoped `coord:send` federates with the persisted wake intent and the
+pot-scoped `coord:send` federates with the persisted wake intent and the
 receiving projection fires the wake fan on arrival (EI-279 + P-001 scope
-stamping); wake-on-reply bridges back (P-002); `events:emit {scope:'hive'}`
+stamping); wake-on-reply bridges back (P-002); `events:emit {scope:'pot'}`
 re-fires keys into every machine's await store (P-009); directed required-wakes
 get delivery receipts (`coord:receipt:<msg_id>`, P-008); remote agents are
 addressable via the federated session roster (P-005/P-007). Residual caveats:
@@ -179,7 +179,7 @@ handoffs surface federates on the wire like messages/escalations, but the
 receiver-side P-013 comms-tier gate
 (`sync/hyperbee/projections/coord-message.ts` + `comms-tier-gate.ts`) requires
 the *author* to resolve to tier `steer` — via a **local** `comms_trust_list`
-grant or the owner-signed hive-policy default — before a remote handoff
+grant or the owner-signed pot-policy default — before a remote handoff
 applies; below that it lands in `harness_shared.coord_quarantine`
 (reason `handoff-below-steer`): visible and grantable, never silently applied
 or dropped. There is deliberately **no owner special-case** (steer grants are
@@ -193,15 +193,15 @@ take effect.
 ### 2. Multi-device, same identity
 Federation identity is **per-device keypair**, not per-GitHub-account. The
 substrate is "Model B" — per-device single-writer logs + read-merge
-(`sync/hyperbee/peer-log.ts`), *not* Autobase — so sharing one hive keypair
+(`sync/hyperbee/peer-log.ts`), *not* Autobase — so sharing one pot keypair
 across a user's devices is *safe* (no writer conflict), but **discovery and merge
 are separate gates**: the shared keypair grants topic discovery, while the actual
 merge is gated by membership (`classifySameHiveMember` admits a remote log only
 if its `device_pubkey` is in `hive_members`). So one human on two devices = two
 distinct device pubkeys, each needing its own membership admission.
 
-The dogfood per-owner hive solves the same-owner case (Solution C,
-`harness/papercusp-hive-share.ts`: a per-owner private identity gist + an
+The dogfood per-owner pot solves the same-owner case (Solution C,
+`harness/papercusp-pot-share.ts`: a per-owner private identity gist + an
 owner-signed allowlist policy auto-admits the owner's login), but the
 **two-device data-merge has only been single-box-smoke-verified, never witnessed
 live with a real second device.** The stricter "private key never leaves the
@@ -214,14 +214,14 @@ overwrite) is *obsolete* — admission is now keyed by the stable numeric
 ### 3. Revocation is WRITE + DISCOVERY-plane only (hard read cut-off rides the re-key)
 A revoked/banned member stops being *aggregated* and stops *discovering* new
 content, but `swarm.ts`'s `store.replicate(socket)` serves cores to any topic
-peer, so a removed member (or anyone who got the link while the hive was public)
-keeps **reading** future content until the hive **re-keys** (C-001) or is
+peer, so a removed member (or anyone who got the link while the pot was public)
+keeps **reading** future content until the pot **re-keys** (C-001) or is
 **dissolved**. The in-place re-key epoch **K-cut** that closes the read plane is
-now **enabled by default in production** (`papercusp-hive-rekey` — no longer dark;
-built in `hive-epoch-boot-deps.ts` / `buildHiveRekeyBootDeps`, consumed on the
+now **enabled by default in production** (`papercusp-pot-rekey` — no longer dark;
+built in `pot-epoch-boot-deps.ts` / `buildHiveRekeyBootDeps`, consumed on the
 in-place `rekey()` rebind, never a reboot). But its **cross-machine LIVE proof is
 still pending (Brief 3)** — today only the in-process
-`federation-revocation-kcut-sidecar` + `hive-late-join-epoch-decrypt-federation`
+`federation-revocation-kcut-sidecar` + `pot-late-join-epoch-decrypt-federation`
 tests cover the K-cut. This is a conscious product decision, not a silent hole.
 ([substrate-revocation-model](/internal/docs/agent-insights/substrate-revocation-model).)
 
@@ -254,7 +254,7 @@ key") had **four** distinct sources, all now fixed:
    lose ties deterministically on every peer.
 4. **The recv-ratchet amplifier (mig 460):** `hlc_recv`/`HlcClock.recv` blindly
    adopted any remote `ms`, so ONE absurd-future stamp pinned the clock — and,
-   re-propagated, the whole hive — years ahead, permanently (self-demonstrated
+   re-propagated, the whole pot — years ahead, permanently (self-demonstrated
    live on the dev DB during WI-1672 verification). Both now refuse to ratchet
    past `now + 600s` (2× the D-007 announce-admission window, so every
    legitimately-admitted peer still ratchets); the op's DATA still applies,
@@ -301,12 +301,12 @@ joiner is still in its owner-binding-null admit-refusal window stall
 indefinitely (80+ min observed, survives a cold restart of the member) until
 the **next owner-side append** kicks the replication/fold, after which the
 entire backlog folds within minutes. No data loss; the log is intact. Filed as
-**WI-1534** (unbounded staleness on quiescent hives).
+**WI-1534** (unbounded staleness on quiescent pots).
 
 **MITIGATION SHIPPED (2026-07-09):** root-caused to the WI-752/FED-2 self-heal
 re-peer loop (`joinHarnessSwarm`'s `discovery.refresh()` cadence) settling into
 its 60s SLOW keepalive once the post-join/post-peer-loss FAST window lapses —
-on a QUIESCENT hive (no connection churn to naturally re-arm the fast window)
+on a QUIESCENT pot (no connection churn to naturally re-arm the fast window)
 that is the only thing that ever retries a stalled/zombie/never-attached
 admitted remote's reconnect, so the peer sits at 0 live replicator peers for as
 long as it takes an UNRELATED event (the next owner append) to coincidentally
@@ -370,7 +370,7 @@ would be a security regression).
 member↔member fanout (owner + 2 members, Brief 2) was **not live-coverable**;
 it was proven only via a 2-VM proxy + the in-process matrix, and the owner
 ratified that min-bar (D-006). **UPDATE 2026-07-03 (D-001,
-`shared-hive-p2p-release-readiness-2026-07-03`): Hetzner is gone entirely, and
+`shared-pot-p2p-release-readiness-2026-07-03`): Hetzner is gone entirely, and
 the un-gating path is now LOCAL** — extend the containerized rig to 3 frames
 (`bin/local-matrix.sh` provisions docker frames; the rig lib is already
 N-frame) and run the matrix + membership churn there (that plan's P-010).
@@ -383,7 +383,7 @@ DHT) surfaced **owner(a)→joiner(b) content federation FAILING** in the plain
 join→write path with **no restart**: b's `hive_members` roster stayed EMPTY for
 270s+, so `decideMemberContentOp` dropped every owner op (b→a was fine). Code
 root-cause (su-0f0a4): `forceReFold` (`boot.ts`) fires **exactly once**, on the
-`rekey()`→hive-home rebind, then resets. If the owner's `hive_members` op arrives
+`rekey()`→pot-home rebind, then resets. If the owner's `hive_members` op arrives
 at the joiner **after** that single re-fold (during drain), it is never
 re-applied — it stays dropped-in-the-home-window until a **restart or a later
 rekey**. This is consistent with Brief 5 (restart) PASSING (the restart re-folds)
@@ -391,7 +391,7 @@ and means the earlier "proven live" runs (run33/34/35) may have included a
 restart/rekey rather than exercising the pure no-restart path.
 
 **Root cause (confirmed, su-2c799):** cross-process `opStateCache` staleness under
-`SUBSTRATE_SIDECAR`. `join-hive.ts` (MAIN process) commits the registry
+`SUBSTRATE_SIDECAR`. `join-pot.ts` (MAIN process) commits the registry
 (`remote_hive:true` + `hive_slug`) and invalidates its OWN cache; but `rekey()`
 runs in the substrate SIDECAR process, whose warm `harness_registry` cache (2s
 TTL, kept hot by the sidecar's constant reads) never saw that invalidation → it
@@ -409,16 +409,16 @@ calls `joinerHiveHomeSlug(ws, slug, { fresh: true })`, threaded through
 `loadHarnessRegistry({fresh})` → `readOperatorState({fresh})` to BYPASS the 2s
 cache on this one rare resolve path (hot-path callers keep the cache, so the
 seqscan perf win is preserved). A fresh PG read is guaranteed to see the
-committed write (join-hive awaits the `mutateRegistry` commit before the rekey
+committed write (join-pot awaits the `mutateRegistry` commit before the rekey
 RPC). **Second mechanism (WI-1544, the race bifurcation):** when the deterministic
-join-time binding resolved BEFORE the owner's announce, the joiner's hive-home
+join-time binding resolved BEFORE the owner's announce, the joiner's pot-home
 projection conclusively rejected the owner core on the slug filter
 (origin=member-slug), membership chicken-and-egged, and A→B blacked out
 *permanently* (the rekey rescue was structurally unreachable — no binding
 transition). Fixed in `boot.ts`: `inJoinBootstrapWindow()` reclassifies a
 join-window `binding_invalid` as retryable/buffered instead of
 conclusive-reject, and the `scope_unresolved` buffer holds out-of-scope
-slug-filter frames while the hive-home projection slug is unresolved
+slug-filter frames while the pot-home projection slug is unresolved
 (WI-1544, resolved 2026-07-02; 41 dedicated tests in `boot.test.ts` +
 `announce-channel-multihive.test.ts`).
 
@@ -429,8 +429,8 @@ needed. This limitation is closed.
 ### 10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)
 
 The post-min-bar backlog was given explicit verdicts under
-`shared-hive-p2p-release-readiness-2026-07-03` P-011 (full table:
-`shared-hive-release-testing/RELEASE-READINESS.md`). The standing
+`shared-pot-p2p-release-readiness-2026-07-03` P-011 (full table:
+`shared-pot-release-testing/RELEASE-READINESS.md`). The standing
 ship-with-limitation rows, each with an accountable tracker:
 
 - **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation
@@ -441,7 +441,7 @@ ship-with-limitation rows, each with an accountable tracker:
   ⚠️ **CORRECTION (2026-07-09, P-003 rest-lanes audit):** this row previously stated
   the sanctioned workaround (re-invite as a fresh device/epoch) "must NOT retro-grant
   cut epochs" — **verified FALSE against the actual implementation.**
-  `grantEpochKeysToMembers` (`hive-epoch-boundary-wiring.ts`) is a ratified v1
+  `grantEpochKeysToMembers` (`pot-epoch-boundary-wiring.ts`) is a ratified v1
   correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member —
   including a re-invited fresh device for a previously-revoked identity — is granted
   wrapped keys for **every** epoch `[0..current]`, by design (pinned by
@@ -476,11 +476,11 @@ ship-with-limitation rows, each with an accountable tracker:
   migration (completeness-guard exemption until then).
 - **From-repo joiner incremental federation (WI-971) — RE-VERIFIED 2026-07-09
   (p2p-rest-lanes-2026-07-09 P-005, WI-3542).** The outbox drain is never wired for
-  joined/created hive harnesses (WI-259 was closed as its duplicate); the fix
-  (join-hive.ts step "2c/2c′" — re-key the home-VIEW and every joined member onto
-  the Hive-pubkey topic right after the registry view/identity materialize,
+  joined/created pot harnesses (WI-259 was closed as its duplicate); the fix
+  (join-pot.ts step "2c/2c′" — re-key the home-VIEW and every joined member onto
+  the Pot-pubkey topic right after the registry view/identity materialize,
   instead of waiting for a process restart) was already unit-tested with mocked
-  deps (`join-hive.test.ts`'s "2c′ home-view boot/rekey" block), but the earlier
+  deps (`join-pot.test.ts`'s "2c′ home-view boot/rekey" block), but the earlier
   `resolved` state-flip carried no recorded completion evidence. New evidence:
   `packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts`
   drives `joinHiveAsView` against a REAL, migrated Postgres (env-routed `getOrgPg`,
@@ -557,7 +557,7 @@ exits 0). CI is no longer red on this.
 > green first-poll with no restart (m1783013203).
 >
 > **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of
-> `shared-hive-p2p-release-readiness-2026-07-03`).** Access to the Hetzner
+> `shared-pot-p2p-release-readiness-2026-07-03`).** Access to the Hetzner
 > machines is permanently lost (owner directive); the former "billing lock the
 > owner can clear" framing no longer applies. **The LOCAL rig set is now the
 > proof of record:** (i) the containerized 2-node matrix rig —
@@ -576,8 +576,8 @@ exits 0). CI is no longer red on this.
 - Memories: `a02714f1` (the original "release-ready" decision — *overstated*),
   `f64a176d` (the calibration correction — the honest gaps list), `4d1db206`
   (the `forceReFold` adversarial review record).
-- [shared-hive-federation-diagnosis-toolkit](/internal/docs/agent-insights/shared-hive-federation-diagnosis-toolkit) — the "rosters but no content" runbook.
+- [shared-pot-federation-diagnosis-toolkit](/internal/docs/agent-insights/shared-pot-federation-diagnosis-toolkit) — the "rosters but no content" runbook.
 - [live-2machine-kcut-witness-and-federation-gaps](/internal/docs/agent-insights/live-2machine-kcut-witness-and-federation-gaps) — the live re-key K-CUT witness recipe.
-- [hive-rekey-flip-readiness](/internal/docs/agent-insights/hive-rekey-flip-readiness) — the `papercusp-hive-rekey` flip gate.
+- [pot-rekey-flip-readiness](/internal/docs/agent-insights/pot-rekey-flip-readiness) — the `papercusp-pot-rekey` flip gate.
 - [federation-rig-restart-runbook](/internal/docs/agent-insights/federation-rig-restart-runbook) — recovering the live VM rig.
 - The live rig: `papercusp-desktop/bin/lib/deb-hetzner-rig.sh` (reusable, N-frame) + `papercusp-desktop/bin/lib/federation-asserts.sh` (assertions, incl. negative asserts).

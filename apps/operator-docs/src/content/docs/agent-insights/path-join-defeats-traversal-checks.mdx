@@ -85,7 +85,7 @@ discovery. The `withPlanLock` bug was feeding it a path that an earlier
 > case study that motivated it.
 >
 > **Update (2026-06-25):** `resolvePlanScope` now also collapses concrete
-> non-operator harness slugs to their Hive home before reading
+> non-operator harness slugs to their Pot home before reading
 > `harness_shared.harness_plans`. That changes the plan storage key, not the
 > traversal defense: `getPlanRow` still rejects invalid slugs with
 > `VALID_PLAN_SLUG` before the slug is used as a PG key or synthetic locator.

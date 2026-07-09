@@ -1,9 +1,9 @@
 ---
 title: The unified override-settings backbone (scope → persistence → resolution → contract)
-description: "Every runtime override in Papercusp now conforms to one of two contracts — backend mechanisms self-register as a config-override CONCERN (config:list-overrides / config:reset-overrides are the canonical audit + revoke-all surface), and frontend override UIs unify on <OverridableSetting>. This maps each setting family to its scope (global/workspace/hive/user/session/device), persistence, resolution order, and which contract it conforms to. New override surfaces MUST use both."
+description: "Every runtime override in Papercusp now conforms to one of two contracts — backend mechanisms self-register as a config-override CONCERN (config:list-overrides / config:reset-overrides are the canonical audit + revoke-all surface), and frontend override UIs unify on <OverridableSetting>. This maps each setting family to its scope (global/workspace/pot/user/session/device), persistence, resolution order, and which contract it conforms to. New override surfaces MUST use both."
 discovered: 2026-06-21
 updated: 2026-07-01
-tags: [overrides, config-overrides, settings, scope, resolution-order, registerOverrideConcern, OverridableSetting, sentinel-herald]
+tags: [overrides, config-overrides, settings, scope, resolution-order, registerOverrideConcern, OverridableSetting, papercup-herald]
 status: active
 documents:
   - packages/operator-core/lib/config-overrides/registry.ts
@@ -46,7 +46,7 @@ The fix is **two contracts**, and every override must conform to one of each:
 | --- | --- | --- |
 | **global** | the whole install / process (env, host profile) | boot / env read |
 | **workspace** | one workspace's operator-state row | `activeWorkspaceId()` |
-| **hive** | one hive's `hive_settings` | hive id |
+| **pot** | one pot's `hive_settings` | pot id |
 | **user** | one signed-in user, per-workspace (`user_preferences`, migration 304) | session user × workspace |
 | **session** | a transient "session-now" steer (no TTL, owner-cleared) | the override row |
 | **device** | a client-local value (cpal / MediaDevice ids) | the client |
@@ -65,7 +65,7 @@ Resolution order reads **left → right; the LAST present layer wins.**
 | account-override | session-now account allow/exclude steer | session (workspace-level) | `operator_account_override` | empty (no restriction) → owner steer | `account-session-override` ✅ (P-037) |
 | backup | backup cadence/retention/destination | workspace | `workspace_backup_settings` (own table) | migration DDL defaults → row | **skipped** (see below) |
 | role-grants | runtime role→capability grants (DARK) | workspace | `role_capability_grants` | code BLUEPRINT_ROLE_CAPS → runtime grants (flag-gated) | `role-capability-grants` ✅ (pre-existing) |
-| hive-steering | Queen focus / eligible plans / new-work pause | hive | `hive_settings` | unset → owner steer | `hive-control-policy` ✅ (pre-existing) |
+| pot-steering | Mug focus / eligible plans / new-work pause | pot | `hive_settings` | unset → owner steer | `pot-control-policy` ✅ (pre-existing) |
 | autonomy-policy | auto-implement risk + dispatch limits | workspace | `operator_auto_implement_policy` | DEFAULT → row | `auto-implement-policy` ✅ (pre-existing) |
 | effective-tier-config | opus-budget shed bands | workspace | `operator_opus_budget_policy` | DEFAULT_OPUS_BUDGET_POLICY → row | `opus-budget-policy` ✅ (pre-existing) |
 | scale-policy | account scale-out trigger | workspace | `operator_scale_policy` | DEFAULT → row | `scale-policy` ✅ (pre-existing) |
@@ -74,7 +74,7 @@ Resolution order reads **left → right; the LAST present layer wins.**
 | coord-liveness | reclaim / handoff-TTL / reaper grace | workspace | `operator_coord_liveness_config` | DEFAULT → row | `coord-liveness-config` ✅ (pre-existing) |
 | capability-envelope | per-role envelope overrides (DARK) | workspace | `operator_capability_envelopes` | code envelope → row (flag-gated) | `capability-envelope-overrides` ✅ (pre-existing) |
 | release-checkpoint | green-checkpoint thresholds | workspace | `operator_release_checkpoint_config` | DEFAULT → row | `release-checkpoint-config` ✅ (pre-existing) |
-| gym-gates | per-harness gym promotion gates | workspace/hive | (gym-gates store) | DEFAULT → row | `gym-gates` ✅ (pre-existing) |
+| gym-gates | per-harness gym promotion gates | workspace/pot | (gym-gates store) | DEFAULT → row | `gym-gates` ✅ (pre-existing) |
 | scout-workspace-budget | Scout workspace spend-ceiling override | workspace | `operator_scout_budget` | PG override → env `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD` → `DEFAULT_SCOUT_WORKSPACE_CEILING_USD` | `scout-workspace-budget` ✅ |
 | tool-quota-overrides | per-(tool,role) quota overrides | workspace | `operator_quota_overrides` | baked `rolesQuota[role]` → PG override (D-010 sync cache) | `tool-quota-overrides` ✅ |
 | telemetry-buffer-config | dispatch telemetry-buffer sizing (maxPending/debounceMs/maxBatch) | workspace | `operator_telemetry_buffer_config` | baked `TELEMETRY_BUFFER_DEFAULTS` → PG override (kill-switch `papercusp-telemetry-buffer-config`, default ON) | `telemetry-buffer-config` ✅ |
@@ -82,7 +82,7 @@ Resolution order reads **left → right; the LAST present layer wins.**
 | capability-tier-overrides | per-capability tier reclassification | workspace | `operator_capability_tiers` | baked EXACT table → PG override, **DARK** (`papercusp-auth-config-overrides`) | `capability-tier-overrides` ✅ |
 | auth-config-overrides | §G auth/sandbox dials (full-access bypass roles, scoped-SU safe-tools, sandbox mask/egress) | workspace | `operator_auth_config` | baked literals → PG override, **DARK** (`papercusp-auth-config-overrides`); tighten/replace-only, never widens | `auth-config-overrides` ✅ |
 | flags | runtime flag overrides | workspace | `operator_flag_overrides` | code flag defaults → row | (flag-bus; not yet a concern) |
-| learning-packs | installed pack enable/config | workspace/hive | learning-pack store | pack default → install row | (not yet a concern) |
+| learning-packs | installed pack enable/config | workspace/pot | learning-pack store | pack default → install row | (not yet a concern) |
 
 ### Why two families were skipped (P-037)
 

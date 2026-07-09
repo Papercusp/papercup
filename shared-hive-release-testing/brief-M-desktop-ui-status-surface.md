@@ -1,10 +1,10 @@
-# Brief M — Desktop UI: share-hive flow + the G-004 live status surface
+# Brief M — Desktop UI: share-pot flow + the G-004 live status surface
 
 **Priority: S2 lane.** Desktop E2E via the **Tauri shell** (NEVER `:0`, never a
 browser at `:3055`/`:3070`). Follow `/internal/docs/testing` + `testing/agent-e2e`.
 
 ## Objective
-Drive the **real desktop UI** through the shared-hive user journey and resolve
+Drive the **real desktop UI** through the shared-pot user journey and resolve
 **G-004** — the desktop has **no live peer/sync status surface** (a gap, not a lie):
 implement a minimal one, or document the absence honestly.
 
@@ -13,7 +13,7 @@ The federation logic is proven at the API/PG layer; the **user** experiences it
 through the Tauri UI, and UI-only bugs (handler wired wrong, toast lost, panel
 unmounted, deceptive copy) don't show up in curl/PG checks. G-001/G-002/G-003 are
 honesty bugs at the UI seam; G-004 is a missing surface — a user has no way to see
-"am I connected to peers / is my hive syncing?", which makes every other federation
+"am I connected to peers / is my pot syncing?", which makes every other federation
 guarantee invisible and erodes trust at exactly the moment it matters.
 
 ## Scope / scenarios
@@ -21,14 +21,14 @@ Run a SECOND Tauri instance headless (its own Xvfb `:1xx` + `PAPERCUSP_WORKSPACE
 or reuse the smoke pair's instances if drivable. For each, capture DOM/screenshot
 evidence (silence ≠ success):
 1. **ShareHiveDialog** (`apps/operator/app/harness/ShareHiveDialog.tsx`): share a
-   hive (public + invite); assert the dialog shows the link/secret and an **honest**
+   pot (public + invite); assert the dialog shows the link/secret and an **honest**
    reach signal (consumes G-001's `reachablePeersForHive`, not the global count).
-2. **Discover panel:** lists public hives; **withdrawn hives drop out** on the
+2. **Discover panel:** lists public pots; **withdrawn pots drop out** on the
    30s poll + manual Refresh (G-003); joining navigates correctly.
 3. **Invite-join copy (G-002):** a dead/wrong secret shows honest failure copy, NOT
    an unconditional "appears shortly".
 4. **G-004 live status surface:** design + implement a minimal peer/sync indicator
-   (peer count for the active hive, last-sync / drained state) — OR, if deferred,
+   (peer count for the active pot, last-sync / drained state) — OR, if deferred,
    write the honest "no live sync status yet" documentation + an EI so it's tracked,
    not silently missing.
 

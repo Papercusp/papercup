@@ -4,7 +4,7 @@ sidebar:
   order: 2
 plans:
   - impartial-benchmark-suite-2026-06-15
-  - domain-generic-hive-architecture-2026-06-18
+  - domain-generic-pot-architecture-2026-06-18
 documents:
   - libs/generic/bench-metrics/src/schema.ts
   - libs/generic/bench-metrics/src/mast.ts
@@ -18,8 +18,8 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Draft — numbers pending the pilots; every external figure verified verbatim before publishing">
 This describes the protocol, not results. Every quantitative claim is a
 `TBD-after-pilot` placeholder until the pilots run (`P-009` for the L1 per-task
-floor; `P-032` for the L2–L4 hive-backlog layer). The fleet-layer instruments are now
-grounded in the hive-instrument feasibility spike (**D-011**, the fleet-layer analog
+floor; `P-032` for the L2–L4 pot-backlog layer). The fleet-layer instruments are now
+grounded in the pot-instrument feasibility spike (**D-011**, the fleet-layer analog
 of the L1 grader spike D-008). **Any cited third-party number (the MAST baseline, any
 prior-art figure) MUST be re-confirmed verbatim against its source at publication
 time** — an unsourced quantitative claim in an impartiality doc is a credibility risk
@@ -32,23 +32,23 @@ cost model, contamination handling, the grader interface, the locked run-result
 schema, and how the whole thing maps onto Papercusp machinery. The operational re-run
 steps are in the reproducer README (`benchmarks/README.md`).
 
-## What we benchmark: the Hive, not the per-task harness
+## What we benchmark: the Pot, not the per-task harness
 
-Per the **D-010 reframe**, the subject under test is the **Hive** — the **Queen**
-(autonomous placement, ranking, eviction, and warm-inject) operating over a **bee
+Per the **D-010 reframe**, the subject under test is the **Pot** — the **Mug**
+(autonomous placement, ranking, eviction, and warm-inject) operating over a **cup
 fleet** that shares the coordination substrate (`coord:*`, `locks:*`,
 `work_items:*`, `messages:*`). The per-task `coding` pipeline is a conventional
-multi-role spine and is *not* the differentiator; the Hive's autonomous
+multi-role spine and is *not* the differentiator; the Pot's autonomous
 orchestration over a whole backlog is.
 
 The per-task build wave is **not wasted** — it is the **L1 competence floor** and
 the **atomic unit the fleet places**. Everything the field already agrees on for
 single-task agent evaluation (`Agent = Model + Harness`, hold the model constant,
-vary the system) holds at L1; the Hive layers add the fleet dimension on top.
+vary the system) holds at L1; the Pot layers add the fleet dimension on top.
 
-> Holding the model constant, the **Hive** drains a real backlog of public tasks
+> Holding the model constant, the **Pot** drains a real backlog of public tasks
 > faster, cheaper-per-task, with more value captured under a fixed budget, and with
-> fewer coordination failures than the **same fleet with the Queen ablated** — and
+> fewer coordination failures than the **same fleet with the Mug ablated** — and
 > its per-task floor matches or beats the provider's native harness.
 
 ## The five measurement layers
@@ -56,13 +56,13 @@ vary the system) holds at L1; the Hive layers add the fleet dimension on top.
 | Layer | What it measures | Headline comparison | Instruments |
 |---|---|---|---|
 | **L1 competence floor** | Per-task resolve rate (pass@1) | Papercusp spine vs native harness / ablation / best-of-N | SWE-bench Pro, Terminal-Bench (external graders) |
-| **L2 throughput** | Wall-clock speedup, tasks/\$, backlog-drain time, autonomy (% done with zero human gate) | **Hive vs Queen-ablated fleet** | Whole benchmark as a backlog; speedup is *our own measured* number (no public throughput benchmark exists) |
-| **L3 value-capture** | \$ captured under a **fixed budget** | **Hive vs Queen-ablated fleet** | SWE-Lancer (\$-weighted, built-in grading); UpBench *not currently runnable* (P-029) |
-| **L4 coordination-quality** | Duplication / coordination-breakdown / misalignment rates | Hive vs the published MAS baseline **and** vs other orchestrators | MAST failure taxonomy over rollout + coordination traces |
-| **L5 long-horizon** | Multi-step sequencing under one backlog | Hive vs Queen-ablated fleet | RoadmapBench, SWE-EVO |
+| **L2 throughput** | Wall-clock speedup, tasks/\$, backlog-drain time, autonomy (% done with zero human gate) | **Pot vs Mug-ablated fleet** | Whole benchmark as a backlog; speedup is *our own measured* number (no public throughput benchmark exists) |
+| **L3 value-capture** | \$ captured under a **fixed budget** | **Pot vs Mug-ablated fleet** | SWE-Lancer (\$-weighted, built-in grading); UpBench *not currently runnable* (P-029) |
+| **L4 coordination-quality** | Duplication / coordination-breakdown / misalignment rates | Pot vs the published MAS baseline **and** vs other orchestrators | MAST failure taxonomy over rollout + coordination traces |
+| **L5 long-horizon** | Multi-step sequencing under one backlog | Pot vs Mug-ablated fleet | RoadmapBench, SWE-EVO |
 
 L2–L4 are the differentiated claims; **L4 (coordination quality) is the most
-differentiated *and* most impartial** Hive claim — see [below](#l4-coordination-quality-the-mast-taxonomy).
+differentiated *and* most impartial** Pot claim — see [below](#l4-coordination-quality-the-mast-taxonomy).
 The exact metric names, MAST scoring rubric, and value-capture mechanics are owned by
 `P-025` (throughput), `P-026` (MAST), and `P-027` (value-capture); the instrument
 feasibility (licenses, grading, integration cost) is settled by `P-029` / **D-011**
@@ -78,7 +78,7 @@ the headline pass/fail.
 
 The arm an entity plays is carried verbatim on every run-result row. **Both the L1 and
 the fleet-layer arm vocabularies are now locked** in `@papercusp/bench-metrics`: the L1
-vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated` ·
+vocab on the per-task `TaskRunResult`, the fleet vocab (`pot` · `mug-ablated` ·
 `native-serial` · `openhands-async` · `crewai` · `langgraph`) on the `FleetRunSummary`.
 
 ### L1 per-task arms (locked vocab)
@@ -88,9 +88,9 @@ vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated
   `external-bench` blueprint, which **`extends: coding-factory` and overrides nothing**
   (D-009) — so a fairness auditor confirms *"the benchmark arm is the shipped
   product"* by diffing `external-bench` against `coding-factory` (the shipped default
-  coding-factory spine). Note: after the generic-hive refactor
-  (`domain-generic-hive-architecture-2026-06-18`), `coding` is a generic queen-decider
-  hive parent (`extends: base`) and the classic per-feature-director spine now lives in
+  coding-factory spine). Note: after the generic-pot refactor
+  (`domain-generic-pot-architecture-2026-06-18`), `coding` is a generic mug-decider
+  pot parent (`extends: base`) and the classic per-feature-director spine now lives in
   `coding-factory` — so `coding-factory`, not `coding`, is the parent that diff must
   compare against.
 - **`baseline-a-ablation`** — the spine collapsed to a single worker (`coding-solo`,
@@ -115,13 +115,13 @@ Each emits one `FleetRunSummary` per backlog run (`runId`, `suite`, `arm`, `task
 `resolved`, `wallClockMs`, `costUsd`, `tokensTotal`, `tasksZeroHumanGate`,
 `peakConcurrency?`); the per-task atomic unit stays the locked `TaskRunResult`.
 
-- **`hive`** (treatment) — a **fleet driver** hands the *whole task SET* to a Hive as a
-  backlog; the Queen places/ranks/evicts and bees run the per-task L1 unit. Bound at the
+- **`pot`** (treatment) — a **fleet driver** hands the *whole task SET* to a Pot as a
+  backlog; the Mug places/ranks/evicts and cups run the per-task L1 unit. Bound at the
   pilot via `setBenchHarnessDriver`, exactly like every other arm.
-- **`queen-ablated`** (the **NEW HEADLINE baseline**, P-023) — the *same* bee fleet and
+- **`mug-ablated`** (the **NEW HEADLINE baseline**, P-023) — the *same* cup fleet and
   the *same* per-task unit, but with a **naive FIFO / round-robin scheduler** in place of
-  the Queen's intelligent placement. The delta between the `hive` arm and this baseline
-  **is the Queen's value**, measured apples-to-apples inside our own system. This
+  the Mug's intelligent placement. The delta between the `pot` arm and this baseline
+  **is the Mug's value**, measured apples-to-apples inside our own system. This
   supersedes the headline half of D-002.
 - **`native-serial`** (P-024) — one Claude Code session draining the whole backlog; the
   serial-throughput floor and the **speedup denominator** (`buildHiveReport` computes
@@ -151,15 +151,15 @@ orchestrator changes. Held constant across **every** arm:
   L2, not differentially granted).
 
 **Vary only the harness / orchestrator.** At L1 the variable is the spine; at L2–L5
-the variable is the Queen.
+the variable is the Mug.
 
-<Aside type="note" title="Why the Queen-ablation baseline carries the fairness load">
+<Aside type="note" title="Why the Mug-ablation baseline carries the fairness load">
 There is **no off-the-shelf public fleet-throughput benchmark**. So impartiality at
 L2–L5 rests on four legs: public **tasks**, the benchmark's **external grader** (or
-SWE-Lancer's automated E2E \$ grading), the **Queen-ablation baseline** (an
+SWE-Lancer's automated E2E \$ grading), the **Mug-ablation baseline** (an
 apples-to-apples control *inside our own system* — same fleet, same workers, same
-substrate, only the scheduler differs), and **pre-registration**. The Queen-ablation
-delta is the honest, un-spinnable measure of what the Queen adds.
+substrate, only the scheduler differs), and **pre-registration**. The Mug-ablation
+delta is the honest, un-spinnable measure of what the Mug adds.
 </Aside>
 
 ## The L1 baselines — run all three
@@ -179,7 +179,7 @@ Elicit each baseline's *best* performance — recommended config, full tool acce
 chain-of-thought, retries — and fix "spurious" failures rather than scoring them. The
 tell: **if a baseline fails even easy tasks, the elicitation is broken, not the
 baseline.** Never hand a baseline a worse setup than we'd give ourselves. This applies
-equally to the Queen-ablated fleet and the competitor orchestrators (P-028) — run them
+equally to the Mug-ablated fleet and the competitor orchestrators (P-028) — run them
 to *their* best.
 </Aside>
 
@@ -191,12 +191,12 @@ must never secretly mean *"we spent 7×."*
 - **L1 — iso-budget + cost/accuracy Pareto.** Cap every arm at the same generation
   budget; plot the cost-vs-resolved frontier with **all coordination overhead counted
   inside our own cost number**; match against best-of-N.
-- **L2 — tasks/\$ and \$/task** across the whole backlog drain, Hive vs Queen-ablated
+- **L2 — tasks/\$ and \$/task** across the whole backlog drain, Pot vs Mug-ablated
   fleet.
-- **L3 — value captured under a FIXED budget** — the Queen must turn a budget into
+- **L3 — value captured under a FIXED budget** — the Mug must turn a budget into
   more graded \$ of completed work than the naive scheduler.
 - **The accounting rule everywhere:** `tokens_total` is the **sum over every agent and
-  role** — every Queen decision, every bee, every hand-off, every coordination message
+  role** — every Mug decision, every cup, every hand-off, every coordination message
   (and for best-of-N, all N candidates + the verifier). Under-counting coordination
   overhead is the single easiest way to fake a win, so the suite counts it all and
   reports *"net of all coordination overhead, better per dollar."* `cost_usd` is
@@ -216,21 +216,21 @@ must never secretly mean *"we spent 7×."*
 
 ## L2 throughput & L3 value-capture
 
-**L2 — throughput.** Hand the *whole* benchmark to the Hive as a backlog and measure
+**L2 — throughput.** Hand the *whole* benchmark to the Pot as a backlog and measure
 wall-clock speedup, tasks/\$, backlog-drain time, and autonomy (% completed with zero
-human gate) against the Queen-ablated fleet and the native serial floor (`P-024`).
+human gate) against the Mug-ablated fleet and the native serial floor (`P-024`).
 There is **no public fleet-throughput benchmark**, so the **speedup is our own measured
 number** — impartiality comes from public tasks + the external grader + the
-Queen-ablation control + pre-registration, never from a borrowed throughput score. The
+Mug-ablation control + pre-registration, never from a borrowed throughput score. The
 closest published analog is **OpenHands async / CAID** (arXiv 2603.21489 — dependency-aware
-concurrent branch-and-merge, the nearest prior art to a Queen+fleet); cite it for the
+concurrent branch-and-merge, the nearest prior art to a Mug+fleet); cite it for the
 *architecture*, **not** as a speedup source — it (and the OpenHands async-SWE blog)
 report **accuracy** gains, not throughput multipliers (D-011 §4). It also notes returns
 diminish once agent count exceeds the number of parallelizable subtasks — a result our
 own throughput curve should expect to reproduce.
 
 **L3 — value-capture.** Under a **fixed budget**, measure the dollar value of completed
-work the Queen's placement captures versus the naive scheduler. The runnable instrument
+work the Mug's placement captures versus the naive scheduler. The runnable instrument
 is **SWE-Lancer** (arXiv 2502.12115 — \$1M of real freelance SWE tasks, public,
 **automated end-to-end test grading**), which reuses the L1 M1 diff→grader path
 directly (`P-027`). **UpBench** (arXiv 2511.12306) is proprietary to Upwork and
@@ -239,7 +239,7 @@ economic-framing motivation only, never run (D-011 §1).
 
 ## L4 coordination-quality (the MAST taxonomy)
 
-The most differentiated and most impartial Hive claim — because *someone else* defined
+The most differentiated and most impartial Pot claim — because *someone else* defined
 what counts as a coordination failure. The **MAST failure taxonomy** (arXiv 2503.13657,
 NeurIPS 2025; built from 1,600+ annotated traces across 7 MAS frameworks) defines
 **14 failure modes in 3 categories**: (i) **system-design**, (ii) **inter-agent
@@ -280,9 +280,9 @@ locked in `@papercusp/bench-metrics`):
 We report both against three references: (1) the **published MAS baseline** —
 `MastReport.masBaselineBand` carries the `[0.41, 0.86]` reference band (third-party
 numbers, impartial by construction — re-confirm verbatim before publishing); (2) the
-**Queen-ablated fleet** (our own naive scheduler); (3) **other orchestrators** (P-028 —
+**Mug-ablated fleet** (our own naive scheduler); (3) **other orchestrators** (P-028 —
 `openhands-async` / `crewai` / `langgraph`; with MultiAgentBench/MARBLE, MIT-licensed,
-cited for its topology framing — the Queen as a *learned* scheduler vs MARBLE's fixed
+cited for its topology framing — the Mug as a *learned* scheduler vs MARBLE's fixed
 star/chain/tree/graph topologies).
 
 The Papercusp substrate is built to suppress exactly these failure modes — `locks`
@@ -322,11 +322,11 @@ Defenses, in order of strength:
 ## The benchmark must EXERCISE coordination
 
 The coordination advantage only shows up when there is something to coordinate. A
-single 3-line bug fix exercises neither the spine (L1) nor the Queen (L2–L5). So the
+single 3-line bug fix exercises neither the spine (L1) nor the Mug (L2–L5). So the
 suite is **weighted toward long-horizon, multi-file, decomposable backlogs** (SWE-EVO,
 RoadmapBench, the harder SWE-bench Pro instances) where current single agents are weak
 — e.g. GPT-5.4 + OpenHands gets only ~25% on SWE-EVO. That headroom is where both the
-spine and the Queen should open a visible, attributable gap.
+spine and the Mug should open a visible, attributable gap.
 
 ## Grading — the official harness is arm-agnostic
 
@@ -385,10 +385,10 @@ complete set + a redistribution license.
 
 | Trap | Mitigation |
 |---|---|
-| **Strawman baseline** | L1: native harness (B) + ablation (A) elicited to best (METR). L2–L5: the Queen-ablated fleet + competitor orchestrators, each run to *their* best. |
+| **Strawman baseline** | L1: native harness (B) + ablation (A) elicited to best (METR). L2–L5: the Mug-ablated fleet + competitor orchestrators, each run to *their* best. |
 | **Hidden compute advantage** | Iso-budget (L1) + tasks/\$ (L2) + value-under-fixed-budget (L3); coordination overhead counted in *our* `tokens_total`. |
-| **"Better plumbing" confound** | Ablation (A) and the Queen-ablation baseline hold tools/workers/substrate identical, so any delta is purely orchestration / the Queen. |
-| **No public fleet-throughput benchmark** | Public tasks + external grader + the within-system Queen-ablation control + pre-registration (the honesty caveat above). |
+| **"Better plumbing" confound** | Ablation (A) and the Mug-ablation baseline hold tools/workers/substrate identical, so any delta is purely orchestration / the Mug. |
+| **No public fleet-throughput benchmark** | Public tasks + external grader + the within-system Mug-ablation control + pre-registration (the honesty caveat above). |
 | **Contamination / tune-to-test** | Pre-registration + the gym↔report firewall (statically CI-proven) + fresh/live sets. |
 | **Coordination not exercised** | Long-horizon, decomposable backlog weighting. |
 | **Coordination claims unfalsifiable** | L4 uses the *published* MAST taxonomy + third-party MAS baseline, not a metric we invented. |
@@ -402,9 +402,9 @@ complete set + a redistribution license.
   shared `instantiateBenchHarness` port (`external-bench/run-loop.ts`), arms differ
   only by `blueprintId`. The clone→diff→grade→emit loop is `arm-generation.ts`
   (`P-005`), **not** a blueprint op (D-009 — there is no `external-bench:run`).
-- **The Hive arm + Queen-ablated fleet** — a **fleet driver** over the backlog
+- **The Pot arm + Mug-ablated fleet** — a **fleet driver** over the backlog
   (`P-022` / `P-023`), bound at the pilot via `setBenchHarnessDriver` like every other
-  arm. The Queen ablation swaps intelligent placement for a naive FIFO scheduler.
+  arm. The Mug ablation swaps intelligent placement for a naive FIFO scheduler.
 - **Metrics** — `@papercusp/bench-metrics` (`P-011`): `buildSuiteReport(rows)`,
   `aggregateArm`, `priceRun`; extended with fleet metrics by `P-025` (throughput) and
   `P-026` (MAST).
@@ -472,9 +472,9 @@ The authoritative types live in `@papercusp/bench-metrics` (`TaskRunResult`, `P-
 `libs/generic/bench-metrics/src/schema.ts`, re-exported from the package root) and
 `packages/operator-core/lib/external-bench/reproducibility/` (the rollout + prereg
 records + `emitRollout`, `P-010`), backed by migration
-`291-benchmark-reproducibility.sql`. The L2 hive layer adds `emitFleetRun` /
+`291-benchmark-reproducibility.sql`. The L2 pot layer adds `emitFleetRun` /
 `emitCoordEvents` (`reproducibility/fleet.ts`) and migration
-`292-benchmark-hive-layer.sql`. **Naming:** the schema table above lists the PG column
+`292-benchmark-pot-layer.sql`. **Naming:** the schema table above lists the PG column
 names (snake_case); the `@papercusp/bench-metrics` `TaskRunResult` TS fields are the
 camelCase equivalents (`tokens_total` ↔ `tokensTotal`, `cost_usd` ↔ `costUsd`,
 `generation_status` ↔ `generationStatus`), and `emitRollout` returns

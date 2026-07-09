@@ -15,7 +15,7 @@ harness (display :195+) later. Every new test teeth-verified.
 
 Stood up a real 2-peer packaged pair (the integrated fix-`.deb`: A-001+G-001+G-002+
 A-003, Xvfb :195, A=papercupai owner / B=aviynw joiner, real testnet DHT,
-`hello-world` hive). Baseline federation confirmed (content matrix bidirectional;
+`hello-world` pot). Baseline federation confirmed (content matrix bidirectional;
 the only FAILs are the by-design presence wire + the A-003 hive_members/hive_settings
 send-side gap — out of Brief S scope). Then the crash cycle, verified via each
 peer's embedded PG `origin` column:
@@ -32,8 +32,8 @@ peer's embedded PG `origin` column:
 4. **NO LOSS:** the restarted A's PG held `F-CRASH-1` + `F-CRASH-2` and all 5
    `hello-world` features (WAL recovery, no corruption).
 5. **Topic re-join:** `inst-a.log` shows `[hyperbee-substrate] boot complete booted=2`
-   and `[swarm] joined topic b68823d8… harness=hello-world-hive` **AND**
-   `harness=hello-world` — i.e. the hive-HOME harness re-joined the topic on restart,
+   and `[swarm] joined topic b68823d8… harness=hello-world-pot` **AND**
+   `harness=hello-world` — i.e. the pot-HOME harness re-joined the topic on restart,
    not just the member (the explicit 9140a check).
 6. **Federation RESUMED:** a FRESH post-restart write `F-CRASH-3` on A crossed to B
    `origin='remote'` in ~2 s — the outbox drained + the topic round-trips again. B
@@ -41,7 +41,7 @@ peer's embedded PG `origin` column:
 
 So a real instance + embedded-PG hard-crash mid-federation recovers cleanly:
 persisted state survives (PG WAL recovery), the substrate re-boots + re-joins the
-topic (hive-home + member), the drain resumes, and federation converges with no
+topic (pot-home + member), the drain resumes, and federation converges with no
 loss/dup. HLC-monotone-across-restart is the deterministic #6. All of the brief's
 GREEN criteria are met. (Honest scope note: the embedded PG was hard-killed AS PART
 OF the full-instance crash and WAL-recovered — the narrower "kill ONLY the PG while
@@ -54,7 +54,7 @@ at-least-once dedup, large-backlog catch-up, HLC-survives-restart — all
 teeth-verified) proves the recovery LOGIC, and the **live cycle** (§live) proves it
 on the real packaged binary: a hard instance + embedded-PG SIGKILL mid-federation
 recovers with NO LOSS (PG WAL recovery), the substrate re-boots + re-joins the topic
-(hive-home + member), the outbox/drain resumes, and federation converges (a fresh
+(pot-home + member), the outbox/drain resumes, and federation converges (a fresh
 post-restart write crosses) — with HLC monotone across restart (#6). Every one of
 the brief's GREEN criteria is met. **No S0/S1 found in this dimension.** One honest
 follow-up (not a blocker): a PG-only-kill-with-instance-survival fault was not
@@ -89,7 +89,7 @@ idempotent LWW dedup. Neither half (resume-no-loss, re-append-deduped) is tested
 | 5 | **Long-downtime backfill catch-up** (a large accumulated outbox drains FULLY across multi-pass drain on restart) | deterministic integration | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
 | 6 | **HLC monotonicity across restart** (mig-314 `hlc_clock` survives a reboot → no clock regression → no D-001-class divergence post-restart) | deterministic integration (real PG hlc_clock) | 🟢 GREEN — `crash-recovery-drain.integration.test.ts` |
 | 2 | **Embedded-PG crash → WAL recovery + substrate re-attach** | LIVE (:195) | 🟢 GREEN (via the #3 cycle — see §live) |
-| 3 | **Real instance restart mid-federation → re-boot + re-join topic + re-drain + converge** (the session's actual failure; hive-home must also re-join) | LIVE (:195) | 🟢 GREEN — see §live |
+| 3 | **Real instance restart mid-federation → re-boot + re-join topic + re-drain + converge** (the session's actual failure; pot-home must also re-join) | LIVE (:195) | 🟢 GREEN — see §live |
 
 ## Results so far — #1 + #4 (GREEN, teeth-verified)
 
@@ -166,7 +166,7 @@ no-double-apply net, the same fed_ts guard Brief N modeled).
 ## Gaps / boundaries (so far)
 - Live legs #2/#3 need the real packaged pair on display :195+ (coordinate the live
   harness via coord:* — never `:0`). Independent of A-003/re-key to START, but #3's
-  full assertion (hive-home re-boots onto topic) intersects the A-003 send-side fix
+  full assertion (pot-home re-boots onto topic) intersects the A-003 send-side fix
   (d2230) — will note, not block on it.
 - Not colliding with Brief U (federation observability — su-9140a) or the re-key
   lanes (ed300/313d1).

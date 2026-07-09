@@ -24,9 +24,9 @@ presence) belong to `coord:*`, not to any of these.
 
 ## Where checkpoints actually live
 
-Work-item, loop, and hive checkpoints are rows in
+Work-item, loop, and pot checkpoints are rows in
 **`harness_shared.carry_notes`**, keyed by scope
-(`workitem:<harness>:<WI-id>`, `loop:…`, `hive`) — migration 472. Two traps:
+(`workitem:<harness>:<WI-id>`, `loop:…`, `pot`) — migration 472. Two traps:
 
 - `harness_shared.work_item_checkpoints` was the legacy checkpoint table;
   migration 494 folds any stragglers into `carry_notes` and drops it.

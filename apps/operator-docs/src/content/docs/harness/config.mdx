@@ -35,21 +35,21 @@ declares the *shape*: roles, spine, triggers, gates, dispatch policy, plus
   `aiBackend.default.agentCmd`); a child blueprint adds its own (`coding-factory`'s
   worker/typecheck/debugger params — `debugger.threshold`,
   `parallelWorkers.useChunkLoop` / `.workingStateCheck` / `.replanStrikes` /
-  `.escalateToRole` — are pipeline-only). The current `coding` (hive) blueprint
+  `.escalateToRole` — are pipeline-only). The current `coding` (pot) blueprint
   declares no `params:` block at all, so it inherits only base's universal set.
   Schema: `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`.
 
-:::note[Blueprint-id rename — `coding` is the Hive, `coding-factory` is the pipeline]
+:::note[Blueprint-id rename — `coding` is the Pot, `coding-factory` is the pipeline]
 The 2026-06-18 rename
-(`domain-generic-hive-architecture-2026-06-18`,
+(`domain-generic-pot-architecture-2026-06-18`,
 `libs/papercusp/packages/orchestrator/src/blueprint-aliases.ts`) reassigned three
-ids: `hive → coding`, `generic-hive → work`, and the **old** `coding → coding-factory`.
-So `coding` now names the standard coding **Hive** (Queen + bees), while the
+ids: `pot → coding`, `generic-pot → work`, and the **old** `coding → coding-factory`.
+So `coding` now names the standard coding **Pot** (Mug + cups), while the
 per-feature director pipeline (the strict
 scoper → architect → worker → validator → … → curator spine that carries the
 worker/typecheck/debugger knobs and params) is now `coding-factory`. There is
 deliberately **no `coding → coding-factory` alias** — the `coding` id was reused,
-so a bare `coding` reference resolves to the new Hive; old strict-spine instances
+so a bare `coding` reference resolves to the new Pot; old strict-spine instances
 must be migrated to `extends: coding-factory`. When this page says "the coding
 pipeline" it means `coding-factory`.
 :::
@@ -75,7 +75,7 @@ The overlay is read **best-effort** from the harness's own local
 `<stateDir>/blueprint.yaml` (`loadHarnessKnobs`) — a missing or unparseable
 blueprint yields `null` and an **empty overlay**, never a file fallback. And a
 blueprint that declares **none** of the five residual keys (the current `coding`
-Hive, whose knobs are just `harnessKind` / `requiresRepo`) also produces an empty
+Pot, whose knobs are just `harnessKind` / `requiresRepo`) also produces an empty
 overlay: `readEffectiveConfig` short-circuits and returns the bare instance layer
 unchanged.
 
@@ -103,7 +103,7 @@ The UI for all of this is the schema-driven **harness settings panel**
 [flag](/internal/docs/posthog/feature-flags) — **default ON**): it introspects
 the harness's blueprint `params` and renders controls per declared group — which
 is why a `coding-factory` harness shows the worker/typecheck/debugger controls
-(those params are declared on `coding-factory`), while a `coding` (hive) / `work`
+(those params are declared on `coding-factory`), while a `coding` (pot) / `work`
 / research / gym harness shows its own tunables instead of a hardcoded coding
 form.
 

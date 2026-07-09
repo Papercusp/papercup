@@ -100,7 +100,7 @@ const result = await indirectProbe(target, relays, myRelayProbe, {
 const { evict } = decideEviction(detector.phi(now), result);
 ```
 
-**Eviction is WIRED (P-016, shared-hive-hardening-2026-06-13).** `peer-eviction.ts`
+**Eviction is WIRED (P-016, shared-pot-hardening-2026-06-13).** `peer-eviction.ts`
 (`AuthorityEvictionMonitor`) feeds a φ detector per peer from presence
 observations, and `myRelayProbe` = `transportRelayProbe`: a `peer.probe` authority
 RPC over the SAME `PeerRpcTransport` seam (the option-(c) Hyperswarm transport / the
@@ -156,7 +156,7 @@ All three cutover steps are **wired at boot** (side-effect import of
    the authority). (Handover, D-005: on becoming authority, a peer rebuilds its
    lock set from holders' re-asserted TTL heartbeats within one heartbeat
    interval; the brief gap is fail-open. INSTANT handover is now BUILT — P-015,
-   shared-hive-hardening-2026-06-13: `lock-event-stream.ts` appends each
+   shared-pot-hardening-2026-06-13: `lock-event-stream.ts` appends each
    authority grant/release as a `lock-event` op on the peer-log; a new authority
    reads the merged stream + folds it (`reconstructLockSet`) into
    `LockSetReconstructor.hydrateFromEvents` to reconstruct the live set
@@ -169,13 +169,13 @@ All three cutover steps are **wired at boot** (side-effect import of
 3. ✅ **Domain→harness mapping** — `configureFileLockDomainResolver` /
    `configureFileLockHiveResolver` wired from the harness-registry snapshot.
 
-**ADDRESSING — resolved via option (c)** (shared-hive-hardening-2026-06-13 D-005,
+**ADDRESSING — resolved via option (c)** (shared-pot-hardening-2026-06-13 D-005,
 owner-ratified). The original residual was that `shared_presence` carries identity
 (`device_pubkey`), not a network address, so `HttpPeerRpcTransport` had no
 production address source — and a raw `:3070` URL can't reach a NAT'd desktop
 anyway. The fix does NOT plumb an address: `authority-rpc-swarm-transport.ts`
 multiplexes a `papercusp/authority-rpc` protomux channel onto the EXISTING
-per-harness Hyperswarm connection (mirrors `cross-hive-swarm-transport.ts`; HELLO
+per-harness Hyperswarm connection (mirrors `cross-pot-swarm-transport.ts`; HELLO
 carries `device_pubkey`; the connection IS the address — NAT already traversed).
 `composite-peer-rpc-transport.ts` composes it IN FRONT of the HTTP transport
 (addressable peers: the `PAPERCUSP_AUTHORITY_PEER_ADDRESSES` env map /
@@ -202,7 +202,7 @@ flag ON is the one remaining act, gated on the two-machine serialization proof.
   resolver > env map > null), malformed-env degradation, boot idempotency,
   fail-open through the boot-wired transport.
 - `__tests__/peer-rpc-transport.integration.test.ts` +
-  `__tests__/two-instance-authority.integration.test.ts` (+ the hive variant) —
+  `__tests__/two-instance-authority.integration.test.ts` (+ the pot variant) —
   the generic remote leg over real loopback HTTP: dispatch, serialization at one
   authority store, fail-open when unreachable.
 - `__tests__/file-lock-authority-e2e.integration.test.ts` — the REAL file-lock

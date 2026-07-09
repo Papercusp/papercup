@@ -52,7 +52,7 @@ the failing test name + assertion (or the timeout message).
 - **Timeout class:** `output_tail` is `Test timed out in 60000ms` (or 15000ms). Check the
   file's run history — if it alternates pass/fail with passes near the timeout ceiling
   (e.g. passes 47–59s against a 60s timeout), it's tipping over under load. A trivial
-  43-line test (e.g. `hive/guard.test.ts`) can take 50s purely transforming the
+  43-line test (e.g. `pot/guard.test.ts`) can take 50s purely transforming the
   `await import('./create')` module graph under CPU starvation — the cost is vitest
   transform, not the test body. Bumping the timeout is a losing treadmill (proven on
   `sync-resolver/index.test.ts`: 10s→30s→120s, still timed out at load 90).

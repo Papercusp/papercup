@@ -10,7 +10,7 @@
 
 The authoritative checkpoint verdict (from `harness_shared.pipeline_events`, kind=`green_checkpoint`, against the current staging commit) fails on **exactly one workspace: `@papercusp/operator-core`**. Everything else greens. So this is bounded: **make operator-core's suite pass under the checkpoint's conditions.**
 
-> ⚠️ Do NOT triage off `harness_shared.test_runs` alone — I wasted hours on that. Those rows are hours-stale and mix in the `papercup-checkpoint/` sibling tree + other hives (`@oddsmith/*`). Get the CURRENT red list from the freshest `pipeline_events` verdict or by running operator-core yourself (below).
+> ⚠️ Do NOT triage off `harness_shared.test_runs` alone — I wasted hours on that. Those rows are hours-stale and mix in the `papercup-checkpoint/` sibling tree + other pots (`@oddsmith/*`). Get the CURRENT red list from the freshest `pipeline_events` verdict or by running operator-core yourself (below).
 
 ## Get the authoritative current red list
 

@@ -15,39 +15,39 @@ Verified the integrated sidecar (`serve.mjs`) carries every fix:
 `federation-status`×3 (M/G-004) · `confirmInviteAnnounce`×2 (L/G-002) · luxon (A-001).
 Artifact: `/tmp/integrated-witness/Papercusp_integrated.deb` (686M). 2 real peers
 (A=papercupai owner, B=aviynw joiner), private testnet DHT, Xvfb :158, **no SKIP_INVITE**
-(so the run also tests A-002's 2-hive case). mig-314 auto-applied on each boot.
+(so the run also tests A-002's 2-pot case). mig-314 auto-applied on each boot.
 
 ## Content-matrix result
 
 Pre-flight: both binaries booted (A-001 ✅) · negative-isolation **PASS** · topic-equal
-**PASS** (`9d70c466…`). Owner published a PUBLIC hive (`hello-world-hive`) **and** a
-separate INVITE hive (`spoon-knife-hive`) — the 2-hive A-002 scenario.
+**PASS** (`9d70c466…`). Owner published a PUBLIC pot (`hello-world-pot`) **and** a
+separate INVITE pot (`spoon-knife-pot`) — the 2-pot A-002 scenario.
 
 | Type | backfill | incr A→B | incr B→A |
 |---|---|---|---|
 | features / conversations / messages / threads / thread-posts / plans / plan-parts / item-assignments | ✅ remote | ✅ remote | ✅ remote |
 | presence | ➖ outbox=0 | ➖ outbox=0 | ➖ outbox=0 |
-| hive-settings | ❌ outbox=5 | ❌ outbox=6 | ❌ outbox=1 |
-| hive-members | ❌ outbox=1 | ❌ outbox=1 | ❌ outbox=1 |
+| pot-settings | ❌ outbox=5 | ❌ outbox=6 | ❌ outbox=1 |
+| pot-members | ❌ outbox=1 | ❌ outbox=1 | ❌ outbox=1 |
 
 ## Verdicts per fix
 
-- **A-002 (multi-hive) — ✅ holds (content level).** With BOTH hives present, the 1st
-  hive federated **8/8 types fully bidirectionally** (backfill + incr A→B + incr B→A).
-  Pre-fix, a 2nd hive stalled the 1st's federation entirely → H's announce-channel fix
-  (muxer×topic) works. REMAINING: dc9db witnesses the 2nd (invite) hive's OWN content
-  crossing on the up pair (the matrix only drove the 1st hive's member).
+- **A-002 (multi-pot) — ✅ holds (content level).** With BOTH pots present, the 1st
+  pot federated **8/8 types fully bidirectionally** (backfill + incr A→B + incr B→A).
+  Pre-fix, a 2nd pot stalled the 1st's federation entirely → H's announce-channel fix
+  (muxer×topic) works. REMAINING: dc9db witnesses the 2nd (invite) pot's OWN content
+  crossing on the up pair (the matrix only drove the 1st pot's member).
 
 - **A-003 (member/settings → joiner) — ⚠️ INCONCLUSIVE on this witness (NOT a clean fail).**
   `hive_members`/`hive_settings` did not cross in any phase. BUT the `.deb` carries I's fix,
   and the root-cause evidence shows the test didn't exercise it: on B, `hive_members`=0 rows
   and `hive_settings`=0 rows (zero, incl. local), and B's log has **zero** rekey /
   `bootSingleHarness` / `stepBootFederate` / `joinerHiveHomeSlug` lines on join. The
-  content-matrix's **synthetic `POST /api/discovery/join-hive`** doesn't set B up as a
+  content-matrix's **synthetic `POST /api/discovery/join-pot`** doesn't set B up as a
   `remote_hive`-view member, so I's fix condition ("joiner's member with a remote_hive view")
   never matches. The 8/11 content types DID federate (substrate booted fine) — only the
-  hive-home-scoped projection didn't wire. **DEFINITIVE TEST = the FROM-REPO join**
-  (`two-instance-hive-from-repo-smoke.sh`, which does `POST /api/harness/hives/from-repo`
+  pot-home-scoped projection didn't wire. **DEFINITIVE TEST = the FROM-REPO join**
+  (`two-instance-pot-from-repo-smoke.sh`, which does `POST /api/harness/pots/from-repo`
   first) — owned by K (K-2 leg) on the integrated `.deb`, display :175. That result is I's
   verdict signal: crosses → I's fix works (rig+live), the content-matrix just can't exercise
   it; still fails → genuine A-003 gap → back to d2230.
@@ -62,7 +62,7 @@ separate INVITE hive (`spoon-knife-hive`) — the 2-hive A-002 scenario.
   **revoke-induced**, not a baseline bug (no revoke ops in this run → B→A fully green).
 
 ## Open live legs (on the up pair / fresh displays)
-- **dc9db** — A-002 2nd-hive content crossing (:158 pair).
+- **dc9db** — A-002 2nd-pot content crossing (:158 pair).
 - **K** — from-repo A-003 + K-2 revocation witness (:175, integrated `.deb`).
 - **J** — D-001 live clock-skew convergence (up pair).
 - **M** — ✅ DONE: G-004 live-proven on the integrated `.deb` (reach=1 == B).

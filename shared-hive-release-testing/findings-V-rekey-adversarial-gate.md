@@ -3,7 +3,7 @@
 Co-owned: K (su-313d1) + the wave lead (su-9140a). The acceptance battery that proves
 the C-001 read-cutoff — i.e. that member-remove / go-private make a removed peer
 **unable to read post-boundary content** — to a public-release bar. This is the
-**definition of DONE** for `shared-hive-rekey-2026-06-19`: the plan flips GREEN only
+**definition of DONE** for `shared-pot-rekey-2026-06-19`: the plan flips GREEN only
 when every MUST case below is green (unit + integration + the LIVE on-binary witness),
 with the existing federation + D-001 convergence suites still green.
 
@@ -15,18 +15,18 @@ Status legend: ✅ landed · ◻ pending the op-path wiring (P-004/op-path) · �
 These already exist (35 tests; see findings-REKEY §Status). V relies on them; re-listed
 as the gate's foundation, not re-tested here.
 - ✅ crypto: epoch-key fresh-random + wrap/unwrap (sealed box) + AEAD; op under epoch N+1
-  undecryptable with the epoch-N key (`hive-epoch-crypto-impl.test.ts`, ed300).
+  undecryptable with the epoch-N key (`pot-epoch-crypto-impl.test.ts`, ed300).
 - ✅ boundary core: advance epoch → wrap to REMAINING members; removed excluded; e2e
-  unwrap+decrypt for a remaining member, fail for removed (`hive-epoch-boundary.test.ts`).
-- ✅ provider: re-unwrap + cache; **fail-closed** when no row (`hive-epoch-key-provider.test.ts`).
-- ✅ producer: encrypt under current epoch; epoch N unreadable with N-1 key (`hive-epoch-producer.test.ts`).
-- ✅ projection/store: per-member rows, demux, drain hook (`hive-epoch-keys.test.ts`).
+  unwrap+decrypt for a remaining member, fail for removed (`pot-epoch-boundary.test.ts`).
+- ✅ provider: re-unwrap + cache; **fail-closed** when no row (`pot-epoch-key-provider.test.ts`).
+- ✅ producer: encrypt under current epoch; epoch N unreadable with N-1 key (`pot-epoch-producer.test.ts`).
+- ✅ projection/store: per-member rows, demux, drain hook (`pot-epoch-keys.test.ts`).
 - ✅ ordering buffer: defer content until its epoch-key row applies; removed defers forever (J, `pending-epoch-content.ts`).
 
 ## Tier 1 — the flip (◻ pending wiring): `revoked-swarm.integration.test.ts`
 The existing test **codifies the gap** ("the revoking side's writes still federate to the
 revoked peer" as intended C-001 behavior). The re-key INVERTS it. Flag-gated on
-`papercusp-hive-rekey` so it stays green-as-codified with the flag OFF and asserts the
+`papercusp-pot-rekey` so it stays green-as-codified with the flag OFF and asserts the
 cutoff with the flag ON (no RED-in-CI before the impl).
 - **V-1 (MUST)** flag ON: owner removes member B → owner writes content at the new epoch →
   B replicates the op bytes but **cannot decrypt** (no epoch-(N) wrapped row) → the op is
@@ -67,17 +67,17 @@ On a real-binary 2-instance pair (the inverse of the current C-001 live witness 
 - **V-13 (SHOULD)** go-private live: owner flips public→private → writes content → a peer
   that was on the topic pre-flip cannot read post-flip content. (Inverts Brief E's live E-001.)
 - Method: the from-repo real-join pair on the integrated fix-`.deb` (real device
-  attestations → real wrap targets), `papercusp-hive-rekey` ON; verify via each peer's
+  attestations → real wrap targets), `papercusp-pot-rekey` ON; verify via each peer's
   embedded-PG. Coordinate the live pair with the lead (one pair at a time; never :0).
 
 ## Gate
 GREEN ⟺ V-1..V-5, V-8, V-9, V-11, V-12 (the MUSTs) green + the federation + D-001 suites
 unregressed. SHOULDs (V-6/7/10/13) are strongly desired for the public bar; if any is
 deferred, log it explicitly in the rollup (no silent gap). Until V-12 (the live witness)
-is green on the real binary, shared-hive is NOT public-release-ready on the C-001 axis.
+is green on the real binary, shared-pot is NOT public-release-ready on the C-001 axis.
 
 ## Dependencies
 All of Tier 1–4 are gated on the op-path WIRING (P-004 boundary wiring + J's
 encrypt/decrypt apply-gate + the projection registration), which is itself gated on the
-A-003 (a′) live witness (the hive-home→joiner seam epoch keys ride). Tier 0 is done.
+A-003 (a′) live witness (the pot-home→joiner seam epoch keys ride). Tier 0 is done.
 The wiring + V battery land together once A-003 (a′) is witnessed green.

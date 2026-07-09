@@ -1,10 +1,10 @@
-# Shared-Hive P2P federation — threat model (public-release notes)
+# Shared-Pot P2P federation — threat model (public-release notes)
 
 *Brief C deliverable. Audience: release notes + anyone deciding whether to put
-private data in a shared hive. Written to be HONEST about the trust boundary — what
+private data in a shared pot. Written to be HONEST about the trust boundary — what
 the federation layer defends against, and what it does not.*
 
-The shared-hive feature federates harness/hive state peer-to-peer over Hyperswarm.
+The shared-pot feature federates harness/pot state peer-to-peer over Hyperswarm.
 A public network means **untrusted peers can reach you**. This is the trust model.
 
 ---
@@ -46,13 +46,13 @@ A public network means **untrusted peers can reach you**. This is the trust mode
   *Tests:* `federation-adversarial` (wrong tableTag; "garbage ops cannot wedge"),
   `federation-threat-model` (12-case dispatch battery).
 
-- **Topic secrecy for never-members.** A private hive's swarm topic is
-  `sha256("papercusp-substrate-v1:hive:" + hivePubkey)`. The pubkey travels only in a
+- **Topic secrecy for never-members.** A private pot's swarm topic is
+  `sha256("papercusp-substrate-v1:pot:" + hivePubkey)`. The pubkey travels only in a
   member/invite link, never on the public directory. Someone who knows the GitHub repo
-  id derives a *different* (`gh:`) topic and learns nothing. Invite hives gate on an
+  id derives a *different* (`gh:`) topic and learns nothing. Invite pots gate on an
   `inviteSecret`-derived directory topic, unguessable without the secret.
-  *Tests:* `derive-swarm-topic.test.ts` (hive ≠ gh topic; distinct pubkeys → distinct
-  topics; domain separation), `hive-directory-live-two-peer` (invite no-leak).
+  *Tests:* `derive-swarm-topic.test.ts` (pot ≠ gh topic; distinct pubkeys → distinct
+  topics; domain separation), `pot-directory-live-two-peer` (invite no-leak).
 
 - **Cross-workspace isolation.** `local:` swarm topics embed the workspace id, so the
   same harness slug in two workspaces never shares a topic. Apply-side isolation is
@@ -64,28 +64,28 @@ A public network means **untrusted peers can reach you**. This is the trust mode
 
 ## What the system does NOT defend against (state these in the product)
 
-- **⚠ Reading is not cut off by removing a member or making a hive private (C-001).**
+- **⚠ Reading is not cut off by removing a member or making a pot private (C-001).**
   Revocation and visibility changes control **discovery and WRITES, not READS**.
   Replication is served unconditionally to any peer already connected to the topic;
-  the hive identity (pubkey = topic) is immutable and never re-keys; cores are not
+  the pot identity (pubkey = topic) is immutable and never re-keys; cores are not
   per-member encrypted. Therefore a removed member — or anyone who obtained the pubkey
-  while a hive was public — who keeps the link can reconnect and **continue reading
-  all future content** until the hive is dissolved. The product UI ("Remove member",
+  while a pot was public — who keeps the link can reconnect and **continue reading
+  all future content** until the pot is dissolved. The product UI ("Remove member",
   "Make private") MUST NOT imply more than this. *Demonstrated by `federation-threat-
   model` (read-after-revocation) and asserted as current behavior by
   `revoked-swarm.integration` step 2.* This is the one release-gating decision.
 
-- **Anyone with a valid GitHub identity can READ a hive's content** if they obtain its
+- **Anyone with a valid GitHub identity can READ a pot's content** if they obtain its
   link. Admission is "prove a real GitHub identity," NOT "be a repo collaborator" —
   the federation layer is deliberately open to any real GitHub user; GitHub's PR-merge
-  gate is the real authority over what lands in the canonical repo. Treat hive content
+  gate is the real authority over what lands in the canonical repo. Treat pot content
   as readable by any link-holder with a GitHub account.
 
 - **Caching.** A peer that already replicated content keeps its local copy forever.
   No revocation can claw back data a peer has already read.
 
 - **Self-reported holder pubkey on lease RPC** is defense-in-depth, not anti-spoofing
-  (the envelope is unauthenticated; EI-284 residual). Authority decisions gate on hive
+  (the envelope is unauthenticated; EI-284 residual). Authority decisions gate on pot
   standing, but a determined caller can mis-report its own holder pubkey.
 
 - **Op-size DoS (C-002, S3).** There is no payload-size cap; a huge op replicates and
@@ -96,13 +96,13 @@ A public network means **untrusted peers can reach you**. This is the trust mode
 
 ## Trust assumptions (the one-paragraph version for users)
 
-> A shared hive federates over a public P2P network. Membership and signatures stop
+> A shared pot federates over a public P2P network. Membership and signatures stop
 > *unauthorized writes, forged identities, and replay*, and the topic is secret from
-> anyone who never had the link. **But anyone who holds a hive's link can read its
-> content (now and going forward), and removing a member or switching a hive to
+> anyone who never had the link. **But anyone who holds a pot's link can read its
+> content (now and going forward), and removing a member or switching a pot to
 > private stops their writes and hides it from discovery — it does NOT stop them from
-> reading future content.** Only *dissolving* the hive fully cuts off reads. Do not
-> put data in a shared hive that you could not tolerate every past and present
+> reading future content.** Only *dissolving* the pot fully cuts off reads. Do not
+> put data in a shared pot that you could not tolerate every past and present
 > link-holder reading.
 
 ---
@@ -114,7 +114,7 @@ read-of-private-data path), but the owner has made the conscious trust-model dec
 **option (d): keep write+discovery-plane revocation for this release and make the UI
 honest** — and the honest copy has landed: the "Make private" consequence text
 (`ShareHiveDialog.tsx`) and the revoke explainer (`HowSharingWorks.tsx`) now state that
-members who already joined keep reading new content until the hive is dissolved (the
+members who already joined keep reading new content until the pot is dissolved (the
 trust-assumptions paragraph above is the canonical wording). So the leak is now a
 documented, in-UI limitation rather than a silent one → **YELLOW**. **GREEN** still
 requires actually closing the read path (re-key on boundary change, replication gated

@@ -13,6 +13,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+type FakeDuplex = { on: (ev: string, cb: () => void) => void };
+type BootstrapOutcome = {
+  ok: boolean;
+  namespaces: string[];
+  skippedExisting: string[];
+  skippedSelf: string | null;
+  stderr: string;
+};
+type RegistryProject = { slug: string; hive_slug?: string; self_repo?: boolean };
+
 const {
   loadHarnessRegistryMock,
   listHiveMembersMock,
@@ -22,7 +32,7 @@ const {
   resolveUsageActorMock,
   unsafeMock,
 } = vi.hoisted(() => ({
-  loadHarnessRegistryMock: vi.fn(async () => ({
+  loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
     projects: [{ slug: 'shop-hive', hive_slug: 'shop-hive', self_repo: true }],
   })),
   listHiveMembersMock: vi.fn(async (_ws: string, _hive: string) => [
@@ -36,7 +46,9 @@ const {
   // pre-destroyed stub duplex) — a mock that ignored the duplex entirely
   // would falsely "pass" while masking an unhandled-error crash the real
   // call chain no longer has.
-  bootstrapFromPeerMock: vi.fn(async (_repoPath: string, duplex: { on: (ev: string, cb: () => void) => void }, _opts: Record<string, unknown>) => {
+  bootstrapFromPeerMock: vi.fn<
+    (repoPath: string, duplex: FakeDuplex, opts: Record<string, unknown>) => Promise<BootstrapOutcome>
+  >(async (_repoPath, duplex, _opts) => {
     duplex.on('error', () => {});
     return {
       ok: true,
@@ -69,15 +81,14 @@ import { runBootstrapLeg } from './git-sync-action';
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
 
-type FakeDuplex = { on: (ev: string, cb: () => void) => void };
 /** Every override below must keep consuming the duplex (attach a no-op
  *  'error' listener) exactly like the real fetchOverDuplex chain does now —
  *  see the vi.hoisted() comment above for why. */
-const bootstrapOutcome = (result: Record<string, unknown>) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>) => {
+const bootstrapOutcome = (result: BootstrapOutcome) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>): Promise<BootstrapOutcome> => {
   duplex.on('error', () => {});
   return result;
 };
-const bootstrapRejection = (err: Error) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>) => {
+const bootstrapRejection = (err: Error) => async (_repoPath: string, duplex: FakeDuplex, _opts: Record<string, unknown>): Promise<BootstrapOutcome> => {
   duplex.on('error', () => {});
   throw err;
 };

@@ -3,7 +3,7 @@ title: 8. UI plugins — Backstage-DI + Figma-iframe hybrid
 sidebar:
   order: 10
 plans:
-  - plugin-system-hive-port-2026-06-11
+  - plugin-system-pot-port-2026-06-11
   - event-reaction-system-2026-06-04
   - revive-plugin-system-2026-06-04
   - fumadocs-to-starlight-2026-05-20
@@ -307,7 +307,7 @@ export default defineManifest({
         <em>Implemented (current state):</em> the WordPress-style
         <code>PluginHookBus</code> (<code>addAction</code> /
         <code>addFilter</code> / <code>emit</code>) was <strong>retired
-        2026-06-12</strong> (<code>plugin-system-hive-port-2026-06-11</code>
+        2026-06-12</strong> (<code>plugin-system-pot-port-2026-06-11</code>
         P-006 / D-003: zero registered consumers, and its invocations bypassed
         dispatch — no audit, no fire-time capability gating). It is gone from
         the loader, SDK, and host; the only surviving reference is a
@@ -476,7 +476,7 @@ api.hooks.addAction('task.passed', handler, { priority: 20 });  // runs last
 // If A says { runs: 'after:billing' }, B runs first → final = '[A] [B] do thing'
 ```
 
-      <p><strong>Cancellation.</strong> A filter handler that returns the special sentinel `api.hooks.STOP` halts the chain — no further handlers run, the current value is returned. Useful for veto patterns (e.g., a security plugin blocks a task title containing PII). For preventing actions from happening at all, see §8.5.2 (Guard hooks).</p>
+      <p><strong>Cancellation.</strong> A filter handler that returns the special papercup `api.hooks.STOP` halts the chain — no further handlers run, the current value is returned. Useful for veto patterns (e.g., a security plugin blocks a task title containing PII). For preventing actions from happening at all, see §8.5.2 (Guard hooks).</p>
 
       
 

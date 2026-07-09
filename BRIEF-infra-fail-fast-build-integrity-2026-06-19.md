@@ -81,8 +81,8 @@ benign musl/darwin/win/freebsd/arm alternates the loader never selects. Lone rea
   revisions/outbox, drop legacy, add CHECK. Biggest single write-amplification lever.
 - **C2 [P0, REGRESSED] `substrate_outbox` regrowth.** 27,883 rows / 114 MB, **22,145 undrained** —
   the prior 100 GB-incident table (`perf-sweep-outbox-bloat`). GC deletes only drained rows; drain
-  is stalled (newest row today), driven by the xbench 400+ ephemeral-hive fleet + dual-slug. Drain
-  backlog + GC-undrained-after-TTL + prune dead xbench/contract-test hive slugs.
+  is stalled (newest row today), driven by the xbench 400+ ephemeral-pot fleet + dual-slug. Drain
+  backlog + GC-undrained-after-TTL + prune dead xbench/contract-test pot slugs.
 - **C3 [P1, NEW] `coord_event_log` retention + autovacuum.** 138 MB heap, `last_autovacuum=NULL`,
   no cap on `escalations` (19 k) / `messages` (17 k). Add VACUUM + autovacuum tuning + retention.
 - **C4 [P2, NEW] `plan_revisions` cap.** 20,315 rows / 405 MB full snapshots; cap N recent + delta/gzip.
@@ -91,7 +91,7 @@ benign musl/darwin/win/freebsd/arm alternates the loader never selects. Lone rea
 
 ## Theme D — Smaller reliability — NEW
 
-- **D1 [P1] DBOS `durable-spawn fire papercup-hive/queen → HTTP 400`** recurs (4 workflow fails/2 h,
+- **D1 [P1] DBOS `durable-spawn fire papercup-pot/mug → HTTP 400`** recurs (4 workflow fails/2 h,
   each exhausting 3 retries). Fix the spawn payload/endpoint AND classify 4xx as non-retryable
   (stop retrying a 400 three times).
 - **D2 [P2] Cluster workers bind `0.0.0.0:3070`** (not loopback) under `PAPERCUSP_CLUSTER=2` —

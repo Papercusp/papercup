@@ -15,7 +15,7 @@ plans:
 The METR HCAST / time-horizon suite (`suite='metr-hcast'`, plan
 `benchmark-suite-metr-hcast-2026-06-17`) measures a **50%/80%-task-completion time
 horizon** — the human-expert task LENGTH at which an arm succeeds 50%/80% of the time —
-and reports the **hive-vs-single-opus horizon LIFT**. Integration lives under
+and reports the **pot-vs-single-opus horizon LIFT**. Integration lives under
 `packages/operator-core/lib/external-bench/metr-hcast-*` + the horizon math in
 `libs/generic/bench-metrics/src/horizon.ts`.
 
@@ -74,7 +74,7 @@ hierarchical-bootstrap CIs. The golden test reproduces METR's published Claude 3
 
 **The absolute horizon on ~18 short tasks is illustrative-only — NOT
 leaderboard-comparable** (METR's real fit spans seconds→8 h over ~170 tasks). The
-**defensible headline is the LIFT**: treatment (hive, `papercusp`) vs baseline
+**defensible headline is the LIFT**: treatment (pot, `papercusp`) vs baseline
 (single-opus, `baseline-a-ablation`) on the SAME tasks cancels much of the subset bias
 (plan D-002). `buildMetrHcastReport` emits three mandatory caveats — surface them.
 

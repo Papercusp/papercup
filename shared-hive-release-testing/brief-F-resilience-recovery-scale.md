@@ -5,12 +5,12 @@ scale pass on the packaged app is a bonus).
 
 ## Objective
 Prove the substrate survives the messy real world: peers come and go, restart,
-fall far behind, and hives grow large — without losing data, hanging, or
+fall far behind, and pots grow large — without losing data, hanging, or
 exhausting resources.
 
 ## Why it matters for release
-A public hive runs for weeks across flaky networks and restarts. Convergence in a
-clean test says nothing about a peer that was offline for a day or a hive with
+A public pot runs for weeks across flaky networks and restarts. Convergence in a
+clean test says nothing about a peer that was offline for a day or a pot with
 20k ops.
 
 ## Scope / scenarios
@@ -21,7 +21,7 @@ clean test says nothing about a peer that was offline for a day or a hive with
    resumes from its watermark, re-derives the SAME topic (the join-side topic
    persistence — ties to the topic-split fix), and converges. The revocation set
    re-seeds correctly on boot (`revocation` G8: re-admission requires reboot).
-3. **Long-offline catch-up / backfill:** a peer offline while the hive advances
+3. **Long-offline catch-up / backfill:** a peer offline while the pot advances
    far, then rejoins → full backfill, idle thereafter (`merge-scaling`: idle ticks
    must decode/apply NOTHING after backfill — extend to a large gap).
 4. **Outbox drain under failure:** kill the sidecar mid-drain; on restart the
@@ -30,7 +30,7 @@ clean test says nothing about a peer that was offline for a day or a hive with
 5. **Stale-reclaim / dead-letter:** the stuck-item recovery (migration 307 /
    `requeue_count`) — a dead holder's item requeues up to the cap then dead-letters
    to `blocked` with `requeue_count >= cap`. Prove the bound holds (no poison loop).
-6. **Scale:** a hive with many peers (8–16) and large history (10k–50k ops);
+6. **Scale:** a pot with many peers (8–16) and large history (10k–50k ops);
    measure merge time (must stay ~idle when nothing changed), memory, and
    convergence time. Many work-items / many conversations.
 7. **Schema-version skew:** two peers on adjacent `known_schema_versions` — does

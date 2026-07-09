@@ -12,7 +12,7 @@ EVERY live witness so far ran 2 instances on ONE box with
 `PAPERCUSP_DHT_BOOTSTRAP=127.0.0.1:<port>` (a private testnet DHT, loopback
 transport). That bypasses the entire real-world transport: DHT discovery on the
 public network, NAT hole-punching/hairpinning, WAN RTT, packet loss, and asymmetric
-partitions. A public hive's whole value is cross-machine — and Brief F explicitly
+partitions. A public pot's whole value is cross-machine — and Brief F explicitly
 left WAN-latency convergence (C3) out of scope. Loopback green ≠ internet green.
 
 ## Scope / scenarios

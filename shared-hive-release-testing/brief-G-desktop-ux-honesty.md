@@ -1,10 +1,10 @@
 # Brief G — Desktop UX flows & honesty
 
 **Priority: S1 lane.** Playwright e2e + live desktop verification. Coordinate the
-live harness via the `shared-hive-live-instances` lock (with A, E).
+live harness via the `shared-pot-live-instances` lock (with A, E).
 
 ## Objective
-Prove the user-facing shared-hive flows in the **actual Tauri desktop app** are
+Prove the user-facing shared-pot flows in the **actual Tauri desktop app** are
 correct, honest, and don't strand the user — create, publish, share, discover,
 join, and the federation status surfaces.
 
@@ -15,16 +15,16 @@ silently no-ops. (We already fixed one "deceptive publish" honesty bug — assum
 there are more UX-truth gaps.)
 
 ## Scope / scenarios
-1. **Create hive** (from repo, from blueprint) — the picker/flow lands a real,
-   bootable hive; visibility derives from repo privacy correctly.
+1. **Create pot** (from repo, from blueprint) — the picker/flow lands a real,
+   bootable pot; visibility derives from repo privacy correctly.
 2. **Publish / ShareHiveDialog** (`apps/operator/app/harness/ShareHiveDialog.tsx`):
    - `reachablePeers` honesty: with 0 peers it says "no peers connected yet, becomes
      discoverable when peers come online" — NOT "announced to N peers". With peers,
      the count is real. (This was the deceptive-publish fix — keep it honest.)
-   - The share/member/invite **link is correct** and carries the hive topic.
+   - The share/member/invite **link is correct** and carries the pot topic.
    - Visibility selector states (public/invite/private) match backend effect.
-3. **Discover** — the directory lists public hives accurately; invite hives don't
-   appear without the secret; stale/withdrawn hives disappear.
+3. **Discover** — the directory lists public pots accurately; invite pots don't
+   appear without the secret; stale/withdrawn pots disappear.
 4. **Join** — pasting a link actually joins + boots + backfills; an invalid/expired
    link gives a clear error, not a silent no-op or a stuck spinner.
 5. **Federation status surfaces** — peer count, sync state, member list reflect

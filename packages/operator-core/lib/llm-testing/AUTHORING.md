@@ -222,7 +222,7 @@ Available helpers (`dispatch-override.ts`):
 - `makeSlowOverride({ name: { delayMs, result } })` — adds latency
 - `chainOverrides(a, b, c)` — first-match-wins composition
 
-The dispatcher's `PASS_THROUGH` sentinel lets the real handler run
+The dispatcher's `PASS_THROUGH` papercup lets the real handler run
 when the override doesn't match. `makeStaticOverride` returns
 PASS_THROUGH automatically for unmapped tools.
 

@@ -1,4 +1,4 @@
-# Sentinel voice-flow testing — execution plan (2026-06-23)
+# Papercup voice-flow testing — execution plan (2026-06-23)
 
 > Owner authorized full autonomous execution (2026-06-23, "do as you think best
 > for all phases … work through all the items until the entire plan is
@@ -6,17 +6,17 @@
 
 ## Goal
 
-Exercise the **Sentinel brain** end-to-end by injecting **text at the post-STT
+Exercise the **Papercup brain** end-to-end by injecting **text at the post-STT
 layer** (voice is already converted to text before it reaches the brain, so we
 submit text directly — no mic/STT needed) and verify:
 1. the flow works (text → `papercup:converse` → streamed reply / tools / cards),
-2. it answers **real questions about the papercusp hive** well (grounded, accurate),
-3. it routes substantial work to the **Queen** via `<handoff_to_queen>` and keeps
+2. it answers **real questions about the papercusp pot** well (grounded, accurate),
+3. it routes substantial work to the **Mug** via `<handoff_to_queen>` and keeps
    trivia local,
-4. the borrowed **operator behavioral contracts** still hold for the Sentinel.
+4. the borrowed **operator behavioral contracts** still hold for the Papercup.
 
 Reuse the existing operator behavioral suite with minimal change (target swap),
-because operator and sentinel are the SAME role-keyed converse brain.
+because operator and papercup are the SAME role-keyed converse brain.
 
 ## What exists (audit, verified 2026-06-23)
 
@@ -27,16 +27,16 @@ because operator and sentinel are the SAME role-keyed converse brain.
   TEXT to `/api/agent-mcp/operator-converse` — already the post-STT hook.
 - Shared brain: the route resolves `${role}:converse` and honors an explicit
   `body.role`.
-- Already built: a `sentinel` target (role=`sentinel`) + `scenarios/sentinel/SN01`
+- Already built: a `papercup` target (role=`papercup`) + `scenarios/papercup/SN01`
   (planning → `<handoff_to_queen>`) + `SN02` (trivia → no handoff).
-- Real-hive support: `realWorkspace: true` + `setup.mem0`.
+- Real-pot support: `realWorkspace: true` + `setup.mem0`.
 
 ## Decisions (owner delegated — chosen here)
 
 - **Phase 1**: shared `makeBrainScenario({target})` factory so each contract runs
-  on BOTH operator + sentinel (max coverage, zero duplication).
-- **Phase 2**: hive-knowledge question set seeded below (fleet status, plans,
-  blocked work, Queen explainer, assign-to-Queen).
+  on BOTH operator + papercup (max coverage, zero duplication).
+- **Phase 2**: pot-knowledge question set seeded below (fleet status, plans,
+  blocked work, Mug explainer, assign-to-Mug).
 - **Phase 4**: a committed Playwright e2e spec where the suite supports it
   (`apps/operator/e2e/*.spec.ts` is the sanctioned automatable surface);
   otherwise a documented `tauri-agent-tools` agent-e2e checklist. UI round-trip
@@ -44,21 +44,21 @@ because operator and sentinel are the SAME role-keyed converse brain.
 
 ## Phases / work items
 
-- [x] **P1 — Borrow operator contracts onto the Sentinel.** DONE 2026-06-23.
-  - `mirrorForSentinel()` factory in `scenarios/sentinel/_mirror.ts` (op-→sn- id,
-    target→sentinel, persona/asserts/rubric verbatim).
+- [x] **P1 — Borrow operator contracts onto the Papercup.** DONE 2026-06-23.
+  - `mirrorForSentinel()` factory in `scenarios/papercup/_mirror.ts` (op-→sn- id,
+    target→papercup, persona/asserts/rubric verbatim).
   - 8 contracts mirrored: S10, S11, S13, S14, S15, S16, M4, M8. Registered;
     lint + runner-aggregate green (40/40).
-- [x] **P2 — Hive-knowledge scenarios** DONE 2026-06-23 (`scenarios/sentinel/`,
+- [x] **P2 — Pot-knowledge scenarios** DONE 2026-06-23 (`scenarios/papercup/`,
   `realWorkspace:true`; shared asserts in `_asserts.ts`: consultedATool /
   emitsHandoff / noHandoff):
   - SN-H01 fleet-status → consultedATool + voice format.
   - SN-H02 plans-and-blocked → consultedATool + voice format.
-  - SN-H03 queen-explainer → text_contains queen + voice format.
-  - SN-H04 assign-to-queen → emitsHandoff + no fleet:spawn.
+  - SN-H03 mug-explainer → text_contains mug + voice format.
+  - SN-H04 assign-to-mug → emitsHandoff + no fleet:spawn.
   - Registered; lint + runner-aggregate green (40/40).
 - [x] **P3 — Handoff depth** DONE 2026-06-23: SN-H05 urgent-handoff (escalation +
-  no self-fix), SN-H06 respect-no-handoff (honor "don't bother the Queen"),
+  no self-fix), SN-H06 respect-no-handoff (honor "don't bother the Mug"),
   SN-H07 multi-item-handoff (all items captured, none dropped). Registered;
   lint + runner-aggregate green (40/40).
 - [x] **P4 — Full-flow UI integration** DONE 2026-06-23. The new TTS-toggle LOGIC
@@ -73,25 +73,25 @@ because operator and sentinel are the SAME role-keyed converse brain.
   **Agent-e2e checklist (manual, `tauri-agent-tools`) — full voice round-trip:**
   1. `cd papercusp-desktop && npm run dev` → drive the webview headlessly with
      `tauri-agent-tools` (`probe`/`eval`/`dom`/`click`/`type`/`screenshot`/`check`).
-  2. Open the **Sentinel** tab (`left-sidebar-tab-sentinel`); confirm the voice
+  2. Open the **Papercup** tab (`left-sidebar-tab-papercup`); confirm the voice
      bar renders the mic + the speaker (TTS) toggle.
-  3. Inject text at the post-STT layer: `POST /api/operator/sentinel-input`
-     (CSRF-guarded) with a transcript, OR type into the Sentinel composer.
-     Confirm it lands in the **Sentinel pane** (not the focused pane).
-  4. Confirm the brain's reply streams back into the Sentinel tab/conversation.
+  3. Inject text at the post-STT layer: `POST /api/operator/papercup-input`
+     (CSRF-guarded) with a transcript, OR type into the Papercup composer.
+     Confirm it lands in the **Papercup pane** (not the focused pane).
+  4. Confirm the brain's reply streams back into the Papercup tab/conversation.
   5. Click the speaker toggle → assert `aria-pressed` flips and (unmuted) replies
      are spoken / (muted) silent; reload → muted state persists.
   6. `check` (CI-style assert) the above; `capture` a screenshot + DOM for the log.
 - [x] **P5 — Run + review** DONE (bounded smoke executed) 2026-06-23. `:3070`
-  healthy (200). Smoke `sn-H03-queen-explainer` ran and **validated the live
-  plumbing**: the runner loaded the scenario, resolved the **`sentinel`** target,
+  healthy (200). Smoke `sn-H03-mug-explainer` ran and **validated the live
+  plumbing**: the runner loaded the scenario, resolved the **`papercup`** target,
   connected to `:3070`, and started the sim-user/judge loop
-  (`▶ sn-H03-queen-explainer [sentinel]`). It then hit **Anthropic API rate
+  (`▶ sn-H03-mug-explainer [papercup]`). It then hit **Anthropic API rate
   limits (429 × 8 retries)** → the answer-quality eval is **inconclusive** (an
   external rate limit, NOT a wiring bug). Did not retry into the limit (bounded).
   **Answer-quality review is ready to run when API headroom returns:**
-  `npm --prefix apps/operator run llm-test -- --target sentinel` (full suite), or
-  `--scenario sn-H03-queen-explainer` for a single cheap check. Note: the runner
+  `npm --prefix apps/operator run llm-test -- --target papercup` (full suite), or
+  `--scenario sn-H03-mug-explainer` for a single cheap check. Note: the runner
   warned SUT model === judge model (both claude-sonnet-4-6) — Plan §6.3 prefers
   they differ to avoid self-grading bias; a follow-up could set distinct models.
 
@@ -107,23 +107,23 @@ because operator and sentinel are the SAME role-keyed converse brain.
 
 ## Progress log
 
-- 2026-06-23: plan written. Prereqs done earlier same day — `sentinel` target +
+- 2026-06-23: plan written. Prereqs done earlier same day — `papercup` target +
   SN01/SN02 built; 5 stale `layout.rs` tests fixed (12/12 green); stale
   `sched-e2e-test` harness removed from PG; planner cwd guard
-  (`bootstrap-role.ts`); TTS toggle; tab tooltips; queen-boards stacked (resize).
+  (`bootstrap-role.ts`); TTS toggle; tab tooltips; mug-boards stacked (resize).
 - 2026-06-23: **P1 DONE** — `mirrorForSentinel` factory + 8 mirrored contracts
-  (S10/S11/S13–S16/M4/M8). **P2 DONE** — 4 hive-knowledge scenarios (SN-H01–04)
+  (S10/S11/S13–S16/M4/M8). **P2 DONE** — 4 pot-knowledge scenarios (SN-H01–04)
   + `_asserts.ts`. Framework tests green (40/40). Autonomous 2-min loop armed
   (CronCreate job aeac4918) to drive P3→P5. Next: P3 handoff-depth scenarios.
 - 2026-06-23: **P3 DONE** — SN-H05/H06/H07 handoff-depth scenarios; 40/40 green.
-  Sentinel suite now: SN01/02 + SN-H01–H07 + 8 mirrors = 17 sentinel scenarios.
+  Papercup suite now: SN01/02 + SN-H01–H07 + 8 mirrors = 17 papercup scenarios.
   Next: P4 UI round-trip (Playwright e2e spec vs agent-e2e checklist).
 - 2026-06-23: **P4 DONE** — TTS-toggle logic covered by a Vitest unit test
   (voice-mode.test.ts, 7/7); full round-trip documented as a tauri-agent-tools
   agent-e2e checklist (browser e2e against :3055/:3070 is non-canonical for
   Papercusp UI). Next + LAST: P5 bounded live smoke.
 - 2026-06-23: **P5 DONE (bounded smoke) — PLAN COMPLETE.** Live smoke validated
-  the sentinel plumbing end-to-end against :3070; answer-quality eval blocked by
+  the papercup plumbing end-to-end against :3070; answer-quality eval blocked by
   Anthropic 429 rate limits (external, transient) → ready-to-run command left
   above. While finalizing, also fixed a CONCURRENT-PEER red: `su-S26` was added
   to the registry without updating the aggregate test's id list — added it; gate
@@ -131,10 +131,10 @@ because operator and sentinel are the SAME role-keyed converse brain.
 
   ## FINAL SUMMARY (loop complete, CronDelete'd)
   Shipped, all framework-green:
-  - `sentinel` LLM-testing target (role='sentinel' converse) + `mirrorForSentinel`
+  - `papercup` LLM-testing target (role='papercup' converse) + `mirrorForSentinel`
     factory + shared `_asserts.ts`.
-  - **17 sentinel scenarios**: SN01/02 (handoff / no-handoff), SN-H01–H07
-    (fleet-status, plans-and-blocked, queen-explainer, assign-to-queen,
+  - **17 papercup scenarios**: SN01/02 (handoff / no-handoff), SN-H01–H07
+    (fleet-status, plans-and-blocked, mug-explainer, assign-to-mug,
     urgent-handoff, respect-no-handoff, multi-item-handoff), + 8 mirrored operator
     chat-hygiene contracts (S10/S11/S13–S16/M4/M8).
   - TTS-mute unit test (voice-mode.test.ts 7/7) + agent-e2e checklist for the UI
@@ -142,7 +142,7 @@ because operator and sentinel are the SAME role-keyed converse brain.
   - Tests: llm-testing lint+aggregate **40/40**, voice-mode **7/7**.
   ONE follow-up for the owner: run the live answer-quality eval when the API
   isn't rate-limited (`npm --prefix apps/operator run llm-test -- --target
-  sentinel`); optionally set a distinct judge model (Plan §6.3).
+  papercup`); optionally set a distinct judge model (Plan §6.3).
 - 2026-06-23 (resumed): two voice-bar space trims (owner ask) — removed the
   "<persona> · voice & activity" brand/header row from SentinelVoiceBar (collapse
   control moved into the controls row), and dropped the "Voice" text label from
@@ -150,13 +150,13 @@ because operator and sentinel are the SAME role-keyed converse brain.
   LeftSidebar 12/12, VoiceButton 15/15 green. Re-armed the 2-min loop
   (CronCreate **8b3ba1e8**) to retry the bounded LIVE eval until the 429 rate
   limit clears, then capture results + self-review + CronDelete.
-- 2026-06-23 ~09:35: live eval got PAST the 429 (cost $0.0009) but the sentinel
+- 2026-06-23 ~09:35: live eval got PAST the 429 (cost $0.0009) but the papercup
   brain on :3070 returned NO output — "agent backend failure" → verdict=errored
   (judge: environment/SUT-health failure, NOT a behavioral finding). So now the
   blocker is a flaky brain LLM backend (likely 429 residual), not a clean 429.
   Loop keeps retrying; STOP only on a CLEAN non-errored verdict. Cadence restored
   to 2-min per owner. **Latest: 11:04 — ~11 attempts; direct brain probe at 11:04
-  sharpened the diagnosis: operator-converse (role=sentinel) streams ONLY SSE
+  sharpened the diagnosis: operator-converse (role=papercup) streams ONLY SSE
   heartbeats (×4 in 40s), NO `delta` — i.e. the brain turn IS invoked (role
   resolves, keepalives flow) but its LLM call yields zero tokens. So the block is
   PURELY the shared Anthropic LLM backend hanging/overloaded — NOT a routing/role/
@@ -179,38 +179,38 @@ because operator and sentinel are the SAME role-keyed converse brain.
 The full *judged* eval (sim-user→SUT→judge, multi-call) keeps timing out on the
 congested shared backend (sn-H03 killed at 120s + 200s + 200s). But the backend
 DOES complete single real turns fast, so I captured real answers directly by
-POSTing real questions to `papercup:converse` (role=sentinel) and assessed them
-myself — which directly answers "ask real questions about the hive, see if it
+POSTing real questions to `papercup:converse` (role=papercup) and assessed them
+myself — which directly answers "ask real questions about the pot, see if it
 gives good results." Results (all clean, exit 0, `event: done`):
 
-1. **Q: "What is the Queen's role and can you hand work to her?"**
-   A: *"The Queen is the brain and placer — she triages the backlog, decides
+1. **Q: "What is the Mug's role and can you hand work to her?"**
+   A: *"The Mug is the brain and placer — she triages the backlog, decides
    priority, and spawns the work. I don't place; I file high-priority work_items
-   and nudge her via handoff_to_queen."* → ✅ accurate hive division of labor;
-   correctly says the Sentinel does NOT place work; speakable `<say>`. (= SN-H03)
+   and nudge her via handoff_to_queen."* → ✅ accurate pot division of labor;
+   correctly says the Papercup does NOT place work; speakable `<say>`. (= SN-H03)
 
-2. **Q: "Get the Queen to plan and ship a new CSV export feature end to end."**
+2. **Q: "Get the Mug to plan and ship a new CSV export feature end to end."**
    A: *"On it — filing CSV export as a high-priority planning ask and flagging
-   the Queen. She'll scope it, plan it, and place the work."* PLUS emitted
+   the Mug. She'll scope it, plan it, and place the work."* PLUS emitted
    `<handoff_to_queen summary="plan and ship a brand-new CSV export feature
-   end-to-end — Queen to scope, author the plan, place the chunks, and drive to
+   end-to-end — Mug to scope, author the plan, place the chunks, and drive to
    ship" tier="high">`. → ✅ handoff fires with a FAITHFUL brief + high tier; does
    not try to do it itself. (= SN01 / SN-H04)
 
 3. **Q: "Thanks, that's all I needed for now."**
    A: *"Got it. I'll be here."* — NO handoff. → ✅ correctly keeps trivia local,
-   doesn't spam the Queen. (= SN02 / SN-H06)
+   doesn't spam the Mug. (= SN02 / SN-H06)
 
-**Verdict: the Sentinel's live answer quality on real hive questions is GOOD** —
-it models the hive correctly, routes substantial work to the Queen via a faithful
-handoff, and doesn't over-escalate. The plumbing (role=sentinel converse →
+**Verdict: the Papercup's live answer quality on real pot questions is GOOD** —
+it models the pot correctly, routes substantial work to the Mug via a faithful
+handoff, and doesn't over-escalate. The plumbing (role=papercup converse →
 handoff) is confirmed end-to-end LIVE. The remaining nice-to-have is the
 *automated rubric score* from the full judged suite, which is blocked only by
 backend congestion — run it when the API is fast:
-`npm --prefix apps/operator run llm-test -- --target sentinel`.
+`npm --prefix apps/operator run llm-test -- --target papercup`.
 
 ## FINAL SUMMARY — loop complete (CronDelete'd 11:31)
-- Plan P1–P5 DONE. Suite: `sentinel` target + `mirrorForSentinel` + 17 sentinel
+- Plan P1–P5 DONE. Suite: `papercup` target + `mirrorForSentinel` + 17 papercup
   scenarios + `_asserts.ts`; TTS-mute Vitest test; agent-e2e checklist. Tests:
   llm-testing 40/40, voice-mode 7/7.
 - Live answer-quality VERIFIED GOOD via 3 representative probes (above).
@@ -229,52 +229,52 @@ backend congestion — run it when the API is fast:
   15-min** (CronCreate **2d3e072f**, replacing 8b3ba1e8) — still catches the clear
   but a responsible footprint on the shared box/account. On the first success:
   capture score → run sn-S01 → answer-quality review → CronDelete. (Owner: bump
-  back to 2-min or run `--target sentinel` manually once the API has headroom.)
+  back to 2-min or run `--target papercup` manually once the API has headroom.)
 
 ---
 
 ## 2026-06-23 (afternoon) — live voice round-trip + 4 fixes shipped
 
 Drove synthetic voice prompts through the REAL post-STT endpoint
-(`POST /api/operator/sentinel-input`) into the live dock Sentinel pane.
+(`POST /api/operator/papercup-input`) into the live dock Papercup pane.
 
-**Voice-IN works; answer quality EXCELLENT.** "Status of the hive, top 3?" →
+**Voice-IN works; answer quality EXCELLENT.** "Status of the pot, top 3?" →
 fully-grounded answer (8× `papercusp-su` tool calls reading live state; correct
 "placement/liveness failure not a token wall" diagnosis; root-cause-ordered top 3).
 
 ### Fixes shipped this session (all code-complete; live on next green :3070 deploy unless noted)
 1. **Voice-OUT cross-process buffer** — root cause: `voice:say` runs in the
-   agent-mcp process the psu Sentinel connects to (MCP proxy **:9071 → :3070**),
-   while the webview drains `/api/operator/sentinel-output` on a DIFFERENT process
+   agent-mcp process the psu Papercup connects to (MCP proxy **:9071 → :3070**),
+   while the webview drains `/api/operator/papercup-output` on a DIFFERENT process
    → the old PROCESS-LOCAL in-memory FIFO never bridged them (user heard nothing).
    Fix: migration **390** (`harness_shared.sentinel_says` global FIFO) +
-   rewrote `sentinel-output-buffer.ts` to push/drain via shared PG. Integration
+   rewrote `papercup-output-buffer.ts` to push/drain via shared PG. Integration
    test **5/5**. (CI drizzle-drift gate is now `continue-on-error` — the prior
    deferral reason is stale.)
-2. **#1 voice:say reliability** — tool IS registered + cap-granted to sentinel; it
+2. **#1 voice:say reliability** — tool IS registered + cap-granted to papercup; it
    just wasn't reliably CALLED (produced terminal-text-only). Persona hard-rule in
-   `sentinel.persona.md`: every answering turn MUST `voice:say`; terminal-only = a
+   `papercup.persona.md`: every answering turn MUST `voice:say`; terminal-only = a
    FAILED turn.
 3. **#2 mirror erroring** — NOT structural (code/caps/tables correct on green;
    replicated `appendTurn` insert OK; system-source turns land fine) → transient
-   backend congestion during the test. Durable bug was that the Sentinel NARRATED
+   backend congestion during the test. Durable bug was that the Papercup NARRATED
    the plumbing failure aloud. Persona: mirror is best-effort/INVISIBLE; never
    speak tool/backend/mirror failures.
 4. **#3 voice-in boot-window race** — voice-in during the pane's post-relaunch
    boot lands in a not-ready composer and is dropped. Added `SENTINEL_WARMUP_MS`
-   gate in `sentinel-input.ts`: if the pane registration is <8s old, wait out the
+   gate in `papercup-input.ts`: if the pane registration is <8s old, wait out the
    warmup before writing (delayed, not dropped).
 - **Reverted** an `--ax-screen-reader` display attempt: screen-reader mode uses
   no-alt-screen linear output, so on the dock's relaunches each banner STACKS
-  (worse). Repo + `~/.local/bin/psu-sentinel` shim reverted.
+  (worse). Repo + `~/.local/bin/psu-papercup` shim reverted.
 
-### #18 (open, owner-decision) — frequent Sentinel relaunches re-show the banner
+### #18 (open, owner-decision) — frequent Papercup relaunches re-show the banner
 - Two churn sources: whole-dock relaunch (zellij session id churns
   `pui-dock-3416140`→`3532081`→`3939615`) AND pane-level psu role churn within a
   session (`3c580`→`e0616`).
 - Bursty, NOT chronic (dock stable 46m+ after a 14:40 burst); does NOT correlate
   with :3070 deploys (last restart 12:30, burst at 14:40).
-- Within-session role churn is consistent with: the sentinel claude pane EXITS
+- Within-session role churn is consistent with: the papercup claude pane EXITS
   (reason TBD), leaving zellij's "press Enter to re-run", and a voice-in `write 13`
   (Enter) then triggers the rerun + loses the text — a 2nd voice-in failure mode
   the warmup gate does NOT cover (it only covers the boot window).
@@ -282,32 +282,32 @@ fully-grounded answer (8× `papercusp-su` tool calls reading live state; correct
   + the pui dock-driver (`apps/tui`). Risky to touch mid-session; scoped as WI #18.
 
 ### Loop tick 16:08 — exited-pane voice-in guard (item 2 DONE)
-- `sentinel-input.ts`: added `isExitedPaneScreen()` (detects zellij's held-frame
+- `papercup-input.ts`: added `isExitedPaneScreen()` (detects zellij's held-frame
   footer: `EXIT CODE:` + `re-run`) + a handler guard that, for the registered
   pane, dump-screens it and returns `409 {exited:true}` instead of writing when
   the pane is held at the re-run prompt (writing would Enter-trigger a re-run and
-  lose the turn). Unit test `sentinel-input.test.ts` 5/5. Closes the 2nd voice-in
+  lose the turn). Unit test `papercup-input.test.ts` 5/5. Closes the 2nd voice-in
   failure mode (the warmup gate covers the boot window; this covers a dead pane).
 - Item 1 (live-verify voice-out/persona) still BLOCKED: :3070 has not restarted
   since 12:30 (pid 1908618), so green runs the OLD in-memory buffer + old persona
   despite migration 390 being applied + the buffer file present in papercup-release.
-  Green-checkpoint appears held (hive degraded). Not forcing a deploy. Loop will
+  Green-checkpoint appears held (pot degraded). Not forcing a deploy. Loop will
   re-check and live-verify once :3070 reloads.
 
 ### Loop tick 16:10 — root-caused the deploy block (NOT mine)
 - Item 1 (live-verify) is blocked because **green-checkpoint is wedged**: the
   `@papercusp/operator-core` test task fails it (15:28 log), signature "admission
   slots drained — no slot-squat" → maps to inference-gateway / capacity-dispatch /
-  fleet-admission code (cross-hive-boundary-admission, capacity-dispatch), NOT the
-  voice/sentinel files I touched.
+  fleet-admission code (cross-pot-boundary-admission, capacity-dispatch), NOT the
+  voice/papercup files I touched.
 - Green-checkpoint has been RED ALL DAY (08:24/09:27/11:27/13:28/14:37/15:28) with
-  DIFFERENT signatures → pre-existing flaky/degraded-hive failure, not introduced
-  by my changes. My operator-core tests are green (sentinel-input 5/5, buffer integ
+  DIFFERENT signatures → pre-existing flaky/degraded-pot failure, not introduced
+  by my changes. My operator-core tests are green (papercup-input 5/5, buffer integ
   5/5). So my 4 fixes are shipped+green but stuck BEHIND a fleet-infra blocker.
 - :3070 last restarted 12:30 → still serving old buffer+persona. The pipeline
   won't deliver my fixes until green-checkpoint passes, which is gated on the
-  inference-gateway/admission failure + the degraded hive (Queen dark) — OWNER /
-  fleet-ops territory, outside the Sentinel lane.
+  inference-gateway/admission failure + the degraded pot (Mug dark) — OWNER /
+  fleet-ops territory, outside the Papercup lane.
 - NOT force-deploying: it would push a green-gate-FAILING tree (+ all peers' WIP)
   to :3070 unattended — too risky. Declined per the no-unattended-force-deploy
   constraint. Loop stays in monitor-for-unblock mode: re-checks :3070 reload each

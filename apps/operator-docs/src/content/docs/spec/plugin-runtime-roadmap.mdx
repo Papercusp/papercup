@@ -5,7 +5,7 @@ plans:
   - plugin-mcp-migration-brief-2026-05-10
   - self-contained-migration-baseline-2026-06-02
   - revive-plugin-system-2026-06-04
-  - plugin-system-hive-port-2026-06-11
+  - plugin-system-pot-port-2026-06-11
   - tool-distribution-granularity-2026-06-05
 ---
 
@@ -31,7 +31,7 @@ non-goal; see [Post-A–F: out-of-process runtimes](#post-af-out-of-process-runt
 
 - ~~**Typed `ctx.kv` with quotas**~~ — shipped in papercup#46 + papercupai/papercusp#4 (Migration 054). Per-plugin namespace, 10 KiB/key + 1 MiB/plugin defaults, override via `kvQuota` in manifest. PG-backed.
 - ~~**Hot-reload state preservation**~~ — shipped in papercup#47 + papercupai/papercusp#5 (Migration 055). Opt-in via `hotReload: { preserveState: true }`; 64 KiB cap; one-shot restore on next init.
-- ~~**`papercusp plugin doctor`**~~ — shipped in papercupai/papercusp#3 + papercup#44 (with the `.read` scanner fix in papercupai/papercusp#6 + papercup#49). Regex scanner for `ctx.spawn` / `ctx.fetch` / `ctx.secrets.read` / `ctx.hookBus.{emit,on}` literal arguments; alias-aware (`const spawn = ctx.spawn`); cross-checks against `capabilities[]`; reports missing / unused / dynamic classifications. **Stale pattern:** the doctor still scans `ctx.hookBus.{emit,on}`, but the hookbus was retired (`plugin-system-hive-port-2026-06-11` P-006) — `ctx.hookBus` no longer exists on the SDK ctx. Plugins now hook the host via declarative `reactions` rules keyed on `<namespace>.<event>` topics; those scan patterns target a dead API and should be dropped or repointed at the reactions surface.
+- ~~**`papercusp plugin doctor`**~~ — shipped in papercupai/papercusp#3 + papercup#44 (with the `.read` scanner fix in papercupai/papercusp#6 + papercup#49). Regex scanner for `ctx.spawn` / `ctx.fetch` / `ctx.secrets.read` / `ctx.hookBus.{emit,on}` literal arguments; alias-aware (`const spawn = ctx.spawn`); cross-checks against `capabilities[]`; reports missing / unused / dynamic classifications. **Stale pattern:** the doctor still scans `ctx.hookBus.{emit,on}`, but the hookbus was retired (`plugin-system-pot-port-2026-06-11` P-006) — `ctx.hookBus` no longer exists on the SDK ctx. Plugins now hook the host via declarative `reactions` rules keyed on `<namespace>.<event>` topics; those scan patterns target a dead API and should be dropped or repointed at the reactions surface.
 
 ## Post-A–F: out-of-process runtimes
 

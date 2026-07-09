@@ -6,7 +6,7 @@ anything to hand off").
 
 ## Status: my lane is DONE + hardened
 - **PR-3** (report GUI + manual/auto modes) complete + verified; **+4 safe hardening passes**
-  (hive-scope auto-status suppression, structured agent-review audit rows `formatAuditDetail`,
+  (pot-scope auto-status suppression, structured agent-review audit rows `formatAuditDetail`,
   `mapReportRow` drift-test for the PR-2 contract seam, open-only auto-status gating).
 - Closed the revocation-coverage consensus with pr5-impl (my vote → their (b)+log landing).
 - Full PR-system watchdog **GREEN**: operator-core 416 / UI 58.

@@ -14,13 +14,13 @@ coverage (`hardened-authority`, `revocation-enforcement`, `peer-eviction`,
 `authority-failover-flood`), but the *content/privacy* attack surface is thin.
 
 ## Threats to test (write an adversarial test that FAILS if the threat succeeds)
-1. **Privacy leak — private hive.** A peer that never joined / wasn't admitted must
-   NOT be able to read a private or invite-only hive's content, EVEN if it knows
-   the repo id / guesses the topic. Confirm invite hives never list on the global
-   directory topic (there's a seed test in `hive-directory-live-two-peer` — extend
+1. **Privacy leak — private pot.** A peer that never joined / wasn't admitted must
+   NOT be able to read a private or invite-only pot's content, EVEN if it knows
+   the repo id / guesses the topic. Confirm invite pots never list on the global
+   directory topic (there's a seed test in `pot-directory-live-two-peer` — extend
    it adversarially). Try deriving `gh:<repo_id>` and joining — must get nothing.
 2. **Unauthorized write.** A non-member / non-admitted peer announces + appends ops
-   to the hive topic. The admission gate (channel-2 GitHub-binding,
+   to the pot topic. The admission gate (channel-2 GitHub-binding,
    `verifyBindingOverride` in tests is the REAL gate in prod) must reject; its ops
    must NOT apply on honest peers. Test the gate is actually enforced end-to-end,
    not just in the unit.
@@ -40,8 +40,8 @@ coverage (`hardened-authority`, `revocation-enforcement`, `peer-eviction`,
    gracefully (no crash, no corruption, no unbounded memory).
 7. **Workspace isolation.** Cross-workspace data must not leak through federation
    (the F-C3 isolation + the `reg.current` strand class — see the EI-1534 +
-   pending-wakes fixes). A hive in workspace X must not surface in workspace Y.
-8. **Invite-secret enforcement.** Joining an invite hive without the secret must
+   pending-wakes fixes). A pot in workspace X must not surface in workspace Y.
+8. **Invite-secret enforcement.** Joining an invite pot without the secret must
    fail; with a wrong secret must fail; the secret must not be derivable from the
    public directory.
 

@@ -4,8 +4,8 @@
 
 ## Objective
 Prove peers on **different code/schema versions federate safely** — an old peer and a
-new peer in the same hive — and that migrations + the re-key roll out without splitting
-or corrupting the hive.
+new peer in the same pot — and that migrations + the re-key roll out without splitting
+or corrupting the pot.
 
 ## Why it matters
 A deployed product updates continuously, and members update at different times — so
@@ -25,12 +25,12 @@ not cross-version. Untested skew = silent divergence or data loss in production.
 3. **Schema-migration skew:** one peer has applied a new migration, the other hasn't —
    does a federated op for a new column drop silently (the requeue_count / B-001 class)?
    Assert graceful degradation, not silent loss.
-4. **Re-key epoch back-compat (coordinate w/ V):** a new-hives-only encrypted hive vs a
-   legacy unencrypted hive; a peer that predates the re-key joining an epoch'd hive.
-   Assert the new-hives-only boundary holds + no mixed-epoch corruption.
+4. **Re-key epoch back-compat (coordinate w/ V):** a new-pots-only encrypted pot vs a
+   legacy unencrypted pot; a peer that predates the re-key joining an epoch'd pot.
+   Assert the new-pots-only boundary holds + no mixed-epoch corruption.
 5. **Downgrade safety:** a peer rolled BACK a version — does it crash / corrupt / poison
    the shared log, or degrade safely? (Forward-only is acceptable IF it fails closed.)
-6. **Rolling upgrade of a live hive:** members upgrade one at a time while writing —
+6. **Rolling upgrade of a live pot:** members upgrade one at a time while writing —
    assert continuous convergence throughout the mixed-version window.
 
 ## Method

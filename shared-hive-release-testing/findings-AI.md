@@ -1,4 +1,4 @@
-# Findings — Brief AI: Shared-hive ownership (provisional → claimed authority)
+# Findings — Brief AI: Shared-pot ownership (provisional → claimed authority)
 
 Owner: su-396e1. Lane: S0/S1 ownership-authority-root (the binding-service claim flow).
 This pass took the BUILT-but-only-piece-tested provisional/claimed model to a
@@ -121,7 +121,7 @@ at policy-author time, so it does not lean on this daemon; but the plan must nev
 cached `claim_status` for authority without that live re-check — AI-4 is why the live
 re-check is load-bearing.
 
-## AI-5 — claim_status does NOT federate: a member of a CLAIMED hive sees "unclaimed" (scenario 6) — 🟠 S1 — EI-1625
+## AI-5 — claim_status does NOT federate: a member of a CLAIMED pot sees "unclaimed" (scenario 6) — 🟠 S1 — EI-1625
 
 `shared_repo_binding_cache` is **not a federated table**:
 - not in `PEER_LOG_TABLES` (`harness-state/table-registry.ts`) — pinned by a guard test;
@@ -135,7 +135,7 @@ workspace's cache row. A joiner never writes that row — `join-shared-harness.t
 `.papercusp/shared.json` with `claim_status: 'unclaimed'` **hardcoded** (line ~576) and no
 PG cache row. So on a member's machine the route returns `NO_BINDING` →
 `HarnessClaimHeader` renders the explainer **"No GitHub maintainer has claimed this
-harness. The creator is the provisional owner."** — an **active falsehood** for a hive the
+harness. The creator is the provisional owner."** — an **active falsehood** for a pot the
 owner has claimed.
 
 **Severity S1 (a surface lies / a feature silently doesn't federate)** per the brief's
@@ -145,10 +145,10 @@ member cannot forge `claimed` (with `binding_id:null` the claim CTA is hidden an
 short-circuits). Design nuance: the owner-enforcement layer federates *policy* via
 `hive_settings` (post-A-003), **not** via this cache, so AI-5 does not block enforcement —
 but it does mean members cannot today see *who* the verified owner is, which undercuts the
-"claim = public trust signal" story for shared-public hives. Recommend either federating a
-read-only projection of `(claim_status, claimed_by logins)` from the owner's hive-home, or
+"claim = public trust signal" story for shared-public pots. Recommend either federating a
+read-only projection of `(claim_status, claimed_by logins)` from the owner's pot-home, or
 sourcing the member-side badge from the Cupboard listing's `claim_status` for shared-public
-hives. **A live two-instance pass should specifically assert: does a JOINER see the owner's
+pots. **A live two-instance pass should specifically assert: does a JOINER see the owner's
 `claimed` badge? (today: no.)**
 
 ## AI-6 — Concurrent two-maintainer claim has a read-modify-write lost-update window (scenario 7) — 🟡 S2 — EI-1626
@@ -185,10 +185,10 @@ surfaces the structured permission error as a toast. The components faithfully r
 status they are *given* — so the GUI itself is honest; AI-5 is a data-source gap upstream of
 them, not a component bug.
 
-**Open item:** a full two-identity **live Tauri** claim E2E (real shared hive → owner claims
+**Open item:** a full two-identity **live Tauri** claim E2E (real shared pot → owner claims
 → status flips → badge updates; and a non-owner's CTA 403s) was NOT run — heavy infra
 (packaged `.deb` + two GitHub identities with differing repo perms + the
-`shared-hive-live-instances` lock). The integration layer already teeth-verifies the same
+`shared-pot-live-instances` lock). The integration layer already teeth-verifies the same
 gates at the service boundary, so this is a confidence top-up, not a coverage hole — but it
 is the right place to also verify the **AI-5 member-honesty** question live. Prior art:
 `apps/operator/e2e/adv-hive-from-github-url.spec.ts`.
@@ -209,8 +209,8 @@ is the right place to also verify the **AI-5 member-honesty** question live. Pri
    decides cadence + ops) so scenario 5 fires live. **Gate the owner-enforcement layer on a
    working live owner re-check, never on cached `claim_status`.**
 2. **AI-5 (EI-1625):** decide the member-side source of truth for `claim_status` (federated
-   read-only projection from the hive-home, or Cupboard listing for shared-public) so a
-   member of a claimed hive stops being told "no maintainer has claimed this." (Cross-cutting
+   read-only projection from the pot-home, or Cupboard listing for shared-public) so a
+   member of a claimed pot stops being told "no maintainer has claimed this." (Cross-cutting
    federation change — filed, not patched from this lane.)
 3. **AI-6 (EI-1626):** within the brief's allowed "first-wins, no corruption" envelope today;
    optional polish — make the claimant append a set-union (or `FOR UPDATE`) to also record

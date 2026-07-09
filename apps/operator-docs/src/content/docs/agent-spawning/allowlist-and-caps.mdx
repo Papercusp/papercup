@@ -7,11 +7,11 @@ plans:
   - unify-agent-spawn-chokepoint-2026-06-06
   - rate-limit-layer-v2-2026-06-05
   - operator-scalability-event-loop-2026-06-16
-  - bee-capability-expansion-2026-06-08
+  - cup-capability-expansion-2026-06-08
   - fleet-as-supervised-blackboard-2026-06-04
   - unify-launch-mechanics-2026-06-09
   - overwatch-role-2026-06-15
-  - queen-steering-panel-2026-06-15
+  - mug-steering-panel-2026-06-15
 documents:
   - packages/operator-core/lib/fleet/operator-spawn.ts
   - packages/operator-core/lib/rate-limit-config.ts
@@ -19,26 +19,26 @@ documents:
   - packages/agent-mcp/src/role-config.ts
 ---
 
-## Who may call `bee:spawn`
+## Who may call `cup:spawn`
 
 There is no per-role *allowlist matrix* (caller-role → set-of-spawnable-roles).
 That layered rule budget lived in the retired `@papercupai/orchestrator-spawn`
 plugin; the live path is `packages/operator-core/lib/fleet/operator-spawn.ts`
-behind the `bee:spawn` tool.
+behind the `cup:spawn` tool.
 
-`bee:spawn` is role-gated to a **filtered subset** of `COORD_ROLES`, not the
+`cup:spawn` is role-gated to a **filtered subset** of `COORD_ROLES`, not the
 full set. The full coordination role set the `coord:*` and `locks:*` tools use
 is `scoper`, `architect`, `worker`, `validator`, `reviewer`, `debugger`,
-`operator`, `documenter`, `curator`, `bee`, `queen`, `sentinel`, `overwatch`.
-`bee:spawn` takes `COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'
-&& r !== 'overwatch')` — placement is the **Queen's** surface (D-002,
-`bee-capability-expansion-2026-06-08`), so:
+`operator`, `documenter`, `curator`, `cup`, `mug`, `papercup`, `overwatch`.
+`cup:spawn` takes `COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup'
+&& r !== 'overwatch')` — placement is the **Mug's** surface (D-002,
+`cup-capability-expansion-2026-06-08`), so:
 
-- **`queen`** is the registered placement decider and **can** call `bee:spawn`
+- **`mug`** is the registered placement decider and **can** call `cup:spawn`
   (alongside `operator` and the pipeline coding roles).
-- **`bee`**, **`sentinel`**, and **`overwatch`** are explicitly **excluded** —
-  the bee *works*, the sentinel *watches* and the overwatch *nudges*; none of
-  them place. (The bee joined `COORD_ROLES` for `coord:*`/`issues:*`, which
+- **`cup`**, **`papercup`**, and **`overwatch`** are explicitly **excluded** —
+  the cup *works*, the papercup *watches* and the overwatch *nudges*; none of
+  them place. (The cup joined `COORD_ROLES` for `coord:*`/`issues:*`, which
   inadvertently leaked this placement tool to it; filtering it back out turns
   "only the brain spawns" from convention into a gate.)
 
@@ -49,7 +49,7 @@ it's *admission* (below) plus the one concurrency ceiling.
 The child role itself is only sanity-checked, not allowlisted against the
 caller: it must be a known `AGENT_ROLES` id (`packages/agent-mcp/src/role-config.ts`)
 or a plugin-namespaced `<plugin>:<role>`, and `role='worker'` requires a
-`chunkId` (workers window their quotas on `chunk:<id>`). A `bee` carries no
+`chunkId` (workers window their quotas on `chunk:<id>`). A `cup` carries no
 chunk requirement.
 
 ## Admission is the brain's judgment, not a rules budget
@@ -62,7 +62,7 @@ per-role quota.
 - **`new_subagent:request`** — any agent asks the brain to spin up a sub-agent.
   It routes a typed, brain-only-approvable request and returns an
   `await_event`; the requester `events:await`s the grant, ends its turn, and on
-  wake (`choice === 'approve'`) calls `bee:spawn`. The response surfaces the
+  wake (`choice === 'approve'`) calls `cup:spawn`. The response surfaces the
   live headroom (`running/ceiling`, free slots) so the brain decides informed.
 - **`new_subagent:approve`** — **brain-only**: approve or deny a pending
   request and wake the requester. The "only the brain decides" rule is enforced
@@ -79,7 +79,7 @@ per-role quota.
   round-trip; only an exhausted (or never-granted) budget routes to the brain.
 
 The operator/brain itself doesn't request — it allocates directly via
-`bee:spawn`. Already-decided pipeline work admits its own role progression
+`cup:spawn`. Already-decided pipeline work admits its own role progression
 (the harness autoloop dispatches it), and a human-initiated `psu` session needs
 no request at all.
 
@@ -107,7 +107,7 @@ the ceiling. This is only the *seed*: the user's persisted live config (PG
 
 The effective **admission** ceiling is lower still: `effectiveSpawnCeiling(workspaceId)`
 takes the system `spawnConcurrencyCeiling()` and clamps it **down** by the
-owner's per-hive `max-bees` steering knob (`queen-steering-panel-2026-06-15`
+owner's per-pot `max-cups` steering knob (`mug-steering-panel-2026-06-15`
 P-006 / D-005). The owner can only *lower* it, never raise it past the system
 cap. Both `getSpawnHeadroom` and the atomic admission read this reduced value —
 so when the owner throttles the fleet, the brain sees (and admission enforces) a
@@ -139,7 +139,7 @@ tab rather than a silent `console.warn`. Two more validation refusals join this
 class: `role='overwatch'` is refused while the **`papercusp-overwatch`** flag is
 OFF (the role ships dark until staged), and a brief still holding an
 un-substituted `{item}` / `brief-NN` placeholder is refused (EI-249 — a missed
-template substitution would otherwise boot a mis-briefed bee). Example messages:
+template substitution would otherwise boot a mis-briefed cup). Example messages:
 
 ```text
 spawn rejected: unknown role "wroker" — known roles: scoper, architect, worker, …
@@ -176,13 +176,13 @@ unique index — so even a racing retry can't slip a duplicate through.
 
 ## How the gates compose
 
-The full sequence when an agent calls `bee:spawn(role: 'worker', feature:
+The full sequence when an agent calls `cup:spawn(role: 'worker', feature:
 'F-001', chunk: 'F-001-1')`:
 
 ```
 1. Framework: tool exists?                          ✓ (registered)
 2. Framework: caller role in the spawn subset?      ✓ (COORD_ROLES minus
-                                                       bee/sentinel/overwatch;
+                                                       cup/papercup/overwatch;
                                                        or superuser bypass)
 3. Engine: role known (AGENT_ROLES or <plugin>:…)?  ✓
 4. Engine: worker has chunkId?                       ✓
@@ -208,7 +208,7 @@ recorded `error_message` strings and the one await rail.
 `getSpawnHeadroom(workspaceId)` returns `{ ceiling, running, headroom }` after
 reclaiming orphaned rows, so the count reflects live spawns only. The `ceiling`
 it reports is the **effective** ceiling (`effectiveSpawnCeiling` — the system
-cap clamped down by the owner's `max-bees` knob), the same value admission
+cap clamped down by the owner's `max-cups` knob), the same value admission
 enforces. This is the read the brain-as-allocator consults — and what
 `new_subagent:request` surfaces to the brain — before deciding a spawn is worth
 it. The ceiling is the hard backstop; the worth-it allocation above it is

@@ -49,11 +49,11 @@ operator proxy use today. Once the operator proxy is cut over to `/listings?kind
 | `GET`  | `/healthz` | none | Liveness |
 | `GET`  | `/listings` | none | Paginated public listing. Query: `kind` (`harness`/`blueprint`/`snapshot`/`plugin`/`all`), `project` (project_ref), `q`, `claim`, `limit` (1-100), `cursor` |
 | `GET`  | `/listings/:id` | none | Single listing detail |
-| `POST` | `/listings` | gh-bearer | Publish (5/hr per user; private GitHub repos rejected). Body `listing_kind` (default `harness`), `project_ref`, `listing_ref` (required for non-harness), `topic_hex` (required for harness), `hive_pubkey` + `hive_title` (migration 007 repo→Hive binding; pubkey = raw-32-byte-base64 Ed25519, the hive directory encoding) |
+| `POST` | `/listings` | gh-bearer | Publish (5/hr per user; private GitHub repos rejected). Body `listing_kind` (default `harness`), `project_ref`, `listing_ref` (required for non-harness), `topic_hex` (required for harness), `hive_pubkey` + `hive_title` (migration 007 repo→Pot binding; pubkey = raw-32-byte-base64 Ed25519, the pot directory encoding) |
 | `DELETE` | `/listings/:id` | gh-bearer | Unlist (publisher or claimant only) |
 | `POST` | `/listings/:id/claim` | gh-bearer | Claim by `maintain`/`admin` GitHub perm |
 | `GET`/`POST`/`DELETE` | `/harnesses*` | as above | Back-compat: `/listings` pinned to `kind='harness'` |
-| `GET`  | `/binding/:github_repository_id` | none | Lookup the harness listing bound to a repo (Entry 2 "join existing" alert). Carries `hive_pubkey`/`hive_title` when the repo is a member of a public Hive (migration 007; one row per member repo, all sharing the hive_pubkey) |
+| `GET`  | `/binding/:github_repository_id` | none | Lookup the harness listing bound to a repo (Entry 2 "join existing" alert). Carries `hive_pubkey`/`hive_title` when the repo is a member of a public Pot (migration 007; one row per member repo, all sharing the hive_pubkey) |
 | `POST` | `/reports` | gh-bearer | File abuse report (10/hr per user) |
 
 ## Local dev

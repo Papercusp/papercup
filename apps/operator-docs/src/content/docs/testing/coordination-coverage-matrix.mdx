@@ -5,7 +5,7 @@ sidebar:
 plans:
   - coordination-test-suite-2026-06-08
   - coord-system-e2e-testing-2026-06-10
-  - shared-hive-loop-e2e-testing-2026-06-10
+  - shared-pot-loop-e2e-testing-2026-06-10
 documents:
   - packages/operator-core/test/_multi-session-testbed.ts
   - packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts
@@ -134,7 +134,7 @@ Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (
 
 ### Lock authority — remote leg over HTTP (C2)
 
-Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6, real PG su-lock store + real loopback HTTP, plan `coord-system-e2e-testing-2026-06-10` P-006) + `lib/authority/__tests__/transport-wiring.test.ts` (9) + the pre-existing `peer-rpc-transport.integration.test.ts` / `two-instance-authority.integration.test.ts` (+ hive variant).
+Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6, real PG su-lock store + real loopback HTTP, plan `coord-system-e2e-testing-2026-06-10` P-006) + `lib/authority/__tests__/transport-wiring.test.ts` (9) + the pre-existing `peer-rpc-transport.integration.test.ts` / `two-instance-authority.integration.test.ts` (+ pot variant).
 
 | Cell | Before | Now |
 |---|---|---|
@@ -180,11 +180,11 @@ File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (8 te
 
 ### Coord verb lifecycle ACROSS instances (C2/C3)
 
-File: `shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (5 tests, plan `coord-system-e2e-testing-2026-06-10` P-005 — the brief-11 composition rig + the real coord_event_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).
+File: `shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (5 tests, plan `coord-system-e2e-testing-2026-06-10` P-005 — the brief-11 composition rig + the real coord_event_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).
 
 | Cell | Before | Now |
 |---|---|---|
-| **send → handoff/ACCEPT → escalate/RESOLVE federate BOTH directions** between two cells of one Hive (LINE + EVENT surfaces, origin='remote' on arrival, body intact) | ❌ nothing ran verbs across instances | 🔴 |
+| **send → handoff/ACCEPT → escalate/RESOLVE federate BOTH directions** between two cells of one Pot (LINE + EVENT surfaces, origin='remote' on arrival, body intact) | ❌ nothing ran verbs across instances | 🔴 |
 | EVENT immutability across the wire: replays mint no second record on the peer | 🟢 single-PG only | 🔴 cross-cell |
 | per-surface order of remote-fed rows preserved (send order = arrival order) | ❌ | 🔴 |
 | partition (convergence withheld) → heal: every message exactly once, batch order kept; a re-converge is a FIXED POINT (EI-117 no-double-application class) | ❌ | 🔴 |
@@ -217,7 +217,7 @@ File: `work-item-claims-concurrency.integration.test.ts` (12 tests, real PG).
 | **G16 — REAL-clock lease expiry**: a short ttl lapses on the wall clock (no manual DB edit) and is then stealable | ❌ | 🔴 |
 | **G17 — heartbeat renewal blocks a steal**: a renewing owner holds against concurrent steals, then loses only after heartbeats stop | ❌ | 🔴 |
 | **G18 — priority-ordered claiming**: equal `feature_order` tie-breaks on `created_ts` (oldest first); N claimers over M priorities drain in priority order, all distinct; serial claiming drains strictly lowest-`feature_order` first | ❌ | 🔴 |
-| **caller-standing gate (EI-284)**: a REVOKED swarm's acquire/heartbeat RPC is refused (`refused:'caller_revoked'` / `reason:'caller_revoked'`); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004) | ❌ revoked swarm stole leases + blocked live swarms | 🔴 `work-item-claim-authority-ops.test.ts` (6 gate cells) + the flipped `shared-hive-loop/revoked-swarm.integration.test.ts` |
+| **caller-standing gate (EI-284)**: a REVOKED swarm's acquire/heartbeat RPC is refused (`refused:'caller_revoked'` / `reason:'caller_revoked'`); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004) | ❌ revoked swarm stole leases + blocked live swarms | 🔴 `work-item-claim-authority-ops.test.ts` (6 gate cells) + the flipped `shared-pot-loop/revoked-swarm.integration.test.ts` |
 | caller-standing residual: the RPC envelope is UNAUTHENTICATED — `holderPubkey` is self-reported, so the gate is defense-in-depth against well-behaved-but-revoked peers, not spoofing | — | ⚪ on EI-284's thread (authenticated-envelope follow-on) |
 
 ### Multi-session concurrency E2E (C3) — the capstone
@@ -248,7 +248,7 @@ Run recipe (the 429 trap): `LLM_TEST_BACKEND=claude-code` is the knob that escap
 <Aside type="tip" title="EI-155 — interactive-claude config isolation: CLOSED">
 **Interactive psu/SU + role claude config isolation (EI-155) is now implemented
 and tested.** Per-session `CLAUDE_CONFIG_DIR` isolation was previously only on
-the **orchestrator-spawned bee** path (`spawn-mcp.ts`/`invoke.ts` →
+the **orchestrator-spawned cup** path (`spawn-mcp.ts`/`invoke.ts` →
 `~/.papercusp/session-claude/<spawnId>`, restored on **wake-executor resume**);
 interactive `psu` claude sessions shared one `~/.claude`. The fix (`bootstrap-su`
 + `bootstrap-role` → `writeInteractiveClaudeConfig`, keyed by `sid` via the same

@@ -69,9 +69,9 @@ and per-tool hit/miss/stale/bypass telemetry (`snapshotCachedReadStats()`).
 
 3. **NEVER cache the readiness floor / dispatch frontier (D-004).** Readiness is a
    MAINTAINED column kept exact by triggers on the scheduler claim hot path; a cache
-   miss/stampede/coherence gap there is unacceptable. `hive:survey` IS the dispatch
+   miss/stampede/coherence gap there is unacceptable. `pot:survey` IS the dispatch
    readiness (`filterReadyFrontier`), `fleet:assignments` IS the live liveness truth, and
-   `hive:status` is control-plane wake state — none was cached. Caching an overview read
+   `pot:status` is control-plane wake state — none was cached. Caching an overview read
    that merely *includes* a `ready` column is fine ONLY if it's off the claim path
    (`work_items:list` is — the scheduler claims via `claim_next`, not the list).
 

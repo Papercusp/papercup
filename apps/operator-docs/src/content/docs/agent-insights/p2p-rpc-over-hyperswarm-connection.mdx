@@ -1,8 +1,8 @@
 ---
 title: Add a P2P request/response RPC channel by riding the existing Hyperswarm connection
-description: To reach a NAT'd peer for an RPC (lock authority, eviction relay-probe), don't resolve a URL — multiplex a protomux channel onto the connection the substrate already holds open. The connection IS the address. Mirror cross-hive-swarm-transport.ts; touch NOTHING in swarm.ts.
+description: To reach a NAT'd peer for an RPC (lock authority, eviction relay-probe), don't resolve a URL — multiplex a protomux channel onto the connection the substrate already holds open. The connection IS the address. Mirror cross-pot-swarm-transport.ts; touch NOTHING in swarm.ts.
 discovered: 2026-06-13
-tags: [shared-hive, authority, federation, hyperswarm, protomux, peer-rpc, nat]
+tags: [shared-pot, authority, federation, hyperswarm, protomux, peer-rpc, nat]
 status: active
 documents:
   - packages/operator-core/lib/authority/authority-rpc-swarm-transport.ts
@@ -10,12 +10,12 @@ documents:
   - packages/operator-core/lib/authority/authority-rpc-swarm-wiring.ts
   - packages/operator-core/lib/cross-hive-swarm-transport.ts
 plans:
-  - shared-hive-hardening-2026-06-13
+  - shared-pot-hardening-2026-06-13
 ---
 
 ## What
 
-When you need to send a **request/response RPC to a remote peer** in a shared hive
+When you need to send a **request/response RPC to a remote peer** in a shared pot
 (the lock authority's `routeToAuthority`, B-05's eviction relay-probe, any future
 cross-machine control op), the obvious design — "resolve the peer's `:3070` URL and
 POST to it" — **does not work for the real topology.** Most peers are NAT'd desktops;
@@ -23,13 +23,13 @@ a raw operator URL is not reachable peer-to-peer. That was the standing `HttpPee
 gap: `configurePeerAddressResolver` had no production source because `shared_presence`
 carries `device_pubkey` (identity), not a network address.
 
-The answer (shared-hive-hardening-2026-06-13 D-005, owner-ratified **option c**): the
+The answer (shared-pot-hardening-2026-06-13 D-005, owner-ratified **option c**): the
 substrate **already holds an open, NAT-traversed, encrypted Hyperswarm connection per
 harness**, with a `protomux` muxer pinned at `socket.userData`, over which it already runs
 the `papercusp/announce` channel. **Ride that connection.** The connection IS the address —
 no URL, no mesh/tunnel layer, no addressing source to plumb.
 
-## How (the pattern — copy `cross-hive-swarm-transport.ts`)
+## How (the pattern — copy `cross-pot-swarm-transport.ts`)
 
 A standalone transport, NOT an edit to `sync/hyperbee/swarm.ts`:
 

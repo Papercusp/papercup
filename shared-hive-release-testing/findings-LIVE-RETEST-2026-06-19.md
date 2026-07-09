@@ -10,7 +10,7 @@ briefs H–N). This file is the durable record of *what is true live, right now*
 - Binary: `Papercusp_0.0.2_amd64.deb` (`/home/marsh-office/.cargo-target/release/
   bundle/deb/`, 05:33 build, luxon bundled — A-001 fix in the artifact).
 - Harness: `papercusp-desktop/bin/two-instance-content-matrix-smoke.sh`,
-  `SKIP_INVITE=1` (single hive, to isolate the unfixed A-002 multi-hive variable).
+  `SKIP_INVITE=1` (single pot, to isolate the unfixed A-002 multi-pot variable).
 - Topology: 2 distinct real peers — A = papercupai (owner), B = aviynw (joiner) —
   over a local testnet DHT, headless **Xvfb :154** (never :0; fleet-halt-safe).
 - Verification: each peer's embedded PG `origin` column
@@ -35,16 +35,16 @@ Pre-flight: **A-001 boot GREEN** (both real binaries booted) ·
 | plan-parts | ✅ remote | ✅ remote | ✅ remote |
 | item-assignments | ✅ remote | ✅ remote | ✅ remote |
 | presence | ➖ outbox=0 | ➖ outbox=0 | ➖ outbox=0 |
-| hive-settings | ❌ outbox=3 | ❌ outbox=4 | ❌ outbox=1 |
-| hive-members | ❌ outbox=1 | ❌ outbox=1 | ❌ outbox=1 |
+| pot-settings | ❌ outbox=3 | ❌ outbox=4 | ❌ outbox=1 |
+| pot-members | ❌ outbox=1 | ❌ outbox=1 | ❌ outbox=1 |
 
 - ✅ **8/11 types federate BIDIRECTIONALLY** in all three phases — the headline
   GREEN path, re-proven on the real binary post-restart.
 - ➖ **presence** rides the separate announce wire (`wire-presence.ts`); it is not
   capturable via raw-INSERT (outbox=0) — **by design, NOT a fail.** Do not re-file.
-- ❌ **hive-settings + hive-members = A-003, re-witnessed LIVE.** The outbox IS
+- ❌ **pot-settings + pot-members = A-003, re-witnessed LIVE.** The outbox IS
   populated (capture works) but the joiner never applies them — in backfill AND
-  both incremental directions. (`hive-members` incr A→B also shows a rig
+  both incremental directions. (`pot-members` incr A→B also shows a rig
   `SETUP-FAIL` dup-key on the seed PK — a test artifact, not a federation result.)
 
 ## Convergence (D-001) — restart-independent
@@ -65,6 +65,6 @@ briefs H–N (`CONTINUATION-PLAN.md`). Nothing here is new-blocker; it is the
 converged set, re-grounded in live evidence.
 
 ## Live pair (left up for the live lanes)
-`~/.papercusp-shared-hive-retest/instances.env` (A/B sidecar + embedded-PG ports,
-DHT bootstrap, `DISPLAY=:154`). Teardown: `~/.papercusp-shared-hive-retest/stop.sh`
+`~/.papercusp-shared-pot-retest/instances.env` (A/B sidecar + embedded-PG ports,
+DHT bootstrap, `DISPLAY=:154`). Teardown: `~/.papercusp-shared-pot-retest/stop.sh`
 (path-scoped `pkill -f <WORK>` — safe; never name-pattern the binary).

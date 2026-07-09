@@ -1,6 +1,6 @@
 ---
 title: "A 'freeze' watchdog that reads journald silence false-restarts a healthy host when journald itself wedges"
-description: "Bees/spawns kept dying at boot (exit-143, 0 invocations, EI-2186 reclaim). It looked like capacity or the gateway — it was neither. The bg-host watchdog judged 'frozen' by journalctl silence, but journald's capture had wedged host-wide, so it restarted a perfectly healthy durable-spawn host every ~5-11 min, and each unclean restart reclaim-killed every in-flight spawn. The fix + the generalizable detector-design lesson."
+description: "Cups/spawns kept dying at boot (exit-143, 0 invocations, EI-2186 reclaim). It looked like capacity or the gateway — it was neither. The bg-host watchdog judged 'frozen' by journalctl silence, but journald's capture had wedged host-wide, so it restarted a perfectly healthy durable-spawn host every ~5-11 min, and each unclean restart reclaim-killed every in-flight spawn. The fix + the generalizable detector-design lesson."
 discovered: 2026-06-22
 tags: [watchdog, bg-host, journald, spawn-reclaim, restart, false-positive, EI-2186, EI-2421, fleet-reliability, detector-design, exit-143]
 status: current
@@ -8,13 +8,13 @@ documents:
   - packages/operator-core/lib/fleet/spawn-reclaim.ts
   - packages/operator-core/lib/harness/improvements/watchdog.ts
 plans:
-  - hive-coordination-test-loop-2026-06-20
+  - pot-coordination-test-loop-2026-06-20
   - fleet-concurrency-first-prompt-policy-2026-06-20
 ---
 
 ## Symptom
 
-Fleet-wide, freshly-placed bees (and any durable spawn) died **at boot**: `status=failed`,
+Fleet-wide, freshly-placed cups (and any durable spawn) died **at boot**: `status=failed`,
 **zero tool invocations**, and a reclaim message like:
 
 > reclaimed at operator boot: launched by a prior incarnation … (host/process restarted
@@ -31,12 +31,12 @@ was capped not by capacity but by spawns that never survived their first turn.
    was not — the account pool had headroom (one account at 2% of its 7-day window). See the
    multi-account routing insights: a "limit" is almost always routing/health, not real exhaustion.
 2. **"It's the gateway."** There *was* a separate gateway crash-loop (EI-2421), and fixing it was
-   necessary — but **not sufficient**. A canary bee still died with 0 invocations *after* the
+   necessary — but **not sufficient**. A canary cup still died with 0 invocations *after* the
    gateway was stabilized, because a **different** restart source was killing it.
 
 ## Root cause (the chain)
 
-1. `papercup-bg-host` — the **durable-spawn primary** (it hosts bee spawns) — was being restarted
+1. `papercup-bg-host` — the **durable-spawn primary** (it hosts cup spawns) — was being restarted
    roughly **every 5-11 minutes**.
 2. It was **not** systemd auto-restart: `systemctl --user show papercup-bg-host.service -p NRestarts`
    read `0`, yet `ExecMainStartTimestamp` was minutes-old. A recent main-start with `NRestarts=0`
@@ -51,7 +51,7 @@ was capped not by capacity but by spawns that never survived their first turn.
 5. So the watchdog saw silence → **false-detected a freeze** → restarted a perfectly healthy host.
 6. Each restart was **unclean**: `State 'final-sigterm' timed out. Killing` + `Found left-over
    process … in control group` → SIGKILL + cgroup orphan leak. Because the bg-host hosts
-   durable-spawn, every in-flight bee was orphaned, and the next operator boot-reconcile
+   durable-spawn, every in-flight cup was orphaned, and the next operator boot-reconcile
    (`reconcileSpawnAdmissionOnBoot`) marked them `failed` (EI-2186). Net: a restart storm that
    manufactured the exact spawn-death outage the watchdog existed to prevent.
 
@@ -63,7 +63,7 @@ was capped not by capacity but by spawns that never survived their first turn.
   wedged**, not the service. This is the load-bearing tell: don't trust log-absence as liveness.
 - **`dev:session_detail` on a dead spawn** — `"host/process restarted before its admission-release
   ran (EI-2186)"` names a *host restart* (not the gateway) as the killer.
-- **`ps -o etimes,wchan -p <pid>`** on a wedged bee — `ep_poll` with 0 invocations ⇒ blocked on
+- **`ps -o etimes,wchan -p <pid>`** on a wedged cup — `ep_poll` with 0 invocations ⇒ blocked on
   first inference (a *different* failure: the gateway egress circuit; see the egress-probe insight).
   Distinguish "wedged on I/O" (gateway) from "reclaimed at boot" (host restart) — they need
   different fixes.
@@ -79,7 +79,7 @@ was capped not by capacity but by spawns that never survived their first turn.
   should **RE-LAUNCH** an in-flight spawn whose durable work-item is **non-terminal**, not
   reclaim-**kill** it — so a spawn survives **any** restart (gateway / operator / bg-host / deploy /
   legit crash), not only the false ones. Reclaim-only when the work-item is already terminal.
-  Complemented by a deterministic **spawn-admission readiness gate** (don't boot a bee into a
+  Complemented by a deterministic **spawn-admission readiness gate** (don't boot a cup into a
   gateway that can't serve it) so a fresh spawn never wedges in the first place.
 
 ## The lesson (generalizable)

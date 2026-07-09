@@ -56,12 +56,12 @@ pipelines. Found and fixed **five times** in one session (2026-06-19→20):
   waiting): they SHOULD fail-fast → the `WorkspaceContendedError` → `busy` result
   is correct. Retrying would make a waiting caller hang.
 - **Deliberate fail-open / tolerate-and-reconcile** (work-item claim authority,
-  hive federation, D-007): those fail-opens are by-design correctness choices, not
+  pot federation, D-007): those fail-opens are by-design correctness choices, not
   the bug. Releases that fail-open (the lease drains at TTL) are also fine.
 
 So the audit is per-site judgment: retry only **background/pipeline** acquires
 that should ride out load; leave interactive fail-fast and federation fail-open
-alone. Open follow-up: the spawn-fire/nursery acquire (zombie bee rows under
+alone. Open follow-up: the spawn-fire/nursery acquire (zombie cup rows under
 contention) — WI-262.
 
 Related: [[/agent-insights/native-addon-abi-mismatch-memory-hang]] (the same

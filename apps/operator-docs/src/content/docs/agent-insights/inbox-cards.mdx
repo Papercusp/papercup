@@ -86,8 +86,8 @@ grew `answerAttentionItem` once Answer became a real InputCard submit path):
   adapter doesn't emit. Add the action to `AttentionActionId` *and*
   `planItemToAttention`, and mirror the union in the client wire type
   (`plans-api.ts`).
-- **Preserve `resumeLoop`.** Plan-item Resolve/Answer fire `hive:wake` (via
-  `/api/agent-mcp/run-tool`, floor-debounced) to nudge the Queen now instead of
+- **Preserve `resumeLoop`.** Plan-item Resolve/Answer fire `pot:wake` (via
+  `/api/agent-mcp/run-tool`, floor-debounced) to nudge the Mug now instead of
   waiting for her next armed wake; **Drop deliberately does not** call it. This
   replaced the legacy `POST /api/harness/:slug/launch?phase=staging` run-loop
   kick after the bash orchestrator binary was archived (2026-06-06) — the

@@ -43,7 +43,7 @@ C4 is **not** satisfied by config (the arm being *configured* with the capabilit
 
 - **Coordination topologies:** the run driver (`run-topology.ts`) surfaces `armMeta.coordCalls` per task — the count of coordination tool calls the agents actually made. A coordination arm (broadcast / peer-review / blackboard / huddle / ensemble) whose rows show `coordCalls ≈ 0` is **C4 NEEDS-EVIDENCE**: the topology was never exercised, so the delta is variance, not capability. (A `worker` in a central/no-coord arm legitimately reports 0.)
 - **Capability injection (memory, tools, …):** count the capability's own tool calls from `agent_usage_samples` before trusting a lift; zero calls ⇒ the arm is its own control.
-- **Clean scoping is part of "exercised":** a capability wired to the wrong scope silently no-ops. `memory:search` scopes by `harness_slug`, **not** `hive_slug` — passing the hive slug returns workspace noise, not the arm's recall. Verify the capability reads/writes the scope you think it does.
+- **Clean scoping is part of "exercised":** a capability wired to the wrong scope silently no-ops. `memory:search` scopes by `harness_slug`, **not** `hive_slug` — passing the pot slug returns workspace noise, not the arm's recall. Verify the capability reads/writes the scope you think it does.
 
 Pre-flight the run on a 1–2 task probe and confirm the capability-exercised telemetry is non-zero **before** any big spend or claim. `buildFairnessAudit` marks C4 `NEEDS-EVIDENCE` by default — supply the `coordCalls`/tool-call evidence to clear it; never hand-wave past it.
 

@@ -7,7 +7,7 @@ documents:
 plans:
   - legacy-docs-audit-revival-2026-06-06
   - papercusp-full-app-audit-2026-06-09
-  - domain-generic-hive-architecture-2026-06-18
+  - domain-generic-pot-architecture-2026-06-18
 ---
 
 This page preserves the design-decision history of the **first-generation
@@ -89,8 +89,8 @@ Verified against the current engine:
 - **Competition mode** — removed (replaced by the synthesizer pre-cutover,
   itself dormant since the run-loop retirement); lane-style isolation lives
   on — see [Worktrees & isolation](/internal/docs/harness/worktrees).
-  Parallelism is now two-tiered: at the fleet level the Hive/Queen places
-  ranked tasks onto bee slots (free slot / graceful-evict+fresh /
+  Parallelism is now two-tiered: at the fleet level the Pot/Mug places
+  ranked tasks onto cup slots (free slot / graceful-evict+fresh /
   warm-inject), and the per-feature `coding-factory` pipeline carries
   `dispatch.concurrency: 4` (`priority: plan-order`) for parallel feature
   pipelines.
@@ -98,10 +98,10 @@ Verified against the current engine:
   (see [Storage policy](/internal/docs/system/storage-policy)); the
   fresh-shell re-derivability *goal* survives, now via PG + the operator API.
 
-## A note on the blueprint rename (`coding` is now the Hive)
+## A note on the blueprint rename (`coding` is now the Pot)
 
 This page was written when `coding` *was* the per-feature director spine.
-The 2026-06-18 domain-generic-hive-architecture rename
+The 2026-06-18 domain-generic-pot-architecture rename
 (D-011/D-024) shuffled the blueprint ids, so the names mean different
 things today:
 
@@ -110,10 +110,10 @@ things today:
   — survives as **`blueprints/coding-factory/blueprint.yaml`** (the retired
   per-feature director loop, lifted into declared spine edges).
 - **`blueprints/coding/blueprint.yaml`** is now a different system entirely:
-  the **Hive/Queen operator blueprint** (`kind: hive`, roles `operator` and
-  `queen`) — the judgment layer over the bee fleet, not a validation spine.
+  the **Pot/Mug operator blueprint** (`kind: pot`, roles `operator` and
+  `mug`) — the judgment layer over the cup fleet, not a validation spine.
   Following the old pointer expecting validator/debugger/crosscheck will
-  land you on the Queen instead.
+  land you on the Mug instead.
 
 ## Later eras (condensed)
 

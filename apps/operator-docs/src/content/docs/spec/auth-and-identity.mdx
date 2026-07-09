@@ -88,7 +88,7 @@ They use transport-local trust instead:
 
 | Surface | Trust model | Why |
 |---|---|---|
-| `POST /api/operator/sentinel-input` | `auth: 'loopback'` + allowed-origin check | Types into the local Sentinel pane; local app-user surface, not a harness admin write |
+| `POST /api/operator/papercup-input` | `auth: 'loopback'` + allowed-origin check | Types into the local Papercup pane; local app-user surface, not a harness admin write |
 | `GET /api/desktop/voice-config` | `auth: 'public'` | Returns loopback runtime config (chosen WS port + framing constants), not owner data |
 | `/api/desktop/voice` WebSocket | loopback-only remote-address check in `desktop-voice-ws.ts` | Dumb byte-pipe from the Tauri webview into the local voice socket |
 | `/api/device/voice` WebSocket | device JWT (`verifyDeviceToken`) | Device-session auth, not harness identity |

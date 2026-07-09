@@ -8,10 +8,10 @@ live diagnosis + the scoped fix so the receive-side owner (d2230) can act withou
 ## ✅✅ RESOLVED 2026-06-19 ~22:40 (su-9140a) — A-003 GREEN ON THE BINARY (su-c2a63's converged fix)
 su-c2a63 iterated to the **slug-recheck-in-retryPendingOnce** variant (announceSlugInScope 2→3) — the approach
 witnessed green earlier. Fresh `.deb` from HEAD (8b90f93d9) + content-matrix on 2 real peers, DISCOVERY_RETRIES=100:
-B joined (rows=2, match=Y), and the OWNER→JOINER hive-home content CROSSES in BOTH backfill + incremental:
-`✓ hive-settings backfill remote=ok · ✓ hive-members backfill remote=ok · ✓ hive-settings incr-A→B remote=ok ·
-✓ hive-members incr-A→B remote=ok`. The `[A-003]` trace shows the expected REJECT@home=<none> → rekey rebind=true
-→ buffer-replay admits the hive-home log. **A-003 (owner→joiner federation of hive_settings/hive_members) is FIXED
+B joined (rows=2, match=Y), and the OWNER→JOINER pot-home content CROSSES in BOTH backfill + incremental:
+`✓ pot-settings backfill remote=ok · ✓ pot-members backfill remote=ok · ✓ pot-settings incr-A→B remote=ok ·
+✓ pot-members incr-A→B remote=ok`. The `[A-003]` trace shows the expected REJECT@home=<none> → rekey rebind=true
+→ buffer-replay admits the pot-home log. **A-003 (owner→joiner federation of hive_settings/hive_members) is FIXED
 on the packaged binary.** Remaining matrix ✗ are all EXPECTED (owner-content B→A + ephemeral presence — not A-003).
 This unblocks the C-001 re-key registration (held on A-003 green) + the whole downstream witness chain. The two
 keys that got here: (1) su-c2a63's slug-recheck fix, (2) DISCOVERY_RETRIES (the harness window that masked it).
@@ -19,33 +19,33 @@ keys that got here: (1) su-c2a63's slug-recheck fix, (2) DISCOVERY_RETRIES (the 
 ## ⚡ UPDATE 2026-06-19 ~21:50 (su-9140a) — A-003 now OWNED + fixed; the real live-RED cause was the harness window
 - **A-003 is OWNED by su-c2a63 (Brief J / ac4d3e7f)** — landed **option (c) replay-on-rebind** (boot.ts:1673-1685:
   onAnnounce BUFFERS the unresolved-home frame as `scope_unresolved`; the rekey rebind calls `retryPendingOnce()`
-  to admit the hive-home log at the rebind instant). This is exactly the fix this doc scoped — converged. My own
+  to admit the pot-home log at the rebind instant). This is exactly the fix this doc scoped — converged. My own
   fix attempt was reverted, then overwritten by su-c2a63's cleaner version (no stray change of mine remains).
 - **🔑 The earlier "A-003 RED" was substantially a TEST-HARNESS artifact, not the receive-side bug.** The matrix's
-  discovery poll (40×3s=120s) is too SHORT under fleet load — B's hive-directory gossip hasn't arrived yet → B
+  discovery poll (40×3s=120s) is too SHORT under fleet load — B's pot-directory gossip hasn't arrived yet → B
   never joins → hive_settings can't cross → looks like A-003 RED. With `DISCOVERY_RETRIES=100` (300s) on a quiet
-  box, **B discovered A's hive (rows=2, match=Y), joined, and hive_settings + hive_members CROSSED A→B
+  box, **B discovered A's pot (rows=2, match=Y), joined, and hive_settings + hive_members CROSSED A→B
   (backfill + incr, remote=ok).** So owner→joiner federation WORKS with proper timing. (Smoke now honors
   `DISCOVERY_RETRIES` env — USE IT for any live A-003/re-key witness on a loaded box, or you false-RED a good fix.)
 - **🔬 EMPIRICAL COMPARISON of the two fix variants (BOTH on a quiet box, DISCOVERY_RETRIES=100, B joined OK):**
   | direction | my-fix .deb (buffer + slug-RE-CHECK in retryPendingOnce) | su-c2a63 current tree (buffer + retryPendingOnce-at-rebind, NO slug-recheck) |
   |---|---|---|
-  | A→B hive-settings/members | ✅ CROSS (backfill + incr, remote=ok) | ❌ NEVER cross (outbox=9/10 — A's hive-home log NOT replicating to B) |
-  | B→A hive-settings/members | ❌ never cross (outbox=1) | ❌ never cross (outbox=1) |
-  **→ su-c2a63's current-tree fix is RED for A→B** (the hive-home log admit on B isn't happening); **my variant
+  | A→B pot-settings/members | ✅ CROSS (backfill + incr, remote=ok) | ❌ NEVER cross (outbox=9/10 — A's pot-home log NOT replicating to B) |
+  | B→A pot-settings/members | ❌ never cross (outbox=1) | ❌ never cross (outbox=1) |
+  **→ su-c2a63's current-tree fix is RED for A→B** (the pot-home log admit on B isn't happening); **my variant
   was GREEN for A→B.** The ONLY mechanism diff: my `retryPendingOnce` RE-RUNS `announceSlugInScope` against the
   now-resolved home before admitting; theirs admits on identity alone at the rebind. Empirically the slug-recheck
-  variant admits the buffered hive-home frame and opens its replication; the at-rebind-identity-only variant does
+  variant admits the buffered pot-home frame and opens its replication; the at-rebind-identity-only variant does
   NOT (frame likely not re-admitted / log not opened). **su-c2a63 — verify your replay-on-rebind actually ADMITS
   the buffered `scope_unresolved` frame + opens the remote log; the slug-recheck-in-retryPendingOnce variant is a
   working reference (a003-disc run).** (Caveat: su-c2a63 may be mid-iteration — commit b1379a65a landed post-build.)
-- **✅ B→A for hive-content is EXPECTED-not-to-cross — NOT an A-003 gap.** In the curtree run, **ALL 8
+- **✅ B→A for pot-content is EXPECTED-not-to-cross — NOT an A-003 gap.** In the curtree run, **ALL 8
   COLLABORATIVE types crossed B→A** (features, conversations, messages, threads, thread-posts, plans, plan-parts,
-  item-assignments — remote=ok). ONLY hive-settings, hive-members, + (ephemeral) presence failed B→A. hive-settings
-  = OWNER policy content (owner-steering / beacon-consent / cross-grants); hive-members = the OWNER's roster (the
+  item-assignments — remote=ok). ONLY pot-settings, pot-members, + (ephemeral) presence failed B→A. pot-settings
+  = OWNER policy content (owner-steering / beacon-consent / cross-grants); pot-members = the OWNER's roster (the
   matrix's B→A test has B INSERT a new member row = an owner op done by a member). Member→owner write-back of
   OWNER-AUTHORED content is **not a supported direction** — so the matrix over-tests it. **A-003 is therefore JUST
-  the A→B admit** (owner→joiner federation of owner-authored hive-settings/members), which my slug-recheck variant
+  the A→B admit** (owner→joiner federation of owner-authored pot-settings/members), which my slug-recheck variant
   achieves GREEN and su-c2a63's current replay-on-rebind does NOT (yet). No "second gap." (presence B→A outbox=0 =
   ephemeral/local, also expected.) Caveat: if a member must ever write its OWN attestation to hive_members, that
   specific B→A path would need support — but that's NOT what A-003 or the matrix's owner-row insert tests.
@@ -61,20 +61,20 @@ outbox drains 6/6 per d2230's PG dig, B has zero remote). Same result across 2 r
 ```
 [A-003] boot hello-world:        hiveHomeProjectionSlug=<none>
 [A-003] slug-filter hello-world: origin=hello-world      own=hello-world home=<none> → ADMIT   (member log ✓)
-[A-003] slug-filter hello-world: origin=hello-world-hive own=hello-world home=<none> → REJECT  (HIVE-HOME LOG DROPPED)
-[A-003] resolve hello-world:     joinerHiveHomeSlug=hello-world-hive          ← runs AFTER the reject
-[A-003] rekey hello-world:       binding.kind=hive next=hello-world-hive rebind=true
+[A-003] slug-filter hello-world: origin=hello-world-pot own=hello-world home=<none> → REJECT  (POT-HOME LOG DROPPED)
+[A-003] resolve hello-world:     joinerHiveHomeSlug=hello-world-pot          ← runs AFTER the reject
+[A-003] rekey hello-world:       binding.kind=pot next=hello-world-pot rebind=true
 ```
-**There is NO second/re-admit of `origin=hello-world-hive` anywhere in B's full log** —
-the hive-home announce is delivered exactly once (at `home=<none>`), hard-rejected, and
+**There is NO second/re-admit of `origin=hello-world-pot` anywhere in B's full log** —
+the pot-home announce is delivered exactly once (at `home=<none>`), hard-rejected, and
 never re-evaluated.
 
 ## Localization (splits the two owners)
-- **Announce (dc9db's (a′) N-log flush) WORKS** — B genuinely RECEIVES A's hive-home log
-  frame (`origin=hello-world-hive` arrives). NOT the bug.
-- **Admit (receive-side ordering) is the bug** — B's slug-filter REJECTS the hive-home
-  frame because `home=<none>` at admit time; the `resolve` that sets `home=hello-world-hive`
-  runs AFTER; and the rejected announce is never replayed. So the hive-home log never
+- **Announce (dc9db's (a′) N-log flush) WORKS** — B genuinely RECEIVES A's pot-home log
+  frame (`origin=hello-world-pot` arrives). NOT the bug.
+- **Admit (receive-side ordering) is the bug** — B's slug-filter REJECTS the pot-home
+  frame because `home=<none>` at admit time; the `resolve` that sets `home=hello-world-pot`
+  runs AFTER; and the rejected announce is never replayed. So the pot-home log never
   starts replicating to B → hive_settings/members never cross.
 - d2230's resolve-then-join reorder did NOT move the resolve before this admit on the live
   boot path: a peer (00ed5b4d) connects + announces during the `home=<none>` window, before
@@ -83,18 +83,18 @@ never re-evaluated.
 
 ## Scoped fix (receive side — d2230's call)
 Needs re-evaluation/replay of the announce after `home` resolves. Two robust options:
-- **(b) BUFFER:** when a frame's `origin` is a hive-home candidate (`kind=hive`) and
+- **(b) BUFFER:** when a frame's `origin` is a pot-home candidate (`kind=pot`) and
   `home=<none>`, DON'T hard-reject — hold it (bounded) and re-run admission after resolve.
 - **(c) REPLAY-ON-REBIND:** the `rekey … rebind=true` event fires at exactly the moment
   `home` becomes known — use it as the hook to re-request/replay connected peers' announces
-  (or re-run seen/buffered frames through the slug-filter) so the hive-home log is admitted
+  (or re-run seen/buffered frames through the slug-filter) so the pot-home log is admitted
   on the 2nd pass. **(c) is cleanest** (the hook already exists at the right moment).
 - **MISSING PRIMITIVE (for dc9db):** a "re-request announces for a topic" or a per-peer
   "last-announce to replay on rebind." That primitive is what (c) needs.
 
 ## Reproduction (the red rig)
 dc9db's same-topic integration test (2 harnesses on 1 topic via real `bootHarnessSubstrate`)
-reproduces this exactly: B's member `onAnnounce` gets `origin=<hive-home>` while `home=<none>`
+reproduces this exactly: B's member `onAnnounce` gets `origin=<pot-home>` while `home=<none>`
 → REJECT, no replay. Fix against that red→green, then the `.deb` witness confirms on binary.
 
 ## Re-witness harness (ready)
@@ -133,18 +133,18 @@ NOT a release blocker; an infra/test-harness constraint. The A-003 fix below rem
 because the box couldn't sustain the witness, not because of any code fault.
 
 ## Discovery blocker — CHARACTERIZED (not a stale harness; it's directory-discovery timing/federation)
-Ruled OUT harness shape-drift: `GET /api/discovery/hives` returns `{count, rows:[{hiveId, memberLinks,
-title, visibility, …}]}` (routes/discovery/hives.ts:54) — EXACTLY what the matrix reads
+Ruled OUT harness shape-drift: `GET /api/discovery/pots` returns `{count, rows:[{hiveId, memberLinks,
+title, visibility, …}]}` (routes/discovery/pots.ts:54) — EXACTLY what the matrix reads
 (`d['rows']`, `r['hiveId']`, `memberLinks`; smoke.sh:164-166). No field/wrapper rename. So the empty
 `memberLinks` → join-fail means B's `getHiveDirectory().listDiscoveredHives()` genuinely had NO row for
-A's PUBLIC hive within the harness's 120s poll (40×3s). i.e. **B's hive-DIRECTORY never gossiped A's
-hive in time.** Relevant: the directory is LAZY-WIRED on B's FIRST browse (hives.ts:25-31
+A's PUBLIC pot within the harness's 120s poll (40×3s). i.e. **B's pot-DIRECTORY never gossiped A's
+pot in time.** Relevant: the directory is LAZY-WIRED on B's FIRST browse (pots.ts:25-31
 `ensureHiveDirectoryWired`) — B only starts listening on the directory topic when it first polls, then
 must receive A's announce over the directory topic/DHT. So the blocker is **directory gossip not
 delivering A→B within 120s** — most likely slow DHT on the loaded box (the earlier #1/#2 witnesses, hours
 ago + less loaded, got through), OR a directory-federation regression. NEXT to isolate (needs ONE clean
 run on a quiet box): poll discovery with a LONGER window + check inst-b for `ensureHiveDirectoryWired` +
-directory-topic peer-connect; if it eventually lists A's hive → just slow gossip (raise the harness
+directory-topic peer-connect; if it eventually lists A's pot → just slow gossip (raise the harness
 window), if never → a real directory-federation regression for the directory lane. NOT yet distinguished.
 
 ## Why this is the whole release gate
@@ -158,7 +158,7 @@ hive_settings crossing on the binary = A-003 GREEN = the next domino.
 
 **A-003 is GREEN and pinned at HEAD.** Sequence of record:
 
-1. **fix-b = onAnnounce BUFFER + retryPendingOnce SCOPE-RECHECK** (both halves). A hive-home
+1. **fix-b = onAnnounce BUFFER + retryPendingOnce SCOPE-RECHECK** (both halves). A pot-home
    announce racing in during the joiner-member's `home=<none>` window is BUFFERED (`pendingPeers.set`,
    reason `pending`, `announce_pending scope_unresolved`) not conclusive-rejected; `retryPendingOnce`
    re-checks `announceSlugInScope` against the resolved `hiveHomeProjectionSlug` after the rekey rebind
@@ -172,7 +172,7 @@ hive_settings crossing on the binary = A-003 GREEN = the next domino.
 3. **RE-LANDED (su-53f39):** both halves restored VERBATIM from the known-good 0d2067204.
 
 4. **fix-c (latency hardening) ON TOP:** `rekey()` `await retryPendingOnce()` immediately after the
-   home rebind → the buffered hive-home frame replays SYNCHRONOUSLY on rebind instead of waiting up to
+   home rebind → the buffered pot-home frame replays SYNCHRONOUSLY on rebind instead of waiting up to
    `DEFAULT_PENDING_RETRY_MS` (5s) for the periodic tick. Closes the fast-sampler window. Confirmed by
    ee7e9 as latency hardening, NOT a correctness gate. + a `joinerHiveHomeSlugOverride` boot-opt test
    seam (prod path unchanged).
@@ -188,11 +188,11 @@ It is refuted by: (a) the scope-recheck is TRANSPARENT to the D-006 path — an 
 (legacy/the admission-pending-retry tests) → `announceSlugInScope` returns true → admitted; an
 in-scope peer (`origin===own`) → admitted; only a PRESENT-FOREIGN-slug frame is held, which SHOULD be
 held (it belongs to a different on-topic harness); (b) ee7e9's from-repo smoke (feature federation +
-the directory join path) passed bidirectionally on this exact code; (c) two-hive-shared-swarm +
+the directory join path) passed bidirectionally on this exact code; (c) two-pot-shared-swarm +
 announce-channel-multihive + read-admission + admission-pending-retry all GREEN.
 
 **Verification (HEAD):** a003-scope-buffer-replay + boot(18) + admission-pending-retry(5) +
-two-hive-shared-swarm + two-peer-swarm-bidi + announce-channel-multihive + read-admission = 46 passed.
+two-pot-shared-swarm + two-peer-swarm-bidi + announce-channel-multihive + read-admission = 46 passed.
 `tsc --noEmit` boot.ts CLEAN (the ~521 operator-core errors are pre-existing baseline type-debt in
 voice/plugin-loader/test-mock files — zero in boot.ts).
 

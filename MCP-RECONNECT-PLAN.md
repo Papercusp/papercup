@@ -22,7 +22,7 @@ transport so a restart never drops the socket.
 
 ### Layer 2 — permanent, stable signed URLs — NO time-based re-minting ✅ DONE + committed
 - **2a — permanent URLs.** `signSpawnParams` / `verifySpawnParams` (operator `spawn-signing.ts`)
-  + the orchestrator's signer (`spawn-mcp.ts`) support a sentinel `exp=0` = "never expires":
+  + the orchestrator's signer (`spawn-mcp.ts`) support a papercup `exp=0` = "never expires":
   sign with `exp=0` (still inside the HMAC, so role-escalation is still blocked), verify skips
   ONLY the time check when `exp===0`. Permanent by default. 12/12 spawn-signing tests; the
   role-escalation rewrite still fails (`invalid_signature`). Revocation is now key-rotation.
@@ -45,7 +45,7 @@ it just retries a refused upstream across the restart window. It was DEAD WEIGHT
 `PAPERCUSP_MCP_PROXY_BASE` was unset, so every `.mcp.json` still pointed at `:3070` directly.
 Two changes activate it:
 - **3A (code, repo-durable):** `resolveSpawnOperatorBase` (`spawn-mcp.ts`) now honors
-  `PAPERCUSP_MCP_PROXY_BASE` — closing the SPAWN-path gap so fleet bees route through `:9071` too
+  `PAPERCUSP_MCP_PROXY_BASE` — closing the SPAWN-path gap so fleet cups route through `:9071` too
   (the console + role paths already did, via `resolveAgentMcpBaseUrl`). Opt-in: unset ⇒ unchanged.
   New tests assert proxy-wins-over-host-defaults, explicit-operatorUrl-still-wins, unset-is-noop.
 - **3B (activation, box-local):** `80-mcp-proxy-base.conf` systemd drop-ins on `papercup-dev-api`
@@ -55,13 +55,13 @@ Two changes activate it:
 
 ### Layer 4 — safety-net watchdog ✅ BUILT + tested
 `packages/operator-core/lib/system-health/mcp-dark-watchdog.ts` — a process-level sweep (same family
-as the git-sync/green stall watchdogs, wired in `dbos/bootstrap.ts`) that detects a spawned bee
+as the git-sync/green stall watchdogs, wired in `dbos/bootstrap.ts`) that detects a spawned cup
 working DARK after a restart. The signal is robust, not a guess: `coord_presence.heartbeat_at` is
 TOOL-CALL-COUPLED (dark MCP ⇒ frozen) while `spawned_agents.heartbeat_at` is the deploy-surviving
-SUPERVISOR beat (process alive) and `last_output_at` proves it's actively generating. A bee that is
+SUPERVISOR beat (process alive) and `last_output_at` proves it's actively generating. A cup that is
 alive + generating but whose presence beat predates the restart (past a grace window) is working
-tool-less → per-owner escalation + owner notify + fleet broadcast (reaches the HEALTHY peers/Queen,
-who can relaunch it — the dark bee can't read its own inbox). Recovery clears idempotently.
+tool-less → per-owner escalation + owner notify + fleet broadcast (reaches the HEALTHY peers/Mug,
+who can relaunch it — the dark cup can't read its own inbox). Recovery clears idempotently.
 Kill-switch `PAPERCUSP_MCP_DARK_WATCHDOG='0'`. 9/9 unit tests on the pure verdict.
 
 ---
@@ -69,7 +69,7 @@ Kill-switch `PAPERCUSP_MCP_DARK_WATCHDOG='0'`. 9/9 unit tests on the pure verdic
 ## Activation (what makes it LIVE)
 - **bg-host runs from THIS (integration) tree**, so a `papercup-bg-host` restart loads Layers
   1/2/3A/4 code + its proxy-base env directly (no release deploy needed). bg-host is the spawner
-  (writes bee `.mcp.json`), the signer, and where the watchdogs run — so this is the primary
+  (writes cup `.mcp.json`), the signer, and where the watchdogs run — so this is the primary
   activation. It reclaims in-flight background agents (Restart=always + EI-85 relaunch), so it's a
   deliberate step.
 - **dev-api (`:3070`) runs the release checkout**, so its release-side code + proxy-base env apply

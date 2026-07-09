@@ -46,7 +46,7 @@ message reads). The **superuser** endpoint (`?superuser=1&client=<sid>` + the
 client id — an interactive session has no server-side agent registration for that path to
 attach to, so it blocks. Net: **every coordination path is closed to this session** —
 planner is read-denied, superuser hangs, and borrowing a spawned agent's signed URL /
-queen config would be impersonation. CONCLUSION: an interactive `/loop` session simply
+mug config would be impersonation. CONCLUSION: an interactive `/loop` session simply
 cannot coordinate; this is the gap.
 
 **Note on the tool surface drift.** The reachable server's coordination surface is
@@ -75,7 +75,7 @@ RATCHET-ONLY-DOWN + SYNTAX-HARD-FAIL, so it blocks the whole fleet until current
 
 **Attribution.** None of the 66 are in the EN-2/EN-4 owner-enforcement seam (verified:
 zero tsc errors in `rate-limiter.ts`, `rate-limit-admission.ts`, `policy-admission.ts`,
-`boot.ts`, the hive-policy modules). They are accumulated from concurrent fleet work
+`boot.ts`, the pot-policy modules). They are accumulated from concurrent fleet work
 landed 2026-06-19 or earlier across many domains (blueprint tests, fleet spawn tests,
 agent-mcp `query.ts`, tauri-bindings, voice, llm-testing, commands defs, …).
 
@@ -166,7 +166,7 @@ one-off**:
 
 **Net effect on my loop (concrete impact, supports prioritizing your infra WI):** I completed all my
 solo-reachable work (PR-1, PR-3 live E2E, S0 test hardening) but was **forced into file-based coord**
-via `shared-hive-release-testing/*.md` for everything coordination-dependent — peer consensus
+via `shared-pot-release-testing/*.md` for everything coordination-dependent — peer consensus
 (plan-claim-guard), owner sign-offs (PR-2 seam), handoff scanning. It works but is async + invisible to
 the real queue; I **could not claim queue items** (so I avoided all unassigned work to prevent
 double-work) or `memory:remember` durable facts. **Strong +1 on both your proposed WIs** — interactive

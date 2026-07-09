@@ -1,18 +1,18 @@
-# Brief Q — Live multi-member hives + membership churn
+# Brief Q — Live multi-member pots + membership churn
 
 **Priority: S1 lane.** Live (3+ members). Beyond the 2-peer owner+joiner witness.
 
 ## Objective
-Prove a hive with **3+ live members** federates correctly while members **join,
+Prove a pot with **3+ live members** federates correctly while members **join,
 leave, and re-join under load** — content reaches all members, late joiners
 backfill, departures are clean, and convergence holds throughout.
 
 ## Why it matters
-Every live witness was **2 peers** (one owner + one joiner). Real hives are N-member:
-multiple people join a shared hive, some leave, new ones arrive mid-stream. N (rig)
+Every live witness was **2 peers** (one owner + one joiner). Real pots are N-member:
+multiple people join a shared pot, some leave, new ones arrive mid-stream. N (rig)
 covered N-peer at the in-process level, but the LIVE packaged path with real
 identities + real joins has never been exercised past 2. Membership churn is where
-admission, backfill cursors, and the hive-home federation (A-003) interact in ways a
+admission, backfill cursors, and the pot-home federation (A-003) interact in ways a
 static 2-peer pair can't show. (Note the box's 2-gh-identity limit — see Method.)
 
 ## Scope / scenarios
@@ -24,7 +24,7 @@ static 2-peer pair can't show. (Note the box's 2-gh-identity limit — see Metho
    duplication / cursor confusion; assert no double-apply.
 4. **Concurrent joins:** two members join at the ~same time; both end up fully synced.
 5. **Member-list (hive_members) consistency:** as members join/leave, every member's
-   view of the membership converges (depends on A-003's hive-home federation — gate
+   view of the membership converges (depends on A-003's pot-home federation — gate
    this lane behind A-003 landing, or assert it RED-pending if A-003 isn't fixed yet).
 
 ## Method

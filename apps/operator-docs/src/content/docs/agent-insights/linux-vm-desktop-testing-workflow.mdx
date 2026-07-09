@@ -138,8 +138,8 @@ what a copied binary IS, not just that it runs on the host that built it.**
 
 ## Seed-cut identity rule (do not violate)
 
-The seed's git half is encrypted with `deriveEpochKey(hive, epoch)` — deterministic
-per the hive's PRIVATE key, held only in **Tower's live hive keychain** (Tower =
+The seed's git half is encrypted with `deriveEpochKey(pot, epoch)` — deterministic
+per the pot's PRIVATE key, held only in **Tower's live pot keychain** (Tower =
 the owner box that owns the Papercusp GitHub identity). `cut-seed-cli` fails-closed
 off-Tower (`--allow-mint-epoch-key` is the only bootstrap hatch). **Never cut a
 seed on a build VM** — get-or-CREATE would mint a divergent, unwrappable key and
@@ -155,8 +155,8 @@ What the seeded Linux GUI .deb actually does on a clean first boot:
   spawns code-server + ghostty terminal + embedded Postgres. The PUI terminal
   (Zellij `network`/`plans` tabs) renders and shows the expected pre-sign-in empty
   network board.
-- ⏸️ **Hive seed git-restore is gated on GitHub sign-in.**
-  `[papercusp-hive] not created this boot: join awaiting GitHub sign-in`. The
+- ⏸️ **Pot seed git-restore is gated on GitHub sign-in.**
+  `[papercusp-pot] not created this boot: join awaiting GitHub sign-in`. The
   encrypted git half only decrypts **post-admission**, so a fully-offline first
   boot cannot restore the repo until the owner signs in (an interactive,
   owner-gated step — do not attempt to enter credentials).

@@ -68,7 +68,7 @@ fold cost (WAN convergence latency is additive — see C3).
   not O(total-history). "Merge stays ~idle when nothing changed" is met decisively.
 - Memory is **~275 bytes per distinct live key** in the standing winner map
   (400k keys → +105 MB). Linear in distinct keys, not in op-history. Fine for
-  expected hive sizes; very large public hives are the snapshot-compaction path's
+  expected pot sizes; very large public pots are the snapshot-compaction path's
   job (flag-gated today).
 
 ---

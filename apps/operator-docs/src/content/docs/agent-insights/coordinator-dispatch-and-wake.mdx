@@ -1,8 +1,8 @@
 ---
 title: Coordinator dispatch & wake — hand a lane to a peer in ONE call, and read "wakeable" not "active"
-description: How a coordinator/Queen reliably gets work picked up by another agent — coord:dispatch (assign+wake+confirm), the presence wakeable/sessionState signal that tells you who can actually take work, and why a dead session shows as a fake "parked" target until the reclaim lane GCs its dangling inbox-wake await.
+description: How a coordinator/Mug reliably gets work picked up by another agent — coord:dispatch (assign+wake+confirm), the presence wakeable/sessionState signal that tells you who can actually take work, and why a dead session shows as a fake "parked" target until the reclaim lane GCs its dangling inbox-wake await.
 discovered: 2026-06-24
-tags: [coordination, dispatch, wake, presence, reclaim, fleet, queen]
+tags: [coordination, dispatch, wake, presence, reclaim, fleet, mug]
 status: active
 documents:
   - packages/operator-core/lib/agent-tools/coordination/tools/dispatch.ts
@@ -16,7 +16,7 @@ plans:
 
 ## What this fixes
 
-A coordinator (an su handing work to a peer, or the Queen placing a lane) repeatedly
+A coordinator (an su handing work to a peer, or the Mug placing a lane) repeatedly
 hit the same four-step confusion when trying to get an agent to actually pick up work:
 
 1. **`coord:presence` showed dead sessions as "active".** A just-ended su session keeps a
@@ -109,7 +109,7 @@ LOUD miss, never a silent `woken:0`:
 - `warning` + `recipient_dead` / `sessionState: 'ended'` → the lane was **assigned durably** but no
   live process will pick it up until the target is **relaunched/resumed**. Re-dispatch to a
   `parked`/`live` agent or respawn this one. Do NOT assume it landed.
-- `staged: 1+` (EI-5957) → the target is **alive** but in **manual wake-mode** (the hive
+- `staged: 1+` (EI-5957) → the target is **alive** but in **manual wake-mode** (the pot
   pause/edit gate), so the note was **queued for owner review**, not delivered — the #1
   leader-steering trap: a quiet `staged:1` reads like success while the member never acts on it.
   The lane is still assigned durably; release the wake
@@ -140,11 +140,11 @@ standing await as "alive").
 
 The **reclaim lane** (`idle-session-reaper.ts` slice 4, `reclaimDanglingInboxWakeAwaits`) is the
 SessionEnd-hygiene the dead process never ran: it cancels the inbox-wake await of any owner that
-is **not** live-or-resumable (no fresh presence heartbeat, no running bee, no in-flight wake, no
+is **not** live-or-resumable (no fresh presence heartbeat, no running cup, no in-flight wake, no
 OPEN adv_session). A *parked-but-resumable* session (open adv_session — the wake-executor can
 `--resume` it) keeps its await; only a session that is genuinely over loses it and flips from a
 false `parked` to an honest `ended`. (Work-item *claims* of dead owners are released separately by
-the stale-claims reaper, which already uses a heartbeat/running-bee liveness rule that is not
+the stale-claims reaper, which already uses a heartbeat/running-cup liveness rule that is not
 await-polluted.)
 
 So if a coordinator sees a stale "parked" pile, the reclaim sweep — fired by the

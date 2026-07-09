@@ -23,7 +23,7 @@ A 2026-06-26 audit of `harness_shared.tool_invocations` found near-zero *organic
 1. **A role gate** excluded worker-tier roles (fixed: `agentRoles: [...AGENT_ROLES]`).
 2. **The structural nudge fired on the wrong pattern.** The original inline nudge
    triggered only on **same-tool ≥3×** in a session. But among multi-call SU spawns
-   (≥4 calls), only ~**33% (bee) / ~28% (queen)** *have* a same-tool-≥3× pattern — the
+   (≥4 calls), only ~**33% (cup) / ~28% (mug)** *have* a same-tool-≥3× pattern — the
    other ~70% are **many-distinct-tools-once fan-outs** (`get` here, `search` there,
    `list` somewhere else). The nudge was structurally **blind** to the dominant
    batchable shape. It was also **one-shot** (ignore once → never again) and gave the
@@ -38,9 +38,9 @@ tool at all. Layered lockout:
 1. **Seeded kits omitted it.** `code:run` (and `recipes:*`, `tools:find`,
    `tools:invoke`) was absent from `BEE_MCP_TOOL_NAMES` / `QUEEN_MCP_TOOL_NAMES` in
    `orchestrator/src/invoke.ts` — and the `*_ALLOWED_TOOLS` allowlists derive from
-   those kits, so the omission was also an authorization denial. ~98% of bee spawns
+   those kits, so the omission was also an authorization denial. ~98% of cup spawns
    had a batchable shape; **0** could act on it.
-2. **Capability envelopes denied the queen** `capability:bash` (code:run's
+2. **Capability envelopes denied the mug** `capability:bash` (code:run's
    requirement) and `intel:read` (recipes:search) — see
    `role-principal-caps.ts`. 59×/14d recipes denials at orient, silently.
 3. **The su CORE spine omitted it too**, so trimmed seeded surfaces read the prose
@@ -84,7 +84,7 @@ escalating banners included — toward a tool they could not call. Now:
 
 - `canRoleActOnCodeRun(role)` = role ∈ `CODE_RUN_CAPABLE_ROLES` **AND** the role's
   `ROLE_ENVELOPES` entry does not deny `capability:bash` — the envelope deny is folded
-  in, so overwatch/sentinel-style denied roles are never nudged.
+  in, so overwatch/papercup-style denied roles are never nudged.
 - `codeRunInSurface` (computed at the `_mcp-handler` call site from
   `getSessionSurface`): when the live seeded surface lacks `code:run`, the hint text
   switches to the **activate-first** variant (`ACTIVATE_PATH_NOTE` — `tools:find` /

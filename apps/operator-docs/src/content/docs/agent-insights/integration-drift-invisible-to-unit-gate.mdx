@@ -41,7 +41,7 @@ it is *behavioral/config* drift. The recurring sub-recipes (all seen
   Fix: seed under the resolved workspace (import `PAPERCUSP_WORKSPACE_ID`, or
   seed under `activeWorkspaceId()` so seed and a F-C3-scoped read agree).
 - **New create-side scope gate with a PG dependency.** `work_items:create`
-  gained a hive-scope gate; the priority path gained a P-021 queen-home gate.
+  gained a pot-scope gate; the priority path gained a P-021 mug-home gate.
   Both call a PG read (`hiveHomeSlugForHarness`, `getQueenHomePubkey`) the
   throwaway DB lacks → the gate errors or **fails open**, producing the wrong
   result in the test (`hive_required`, or a non-holder steer that wrongly

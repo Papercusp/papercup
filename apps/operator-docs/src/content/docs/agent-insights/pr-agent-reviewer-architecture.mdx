@@ -93,8 +93,8 @@ revoked contributor). The gate ANDs the agent's `reportGatesAutoApprove(report)`
 
 `poll-daemon.ts` `defaultTriggerReviewer` fires once per new/changed PR (last-seen
 guard, so no re-review churn). Preference order:
-1. If a hive declares a `pr:review` launch **blueprint** → POST to it (a heavyweight
-   Bee agent reviews — opt-in).
+1. If a pot declares a `pr:review` launch **blueprint** → POST to it (a heavyweight
+   Cup agent reviews — opt-in).
 2. Otherwise → run `runPrReviewTask` **in-process, fire-and-forget** (the
    deterministic, safety-guarded default). The report lands in `pr_review_reports`
    for the gate + GUI to read on a later poll.

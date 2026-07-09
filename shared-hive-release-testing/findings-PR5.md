@@ -22,7 +22,7 @@ Everything I could land solo is DONE + green. These 4 need YOU (consensus-gated 
    being reachable. pr1-impl's design: verify a CITED ARTIFACT (merged-PR/SHA/passing-test), not a file
    path. **Unblocks when coord is back.**
 4. (FYI, no action) GAP-1 per-harness revocation: resolved by consensus as (b) document + observability
-   log (revocation is hive-membership-based by design). Reopen to (a) only if you want non-hive shared
+   log (revocation is pot-membership-based by design). Reopen to (a) only if you want non-pot shared
    harnesses supported.
 
 ## 📓 Autonomous-session work log (pr5-impl, 2026-06-20 — owner asleep, full auto)
@@ -33,7 +33,7 @@ After PR-1..5 completed, picked up adjacent PR-system queue work from `ideas-pr-
   reconciled with pr3-impl on the followups doc.
 - **GAP-1 per-harness revocation boundary — RESOLVED via consensus (b)+log** with pr3-impl:
   documented the design boundary in `contribution-admission.ts` + a fail-safe observability warn
-  (non-hive harness with substrate revocations → loud log, decision unchanged). 3 teeth tests.
+  (non-pot harness with substrate revocations → loud log, decision unchanged). 3 teeth tests.
 - PR-system suite now **378 green** (22 files). Followups queue: #1/#2 offered by pr3-impl, #4 done,
   #5 = live run (owner env). Next per the priority ladder: peer handoffs (`handoff-*.md`) / RELEASE-READINESS.
 
@@ -77,7 +77,7 @@ report) + 3 teeth tests. Revocation now has teeth on BOTH paths — the S0 invar
 
 | Item | What | Files | Teeth |
 |---|---|---|---|
-| **PR-5.4** Revocation has teeth (code plane) | A revoked Hive contributor now LOSES contribution admission on the fork→PR path. Was a silent no-op: substrate read-revocation shipped, but `tryAutoApprove`/`tryAutoMerge` + the manual `reviewPr` route never consulted the revoked set. | `pr-host/contribution-admission.ts` (+`.test`), edits to `auto-approve.ts`, `auto-merge.ts`, `routes/harness/prs.ts` | 13 + 4 |
+| **PR-5.4** Revocation has teeth (code plane) | A revoked Pot contributor now LOSES contribution admission on the fork→PR path. Was a silent no-op: substrate read-revocation shipped, but `tryAutoApprove`/`tryAutoMerge` + the manual `reviewPr` route never consulted the revoked set. | `pr-host/contribution-admission.ts` (+`.test`), edits to `auto-approve.ts`, `auto-merge.ts`, `routes/harness/prs.ts` | 13 + 4 |
 | **PR-5.3** Fork cleanup / GC | KEEP-on-merge + stale-fork GC (plan D-3). Never deletes an active fork (open PR), a recently-pushed one, or another account's repo. Dry-run by default. | `harness/fork-gc.ts` (+`.test`), `agent-tools/platform/fork_gc.ts` (+`.test`), registered in `agent-tools/index.ts` | 13 + 6 |
 | **PR-5.2** Round-trip WITNESS | Programmatic "did the loop round-trip" check — the brief's Done assertion (WI shows shipped + linked PR). Decoupled from PR-2/PR-4's landing modules via injected reader seams. | `pr-host/dogfood-roundtrip.ts` (+`.test`) | 8 |
 
@@ -93,14 +93,14 @@ Run them: `cd packages/operator-core && npx vitest run lib/pr-host/contribution-
 
 ## The LIVE dogfood loop — runbook (run on the operator install with `gh` auth)
 
-PR-5.1 (stand papercup up as its own self-hive) is step 1 here — the code (`enable-platform-mode.ts`,
+PR-5.1 (stand papercup up as its own self-pot) is step 1 here — the code (`enable-platform-mode.ts`,
 `platform:enable`, slug `papercusp-platform`) is packaged + tested; it has just never been RUN
 internally. Standing it up is a runtime action, not a code gap.
 
 1. **Enable platform mode.** `platform:enable { confirm:true, reason:"dogfood the member path" }`
-   → stands `papercup` up as a `kind:'hive'` self-hive (`papercusp-platform` / home
-   `papercusp-platform-hive`, canonical `github.com/Papercusp/papercup.git`), flag on, loops armed dark.
-2. **Contribute AS A MEMBER (no canonical write).** A Bee makes a real change in the self-hive member
+   → stands `papercup` up as a `kind:'pot'` self-pot (`papercusp-platform` / home
+   `papercusp-platform-pot`, canonical `github.com/Papercusp/papercup.git`), flag on, loops armed dark.
+2. **Contribute AS A MEMBER (no canonical write).** A Cup makes a real change in the self-pot member
    clone, then `platform:contribute { kind:'pr', confirm:true, reason:"…" }` → commits to the
    operator's FORK + opens a fork→canonical PR. (Outbound leg — BUILT.)
 3. **Daemon notices → reviews → owner-mode.** PR-1's `system:pr-poll` routine (per harness with

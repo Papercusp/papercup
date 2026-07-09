@@ -11,7 +11,7 @@ the claimed-owner authority (gating the mode toggle). nuqs for all view state (A
 2. **Manual mode — human acts on the report:** a **Approve** + **Approve-and-merge** action
    (the existing `POST /api/harness/:slug/prs/:number/review`) shown when the viewer is authorized;
    the human reads the agent's report, then clicks. (This is the path that exists today — keep it.)
-3. **Auto mode — per-hive toggle (owner-gated):** an **"Auto-apply agent recommendations"** toggle
+3. **Auto mode — per-pot toggle (owner-gated):** an **"Auto-apply agent recommendations"** toggle
    that flips `pr_reviewer_settings.auto_review`/`auto_merge` — GATED on **claimed-owner authority**
    (reuse `useHarnessClaimStatus`; an unclaimed/non-owner viewer sees it read-only). When ON, the
    daemon (PR-1) auto-applies the recommendation; the GUI shows "auto" + the audit trail.

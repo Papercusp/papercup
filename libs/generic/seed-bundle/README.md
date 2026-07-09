@@ -13,7 +13,7 @@ the **unmodified** sync/join protocol then transfers only the **delta** on top.
 
 ## What's here (pure core)
 
-- **`manifest.ts`** — the self-describing `SeedManifest` (hive id, cut epoch/HLC,
+- **`manifest.ts`** — the self-describing `SeedManifest` (pot id, cut epoch/HLC,
   per-store entries with `{kind, hash, sizeBytes, source, encryption?}`) + pure
   `validateManifest` / `encodeManifest` / `decodeManifest`. `SeedSource` is
   open-ended (`resource | url | swarm`) so delivery can change without a schema bump.
@@ -33,8 +33,8 @@ provider (a `git bundle` → clone-from-bundle → delta fetch).
 
 ## Design
 
-Plan `hive-seed-bundle-2026-07-04`; design memo
-`agent-insights/hive-seed-bundle-design`. First consumer: the Papercusp dogfood
+Plan `pot-seed-bundle-2026-07-04`; design memo
+`agent-insights/pot-seed-bundle-design`. First consumer: the Papercusp dogfood
 installer (skip the second first-boot download while still exercising the real
-shared-hive join). Generic by construction; a follow-up may extract this dir to a
+shared-pot join). Generic by construction; a follow-up may extract this dir to a
 standalone submodule like its siblings.

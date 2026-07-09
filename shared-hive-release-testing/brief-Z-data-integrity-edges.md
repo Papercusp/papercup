@@ -26,7 +26,7 @@ loses data — and none of it is systematically tested across types.
    key under clock skew → assert a deterministic, NON-resurrecting outcome on all peers.
 3. **Tombstone handling:** does a delete leave a tombstone that federates + suppresses
    re-creation, or can the row silently re-appear from an un-drained peer? Test
-   `leave-hive-tombstone` / contributor-tombstone semantics under churn.
+   `leave-pot-tombstone` / contributor-tombstone semantics under churn.
 4. **Large / binary payloads:** federate large content rows (KB→MB), binary/blob fields
    — assert no truncation, no corruption, no encoding mangling (the op-key/value mapper
    round-trips). Find the payload ceiling + that it fails gracefully past it.

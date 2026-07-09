@@ -4,7 +4,7 @@
 after A-003 (a′) + the re-key land — this is the integration capstone for the whole program.
 
 ## Objective
-Stress shared-hive under **many dimensions at once** in one long seeded scenario —
+Stress shared-pot under **many dimensions at once** in one long seeded scenario —
 multi-member + churn + concurrent writes + a re-key + a crash/restart + clock skew +
 version-skew — and assert it stays **convergent, lossless, leak-free, and correct
 throughout.** Find the INTERACTION bugs that every isolated green lane misses.
@@ -14,7 +14,7 @@ Every other lane tests ONE dimension and passes. But production hits all of them
 once, and the bugs that ship are the interactions: a re-key DURING membership churn, a
 crash MID-drain DURING a re-key, clock skew DURING a partition heal, a version-skew peer
 JOINING mid-chaos. These combinations are exactly where the carefully-fixed pieces
-(D-001 HLC ordering, the re-key epoch ordering, A-003 hive-home federation, crash
+(D-001 HLC ordering, the re-key epoch ordering, A-003 pot-home federation, crash
 recovery) can interfere. Isolated-green ≠ composed-green. This lane is the real
 "is it production-ready" integration test — and it's the one that most justifies a
 confident public-release sign-off.
@@ -48,6 +48,6 @@ confident public-release sign-off.
   Any divergence/loss/leak/cutoff-failure under combined chaos = S0.
 
 ## Done / verdict
-GREEN only when shared-hive stays convergent, lossless, leak-free, and revocation-correct
+GREEN only when shared-pot stays convergent, lossless, leak-free, and revocation-correct
 through a long composed-chaos run combining churn + re-key + crash + skew + version-skew.
 **This GREEN is the strongest single signal that the feature is public-release-ready.**

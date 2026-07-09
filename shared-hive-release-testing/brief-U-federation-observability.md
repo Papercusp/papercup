@@ -9,10 +9,10 @@ diverge — there must be a signal (health/metric/log/UI), not a silent black ho
 
 ## Why it matters
 **EI-681 (A-003 send-side) sat completely silent for this entire session**: the
-owner's hive-home `substrate_outbox` rows had `drained_at=NULL` forever, the
-hive-home harness was never on the topic, and NOTHING reported it — it took live
+owner's pot-home `substrate_outbox` rows had `drained_at=NULL` forever, the
+pot-home harness was never on the topic, and NOTHING reported it — it took live
 PG-drilling to find. That's the deceptive-publish/silent-failure class, and it's an
-S1 for a public product: users won't know their hive isn't actually syncing. Also
+S1 for a public product: users won't know their pot isn't actually syncing. Also
 recall the original "deceptive-publish" honesty bug (reachablePeers) — same family.
 If federation can break invisibly, every other green result is fragile.
 

@@ -8,7 +8,7 @@ plans:
   - harness-blueprint-distribution-2026-06-03
   - tool-distribution-granularity-2026-06-05
   - blueprint-role-bundling-2026-06-15
-  - hive-blueprint-generalization-2026-06-15
+  - pot-blueprint-generalization-2026-06-15
 documents:
   - libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts
   - libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts
@@ -90,12 +90,12 @@ Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a
   (installable — `init --from` and the install route's consent-gated step can
   fetch it); neither → hard failure;
 - a declared **blueprint** is a work-blueprint this blueprint's roles
-  **spawn** as sub-harnesses (a hive declares the work-blueprints its bees
-  spin up — e.g. a hive depending on `coding`/`research`). Resolved like
+  **spawn** as sub-harnesses (a pot declares the work-blueprints its cups
+  spin up — e.g. a pot depending on `coding`/`research`). Resolved like
   plugins: a built-in or installed blueprint satisfies it; a Cupboard-listed
   one is **installable** (the install path pulls the closure — see
   Install/fork); neither → hard failure. This is the `memberBlueprints`
-  mechanism (blueprint-role-bundling P-007, hive-blueprint-generalization
+  mechanism (blueprint-role-bundling P-007, pot-blueprint-generalization
   D-004);
 - a declared **datatype** is a shared entity type (e.g. `bet`, `wager` —
   minted by `meta:define-datatype`) this blueprint's roles read or write.
@@ -166,11 +166,11 @@ in P0 (plan D-006):
   (reports / unlist / device-pubkey ban-list). See
   [distribution trust](/internal/docs/security/distribution-trust).
 
-The publish route reads the blueprint.yaml `kind` (default `harness`; `hive`
-for a hive template like `generic-hive`) and forwards it as `blueprint_kind:
-'hive' | 'harness'`. That discriminator selects the Cupboard storefront's tab
-— a `kind: hive` blueprint becomes a **hive template** rather than an ordinary
-harness blueprint (P-018; `availableHiveBlueprintIds` reads `kind: hive`).
+The publish route reads the blueprint.yaml `kind` (default `harness`; `pot`
+for a pot template like `generic-pot`) and forwards it as `blueprint_kind:
+'pot' | 'harness'`. That discriminator selects the Cupboard storefront's tab
+— a `kind: pot` blueprint becomes a **pot template** rather than an ordinary
+harness blueprint (P-018; `availableHiveBlueprintIds` reads `kind: pot`).
 
 ## Install / fork
 
@@ -202,7 +202,7 @@ fetches the declared, Cupboard-resolvable plugins; each install goes through
 the normal plugin capability-grant path. Results land in `pluginInstalls`.
 
 Blueprint deps trigger a **spawned-blueprint closure** (blueprint-role-bundling
-P-007): a blueprint declaring `dependencies.blueprints` (e.g. a hive that spins
+P-007): a blueprint declaring `dependencies.blueprints` (e.g. a pot that spins
 up `coding`) recursively installs each declared work-blueprint that is
 Cupboard-resolvable and not already present — built-ins resolve locally and are
 skipped, so only genuinely third-party deps are cloned, validated, and placed.

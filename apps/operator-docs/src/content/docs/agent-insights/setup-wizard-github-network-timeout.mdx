@@ -49,7 +49,7 @@ if it spans many harnesses/workspaces, it's a shared network condition.
 
 ## Why it surfaced as a scary terminal "failed"
 
-The dogfood bootstrap (`bootstrap-papercusp-hive.ts`) records `clone` /
+The dogfood bootstrap (`bootstrap-papercusp-pot.ts`) records `clone` /
 `submodules` `status:'error'` on **any** git/github failure, and the wizard
 surfaces that as a terminal failure. Inside a GitHub-centric wizard, a generic
 "failed" reads as "your GitHub sign-in didn't take" — so users re-auth, which
@@ -70,4 +70,4 @@ cannot fix a packet-level timeout.
 
 Deferred: a shared GitHub-API client with retry + circuit-breaker for the OTHER
 `api.github.com` callers (`swarm-join`, `revalidate-repo-coords`,
-`hive-directory`) so one bad window doesn't 10s-hang fleet-wide.
+`pot-directory`) so one bad window doesn't 10s-hang fleet-wide.

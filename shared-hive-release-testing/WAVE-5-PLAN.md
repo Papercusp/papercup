@@ -1,4 +1,4 @@
-# Shared-Hive Release Testing — Wave 5 (briefs AC–AG)
+# Shared-Pot Release Testing — Wave 5 (briefs AC–AG)
 
 **Why a wave 5 (and a note on diminishing breadth).** Waves 1–4 (~26 lanes) cover the
 breadth: correctness, convergence, scale, cross-machine, recovery, observability,
@@ -18,9 +18,9 @@ guarantee* (idempotency/replay) under conditions the happy-path lanes assume awa
 | Brief | Dimension | Why it's distinct / why it matters | Disjoint area |
 |------|-----------|-----------------------------------|---------------|
 | **AC** | Clock/time CHAOS & HLC internals | D-001 tested skew CONVERGENCE; this tests the new `fed_hlc` clock under chaos: clock running BACKWARDS (not just forward excursion), NTP step mid-federation, counter overflow/wraparound, leap second, long-drift, monotonic-vs-wall. The HLC is the S0 fix's foundation — its edge robustness is unproven. | hlc-stamp/hlc_clock internals |
-| **AD** | Workspace / tenancy isolation & routing | The EI-126 102 GB blowup was a **workspace MIS-ROUTE** (writes defaulting `workspace_id` to 'default'). Test: cross-workspace hive isolation (hive in ws-A must NOT leak to ws-B), multi-workspace-per-box, the default-routing class, the ALS workspace-context (`runWithWorkspace`) under concurrency. | workspace-registry / routing / ALS |
+| **AD** | Workspace / tenancy isolation & routing | The EI-126 102 GB blowup was a **workspace MIS-ROUTE** (writes defaulting `workspace_id` to 'default'). Test: cross-workspace pot isolation (pot in ws-A must NOT leak to ws-B), multi-workspace-per-box, the default-routing class, the ALS workspace-context (`runWithWorkspace`) under concurrency. | workspace-registry / routing / ALS |
 | **AE** | Combined chaos / INTERACTION (the everything-at-once lane) | **Highest leverage.** Every lane tests one dimension; this combines them: multi-member + churn + concurrent writes + a re-key + a crash/restart + clock skew + version-skew, all in one long seeded scenario, asserting convergence + no loss/dup/leak throughout. Interaction bugs are what isolated green lanes miss. | a composed long-run chaos rig |
-| **AF** | Discovery / directory mechanics in depth | The directory (announce/beacon/TTL/withdraw/re-announce) is its own layer, lightly tested. Directory consistency across peers, stale-entry handling, the invite-hive beacon-capture type bug (dc9db found), re-announce after restart, directory-at-scale (many hives). | hive-directory / beacon |
+| **AF** | Discovery / directory mechanics in depth | The directory (announce/beacon/TTL/withdraw/re-announce) is its own layer, lightly tested. Directory consistency across peers, stale-entry handling, the invite-pot beacon-capture type bug (dc9db found), re-announce after restart, directory-at-scale (many pots). | pot-directory / beacon |
 | **AG** | Idempotency / determinism / replay audit | The foundational guarantee: re-apply the same op log twice → identical state; replay from ANY cursor → converges; no double-apply, no order-dependence beyond the documented LWW. A property-based audit of the whole capture→drain→projection pipeline's idempotency. | property-based over the full pipeline |
 
 ## Rules (inherited — unchanged)

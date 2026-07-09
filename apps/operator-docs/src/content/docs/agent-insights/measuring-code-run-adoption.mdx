@@ -168,7 +168,7 @@ Adoption (above) makes ONE agent's `code:run` cheap. **Code recipes** (plan
 `code-recipes-2026-06-21`, shipped 2026-06-21) make it cheap for *every* agent after, and
 self-promote the hottest patterns into first-class tools:
 
-- **Capture:** every successful `code:run` is auto-saved as a hive-scoped *recipe* (best-effort,
+- **Capture:** every successful `code:run` is auto-saved as a pot-scoped *recipe* (best-effort,
   never breaks a run) — `agent-tools/code/capture-recipe.ts`, `code-recipes-store.ts`, migration `349`
   (`code_recipes` + `code_recipe_runs`).
 - **Soft dedup:** on run, a hybrid `@papercusp/search` (BM25 + pgvector + tool-set Jaccard) surfaces
@@ -178,8 +178,8 @@ self-promote the hottest patterns into first-class tools:
   envelope, never the author's (tested invariant).
 - **Graduation:** `recipes:candidates` scores recipes deterministically (run-frequency × distinct-agent
   breadth × success × tool-cohesion − redundancy; canonical formula in `code-recipes-candidates.ts`),
-  scored against the **`recipe-graduation-readiness`** rubric. The **Queen** owns idle-gated review
-  (`queen.base.md`): she files a work-item to promote a hot recipe to a `defineTool` (the coding
+  scored against the **`recipe-graduation-readiness`** rubric. The **Mug** owns idle-gated review
+  (`mug.base.md`): she files a work-item to promote a hot recipe to a `defineTool` (the coding
   pipeline's review IS the gate) or merge near-duplicates (`recipes:merge`/`recipes:sweep`).
 
 This is the same "frequency is proven demand" principle as the adoption A/B, but applied to *genesis*:
@@ -314,17 +314,17 @@ finding (kits/caps/surface gate adoption before wording does):
 [code-run-adoption-metric](/agent-insights/code-run-adoption-metric/).
 
 **The structural-lockout finding, closed (`code-run-self-state-adoption-2026-07-03` P-001/P-003):**
-the lockout the metric above documented — `code:run` scoped to `SU_ROLES` only, so BEE/QUEEN-kit
+the lockout the metric above documented — `code:run` scoped to `SU_ROLES` only, so CUP/MUG-kit
 agents (the bulk of fleet adoption opportunity) could never reach it no matter how the nudge was
 worded — is now fixed at the root. `prompt-build.ts`'s `CODE_RUN_NUDGE` self-gate comment used to
 read "self-gated … since the tool is SU_ROLES-scoped, so roles without it ignore it"; since P-001
-it instead self-gates on "roles whose surface/envelope still lacks it", because the BEE/QUEEN kits
+it instead self-gates on "roles whose surface/envelope still lacks it", because the CUP/MUG kits
 + the CORE spine now carry `code:run` and the self-gate resolves **TRUE fleet-wide** — SU_ROLES
 scoping was the lockout signature, not a wording problem. P-003 closed the same class one layer
 down: `role-principal-caps.ts` had **drifted behind** several roles' own seeded kits (a role's kit
 advertised a tool its principal caps then denied — measured via 14d of `role-not-allowed`
-telemetry: the herald's `memory:search`/`recipes:search` denied at wake every time, the queen's
-`memory:search` denied 106×, bees denied on their own kit's `capability:git`/`capability:read`/etc.
+telemetry: the herald's `memory:search`/`recipes:search` denied at wake every time, the mug's
+`memory:search` denied 106×, cups denied on their own kit's `capability:git`/`capability:read`/etc.
 dozens of times). **Practical effect for this A/B methodology:** the in-process `su` target's
 `excludeTools`/kit simulation was always accurate for the SU surface, but any fleet-wide adoption
 number pulled from `harness_shared.tool_invocations` (§ Production telemetry below) measured

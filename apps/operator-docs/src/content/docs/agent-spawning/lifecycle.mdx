@@ -9,8 +9,8 @@ plans:
   - agent-liveness-heartbeat-hardening-2026-06-12
   - directed-wake-honesty-and-spawn-handoff-2026-06-14
   - unify-agent-spawn-chokepoint-2026-06-06
-  - queen-brief-cache-assembly-2026-06-13
-  - queen-model-tier-selection-2026-06-11
+  - mug-brief-cache-assembly-2026-06-13
+  - mug-model-tier-selection-2026-06-11
 documents:
   - packages/operator-core/lib/fleet/operator-spawn.ts
   - packages/operator-core/lib/agent-tools/fleet/spawn.ts
@@ -23,11 +23,11 @@ documents:
 
 ## The three tools
 
-Every spawn flows through the `fleet:*` surface — launch with `bee:spawn`, watch with `fleet:tree`, abort with `fleet:cancel`.
+Every spawn flows through the `fleet:*` surface — launch with `cup:spawn`, watch with `fleet:tree`, abort with `fleet:cancel`.
 
 ```
                        ┌──────────────────────────┐
-                       │  bee:spawn             │
+                       │  cup:spawn             │
                        │  → returns spawn_id      │
                        │  → status='running'      │
                        └──────────┬───────────────┘
@@ -47,7 +47,7 @@ parent  ─ fleet:tree → │  status: running         │ ←── │  child
 
 Unlike a poll loop, a parent doesn't have to keep checking: when a child reaches a terminal status, `wakeParentOnChildDeath` fires the parent's inbox-wake key (with the death notice + output tail), so a sleeping parent re-wakes on its own. `fleet:tree` is for on-demand inspection of the subtree, not mandatory polling.
 
-## `bee:spawn { harness?, role, feature?, chunk?, brief?, extras? }`
+## `cup:spawn { harness?, role, feature?, chunk?, brief?, extras? }`
 
 What happens server-side (in `spawnAgentInHarness`):
 
@@ -59,7 +59,7 @@ What happens server-side (in `spawnAgentInHarness`):
 6. **`spawnInvokeOnce()` fires in the background** as a Promise — *not awaited*. The caller gets the spawn result back immediately.
 7. **The promise's `.then`/`.catch`/`.finally`** flips the PG row to `done`/`failed`/`cancelled`, announces the freed slot, and wakes the parent.
 
-The spawn's umbilical: the durable `s-…` spawnId is threaded into the child's env (`PAPERCUSP_SPAWN_ID`) so its signed MCP URL carries a stable `client=`/owner — the same id recorded as `session_owner`, so a bee's coord messages, its file-lock owner, and `fleet:cancel`'s release target all line up.
+The spawn's umbilical: the durable `s-…` spawnId is threaded into the child's env (`PAPERCUSP_SPAWN_ID`) so its signed MCP URL carries a stable `client=`/owner — the same id recorded as `session_owner`, so a cup's coord messages, its file-lock owner, and `fleet:cancel`'s release target all line up.
 
 Return result:
 
@@ -95,7 +95,7 @@ Status field is the single source of truth:
 
 Each node also carries `feature`, `plan_item`, `owner` (`session_owner`), and `restart_strategy`. Per-node `depth` is the lineage depth within the queried subtree (root = 0). Terminal-row detail (`exit_code`, `output_tail`, `error_message`) lives on the `spawned_agents` row directly — query it or read it off the death-notice payload the parent is woken with.
 
-`fleet:tree` also flags wedges. A node that is **alive + heartbeating but stream-silent** past `WEDGE_SILENT_MS` (10 min) — bees stream partial messages, so a long silence with a live process means hung, not thinking — is annotated `possibly_wedged: true`. That annotation is display/triage only. The flag-gated reaper (`WEDGE_AUTO_REAP`, default ON — D-006, 2026-06-11) takes the next step: it cancels a *local* spawn that has been stream-silent past `WEDGE_REAP_SILENT_MS` (30 min) through the same durable `cancelSubtree` engine `fleet:cancel` uses — so a wedged `running` bee becomes `cancelled`, a real terminal transition. Only the host holding the spawn's handle reaps it, and a spawn that has never produced output is never reaped (absence of signal ≠ a wedge).
+`fleet:tree` also flags wedges. A node that is **alive + heartbeating but stream-silent** past `WEDGE_SILENT_MS` (10 min) — cups stream partial messages, so a long silence with a live process means hung, not thinking — is annotated `possibly_wedged: true`. That annotation is display/triage only. The flag-gated reaper (`WEDGE_AUTO_REAP`, default ON — D-006, 2026-06-11) takes the next step: it cancels a *local* spawn that has been stream-silent past `WEDGE_REAP_SILENT_MS` (30 min) through the same durable `cancelSubtree` engine `fleet:cancel` uses — so a wedged `running` cup becomes `cancelled`, a real terminal transition. Only the host holding the spawn's handle reaps it, and a spawn that has never produced output is never reaped (absence of signal ≠ a wedge).
 
 ## `fleet:cancel { spawn_id, reason? }`
 
@@ -149,7 +149,7 @@ Reclaim is **not** purely heartbeat-age, though (EI-85): a stale-heartbeat row w
 | `extras[]` | the input's `extras`, with `FEATURE_ID=<id>` / `CHUNK_ID=<id>` appended when set |
 | `PAPERCUSP_SPAWN_ID` | the durable `s-…` spawnId (the umbilical — becomes the child's stable MCP `client`/owner) |
 | `PAPERCUSP_PARENT_SPAWN_ID` | the parent's spawnId, when this spawn has a parent (lineage) |
-| `QUEEN_BRIEF` | the spawn input's `brief`, when set (P-060) — injected into the bee's prompt |
+| `QUEEN_BRIEF` | the spawn input's `brief`, when set (P-060) — injected into the cup's prompt |
 | pipeline env | `buildPipelineExtraEnv` (workspace, harness, idempotency key, PG DSN) |
 
 The orchestrator's `spawn-mcp.ts` writes a per-child, HMAC-signed `.mcp.json` (`packages/operator-core/lib/spawn-signing.ts`) with the per-spawn URL params, including `parent_spawn` set to the parent's spawnId — so any tool calls the child makes carry `parent_spawn_id` automatically. (See [Schema](/internal/docs/agent-spawning/schema#url-plumbing--the-spawn-params) for the full param list.)

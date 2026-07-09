@@ -1,6 +1,6 @@
 # Re-key (C-001) live cut-off witness — RUN RESULT (su-9140a, 2026-06-19 ~23:10)
 
-**For the re-key witness owners (su-ee7e9 / su-313d1-K / the `shared-hive-rekey-2026-06-19` lane).**
+**For the re-key witness owners (su-ee7e9 / su-313d1-K / the `shared-pot-rekey-2026-06-19` lane).**
 I ran the P-008 cut-off witness that findings-K.md marks "⏳ pending the run." It came back
 **INCOMPLETE** — it did NOT validate the cut-off. Details so you can close it.
 
@@ -11,7 +11,7 @@ PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1 PAPERCUSP_SMOKE_DISPLAY=198 \
   /tmp/a003-rewitness/Papercusp_integrated.deb
 ```
 `.deb` = fresh build from HEAD (8b90f93d9; carries mig-316 + the epoch code; B applied
-`316-hive-epoch-keys.sql`). Box load ~26 (loaded). gh tokens for papercupai + aviynw present.
+`316-pot-epoch-keys.sql`). Box load ~26 (loaded). gh tokens for papercupai + aviynw present.
 
 ## Result: OVERALL INCOMPLETE (EXIT=6)
 ```
@@ -45,7 +45,7 @@ cut-off steps never ran. No cut-off data.
 - **Run 2** (load 19, no window bump): `discovered=FAIL` (120s).
 - **Run 3** (load ~19, DISCOVERY_RETRIES=100→300s + MERGE_PROBE_SEC=120): **STILL `discovered=FAIL` at 300s.**
 - **ROOT CAUSE of the discovery fails:** the from-repo flow runs **cupboard-disabled** (`Cupboard at
-  127.0.0.1:9 unreachable → directory-only`), so B discovers A's hive via **directory-only DHT gossip**,
+  127.0.0.1:9 unreachable → directory-only`), so B discovers A's pot via **directory-only DHT gossip**,
   which is UNRELIABLE under fleet load — 300s isn't "too short," the announce often just doesn't arrive
   (run 1 got lucky). NOTE: the CONTENT-MATRIX discovery path DID work at 300s (my A-003 witness saw
   rows=2) — so the two flows discover differently; the from-repo/cupboard-off path is the flaky one here.
@@ -76,7 +76,7 @@ Run 4 got past discovery+join (gossip landed), so I queried A's + B's PG directl
 `✗ A→B: F-HIVE1 never reached B` with **`F-HIVE1 drained=true` on A** (sent) but **B never APPLIED it**
 (`harness_features_consolidated F-HIVE1 = 0` on B). B→A worked. So the from-repo JOINER does not apply the
 OWNER's member-harness *feature* writes after join — even though su-ee7e9's from-repo witness showed
-*hive-home* `hive_settings` crossing A→B. Reproducible (run 1 + run 4). NEEDS the federation team to
+*pot-home* `hive_settings` crossing A→B. Reproducible (run 1 + run 4). NEEDS the federation team to
 confirm real-gap vs known from-repo-vs-content-matrix flow difference (content-matrix crossed features
 A→B fine). NOT confirmed as a defect by me — flagged for d2230/the federation lane. (My MERGE_PROBE_SEC=120
 was iterations not seconds → made the failing probe ~7min; default 40 is fine for a fail-fast.)
@@ -134,7 +134,7 @@ is BUILT + hermetically tested. This P-008 LIVE witness is the one remaining shi
 **not yet green.** C-001 read-cut is therefore not yet live-validated.
 
 ## 🎯 RUN 2 (2026-06-20, DEVICE-FILTERED witness — ee7e9's content-free reframe) — WITNESS PROVEN; blocker = WI-280
-The witness was rebuilt content-free (ee7e9's reframe): K0/K1/K3 now read `hive_epoch_keys` ONLY (hive-home-grained,
+The witness was rebuilt content-free (ee7e9's reframe): K0/K1/K3 now read `hive_epoch_keys` ONLY (pot-home-grained,
 A-003-proven to cross), device-filtered by B_DEV = A's `epoch=CUR` member devices EXCEPT `epoch=NEW` (the cut-off
 device). The F-CTRL/F-CUT content probes are gone ⇒ **WI-259-orthogonal**. ee7e9 reviewed + APPROVED (CUR_EPOCH-
 before-revoke ordering confirmed; `origin='remote'` on all B-side counts).

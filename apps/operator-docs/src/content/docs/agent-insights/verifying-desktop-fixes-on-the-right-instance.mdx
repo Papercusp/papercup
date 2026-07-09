@@ -115,9 +115,9 @@ escape-hatch bar can never vanish exactly when routing is misconfigured.
 
 ## The work-items "parent shows child" bug (the actual fix this session)
 
-Selecting a formal hive home (`harness_kind:'hive'`, e.g. `papercusp`) showed its first
-child's (`hive-canary`) work items. Root cause: `hiveMembers()` excludes a hive home from
+Selecting a formal pot home (`harness_kind:'pot'`, e.g. `papercusp`) showed its first
+child's (`pot-canary`) work items. Root cause: `hiveMembers()` excludes a pot home from
 its own member list, so `dockSlug` fell through to `members[0]`. Fixed with
-`resolveDockSlug()` in `harness-axis.ts` (a registered selected hive shows ITS OWN content).
+`resolveDockSlug()` in `harness-axis.ts` (a registered selected pot shows ITS OWN content).
 `?harness` / `focusSlug` were red herrings — `focusSlug` is an output-only focused-panel
 tracker, not an input.

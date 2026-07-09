@@ -7,10 +7,10 @@ fully in parallel with everyone).
 Prove that **every table that captures to the substrate outbox also fully applies
 on a peer** — capture → outbox → swarm → merge → projection → peer-PG, with
 `origin=remote`. Find every table that captures but silently drops on the apply
-side (data loss on a real hive).
+side (data loss on a real pot).
 
 ## Why it matters for release
-Every table that should federate but silently doesn't = data loss on a real hive.
+Every table that should federate but silently doesn't = data loss on a real pot.
 
 **CRITICAL distinction (verified — do not conflate these):** there are TWO trigger
 families and only one is federation:
@@ -31,8 +31,8 @@ job is two-fold:
 2. **Classify + JUSTIFY each local-only table** (`emit_change_notify`-only):
    confirm local-only is INTENTIONAL, not an accidental missing-federation. The
    one to investigate hardest is **`trusted_authors`** — it is currently LOCAL-ONLY,
-   but if a hive owner trusts/untrusts an author, should that decision federate to
-   members (so admission/auto-pick is consistent hive-wide)? If yes, local-only is
+   but if a pot owner trusts/untrusts an author, should that decision federate to
+   members (so admission/auto-pick is consistent pot-wide)? If yes, local-only is
    an S1 federation GAP. Same question for `claim_audit`/`auto_review_audit`
    (cross-peer audit visibility) and `harness_feature_prs`.
 

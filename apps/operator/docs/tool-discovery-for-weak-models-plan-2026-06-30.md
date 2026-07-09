@@ -148,7 +148,7 @@ defineGroup('plans', { summary: 'Work-plan store — plans, items, decisions, st
 
 - [ ] **omp default model:** change `modelRoles.default` off `ollama/qwen3.5:latest` to a capable gateway default (e.g. `papercusp-gateway/claude-sonnet-4-6`). WS1–4 make weaker models *viable*, but the default should be sane. Still user-overridable via `/model` (not "forcing").
 - [ ] **Meridian `:3456` down:** the `claude-*-local` picker options and the `slow` role route through it and currently fail. Restore/fix so model selection in omp works (the original "make providers work so the user selects" goal).
-- [x] **Already shipped (separate, deployed):** `wake-executor.ts` now sets `PAPERCUSP_WORKSPACE: d.workspaceId` on autonomous omp resume turns (fixed `coord:* not found` for capable-model bees whose user-level mcp.json sent an empty workspace header). **Caveat:** currently uncommitted on the running `papercup-release` checkout + dev/staging — must be committed so a release sync doesn't revert it.
+- [x] **Already shipped (separate, deployed):** `wake-executor.ts` now sets `PAPERCUSP_WORKSPACE: d.workspaceId` on autonomous omp resume turns (fixed `coord:* not found` for capable-model cups whose user-level mcp.json sent an empty workspace header). **Caveat:** currently uncommitted on the running `papercup-release` checkout + dev/staging — must be committed so a release sync doesn't revert it.
 
 ---
 
@@ -171,7 +171,7 @@ defineGroup('plans', { summary: 'Work-plan store — plans, items, decisions, st
 1. **Scope — RESOLVED: omp-only.** Claude/Codex keep the full catalog (they have the context). No `tools/list_changed`/registration story needed for now. Their only gain is `tools:find` + the map being available.
 2. **Embeddings — RESOLVED: settings-driven.** Use `buildQueryEmbedder`, which reads `voice-prefs.memoryEmbedderMode` — currently **openai** (`text-embedding-3-small`, 384-d). No new provider logic; it follows the settings page.
 3. **Universal core vs role-aware core — PENDING (recommend universal-first).**
-   - *Universal:* every omp session gets the same ~17 (bootstrap + coordination + plans/work + locks + knowledge) regardless of role. One list, one source of truth; a Queen `tools:find`s its `fleet:*`.
+   - *Universal:* every omp session gets the same ~17 (bootstrap + coordination + plans/work + locks + knowledge) regardless of role. One list, one source of truth; a Mug `tools:find`s its `fleet:*`.
    - *Role-aware:* the core is tailored per role (promote `BEE_/QUEEN_MCP_TOOL_NAMES` into per-role cores) — fewer discovery round-trips, but N lists to maintain; role is already known at launch.
    - Recommendation: **universal first** (the 17 are the spine every role needs); make it role-aware later if a role's round-trips annoy — additive, the `BEE_/QUEEN_` lists are ready to become role cores.
 4. **`defineGroup` now or derive-only?** Ship Level-1 derivation first (works for every namespace, zero authoring); add `defineGroup` opportunistically for groups whose auto-summary reads poorly. (Mirrors `defineTool`'s explicit-vs-derived description — see WS2.)

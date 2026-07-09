@@ -93,10 +93,10 @@ per projection: add `fed_hlc` to the INSERT cols + `ON CONFLICT DO UPDATE SET` +
 the put-guard WHERE + the del ts-guard. Reference impl: `harness-features.ts`.
 Files: harness-features, harness-issues(issues), harness-plans, engineer-issues,
 plan-item-assignments, coord-message, coord-thread, coord-thread-post,
-coord-conversation, presence, hive-members, hive-settings, contributors,
+coord-conversation, presence, pot-members, pot-settings, contributors,
 feature-queue, feature-working-set (+ plan-parts recompose semantics).
 > Coordinated with Brief I (su-d2230): I owns the *binding slug* in
-> boot.ts/register-all.ts for hive-members/hive-settings — disjoint from the
+> boot.ts/register-all.ts for pot-members/pot-settings — disjoint from the
 > guard lines; we serialize via locks if we touch the same file.
 
 ## Gate matrix
@@ -110,7 +110,7 @@ feature-queue, feature-working-set (+ plan-parts recompose semantics).
 | all projection guards swapped | the 15 mutable LWW projections | **GREEN** |
 | write-time-HLC gap closed | `d001-write-time-hlc.integration.test.ts` (real local write vs remote) | **GREEN** (3/3) |
 | full federation suite | the 48-file `lib/sync/hyperbee` integration suite | **GREEN** (all 48 files) |
-| affected lib/ + shared-hive-loop suites | rig-stub no-regression (composition-rig, _hive-substrate-rig, federated-cell-setup, cross-hive, trust-admission) | **GREEN** |
+| affected lib/ + shared-pot-loop suites | rig-stub no-regression (composition-rig, _hive-substrate-rig, federated-cell-setup, cross-pot, trust-admission) | **GREEN** |
 | live clock-skew pair | the :158 pair (real .deb + mig-314): staged the inversion via hlc_recv on A, both peers converged to the HLC-winner | **GREEN** (live-witnessed) |
 
 ### Test-stub blast radius (resolved)
@@ -119,7 +119,7 @@ stub with a `fed_ts` column needed `fed_hlc` too. Added it to ~22 rig/test files
 (composition-rig, _cross-peer-rig, federated-cell-setup, ei117-replay, the
 projection `*.integration.test.ts`, the two-peer-federation tests,
 federation-edge-cases/adversarial, plan-part-cutover, wire-outbox-drain-online,
-the lib/ cross-hive + trust-admission + work-items-admission + lifecycle stubs).
+the lib/ cross-pot + trust-admission + work-items-admission + lifecycle stubs).
 The outbox drain reads `op_hlc` RESILIENTLY (`to_jsonb(...)->>'op_hlc'`) so a
 pre-314 outbox (older boot snapshot / a rig loading archive/102 only) degrades to
 NULL instead of crashing — no op_hlc needed in those rigs. `federated-column-
@@ -128,7 +128,7 @@ fed_ts). The fast twin (`lww-hlc-fedts-divergence.test.ts`) now PROVES the fix
 converges + keeps a legacy `fed_ts` characterisation of the old divergence.
 
 ### Progress log (continued)
-- Projection guard swap landed: harness-features, hive-members, hive-settings
+- Projection guard swap landed: harness-features, pot-members, pot-settings
   (mine), presence, contributors, feature-queue, feature-working-set (subagent C,
   verified). coord-* + harness-plans/engineer-issues/issues/plan-item-assignments
   in flight (subagents A/B). NEW test `d001-write-time-hlc.integration.test.ts`
@@ -160,7 +160,7 @@ All gates GREEN. Code on staging (in-tree, git-sync flushing). Migration 314
 applies 000→head. Unit suite 878 pass; convergence-fuzz skew sweep + monotone +
 real-PG twin + NEW write-time-HLC test + fed-ts-lww-guard + ei117 + column-
 completeness all green; full 48-file `lib/sync/hyperbee` integration suite green;
-the affected lib/ + shared-hive-loop rig suites green. **Live D-001 skew witness
+the affected lib/ + shared-pot-loop rig suites green. **Live D-001 skew witness
 PASSED** on the real .deb :158 pair (mig-314): a hand-staged inversion (A high-HLC
 / low-fed_ts vs B low-HLC / higher-fed_ts) converged to the HLC-winner on BOTH
 peers — B accepted A's lower-fed_ts write because the guard orders by fed_hlc.
@@ -172,6 +172,6 @@ D-001 is FIXED. Federated LWW now converges under clock skew: one ordering key o
 record (the HLC `fed_hlc`) end to end — the merge fold and the PG projection guard
 order by the same key, and write-time HLC stamping (the PG clock-of-record via the
 mig-314 trigger + threaded op_hlc) ensures local rows carry it so local-vs-remote
-conflicts converge too. The one hard S0 among the shared-hive release blockers is
+conflicts converge too. The one hard S0 among the shared-pot release blockers is
 closed; the dimension is GREEN (skew sweep converges, monotone green, full
 federation suite green, live clock-skew pair converges to one row).

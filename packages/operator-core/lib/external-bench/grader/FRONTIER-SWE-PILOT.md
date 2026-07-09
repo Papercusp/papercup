@@ -153,7 +153,7 @@ import { resolveCoordinationSpec } from '../coordination-topology';
 const runAgent = makeFrontierSweRunAgent({ modelCall: liveGatewayModelCall, exec: liveDockerExec });
 
 await runFrontierSweResilient({
-  spec: resolveCoordinationSpec(blueprint),  // su-independent (no-coord) | hive (central) | dist-broadcast/-peer-review/-blackboard (distributed) | (ensemble/pair)
+  spec: resolveCoordinationSpec(blueprint),  // su-independent (no-coord) | pot (central) | dist-broadcast/-peer-review/-blackboard (distributed) | (ensemble/pair)
   taskSetId: 'frontier-swe-cpu',             // 12 GPU-free tasks; the 5 GPU tasks need B200/H100
   k: 5,                                      // 5 trials → mean@5 / best@5
   resultsPath: '<dedicated-volume>/frontier-swe/runs/<arm>.jsonl',  // durable; re-invoke to resume only missing (task,seed)
@@ -164,7 +164,7 @@ await runFrontierSweResilient({
 // rows → buildFrontierSweSuiteData(rows) (mean@5/best@5/avgRank/dominance) + buildFairnessAudit (the C1–C10 table).
 ```
 
-Run ≥2 arms (e.g. `su-independent` vs `hive`) over the same tasks + same iso-budget for the topology lift (D-002).
+Run ≥2 arms (e.g. `su-independent` vs `pot`) over the same tasks + same iso-budget for the topology lift (D-002).
 Interrupted? Re-run the same call — only missing trials re-execute.
 
 **Workspace isolation (mandatory — plan benchmark-workspace-isolation-2026-06-18):** the launcher MUST resolve any
@@ -180,7 +180,7 @@ launcher must still isolate the run-store/telemetry workspace as defense-in-dept
 - **Fairness** — every number ships with the **C1–C10 audit** (`buildFairnessAudit`); see
   `benchmarks/fairness-criteria`. Iso-budget includes **wall-clock** here.
 - **Reliability** — long big-repo trials are the worst case for slow-but-alive
-  heartbeat-reclaim; the liveness fix shipped (F-FIX-038 / EI-1293). If bees stall at `$0`,
+  heartbeat-reclaim; the liveness fix shipped (F-FIX-038 / EI-1293). If cups stall at `$0`,
   check `harness_shared.agent_rate_budget` for a far-future `paused_until` (governor
   false-pause runbook: `agent-insights/rate-limit-is-usually-account-routing-not-capacity`).
 - **License (D-005)** — no redistribution of derived data without owner sign-off.

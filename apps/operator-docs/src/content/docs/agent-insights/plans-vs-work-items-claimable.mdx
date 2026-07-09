@@ -1,6 +1,6 @@
 ---
 title: Plans vs work-items — how a plan item becomes claimable, and which surface a coordinator pushes work onto
-description: A plan item (P-NNN) is authoring/intent; a work-item (WI-/F-NNN) is the claimable execution unit. The two bridges (plans:start promotion + plan_items:convert at pickup), how the lane is claimed, and what a coordinator/Queen actually pushes work onto.
+description: A plan item (P-NNN) is authoring/intent; a work-item (WI-/F-NNN) is the claimable execution unit. The two bridges (plans:start promotion + plan_items:convert at pickup), how the lane is claimed, and what a coordinator/Mug actually pushes work onto.
 discovered: 2026-06-24
 tags: [plans, work-items, coordination, claiming, dispatch, promotion]
 status: active
@@ -19,9 +19,9 @@ plans:
 - **Plans (`plans:*`)** — the PG-canonical authoring + intent layer. A plan has items `P-NNN`
   (each with an `effectiveStatus`: todo / wip / blocked / needs-human / done / dropped),
   decisions, a `## Now` anchor, and per-item **claim leases** (the "lane"). This is where a
-  human/su/Queen decides *what should happen* and in what order.
+  human/su/Mug decides *what should happen* and in what order.
 - **Work-items (`work_items:*`)** — the claimable **execution** queue: `WI-NNN` (task/bug/change)
-  and `F-NNN` (feature). `claim_next` / the Queen's placement offer `todo` work-items to agents.
+  and `F-NNN` (feature). `claim_next` / the Mug's placement offer `todo` work-items to agents.
   This is where work is *picked up and done*.
 
 A plan item is **not** directly claimable. It becomes claimable only as a work-item, via one of
@@ -29,12 +29,12 @@ two bridges.
 
 ## Bridge 1 — `plans:start` promotion (the bulk path)
 
-`plans:start` (the same verb a human, su, or the Queen calls) auto-promotes every **OPEN**
+`plans:start` (the same verb a human, su, or the Mug calls) auto-promotes every **OPEN**
 plan-item into a placeable, **UNCLAIMED** work-item (`plan-workitem-promotion.ts`,
 `computePromotions`). The work-item is `kind:'feature'`, carries `source_plan_item_ids` (the
 idempotency key with the slug, so re-starting never double-mints), and lands in the queue for the
-Queen/self-selection to place. Gated by `papercusp-plan-workitem-promotion`. This is why "I
-started a plan but the Queen sat idle" was a bug — without promotion a started plan minted zero
+Mug/self-selection to place. Gated by `papercusp-plan-workitem-promotion`. This is why "I
+started a plan but the Mug sat idle" was a bug — without promotion a started plan minted zero
 work-items.
 
 ## Bridge 2 — `plan_items:convert` (convert-at-pickup, the pickup verb)
@@ -83,15 +83,15 @@ Distinct from minting a work-item, a coordinator/agent declares the **lane** it 
 
 A `claim_conflict` means a live peer holds the lease — coordinate, don't take it.
 
-## What a coordinator/Queen actually pushes work onto
+## What a coordinator/Mug actually pushes work onto
 
 - **Hand a specific plan lane to a peer + get it picked up NOW** → `coord:dispatch { to, planSlug, items, note, harness? }` — it `plan_items:assign`s the lane (durable) AND wakes + confirms
   (see [coordinator-dispatch-and-wake](/internal/docs/agent-insights/coordinator-dispatch-and-wake)).
   Pass `harness` when the plan lives in a non-default harness; it threads through to the assign.
 - **Hand a lane durably without a wake** → `plan_items:assign` (the target pulls it on its next turn).
 - **Feed the open claimable queue** → `plans:start` (bulk promotion) or `work_items:create` directly.
-- **The Queen** places ranked *work-items* onto bees (it does not hand out raw plan items) — the
-  hive scheduler's `get_next` offers a bee a floor-AND-spec-compliant work-item.
+- **The Mug** places ranked *work-items* onto cups (it does not hand out raw plan items) — the
+  pot scheduler's `get_next` offers a cup a floor-AND-spec-compliant work-item.
 
 Rule of thumb: **author + sequence on the plan (P-NNN); claim + execute on the work-item
 (WI-/F-NNN).** A coordinator pushing plan work to a peer uses `coord:dispatch` / `plan_items:assign`;

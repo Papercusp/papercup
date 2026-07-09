@@ -66,7 +66,7 @@ carries an intent (`'required' | 'optimistic'`), not a plain toggle:
   failing silently. The message is still injected to the inbox for the next
   turn; only the re-invoke missed.
 - `wake: 'optimistic'` — silent best-effort over a durable backstop (wake if
-  present, shrug if not — e.g. the Queen survey re-dispatches anyway). A miss
+  present, shrug if not — e.g. the Mug survey re-dispatches anyway). A miss
   is *not* surfaced; the inbox row persisted regardless.
 
 The legacy boolean still coerces: `true` → `'required'`, `false`/omitted → no
@@ -110,8 +110,8 @@ the gate family).
 ## Observing without steering
 
 `fleet:bee_mail` renders what a specific agent has received/sent (the
-bee-dossier view) — for *inspection*, not for reading your own inbox
+cup-dossier view) — for *inspection*, not for reading your own inbox
 (`coord:inbox`) or deriving who's-on-what (`fleet:assignments`). The
 fleet-wide steering surface — scheduling, placement, prioritization — is the
-operator/Queen's job; see
+operator/Mug's job; see
 [Operator persona](/internal/docs/agents/operator-persona).

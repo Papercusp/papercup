@@ -1,4 +1,4 @@
-# Shared-Hive Release Testing — Wave 3 (briefs P–V)
+# Shared-Pot Release Testing — Wave 3 (briefs P–V)
 
 **Why a wave 3.** Waves 1 (A–G) + 2 (H–N) + the integrated live witness proved the
 *core* federation path and fixed/scoped the blockers (D-001 closed; A-002 GREEN;
@@ -11,7 +11,7 @@ then your brief.
 
 ## What's already proven (do NOT re-test — build on it)
 - Core federation 8/11 types bidirectional, backfill, isolation, topic-equal — live GREEN.
-- D-001 convergence under skew — closed code + live. A-002 multi-hive — GREEN.
+- D-001 convergence under skew — closed code + live. A-002 multi-pot — GREEN.
 - Honesty G-001/G-002/G-003/G-004 — live GREEN. N-peer scale/churn (rig) — GREEN.
 - Known-open + OWNED (don't duplicate): A-003 send-side (EI-681, d2230), C-001 re-key (Move 2, ed300+K).
 
@@ -20,8 +20,8 @@ then your brief.
 | Brief | Dimension | Why it's new / why it matters | Disjoint area |
 |------|-----------|------------------------------|---------------|
 | **P** | Cross-machine / real-WAN federation | Everything so far was 1 box + testnet DHT. Real peers are on different machines behind NATs over the PUBLIC DHT, with latency/loss/partition. | 2-machine harness / netem |
-| **Q** | Live multi-member hives + membership churn | Witnesses were 2-peer owner+joiner. Real hives have 3+ members joining/leaving/rejoining under load. | composition over N live members |
-| **R** | Hive lifecycle & edge cases | dissolve, leave+rejoin, ownership transfer, rename, concurrent membership ops — none witnessed. Stresses the A-003/EI-681 hive-home path. | hive-create/dissolve/leave/transfer |
+| **Q** | Live multi-member pots + membership churn | Witnesses were 2-peer owner+joiner. Real pots have 3+ members joining/leaving/rejoining under load. | composition over N live members |
+| **R** | Pot lifecycle & edge cases | dissolve, leave+rejoin, ownership transfer, rename, concurrent membership ops — none witnessed. Stresses the A-003/EI-681 pot-home path. | pot-create/dissolve/leave/transfer |
 | **S** | Substrate durability & crash/restart recovery | This very box restarted mid-effort + lost the fleet. What happens to federation on instance/PG/box crash mid-drain? Recovery? Partial writes? | boot/drain/corestore recovery |
 | **U** | Federation silent-failure OBSERVABILITY | EI-681 sat silent ALL SESSION (outbox drained_at=NULL, harness not on topic, no signal). Does the system DETECT + SURFACE federation stalls, or fail silently? | health/metrics/alerting + deceptive-publish class |
 | **V** | Re-key (Move 2) adversarial test plan | The C-001 re-key is the release critical path; it needs an adversarial test gate authored NOW, ready for when ed300/K land it. | gated on the re-key build; co-own with K |

@@ -1,8 +1,8 @@
 ---
-title: "Driving a multi-agent build: the write-capable pivot when fleet bees can't write"
-description: "The coordinator runbook for building a whole plan via spawned workers when conditions are degraded. Fleet bees may be READ-ONLY (EI-524 capability confinement) — they draft, they can't write; the 'lift' can be announced-but-not-effective. Org-wide API rate-limiting kills parallel agent BURSTS but serial main-loop work survives. Pivot to write-capable Agent (Task) subagents + serial; place waves at ≤3 concurrency; ALWAYS verify bee/subagent drafts before applying."
+title: "Driving a multi-agent build: the write-capable pivot when fleet cups can't write"
+description: "The coordinator runbook for building a whole plan via spawned workers when conditions are degraded. Fleet cups may be READ-ONLY (EI-524 capability confinement) — they draft, they can't write; the 'lift' can be announced-but-not-effective. Org-wide API rate-limiting kills parallel agent BURSTS but serial main-loop work survives. Pivot to write-capable Agent (Task) subagents + serial; place waves at ≤3 concurrency; ALWAYS verify cup/subagent drafts before applying."
 discovered: 2026-06-14
-tags: [coordination, fleet, bee, subagent, rate-limit, capability, confinement, multi-agent, build, migration, plans]
+tags: [coordination, fleet, cup, subagent, rate-limit, capability, confinement, multi-agent, build, migration, plans]
 status: superseded
 documents:
   - packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts
@@ -10,51 +10,51 @@ documents:
 
 ## Current behavior (2026-07-03)
 
-**Wall 1 below is CLOSED — fleet bees are now write+bash capable, not
-read-only.** The "OWNER-PRIORITY FIX (2026-06-15)" (`bee-capability-expansion
+**Wall 1 below is CLOSED — fleet cups are now write+bash capable, not
+read-only.** The "OWNER-PRIORITY FIX (2026-06-15)" (`cup-capability-expansion
 -2026-06-08` D-005/P-004) granted `capability:fs-write` + `capability:bash` (plus
-`fs-read` / `git` / `net` / `code-inspect`) to the `bee` role principal in
+`fs-read` / `git` / `net` / `code-inspect`) to the `cup` role principal in
 `role-principal-caps.ts`, closing the "two-gate desync" this doc's Wall 1
 describes (the ENVELOPE-layer deny had been lifted, but the principal
-CAPABILITY grant lagged — bees still 100%-failed with `lacks capability
-'capability:fs-write'` until this landed). A `system:bee` today CAN `Edit` /
-`Write` / run bash directly — do **not** assume a bee report of "read-only" is
+CAPABILITY grant lagged — cups still 100%-failed with `lacks capability
+'capability:fs-write'` until this landed). A `system:cup` today CAN `Edit` /
+`Write` / run bash directly — do **not** assume a cup report of "read-only" is
 still the EI-524 confinement; verify against `role-principal-caps.ts`'s current
-`bee: [...]` grant list (and `bee-tool-boundary.test.ts`) before re-diagnosing
+`cup: [...]` grant list (and `cup-tool-boundary.test.ts`) before re-diagnosing
 it as Wall 1. See `agent-spawning/allowlist-and-caps.mdx` for the current,
 maintained capability/allowlist model.
 
 **Everything past Wall 1 — Wall 2 (rate-limit bursts), verify-before-apply,
 migration safety, and the monitor loop — is still generically useful runbook
-knowledge** for a degraded/high-load build (a bee CAN now write, but a
+knowledge** for a degraded/high-load build (a cup CAN now write, but a
 genuinely capability-confined or otherwise-blocked agent still benefits from
 the write-capable-subagent + serial pivot). Read the body below as historical
-context for *why* that pivot pattern exists, not as "bees are read-only today."
+context for *why* that pivot pattern exists, not as "cups are read-only today."
 
 ## When this applies
 
 You are an SU coordinator driving a `ready` plan to completion by **spawning
 workers** (the "assign a bunch of agents + monitor on a loop" ask). The happy
-path is: decompose the plan into lanes → `fleet:place_batch` bees → flip plan
+path is: decompose the plan into lanes → `fleet:place_batch` cups → flip plan
 items + place the next wave as deps clear. This page is the **degraded path** —
 the two infra walls that path hit in practice, and the pivots that got through.
 
-## Wall 1 — fleet bees can be READ-ONLY (EI-524 capability confinement)
+## Wall 1 — fleet cups can be READ-ONLY (EI-524 capability confinement)
 
-A `system:bee` spawned via `bee:spawn`/`fleet:place_batch` may lack
+A `system:cup` spawned via `cup:spawn`/`fleet:place_batch` may lack
 `capability:fs-write`. It can read, diagnose, and produce an excellent **draft**
 (exact migration SQL, code diffs), but its `Edit`/`Write` fails:
 
-> `Principal 'system:bee' lacks capability 'capability:fs-write'`
+> `Principal 'system:cup' lacks capability 'capability:fs-write'`
 
-- **Detect it, don't fight it.** If a bee reports the fs-write error (or two of
-  them do), stop re-placing bees into the same wall.
+- **Detect it, don't fight it.** If a cup reports the fs-write error (or two of
+  them do), stop re-placing cups into the same wall.
 - **A capability "lift" can be announced-but-not-effective.** A broadcast that
-  "bees are now write+exec capable" did NOT immediately grant fs-write to bees
+  "cups are now write+exec capable" did NOT immediately grant fs-write to cups
   spawned right after — the change was in-flux. **Verify empirically** (spawn one,
   watch for the error) before trusting a capability flip; multiple fleet agents
   hit the same wall after the "lift."
-- The working fleet pattern while bees are read-only: **bee drafts → a
+- The working fleet pattern while cups are read-only: **cup drafts → a
   write-capable actor verifies + applies.** But that funnels every write through
   a few write-capable SUs — a real throughput bottleneck.
 
@@ -67,9 +67,9 @@ Two write-capable mechanisms the coordinator owns directly:
    `run_in_background: true`; you're notified on completion (your monitor loop).
    This is the parallelism the read-only fleet can't give you.
 2. **Serial main-loop work (you)** — the most reliable path; it consistently got
-   through when both fleet bees and parallel subagents were blocked.
+   through when both fleet cups and parallel subagents were blocked.
 
-Stand the read-only bees down (`fleet:cancel` + close their work-items so the
+Stand the read-only cups down (`fleet:cancel` + close their work-items so the
 autoloop doesn't re-place them) and re-route the lanes to subagents/serial.
 
 ## Wall 2 — org-wide API rate-limiting kills parallel BURSTS
@@ -84,7 +84,7 @@ work.
 - **Reduce concurrency under rate pressure.** Place waves at **≤3** write-capable
   subagents, not a big fan-out. Do the critical-path / privileged steps (DB
   migrations) **serially yourself**.
-- Fleet bees route through the **rate-governor** (paced), so they degrade more
+- Fleet cups route through the **rate-governor** (paced), so they degrade more
   gracefully than raw parallel Agent subagents — prefer them once the confinement
   is fixed.
 - A rate-limited kill leaves **partial work**: check `git status` + a targeted
@@ -94,10 +94,10 @@ work.
 
 ## ALWAYS verify a draft before applying it
 
-Read-only bees (and rushed subagents) produce **unverified** drafts. In one build
+Read-only cups (and rushed subagents) produce **unverified** drafts. In one build
 this caught **three real bugs** before they landed: a backfill `CROSS JOIN
-harness_shared.harnesses WHERE kind='hive'` (no such table/column — hives are a
-registry entry with `harness_kind='hive'`), a join on `engineer_issues.harness_slug`
+harness_shared.harnesses WHERE kind='pot'` (no such table/column — pots are a
+registry entry with `harness_kind='pot'`), a join on `engineer_issues.harness_slug`
 (no such column — the slug is in the federation outbox jsonb, mig 197), and a
 `DROP TABLE … CASCADE` rebuild where a `safe-to-truncate` cache only needed
 `ADD COLUMN` + truncate + repoint-PK. **Verify every schema/table/symbol
@@ -118,7 +118,7 @@ assumption against the real files; correct, then apply + test.**
 
 ## The loop
 
-Monitor with **completion wakes** (background `Task` notifications + the bees'
+Monitor with **completion wakes** (background `Task` notifications + the cups'
 `coord:send {wake:true}` on done) plus an **`events:await` heartbeat** fallback
 for stalls. On each wake: flip the landed plan items (`plans:set-status`), place
 the next wave as deps clear, re-`coord:declare-intent { items }` to keep your lane

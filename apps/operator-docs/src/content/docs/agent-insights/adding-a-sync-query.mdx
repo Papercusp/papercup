@@ -17,7 +17,7 @@ plans:
   - papercusp-dogfood-v5-2026-05-23
   - plans-pg-canonical-migration-2026-06-03
   - storage-settings-page-2026-06-15
-  - hive-from-repo-hardening-2026-06-11
+  - pot-from-repo-hardening-2026-06-11
   - adv-harness-tab-migration-2026-05-30
   - presence-v2-2026-06-14
   - fs-watcher-retirement-2026-05-10
@@ -272,7 +272,7 @@ PG but the surface looks frozen until the 180s drift-repair poll.
 - Client subscribes WITH args (`voiceLease.current` → `{ workspaceId }`,
   `planItems.byPlan` → `{ planSlug }`) → pass those **same** args.
 
-This bit the Queen-autonomy settings page: the ceiling slider wrote to PG but
+This bit the Mug-autonomy settings page: the ceiling slider wrote to PG but
 the dot never moved because the route/tool emitted `{ workspaceId }` against a
 no-arg subscription. Fixed by switching those emits to name-only. (Belt-and-
 suspenders on the consumer side: an optimistic local overlay reconciled against

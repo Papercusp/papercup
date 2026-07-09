@@ -1,6 +1,6 @@
 ---
 title: Voice modality
-description: How tools declare text vs voice relevance, and how the current hosted-voice session maps those prompt-level tool surfaces onto the operator/Sentinel voice stack.
+description: How tools declare text vs voice relevance, and how the current hosted-voice session maps those prompt-level tool surfaces onto the operator/Papercup voice stack.
 sidebar:
   order: 5
 plans:
@@ -8,7 +8,7 @@ plans:
   - phase-4-endpoint-system-2026-05-12
   - bespoke-card-improvements-2026-05-13
   - voice-aware-cards-2026-05-14
-  - sentinel-herald-2026-06-21
+  - papercup-herald-2026-06-21
 documents:
   - libs/generic/tooldef/src/tool-projection.ts
   - packages/operator-core/lib/voice-node/operator-voice-session.ts
@@ -86,7 +86,7 @@ user." It is:
 
 1. a hosted voice provider session
 2. the provider calls our tool for each user turn
-3. the operator host relays the final transcript into the Sentinel or operator
+3. the operator host relays the final transcript into the Papercup or operator
    brain
 4. the answer comes back through the shared voice pipeline
 
@@ -96,32 +96,32 @@ production wiring comes from `operator-voice-session-deps.ts`.
 
 The provider is therefore a **voice front-end**, not the cognition source. The
 tool result is a short acknowledgment; the real answer arrives later through the
-same voice session via `voice:say` and the sentinel-says pump.
+same voice session via `voice:say` and the papercup-says pump.
 
 The earlier browser-only `askOperatorViaSse` story is historical context, not
 the full current architecture.
 
-### Which persona brain answers — the Sentinel-as-Herald repoint
+### Which persona brain answers — the Papercup-as-Herald repoint
 
 The `operator-converse` route (`endpoint-route/routes/agent-mcp/operator-converse.ts`)
 doesn't always dispatch to `operator:converse`. It resolves a `role` (default
 `'operator'`) and looks up `${role}:converse`, falling back to `operator:converse` if
 that name isn't registered. `role` comes from an explicit `body.role` when set;
 otherwise it falls back to the `humanFacingRole` voice pref (`'operator'` |
-`'sentinel'`, default `'operator'`) so voice, text, and mobile all converge on
+`'papercup'`, default `'operator'`) so voice, text, and mobile all converge on
 the same human-facing persona choice.
 
-When `role === 'sentinel'`, the turn is answered by the always-on Sentinel persona
+When `role === 'papercup'`, the turn is answered by the always-on Papercup persona
 instead of the legacy operator persona — same tag contract (`<say>`, `<set_mode>`,
-`<sleep>`), but with its own read-context and two Sentinel-only control tags (below).
-See [the Sentinel](/internal/docs/agent-insights/sentinel) for the full architecture
-(how it's enabled, its read-context sources, and the handoff-to-Queen flow).
+`<sleep>`), but with its own read-context and two Papercup-only control tags (below).
+See [the Papercup](/internal/docs/agent-insights/papercup) for the full architecture
+(how it's enabled, its read-context sources, and the handoff-to-Mug flow).
 
 ### Hosted voice is transport — the brain is still ours
 
 The hosted session is deliberately relay-shaped. Its prompt override tells it to
 call the tool on every user turn and never answer from its own knowledge. That
-keeps the cognition in the local operator/Sentinel stack and avoids a voice-only
+keeps the cognition in the local operator/Papercup stack and avoids a voice-only
 split brain.
 
 The exact transport may change over time, but the modality contract stays the
@@ -139,15 +139,15 @@ The operator brain (running our prompt) wraps voice-mode replies in `<say>...</s
 | `<sleep duration_minutes="N" reason="…">` | "Stay silent for N minutes" (capped at 1 day). | Client only — the sleep timer is written by `OperatorConversationProvider`. |
 | `<continue/>` | "I have more user-visible progress to make; no user input needed." | Client only — the runtime auto-fires another turn with `trigger: 'continue'`. |
 | `<report>{json}</report>` | Structured per-plan/per-item status, paired with `<say>`. | Client only — persisted alongside `parsed.say` and rendered as a card/list. |
-| `<spawn role="..." harness="..." feature="..." chunk="..." extras="K=V" />` | Server-side orchestrator dispatch. **Operator role only** — a Sentinel turn never dispatches `<spawn>` even if one is present (its capability envelope denies `bee:spawn`). | Server (`parseOperatorTurn` → `fleet/operator-spawn`); never returned to EL. |
-| `<handoff_to_queen summary="…" harness="…" feature="…" tier="…" urgent="…">` | The **Sentinel's** file-and-nudge placement seam — never spawns, files a `work_item` and nudges the Queen. **Sentinel role only.** | Server (`parseOperatorTurn` → `operator-sentinel-handoff.ts`); never returned to EL. See [the Sentinel](/internal/docs/agent-insights/sentinel). |
-| `<delegate_deep summary="…" brief="…" harness="…">` | The **Sentinel's** hard-thinking delegation seam — offloads sustained analysis to the deep-analysis lane. **Sentinel role only.** | Server (`parseOperatorTurn` → `sentinel-deep-delegate.ts`); never returned to EL. |
+| `<spawn role="..." harness="..." feature="..." chunk="..." extras="K=V" />` | Server-side orchestrator dispatch. **Operator role only** — a Papercup turn never dispatches `<spawn>` even if one is present (its capability envelope denies `cup:spawn`). | Server (`parseOperatorTurn` → `fleet/operator-spawn`); never returned to EL. |
+| `<handoff_to_queen summary="…" harness="…" feature="…" tier="…" urgent="…">` | The **Papercup's** file-and-nudge placement seam — never spawns, files a `work_item` and nudges the Mug. **Papercup role only.** | Server (`parseOperatorTurn` → `operator-papercup-handoff.ts`); never returned to EL. See [the Papercup](/internal/docs/agent-insights/papercup). |
+| `<delegate_deep summary="…" brief="…" harness="…">` | The **Papercup's** hard-thinking delegation seam — offloads sustained analysis to the deep-analysis lane. **Papercup role only.** | Server (`parseOperatorTurn` → `papercup-deep-delegate.ts`); never returned to EL. |
 
 The shared parser (`parseOperatorTurn` in `operator-converse-tags.ts`) runs on
 both the server and the client, but they consume different slots, and which
 server-side tags are honored depends on the turn's `role`. `operator:converse`
 reads `parsed.say` / `parsed.report` and, for an **operator** turn, dispatches
-`parsed.spawns`; for a **sentinel** turn it instead dispatches
+`parsed.spawns`; for a **papercup** turn it instead dispatches
 `parsed.handoffs` and `parsed.deepDelegations` and ignores `parsed.spawns`.
 Those control-tag sets cannot cross.
 

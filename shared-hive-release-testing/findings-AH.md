@@ -6,8 +6,8 @@ conflict-convergent, branch-agnostic, and plane-independent; the S0 "a joiner ca
 direct-push the owner's main" invariant holds and is teeth-verified — including **tree-wide**
 (submodules, AH-6) and now **LIVE against real GitHub**. The non-collaborator fork→PR path was the
 one prior YELLOW; it is **now witnessed live** (2026-06-20): a real `aviynw` joiner (no upstream
-write) forked `papercupai/shared-hive-test` under its OWN account and opened a real cross-fork PR
-(`papercupai/shared-hive-test#1`, head `aviynw:… → papercupai:main`) while the owner's `main`
+write) forked `papercupai/shared-pot-test` under its OWN account and opened a real cross-fork PR
+(`papercupai/shared-pot-test#1`, head `aviynw:… → papercupai:main`) while the owner's `main`
 stayed byte-identical — the joiner contributed ONLY as a PR, never a direct push. No release
 blockers remain.
 
@@ -17,7 +17,7 @@ blockers remain.
 
 The code plane's PIECES were already well-tested (seeding, eligibility, the push decision, the
 run-git-sync pipeline, GAP-4 submodule-defer, oversized-blob exclusion, non-FF retry, two-peer
-convergence). This lane (a) ties them into the literal **"a Bee writes code in a running member →
+convergence). This lane (a) ties them into the literal **"a Cup writes code in a running member →
 it lands on the shared origin's default branch → a peer pulls it → all converge"** end-to-end
 claim with a **byte-for-byte content** assertion, (b) closes the **S0 joiner-no-direct-push**
 invariant *with teeth* and *with a real upstream remote present* (the existing push:false test
@@ -26,7 +26,7 @@ only covered the no-upstream case), (c) adds the **plane-orthogonality** guards,
 
 **New test file (teeth-verified):**
 `packages/operator-core/lib/harness/git-sync/code-plane-federation.test.ts` (real `git` + a local
-bare repo as the shared-hive origin; no GitHub network, no PG) — 6 tests, all green.
+bare repo as the shared-pot origin; no GitHub network, no PG) — 6 tests, all green.
 
 **Run:** `cd packages/operator-core && npx vitest run lib/harness/git-sync/code-plane-federation.test.ts`
 
@@ -41,11 +41,11 @@ bare repo as the shared-hive origin; no GitHub network, no PG) — 6 tests, all 
   (`git add -A`) and `git push origin HEAD:<branch>` **directly to the shared repo's default
   branch** (collaborators), with non-FF retry so concurrent peers converge at the origin.
 
-> **Terminology note for readers:** the brief says "main". In the SHARED-HIVE code plane the push
+> **Terminology note for readers:** the brief says "main". In the SHARED-POT code plane the push
 > target is the **member repo's own default branch** (`origin/HEAD`, often `main`, sometimes
 > `trunk`/etc.) — resolved per-repo by the pipeline, NOT a literal hardcoded `main`. This is
 > distinct from the *papercup* superproject, whose git-sync pushes `origin/staging` and whose
-> `main` is green-automation-only. Brief AH is about the shared-hive member-repo plane. AH-4
+> `main` is green-automation-only. Brief AH is about the shared-pot member-repo plane. AH-4
 > below proves the per-repo resolution.
 
 ## 2. The two contribution paths (confirmed in code)
@@ -74,7 +74,7 @@ the origin converge.
   on the bare origin equals the exact bytes written (existing tests assert head-sha/filenames
   only — never the content), then the peer's clean-tree tick fetch-merges it and the file arrives
   intact in the peer's working tree; all three heads converge.
-- **Prior art** (re-confirmed green this run): `seed-any-hive.integration.test.ts` S4
+- **Prior art** (re-confirmed green this run): `seed-any-pot.integration.test.ts` S4
   "push:true tick: commit lands, push reaches the bare origin" (13/13);
   `two-peer-convergence.integration.test.ts` C1 "A pushes; B fetch-merges A and pushes; A merges
   back — union on origin" (6/6).
@@ -88,7 +88,7 @@ the origin converge.
   decision (`push:true`) DOES advance the origin — proving the "origin unchanged" assertion is
   load-bearing. **Teeth-verified at the source:** neutering the joiner rule in
   `decide-git-sync-push.ts` (`push:false`→`push:true`) turns the invariant RED.
-  - This strictly strengthens the prior `seed-any-hive` S4 "push:false → origin untouched", which
+  - This strictly strengthens the prior `seed-any-pot` S4 "push:false → origin untouched", which
     only covered the **no-upstream** case (`no_upstream_remote`) and carried **no teeth** — AH-2
     covers the actual S0 case: a joiner **with a real upstream remote present**.
   - **The invariant holds TREE-WIDE (submodules included):** **NEW** AH-6 — a joiner that writes
@@ -103,12 +103,12 @@ the origin converge.
   `{write,maintain,admin}` → `integration_mode` (direct push, no PR). `ensureFork` short-circuits
   when the authed user owns the upstream and is idempotent + ready-polls a created fork. Unit-tested
   with mocked Octokit (`fork-pr-on-feature-pass.test.ts`, `open-fork-pr.test.ts`,
-  `fork-pr-url-created-hive.test.ts`, re-confirmed green). **NEW — the LIVE leg is closed:**
+  `fork-pr-url-created-pot.test.ts`, re-confirmed green). **NEW — the LIVE leg is closed:**
   `code-plane-fork-pr-live.test.ts` (gated on `PAPERCUSP_LIVE_FORK_PR=1`) drove the REAL
   `ensureFork` + `openForkPr` against GitHub with two real identities — a `papercupai`-owned
   upstream and an `aviynw` joiner with no write. Witnessed 2026-06-20: `ensureFork` created the fork
-  **under the joiner's own account** (`aviynw/shared-hive-test`, D-007), `openForkPr` opened a real
-  cross-fork PR (`papercupai/shared-hive-test#1`, head `aviynw:harness/… → papercupai:main`), and
+  **under the joiner's own account** (`aviynw/shared-pot-test`, D-007), `openForkPr` opened a real
+  cross-fork PR (`papercupai/shared-pot-test#1`, head `aviynw:harness/… → papercupai:main`), and
   the owner's `main` stayed byte-identical to the seed — **the S0 invariant held against real
   GitHub.** PR closed + branch deleted in teardown; the fixture repos persist for reuse.
 - **Honesty (not a silent no-op):** the joiner's push:false carries an explicit, honest
@@ -123,7 +123,7 @@ Fully covered by `two-peer-convergence.integration.test.ts` (re-confirmed green,
   force-pushed:** P0 "CONFLICTING peer push → the retry re-merge conflicts, **aborts CLEAN**,
   reports" (no half-merge, no `MERGE_HEAD` left behind); C2 "loser escalates + dispatches a
   resolver, converges"; C3 racing resolvers are bounded at one extra pass (origin serializes); C4
-  three rounds, no wedged dedup. `seed-any-hive` S4 "conflict tick → escalation at the constant
+  three rounds, no wedged dedup. `seed-any-pot` S4 "conflict tick → escalation at the constant
   `git-sync` phase, clean pass clears it". The pipeline **never force-pushes** (only
   `push HEAD:<branch>`; non-FF → fetch+merge+retry).
 
@@ -208,7 +208,7 @@ already fixed.
 
 | # | Gap | Severity | Why open / disposition |
 |---|---|---|---|
-| ~~G1~~ | ~~Fork→PR LIVE leg never run hermetically~~ | — | **CLOSED 2026-06-20.** Created the `papercupai/shared-hive-test` fixture + `code-plane-fork-pr-live.test.ts` (gated on `PAPERCUSP_LIVE_FORK_PR=1`); witnessed a real `aviynw`-joiner fork + cross-fork PR (`#1`) with the owner `main` unchanged. The two reusable fixture repos persist (the box's gh tokens lack `delete_repo`); PR closed + branch deleted in teardown. |
+| ~~G1~~ | ~~Fork→PR LIVE leg never run hermetically~~ | — | **CLOSED 2026-06-20.** Created the `papercupai/shared-pot-test` fixture + `code-plane-fork-pr-live.test.ts` (gated on `PAPERCUSP_LIVE_FORK_PR=1`); witnessed a real `aviynw`-joiner fork + cross-fork PR (`#1`) with the owner `main` unchanged. The two reusable fixture repos persist (the box's gh tokens lack `delete_repo`); PR closed + branch deleted in teardown. |
 | G2 | **EI-382 reconcile residual**: a link-joined member whose best-effort join-time seed FAILS is not auto-backfilled (no `hive_slug` → reconcile skips it; only `unseeded` alarm) | S2 | Common path fixed; rare seed-failure path degrades to an alarm, not auto-heal. Filed as an improvement **EI-1623** (link-join should either stamp `hive_slug`, or the reconcile should also backfill the `unseeded` set it already detects). |
 | ~~G3~~ | ~~`gh` credential resolution at push time not hermetically exercised~~ | — | **CLOSED 2026-06-20.** The live fork→PR run resolved a real per-account token via `gh auth token --user`, authed a real push to the fork, and authed the PR-create API. Collaborator direct-push (SSH) is proven continuously by live `papercup` git-sync. |
 
@@ -228,7 +228,7 @@ proven with a real upstream remote present, teeth-verified, tree-wide (submodule
 against real GitHub**.
 
 **🟢 GREEN** for the **non-collaborator contribution path**: the fork→PR leg is now witnessed live
-(`papercupai/shared-hive-test#1` — a real joiner fork + cross-fork PR, owner `main` untouched). No
+(`papercupai/shared-pot-test#1` — a real joiner fork + cross-fork PR, owner `main` untouched). No
 release blockers remain; the only open item is G2 (S2, filed as EI-1623).
 
 ---
@@ -238,9 +238,9 @@ release blockers remain; the only open item is G2 (S2, filed as EI-1623).
 | Suite | Result | Covers |
 |---|---|---|
 | `code-plane-federation.test.ts` (**NEW**) | 8/8 | AH-1 headline content round-trip; AH-2 S0 no-direct-push + teeth; AH-3 orthogonality; AH-4 non-main branch; AH-6 S0 holds tree-wide (joiner never leaks to a submodule origin) + teeth |
-| `code-plane-fork-pr-live.test.ts` (**NEW**, gated `PAPERCUSP_LIVE_FORK_PR=1`) | 1/1 live | G1 — real `ensureFork` + cross-fork PR vs GitHub (`papercupai/shared-hive-test#1`), owner `main` unchanged (S0 live) |
+| `code-plane-fork-pr-live.test.ts` (**NEW**, gated `PAPERCUSP_LIVE_FORK_PR=1`) | 1/1 live | G1 — real `ensureFork` + cross-fork PR vs GitHub (`papercupai/shared-pot-test#1`), owner `main` unchanged (S0 live) |
 | `two-peer-convergence.integration.test.ts` | 6/6 | scenario 2 conflict convergence (P0/C1–C4) |
-| `seed-any-hive.integration.test.ts` | 13/13 | scenarios 1/3 (push lands; push:false origin untouched; reconcile; conflict tick) |
+| `seed-any-pot.integration.test.ts` | 13/13 | scenarios 1/3 (push lands; push:false origin untouched; reconcile; conflict tick) |
 | `multi-peer-convergence.test.ts` | (prior art) | 3-peer disjoint + same-file convergence; cross-peer submodule defer; force-push rewrite safety |
 | `join-link.test.ts` + `fork-pr-on-feature-pass.test.ts` + `decide-git-sync-push.test.ts` + `github-repo-permissions.test.ts` | green | EI-382 fix; fork-mode gate; push decision; credential probe fail-closed |
 

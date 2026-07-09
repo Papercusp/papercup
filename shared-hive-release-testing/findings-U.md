@@ -17,13 +17,13 @@ hand-drilling Postgres (`drained_at=NULL`), not by any health surface.
 > REMAINING (handed to M, owns the route + G-004 surface): pass a `resolveDrainStats` that
 > queries `harness_shared.substrate_outbox` (COUNT(*) + age of MIN(created_ts) WHERE
 > drained_at IS NULL, per booted scope, pre-fetched since the resolver is sync) into
-> `getInProcessSubstrateStatus` in `federation-status.ts`, and render the per-hive sync
+> `getInProcessSubstrateStatus` in `federation-status.ts`, and render the per-pot sync
 > line in `HiveFederationStatus`. Then EI-1618/EI-1599 close + a stuck outbox is visible live.
 
 ## Audit — what federation health signals exist today (code evidence)
 
 1. **`GET /api/discovery/federation-status` (G-004, M's lane)** — reports:
-   - `hives[].reachablePeers` = topic peer count (`reachablePeersForHive`).
+   - `pots[].reachablePeers` = topic peer count (`reachablePeersForHive`).
    - `substrate` = install-wide **boot** health (`getInProcessSubstrateStatus`):
      `{active, bootedHarnesses, healthy, booting, degraded}`.
    - **Its own doc comment**: *"There is deliberately NO 'synced' / 'connected to peer X'
@@ -51,7 +51,7 @@ So the failure mode "harness booted, outbox capturing, but `drained_at=NULL` for
 (not on topic / drain unwired)" — i.e. EI-681, and the EI-126 mis-route class — is
 **undetectable**: `federation-status` shows `substrate.healthy`, `reachablePeers` may be
 >0 (the member's), and the only thing that touches the undrained rows is a GC that
-deletes them. A user (or an agent) is told their hive is healthy while its content
+deletes them. A user (or an agent) is told their pot is healthy while its content
 silently never syncs. For a public product, "synced" must not be a lie of omission.
 
 ## Proposed fix (minimal, test-able)

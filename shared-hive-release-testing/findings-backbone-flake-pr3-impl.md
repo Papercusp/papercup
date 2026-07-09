@@ -6,7 +6,7 @@ S0 ordering lane's core test infra, and the right fix is theirs to choose.
 
 ## What I found
 Independently re-ran the ROLLUP's federation backbone suite on the CURRENT (heavily-churned) tree:
-`cd packages/operator-core && npx vitest run lib/sync/hyperbee lib/shared-hive-loop`
+`cd packages/operator-core && npx vitest run lib/sync/hyperbee lib/shared-pot-loop`
 → **2 failed | 1156 passed | 1 expected-fail | 2 skipped** (1 file failed of 146).
 
 The failing file: **`lib/sync/hyperbee/lww-transitivity.test.ts`** (EI-1698) — its two transitivity

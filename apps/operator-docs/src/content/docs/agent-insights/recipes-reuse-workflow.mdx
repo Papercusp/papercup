@@ -1,6 +1,6 @@
 ---
 title: Code recipes — the reuse loop (search → reuse → leave findable) and how popular ones graduate
-description: Every successful code:run is saved as a reusable RECIPE. How to FIND and REUSE an existing recipe instead of re-authoring (recipes:search / recipes:run), what the code:run similarRecipes nudge means, and how hot recipes graduate into first-class tools via recipes:candidates + the Queen.
+description: Every successful code:run is saved as a reusable RECIPE. How to FIND and REUSE an existing recipe instead of re-authoring (recipes:search / recipes:run), what the code:run similarRecipes nudge means, and how hot recipes graduate into first-class tools via recipes:candidates + the Mug.
 discovered: 2026-06-22
 tags: [code-run, recipes, reuse, tool-orchestration, agent-efficiency, graduation]
 status: active
@@ -25,7 +25,7 @@ plans:
 A **recipe** is a saved, reusable [`code:run`](/internal/docs/agent-insights/code-run-when-and-why)
 script. **Every successful, non-dry-run `code:run` is captured** as a recipe (you don't make a
 separate "save" call), titled by you or auto-derived. Recipes are **global** — a good recipe helps
-every hive, like a tool definition — so the one you need was very likely already written by another
+every pot, like a tool definition — so the one you need was very likely already written by another
 agent.
 
 `code:run` collapses many tool round-trips into one. Recipes close the other half of that win:
@@ -70,7 +70,7 @@ clusters**. Two guards keep it honest (`code-recipes-candidates.ts`):
   **existing tool name** (slug-compared) are excluded — promoting them would just regenerate a
   primitive that already exists.
 
-The **Queen** pulls `recipes:candidates` on an idle wake, judges the worklist with hive context, and
+The **Mug** pulls `recipes:candidates` on an idle wake, judges the worklist with pot context, and
 files a work-item to implement a strong candidate as a first-class `defineTool` (the normal coding
 pipeline's review *is* the gate) or to merge a duplicate cluster. Stale never-reused one-offs are
 retired by **`recipes:sweep`**. So the more you *reuse*, the better the system gets at turning the

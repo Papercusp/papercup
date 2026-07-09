@@ -1,6 +1,6 @@
 # Findings EN-4 — Owner-enforcement: the single `policy-admission` boot seam (the keystone)
 
-**Status: LANDED + GREEN.** Plan `shared-hive-owner-enforcement-2026-06-19`, Phase EN-4 — the
+**Status: LANDED + GREEN.** Plan `shared-pot-owner-enforcement-2026-06-19`, Phase EN-4 — the
 KEYSTONE that makes EN-1/EN-2/EN-3 actually bite. Continued + completed 2026-06-19 (su-328af):
 `policy-admission.ts` (the pure decider + decorator) existed and was suite-green, but was
 **NOT wired into `boot.ts`** (`applyImpl: scopedApply`, zero enforcement) — so all of EN-2's
@@ -32,7 +32,7 @@ ban → allowlist → takedown → content   (EN-4 makePolicyEnforcedApply, oute
 3. **The per-pass seam** at `mergeOpts` construction:
    - Read the owner-SIGNED policy ONCE per merge pass via
      `getHivePolicy(workspaceId, hiveHomeProjectionSlug ?? harnessSlug)`. This runs **only past
-     the `!changed` early-return** — an idle / un-policed harness pays NOTHING. The Hive-home
+     the `!changed` early-return** — an idle / un-policed harness pays NOTHING. The Pot-home
      slug is the scope (`hiveHomeProjectionSlug` rebinds on the joiner re-key; the owner's home
      is its own slug).
    - Compose `enforcedApply = ownerPolicy ? makePolicyEnforcedApply({…, apply: makeRateLimitedApply({…, apply: scopedApply})}) : scopedApply` — wrapping the CURRENT `scopedApply` (which `rekey` may have rebound), EN-2 inner + EN-4 outer, exactly as `policy-admission.apply.test.ts` proves.
@@ -41,7 +41,7 @@ ban → allowlist → takedown → content   (EN-4 makePolicyEnforcedApply, oute
 ### Key properties (preserved by the wiring)
 
 - **Default-off = byte-for-byte unchanged.** No owner policy ⇒ `enforcedApply === scopedApply`
-  (not even a wrapper closure). Existing hives are unaffected.
+  (not even a wrapper closure). Existing pots are unaffected.
 - **Author attribution is unforgeable + fail-closed.** `resolveAuthor` / `resolveAuthorId`
   key off the receiver-stamped `op.sourceLogKeyHex` via `admittedIdentities`
   (`githubUserId` + `githubUsername`=`githubLogin`), NOT the self-declared `writerPubkey`. An
@@ -102,7 +102,7 @@ read-cut) must drop BEFORE it spends rate budget or hits content checks.
 **Seam (designed for race-free composition):** boot.ts builds the EN stack as a NAMED const —
 `const enforcedApply = ownerPolicy ? makePolicyEnforcedApply(…makeRateLimitedApply(…scopedApply)) : scopedApply;`
 — and `mergeOpts.applyImpl = enforcedApply;`. The re-key lane composes by WRAPPING that stable
-named value at the `applyImpl:` line only (flag-gated to `papercusp-hive-rekey`), e.g.
+named value at the `applyImpl:` line only (flag-gated to `papercusp-pot-rekey`), e.g.
 `applyImpl: rekeyOn ? decryptGate(enforcedApply) : enforcedApply` — never rebuilding the EN
 construction. `enforcedApply` re-reads the CURRENT `scopedApply` per pass, so it survives the
 rekey rebind. One owner per expression ⇒ no clobber.
@@ -110,11 +110,11 @@ rekey rebind. One owner per expression ⇒ no clobber.
 **STATUS (REAL gate WIRED 2026-06-19):** the stub has been replaced by the live re-key
 decrypt-gate (su-ee7e9). boot.ts now builds the deps ONCE at boot scope —
 `const rekeyDeps = await buildHiveRekeyBootDeps({ workspaceId, harnessSlug })` (line ~639,
-`Promise<HiveRekeyBootDeps | null>`, null on flag-off/non-hive/no-device, flag checked FIRST so
+`Promise<HiveRekeyBootDeps | null>`, null on flag-off/non-pot/no-device, flag checked FIRST so
 the off-path is one cached read) — and the seam is
 `applyImpl: rekeyDeps ? rekeyDeps.epochGate(enforcedApply) : enforcedApply` (line ~1167).
 All three invariants hold: epochGate OUTERMOST (inv-1), built once (inv-2), null ⇒ enforcedApply
-byte-for-byte (inv-3). Flag-dark until `papercusp-hive-rekey` (FLAGS.HIVE_REKEY) flips.
+byte-for-byte (inv-3). Flag-dark until `papercusp-pot-rekey` (FLAGS.HIVE_REKEY) flips.
 
 The compose order is pinned by a regression test (su-328af):
 `lib/sync/hyperbee/rekey-enforcement-compose-order.test.ts` (6/6) — a banned-pattern present in
@@ -123,13 +123,13 @@ the PLAINTEXT but absent from the ciphertext is dropped by EN-4 ONLY because dec
 undecryptable op (read-cut/defer) drops at the gate before EN-4/EN-2; the full chain
 (decrypt → EN-4 ban) verified. Full `lib/sync/hyperbee` backbone GREEN with the gate wired:
 136/137 files, 1081 passed | 1 expected-fail | 2 skipped. The real gate's crypto (round-trip /
-defer=removed-member-cut / drop=wrong-key/tampered-AAD) is covered by hive-epoch-op-gate.test.ts (7/7).
+defer=removed-member-cut / drop=wrong-key/tampered-AAD) is covered by pot-epoch-op-gate.test.ts (7/7).
 
 ## Honest residuals / not-yet
 
 - **Live witness:** suite + structural GREEN; a live .deb witness (owner sets a policy → a
   member peer drops a banned/over-cap/taken-down op) is the remaining release-grade proof. It
-  now rides the A-003 hive-home seam that just hit first green LIVE witness (policy federates
+  now rides the A-003 pot-home seam that just hit first green LIVE witness (policy federates
   owner→member on the real binary), so the path is unblocked.
 - **EN-1 GUI snapshot surface** — the owner-facing "member X at N/cap" read off
   `limiter.snapshot()` is a fast-follow (the EN-1 panel exists; the live counter is additive).

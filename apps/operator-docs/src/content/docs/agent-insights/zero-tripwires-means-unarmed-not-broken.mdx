@@ -1,8 +1,8 @@
 ---
 title: 0 autonomy tripwires is the UNARMED dark-ship state, NOT a broken backstop
-description: 'autonomy_tripwire_list returning 0 does not mean the auto-revert safety net is broken. Tripwires arm ONLY when the autonomy policy is armed (papercusp-queen-autonomy-armed) or papercusp-queen-full-autonomy is ON — both default OFF. Unarmed → the decider returns gated for every action → planReversibleArm returns null → nothing arms, BY DESIGN (D-007). And don''t be fooled by "N auto-actions in the decision ledger": the action-layer logs every governed call with posture=auto; that is not the same as an autonomy-gated reversible Queen auto-take, and most of the volume is unrelated (in papercusp-workspace ~1000 were the palette command-palette runaway, EI-597). The arm seam is wired only to work_items:set_state + set_priority.'
+description: 'autonomy_tripwire_list returning 0 does not mean the auto-revert safety net is broken. Tripwires arm ONLY when the autonomy policy is armed (papercusp-mug-autonomy-armed) or papercusp-mug-full-autonomy is ON — both default OFF. Unarmed → the decider returns gated for every action → planReversibleArm returns null → nothing arms, BY DESIGN (D-007). And don''t be fooled by "N auto-actions in the decision ledger": the action-layer logs every governed call with posture=auto; that is not the same as an autonomy-gated reversible Mug auto-take, and most of the volume is unrelated (in papercusp-workspace ~1000 were the palette command-palette runaway, EI-597). The arm seam is wired only to work_items:set_state + set_priority.'
 discovered: 2026-06-18
-tags: [autonomy, queen, tripwire, auto-revert, decider, flags, dark-ship, verify-first, decision-ledger, misdiagnosis]
+tags: [autonomy, mug, tripwire, auto-revert, decider, flags, dark-ship, verify-first, decision-ledger, misdiagnosis]
 status: active
 documents:
   - packages/operator-core/lib/autonomy/decider.ts
@@ -17,7 +17,7 @@ When an agent sees `autonomy:tripwire_list` return **0 rows** "despite hundreds
 of auto-actions," the tempting conclusion is *"the auto-revert backstop is
 broken — every auto-take runs unbacked."* **That conclusion is almost always
 wrong, and chasing a `planReversibleArm` "fail-safe-critical bug" wastes an
-hour.** (It already has — twice: EI-570, then the queen-loop-alignment P-003
+hour.** (It already has — twice: EI-570, then the mug-loop-alignment P-003
 re-investigation.) Two things bite.
 
 ## 1. 0 tripwires is the dark-ship contract, not a bug
@@ -25,8 +25,8 @@ re-investigation.) Two things bite.
 The tripwire only arms when the autonomy policy is **ARMED**. The two gates,
 both default **OFF**, fail-dark:
 
-- `papercusp-queen-autonomy-armed` (the P-092 arm flag), and
-- `papercusp-queen-full-autonomy` (the residue-lifting grant).
+- `papercusp-mug-autonomy-armed` (the P-092 arm flag), and
+- `papercusp-mug-full-autonomy` (the residue-lifting grant).
 
 With both OFF, `decideAutonomy`
 (`packages/operator-core/lib/autonomy/decider.ts`) returns **`gated` for every
@@ -38,8 +38,8 @@ posture and returns **`null`**, the caller skips `commitReversibleArm`, and
 **Check before concluding "broken":**
 
 ```
-flags:get papercusp-queen-autonomy-armed     # OFF ⇒ dormant by design
-flags:get papercusp-queen-full-autonomy       # OFF ⇒ dormant by design
+flags:get papercusp-mug-autonomy-armed     # OFF ⇒ dormant by design
+flags:get papercusp-mug-full-autonomy       # OFF ⇒ dormant by design
 autonomy:policy_get                            # ceilings (FYI; not the blocker)
 ```
 
@@ -57,7 +57,7 @@ critical ceiling. The only blocker is the arm flags being off.
 
 The number that triggers the false alarm is usually
 `decision_ledger:summary { byPosture: { auto: ~1000 } }`. **That count is not
-"autonomy-gated reversible Queen auto-takes."** The action-layer ledger records
+"autonomy-gated reversible Mug auto-takes."** The action-layer ledger records
 *every* governed MCP call with a posture; `posture: auto` just means "ran
 without owner-gating" — true of ordinary authorized tool calls.
 
@@ -102,5 +102,5 @@ code is correct — it is waiting for the owner to arm, nothing more.
 - `agent-insights/autonomy-residue-and-the-full-autonomy-knob` — why maxing all
   13 ceilings still leaves a gated residue, and how `QUEEN_FULL_AUTONOMY` lifts
   both the decide gate and the implement TCB.
-- Plan `queen-loop-alignment-2026-06-14` D-004 (this finding) and
-  `queen-autonomy-policy-2026-06-13` (the B-12/B-16 design).
+- Plan `mug-loop-alignment-2026-06-14` D-004 (this finding) and
+  `mug-autonomy-policy-2026-06-13` (the B-12/B-16 design).

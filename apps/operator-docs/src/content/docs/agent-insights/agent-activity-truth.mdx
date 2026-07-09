@@ -1,6 +1,6 @@
 ---
 title: "Agent-activity truth: a claim is not progress — who's-doing-what is a LIVE derived signal"
-description: "The durable fix for 'agents are wrong about what other agents are doing'. A claim is a RESERVATION and a heartbeat proves the PROCESS is alive — NEITHER proves the WORK is advancing, and a coord broadcast outlives the work. The incident: a gate-fix bee DIED but its 'spawned for X' broadcast was read as 'actively worked' by the Queen + idle agents + the coordinator for ~1h, so the reds sat owned-but-unworked and blocked every deploy. The fix: a third signal (last_progress_at) + a reconciled fleet_assignment view (orphaned = dead holder, stalled = live-but-not-progressing) + the whoIsDoingWhat resolver + a flag-gated reconciler that auto-frees dead/stalled claims + immediate spawn-death release + the stalled-claim watchdog. Read the live signal, never the announcement."
+description: "The durable fix for 'agents are wrong about what other agents are doing'. A claim is a RESERVATION and a heartbeat proves the PROCESS is alive — NEITHER proves the WORK is advancing, and a coord broadcast outlives the work. The incident: a gate-fix cup DIED but its 'spawned for X' broadcast was read as 'actively worked' by the Mug + idle agents + the coordinator for ~1h, so the reds sat owned-but-unworked and blocked every deploy. The fix: a third signal (last_progress_at) + a reconciled fleet_assignment view (orphaned = dead holder, stalled = live-but-not-progressing) + the whoIsDoingWhat resolver + a flag-gated reconciler that auto-frees dead/stalled claims + immediate spawn-death release + the stalled-claim watchdog. Read the live signal, never the announcement."
 discovered: 2026-06-21
 tags: [coordination, liveness, claims, progress, stalled, orphaned, reconciler, fleet-assignment, watchdog, who-is-doing-what, EI-2311, EI-6874, incident]
 status: active
@@ -25,10 +25,10 @@ plans:
 
 ## The incident (2026-06-21)
 
-The Queen spawned a bee to fix two green-gate reds. The bee **died** seconds after
+The Mug spawned a cup to fix two green-gate reds. The cup **died** seconds after
 spawn (`fleet:assignments` for it → 0 agents / 0 claims). But every reader — the
-Queen's placement, idle su agents, and the coordinator itself — kept reading the
-Queen's "**bee spawned for these reds**" coord broadcast as "being actively
+Mug's placement, idle su agents, and the coordinator itself — kept reading the
+Mug's "**cup spawned for these reds**" coord broadcast as "being actively
 worked." So the gate sat **RED and unowned for ~1 hour**, blocking ALL deploys. No
 one picked up the reds because everyone believed they were covered.
 
@@ -137,7 +137,7 @@ Two failures, both avoidable with signals that ALREADY existed:
    `recipient_absent` / `recipient_dead` with a loud note; a plain inject reports
    `notWoken`. But **`wake:'optimistic'` is SILENT on a miss by design** (it assumes
    a durable backstop re-dispatches) — it still returns `woken:0`, but no escalation.
-   So `optimistic` is ONLY safe when something (the Queen survey, a sweep) will
+   So `optimistic` is ONLY safe when something (the Mug survey, a sweep) will
    re-dispatch. For a one-off transfer to a specific agent it is the WRONG mode.
 
 ### Use the right tool for a transfer
@@ -222,12 +222,12 @@ result, not your assumption.** After sending to any audience selector, check
 nobody live got it, full stop — don't sit "awaiting compliance" on a broadcast
 that never left the building.
 
-## The fourth corollary: on a FEDERATED hive, "never seen here" is not "dead" (WI-1999, 2026-07-03)
+## The fourth corollary: on a FEDERATED pot, "never seen here" is not "dead" (WI-1999, 2026-07-03)
 
 The reconciler itself (§5, `reclaimStaleWorkItemClaims` /
 `reclaimStaleIssueClaims`, `work-items-stale-claims.ts`) had its own instance of
 this same root cause, on the DEAD leg specifically. `work_items`/`engineer_issues`
-rows **federate** across a shared hive's member nodes, but `coord_presence` (and
+rows **federate** across a shared pot's member nodes, but `coord_presence` (and
 `spawned_agents`) are **local-by-design** — a holder alive on a peer node is
 simply invisible to this node's liveness table. The DEAD leg used to conclude
 "not in `live_holder`" ⇒ dead and reap it — which is correct for a holder this
@@ -254,7 +254,7 @@ regardless (so a genuinely abandoned row still doesn't leak forever).
 (`taken_by` some alias `fleet:assignments`/`coord:presence` on THIS node has
 never heard of) survives well past the usual ~10-minute stale-claim grace — that
 is the federation guard working as intended, not a bug. If you need to confirm a
-claim is truly abandoned rather than live-on-another-node, check the hive's other
+claim is truly abandoned rather than live-on-another-node, check the pot's other
 member nodes (or wait out the 24h fallback) before assuming it's free.
 
 ## The fifth corollary: `last_progress_at` was hardcoded null for issue-family, so every held bug/change/task claim read "stalled" (WI-2990/WI-3006, 2026-07-05)
@@ -273,7 +273,7 @@ The effect: `classifyItemActivity` returns `'stalled'` (age = `Infinity`) whenev
 `takenBy` is set but `takenAt`/`lastProgressAt` read null — so **every claimed
 issue-family item, however freshly and actively worked, classified as
 immediately reclaimable**. `fleet:assignments`' `reclaimable` field (and any
-leader census / Queen placement reading it) saw a just-claimed bug/change as
+leader census / Mug placement reading it) saw a just-claimed bug/change as
 free, risking a near-double-placement.
 
 **The fix** (migration 509 + `work-items.ts` / `issues-engineer.ts` /

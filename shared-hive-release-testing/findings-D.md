@@ -63,7 +63,7 @@ section.)
 
 ### Why the green suite missed it
 
-- `split-brain-queen.integration.test.ts` and `composition-rig.ts` share ONE wall
+- `split-brain-mug.integration.test.ts` and `composition-rig.ts` share ONE wall
   clock (`physical: () => this.now()`), so they cannot construct recv-advance +
   skew — they only ever exercised the drain-interleave case the fix closed.
 - `three-peer-partition-rejoin.test.ts` (the best partition/convergence test)
@@ -97,7 +97,7 @@ queue, status badges, claim flow, and PR daemon read.
 `HLC.physical` is monotone (`send`/`recv` only take `max`) and propagates the
 **global-max wall-ts** ever seen anywhere (recv takes `max(local, remote, now)`).
 So a single forward clock excursion on ANY peer at ANY past time (NTP overshoot,
-a fast VM, a manually-set clock) raises the HLC floor for the whole hive
+a fast VM, a manually-set clock) raises the HLC floor for the whole pot
 **permanently**. Thereafter any two concurrent same-key writes whose wall-`ts`
 order differs across peers can diverge. The window self-heals only once every
 peer's wall clock advances past the floor. So: not every concurrent edit
@@ -178,7 +178,7 @@ n/a not applicable to that mechanism.
 | plans (`harness_plans`) | LWW | ✅ fuzz | 🟥 **D-001** | ✅ fuzz | n/a | n/a |
 | plan-item assignments | LWW | ✅ fuzz | 🟥 **D-001** | ✅ fuzz | n/a | n/a |
 | coord messages / posts | LWW | ✅ fuzz | 🟥 **D-001** | ✅ fuzz | n/a | n/a |
-| presence / hive-settings / hive-members / contributors / feature-queue | LWW (same guard) | ✅ (same comparator) | 🟥 **D-001 (by construction — identical guard)** | ✅ | n/a | n/a |
+| presence / pot-settings / pot-members / contributors / feature-queue | LWW (same guard) | ✅ (same comparator) | 🟥 **D-001 (by construction — identical guard)** | ✅ | n/a | n/a |
 | feature_claims / plan_item_claims | append-only + authority | ✅ exactly-once | ✅ (no HLC, unaffected) | ✅ | ✅ | ✅ |
 | work-item leases (authority) | authority-serialized | ✅ exactly-once | ✅ (no HLC, unaffected) | ✅ fail-open reconcile | ✅ re-election | ✅ steal + late-write superseded |
 
@@ -188,8 +188,8 @@ Verified directly (not assumed from the fuzz harness's uniform model): every
 mutable projection carries the **identical** put guard (`WHERE … EXCLUDED.fed_ts
 >= stored.fed_ts`) + del ts-guard — `harness-features`, `harness-plans`,
 `engineer-issues`, `issues`, `plan-item-assignments`, `coord-message`,
-`coord-thread(-post)`, `coord-conversation`, `presence`, `hive-members`,
-`hive-settings`, `contributors`, `feature-queue`, `feature-working-set`. So
+`coord-thread(-post)`, `coord-conversation`, `presence`, `pot-members`,
+`pot-settings`, `contributors`, `feature-queue`, `feature-working-set`. So
 D-001 is **universal across every mutable LWW table by construction**, not a
 per-table accident. The non-LWW families are correctly different:
 `feature-claims` + `usage` are **append-only** (`ON CONFLICT DO NOTHING`, del =
@@ -201,14 +201,14 @@ default). `register-all` is the builder, not a writer.
 The LWW rows share ONE comparator pair (HLC in the fold, `fed_ts` in the guard),
 so D-001 is **universal across every LWW content type** — not feature-specific.
 The claim/authority rows use a DIFFERENT mechanism (append-only `ON CONFLICT DO
-NOTHING` + per-Hive authority serialization) and carry **no HLC** (claims use raw
+NOTHING` + per-Pot authority serialization) and carry **no HLC** (claims use raw
 `ownLog.append`, never LWW — `hlc-stamp.ts:14`), so D-001 does not touch them.
 
 ### LWW rule, documented per type
 
 - **All mutable LWW tables** (features, issues, plans, plan-item-assignments,
-  coord messages/posts/conversations/threads, presence, hive-settings,
-  hive-members, contributors, feature-queue, feature-working-set, plan-parts):
+  coord messages/posts/conversations/threads, presence, pot-settings,
+  pot-members, contributors, feature-queue, feature-working-set, plan-parts):
   in-memory winner = higher **HLC**, then `del` beats `put`, then
   lexicographically-greater `sourceLogKeyHex` (`lwwPick`, total + fold-order
   independent). Materialised winner = higher **`fed_ts` (= op.ts wall clock)**,
@@ -216,7 +216,7 @@ NOTHING` + per-Hive authority serialization) and carry **no HLC** (claims use ra
   clock skew → D-001.**
 - **Append-only claims** (`feature_claims`): `ON CONFLICT DO NOTHING` — first
   writer per distinct (item, claimer, attempt) wins; no LWW; deterministic.
-- **Authority leases:** the per-Hive authority (argmin device pubkey among
+- **Authority leases:** the per-Pot authority (argmin device pubkey among
   presence rows fresher than the 90s stale window) serializes claims; exactly one
   grant per epoch; a lapsed lease (no heartbeat for its TTL) is stealable with a
   fresh `claim_id`; a zombie's late completion is **superseded, never adopted**

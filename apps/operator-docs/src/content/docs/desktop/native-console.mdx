@@ -99,7 +99,7 @@ opens**.
 selection, the OSC appearance prelude, the launcher one-liner) reused
 by both this route and the `capability:terminal` agent tool (and, in
 turn, `fleet:launch-on-plan`'s member terminals) — see
-[desktop-fleet-vs-loop-bee](/internal/docs/agent-insights/desktop-fleet-vs-loop-bee).
+[desktop-fleet-vs-loop-cup](/internal/docs/agent-insights/desktop-fleet-vs-loop-cup).
 `capability:terminal` calls it with `writeMcpJson:false` (it runs an
 arbitrary command, so it must not displace the project's real
 `.mcp.json`); this route calls it with `writeMcpJson:true`.
@@ -251,7 +251,7 @@ Pass `{"slug": null}` (or omit the body) for a workspace-only console
 — cwd becomes the workspace root, no `PAPERCUSP_HARNESS_SLUG` or
 `PI_CODING_AGENT_DIR` are set, the MCP URL still pins `workspace=default`.
 
-The written `.mcp.json` is **ephemeral**: a sentinel-file watcher
+The written `.mcp.json` is **ephemeral**: a papercup-file watcher
 (polling for `.papercup-console-active.*` files) restores the prior
 `.mcp.json` — or removes ours when none existed — once the last
 papercup-launched shell exits, bounded by a 24h hard timeout. It does
@@ -282,7 +282,7 @@ are exposed via `?superuser=1`:
 - **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
 - **Spawn / supervise other agents** (the full `fleet:*` surface):
-  `cup:spawn` (formerly `bee:spawn`), `fleet:supervise`, `fleet:cancel`,
+  `cup:spawn` (formerly `cup:spawn`), `fleet:supervise`, `fleet:cancel`,
   `fleet:tree`, `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
   `fleet:drain`, `fleet:governor`, `fleet:place_batch`,
   `fleet:sandbox_deps`, `fleet:selected_bee`. (The old
@@ -293,8 +293,8 @@ are exposed via `?superuser=1`:
 
 Every call is recorded in `harness_shared.tool_invocations` with
 `role='operator'` (the default when no `?role=` param is sent). Note
-that `run_id` is **not** a `'standalone'` sentinel — the shared
-sentinel was removed (it created a cross-cancellation hazard), and each
+that `run_id` is **not** a `'standalone'` papercup — the shared
+papercup was removed (it created a cross-cancellation hazard), and each
 superuser/console MCP call now gets a per-request UUID
 (`crypto.randomUUID()`). Filter the Intel panel by `role='operator'`,
 not by `runId='standalone'` (that returns nothing).

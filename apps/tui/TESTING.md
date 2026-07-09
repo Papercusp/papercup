@@ -100,7 +100,7 @@ PipeWire + `pactl`, so it's a local dev smoke, not CI. (Agent memory:
 
 The full P-011/P-013 leg — synthetic speech (espeak-ng) streamed at real-time pace
 into the RUNNING operator's voice host, through **real ElevenLabs** (STT → relay
-ack → Sentinel pane answer via `voice:say`), with two bus clients asserting the
+ack → Papercup pane answer via `voice:say`), with two bus clients asserting the
 shared-session contract (both get the input transcript, the relay ack, the later
 pane answer, and response audio; exactly one elected player):
 

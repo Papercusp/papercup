@@ -2,7 +2,7 @@
 title: "Overwatch empty invoke bodies must trigger the scorecard backstop"
 description: "The shared no-turn classifier treats an unreadable/empty invoke body as uncertain for generic roles, but Overwatch must fail closed because every wake owes a scorecard. An empty HTTP 200 body is a launch failure for Overwatch, not a successful monitor turn."
 discovered: 2026-06-25
-tags: [overwatch, scorecard, hive, invoke, no-turn, backstop]
+tags: [overwatch, scorecard, pot, invoke, no-turn, backstop]
 status: active
 documents:
   - packages/operator-core/lib/overwatch/loop.ts
@@ -17,7 +17,7 @@ response body. For generic fleet roles, `agentProducedTurn('')` intentionally pr
 legacy behavior and assumes the result is uncertain rather than failed. Do not reuse that
 generic uncertainty rule as the final Overwatch decision.
 
-Overwatch is a monitor. Every wake must either emit a complete `hive-coordination-health`
+Overwatch is a monitor. Every wake must either emit a complete `pot-coordination-health`
 scorecard or run `overwatchScorecardEndCheck` to synthesize the deterministic floor. An
 empty invoke body proves the parent cannot verify that the monitor turn happened, so the
 Overwatch launch path must record a no-turn error and run the scorecard backstop.

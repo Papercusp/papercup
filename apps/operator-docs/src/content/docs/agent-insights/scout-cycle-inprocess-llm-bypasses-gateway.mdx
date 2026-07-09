@@ -1,7 +1,7 @@
 ---
 title: The Scout cycle's in-process ideators/critics bypass the inference gateway (same class as the gym's FB-16)
 description: >-
-  Spawned bees get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv),
+  Spawned cups get ANTHROPIC_BASE_URL at the spawn chokepoint (gatewaySpawnEnv),
   but Scout's IN-PROCESS ideator/critic/recombine llmCalls never pass through it —
   so they hit api.anthropic.com directly with the Claude Max SUBSCRIPTION OAuth
   token (no ANTHROPIC_API_KEY set) but WITHOUT the `anthropic-beta: oauth-2025-04-20`
@@ -10,7 +10,7 @@ description: >-
   currently not allowed for this organization"` (NOT a 429/rate-limit — an earlier
   read of this was wrong). Symptom that means READ THIS: a scout_ticks row with
   status=ran, ideas_generated=0, budget_used_usd=0, detail.stop='no-ideas' —
-  repeatedly, completing fast (no slow 429 retries). Bees avoid it via the `claude
+  repeatedly, completing fast (no slow 429 retries). Cups avoid it via the `claude
   -p` CLI path the gateway injects Bearer+oauth-beta for. Fix = mirror the gym
   (FB-16): gatewayLlmEnv() routes the in-process SDK through the gateway, which
   injects the oauth-beta — but ONLY works when the gateway's credential injection is
@@ -52,7 +52,7 @@ Scout's ideator/critic/recombine calls are **in-process** `anthropic-direct`
 `llmCall`s (`register-scout-action.ts` → `cycle-deps.ts` → `ideators.ts`). The
 inference gateway is only wired onto **spawned subprocesses**: `operator-spawn.ts`
 merges `gatewaySpawnEnv()` (`ANTHROPIC_BASE_URL=http://127.0.0.1:<gatewayPort>`)
-at the spawn chokepoint, and bees egress through the gateway, which **strips** the
+at the spawn chokepoint, and cups egress through the gateway, which **strips** the
 incoming `authorization`/`x-api-key` and **injects** `Authorization: Bearer
 <bound-account-token>` + `anthropic-beta: oauth-2025-04-20` (the gateway's
 `CLAUDE_OAUTH_BETA`, `credential-store.ts`). That beta header is **mandatory** for a
@@ -67,7 +67,7 @@ currently not allowed for this organization"` → `no-ideas`, `$0`, fast (no ret
 This is **the same bug class** the gym hit (see
 [gym-cycle-inprocess-llm-bypasses-gateway](/agent-insights/gym-cycle-inprocess-llm-bypasses-gateway),
 FB-16) — a 401/403 OAuth/org error, identical mechanism: in-process anthropic-direct
-egress bypassing the gateway's oauth-beta injection. Bees work because the gateway
+egress bypassing the gateway's oauth-beta injection. Cups work because the gateway
 adds the beta for them.
 
 Why it's easy to misdiagnose: (1) the rate-governor buckets show opus with headroom
@@ -115,4 +115,4 @@ the gateway points at the gateway's credential layer, not the Scout fix. Verify 
 gateway is healthy (pool loaded, `:8788` stable) before concluding the routing fix
 failed. If the gateway genuinely can't inject for the in-process path, the alternates
 are: set a real `ANTHROPIC_API_KEY` (a direct-API key sidesteps the oauth-beta
-requirement entirely), or egress ideators via the `claude -p` CLI path bees use.
+requirement entirely), or egress ideators via the `claude -p` CLI path cups use.

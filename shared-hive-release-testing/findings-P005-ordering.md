@@ -3,13 +3,13 @@
 Co-build with K (su-313d1). K owns the `hive_epoch_keys` table + projection +
 `EpochKeyProvider` impl; **I own the ordering invariant + the apply-seam
 decrypt-gate**. ed300's crypto (`HiveEpochCrypto`) + K's serving glue
-(`hive-epoch-serving.ts`: `deriveOpId`, `encryptOpPayload`/`decryptOpPayload`,
-`EpochKeyProvider`, the `papercusp-hive-rekey` flag gate) are LANDED + frozen.
+(`pot-epoch-serving.ts`: `deriveOpId`, `encryptOpPayload`/`decryptOpPayload`,
+`EpochKeyProvider`, the `papercusp-pot-rekey` flag gate) are LANDED + frozen.
 
 ## The invariant (why `fed_hlc` alone is insufficient)
-Content ops are AEAD-encrypted under the hive's current **epoch key**. A peer can
+Content ops are AEAD-encrypted under the pot's current **epoch key**. A peer can
 only decrypt an epoch-N content op once it holds epoch-N's wrapped key (a
-`hive_epoch_keys` row for `(hive, epoch, ownDevice)`). The key row and the content
+`hive_epoch_keys` row for `(pot, epoch, ownDevice)`). The key row and the content
 op federate as **separate ops on separate surfaces**.
 
 `fed_hlc` (my D-001 fix, migration 314) gives the PRODUCER a keys-before-content
@@ -46,8 +46,8 @@ on apply of op:
   payload = await decryptOpPayload(crypto, <op ciphertext>, {hiveId, epoch, id:{op.table, op.hbKey, op.writerPubkey}}, key)
   on decrypt-reject (tampered / wrong despite key) → drop (fail-closed), NOT defer
   else                           → decode(payload) → project (the existing path)
-when a hive_epoch_keys row for (hive, epoch, ownDevice) APPLIES:
-  for op of pending.drainEpoch(hive, epoch): re-feed op through applyOpVia
+when a hive_epoch_keys row for (pot, epoch, ownDevice) APPLIES:
+  for op of pending.drainEpoch(pot, epoch): re-feed op through applyOpVia
 ```
 
 ## Open confirmations from K (sent 2026-06-19; blocks wiring `applyOpVia`)
@@ -55,13 +55,13 @@ when a hive_epoch_keys row for (hive, epoch, ownDevice) APPLIES:
    present, the payload (`op.value`) is the AEAD ciphertext. Who owns adding the
    field + the **producer encrypt** (on capture/drain)? (Pair it with my decrypt.)
 2. **Provider + hiveId at apply** — thread `EpochKeyProvider.keyForEpoch` into
-   `applyOpVia`'s opts; resolve the op's `hiveId` (from the harness hive binding);
+   `applyOpVia`'s opts; resolve the op's `hiveId` (from the harness pot binding);
    the rekey-flag check.
 3. **Drain trigger** — K's `hive_epoch_keys` projection `writeToPg` fires
-   `onEpochKeyApplied(hive, epoch)` so the buffer drains exactly when a key lands
+   `onEpochKeyApplied(pot, epoch)` so the buffer drains exactly when a key lands
    (vs polling).
 
 ## Sequencing
-Gated on dc9db's (a′) hive-home federation seam (the path `hive_epoch_keys` rides)
+Gated on dc9db's (a′) pot-home federation seam (the path `hive_epoch_keys` rides)
 + K's table/provider. The module + this spec are ready; wiring lands when both do.
-All inert behind `papercusp-hive-rekey` (off) — safe to land ahead.
+All inert behind `papercusp-pot-rekey` (off) — safe to land ahead.

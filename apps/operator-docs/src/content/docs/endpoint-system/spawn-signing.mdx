@@ -61,7 +61,7 @@ Both sides cache the key in-process, but with **different invalidation policies*
 2. Adds `exp`. **As of the 2026-07-01 owner directive, the default is `exp=0` — PERMANENT, no
    time-based expiry** (pass `ttlSec > 0` to get the old `now + ttlSec` behavior). The 24h TTL
    used to force a daily re-mint that churned `.mcp.json` and triggered a Claude Code
-   re-approval prompt, silently darkening unattended sessions; `exp=0` is a sentinel the
+   re-approval prompt, silently darkening unattended sessions; `exp=0` is a papercup the
    verifier special-cases to skip only the *time* check — the signature still covers `exp`, so a
    role-escalation rewrite of a permanent URL fails verification exactly as before. Revocation is
    now **key-rotation only** (see [Coarse revocation](#coarse-revocation)), not expiry.

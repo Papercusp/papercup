@@ -10,7 +10,7 @@ load**, and **backfill at size** (hundreds of rows), asserting convergence, no
 loss/dup, and monotonic watermarks throughout.
 
 ## Why it matters for release
-The live proof and most integration coverage is 2-peer. A public hive is N-peer with
+The live proof and most integration coverage is 2-peer. A public pot is N-peer with
 members joining/leaving while writes flow. Brief F proved resilience GREEN for
 reconnect/backfill/outbox-failure at small scale, but N-peer breadth + churn-under-
 load + large backfill were not systematically swept. Scale bugs (cursor resets,

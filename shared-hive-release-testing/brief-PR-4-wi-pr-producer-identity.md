@@ -22,7 +22,7 @@ per-operator. Independent of PR-2/3 (PR-1 consumes its outputs). Start now.
    resolve the operator's `gh` identity (`identity/gh-token.ts`) — and record the resolved
    `github_user_id` on `harness_feature_prs` + `auto_review_audit` so every PR/review is
    attributed to the HUMAN operator (not a generic host token).
-5. **Agent-authored trailer.** When a Bee opens the PR, append a `Co-authored-by: papercusp-bee
+5. **Agent-authored trailer.** When a Cup opens the PR, append a `Co-authored-by: papercusp-cup
    <…>` trailer (+ a body marker) so agent-driven vs hand-authored is visible — the ACCOUNT stays
    the human; only agency is marked.
 6. **Rate-limit attribution hook.** Expose the per-operator `github_user_id` as the key the

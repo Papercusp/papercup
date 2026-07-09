@@ -99,9 +99,9 @@ the CAS hash, so prose-only is not a substitute. Read needs `prose`; edit needs 
 4. **UI: distinguish `not_found` from a real server error.** `PlanDetail` now checks
    `data.error === 'not_found'` and renders a calm "Plan not found." message instead
    of the alarming "Server: not_found". This matters because `not_found` is a **benign
-   empty state** — the plan lives in a different hive's harness, was deleted, or hasn't
+   empty state** — the plan lives in a different pot's harness, was deleted, or hasn't
    synced yet. It surfaces conspicuously in the Create tab when the harness-picker
-   shows a cross-hive plan the current harness doesn't own.
+   shows a cross-pot plan the current harness doesn't own.
 
 ## The generalizable checklist
 
@@ -124,7 +124,7 @@ When you migrate a `defineTool` that an `/admin` route proxies to the bulk
 - `includeRaw` + cache key: `packages/operator-core/lib/agent-tools/plans/get.ts`.
 - UI consumer: `apps/operator/app/admin/plans/PlanDetail.tsx` (`data.raw ?? data.prose` for
   read/edit; `data.error === 'not_found'` handled as a calm benign state — "Plan not found."
-  instead of "Server: not_found" — so cross-harness hive plans in the Create tab don't alarm),
+  instead of "Server: not_found" — so cross-harness pot plans in the Create tab don't alarm),
   `plans-api.ts` (`fetchPlan`, mode:'full').
 - Related: [bulk-tool-contract-2026-06-22](/internal/docs/agent-insights/bulk-tool-contract-2026-06-22),
   [admin-route-tool-proxy](/internal/docs/agent-insights/admin-route-tool-proxy),
