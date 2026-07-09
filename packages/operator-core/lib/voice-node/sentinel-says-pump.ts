@@ -13,7 +13,7 @@
  * SPOKEN identically whether the question arrived by voice or typed text.
  *
  * When NO session is live the pump stays hands-off: the webview's local-mode
- * drain of GET /operator/sentinel-output keeps working as before (kokoro
+ * drain of GET /operator/papercup-output keeps working as before (kokoro
  * speak-on-poll). The `sessionLive` gate is what keeps exactly one consumer on
  * the FIFO at a time; the PG drain itself (DELETE … RETURNING) is atomic, so a
  * transition race delivers a line to exactly one of them, never both.

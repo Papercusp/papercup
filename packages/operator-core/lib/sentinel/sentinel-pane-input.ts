@@ -4,7 +4,7 @@
  * pipeline (voice-unified-sentinel-pipeline-2026-07-01, D-001: the pane is the
  * single brain of record for every modality).
  *
- * Extracted from the POST /operator/sentinel-input route so in-process callers
+ * Extracted from the POST /operator/papercup-input route so in-process callers
  * (the operator voice host relaying EL utterances, the deep-delegation watch
  * injecting answers) share the exact mechanics + guards instead of self-calling
  * HTTP:

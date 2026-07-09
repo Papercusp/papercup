@@ -119,14 +119,31 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   _lints 19/19 + css-tokens, DbosClient 10/10, LearningTab 37/37,
   StructuredStreamView 4/4, `npm run test:affected` exit 0 (2713 files green;
   su-ba914 confirmed the nuqs red fixed on their side).
-- **P-006** theme-contract sweep: (a) globals.css ~28 lines rgba(103,232,249)/
-  #67e8f9 in .pc-voice-btn.is-wake-detected + .operator-panel → color-mix over
-  --accent-strong (add cyan-300 row to tokens.mdx migration table);
-  (b) FeaturesAdmin(4)/admin AdminShell(2)/AdvConversationsTab(1) sky literals;
-  (c) harness/theme.ts COLORS.danger/success raw hexes → var(--bad/--good,…);
-  (d) FrameVncView navy → --bg-deepest; (e) installed/plugins color:'#000' →
-  var(--accent-ink) ×2; (f) lint: extend cyanLiteralRe to all 6 sky shades, add
-  (b) files to audited list.
+- **P-006** [EDITS DONE 2026-07-09; wip pending frost/black litmus] theme-contract
+  sweep — executed WIDER than the recipe: (a) globals.css had 211 cyan-300
+  literals (not ~28; .pc-voice-btn.is-wake-detected turned out amber, the cyan
+  is .operator-panel + marketplace/route-transition/shell-heading families) —
+  ALL migrated via exact-pattern rewrite to `rgb(from var(--accent-strong) r g b
+  / <alpha>)` (file's own idiom; alphas byte-identical, hue cyan-300→sky-300);
+  .operator-panel neon triplets bound (--operator-neon-cyan→var(--accent-strong-rgb),
+  --operator-neon-blue→var(--accent-rgb)); NEW DTCG token `accent-strong-rgb`
+  (desktop.semantic.tokens.json) + tokens rebuilt; tokens.mdx migration table
+  +cyan-300/cyan-400 rows. (b) FeaturesAdmin ×4 → rgb(from …); AdvConversationsTab
+  VIEW_ACCENT threads → var(--accent,…); AdminShell needed nothing (already
+  var-fallback forms). (c) theme.ts COLORS.danger/success solid button bgs →
+  color-mix(var(--bad|--good), var(--bg-deepest) 55%) (keeps white-text contrast;
+  frost ≈ old red-900/emerald-900), *Bg → var(--bad-bg/--good-bg), *Text →
+  var(--bad/--good). (d) FrameVncView rgba(7,16,29,.6) → rgb(from var(--bg) …)
+  (the literal was --bg, not bg-deepest). (e) plugins '#000' ×2 →
+  var(--accent-ink). (f) cyanLiteralRe extended to 6 shades (+67e8f9/0ea5e9/
+  bae6fd + triplet forms) + FeaturesAdmin/AdvConversationsTab/FrameVncView/
+  plugins-page added to audited list. En route: allowlisted RubricDetailPanel +
+  ScorecardDetail native tables (peer plan rubrics-tab-scorecard-ui-2026-07-09
+  landed mid-verify holding the gate red; their author owns migration).
+  Verified: _lints 21/21, tokens.test 15/15, test:affected exit 0. REMAINING to
+  flip done: frost/black visual litmus of .operator-panel neon border (tauri-
+  agent-tools) + docs-mirror rebuild (was failing on a stale .prerender chunk;
+  clean rebuild kicked off).
 - **P-007** flat buttons (HR9): strip bevels globals.css L~9128 .operator-feed-
   pills button.is-active, L~20760 .operator-mini-btn--ghost, L~21145
   .operator-delegates__actions button, L~24624 .operator-feed-active-filters

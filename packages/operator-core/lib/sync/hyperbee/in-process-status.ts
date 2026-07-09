@@ -35,6 +35,7 @@ import {
   getReplicationLiveness,
   type HarnessReplicationLiveness,
 } from './replication-liveness';
+import { getOwnLogForkState, type OwnLogForkState } from './own-log-fork-guard';
 
 export interface InProcessHarnessHealth {
   workspaceId: string;
@@ -48,6 +49,12 @@ export interface InProcessHarnessHealth {
    * silent-stall (EI-681) signal that boot-health alone hides.
    */
   drain: { undrainedCount: number; oldestUndrainedAgeMs: number | null };
+  /**
+   * P-003 (own-log-fork-guard, WI-3535): does this harness's own writable log
+   * currently sit in the (non-self-healing) fork/equivocation-loop state?
+   * Also feeds the health verdict (`forked:true` ⇒ 'unhealthy').
+   */
+  ownLogFork: OwnLogForkState;
 }
 
 export interface InProcessSubstrateStatus {
@@ -162,6 +169,7 @@ export function getInProcessSubstrateStatus(
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
     const drain = resolveDrain(h.workspaceId, h.harnessSlug);
     const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
+    const ownLogFork = getOwnLogForkState(h.workspaceId, h.harnessSlug);
     const { verdict, reasons } = assessHarnessSubstrateHealth({
       // health.ts's `flagEnabled` is its real "is the substrate active" input
       // (drives the 'disabled' verdict); feed it `substrateActive`.
@@ -185,6 +193,8 @@ export function getInProcessSubstrateStatus(
             }
           : undefined;
       })(),
+      // P-003 (WI-3535): a forked own-log flips to 'unhealthy' — local writes blocked.
+      ownLogFork: ownLogFork.forked ? { forked: true, detail: ownLogFork.detail ?? undefined } : undefined,
       // WI-899 (A): a confirmed-dead sidecar overrides everything above.
       sidecarLive,
     });
@@ -194,6 +204,7 @@ export function getInProcessSubstrateStatus(
       verdict,
       reasons,
       drain,
+      ownLogFork,
     };
   });
 

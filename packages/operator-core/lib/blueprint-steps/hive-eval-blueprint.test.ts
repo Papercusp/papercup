@@ -18,14 +18,14 @@ import { setHiveEvalGenDeps } from './ops/hive-eval-gen.js';
 afterEach(() => setHiveEvalGenDeps(null));
 
 const run = async (payload: Record<string, unknown>) => {
-  const { blueprint } = loadBuiltinBlueprint('hive-eval');
+  const { blueprint } = loadBuiltinBlueprint('pot-eval');
   const { caps } = makeFakeCaps();
   const ctx = makeCtx(caps, { workspaceId: 'ws-1', harnessSlug: 'pot' });
   return runProgramCore({ blueprint, payload, ctx, runOp: inlineRunOp });
 };
 
 test('the hive-eval blueprint loads + validates as a gateless deterministic pipeline', () => {
-  const { blueprint, validation } = loadBuiltinBlueprint('hive-eval');
+  const { blueprint, validation } = loadBuiltinBlueprint('pot-eval');
   assert.equal(validation.ok, true, `validation errors: ${JSON.stringify(validation.errors)}`);
   assert.equal(blueprint.spine.steps?.length, 1);
   assert.equal(blueprint.spine.steps?.[0]?.op, 'pot-eval:gen');

@@ -164,10 +164,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       // operator specialized for placement (D-001); `operator` remains the
       // deciderAlternative for decision-tree-only wakes (blueprint.yaml).
       coding: 'mug',
-      // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
-      bee: 'cup',
-      // unify-launch-mechanics D-004: the sentinel watcher's decider IS the sentinel role.
-      sentinel: 'papercup',
+      // local-hive P-010/P-011: the cup launch blueprint's decider IS the cup role.
+      cup: 'cup',
+      // unify-launch-mechanics D-004: the papercup watcher's decider IS the papercup role.
+      papercup: 'papercup',
     };
     for (const id of BUILTIN_LAUNCH_BLUEPRINTS) {
       const target = await resolveLaunchTarget(id, opts);
@@ -432,10 +432,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       fired.push(input);
     });
     // bee is kind:'harness' — a parent (the Queen) placing it is fine; only hives nest-guard.
-    const target = await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
+    const target = await fireLaunchBlueprint('cup', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
     expect(target.role).toBe('cup');
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'bee', role: 'cup' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'cup', role: 'cup' });
   });
 
   it('honors an overridden blueprint resolver (forked / PG-cache launch blueprint)', async () => {

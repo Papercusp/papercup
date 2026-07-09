@@ -7533,11 +7533,11 @@ A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, rea
 
 The post-min-bar backlog was given explicit verdicts under `shared-hive-p2p-release-readiness-2026-07-03` P-011 (full table: `shared-hive-release-testing/RELEASE-READINESS.md`). The standing ship-with-limitation rows, each with an accountable tracker:
 
-* **No un-revoke path (G8, WI-1855)** — revocation is one-way; un-banning a member has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must NOT retro-grant cut epochs).
-* **Membership teardown doesn’t federate (G24/G27, WI-1857)** — dissolve publishes no membership tombstone (peers’ rows orphan out by TTL) and a leaver’s `hive_members` row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`; the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole.
-* **revoke() Hypercore session leak (G9, WI-1856)** — revoked members’ core sessions are not verifiably closed on the owner; unbounded only on long-lived owners with many revokes.
+* **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation is one-way; un-banning a member has no sanctioned flow. WI-1855’s acceptance criteria (a built un-revoke flow OR this owner-ratified permanent-limitation row) is satisfied by this row, hence its `resolved` tracker state — no code shipped for un-revoke itself, this is a documented-and-accepted gap, not a fix. ⚠️ **CORRECTION (2026-07-09, P-003 rest-lanes audit):** this row previously stated the sanctioned workaround (re-invite as a fresh device/epoch) “must NOT retro-grant cut epochs” — **verified FALSE against the actual implementation.** `grantEpochKeysToMembers` (`hive-epoch-boundary-wiring.ts`) is a ratified v1 correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member — including a re-invited fresh device for a previously-revoked identity — is granted wrapped keys for **every** epoch `[0..current]`, by design (pinned by `seed-past-epoch-key-guarantee.test.ts`; a current-epoch-only policy is explicitly a *deferred future forward-secrecy policy*, not implemented). So the re-invite workaround **does** hand the returning member every epoch key minted during their ban, including the K-cut boundary epoch that revoked them — it restores full history access, same as any brand-new member. There is currently no guard that distinguishes “returning previously-revoked identity” from “genuinely new member” at grant time. Tracked for an owner design decision: WI-3566 (build a per-identity epoch-floor exclusion) OR explicitly ratify that un-revoke-via-reinvite is, and is meant to be, a full history restore (making the old “must not retro-grant” caveat simply wrong and removable). Until decided, treat un-revoke-via-reinvite as **equivalent to inviting a brand-new member with full history access** — NOT as a partial/forward-only restore.
+* **Membership teardown doesn’t federate (G24/G27, WI-1857) — SHIP-WITH-LIMITATION, ratified.** Dissolve publishes no membership tombstone (peers’ rows orphan out by TTL) and a leaver’s `hive_members` row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`; the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole. Same as WI-1855: `resolved` reflects this ratified doc row, not a built fix.
+* **revoke() Hypercore session leak (G9, WI-1856) — FIXED 2026-07-05.** `openRemoteLog`’s `RemoteLog` now implements `close()` (`core.close?.()`), and `boot.ts`’s `revoke()` captures the `AdmittedLog` before deleting it from `admitted` and fire-and-forget closes it (deliberately not awaited — awaiting added multi-second live-replicator teardown latency that timed out an unrelated pinned test). Verified: `boot.test.ts` 43/43, `revocation-prior-row-semantics.test.ts` 1/1, `peer-log.test.ts` 4/4, a new pinning test added, `tsc --noEmit` clean on the 5 changed files (`peer-log.ts`/`read-merge.ts`/`boot.ts` + the two test files).
 * **Usage-events metering is machine-local (G2, WI-1858)** — the `contributor_usage_events` capture trigger is deliberately deferred to the GA migration (completeness-guard exemption until then).
-* **From-repo joiner incremental federation (WI-971, OPEN)** — the outbox drain is never wired for joined/created hive harnesses (WI-259 was closed as its duplicate). If from-repo joins are v1 public scope this is release-critical, not a limitation row — P-014 makes that scope call.
+* **From-repo joiner incremental federation (WI-971) — tracker state is `resolved` but UNVERIFIED, active re-verification in flight (p2p-rest-lanes-2026-07-09 P-005).** The outbox drain is never wired for joined/created hive harnesses (WI-259 was closed as its duplicate); the WI’s own checkpoint carries a detailed execution plan (registry persistence + direct `ensureSendSideWired` call at join/create, hermetic pin, then a deb-rebuild GATE\_FORCE live verify) but the state flip to `resolved` carries **no recorded completion evidence** (`terminalCompletionRef`/ `terminalCompletionEvidence` are both null) — the same stale-state-flip pattern seen on WI-1684 before its 2026-07-09 re-verification. Do not treat this row as fixed until P-005 lands real evidence. If from-repo joins are v1 public scope this stays release-critical, not a limitation row — P-014 makes that scope call.
 
 ***
 
@@ -24197,7 +24197,7 @@ Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`.
 
 [Section titled “3. Postbuild copy is in apps/operator-docs/package.json”](#3-postbuild-copy-is-in-appsoperator-docspackagejson)
 
-The build script is `"build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the `.md`-twin emit and the static copy steps are skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
+The build script is `"build": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
 
 ### 4. Both fumadocs setups were removed
 
@@ -42548,14 +42548,16 @@ border-color: color-mix(in oklab, var(--accent), transparent 55%);
 
 **Migrating an existing `rgba(<sky>, a)` → use `in srgb`.** `color-mix(in srgb, C, transparent N%)` resolves to *exactly* `C` at alpha `(1 − N/100)` (premultiplied mix with `transparent`), so it’s **byte-identical** to the old rgba in frost and goes monochrome in black. Pick the token whose frost value equals the sky shade:
 
-| Old literal                                        | Replace with                                                                             |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)` |
-| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                      |
-| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                          |
-| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                          |
-| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                          |
-| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                        |
+| Old literal                                        | Replace with                                                                                                                                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)`                                                                                   |
+| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                                                                                                        |
+| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                                                                                                            |
+| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                                                                                                            |
+| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                                                                                                            |
+| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                                                                                                          |
+| `#67e8f9` (cyan-300), `rgba(103,232,249,a)`        | `--accent-strong` / `rgb(from var(--accent-strong) r g b / a)` (nearest sky shade; also `--accent-strong-rgb` for `rgba(var(--accent-strong-rgb), a)` triplet composition) |
+| `#22d3ee` (cyan-400), `rgba(34,211,238,a)`         | `--accent` / `rgb(from var(--accent) r g b / a)` (nearest sky shade; `--accent-rgb` for triplet composition)                                                               |
 
 (`in oklab` is fine for *new* washes; use `in srgb` when you’re replacing an existing rgba and need the frost render to stay pixel-for-pixel identical.)
 
@@ -69140,6 +69142,18 @@ tauri-agent-tools eval "location.reload()"
 ```
 
 `localStorage.clear()` works because the bridge runs inside the webview — unlike pure-Rust IPC, it has full DOM access including storage APIs.
+
+localStorage.clear() (or a fresh $HOME) does NOT reproduce a true empty-DB first run on THIS dev box — the routing decision is server-side, PG-backed (WI-3134)
+
+The root gateway (`apps/operator-vite/src/routes/index.tsx` `beforeLoad`) decides `/onboarding` vs `/adv` by fetching `GET /api/desktop/setup-wizard-state` and checking `finished_at` — a row in `harness_shared.setup_wizard_state` keyed by **`workspace_id`**, resolved server-side by `activeWorkspaceId()` (`packages/operator-core/lib/workspace-registry.ts`). Clearing `localStorage`/`sessionStorage`, or launching with a genuinely fresh `$HOME` (a fresh `.papercusp-workspaces/registry.json`), changes none of that: the workspace id it resolves to (almost always `default`) still points at the **same row in the same Postgres**, because — per [repo-conventions § two-port model](/internal/docs/system/repo-conventions) — **this dev box’s `tauri dev` uses native PG on `:5432`, not per-launch embedded-pg**, so no isolated instance actually gets an isolated database. Verified 2026-07-09 (WI-3134): `harness_shared.setup_wizard_state` for `workspace_id='default'` already carries `finished_at` (set 2026-05-22, this box’s own everyday-use onboarding) — so *any* “fresh” instance that resolves to workspace `default` will correctly, and misleadingly, land on `/adv` straight away. **This is not an app bug** — `dev:pg_query` against an unused workspace (e.g. one with no `setup_wizard_state` row) confirms the gateway logic is correct; it’s a gap in the isolation recipe.
+
+**To genuinely exercise first-run/onboarding on this dev box**, force a workspace id that has no `setup_wizard_state` row at all (pick a fresh random slug — `dev:pg_query { sql: "SELECT workspace_id FROM harness_shared.setup_wizard_state" }` shows which ids are already onboarded) and pass it as `PAPERCUSP_WORKSPACE_ID=<fresh-slug>` in the launch env (`activeWorkspaceId()` precedence #2 — a process-pin, overridable per-request only by an explicit `x-papercusp-workspace` header, which the desktop webview doesn’t send). Confirm with an API-only check before touching the UI:
+
+```sh
+curl -s -H "x-papercusp-workspace: <fresh-slug>" \
+  http://127.0.0.1:<port>/api/desktop/setup-wizard-state
+# expect: no "finished_at" key at all
+```
 
 ## 2. Reporting format
 

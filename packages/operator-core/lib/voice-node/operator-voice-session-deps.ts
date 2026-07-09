@@ -9,7 +9,7 @@
  *                     never a brain)
  *   connect         → an outbound `ws` WebSocket to EL's signed URL
  *   relayToBrain    → writeToSentinelPane (the ONE Sentinel pipeline — the same
- *                     mechanics typed text takes via POST /operator/sentinel-input)
+ *                     mechanics typed text takes via POST /operator/papercup-input)
  *   loadConversationId / persistTurn → the shared operator_conversations thread (D-005)
  *   parseUtterance  → parseOperatorTurn (the <say>/<set_mode> tag protocol)
  *   claim/releaseLease → the cross-surface voice-lease, re-meaned to elect the

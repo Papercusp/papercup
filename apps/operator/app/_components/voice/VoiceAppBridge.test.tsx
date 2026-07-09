@@ -3,7 +3,7 @@
  *
  * VoiceAppBridge — routes app-level voice utterances into the dock's 🛡
  * Sentinel pane (a psu/Claude-Code TUI) via routeVoiceToSentinelPane()
- * (POST /api/operator/sentinel-input), unless a higher-priority consumer
+ * (POST /api/operator/papercup-input), unless a higher-priority consumer
  * (an open Operator panel, an undo toast) has claimed them. We render the
  * component, capture its onFinalUtterance + voice-state subscriptions, and
  * drive utterances to assert the consumer-priority routing decision + the

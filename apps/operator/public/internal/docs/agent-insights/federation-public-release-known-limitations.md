@@ -399,24 +399,58 @@ The post-min-bar backlog was given explicit verdicts under
 `shared-hive-release-testing/RELEASE-READINESS.md`). The standing
 ship-with-limitation rows, each with an accountable tracker:
 
-* **No un-revoke path (G8, WI-1855)** — revocation is one-way; un-banning a member
-  has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must
-  NOT retro-grant cut epochs).
-* **Membership teardown doesn't federate (G24/G27, WI-1857)** — dissolve publishes no
-  membership tombstone (peers' rows orphan out by TTL) and a leaver's `hive_members`
-  row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`;
-  the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap,
-  not a security hole.
-* **revoke() Hypercore session leak (G9, WI-1856)** — revoked members' core sessions
-  are not verifiably closed on the owner; unbounded only on long-lived owners with
-  many revokes.
+* **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation
+  is one-way; un-banning a member has no sanctioned flow. WI-1855's acceptance
+  criteria (a built un-revoke flow OR this owner-ratified permanent-limitation row)
+  is satisfied by this row, hence its `resolved` tracker state — no code shipped for
+  un-revoke itself, this is a documented-and-accepted gap, not a fix.
+  ⚠️ **CORRECTION (2026-07-09, P-003 rest-lanes audit):** this row previously stated
+  the sanctioned workaround (re-invite as a fresh device/epoch) "must NOT retro-grant
+  cut epochs" — **verified FALSE against the actual implementation.**
+  `grantEpochKeysToMembers` (`hive-epoch-boundary-wiring.ts`) is a ratified v1
+  correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member —
+  including a re-invited fresh device for a previously-revoked identity — is granted
+  wrapped keys for **every** epoch `[0..current]`, by design (pinned by
+  `seed-past-epoch-key-guarantee.test.ts`; a current-epoch-only policy is explicitly
+  a *deferred future forward-secrecy policy*, not implemented). So the re-invite
+  workaround **does** hand the returning member every epoch key minted during their
+  ban, including the K-cut boundary epoch that revoked them — it restores full
+  history access, same as any brand-new member. There is currently no guard that
+  distinguishes "returning previously-revoked identity" from "genuinely new member"
+  at grant time. Tracked for an owner design decision: WI-3566 (build a per-identity
+  epoch-floor exclusion) OR explicitly ratify that un-revoke-via-reinvite is, and is
+  meant to be, a full history restore (making the old "must not retro-grant" caveat
+  simply wrong and removable). Until decided, treat un-revoke-via-reinvite as
+  **equivalent to inviting a brand-new member with full history access** — NOT as a
+  partial/forward-only restore.
+* **Membership teardown doesn't federate (G24/G27, WI-1857) — SHIP-WITH-LIMITATION, ratified.**
+  Dissolve publishes no membership tombstone (peers' rows orphan out by TTL) and a
+  leaver's `hive_members` row persists on peers. Pinned by
+  `lifecycle-membership-teardown.gap.integration.test.ts`; the read-plane mitigation
+  (epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole. Same
+  as WI-1855: `resolved` reflects this ratified doc row, not a built fix.
+* **revoke() Hypercore session leak (G9, WI-1856) — FIXED 2026-07-05.** `openRemoteLog`'s
+  `RemoteLog` now implements `close()` (`core.close?.()`), and `boot.ts`'s `revoke()`
+  captures the `AdmittedLog` before deleting it from `admitted` and fire-and-forget
+  closes it (deliberately not awaited — awaiting added multi-second live-replicator
+  teardown latency that timed out an unrelated pinned test). Verified: `boot.test.ts`
+  43/43, `revocation-prior-row-semantics.test.ts` 1/1, `peer-log.test.ts` 4/4, a new
+  pinning test added, `tsc --noEmit` clean on the 5 changed files
+  (`peer-log.ts`/`read-merge.ts`/`boot.ts` + the two test files).
 * **Usage-events metering is machine-local (G2, WI-1858)** — the
   `contributor_usage_events` capture trigger is deliberately deferred to the GA
   migration (completeness-guard exemption until then).
-* **From-repo joiner incremental federation (WI-971, OPEN)** — the outbox drain is
-  never wired for joined/created hive harnesses (WI-259 was closed as its duplicate).
-  If from-repo joins are v1 public scope this is release-critical, not a limitation
-  row — P-014 makes that scope call.
+* **From-repo joiner incremental federation (WI-971) — tracker state is `resolved` but
+  UNVERIFIED, active re-verification in flight (p2p-rest-lanes-2026-07-09 P-005).**
+  The outbox drain is never wired for joined/created hive harnesses (WI-259 was
+  closed as its duplicate); the WI's own checkpoint carries a detailed execution
+  plan (registry persistence + direct `ensureSendSideWired` call at join/create,
+  hermetic pin, then a deb-rebuild GATE\_FORCE live verify) but the state flip to
+  `resolved` carries **no recorded completion evidence** (`terminalCompletionRef`/
+  `terminalCompletionEvidence` are both null) — the same stale-state-flip pattern
+  seen on WI-1684 before its 2026-07-09 re-verification. Do not treat this row as
+  fixed until P-005 lands real evidence. If from-repo joins are v1 public scope this
+  stays release-critical, not a limitation row — P-014 makes that scope call.
 
 ***
 

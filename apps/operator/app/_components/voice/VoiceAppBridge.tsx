@@ -243,7 +243,7 @@ export function VoiceAppBridge(): null {
 
       // Phase C (sentinel-as-claude-tui-2026-06-22): route the final transcript
       // to the dock's 🛡 Sentinel pane (a psu/Claude-Code TUI) by POSTing
-      // /api/operator/sentinel-input, which writes it into the pane's stdin.
+      // /api/operator/papercup-input, which writes it into the pane's stdin.
       // LOCAL APP USER ONLY — not the P2P voice channels. If the dock isn't up
       // the POST fails and the turn drops.
       //

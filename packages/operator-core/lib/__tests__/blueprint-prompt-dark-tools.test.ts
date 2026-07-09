@@ -295,9 +295,9 @@ describe('blueprint prompt dark-tools (no prompt may reference a tool absent fro
     parseToolMentions(text).has(qualified) || new RegExp('`' + bareVerb + '`').test(text);
 
   it('bee blueprint: the bee prompt CALLS get_next AND the blueprint DECLARES scheduler:get_next (P-003 lock)', () => {
-    const deps = effectiveDeps('bee');
+    const deps = effectiveDeps('cup');
     expect(deps.has('scheduler:get_next')).toBe(true); // the wiring that was missing
-    const promptText = resolvePromptFiles('bee', 'cup').map((f) => readFileSync(f, 'utf8')).join('\n');
+    const promptText = resolvePromptFiles('cup', 'cup').map((f) => readFileSync(f, 'utf8')).join('\n');
     expect(referencesTool(promptText, 'scheduler:get_next', 'get_next')).toBe(true);
   });
 

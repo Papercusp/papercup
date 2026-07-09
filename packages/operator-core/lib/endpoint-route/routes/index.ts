@@ -42,8 +42,8 @@ import operatorConversationTurns from './operator/conversation-turns';
 import operatorCardResponse from './operator/card-response';
 import operatorSilenceNudge from './operator/silence-nudge';
 import operatorRunCancel from './operator/run-cancel';
-import operatorSentinelInput from './operator/sentinel-input';
-import operatorSentinelOutput from './operator/sentinel-output';
+import operatorPapercupInput from './operator/papercup-input';
+import operatorPapercupOutput from './operator/papercup-output';
 import operatorTurnAnswer from './operator/turn-answer';
 import operatorEventsEmit from './operator/events-emit';
 import operatorHiveSteering from './operator/hive-steering';
@@ -554,8 +554,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorCardResponse as AnyRoute),
   ...flatten(operatorSilenceNudge as AnyRoute),
   ...flatten(operatorRunCancel as AnyRoute),
-  ...flatten(operatorSentinelInput as AnyRoute),
-  ...flatten(operatorSentinelOutput as AnyRoute[]),
+  ...flatten(operatorPapercupInput as AnyRoute),
+  ...flatten(operatorPapercupOutput as AnyRoute[]),
   ...flatten(operatorTurnAnswer as AnyRoute),
   // oddsmith P-020 engine↔operator bridge (additive + inert until armed).
   ...flatten(operatorEventsEmit as AnyRoute),

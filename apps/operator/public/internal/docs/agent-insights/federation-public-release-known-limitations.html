@@ -469,24 +469,58 @@ needed. This limitation is closed.</p>
 <code dir="auto">shared-hive-release-testing/RELEASE-READINESS.md</code>). The standing
 ship-with-limitation rows, each with an accountable tracker:</p>
 <ul>
-<li><strong>No un-revoke path (G8, WI-1855)</strong> — revocation is one-way; un-banning a member
-has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must
-NOT retro-grant cut epochs).</li>
-<li><strong>Membership teardown doesn’t federate (G24/G27, WI-1857)</strong> — dissolve publishes no
-membership tombstone (peers’ rows orphan out by TTL) and a leaver’s <code dir="auto">hive_members</code>
-row persists on peers. Pinned by <code dir="auto">lifecycle-membership-teardown.gap.integration.test.ts</code>;
-the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap,
-not a security hole.</li>
-<li><strong>revoke() Hypercore session leak (G9, WI-1856)</strong> — revoked members’ core sessions
-are not verifiably closed on the owner; unbounded only on long-lived owners with
-many revokes.</li>
+<li><strong>No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.</strong> Revocation
+is one-way; un-banning a member has no sanctioned flow. WI-1855’s acceptance
+criteria (a built un-revoke flow OR this owner-ratified permanent-limitation row)
+is satisfied by this row, hence its <code dir="auto">resolved</code> tracker state — no code shipped for
+un-revoke itself, this is a documented-and-accepted gap, not a fix.
+⚠️ <strong>CORRECTION (2026-07-09, P-003 rest-lanes audit):</strong> this row previously stated
+the sanctioned workaround (re-invite as a fresh device/epoch) “must NOT retro-grant
+cut epochs” — <strong>verified FALSE against the actual implementation.</strong>
+<code dir="auto">grantEpochKeysToMembers</code> (<code dir="auto">hive-epoch-boundary-wiring.ts</code>) is a ratified v1
+correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member —
+including a re-invited fresh device for a previously-revoked identity — is granted
+wrapped keys for <strong>every</strong> epoch <code dir="auto">[0..current]</code>, by design (pinned by
+<code dir="auto">seed-past-epoch-key-guarantee.test.ts</code>; a current-epoch-only policy is explicitly
+a <em>deferred future forward-secrecy policy</em>, not implemented). So the re-invite
+workaround <strong>does</strong> hand the returning member every epoch key minted during their
+ban, including the K-cut boundary epoch that revoked them — it restores full
+history access, same as any brand-new member. There is currently no guard that
+distinguishes “returning previously-revoked identity” from “genuinely new member”
+at grant time. Tracked for an owner design decision: WI-3566 (build a per-identity
+epoch-floor exclusion) OR explicitly ratify that un-revoke-via-reinvite is, and is
+meant to be, a full history restore (making the old “must not retro-grant” caveat
+simply wrong and removable). Until decided, treat un-revoke-via-reinvite as
+<strong>equivalent to inviting a brand-new member with full history access</strong> — NOT as a
+partial/forward-only restore.</li>
+<li><strong>Membership teardown doesn’t federate (G24/G27, WI-1857) — SHIP-WITH-LIMITATION, ratified.</strong>
+Dissolve publishes no membership tombstone (peers’ rows orphan out by TTL) and a
+leaver’s <code dir="auto">hive_members</code> row persists on peers. Pinned by
+<code dir="auto">lifecycle-membership-teardown.gap.integration.test.ts</code>; the read-plane mitigation
+(epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole. Same
+as WI-1855: <code dir="auto">resolved</code> reflects this ratified doc row, not a built fix.</li>
+<li><strong>revoke() Hypercore session leak (G9, WI-1856) — FIXED 2026-07-05.</strong> <code dir="auto">openRemoteLog</code>’s
+<code dir="auto">RemoteLog</code> now implements <code dir="auto">close()</code> (<code dir="auto">core.close?.()</code>), and <code dir="auto">boot.ts</code>’s <code dir="auto">revoke()</code>
+captures the <code dir="auto">AdmittedLog</code> before deleting it from <code dir="auto">admitted</code> and fire-and-forget
+closes it (deliberately not awaited — awaiting added multi-second live-replicator
+teardown latency that timed out an unrelated pinned test). Verified: <code dir="auto">boot.test.ts</code>
+43/43, <code dir="auto">revocation-prior-row-semantics.test.ts</code> 1/1, <code dir="auto">peer-log.test.ts</code> 4/4, a new
+pinning test added, <code dir="auto">tsc --noEmit</code> clean on the 5 changed files
+(<code dir="auto">peer-log.ts</code>/<code dir="auto">read-merge.ts</code>/<code dir="auto">boot.ts</code> + the two test files).</li>
 <li><strong>Usage-events metering is machine-local (G2, WI-1858)</strong> — the
 <code dir="auto">contributor_usage_events</code> capture trigger is deliberately deferred to the GA
 migration (completeness-guard exemption until then).</li>
-<li><strong>From-repo joiner incremental federation (WI-971, OPEN)</strong> — the outbox drain is
-never wired for joined/created hive harnesses (WI-259 was closed as its duplicate).
-If from-repo joins are v1 public scope this is release-critical, not a limitation
-row — P-014 makes that scope call.</li>
+<li><strong>From-repo joiner incremental federation (WI-971) — tracker state is <code dir="auto">resolved</code> but
+UNVERIFIED, active re-verification in flight (p2p-rest-lanes-2026-07-09 P-005).</strong>
+The outbox drain is never wired for joined/created hive harnesses (WI-259 was
+closed as its duplicate); the WI’s own checkpoint carries a detailed execution
+plan (registry persistence + direct <code dir="auto">ensureSendSideWired</code> call at join/create,
+hermetic pin, then a deb-rebuild GATE_FORCE live verify) but the state flip to
+<code dir="auto">resolved</code> carries <strong>no recorded completion evidence</strong> (<code dir="auto">terminalCompletionRef</code>/
+<code dir="auto">terminalCompletionEvidence</code> are both null) — the same stale-state-flip pattern
+seen on WI-1684 before its 2026-07-09 re-verification. Do not treat this row as
+fixed until P-005 lands real evidence. If from-repo joins are v1 public scope this
+stays release-critical, not a limitation row — P-014 makes that scope call.</li>
 </ul>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="public-release-checklist">Public-release checklist</h2><a class="sl-anchor-link" href="#public-release-checklist"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Public-release checklist”</span></a></div>
@@ -596,4 +630,4 @@ remain valid evidence for the rows above.</p>
 <li><a href="/internal/docs/agent-insights/hive-rekey-flip-readiness">hive-rekey-flip-readiness</a> — the <code dir="auto">papercusp-hive-rekey</code> flip gate.</li>
 <li><a href="/internal/docs/agent-insights/federation-rig-restart-runbook">federation-rig-restart-runbook</a> — recovering the live VM rig.</li>
 <li>The live rig: <code dir="auto">papercusp-desktop/bin/lib/deb-hetzner-rig.sh</code> (reusable, N-frame) + <code dir="auto">papercusp-desktop/bin/lib/federation-asserts.sh</code> (assertions, incl. negative asserts).</li>
-</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-09T22:10:26.000Z">Jul 9, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/desktop-localstorage-unreliable-use-pg.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Desktop webview localStorage is unreliable for persistence — per-user prefs belong in PG</span> </span> </a> <a href="/internal/docs/agent-insights/federation-rig-restart-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Federation rig — restart / recovery runbook (wedged smokes, stale ports, leaked VMs)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-09T22:16:52.000Z">Jul 9, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/desktop-localstorage-unreliable-use-pg.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Desktop webview localStorage is unreliable for persistence — per-user prefs belong in PG</span> </span> </a> <a href="/internal/docs/agent-insights/federation-rig-restart-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Federation rig — restart / recovery runbook (wedged smokes, stale ports, leaked VMs)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

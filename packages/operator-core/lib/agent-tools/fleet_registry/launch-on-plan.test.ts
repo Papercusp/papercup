@@ -18,6 +18,7 @@ import launchOnPlan, {
   isOmpLocalModel,
   resolveFleetAgent,
   buildFleetKindClaimSpec,
+  clampFleetTopUpToCapacity,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 
@@ -232,5 +233,68 @@ describe('claimKinds arg (EI-7671)', () => {
     expect(() =>
       (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan' }),
     ).not.toThrow();
+  });
+});
+
+// EI-8807: fleet:launch-on-plan's owner-override for the capacity clamp. Two concurrent fixes each
+// added `overrideCapacityClamp`, producing a duplicate object-literal key (TS1117 + a describe that
+// referenced a nonexistent `capacityClampOverridden` result field). These lock in the arg's single
+// canonical shape AND the override's behavior so neither the arg nor the escape hatch can silently
+// regress. `clampFleetTopUpToCapacity` is the pure capacity-clamp authority the tool calls.
+describe('overrideCapacityClamp arg + clamp override (EI-8807)', () => {
+  const parseArgs = (extra: Record<string, unknown>) =>
+    (launchOnPlan.args as { parse: (x: unknown) => Record<string, unknown> }).parse({
+      name: 'atlas',
+      plan: 'p-plan',
+      ...extra,
+    });
+
+  it('accepts overrideCapacityClamp:true and surfaces it (single, non-dropped key)', () => {
+    // A duplicate object-literal key would keep only the last describe; a dropped/renamed key would
+    // strip the value on parse. Assert the boolean survives a round-trip through the args schema.
+    expect(parseArgs({ overrideCapacityClamp: true }).overrideCapacityClamp).toBe(true);
+    expect(parseArgs({ overrideCapacityClamp: false }).overrideCapacityClamp).toBe(false);
+  });
+
+  it('is optional — omitting it still parses (default off downstream)', () => {
+    expect(() => parseArgs({})).not.toThrow();
+    expect(parseArgs({}).overrideCapacityClamp).toBeUndefined();
+  });
+
+  it('rejects a non-boolean overrideCapacityClamp', () => {
+    expect(() => parseArgs({ overrideCapacityClamp: 'yes' })).toThrow();
+  });
+
+  // The core EI-8807 incident: a gateway-routed launch with a pool reading healthyAccounts:0 was
+  // clamped to ZERO despite a full dispatchBudget, and there was no way for an owner to override it.
+  const walledPool = { reachable: true, healthyAccounts: 0, dispatchBudget: 13, recommendedHeadroom: 8 };
+
+  it('WITHOUT override: a gateway-routed healthyAccounts:0 pool still suppresses the top-up to 0', () => {
+    const clamp = clampFleetTopUpToCapacity(4, walledPool, { gatewayRouted: true });
+    expect(clamp).not.toBeNull();
+    expect(clamp!.openCount).toBe(0);
+    expect(clamp!.clamped).toBe(true);
+    expect(clamp!.overridden).toBe(false);
+    // The recommendation is legible independent of application.
+    expect(clamp!.recommendedOpenCount).toBe(0);
+  });
+
+  it('WITH override: launches ALL requested members even at healthyAccounts:0, and reports the override', () => {
+    const clamp = clampFleetTopUpToCapacity(4, walledPool, { gatewayRouted: true, override: true });
+    expect(clamp).not.toBeNull();
+    expect(clamp!.openCount).toBe(4); // owner override defeats the zero-gate
+    expect(clamp!.overridden).toBe(true);
+    // The recommendation is still COMPUTED + reported — the override is never invisible.
+    expect(clamp!.recommendedOpenCount).toBe(0);
+    expect(clamp!.reason).toMatch(/OVERRIDDEN/);
+  });
+
+  it('a DIRECT-credential member is not gated by pool health at all (no override needed)', () => {
+    // fleet-launch-zero-gate-routing-blind: a member on the direct system credential never asks the
+    // gateway to authenticate, so an exhausted pool must not suppress it. dispatchBudget is the cap.
+    const clamp = clampFleetTopUpToCapacity(4, walledPool, { gatewayRouted: false });
+    expect(clamp!.openCount).toBe(4);
+    expect(clamp!.clamped).toBe(false);
+    expect(clamp!.overridden).toBe(false);
   });
 });

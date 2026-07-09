@@ -72,7 +72,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
   });
 
   it('records a spawned_agents row with status=running before fetch', async () => {
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
 
     expect(recordSpawn).toHaveBeenCalledOnce();
     const [sql, input] = vi.mocked(recordSpawn).mock.calls[0]!;
@@ -95,7 +95,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
   });
 
   it('records the launching parent lineage when the launch carries one', async () => {
-    await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-parent-1', role: 'mug' } });
+    await fireLaunchBlueprint('cup', { ...opts, parent: { spawnId: 's-parent-1', role: 'mug' } });
 
     expect(recordSpawn).toHaveBeenCalledOnce();
     const [, input] = vi.mocked(recordSpawn).mock.calls[0]!;
@@ -103,7 +103,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
   });
 
   it('flips the row to done after fetch succeeds', async () => {
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
 
     const [sql, input] = vi.mocked(finishSpawn).mock.calls[0]!;
@@ -119,7 +119,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     vi.mocked(loopbackFetch).mockRejectedValue(fetchErr);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
 
     const [, input] = vi.mocked(finishSpawn).mock.calls[0]!;
@@ -135,7 +135,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     vi.mocked(recordSpawn).mockRejectedValue(new Error('pg down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
     // fetch still went out
     expect(loopbackFetch).toHaveBeenCalledOnce();
     // finishSpawn NOT called (pg is null after the record failure)
@@ -165,14 +165,14 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
   });
 
   it('threads the correct body fields (blueprintId extra, kickoff, timeoutMs) to the invoke route', async () => {
-    await fireLaunchBlueprint('bee', { ...opts, kickoff: 'go', timeoutMs: 120_000, extra: ['FOO=bar'] });
+    await fireLaunchBlueprint('cup', { ...opts, kickoff: 'go', timeoutMs: 120_000, extra: ['FOO=bar'] });
 
     expect(loopbackFetch).toHaveBeenCalledOnce();
     const [, init] = vi.mocked(loopbackFetch).mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.kickoff).toBe('go');
     expect(body.timeoutMs).toBe(120_000);
-    expect(body.extra).toContain('BLUEPRINT_ID=bee');
+    expect(body.extra).toContain('BLUEPRINT_ID=cup');
     expect(body.extra).toContain('FOO=bar');
   });
 });
@@ -202,7 +202,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     let resolveFetch!: (r: Response) => void;
     vi.mocked(loopbackFetch).mockReturnValue(new Promise<Response>((r) => { resolveFetch = r; }));
 
-    await fireLaunchBlueprint('bee', { ...opts, kickoff: 'wake' });
+    await fireLaunchBlueprint('cup', { ...opts, kickoff: 'wake' });
     const recordedSpawnId = vi.mocked(recordSpawn).mock.calls[0]![1].spawnId;
 
     // Several heartbeat intervals while the worker (fetch) is still running.
@@ -229,7 +229,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     vi.mocked(loopbackFetch).mockReturnValue(new Promise<Response>((_r, rej) => { rejectFetch = rej; }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
     await tick(25);
     expect(heartbeatSpawns).toHaveBeenCalled();
 
@@ -246,7 +246,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     vi.mocked(loopbackFetch).mockResolvedValue(new Response('', { status: 200 }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await fireLaunchBlueprint('bee', opts);
+    await fireLaunchBlueprint('cup', opts);
     await tick(45);
     expect(heartbeatSpawns).not.toHaveBeenCalled();
     warn.mockRestore();

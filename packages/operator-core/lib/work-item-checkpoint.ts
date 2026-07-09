@@ -26,10 +26,33 @@ import { activeWorkspaceId } from './workspace-registry';
 import { setCarryNote, getCarryNote, workItemScope } from './carry-note';
 
 export interface WorkItemCheckpointRef {
-  harness: string;
+  /**
+   * The harness the item lives under. May be `null` for a harness-null item — an
+   * issue-family EI filed from an unscoped su session (EI-8805). Both write and read
+   * MUST resolve to the same canonical key: null / '' / the unscoped-session wildcard
+   * '*' collapse onto one namespace via {@link checkpointScopeHarness}, so a
+   * harness-null item's checkpoint is keyed identically on every write/read seam.
+   */
+  harness: string | null;
   workItemId: string;
   /** Defaults to the active workspace (the owner install). */
   workspaceId?: string;
+}
+
+/**
+ * The sentinel namespace for a harness-null item's checkpoint. A harness-null item
+ * (issue-family EI from an unscoped session) has no harness, and the unscoped su
+ * session that writes it resolves its own harness to this wildcard — so null, empty,
+ * and '*' must ALL key under one namespace or a write silently orphans its checkpoint
+ * (EI-8805: the write keyed under the session harness while the read looked it up
+ * under the item's own null harness). The work-item id is unique within the workspace,
+ * so collapsing the harness component onto a single sentinel never collides.
+ */
+const CHECKPOINT_WILDCARD_HARNESS = '*';
+
+/** Canonicalize the scope harness: null / '' / the '*' wildcard ⇒ the shared sentinel. */
+function checkpointScopeHarness(harness: string | null | undefined): string {
+  return harness && harness !== CHECKPOINT_WILDCARD_HARNESS ? harness : CHECKPOINT_WILDCARD_HARNESS;
 }
 
 /**
@@ -42,14 +65,16 @@ export async function setWorkItemCheckpoint(
   checkpoint: string | null | undefined,
 ): Promise<string | null> {
   const ws = ref.workspaceId ?? activeWorkspaceId();
-  if (!ws || !ref.harness || !ref.workItemId) {
-    throw new Error('setWorkItemCheckpoint — workspaceId, harness, and workItemId are required');
+  if (!ws || !ref.workItemId) {
+    throw new Error('setWorkItemCheckpoint — workspaceId and workItemId are required');
   }
   // journal:false — the bee checkpoint is a pure note (no trajectory ring): a
   // clear DELETES the row (the next invocation re-derives from the dossier —
   // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
+  // The scope harness is CANONICALIZED (EI-8805) so a harness-null item keys under
+  // one namespace on every write/read seam.
   const stored = await setCarryNote(
-    { scope: workItemScope(ref.harness, ref.workItemId), workspaceId: ws },
+    { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
     { journal: false },
   );
@@ -60,10 +85,15 @@ export async function setWorkItemCheckpoint(
   if (stored !== null) {
     try {
       const { sql } = getOrgPg();
-      await sql`
-        UPDATE harness_shared.work_items
-           SET last_progress_at = now()
-         WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+      // Feature-family progress anchor keys on a concrete harness_slug. A harness-null
+      // item (issue-family EI) has no feature row, so skip this UPDATE — the
+      // engineer_issues UPDATE below is its progress anchor (EI-8805).
+      if (ref.harness && ref.harness !== CHECKPOINT_WILDCARD_HARNESS) {
+        await sql`
+          UPDATE harness_shared.work_items
+             SET last_progress_at = now()
+           WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+      }
       // Issue-family rows live in engineer_issues and do not yet have a separate
       // last_progress_at column. Refresh assigned_at for claimed, open issues so
       // checkpoint progress keeps the same stale-claim anchor alive.
@@ -89,6 +119,8 @@ export async function setWorkItemCheckpoint(
  */
 export async function getWorkItemCheckpoint(ref: WorkItemCheckpointRef): Promise<string | null> {
   const ws = ref.workspaceId ?? activeWorkspaceId();
-  if (!ws || !ref.harness || !ref.workItemId) return null;
-  return getCarryNote({ scope: workItemScope(ref.harness, ref.workItemId), workspaceId: ws });
+  if (!ws || !ref.workItemId) return null;
+  // EI-8805: canonicalize the scope harness so a harness-null item reads back the
+  // checkpoint it was written under (previously a null harness short-circuited to null).
+  return getCarryNote({ scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws });
 }

@@ -78,6 +78,17 @@ function resolveCacheBlocks(): number {
   return DEFAULT_CORESTORE_CACHE_BLOCKS;
 }
 
+/**
+ * P-003 (own-log-fork-guard, WI-3535): the supported own-log-fork recovery is
+ * a per-harness STORE RESET (delete this directory so Corestore lazily mints
+ * a fresh keypair on next open) — exported so own-log-fork-recovery.ts (and
+ * anything else that needs to name/verify the on-disk path) doesn't have to
+ * re-derive the `.papercusp/<slug>/hyperbee` layout by hand.
+ */
+export function harnessStorePath(opts: HarnessStoreOpts): string {
+  return storagePath(opts);
+}
+
 export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore> {
   const key = cacheKey(opts);
   const cached = stores.get(key);

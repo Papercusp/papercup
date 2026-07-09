@@ -7,8 +7,9 @@
  * checkpoint existed and could wrongly conclude state was lost. Pins: the field
  * is always present (null when none was ever written), it reflects the resolved
  * work-item's OWN harness (not the request arg), a lookup failure degrades to
- * null rather than failing the whole read, and a harness-less item never calls
- * the checkpoint store at all.
+ * null rather than failing the whole read, and a harness-NULL item still reads its
+ * checkpoint (EI-8805 — the store canonicalizes the null harness to the wildcard
+ * namespace it was written under, instead of skipping the lookup and losing it).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -64,11 +65,16 @@ describe('work_items:get — checkpoint field', () => {
     expect(r).toMatchObject({ ok: true, id: 'WI-9', checkpoint: null });
   });
 
-  it('skips the checkpoint lookup entirely for a harness-less item', async () => {
-    getWorkItem.mockResolvedValue({ id: 'WI-10', harness: null, kind: 'bug', family: 'issue', title: 't', state: 'open' });
-    const r = await one({ id: 'WI-10' });
-    expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ ok: true, id: 'WI-10', checkpoint: null });
+  it('reads the checkpoint for a harness-null item (EI-8805 — no longer skipped)', async () => {
+    // A harness-null item (an EI filed from an unscoped session) previously skipped the
+    // checkpoint lookup entirely and always read null, silently losing a written
+    // checkpoint. Now the lookup runs (the store canonicalizes the null harness to the
+    // wildcard namespace it was written under) so the checkpoint round-trips.
+    getWorkItem.mockResolvedValue({ id: 'EI-10', harness: null, kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemCheckpoint.mockResolvedValue('harness-null continuity state');
+    const r = await one({ id: 'EI-10' });
+    expect(getWorkItemCheckpoint).toHaveBeenCalledWith({ harness: null, workItemId: 'EI-10' });
+    expect(r).toMatchObject({ ok: true, id: 'EI-10', checkpoint: 'harness-null continuity state' });
   });
 
   it('also surfaces on the detail path (args.detail:true)', async () => {

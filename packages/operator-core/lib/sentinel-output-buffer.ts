@@ -4,7 +4,7 @@
  * tool → `pushSentinelSay`; consumers drain via `drainSentinelSays`. In the
  * shipped one-brain pipeline there are two mutually-exclusive consumers:
  * the server-side full-agent says-pump while a voice session is live, or the
- * local webview's `GET /api/operator/sentinel-output` poll when it is not.
+ * local webview's `GET /api/operator/papercup-output` poll when it is not.
  *
  * CROSS-PROCESS via PG (migration 390). `voice:say` executes inside the
  * agent-mcp process the psu Sentinel's role-scoped MCP connects to (observed:

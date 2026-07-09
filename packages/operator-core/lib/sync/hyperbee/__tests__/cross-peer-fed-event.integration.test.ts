@@ -63,9 +63,9 @@ vi.mock('@papercusp/flags/server', async () => {
 
 afterEach(rigAfterEach);
 
-// FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency) — the same
-// hand-rolled subset store.integration.test.ts stands up (no RLS/grants; a
-// throwaway test DB has no harness_app/harness_zero roles).
+// FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +
+// 387 (source) — the same hand-rolled subset store.integration.test.ts stands up
+// (no RLS/grants; a throwaway test DB has no harness_app/harness_zero roles).
 const EVENT_AWAITS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.event_awaits (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -85,7 +85,9 @@ const EVENT_AWAITS_DDL = `
       CHECK (status IN ('pending','parked','delivering','delivered','dropped','dead')),
     channel text, attempts integer NOT NULL DEFAULT 0, last_error text,
     next_attempt_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now(),
-    delivered_at timestamptz
+    delivered_at timestamptz,
+    urgent boolean NOT NULL DEFAULT false, min_sleep_sec integer, coalesced_count integer NOT NULL DEFAULT 1,
+    source text
   );
 `;
 
@@ -93,6 +95,12 @@ describe('cross-peer coordination on a shared Hive — fed_event surfacing over 
   it(
     "a coord-message with body.fed_event federates A→B over the actual swarm; B's projection both (1) lands the row in coord_event_log AND (2) re-fires B's registered events:await watch",
     async () => {
+      // The real await/delivery pump logs its own success line via console.warn
+      // (lib/events/await/engine.ts's `log()` helper is not error-only) — expected
+      // noise from exercising the REAL pump end-to-end, not a test failure signal;
+      // swallow it (vitest-fail-on-console would otherwise flag it as unexpected).
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
       const { dbA, dbB, idA, peerA, peerB, federated } = await federateTwoPeerPresence();
       expect(federated).toBeTruthy();
       await dbB.sql.unsafe(EVENT_AWAITS_DDL);
@@ -177,11 +185,19 @@ describe('cross-peer coordination on a shared Hive — fed_event surfacing over 
       // one-shot event_awaits row is claimed (fired_at set) and a wake delivery
       // was queued for it. A miss here — the row lands (a) passes) but this stays
       // unfired — is the RE-FIRE-HOOK gap the checkpoint names.
+      // NOTE: event_awaits/event_wake_deliveries are queried WITHOUT a workspace_id
+      // predicate — `eventsWs()` (lib/events/await/store.ts) ignores its
+      // `workspaceId` input entirely and always pins reads/writes to the single
+      // `DEFAULT_COORD_WORKSPACE` constant (both registerAwait's write and
+      // fireAwaitsForKey's read go through it), so filtering by the rig's
+      // WORKSPACE_ID here would find nothing even on a correct re-fire. This is a
+      // pre-existing store-level behavior (self-consistent, not a bug this test is
+      // chasing) — worth a follow-up note, not a P-102 blocker.
       const fired = await pollUntil(
         async () => {
           const rows = await dbB.sql<Array<{ fired_at: Date | null; fired_reason: string | null }>>`
             SELECT fired_at, fired_reason FROM harness_shared.event_awaits
-             WHERE workspace_id = ${WORKSPACE_ID} AND subscriber_id = 'su-B-watcher' AND event_key = ${EVENT_KEY}
+             WHERE subscriber_id = 'su-B-watcher' AND event_key = ${EVENT_KEY}
           `;
           return rows[0]?.fired_at ? rows[0] : undefined;
         },
@@ -192,7 +208,7 @@ describe('cross-peer coordination on a shared Hive — fed_event surfacing over 
 
       const deliveries = await dbB.sql<Array<{ event_key: string; subscriber_id: string; payload: unknown }>>`
         SELECT event_key, subscriber_id, payload FROM harness_shared.event_wake_deliveries
-         WHERE workspace_id = ${WORKSPACE_ID} AND subscriber_id = 'su-B-watcher' AND event_key = ${EVENT_KEY}
+         WHERE subscriber_id = 'su-B-watcher' AND event_key = ${EVENT_KEY}
       `;
       expect(deliveries, 'the re-fire matched the await but never queued a wake delivery').toHaveLength(1);
       expect((deliveries[0].payload as { ref?: string } | null)?.ref).toBe('refs/hive/staging');

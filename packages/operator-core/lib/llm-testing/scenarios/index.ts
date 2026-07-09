@@ -34,24 +34,24 @@ import { S15_VOICE_ERROR_RECOVERY } from './operator/S15-voice-error-recovery';
 import { S16_VOICE_DISAMBIGUATION } from './operator/S16-voice-disambiguation';
 // SN01–SN02: sentinel-as-claude-tui-2026-06-22 — the voice→Sentinel→Queen
 // handoff path (role='sentinel' converse brain, `sentinel` target).
-import { SN01_HANDOFF_PLANNING_ASK } from './sentinel/SN01-handoff-planning-ask';
-import { SN02_NO_HANDOFF_TRIVIAL } from './sentinel/SN02-no-handoff-trivial';
-import { mirrorForSentinel } from './sentinel/_mirror';
+import { SN01_HANDOFF_PLANNING_ASK } from './papercup/SN01-handoff-planning-ask';
+import { SN02_NO_HANDOFF_TRIVIAL } from './papercup/SN02-no-handoff-trivial';
+import { mirrorForSentinel } from './papercup/_mirror';
 // P2 hive-knowledge scenarios (sentinel-voice-flow-testing): real questions about
 // the live papercusp hive, judged for grounded/tool-backed answers.
-import { SN_H01_FLEET_STATUS } from './sentinel/SN-H01-fleet-status';
-import { SN_H02_PLANS_AND_BLOCKED } from './sentinel/SN-H02-plans-and-blocked';
-import { SN_H03_QUEEN_EXPLAINER } from './sentinel/SN-H03-queen-explainer';
-import { SN_H04_ASSIGN_TO_QUEEN } from './sentinel/SN-H04-assign-to-queen';
+import { SN_H01_FLEET_STATUS } from './papercup/SN-H01-fleet-status';
+import { SN_H02_PLANS_AND_BLOCKED } from './papercup/SN-H02-plans-and-blocked';
+import { SN_H03_QUEEN_EXPLAINER } from './papercup/SN-H03-queen-explainer';
+import { SN_H04_ASSIGN_TO_QUEEN } from './papercup/SN-H04-assign-to-queen';
 // P3 handoff-depth scenarios (sentinel-voice-flow-testing).
-import { SN_H05_URGENT_HANDOFF } from './sentinel/SN-H05-urgent-handoff';
-import { SN_H06_RESPECT_NO_HANDOFF } from './sentinel/SN-H06-respect-no-handoff';
-import { SN_H07_MULTI_ITEM_HANDOFF } from './sentinel/SN-H07-multi-item-handoff';
+import { SN_H05_URGENT_HANDOFF } from './papercup/SN-H05-urgent-handoff';
+import { SN_H06_RESPECT_NO_HANDOFF } from './papercup/SN-H06-respect-no-handoff';
+import { SN_H07_MULTI_ITEM_HANDOFF } from './papercup/SN-H07-multi-item-handoff';
 // SN-D01–D02: voice-unified-sentinel-pipeline-2026-07-01 P-007 — the D-003
 // three-way routing split (answer now / delegate_deep thinking / handoff work).
-import { SN_D01_DELEGATE_HARD_THINKING } from './sentinel/SN-D01-delegate-hard-thinking';
-import { SN_D02_WORK_NOT_DELEGATED } from './sentinel/SN-D02-work-not-delegated';
-import { SN_D03_EXISTING_DELEGATION_STATUS } from './sentinel/SN-D03-existing-delegation-status';
+import { SN_D01_DELEGATE_HARD_THINKING } from './papercup/SN-D01-delegate-hard-thinking';
+import { SN_D02_WORK_NOT_DELEGATED } from './papercup/SN-D02-work-not-delegated';
+import { SN_D03_EXISTING_DELEGATION_STATUS } from './papercup/SN-D03-existing-delegation-status';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -140,18 +140,18 @@ import { SU_S26_TAKE_CHARGE_DONT_WAIT } from './su/S26-take-charge-dont-wait';
 import { SU_S27_WOKE_TO_DISPATCH_CLAIMS } from './su/S27-woke-to-dispatch-claims';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
-import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
-import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './queen/Q02-owner-grade-sovereign-no-retry';
+import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
+import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './mug/Q02-owner-grade-sovereign-no-retry';
 // QUEEN-Q03: self-learning-frontier-2026-06-12 P-045 (FB-19, D-008) — the Queen
 // DECIDES the ranked improvement queue (triage-one place/gate/gym/reject),
 // weighs claimed confidence by calibration trust, gates graduation reports.
-import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './queen/Q03-ranked-queue-decider';
+import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './mug/Q03-ranked-queue-decider';
 // QUEEN-Q04 + BEE-B01: hybrid-bee-scheduler-work-stealing-2026-06-22 P-003 — the Queen
 // AUTHORS a per-bee claim spec (scheduler:set_claim_spec, steer-not-dispatch) and the bee
 // PULLS its next item via scheduler:get_next (no self-freelance). The two adoption halves.
-import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './queen/Q04-authors-claim-spec';
-import { BEE_B01_PULL_VIA_GET_NEXT } from './bee/B01-pull-via-get-next';
-import { BEE_B02_IDLE_ON_EMPTY_FRONTIER } from './bee/B02-idle-on-empty-frontier';
+import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './mug/Q04-authors-claim-spec';
+import { BEE_B01_PULL_VIA_GET_NEXT } from './cup/B01-pull-via-get-next';
+import { BEE_B02_IDLE_ON_EMPTY_FRONTIER } from './cup/B02-idle-on-empty-frontier';
 // OVERWATCH-OW01/OW02: overwatch-role-2026-06-15 B-11 — the system-health
 // supervisor's persona boundaries: NUDGE-not-replace (D-001) + OBSERVE-not-idea (D-003).
 import { OVERWATCH_OW01_NUDGE_NOT_REPLACE } from './overwatch/OW01-nudge-not-replace';

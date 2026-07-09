@@ -14,7 +14,7 @@ import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity
 import { defaultRunGit, ensureHiveGitRepo, writeNamespaceRef, readNamespaceRef } from './storage';
 import { readSigrefs } from './sigrefs';
 import { serveUploadPack } from './fetch-transport';
-import type { SignedRefAnnouncement } from './ref-announce';
+import { buildRefAnnouncement, type SignedRefAnnouncement } from './ref-announce';
 import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from './ref-announce-tick';
 
 function mkDevice(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> } {
@@ -202,7 +202,6 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       // Outsider forges an announcement claiming to be devD (real device
       // fields, wrong signer) — must be rejected on signature, never opening
       // a stream for it, while the legit one in the same batch still lands.
-      const { buildRefAnnouncement } = await import('./ref-announce');
       const forged = await buildRefAnnouncement(repoB, devD.pubkeyBase64, outsider.sign, { nowMs: 6_000 });
 
       let openedForForged = false;

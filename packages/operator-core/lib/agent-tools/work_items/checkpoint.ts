@@ -80,16 +80,24 @@ export default defineTool({
     const env = await runBulk(
       items,
       async (it) => {
-        // Resolve the harness the item lives under: explicit per-item / batch arg → the
-        // caller's scoped harness → a work-item lookup (last resort). The store keys on it.
-        let harness = it.harness ?? args.harness ?? c.harnessSlug ?? null;
-        if (!harness) {
-          const item = await getWorkItem(it.id).catch(() => null);
-          harness = item?.harness ?? null;
-        }
-        if (!harness) {
+        // EI-8805: KEY the checkpoint by the ITEM's OWN harness so the write agrees
+        // with the read (work_items:get keys by the resolved item.harness). A
+        // harness-null item — an issue-family EI filed from an unscoped su session —
+        // must NOT be keyed under the session's harness ('*' or a scoped slug): the
+        // read looks it up under the item's own null harness, and the mismatch
+        // silently loses the checkpoint. The caller's arg/ctx harness is only a
+        // disambiguation HINT for a feature id that repeats across harnesses; the '*'
+        // wildcard is not a real harness filter.
+        const hint = it.harness ?? args.harness ?? c.harnessSlug ?? undefined;
+        const hintHarness = hint && hint !== '*' ? hint : undefined;
+        const item = await getWorkItem(it.id, hintHarness).catch(() => null);
+        if (!item && !hintHarness) {
           return { ok: false as const, id: it.id, error: `could not resolve a harness for work_item '${it.id}' — pass { harness }` };
         }
+        // The item's own harness is authoritative (null for a harness-null item — the
+        // store canonicalizes it). Fall back to the hint only when the item can't be
+        // resolved (e.g. a not-yet-persisted id).
+        const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
         const stored = await setWorkItemCheckpoint(
           { harness, workItemId: it.id, workspaceId: c.workspaceId ?? undefined },
           it.checkpoint,
@@ -103,7 +111,7 @@ export default defineTool({
         // mutually exclusive between them, so firing both unconditionally is a harmless
         // no-op on whichever one doesn't apply (no need to look up the item's kind first).
         if (stored !== null) {
-          void markFeatureProgress(harness, it.id);
+          void markFeatureProgress(harness ?? '', it.id);
           void markIssueProgress(it.id);
         }
         return { ok: true as const, id: it.id, harness, cleared: stored === null, length: stored?.length ?? 0, by: ident.ownerId };

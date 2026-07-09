@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   // payload_template carries the blueprint pointer; the owner budget lives under
   // `.payload.budgetUsd` (runScheduledProgram passes `.payload` to the program).
   const blueprintPayload = JSON.stringify(
-    budgetUsd != null ? { blueprintId: 'hive-eval', payload: { budgetUsd } } : { blueprintId: 'hive-eval' },
+    budgetUsd != null ? { blueprintId: 'pot-eval', payload: { budgetUsd } } : { blueprintId: 'pot-eval' },
   );
   const budgetPayload = budgetUsd != null ? JSON.stringify({ budgetUsd }) : null;
   // On conflict: ENSURE blueprintId; a re-seed without --budget must NOT wipe the owner-set
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
       payload_template = jsonb_build_object(
-        'blueprintId', 'hive-eval',
+        'blueprintId', 'pot-eval',
         'payload', COALESCE(${budgetPayload}::text::jsonb, harness_shared.routines.payload_template->'payload', '{}'::jsonb)
       ),
       active = EXCLUDED.active,

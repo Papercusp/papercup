@@ -108,12 +108,14 @@ export default defineTool({
         // read-only, uncached (checkpoints change out-of-band of the harness_features_
         // consolidated tags this tool's cache is keyed on, so a cached copy could go
         // stale) and cheap (single indexed row lookup, null when never checkpointed).
-        const checkpoint = workItem.harness
-          ? await getWorkItemCheckpoint({
-              harness: workItem.harness,
-              workItemId: workItem.id,
-            }).catch(() => null)
-          : null;
+        // EI-8805: read under the item's OWN harness — INCLUDING a harness-null item
+        // (the store canonicalizes a null harness to the wildcard namespace it was
+        // written under). Previously harness-null items skipped this lookup entirely
+        // and always read null, silently losing a written checkpoint.
+        const checkpoint = await getWorkItemCheckpoint({
+          harness: workItem.harness,
+          workItemId: workItem.id,
+        }).catch(() => null);
         return { ok: true as const, id, workItem, checkpoint };
       },
       { keyOf: (id) => ({ id }) },

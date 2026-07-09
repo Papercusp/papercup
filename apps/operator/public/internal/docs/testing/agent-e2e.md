@@ -288,6 +288,42 @@ tauri-agent-tools eval "location.reload()"
 webview — unlike pure-Rust IPC, it has full DOM access including
 storage APIs.
 
+The root gateway (`apps/operator-vite/src/routes/index.tsx` `beforeLoad`)
+decides `/onboarding` vs `/adv` by fetching `GET
+/api/desktop/setup-wizard-state` and checking `finished_at` — a row in
+`harness_shared.setup_wizard_state` keyed by **`workspace_id`**, resolved
+server-side by `activeWorkspaceId()` (`packages/operator-core/lib/workspace-registry.ts`).
+Clearing `localStorage`/`sessionStorage`, or launching with a genuinely
+fresh `$HOME` (a fresh `.papercusp-workspaces/registry.json`), changes
+none of that: the workspace id it resolves to (almost always `default`)
+still points at the **same row in the same Postgres**, because —
+per [repo-conventions § two-port model](/internal/docs/system/repo-conventions) —
+**this dev box's `tauri dev` uses native PG on `:5432`, not per-launch
+embedded-pg**, so no isolated instance actually gets an isolated database.
+Verified 2026-07-09 (WI-3134): `harness_shared.setup_wizard_state` for
+`workspace_id='default'` already carries `finished_at` (set 2026-05-22,
+this box's own everyday-use onboarding) — so *any* "fresh" instance that
+resolves to workspace `default` will correctly, and misleadingly, land on
+`/adv` straight away. **This is not an app bug** — `dev:pg_query` against
+an unused workspace (e.g. one with no `setup_wizard_state` row) confirms
+the gateway logic is correct; it's a gap in the isolation recipe.
+
+**To genuinely exercise first-run/onboarding on this dev box**, force a
+workspace id that has no `setup_wizard_state` row at all (pick a fresh
+random slug — `dev:pg_query { sql: "SELECT workspace_id FROM
+harness_shared.setup_wizard_state" }` shows which ids are already
+onboarded) and pass it as `PAPERCUSP_WORKSPACE_ID=<fresh-slug>` in the
+launch env (`activeWorkspaceId()` precedence #2 — a process-pin,
+overridable per-request only by an explicit `x-papercusp-workspace`
+header, which the desktop webview doesn't send). Confirm with an
+API-only check before touching the UI:
+
+```sh
+curl -s -H "x-papercusp-workspace: <fresh-slug>" \
+  http://127.0.0.1:<port>/api/desktop/setup-wizard-state
+# expect: no "finished_at" key at all
+```
+
 ## 2. Reporting format
 
 ```

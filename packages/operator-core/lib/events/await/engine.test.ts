@@ -259,6 +259,16 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(h.sendMessage).toHaveBeenCalledTimes(1); // no second nudge
   });
 
+  it('P-001: a degraded delivered/inbox outcome records channel=\'inbox\' on the delivery row, not a drop', async () => {
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'inbox' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ id: 30, subscriberId: 'su-a' })]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(30, 'inbox', 1);
+    expect(h.store.markDeliveryDropped).not.toHaveBeenCalled();
+    expect(stats.delivered).toBe(1);
+    expect(stats.dropped).toBe(0);
+  });
+
   it('drop and error settle visibly (dropped / failed-with-backoff)', async () => {
     h.executeWake
       .mockResolvedValueOnce({ kind: 'drop', reason: 'dead waiter' })

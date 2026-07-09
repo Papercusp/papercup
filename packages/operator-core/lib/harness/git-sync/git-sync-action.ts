@@ -43,6 +43,14 @@ import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
+import { runIntegratorTick } from '../../sync/hive-git/integrator-tick';
+import { STAGING_ADVANCE_EVENT_KEY } from '../../sync/hive-git/staging-advance';
+import { listHiveMembers } from '../../hive-membership-store';
+import { resolveUsageActor } from '../usage-actor';
+import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
+import { signWithDeviceKey } from '../../identity/sign-with-device-key';
+import { resolveAuthorCommsTier } from '../../sync/hyperbee/comms-tier-gate';
+import { emitAwaitedEvent } from '../../events/await/engine';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import {
@@ -1177,6 +1185,16 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
     await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
   }
+
+  // p2p-git-live-activation P-203: on ANY non-legacy hive (bridged OR
+  // p2p-only), one integrator-tick pass per git-sync tick — the lock-authority
+  // lease holder merges member namespace heads into staging + announces the
+  // advance hive-wide; every other member's tick is a fast, correct no-op
+  // (`skipped: 'not-integrator'`). Own checkpoint so a resumed fire never
+  // re-integrates/re-announces past it.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
+  }
 }
 
 /** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
@@ -1238,6 +1256,114 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     });
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * p2p-git-live-activation P-203: the integrator-tick leg of one non-legacy
+ * hive's git-sync tick. Best-effort: never throws (the code plane must keep
+ * committing even when this pass fails); outcome + the `{epoch, seq}`
+ * watermark persist on the routine metadata (the `lastAdmitted` idiom above).
+ *
+ * EPOCH NOTE (known simplification, flagged for the P-101/G-0 live-rig work):
+ * the epoch-FENCING mechanism (sign/verify by strict (epoch,seq) order) is
+ * fully wired here; the epoch-GRANTING policy (bumping `epoch` on a genuine
+ * lock-authority HANDOFF, via the G-0 handoff-token library) is NOT — this
+ * leg persists one epoch per (hive,repo) for the life of its routine metadata
+ * and only advances `seq` within it. Correct and safe for a single-authority
+ * dev-box run (there is only ever one epoch in play); a live multi-machine
+ * authority handoff needs the G-0 grant wired in before Phase 3's drill.
+ */
+async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry) return;
+    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!hiveHomeSlug) return;
+
+    const actor = await resolveUsageActor();
+    if (!actor) return; // gh unauthenticated — no device identity to sign/integrate as
+
+    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const memberDevicePubkeysBase64 = [
+      ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
+    ];
+    if (memberDevicePubkeysBase64.length === 0) return; // no attested devices yet
+
+    const { sql } = getOrgPg();
+    const rows = await sql<{ integrator: { epoch: number; seq: number } | null }[]>`
+      SELECT metadata->'integrator' AS integrator
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const prior = rows[0]?.integrator ?? null;
+    const epoch = prior?.epoch ?? 1;
+    const priorSeq = prior?.seq ?? 0;
+
+    const keychainId = resolveDeviceKeychainId(actor.githubUserId);
+    const outcome = await runIntegratorTick({
+      hiveHomeSlug,
+      workspaceId,
+      repoKey: slug,
+      memberDevicePubkeysBase64,
+      integratorDevicePubkeyBase64: actor.devicePubkey,
+      epoch,
+      priorSeq,
+      sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
+      resolveTier: async (devicePubkeyBase64) =>
+        (await resolveAuthorCommsTier({ workspaceId, hiveHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
+    });
+
+    if (outcome.announcement) {
+      // Local wake for any same-machine waiter, then federate hive-wide (the
+      // ref-announce.ts idiom) so every OTHER member's worktree-bridge driver
+      // (P-204) wakes on the same key.
+      await emitAwaitedEvent({
+        key: STAGING_ADVANCE_EVENT_KEY,
+        summary: `hive-git staging advanced to ${outcome.integration?.staging?.slice(0, 12)}`,
+        payload: outcome.announcement,
+        source: 'git-sync-integrator',
+      });
+      const identity: AgentIdentity = {
+        ownerId: 'git-sync-integrator',
+        ownerLabel: 'git-sync-integrator',
+        source: 'system',
+        userId: null,
+        workspaceId,
+      };
+      await sendMessage(identity, {
+        to: [],
+        summary: `[fed-event] ${STAGING_ADVANCE_EVENT_KEY}`,
+        harnessSlug: hiveHomeSlug,
+        extra: {
+          fed_event: {
+            key: STAGING_ADVANCE_EVENT_KEY,
+            payload: outcome.announcement,
+            source: identity.ownerId,
+          },
+        },
+      });
+      await sql`
+        UPDATE harness_shared.routines
+           SET metadata = jsonb_set(
+             COALESCE(metadata, '{}'::jsonb),
+             '{integrator}',
+             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, at: Date.now() })}::jsonb
+           )
+         WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+      `;
+    }
+    if (outcome.errors.length) {
+      console.warn(`[git-sync] ${slug}: integrator-tick reported errors: ${outcome.errors.join('; ')}`);
+    }
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: integrator-tick failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 

@@ -57,30 +57,33 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null };
-    let harness = args.harness ?? c.harnessSlug ?? null;
-    if (!harness) {
-      const item = await getWorkItem(args.id).catch(() => null);
-      harness = item?.harness ?? null;
-    }
-    if (!harness) {
+    // EI-8805: key the parked checkpoint by the ITEM's OWN harness so it round-trips
+    // on re-claim/re-injection. A harness-null item (an EI from an unscoped session)
+    // must not be keyed under the session harness — the store canonicalizes a null
+    // harness to the shared wildcard namespace the read side resolves it under.
+    const hint = args.harness ?? c.harnessSlug ?? undefined;
+    const hintHarness = hint && hint !== '*' ? hint : undefined;
+    const item = await getWorkItem(args.id, hintHarness).catch(() => null);
+    if (!item && !hintHarness) {
       return {
         content: [
           { type: 'text' as const, text: JSON.stringify({ ok: false, id: args.id, error: `could not resolve a harness for work_item '${args.id}' — pass { harness }` }) },
         ],
       };
     }
+    const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
     const stored = await setWorkItemCheckpoint(
       { harness, workItemId: args.id, workspaceId: c.workspaceId ?? undefined },
       args.checkpoint,
     );
-    const released = await releaseWorkItem(args.id, { harness });
+    const released = await releaseWorkItem(args.id, { harness: harness ?? undefined });
     // Best-effort lifecycle note (never un-parks on failure).
     let noted = false;
     try {
       await sendMessage(ident, {
         to: ['*'],
         summary: `🅿 ${args.id} parked by ${ident.ownerId} — resume checkpoint saved (${stored?.length ?? 0} chars): ${args.reason.slice(0, 140)}`,
-        harnessSlug: harness,
+        harnessSlug: harness ?? undefined,
         extra: { auto: true, lifecycle: 'park', work_item: args.id },
       });
       noted = true;

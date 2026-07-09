@@ -1,7 +1,7 @@
 /**
  * voice-sentinel-bridge — Phase C voice-IN for the Sentinel-as-Claude-TUI
  * (sentinel-as-claude-tui-2026-06-22). A final STT transcript is POSTed to
- * `/api/operator/sentinel-input`, which writes it into the dock's 🛡 Sentinel
+ * `/api/operator/papercup-input`, which writes it into the dock's 🛡 Sentinel
  * pane (a `psu --role=sentinel` Claude-Code TUI) stdin so the local user can
  * talk to the Sentinel by voice.
  *
@@ -12,7 +12,7 @@ export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
   const t = text.trim();
   if (!t) return false;
   try {
-    const res = await fetch('/api/operator/sentinel-input', {
+    const res = await fetch('/api/operator/papercup-input', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: t }),
@@ -31,7 +31,7 @@ export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
  */
 export async function drainSentinelOutput(): Promise<string[]> {
   try {
-    const res = await fetch('/api/operator/sentinel-output', { method: 'GET' });
+    const res = await fetch('/api/operator/papercup-output', { method: 'GET' });
     if (!res.ok) return [];
     const data = (await res.json().catch(() => null)) as { says?: unknown } | null;
     return Array.isArray(data?.says)

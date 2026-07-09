@@ -13,10 +13,10 @@ afterEach(() => {
 });
 
 describe('routeVoiceToSentinelPane', () => {
-  it('POSTs the trimmed transcript to /api/operator/sentinel-input', async () => {
+  it('POSTs the trimmed transcript to /api/operator/papercup-input', async () => {
     fetchMock.mockResolvedValue({ ok: true });
     await expect(routeVoiceToSentinelPane('  status of the hive  ')).resolves.toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith('/api/operator/sentinel-input', {
+    expect(fetchMock).toHaveBeenCalledWith('/api/operator/papercup-input', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'status of the hive' }),
@@ -46,7 +46,7 @@ describe('drainSentinelOutput', () => {
       json: async () => ({ says: ['first', 42, 'second', null] }),
     });
     await expect(drainSentinelOutput()).resolves.toEqual(['first', 'second']);
-    expect(fetchMock).toHaveBeenCalledWith('/api/operator/sentinel-output', { method: 'GET' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/operator/papercup-output', { method: 'GET' });
   });
 
   it('returns [] on a non-ok response', async () => {

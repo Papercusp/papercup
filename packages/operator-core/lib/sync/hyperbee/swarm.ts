@@ -182,6 +182,21 @@ export interface JoinHarnessSwarmOpts {
    *  Default `DEFAULT_SUBSTRATE_SLOW_REFRESH_MS`. */
   slowRefreshMs?: number;
   /**
+   * WI-1534 anti-entropy: best-effort predicate — true when at least one
+   * ADMITTED remote log on this harness currently shows ZERO live replicator
+   * peers (attached-but-dead OR never-attached), i.e. the merge pass has
+   * something it cannot pull. On a QUIESCENT hive (no connection churn to
+   * naturally re-arm the FAST post-join/post-peer-loss window) the self-heal
+   * loop otherwise settles into the 60s `slowRefreshMs` keepalive and stays
+   * there indefinitely — observed as an 80+min stall until an unrelated event
+   * (the next owner append) happens to coincide with a working DHT/holepunch
+   * retry (known-limitations §NAT, WI-1534). Polled once per refresh tick
+   * (cheap — a Map scan, no I/O); a throw is treated as false (never blocks
+   * the keepalive). Omitted ⇒ byte-identical pre-WI-1534 behavior (fast window
+   * only, then flat 60s slow cadence).
+   */
+  hasStalledLogs?: () => boolean;
+  /**
    * P-201 (p2p-git-live-activation-2026-07-09): register this harness's
    * connections to SERVE `papercusp/hive-git` fetch requests (a peer member
    * fetching our namespace) — omitted for a non-hive harness (the common
@@ -947,8 +962,19 @@ export async function joinHarnessSwarm(
       refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
         const now = Date.now();
         const inFastWindow = now - fastWindowStartMs < fastWindowMs;
+        // WI-1534: a stalled admitted log re-arms the FAST cadence exactly
+        // like a fresh join/peer-loss would — best-effort, never throws past
+        // this call (a caller predicate that throws is treated as "no stall").
+        let stalled = false;
+        if (opts.hasStalledLogs) {
+          try {
+            stalled = opts.hasStalledLogs();
+          } catch {
+            stalled = false;
+          }
+        }
         const slowDue = now - lastRefreshMs >= slowRefreshMs;
-        if (!inFastWindow && !slowDue) return;
+        if (!inFastWindow && !stalled && !slowDue) return;
         lastRefreshMs = now;
         try {
           // Re-announce (server) + re-lookup (client) — the same call the

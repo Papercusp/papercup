@@ -8,8 +8,8 @@ import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
 import { SuTarget } from './su';
-import { makeQueenTarget } from './queen';
-import { makeBeeTarget } from './bee';
+import { makeQueenTarget } from './mug';
+import { makeBeeTarget } from './cup';
 import { makeOverwatchTarget } from './overwatch';
 import { onboardingTutorTarget } from './onboarding-tutor';
 

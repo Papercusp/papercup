@@ -91,6 +91,17 @@ export interface SubstrateHealthInputs {
     /** Logs the merge loop hasn't sampled recently (detector dead-man). */
     samplingStale?: number;
   };
+  /**
+   * P-003 (own-log-fork-guard, WI-3535): this harness's OWN writable log hit
+   * the Hypercore equivocation loop ("[hypercore] conflict detected") and
+   * every session to it is SESSION_CLOSED — local writes are frozen and,
+   * unlike replicationLiveness, this does NOT self-heal (only an explicit
+   * store-reset recovery clears it — see own-log-fork-guard.ts). `forked:true`
+   * is at least as severe as a stalled/frozen remote log (local writes are
+   * BLOCKED, not just diverging), so it forces `unhealthy`. Omitted/undefined
+   * = not measured (never fabricates a verdict).
+   */
+  ownLogFork?: { forked: boolean; detail?: string };
   /** Override for tests; defaults to Date.now(). */
   nowMs?: number;
   /** mergedOps lagging highestSeen for this long → unhealthy. Default 5m. */
@@ -206,6 +217,17 @@ export function assessHarnessSubstrateHealth(
         `replication-liveness sampler stale for ${samplingStale} log(s) — merge loop may be wedged`,
       );
     }
+  }
+
+  // P-003 (WI-3535): an own-log fork blocks LOCAL writes outright — at least
+  // as severe as a stalled remote log, so worst-wins to 'unhealthy'. Unlike
+  // replicationLiveness's samplingStale degrade, there is no lesser "degraded"
+  // case here — the condition is binary and does not self-heal.
+  if (inputs.ownLogFork?.forked) {
+    verdict = 'unhealthy';
+    reasons.push(
+      `own-log forked: ${inputs.ownLogFork.detail ?? 'writable core hit the Hypercore equivocation loop'} — local writes are frozen until a store-reset recovery`,
+    );
   }
 
   // WI-899 (A): a confirmed-dead sidecar overrides every other signal — nothing

@@ -152,6 +152,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // yet — the flag reserves the seam). OFF is the intended v1 production state
   // (ON = v2). Count 17 → 18; well under DARK_FLAGS_HIGH_WATERMARK (22).
   'papercusp-rubrics-marketplace',
+  // 2026-07-09 — papercusp-own-log-fork-auto-recovery (p2p-parity-parallel-lanes-
+  // 2026-07-09 P-003 / WI-3535, owner-authority): the own-log-fork-guard's
+  // sketched auto-recovery is a DESTRUCTIVE per-harness Corestore store reset
+  // (discards unmerged local hypercore-only history) that the plan explicitly
+  // requires flag-gated default-OFF until the owner personally ratifies it.
+  // Deliberate new dark flag, not inversion drift. Count 18 → 19; well under
+  // DARK_FLAGS_HIGH_WATERMARK (22).
+  'papercusp-own-log-fork-auto-recovery',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -287,7 +295,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // owner-directed v1/v2 split (local-first-party-rubric-bundling): v1 bundles +
     // seeds first-party rubrics locally; the kind='rubric' Cupboard marketplace is a
     // reserved v2 seam (no remote-fetch code yet). Count 17 → 18.
-    expect(offCount).toBe(18);
+    // 2026-07-09 — papercusp-own-log-fork-auto-recovery (p2p-parity-parallel-lanes-2026-07-09
+    // P-003 / WI-3535, owner-authority): DELIBERATE new dark flag — the own-log-fork-guard's
+    // sketched auto-recovery is destructive (per-harness Corestore store reset, discards
+    // unmerged local history), so it ships default-OFF until the owner ratifies it. Count 18 → 19.
+    expect(offCount).toBe(19);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

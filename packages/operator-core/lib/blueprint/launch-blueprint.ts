@@ -65,8 +65,8 @@ export const BUILTIN_LAUNCH_BLUEPRINTS = [
   'content-fix',
   'audit',
   'coding',
-  'bee',
-  'sentinel',
+  'cup',
+  'papercup',
 ] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 

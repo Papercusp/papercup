@@ -240,7 +240,7 @@ export interface LiveHiveOpsDeps {
  */
 export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
   const ws = deps.workspaceId;
-  const scratchParent = deps.scratchParent ?? join(tmpdir(), 'hive-eval');
+  const scratchParent = deps.scratchParent ?? join(tmpdir(), 'pot-eval');
   const sqlClient = (): postgres.Sql => getOrgPg().sql;
 
   return {

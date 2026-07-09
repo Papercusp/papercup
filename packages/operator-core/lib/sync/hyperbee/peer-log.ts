@@ -209,11 +209,35 @@ function getCore(store: Corestore, opts: { name: string } | { key: Buffer }): Co
  * Open the peer's OWN writable single-writer log. The core is created lazily by
  * Corestore on first access under the fixed name `'peer-log'`, so every call on
  * a given store returns the same underlying writable core.
+ *
+ * `forkGuard` (P-003, own-log-fork-guard.ts) is OPTIONAL and additive: when
+ * passed, this wires the real Hypercore `'conflict'` event on the underlying
+ * session to `attachOwnLogForkListener` so a genuine equivocation-loop
+ * conflict on THIS own log actually escalates (durable EI + health verdict)
+ * instead of failing silently. Omitted by every existing caller (perf
+ * fixtures, seed-cutter, unit tests) — behavior is byte-identical when
+ * absent. boot.ts (the real production merge-loop boot path) is the one
+ * caller that passes it.
  */
-export async function openOwnLog(store: Corestore): Promise<OwnLog> {
+export async function openOwnLog(
+  store: Corestore,
+  forkGuard?: { workspaceId: string; harnessSlug: string },
+): Promise<OwnLog> {
   const core = getCore(store, { name: 'peer-log' });
   await core.ready();
   const keyHex = core.key.toString('hex');
+
+  if (forkGuard) {
+    // Lazy import: keeps this module's static import graph free of the
+    // fork-guard's (eventual, lazy-inside-the-reporter) PG dependency —
+    // mirrors replication-liveness.ts's own lazy-import-for-escalation
+    // pattern. Best-effort: a wiring failure must never block opening the log.
+    void import('./own-log-fork-guard')
+      .then((m) => m.attachOwnLogForkListener(core, forkGuard.workspaceId, forkGuard.harnessSlug, keyHex))
+      .catch(() => {
+        /* best-effort: the log still opens even if the listener can't attach */
+      });
+  }
 
   return {
     async append(op: PeerLogOp): Promise<void> {
