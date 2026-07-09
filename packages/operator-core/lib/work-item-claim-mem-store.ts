@@ -54,7 +54,7 @@ interface MemRow {
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   claimId: string;
   owner: string;
   ownerLabel: string | null;
@@ -106,7 +106,7 @@ export class InMemoryWorkItemClaimStore {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       workItemId: opts.workItemId,
-      hiveSlug: opts.hiveSlug ?? null,
+      potSlug: opts.potSlug ?? null,
       claimId: randomUUID(),
       owner: opts.owner,
       ownerLabel: opts.ownerLabel ?? null,
@@ -186,11 +186,11 @@ export class InMemoryWorkItemClaimStore {
   }
 
   /** All live (non-lapsed) claims for a Hive — the "what's already taken" view. */
-  listLiveClaimsForHive(workspaceId: string, hiveSlug: string): WorkItemClaim[] {
+  listLiveClaimsForHive(workspaceId: string, potSlug: string): WorkItemClaim[] {
     const now = this.now();
     const out: WorkItemClaim[] = [];
     for (const row of this.rows.values()) {
-      if (row.workspaceId === workspaceId && row.hiveSlug === hiveSlug && row.expiresMs > now) {
+      if (row.workspaceId === workspaceId && row.potSlug === potSlug && row.expiresMs > now) {
         out.push(this.toClaim(row, now));
       }
     }
@@ -214,7 +214,7 @@ export class InMemoryWorkItemClaimStore {
       workspaceId: row.workspaceId,
       harnessSlug: row.harnessSlug,
       workItemId: row.workItemId,
-      hiveSlug: row.hiveSlug,
+      potSlug: row.potSlug,
       claimId: row.claimId,
       owner: row.owner,
       ownerLabel: row.ownerLabel,

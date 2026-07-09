@@ -34,7 +34,7 @@ describe('checkHiveSingleRunner — resolution over the per-Hive authority', () 
       resolveHive: async () => 'the-hive',
       hiveAuthority: async () => ({ isSelf: true, liveCount: 1 }),
     });
-    expect(v).toEqual({ run: true, reason: 'authority', hiveSlug: 'the-hive', liveCount: 1 });
+    expect(v).toEqual({ run: true, reason: 'authority', potSlug: 'the-hive', liveCount: 1 });
   });
 
   it('a remote authority ⇒ this node stands down, labelled by machine (pubkey fallback)', async () => {
@@ -130,8 +130,8 @@ describe('checkHiveSingleRunner — MULTI-NODE single-runner via the real electi
     const onB = await checkHiveSingleRunner(WS, HIVE, nodeDeps(PK_B, roster));
 
     // Node A (lowest pubkey) is the single runner; node B stands down.
-    expect(onA).toMatchObject({ run: true, reason: 'authority', hiveSlug: HIVE, liveCount: 2 });
-    expect(onB).toMatchObject({ run: false, reason: 'remote-runner', hiveSlug: HIVE, liveCount: 2 });
+    expect(onA).toMatchObject({ run: true, reason: 'authority', potSlug: HIVE, liveCount: 2 });
+    expect(onB).toMatchObject({ run: false, reason: 'remote-runner', potSlug: HIVE, liveCount: 2 });
     expect(onB.runnerLabel).toBe(PK_A);
 
     // The load-bearing invariant: across the Hive's nodes, runners sum to ONE.
@@ -143,11 +143,11 @@ describe('checkHiveSingleRunner — MULTI-NODE single-runner via the real electi
     // of candidacy and B (the only live node) becomes the runner. No coordination.
     const roster = [row(PK_A, 200_000), row(PK_B, 0)];
     const onB = await checkHiveSingleRunner(WS, HIVE, nodeDeps(PK_B, roster));
-    expect(onB).toMatchObject({ run: true, reason: 'authority', hiveSlug: HIVE });
+    expect(onB).toMatchObject({ run: true, reason: 'authority', potSlug: HIVE });
   });
 
   it('a single-Swarm Hive (no remote presence) runs — standalone behaviour preserved', async () => {
     const onlyA = await checkHiveSingleRunner(WS, HIVE, nodeDeps(PK_A, []));
-    expect(onlyA).toEqual({ run: true, reason: 'authority', hiveSlug: HIVE, liveCount: 1 });
+    expect(onlyA).toEqual({ run: true, reason: 'authority', potSlug: HIVE, liveCount: 1 });
   });
 });

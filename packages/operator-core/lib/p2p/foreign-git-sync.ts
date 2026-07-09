@@ -195,7 +195,7 @@ export interface RunForeignGitSyncTickOpts {
   emitReceipt?: (args: EmitP2pReceiptArgs) => Promise<EmitP2pReceiptResult>;
   /** The receipt author (the enforcing host). 0 = unknown-host fallback. */
   hostGithubUserId?: number;
-  hiveSlug?: string;
+  potSlug?: string;
   log?: (m: string) => void;
 }
 
@@ -228,7 +228,7 @@ export async function runForeignGitSyncTick(
       await setState(workspaceId, ws.offerId, 'parked', { parkReason: 'attestation-unresolvable' }, opts.sql);
       await emitReceipt({
         workspaceId,
-        hiveSlug: opts.hiveSlug ?? ws.fleetSlug,
+        potSlug: opts.potSlug ?? ws.fleetSlug,
         kind: 'refusal',
         offerId: ws.offerId,
         action: 'foreign-git-sync:commit',

@@ -94,7 +94,7 @@ function makeDeps(rows: ForeignWorkspace[], over: Partial<SupervisionDeps> = {})
 
 const args = {
   workspaceId: 'ws-1',
-  hiveSlug: 'hive-h',
+  potSlug: 'hive-h',
   responderGithubUserId: 99,
   now: NOW,
   livenessTtlMs: TTL,
@@ -155,7 +155,7 @@ describe('superviseForeignSessions', () => {
 describe('windDownForeignSession', () => {
   const wdArgs = {
     workspaceId: 'ws-1',
-    hiveSlug: 'hive-h',
+    potSlug: 'hive-h',
     responderGithubUserId: 99,
     offerId: 'offer-1',
     fleetSlug: 'fleet-a',

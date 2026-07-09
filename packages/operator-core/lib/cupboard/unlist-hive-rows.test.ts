@@ -19,7 +19,7 @@ describe('unlistHiveCupboardRows (P-015)', () => {
   it('unlists each id-bearing member row; skips non-members and id-less members', async () => {
     const deleted: (number | string)[] = [];
     const out = await unlistHiveCupboardRows(
-      { workspaceId: 'ws', hiveSlug: 'shop-hive' },
+      { workspaceId: 'ws', potSlug: 'shop-hive' },
       {
         loadRegistry: async () => REGISTRY,
         lookupListingId: async (repoId) => `listing-${repoId}`,
@@ -35,7 +35,7 @@ describe('unlistHiveCupboardRows (P-015)', () => {
 
   it('classifies already-unlisted, missing bindings, and failures separately', async () => {
     const out = await unlistHiveCupboardRows(
-      { workspaceId: 'ws', hiveSlug: 'shop-hive' },
+      { workspaceId: 'ws', potSlug: 'shop-hive' },
       {
         loadRegistry: async () => REGISTRY,
         lookupListingId: async (repoId) => (repoId === 100 ? 'l-100' : null),
@@ -47,7 +47,7 @@ describe('unlistHiveCupboardRows (P-015)', () => {
 
   it('per-row failures are recorded, never thrown', async () => {
     const out = await unlistHiveCupboardRows(
-      { workspaceId: 'ws', hiveSlug: 'shop-hive' },
+      { workspaceId: 'ws', potSlug: 'shop-hive' },
       {
         loadRegistry: async () => REGISTRY,
         lookupListingId: async () => 'l',

@@ -1106,7 +1106,7 @@ export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOp
 
 /** The /api/discovery/pots row shape (the directory's HTTP projection). */
 interface DirectoryHiveRow {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   owner: string;
@@ -1188,21 +1188,21 @@ export function HiveRollupHeaderCard({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          hiveId: announce.hiveId,
+          potId: announce.potId,
           title: announce.title,
           memberLinks: announce.memberLinks,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
-        hiveSlug?: string;
+        potSlug?: string;
         members?: { ok: boolean }[];
         error?: string;
       };
       const okCount = body.members?.filter((m) => m.ok).length ?? 0;
       setJoinMsg(
         res.ok && body.ok
-          ? `Joined ${t('pot', { lower: true })} '${body.hiveSlug}' — ${okCount}/${announce.memberLinks.length} member(s)`
+          ? `Joined ${t('pot', { lower: true })} '${body.potSlug}' — ${okCount}/${announce.memberLinks.length} member(s)`
           : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
       );
     } catch (e) {

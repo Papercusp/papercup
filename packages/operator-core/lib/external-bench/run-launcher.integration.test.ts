@@ -78,7 +78,7 @@ function makeFakeEngine() {
           diff: 'diff x', tokensIn: 10, tokensOut: 100, costUsd: 3, turns: 1, wallClockMs: 1000,
           trajectoryRef: '', stopReason: 'done',
         },
-        beeId: `bee-${t.instanceId}`, placedAtMs: 0, startedAtMs: 0, finishedAtMs: 1000, disposition: 'spawn',
+        cupId: `bee-${t.instanceId}`, placedAtMs: 0, startedAtMs: 0, finishedAtMs: 1000, disposition: 'spawn',
       });
     }
     return {
@@ -137,7 +137,7 @@ describe('launchBenchRun (P-004)', () => {
 
     const final = await getBenchRunDetail('launch-1', scope);
     expect(final!.status).toBe('done');
-    expect(final!.hiveSlug).toBe('hive-launch-1');
+    expect(final!.potSlug).toBe('hive-launch-1');
     expect(final!.run.coordEvents.length).toBeGreaterThan(0);
     // The finally dissolved the spawned hive — no orphan learning loop survives.
     expect(dissolve).toHaveBeenCalledWith('hive-launch-1', WS);
@@ -155,7 +155,7 @@ describe('launchBenchRun (P-004)', () => {
   });
 
   it('cancel freezes status=cancelled + dissolves the hive', async () => {
-    await upsertBenchRun({ id: 'cancel-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', hiveSlug: 'hive-cancel-1' }, scope);
+    await upsertBenchRun({ id: 'cancel-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', potSlug: 'hive-cancel-1' }, scope);
     await setBenchRunHive('cancel-1', 'hive-cancel-1', scope);
     const dissolve = vi.fn(async () => {});
     const res = await cancelBenchRun('cancel-1', { scope, dissolve });
@@ -169,8 +169,8 @@ describe('launchBenchRun (P-004)', () => {
 describe('reapStaleBenchRuns — spend-safety HARD GATE (P-005 / D-022)', () => {
   it('reaps every in-flight run on restart: dissolves the hive + freezes status (0 orphan re-spin)', async () => {
     // Two runs the crashed host left mid-flight.
-    await upsertBenchRun({ id: 'stale-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', hiveSlug: 'hive-stale-1' }, scope);
-    await upsertBenchRun({ id: 'stale-2', arm: 'fifo-noqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', hiveSlug: 'hive-stale-2' }, scope);
+    await upsertBenchRun({ id: 'stale-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', potSlug: 'hive-stale-1' }, scope);
+    await upsertBenchRun({ id: 'stale-2', arm: 'fifo-noqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', potSlug: 'hive-stale-2' }, scope);
 
     const dissolve = vi.fn(async () => {});
     const { reaped } = await reapStaleBenchRuns({ scope, dissolve, staleAfterSec: 0 });
@@ -191,7 +191,7 @@ describe('reapStaleBenchRuns — spend-safety HARD GATE (P-005 / D-022)', () => 
   });
 
   it('does NOT reap a run with a fresh heartbeat (a run legitimately in flight in another live host)', async () => {
-    await upsertBenchRun({ id: 'live-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', hiveSlug: 'hive-live-1' }, scope);
+    await upsertBenchRun({ id: 'live-1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', potSlug: 'hive-live-1' }, scope);
     const dissolve = vi.fn(async () => {});
     // updated_at was just set by upsertBenchRun → well within the 180s window.
     const { reaped } = await reapStaleBenchRuns({ scope, dissolve, staleAfterSec: 180 });

@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    slug: z.string().min(1).max(120).describe("The pot's home-harness slug (or its hiveId)."),
+    slug: z.string().min(1).max(120).describe("The pot's home-harness slug (or its potId)."),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {

@@ -31,7 +31,7 @@ import type { ClaimLauncher } from './claim-launcher';
 
 export interface RunClaimDispatchOpts {
   launcher: ClaimLauncher;
-  hiveSlug?: string;
+  potSlug?: string;
   workspaceId?: string;
   harnessSlug?: string;
   /** Backlog size M — items F-001..F-00M every Swarm contends to claim+complete. */
@@ -93,7 +93,7 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
   const swarmCount = slots.length;
   if (swarmCount < 3) throw new Error(`runClaimDispatch: need ≥3 Swarms, have ${swarmCount}`);
 
-  const hiveSlug = opts.hiveSlug ?? 'claim-e2e-hive';
+  const potSlug = opts.potSlug ?? 'claim-e2e-hive';
   // Synthetic ≥3-Swarm E2E test-rig scope (siblings 'claim-e2e-hive' / 'claim-e2e-h1') — a
   // self-contained decentralized-dispatch scenario over loopback / ephemeral Hetzner frames
   // that never reads or writes real workspace data, an explicit documented local default.
@@ -123,7 +123,7 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
       machineLabel: slot.label,
       workspaceId,
       harnessSlug,
-      hiveSlug,
+      potSlug,
       backlog,
       roster,
       httpPort: slot.httpPort,
@@ -143,7 +143,7 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
   const readys = await Promise.all(handles.map((h) => h.waitFor('ready', readyTimeoutMs)));
   const notReady = readys.map((r, i) => (r ? null : i)).filter((i): i is number => i !== null);
   if (notReady.length) throw new Error(`runClaimDispatch: Swarm(s) ${notReady.join(',')} never became ready`);
-  log(`all ${swarmCount} Swarms ready; backlog=${backlog.length} items; hive=${hiveSlug}`);
+  log(`all ${swarmCount} Swarms ready; backlog=${backlog.length} items; hive=${potSlug}`);
 
   // 4. Go — every Swarm starts work-stealing off the shared backlog.
   for (const h of handles) h.send('go');

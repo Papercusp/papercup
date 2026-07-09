@@ -36,7 +36,7 @@ export type P2pReceiptKind = (typeof P2P_RECEIPT_KINDS)[number];
 
 export interface P2pReceipt {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   receiptId: string;
   kind: P2pReceiptKind;
   /** M21 thread key; null for pre-offer refusals (bare grant checks). */
@@ -78,7 +78,7 @@ interface ReceiptRow {
 function rowToReceipt(r: ReceiptRow): P2pReceipt {
   return {
     workspaceId: r.workspace_id,
-    hiveSlug: r.harness_slug,
+    potSlug: r.harness_slug,
     receiptId: r.receipt_id,
     kind: r.kind as P2pReceiptKind,
     offerId: r.offer_id,
@@ -100,7 +100,7 @@ function rowToReceipt(r: ReceiptRow): P2pReceipt {
 export interface EmitP2pReceiptArgs {
   /** The caller's RESOLVED identity workspace (C3). */
   workspaceId: string | null | undefined;
-  hiveSlug: string;
+  potSlug: string;
   kind: P2pReceiptKind;
   /** M21: REQUIRED whenever the action belongs to an offer lifecycle. */
   offerId?: string | null;
@@ -151,7 +151,7 @@ export async function emitP2pReceipt(
       },
     };
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) return { ok: false, refusal: { code: 'hive_required', detail: 'receipts are hive-scoped; pass the hive HOME slug.' } };
   if (!Number.isInteger(args.responderGithubUserId) || args.responderGithubUserId <= 0) {
     return { ok: false, refusal: { code: 'invalid_responder', detail: 'responderGithubUserId must be a positive numeric GitHub user-id (X9).' } };
@@ -203,7 +203,7 @@ export async function emitP2pReceipt(
   // (c) counter — best-effort.
   try {
     await bumpRefusedOpCounter(
-      { workspaceId: ws, hiveSlug: hive, reason: `${args.kind}:${args.refusal?.code ?? args.action}` },
+      { workspaceId: ws, potSlug: hive, reason: `${args.kind}:${args.refusal?.code ?? args.action}` },
       sql,
     );
   } catch {
@@ -227,13 +227,13 @@ export async function emitP2pReceipt(
  * apply paths wrap in try/catch.
  */
 export async function bumpRefusedOpCounter(
-  args: { workspaceId: string; hiveSlug: string; reason: string },
+  args: { workspaceId: string; potSlug: string; reason: string },
   sqlOverride?: OrgSql,
 ): Promise<void> {
   const sql = sqlOverride ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.p2p_refused_op_counters (workspace_id, harness_slug, reason, count, updated_at)
-    VALUES (${args.workspaceId}, ${args.hiveSlug}, ${args.reason}, 1, now())
+    VALUES (${args.workspaceId}, ${args.potSlug}, ${args.reason}, 1, now())
     ON CONFLICT (workspace_id, harness_slug, reason)
     DO UPDATE SET count = harness_shared.p2p_refused_op_counters.count + 1, updated_at = now()`;
 }
@@ -242,7 +242,7 @@ export async function bumpRefusedOpCounter(
 export async function listP2pReceipts(
   args: {
     workspaceId: string | null | undefined;
-    hiveSlug: string;
+    potSlug: string;
     /** M21: filter to one offer's timeline. */
     offerId?: string | null;
     limit?: number;
@@ -256,18 +256,18 @@ export async function listP2pReceipts(
   const rows = (args.offerId
     ? await sql`
         SELECT * FROM harness_shared.p2p_receipts
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug} AND offer_id = ${args.offerId}
+         WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug} AND offer_id = ${args.offerId}
          ORDER BY receipt_ts ASC LIMIT ${limit}`
     : await sql`
         SELECT * FROM harness_shared.p2p_receipts
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+         WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
          ORDER BY receipt_ts DESC LIMIT ${limit}`) as unknown as ReceiptRow[];
   return rows.map(rowToReceipt);
 }
 
 /** Counter snapshot for p2p:trace / health surfaces. */
 export async function listRefusedOpCounters(
-  args: { workspaceId: string | null | undefined; hiveSlug: string },
+  args: { workspaceId: string | null | undefined; potSlug: string },
   sqlOverride?: OrgSql,
 ): Promise<Array<{ reason: string; count: number }>> {
   const ws = resolveP2pGrantWorkspace(args.workspaceId);
@@ -275,7 +275,7 @@ export async function listRefusedOpCounters(
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
     SELECT reason, count FROM harness_shared.p2p_refused_op_counters
-     WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+     WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
      ORDER BY count DESC`) as unknown as Array<{ reason: string; count: string | number }>;
   return rows.map((r) => ({ reason: r.reason, count: Number(r.count) }));
 }

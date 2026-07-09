@@ -99,7 +99,7 @@ describe('lockAuthorityForHive (P-009 — Hive scope)', () => {
     expect(r.isSelf).toBe(true);
   });
 
-  it('throws on an empty hiveSlug', async () => {
+  it('throws on an empty potSlug', async () => {
     await expect(lockAuthorityForHive('')).rejects.toThrow(/non-empty/);
   });
 });

@@ -57,7 +57,7 @@ describe('exportHiveLearningsToPack', () => {
   it('exports organic rows only by default; skips pack-sourced rows', async () => {
     setPool([...ORGANIC, PACK_ROW]);
     const res = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'my-pack',
       title: 'My Pack',
       description: 'A pack',
@@ -70,7 +70,7 @@ describe('exportHiveLearningsToPack', () => {
   it('includePackRows: true also exports the seeded rows', async () => {
     setPool([...ORGANIC, PACK_ROW]);
     const res = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'my-pack',
       title: 'My Pack',
       description: 'A pack',
@@ -82,9 +82,9 @@ describe('exportHiveLearningsToPack', () => {
 
   it('rejects a non-semver version and a non-kebab packId (before any IO)', async () => {
     const backend = setPool(ORGANIC);
-    expect(await exportHiveLearningsToPack({ hiveSlug: 'h', packId: 'ok', title: 'T', description: 'D', targetDir: root, version: 'v1' }))
+    expect(await exportHiveLearningsToPack({ potSlug: 'h', packId: 'ok', title: 'T', description: 'D', targetDir: root, version: 'v1' }))
       .toMatchObject({ ok: false, error: 'version must be three-part semver' });
-    expect(await exportHiveLearningsToPack({ hiveSlug: 'h', packId: 'Bad_Id', title: 'T', description: 'D', targetDir: root }))
+    expect(await exportHiveLearningsToPack({ potSlug: 'h', packId: 'Bad_Id', title: 'T', description: 'D', targetDir: root }))
       .toMatchObject({ ok: false, error: 'packId must be kebab-case' });
     // Validation precedes the pool read.
     expect(backend.list).not.toHaveBeenCalled();
@@ -93,7 +93,7 @@ describe('exportHiveLearningsToPack', () => {
   it('nothing_to_export when the pool has only pack rows (organic-only default)', async () => {
     setPool([PACK_ROW]);
     const res = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'my-pack',
       title: 'T',
       description: 'D',
@@ -105,7 +105,7 @@ describe('exportHiveLearningsToPack', () => {
   it('memory_unavailable surfaces the backend reason', async () => {
     setPool(ORGANIC, false);
     const res = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'my-pack',
       title: 'T',
       description: 'D',
@@ -118,7 +118,7 @@ describe('exportHiveLearningsToPack', () => {
   it('LP-3: writes `id:` frontmatter so pack_item_ids are STABLE across a round-trip', async () => {
     setPool(ORGANIC);
     const exp = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'round-trip',
       title: 'RT',
       description: 'D',
@@ -145,7 +145,7 @@ describe('exportHiveLearningsToPack', () => {
     const root2 = mkdtempSync(join(tmpdir(), 'pc-lp-export2-'));
     try {
       const exp2 = await exportHiveLearningsToPack({
-        hiveSlug: 'h',
+        potSlug: 'h',
         packId: 'round-trip',
         title: 'RT',
         description: 'D',
@@ -162,7 +162,7 @@ describe('exportHiveLearningsToPack', () => {
   it('round-trips the canonical memory text (title — body) back through the loader', async () => {
     setPool([ORGANIC[0]]);
     const exp = await exportHiveLearningsToPack({
-      hiveSlug: 'h',
+      potSlug: 'h',
       packId: 'rt2',
       title: 'T',
       description: 'D',

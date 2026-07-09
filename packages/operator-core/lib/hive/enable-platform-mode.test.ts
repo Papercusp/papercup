@@ -9,7 +9,7 @@ function deps(over: Partial<EnablePlatformModeInput> = {}): EnablePlatformModeIn
     sql: {} as never,
     setFlag: async () => ({ ok: true as const }),
     createSelfHive: async () =>
-      ({ ok: true, created: { hiveSlug: 'papercusp-platform-hive', memberSlug: 'papercusp-platform' } }) as never,
+      ({ ok: true, created: { potSlug: 'papercusp-platform-hive', memberSlug: 'papercusp-platform' } }) as never,
     // WI-1293: default the self-hive to NOT-yet-locally-registered so the
     // existing tests below still exercise `createSelfHive` exactly as before —
     // without this seam every test would hit the REAL `loadHarnessRegistry`
@@ -29,7 +29,7 @@ describe('enablePlatformMode (per-hive-learning-loops P-071)', () => {
     const res = await enablePlatformMode(deps());
     expect(res.ok).toBe(true);
     expect(res.flagEnabled.ok).toBe(true);
-    expect(res.selfHive).toMatchObject({ ok: true, status: 'created', hiveSlug: 'papercusp-platform-hive' });
+    expect(res.selfHive).toMatchObject({ ok: true, status: 'created', potSlug: 'papercusp-platform-hive' });
     expect(res.armedLoops).toMatchObject({ ok: true, materialized: 2 });
     expect(res.summary).toContain('ENABLED');
   });
@@ -97,7 +97,7 @@ describe('enablePlatformMode (per-hive-learning-loops P-071)', () => {
         checkSelfHiveRegistered: async () => false,
         createSelfHive: async (opts) => {
           passedForce = (opts as { force?: boolean }).force;
-          return { ok: true, created: { hiveSlug: 'papercusp-platform-hive', memberSlug: 'papercusp-platform' } } as never;
+          return { ok: true, created: { potSlug: 'papercusp-platform-hive', memberSlug: 'papercusp-platform' } } as never;
         },
       }),
     );
@@ -109,8 +109,8 @@ describe('enablePlatformMode (per-hive-learning-loops P-071)', () => {
     await enablePlatformMode(
       deps({
         slug: 'my-platform',
-        checkSelfHiveRegistered: async (hiveSlug) => {
-          seen.push(hiveSlug);
+        checkSelfHiveRegistered: async (potSlug) => {
+          seen.push(potSlug);
           return false;
         },
       }),

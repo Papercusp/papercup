@@ -107,7 +107,7 @@ export interface SupervisionDeps extends SupervisionStoreDeps {
 export interface WindDownArgs {
   /** The caller's RESOLVED identity workspace (C3). */
   workspaceId: string | null | undefined;
-  hiveSlug: string;
+  potSlug: string;
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
   offerId: string;
@@ -145,7 +145,7 @@ export async function windDownForeignSession(
       },
     };
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) return { ok: false, refusal: { code: 'hive_required', detail: 'wind-down is hive-scoped; pass the hive HOME slug.' } };
 
   const updated = await setState(
@@ -163,7 +163,7 @@ export async function windDownForeignSession(
     const r = await emit(
       {
         workspaceId: ws,
-        hiveSlug: hive,
+        potSlug: hive,
         kind: args.decision.receiptKind,
         offerId: args.offerId,
         action: 'work-offer:wind-down',
@@ -185,7 +185,7 @@ export async function windDownForeignSession(
 
 export interface SuperviseArgs {
   workspaceId: string | null | undefined;
-  hiveSlug: string;
+  potSlug: string;
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
   /** Injected clock (pure-decision discipline; the scheduler passes Date.now()). */
@@ -238,7 +238,7 @@ export async function superviseForeignSessions(
       },
     };
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) return { ok: false, refusal: { code: 'hive_required', detail: 'supervision is hive-scoped; pass the hive HOME slug.' } };
 
   const all = await list(ws, {}, sqlOverride);
@@ -275,7 +275,7 @@ export async function superviseForeignSessions(
     const res = await windDownForeignSession(
       {
         workspaceId: ws,
-        hiveSlug: hive,
+        potSlug: hive,
         responderGithubUserId: args.responderGithubUserId,
         responderDevicePubkey: args.responderDevicePubkey,
         offerId: w.offerId,

@@ -65,7 +65,7 @@ async function defaultDeleteListing(
 }
 
 export async function unlistHiveCupboardRows(
-  opts: { workspaceId: string; hiveSlug: string },
+  opts: { workspaceId: string; potSlug: string },
   deps: UnlistHiveRowsDeps = {},
 ): Promise<UnlistHiveRowsOutcome> {
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
@@ -86,7 +86,7 @@ export async function unlistHiveCupboardRows(
   );
   const members = reg.projects.filter(
     (p) =>
-      (p.slug === opts.hiveSlug || p.hive_slug === opts.hiveSlug) &&
+      (p.slug === opts.potSlug || p.hive_slug === opts.potSlug) &&
       typeof p.github_repository_id === 'number',
   );
   for (const m of members) {

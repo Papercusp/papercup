@@ -3,13 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const h = vi.hoisted(() => ({
   workspaceCoordOn: false,
   buildSentinelContextDeps: vi.fn(() => ({ marker: 'deps' })),
-  gatherSentinelContext: vi.fn(async (_deps: unknown, opts: { hiveSlug?: string }) => ({
-    hiveSlug: opts.hiveSlug,
+  gatherSentinelContext: vi.fn(async (_deps: unknown, opts: { potSlug?: string }) => ({
+    potSlug: opts.potSlug,
     anomalies: [],
     signals: [],
     headline: null,
   })),
-  renderSentinelContext: vi.fn((ctx: { hiveSlug?: string }) => `status:${ctx.hiveSlug ?? ''}`),
+  renderSentinelContext: vi.fn((ctx: { potSlug?: string }) => `status:${ctx.potSlug ?? ''}`),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
@@ -53,7 +53,7 @@ describe('gatherFleetStatus scope label', () => {
     const status = await gatherFleetStatus('papercusp-workspace', 'papercusp');
 
     expect(status.context).toBe('status:papercusp');
-    expect(h.gatherSentinelContext).toHaveBeenCalledWith({ marker: 'deps' }, { hiveSlug: 'papercusp' });
+    expect(h.gatherSentinelContext).toHaveBeenCalledWith({ marker: 'deps' }, { potSlug: 'papercusp' });
   });
 
   it('ON renders the proactive Sentinel status as workspace-scoped across all hives', async () => {
@@ -64,7 +64,7 @@ describe('gatherFleetStatus scope label', () => {
     expect(status.context).toBe('status:workspace papercusp-workspace (all hives)');
     expect(h.gatherSentinelContext).toHaveBeenCalledWith(
       { marker: 'deps' },
-      { hiveSlug: 'workspace papercusp-workspace (all hives)' },
+      { potSlug: 'workspace papercusp-workspace (all hives)' },
     );
   });
 

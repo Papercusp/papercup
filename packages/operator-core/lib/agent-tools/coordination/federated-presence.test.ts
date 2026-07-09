@@ -32,7 +32,7 @@ describe('mapSharedPresenceRow', () => {
     expect(r.userId).toBe('4242');
     expect(r.devicePubkey).toBe('pubAAA');
     expect(r.harnessSlug).toBe('papercup');
-    expect(r.hiveSlug).toBe('papercup-hive'); // P-004: federated rows are hive-keyed
+    expect(r.potSlug).toBe('papercup-hive'); // P-004: federated rows are hive-keyed
     expect(r.currentView).toBe('harness/papercup');
     expect(r.stale).toBe(false);
     // synthetic ownerId is distinct from any local su-<uuid> → never collides on merge
@@ -103,7 +103,7 @@ describe('mapSessionPresenceRow (P-006 session-grain roster leg)', () => {
     expect(r.federated).toBe(true);
     expect(r.currentPlanSlug).toBe('my-plan-2026-07-01');
     expect(r.agentRole).toBe('su');
-    expect(r.hiveSlug).toBe('hive-home');
+    expect(r.potSlug).toBe('hive-home');
     expect(r.machineLabel).toBe('laptop');
     expect(r.stale).toBe(false);
   });

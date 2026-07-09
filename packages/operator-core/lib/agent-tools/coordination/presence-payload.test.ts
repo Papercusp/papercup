@@ -38,7 +38,7 @@ const MAXIMAL_ROW: RosterRow = {
   pid: 123,
   startedAt: '2026-06-14T00:00:00.000Z',
   agentRole: 'su',
-  hiveSlug: 'papercup-hive',
+  potSlug: 'papercup-hive',
   fleetSlug: 'ui-fleet',
   fleetRole: 'leader',
   model: 'opus',
@@ -85,7 +85,7 @@ const LOCAL_BASE: UnifiedPresenceRecord = {
   heartbeatAt: '2026-06-14T01:00:00.000Z',
   lastActiveAt: '2026-06-14T00:59:00.000Z',
   agentRole: 'su',
-  hiveSlug: 'papercup-hive',
+  potSlug: 'papercup-hive',
   stale: false,
   userId: 'u1',
   revoked: false,
@@ -103,7 +103,7 @@ const JOINS: PresenceTier1Joins = {
 describe('partitionPresenceRow', () => {
   it('classifies a local enriched row into identity / state / liveness', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
-    expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', hiveSlug: 'papercup-hive' });
+    expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', potSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
     expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true, viewerAttached: true });
     // raw timestamps live in no lane
@@ -126,7 +126,7 @@ describe('partitionPresenceRow', () => {
       heartbeatAt: '2026-06-14T00:00:00.000Z',
       lastActiveAt: null,
       agentRole: null,
-      hiveSlug: 'papercup-hive',
+      potSlug: 'papercup-hive',
       stale: false,
       userId: '42',
       revoked: false,

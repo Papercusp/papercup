@@ -42,11 +42,11 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const owner = args.owner ?? ident.ownerId;
     const workspaceId = activeWorkspaceId();
-    const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+    const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
     const res = await claimReplicaSlot({
       workspaceId,
       harnessSlug: args.harness,
-      hiveSlug,
+      potSlug,
       workItemId: args.id,
       owner,
       ownerLabel: ident.ownerLabel ?? null,

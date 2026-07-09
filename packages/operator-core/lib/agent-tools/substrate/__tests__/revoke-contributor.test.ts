@@ -66,19 +66,19 @@ describe('substrate:revoke_contributor tool', () => {
   });
 
   // ── P-006: Hive-scope generalization ──────────────────────────────────────
-  it('args schema accepts a Hive-scoped invocation (hiveSlug instead of harnessSlug)', async () => {
+  it('args schema accepts a Hive-scoped invocation (potSlug instead of harnessSlug)', async () => {
     const tool = await loadTool();
     expect(tool.args.safeParse(VALID_HIVE).success).toBe(true);
   });
 
-  it('args schema rejects BOTH harnessSlug and hiveSlug (exactly one scope)', async () => {
+  it('args schema rejects BOTH harnessSlug and potSlug (exactly one scope)', async () => {
     const tool = await loadTool();
     expect(
       tool.args.safeParse({ ...VALID, potSlug: 'acme-hive' }).success,
     ).toBe(false);
   });
 
-  it('args schema rejects NEITHER harnessSlug nor hiveSlug (a scope is required)', async () => {
+  it('args schema rejects NEITHER harnessSlug nor potSlug (a scope is required)', async () => {
     const tool = await loadTool();
     expect(tool.args.safeParse({ workspaceId: 'ws1', githubUserId: 12345 }).success).toBe(false);
   });

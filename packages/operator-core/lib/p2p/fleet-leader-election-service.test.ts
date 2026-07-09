@@ -162,7 +162,7 @@ describe('PgFleetLeaderLeaseStore', () => {
     const { sql, calls } = fakeTemplateSql([
       [{ device_pubkey: 'leader-pub', leader_github_user_id: String(OWNER), since_ms: String(NOW), roster_epoch: '7' }],
     ]);
-    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: 'hive-home', sqlOverride: sql });
+    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', potSlug: 'hive-home', sqlOverride: sql });
     await expect(store.read(SCOPE)).resolves.toEqual({
       devicePubkey: 'leader-pub',
       githubUserId: OWNER,
@@ -175,7 +175,7 @@ describe('PgFleetLeaderLeaseStore', () => {
 
   it('upserts and clears a lease row', async () => {
     const { sql, calls } = fakeTemplateSql();
-    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: 'hive-home', sqlOverride: sql });
+    const store = new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', potSlug: 'hive-home', sqlOverride: sql });
     await store.write(SCOPE, { devicePubkey: 'leader-pub', githubUserId: OWNER, sinceMs: NOW, rosterEpoch: 2 });
     await store.write(SCOPE, null);
 
@@ -188,8 +188,8 @@ describe('PgFleetLeaderLeaseStore', () => {
 
   it('fails visibly when workspace or hive scope is missing', async () => {
     const { sql, calls } = fakeTemplateSql();
-    await expect(new PgFleetLeaderLeaseStore({ workspaceId: null, hiveSlug: 'hive-home', sqlOverride: sql }).read(SCOPE)).rejects.toThrow(/workspaceId required/);
-    await expect(new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', hiveSlug: '', sqlOverride: sql }).write(SCOPE, null)).rejects.toThrow(/hiveSlug required/);
+    await expect(new PgFleetLeaderLeaseStore({ workspaceId: null, potSlug: 'hive-home', sqlOverride: sql }).read(SCOPE)).rejects.toThrow(/workspaceId required/);
+    await expect(new PgFleetLeaderLeaseStore({ workspaceId: 'ws-test', potSlug: '', sqlOverride: sql }).write(SCOPE, null)).rejects.toThrow(/potSlug required/);
     expect(calls.length).toBe(0);
   });
 });

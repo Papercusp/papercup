@@ -2,7 +2,7 @@
  * beacon-history-pg.integration.test.ts — the tier-4 dossier's beacon history
  * (hive-network-surface-2026-06-11 P-014 item 2, migration 236) against real
  * PG. Proves the capture→list round-trip, newest-first ordering, the dual-key
- * read (hiveId OR pubkey — the C-3 tier-4 row key), per-hive isolation, and
+ * read (potId OR pubkey — the C-3 tier-4 row key), per-hive isolation, and
  * the limit clamp.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -44,7 +44,7 @@ describe('captureBeaconSnapshot → listBeaconHistory', () => {
     const rows = await listBeaconHistory('hid-1', 50, db.sql);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(rows[0].hiveId).toBe('hid-1');
+    expect(rows[0].potId).toBe('hid-1');
     expect(rows[0].hivePubkey).toBe('pk-1');
     expect(rows[0].beacon.focus).toBe('first');
     expect(typeof rows[0].capturedAt).toBe('string');
@@ -63,7 +63,7 @@ describe('captureBeaconSnapshot → listBeaconHistory', () => {
     expect(rows.map((r) => r.beacon.liveAgents)).toEqual([9, 1]);
   });
 
-  it('reads by EITHER key — hiveId or pubkey-b64 (whichever the C-3 row carries)', async () => {
+  it('reads by EITHER key — potId or pubkey-b64 (whichever the C-3 row carries)', async () => {
     await captureBeaconSnapshot('hid-1', 'pk-1', beacon(), db.sql);
     expect(await listBeaconHistory('hid-1', 50, db.sql)).toHaveLength(1);
     expect(await listBeaconHistory('pk-1', 50, db.sql)).toHaveLength(1);

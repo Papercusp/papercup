@@ -86,7 +86,7 @@ function fleetResult(instanceId: string, diff: string, costUsd: number): FleetTa
       trajectoryRef: '',
       stopReason: 'done',
     },
-    beeId: `bee-${instanceId}`,
+    cupId: `bee-${instanceId}`,
     placedAtMs: 1,
     startedAtMs: 2,
     finishedAtMs: 3,
@@ -102,7 +102,7 @@ describe('bench run-store (live write + read)', () => {
     );
     await setBenchRunHive('r1', 'hive-abc', scope);
     // A live "todo" task, then two collected results.
-    await upsertBenchRunTask('r1', { instanceId: 'instance_a', taskStatus: 'in_progress', beeId: 'bee-a' }, scope);
+    await upsertBenchRunTask('r1', { instanceId: 'instance_a', taskStatus: 'in_progress', cupId: 'bee-a' }, scope);
     await upsertBenchRunTask('r1', taskRowFromFleetResult(fleetResult('instance_a', 'diff a', 5.5)), scope);
     await upsertBenchRunTask('r1', taskRowFromFleetResult(fleetResult('instance_b', '', 2.0)), scope);
     await appendBenchRunEvents(
@@ -117,14 +117,14 @@ describe('bench run-store (live write + read)', () => {
     const detail = await getBenchRunDetail('r1', scope);
     expect(detail).not.toBeNull();
     expect(detail!.status).toBe('running');
-    expect(detail!.hiveSlug).toBe('hive-abc');
+    expect(detail!.potSlug).toBe('hive-abc');
     expect(detail!.arm).toBe('hive-realqueen');
     expect(detail!.config).toEqual({ cap: 5 });
     expect(detail!.perTask).toHaveLength(2);
     expect(detail!.run.coordEvents).toHaveLength(2);
-    // The collected result is authoritative — its beeId overwrote the live placeholder.
+    // The collected result is authoritative — its cupId overwrote the live placeholder.
     const a = detail!.perTask.find((t) => t.instanceId === 'instance_a')!;
-    expect(a.beeId).toBe('bee-instance_a');
+    expect(a.cupId).toBe('bee-instance_a');
     expect(a.costUsd).toBe(5.5);
     expect(a.diffBytes).toBeGreaterThan(0);
 
@@ -133,7 +133,7 @@ describe('bench run-store (live write + read)', () => {
     await upsertBenchRunTask('r1', { instanceId: 'instance_a', taskStatus: 'collected' }, scope);
     const after = await getBenchRunDetail('r1', scope);
     const a2 = after!.perTask.find((t) => t.instanceId === 'instance_a')!;
-    expect(a2.beeId).toBe('bee-instance_a');
+    expect(a2.cupId).toBe('bee-instance_a');
     expect(a2.costUsd).toBe(5.5);
     // Not graded yet → resolved null, summary has nothing graded.
     expect(a.resolved).toBeNull();
@@ -221,8 +221,8 @@ describe('bench run-store (file-dir import)', () => {
       nonEmptyDiffs: 1,
       totals: { costUsd: 7.5, tokensIn: 6000, tokensOut: 60000 },
       perTask: [
-        { instanceId: 'instance_x', beeId: 'b1', disposition: 'spawn', stopReason: 'done', tokensIn: 3000, tokensOut: 30000, costUsd: 5, turns: 1, wallClockMs: 0, diffBytes: 100 },
-        { instanceId: 'instance_y', beeId: 'b2', disposition: 'spawn', stopReason: 'no-diff', tokensIn: 3000, tokensOut: 30000, costUsd: 2.5, turns: 1, wallClockMs: 0, diffBytes: 0 },
+        { instanceId: 'instance_x', cupId: 'b1', disposition: 'spawn', stopReason: 'done', tokensIn: 3000, tokensOut: 30000, costUsd: 5, turns: 1, wallClockMs: 0, diffBytes: 100 },
+        { instanceId: 'instance_y', cupId: 'b2', disposition: 'spawn', stopReason: 'no-diff', tokensIn: 3000, tokensOut: 30000, costUsd: 2.5, turns: 1, wallClockMs: 0, diffBytes: 0 },
       ],
       coordEvents: [
         { ts: 1, kind: 'placement', agent: 'b1', taskId: 'instance_x', detail: 'placed' },

@@ -29,7 +29,7 @@ async function post(body: unknown, { raw }: { raw?: string } = {}) {
 
 beforeEach(() => {
   setHiveListing.mockReset();
-  setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: true });
+  setHiveListing.mockResolvedValue({ ok: true, potId: 'h', visibility: 'public', saved: true, announced: true });
 });
 
 describe('POST /api/discovery/set-pot (Gap 9)', () => {
@@ -38,9 +38,9 @@ describe('POST /api/discovery/set-pot (Gap 9)', () => {
   });
 
   it.each([
-    ['missing hiveId', { visibility: 'public' }],
-    ['empty hiveId', { hiveId: '', visibility: 'public' }],
-    ['whitespace hiveId', { hiveId: '   ', visibility: 'public' }],
+    ['missing potId', { visibility: 'public' }],
+    ['empty potId', { potId: '', visibility: 'public' }],
+    ['whitespace potId', { potId: '   ', visibility: 'public' }],
   ])('400s invalid_args (%s) WITHOUT touching setHiveListing', async (_l, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);
@@ -49,8 +49,8 @@ describe('POST /api/discovery/set-pot (Gap 9)', () => {
   });
 
   it.each([
-    ['missing visibility', { hiveId: 'h' }],
-    ['bogus visibility', { hiveId: 'h', visibility: 'bogus' }],
+    ['missing visibility', { potId: 'h' }],
+    ['bogus visibility', { potId: 'h', visibility: 'bogus' }],
   ])('400s an invalid visibility (%s) without touching setHiveListing', async (_l, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);
@@ -59,7 +59,7 @@ describe('POST /api/discovery/set-pot (Gap 9)', () => {
   });
 
   it('400s invite visibility with no inviteSecret without touching setHiveListing', async () => {
-    const { status, body } = await post({ hiveId: 'h', visibility: 'invite' });
+    const { status, body } = await post({ potId: 'h', visibility: 'invite' });
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'invalid_args' });
     expect(setHiveListing).not.toHaveBeenCalled();
@@ -73,12 +73,12 @@ describe('POST /api/discovery/set-pot (Gap 9)', () => {
   });
 
   it('forwards a public listing into setHiveListing with the active workspace', async () => {
-    const { status, body } = await post({ hiveId: 'acme', title: 'Acme', description: 'd', visibility: 'public' });
+    const { status, body } = await post({ potId: 'acme', title: 'Acme', description: 'd', visibility: 'public' });
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true });
     expect(setHiveListing).toHaveBeenCalledTimes(1);
     expect(setHiveListing.mock.calls[0][0]).toMatchObject({
-      hiveId: 'acme',
+      potId: 'acme',
       title: 'Acme',
       description: 'd',
       visibility: 'public',
@@ -86,19 +86,19 @@ describe('POST /api/discovery/set-pot (Gap 9)', () => {
     expect(setHiveListing.mock.calls[0][1]).toBe('ws-test');
   });
 
-  it('defaults title to hiveId when omitted', async () => {
-    await post({ hiveId: 'acme', visibility: 'public' });
+  it('defaults title to potId when omitted', async () => {
+    await post({ potId: 'acme', visibility: 'public' });
     expect(setHiveListing.mock.calls[0][0]).toMatchObject({ title: 'acme' });
   });
 
   it('forwards inviteSecret for an invite listing', async () => {
-    await post({ hiveId: 'acme', visibility: 'invite', inviteSecret: 'sekret' });
+    await post({ potId: 'acme', visibility: 'invite', inviteSecret: 'sekret' });
     expect(setHiveListing.mock.calls[0][0]).toMatchObject({ visibility: 'invite', inviteSecret: 'sekret' });
   });
 
   it('returns the composition result verbatim (private withdraw)', async () => {
-    setHiveListing.mockResolvedValue({ ok: true, hiveId: 'acme', visibility: 'private', saved: true, announced: false, withdrawn: true });
-    const { status, body } = await post({ hiveId: 'acme', visibility: 'private' });
+    setHiveListing.mockResolvedValue({ ok: true, potId: 'acme', visibility: 'private', saved: true, announced: false, withdrawn: true });
+    const { status, body } = await post({ potId: 'acme', visibility: 'private' });
     expect(status).toBe(200);
     expect(body).toMatchObject({ visibility: 'private', withdrawn: true });
   });

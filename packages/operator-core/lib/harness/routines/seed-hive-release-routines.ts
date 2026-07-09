@@ -37,7 +37,7 @@ const RELEASE_TRIGGER = { name: 'release-trigger', target: 'system:release-trigg
 export async function seedHiveReleaseRoutines(opts: {
   sql: postgres.Sql;
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   /** Seed ACTIVE (default true — the gate is the point). Pass false to lay rows down inert. */
   active?: boolean;
 }): Promise<SeedHiveReleaseResult> {
@@ -49,7 +49,7 @@ export async function seedHiveReleaseRoutines(opts: {
     return { seeded: false, reason: 'flag_off', undo: NOOP_UNDO };
   }
 
-  const env = await resolveHiveReleaseEnv(opts.hiveSlug, opts.workspaceId);
+  const env = await resolveHiveReleaseEnv(opts.potSlug, opts.workspaceId);
   // The operator-home pipeline is owned by seed-release-routines.ts — never double-seed it.
   if (env.isOperatorHome) return { seeded: false, reason: 'operator_home', undo: NOOP_UNDO };
   if (!env.enabled) return { seeded: false, reason: env.reason ?? 'gate_disabled', undo: NOOP_UNDO };
@@ -58,12 +58,12 @@ export async function seedHiveReleaseRoutines(opts: {
   const routines = env.hasDeploy ? [GREEN_CHECKPOINT, RELEASE_TRIGGER] : [GREEN_CHECKPOINT];
   const seededNames: string[] = [];
   for (const r of routines) {
-    const id = `rt_${opts.hiveSlug}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+    const id = `rt_${opts.potSlug}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     await opts.sql`
       INSERT INTO harness_shared.routines
         (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
          concurrency, catchup, active, next_fire_at)
-      VALUES (${id}, ${opts.hiveSlug}, ${opts.workspaceId}, ${r.name}, 'cron',
+      VALUES (${id}, ${opts.potSlug}, ${opts.workspaceId}, ${r.name}, 'cron',
               ${JSON.stringify({ cron: r.cron })}::text::jsonb, ${r.target},
               'skip', 'skip-old', ${active}, now())
       ON CONFLICT (install_slug, name) DO UPDATE SET
@@ -79,7 +79,7 @@ export async function seedHiveReleaseRoutines(opts: {
   const undo = async () => {
     for (const r of routines) {
       try {
-        await opts.sql`DELETE FROM harness_shared.routines WHERE install_slug = ${opts.hiveSlug} AND name = ${r.name}`;
+        await opts.sql`DELETE FROM harness_shared.routines WHERE install_slug = ${opts.potSlug} AND name = ${r.name}`;
       } catch {
         /* best-effort rollback */
       }

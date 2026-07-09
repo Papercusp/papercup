@@ -71,15 +71,15 @@ export interface JoinCanonicalDeps {
     confirmInviteAnnounce?: (secret: string, opts?: { timeoutMs?: number }) => Promise<{
       found?: boolean;
       peersOnTopic?: number;
-      hive?: { hiveId?: string; memberLinks?: string[]; hivePubkey?: string } | null;
+      hive?: { potId?: string; memberLinks?: string[]; hivePubkey?: string } | null;
     } | null>;
   } | null>;
   /** List discovered hives (fallback memberLinks source if the confirm omits them).
    *  Default: hive-directory listDiscoveredHives. */
-  listDiscovered?: () => Promise<Array<{ hiveId: string; hivePubkey?: string; memberLinks?: string[] }>>;
+  listDiscovered?: () => Promise<Array<{ potId: string; hivePubkey?: string; memberLinks?: string[] }>>;
   /** The hive join. Default: harness/join-hive joinHiveAsView. */
   joinHive?: (opts: {
-    hiveId: string;
+    potId: string;
     title?: string;
     /** The hive's Ed25519 pubkey (base64) — keys the joiner's hives-row identity (P-005). */
     hivePubkey?: string;
@@ -87,7 +87,7 @@ export interface JoinCanonicalDeps {
     workspaceId: string;
   }) => Promise<{
     ok: boolean;
-    hiveSlug?: string;
+    potSlug?: string;
     error?: string;
   }>;
   setHomeWorkspace?: (ws: string) => void;
@@ -107,13 +107,13 @@ async function defaultEnsureWired(workspaceId: string) {
 }
 
 async function defaultListDiscovered(): Promise<
-  Array<{ hiveId: string; hivePubkey?: string; memberLinks?: string[] }>
+  Array<{ potId: string; hivePubkey?: string; memberLinks?: string[] }>
 > {
   const { getHiveDirectory } = await import('../hive-directory-deps');
   return getHiveDirectory().listDiscoveredHives({ includeExpired: true });
 }
 
-async function defaultJoinHive(opts: { hiveId: string; title?: string; memberLinks: string[]; workspaceId: string }) {
+async function defaultJoinHive(opts: { potId: string; title?: string; memberLinks: string[]; workspaceId: string }) {
   const { joinHiveAsView } = await import('./join-hive');
   return joinHiveAsView(opts);
 }
@@ -231,25 +231,25 @@ export async function joinCanonicalPapercuspHive(
     // 4. PIN to the committed pubkey (P-003 trust anchor). The invite topic is a
     //    DISCOVERY channel — ANYONE with the (committed) invite secret can announce
     //    on it, including a DIFFERENT / divergent / stale hive that happens to share
-    //    the `papercusp` hiveId. So the baked canonical pubkey is the authority: only
-    //    an announce whose `hivePubkey` matches it may be joined. Matching by hiveId
-    //    (the previous `find(h => h.hiveId === hiveId)` fallback) is exactly the
+    //    the `papercusp` potId. So the baked canonical pubkey is the authority: only
+    //    an announce whose `hivePubkey` matches it may be joined. Matching by potId
+    //    (the previous `find(h => h.potId === potId)` fallback) is exactly the
     //    hijack vector — the owner's own divergent ef77075a key was announced under
-    //    the same `papercusp` hiveId and a fresh install joined that EMPTY hive
+    //    the same `papercusp` potId and a fresh install joined that EMPTY hive
     //    instead of canonical 76dee8ea (the slug-rename key-divergence bug,
-    //    2026-07-01). Never match on hiveId; never trust the announced pubkey over
+    //    2026-07-01). Never match on potId; never trust the announced pubkey over
     //    the baked one.
     let memberLinks: string[] = [];
-    let hiveId: string = PAPERCUSP_HIVE_SLUG;
+    let potId: string = PAPERCUSP_HIVE_SLUG;
     if (confirm?.found && confirm.hive?.hivePubkey === invite.pubkeyBase64) {
       memberLinks = confirm.hive.memberLinks ?? [];
-      hiveId = confirm.hive.hiveId ?? PAPERCUSP_HIVE_SLUG;
+      potId = confirm.hive.potId ?? PAPERCUSP_HIVE_SLUG;
     }
     if (memberLinks.length === 0) {
       const hives = await listDiscovered().catch(() => []);
       const match = hives.find((h) => h.hivePubkey === invite.pubkeyBase64);
       if (match) {
-        hiveId = match.hiveId;
+        potId = match.potId;
         memberLinks = match.memberLinks ?? [];
       } else if (!confirm?.found) {
         // Neither a live announce NOR a cached pubkey-pinned one — the honest
@@ -281,7 +281,7 @@ export async function joinCanonicalPapercuspHive(
     // 5. JOIN — read-only-clones each member repo + re-keys onto the owner's topic.
     record('clone', 'running', { percent: 40, detail: 'joining + cloning the Papercusp hive' });
     const res = await joinHive({
-      hiveId,
+      potId,
       title: 'Papercusp',
       // P-003 invariant: the joiner's hives-row identity is ALWAYS the committed
       // canonical pubkey (never a possibly-divergent announced one) — this is what
@@ -301,7 +301,7 @@ export async function joinCanonicalPapercuspHive(
     // Member clones happen inside the join; mark the second phase terminal so the
     // setup-finish gate is satisfied (federation of the data is then ongoing).
     record('submodules', 'done');
-    return { state: 'joined', slug: res.hiveSlug ?? hiveId };
+    return { state: 'joined', slug: res.potSlug ?? potId };
   } catch (e) {
     record('clone', 'error', { detail: (e as Error)?.message?.slice(0, 120) ?? 'join error' });
     return { state: 'skipped', slug: null, reason: `join error: ${(e as Error)?.message ?? e}`.slice(0, 200) };

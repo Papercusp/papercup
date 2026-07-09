@@ -58,7 +58,7 @@ function outAsk(correlationId: string, peerPubkey: string, over: Partial<CrossHi
   const now = new Date().toISOString();
   return {
     workspaceId: WS,
-    hiveSlug: 'hive-a',
+    potSlug: 'hive-a',
     id: `uuid-${correlationId}`,
     peerPubkey,
     direction: 'out',
@@ -139,7 +139,7 @@ describe('wiring reply path — persist + emit is the production path (B-03)', (
     ledger.seed(outAsk('ask-1', B.pubkey, opts.askedBy !== undefined ? { askedBy: opts.askedBy } : {}));
 
     wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: 'hive-a', hivePubkey: A.pubkey,
+      workspaceId: WS, potSlug: 'hive-a', hivePubkey: A.pubkey,
       transport: mesh(A.pubkey), signer: A.signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],
@@ -153,7 +153,7 @@ describe('wiring reply path — persist + emit is the production path (B-03)', (
       onReply: (r) => replies.push(r),
     });
     const bWiring = wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: 'hive-b', hivePubkey: B.pubkey,
+      workspaceId: WS, potSlug: 'hive-b', hivePubkey: B.pubkey,
       transport: mesh(B.pubkey), signer: B.signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],

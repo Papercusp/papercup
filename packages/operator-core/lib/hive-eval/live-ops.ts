@@ -191,7 +191,7 @@ export async function captureRunData(
   input: CaptureRunDataInput,
 ): Promise<{ distilledTrace: string; traceRef: string; extra: Record<string, unknown> }> {
   const { member, hiveHome, repoPath, scenario, workspaceId, maxChars } = input;
-  const ctx: GroundTruthCtx = { scenario, repoPath, hiveSlug: member, workspaceId };
+  const ctx: GroundTruthCtx = { scenario, repoPath, potSlug: member, workspaceId };
 
   const acceptance = await liveAcceptancePorts().runAcceptance({ repoPath, acceptance: scenario.acceptance });
 
@@ -340,12 +340,12 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
         const rows = await listFleetAssignments({ workspaceId, harness: hiveHome });
         const beeIds = [...new Set(rows.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string))];
         const { abortLocalSpawn } = await import('../fleet/operator-spawn');
-        for (const beeId of beeIds) {
+        for (const cupId of beeIds) {
           try {
-            const res = await cancelSubtree(sql, { workspaceId, rootSpawnId: beeId, reason: 'hive-eval:dissolveHive', actor });
+            const res = await cancelSubtree(sql, { workspaceId, rootSpawnId: cupId, reason: 'hive-eval:dissolveHive', actor });
             for (const c of res.cancelled) abortLocalSpawn(c.spawnId);
           } catch (e) {
-            console.warn(`[hive-eval] dissolve cancel bee ${beeId} failed: ${e instanceof Error ? e.message : e}`);
+            console.warn(`[hive-eval] dissolve cancel bee ${cupId} failed: ${e instanceof Error ? e.message : e}`);
           }
         }
       } catch (e) {
@@ -354,7 +354,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
 
       // Tear down the per-hive learning loops (dark gym autoloop row + inactive scout routine + the
       // gym:<hive>/scout:<hive> governor registrants) — the D-022 re-spin source. Best-effort.
-      await teardownHiveLearningLoop({ sql, workspaceId, hiveSlug: hiveHome }).catch((e) => {
+      await teardownHiveLearningLoop({ sql, workspaceId, potSlug: hiveHome }).catch((e) => {
         console.warn(`[hive-eval] dissolve learning-loop teardown failed (${hiveHome}): ${e instanceof Error ? e.message : e}`);
       });
 

@@ -75,7 +75,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
     expect(getWorkItemReplicaAuthority()).toBe(authority);
 
     const res = await redundancy.claimReplicaSlot({
-      workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-1', owner: 'su-a', hiveSlug: 'hive-x',
+      workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-1', owner: 'su-a', potSlug: 'hive-x',
     });
     // The op was routed through the installed authority (not run locally).
     expect(routeSpy).toHaveBeenCalledTimes(1);
@@ -86,7 +86,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
     expect(calls[0].remoteKind).toBe(redundancy.WORK_ITEM_REPLICA_OP_KINDS.claimSlot);
   });
 
-  it('without a hiveSlug the scope key FALLS BACK to the harness slug (single-box correct)', async () => {
+  it('without a potSlug the scope key FALLS BACK to the harness slug (single-box correct)', async () => {
     const { authority, calls } = recordingAuthority();
     setWorkItemReplicaAuthority(authority);
     await redundancy.claimReplicaSlot({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-2', owner: 'su-a' });
@@ -96,15 +96,15 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
   it('every replica op kind routes through the installed authority with the matching op kind', async () => {
     const { authority, calls, routeSpy } = recordingAuthority();
     setWorkItemReplicaAuthority(authority);
-    const scope = { workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-3', hiveSlug: 'hive-y' };
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-3', potSlug: 'hive-y' };
 
     await redundancy.claimReplicaSlot({ ...scope, owner: 'su-a' });
     await redundancy.heartbeatReplica({ ...scope, replicaIndex: 0, claimId: '00000000-0000-0000-0000-000000000000', owner: 'su-a' });
     await redundancy.recordReplicaResult({ ...scope, replicaIndex: 0, owner: 'su-a', result: { text: 'r' } });
     await redundancy.releaseReplica({ ...scope, replicaIndex: 0, claimId: '00000000-0000-0000-0000-000000000000', owner: 'su-a' });
-    await redundancy.listReplicas('WI-3', { harness: HARNESS, workspaceId: WS, hiveSlug: 'hive-y' });
+    await redundancy.listReplicas('WI-3', { harness: HARNESS, workspaceId: WS, potSlug: 'hive-y' });
     await redundancy.judgeRedundancyGroup(
-      { workspaceId: WS, harness: HARNESS, workItemId: 'WI-3', hiveSlug: 'hive-y' },
+      { workspaceId: WS, harness: HARNESS, workItemId: 'WI-3', potSlug: 'hive-y' },
       { llmCall: (async () => ({ text: '{}', costUsd: 0, inputTokens: 0, outputTokens: 0 })) as never },
     );
 

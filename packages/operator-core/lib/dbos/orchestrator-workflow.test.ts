@@ -276,7 +276,7 @@ describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort'
   const lease = (over: Partial<PipelineInput['claim'] & object> = {}) => ({
     claimId: 'claim-A',
     owner: 'swarm-A',
-    hiveSlug: 'hive-x',
+    potSlug: 'hive-x',
     holderPubkey: 'pk-A',
     ...over,
   });

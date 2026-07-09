@@ -49,14 +49,14 @@ const envFromEnc = (enc: { epoch: number; value: unknown }, over: Partial<OpEnve
 describe('hive-epoch-op-gate', () => {
   it('encrypt → decrypt round-trips (same op identity + key) and clears epoch downstream', async () => {
     const crypto = fakeCrypto();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 3 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 3 });
     const enc = await cap.encryptOp(localOp());
     expect(enc).not.toBeNull();
     expect(enc!.epoch).toBe(3);
     expect((enc!.value as { __rekey?: string }).__rekey).toBeTypeOf('string');
 
     const pending = new PendingEpochContent();
-    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending });
     let applied: OpEnvelope | null = null;
     const out = await gate(async (op) => {
       applied = op;
@@ -69,7 +69,7 @@ describe('hive-epoch-op-gate', () => {
 
   it('epoch-absent op ⇒ plaintext passthrough (inner sees it unchanged)', async () => {
     const pending = new PendingEpochContent();
-    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_OK, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_OK, potId: HIVE, pending });
     let seen: OpEnvelope | null = null;
     const out = await gate(async (op) => {
       seen = op;
@@ -81,7 +81,7 @@ describe('hive-epoch-op-gate', () => {
 
   it('key NOT local ⇒ DEFER (buffered, inner not called, returns false) — the removed-member cut', async () => {
     const pending = new PendingEpochContent();
-    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, potId: HIVE, pending });
     const inner = vi.fn(async () => true);
     const out = await gate(inner)({ type: 'put', table: 'harness-features', hbKey: 'F-2', value: { __rekey: 'YWJj' }, epoch: 5 } as OpEnvelope);
     expect(out).toBe(false);
@@ -92,10 +92,10 @@ describe('hive-epoch-op-gate', () => {
   it('have key but decrypt fails (wrong key / tampered AAD) ⇒ DROP (not deferred)', async () => {
     const crypto = fakeCrypto();
     const pending = new PendingEpochContent();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 5 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 5 });
     const enc = await cap.encryptOp(localOp({ hbKey: 'F-3', value: { a: 1 } }));
     // The gate resolves a DIFFERENT key than the one it was sealed under → AEAD verify fails.
-    const gate = buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, potId: HIVE, pending });
     const inner = vi.fn(async () => true);
     const out = await gate(inner)(envFromEnc(enc!, { hbKey: 'F-3' }));
     expect(out).toBe(false);
@@ -106,9 +106,9 @@ describe('hive-epoch-op-gate', () => {
   it('a tampered op identity (different hbKey than sealed) ⇒ DROP (AAD mismatch)', async () => {
     const crypto = fakeCrypto();
     const pending = new PendingEpochContent();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 7 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 7 });
     const enc = await cap.encryptOp(localOp({ hbKey: 'F-real', value: { a: 1 } }));
-    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending });
     const inner = vi.fn(async () => true);
     // apply the ciphertext but claim a DIFFERENT hbKey → the AAD opId won't match → drop.
     const out = await gate(inner)(envFromEnc(enc!, { hbKey: 'F-forged' }));
@@ -120,26 +120,26 @@ describe('hive-epoch-op-gate', () => {
   // onTrace surfaces each verdict (wired to recordBootEvent at boot) so the cause is named.
   it('onTrace fires the verdict phase: applied / decrypt-fail / defer', async () => {
     const crypto = fakeCrypto();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 9 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 9 });
     const enc = await cap.encryptOp(localOp({ hbKey: 'F-9', value: { a: 1 } }));
 
     // SUCCESS → 'epoch_applied'
     const okTrace = vi.fn();
-    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: okTrace })(
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending: new PendingEpochContent(), onTrace: okTrace })(
       async () => true,
     )(envFromEnc(enc!, { hbKey: 'F-9' }));
     expect(okTrace).toHaveBeenCalledWith('epoch_applied', expect.stringContaining(`hive=${HIVE}`));
 
     // DECRYPT-FAIL (wrong key) → 'epoch_decrypt_fail' (the silent drop WI-808 hunts)
     const dropTrace = vi.fn();
-    await buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: dropTrace })(
+    await buildEpochDecryptGate({ crypto, resolveKey: async () => 'WRONG' as unknown as EpochKey, potId: HIVE, pending: new PendingEpochContent(), onTrace: dropTrace })(
       async () => true,
     )(envFromEnc(enc!, { hbKey: 'F-9' }));
     expect(dropTrace).toHaveBeenCalledWith('epoch_decrypt_fail', expect.stringContaining('DROP'));
 
     // KEY-MISSING → 'epoch_defer'
     const deferTrace = vi.fn();
-    await buildEpochDecryptGate({ crypto, resolveKey: KEY_MISSING, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: deferTrace })(
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_MISSING, potId: HIVE, pending: new PendingEpochContent(), onTrace: deferTrace })(
       async () => true,
     )(envFromEnc(enc!, { hbKey: 'F-9' }));
     expect(deferTrace).toHaveBeenCalledWith('epoch_defer', expect.stringContaining('no-key-yet'));
@@ -150,12 +150,12 @@ describe('hive-epoch-op-gate', () => {
   // rekeyVal=true case is the "wire stamp lost on receive" smoking gun.
   it('onTrace fires epoch_gate_seen for an encrypted-looking op (incl. epoch==null ciphertext = stamp-lost)', async () => {
     const crypto = fakeCrypto();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 4 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 4 });
     const enc = await cap.encryptOp(localOp({ hbKey: 'F-seen', value: { a: 1 } }));
 
     // Normal encrypted op (epoch set) → seen with epoch=4.
     const t1 = vi.fn();
-    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t1 })(
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending: new PendingEpochContent(), onTrace: t1 })(
       async () => true,
     )(envFromEnc(enc!, { hbKey: 'F-seen' }));
     expect(t1).toHaveBeenCalledWith('epoch_gate_seen', expect.stringContaining('epoch=4'));
@@ -164,7 +164,7 @@ describe('hive-epoch-op-gate', () => {
     // seen (reached the gate) with epoch=NULL, then passes through as plaintext.
     const t2 = vi.fn();
     const passed = vi.fn(async () => true);
-    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t2 })(
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending: new PendingEpochContent(), onTrace: t2 })(
       passed,
     )({ type: 'put', table: 'harness_features_consolidated', hbKey: 'F-x', value: enc!.value /* {__rekey} */ } as OpEnvelope);
     expect(t2).toHaveBeenCalledWith('epoch_gate_seen', expect.stringContaining('epoch=NULL'));
@@ -173,7 +173,7 @@ describe('hive-epoch-op-gate', () => {
 
     // A plaintext control op (no epoch, plain value) → NOT seen (no noise).
     const t3 = vi.fn();
-    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, hiveId: HIVE, pending: new PendingEpochContent(), onTrace: t3 })(
+    await buildEpochDecryptGate({ crypto, resolveKey: KEY_OK, potId: HIVE, pending: new PendingEpochContent(), onTrace: t3 })(
       async () => true,
     )({ type: 'put', table: 'hive_members', hbKey: 'm1', value: { x: 1 } } as OpEnvelope);
     expect(t3).not.toHaveBeenCalled();
@@ -181,12 +181,12 @@ describe('hive-epoch-op-gate', () => {
 
   it('a throw inside onTrace never alters the gate verdict (observability is best-effort)', async () => {
     const crypto = fakeCrypto();
-    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, hiveId: HIVE, getCurrentEpoch: async () => 11 });
+    const cap = buildEpochEncryptCapability({ crypto, resolveKey: KEY_OK, potId: HIVE, getCurrentEpoch: async () => 11 });
     const enc = await cap.encryptOp(localOp({ hbKey: 'F-11', value: { a: 1 } }));
     const gate = buildEpochDecryptGate({
       crypto,
       resolveKey: KEY_OK,
-      hiveId: HIVE,
+      potId: HIVE,
       pending: new PendingEpochContent(),
       onTrace: () => {
         throw new Error('trace sink exploded');
@@ -209,7 +209,7 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
     const cap = buildEpochEncryptCapability({
       crypto: fakeCrypto(),
       resolveKey,
-      hiveId: HIVE,
+      potId: HIVE,
       getCurrentEpoch: async () => 0,
     });
     await expect(cap.encryptOp(localOp())).resolves.toBeNull();
@@ -220,7 +220,7 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
     const cap = buildEpochEncryptCapability({
       crypto: fakeCrypto(),
       resolveKey: KEY_OK,
-      hiveId: HIVE,
+      potId: HIVE,
       getCurrentEpoch: async () => 1,
     });
     const enc = await cap.encryptOp(localOp());
@@ -233,7 +233,7 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
     const pending = new PendingEpochContent();
     // The drain leaves the op plaintext (no epoch stamp) on a null encrypt result —
     // the receive side must apply it via the epoch-absent passthrough.
-    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, potId: HIVE, pending });
     let seen: OpEnvelope | null = null;
     const out = await gate(async (op) => {
       seen = op;

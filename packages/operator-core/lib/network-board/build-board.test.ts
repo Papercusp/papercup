@@ -45,7 +45,7 @@ function fedPeer(over: Partial<UnifiedPresenceRecord> = {}): UnifiedPresenceReco
     heartbeatAt: '2026-06-11T00:00:00.000Z',
     lastActiveAt: null,
     agentRole: null,
-    hiveSlug: null,
+    potSlug: null,
     stale: false,
     userId: '1',
     revoked: false,
@@ -63,7 +63,7 @@ function beacon(over: Partial<HiveStatusBeacon> = {}): HiveStatusBeacon {
 
 function foreign(pubkey: string, over: Partial<DiscoveredHive> = {}): DiscoveredHive {
   return {
-    hiveId: `hid-${pubkey}`,
+    potId: `hid-${pubkey}`,
     title: `Hive ${pubkey}`,
     description: 'a foreign hive',
     ownerGithubLogin: 'someone',
@@ -273,10 +273,10 @@ describe('assembleNetworkBoard — tier 4 (foreign hives + beacon + grants + ask
     expect(r.lastSeen).toBe('2026-06-11T01:00:00.000Z'); // last-announce is always known
   });
 
-  it('falls back to hiveId for the key when a foreign hive carries no pubkey, and never attaches grants/asks to it', () => {
+  it('falls back to potId for the key when a foreign hive carries no pubkey, and never attaches grants/asks to it', () => {
     const rows = assembleNetworkBoard({
       ...EMPTY,
-      discovered: [foreign('', { hivePubkey: '', hiveId: 'hid-x' })],
+      discovered: [foreign('', { hivePubkey: '', potId: 'hid-x' })],
       // grants keyed by '' must NOT leak onto a pubkey-less hive
       grantsByPeer: new Map([['', ['ask']]]),
     });

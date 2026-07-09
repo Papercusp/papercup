@@ -105,7 +105,7 @@ function packIdOf(e: MemoryEntry): string | undefined {
  */
 export async function classifyPackInstall(
   opts: {
-    hiveSlug: string;
+    potSlug: string;
     pack: LearningPack;
     shapes?: readonly AppliesTo[];
   },
@@ -113,7 +113,7 @@ export async function classifyPackInstall(
 ): Promise<InstallReview> {
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
-  const scope = hiveScopeKey(opts.hiveSlug);
+  const scope = hiveScopeKey(opts.potSlug);
   const items = opts.shapes === undefined ? [...opts.pack.items] : filterByShapes(opts.pack.items, opts.shapes);
 
   // Provenance guard (mirrors planPackUpgrade): an item whose
@@ -230,7 +230,7 @@ export interface ApplyInstallResult {
 export async function applyPackInstall(
   opts: {
     workspaceId: string;
-    hiveSlug: string;
+    potSlug: string;
     pack: LearningPack;
     review: InstallReview;
     resolutions?: ReadonlyArray<{ itemId: string; action: InstallAction }>;
@@ -269,7 +269,7 @@ export async function applyPackInstall(
       }
       await rememberPackItem({
         workspaceId: opts.workspaceId,
-        hiveSlug: opts.hiveSlug,
+        potSlug: opts.potSlug,
         pack: opts.pack,
         item,
         ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
@@ -317,7 +317,7 @@ export interface UninstallResult {
  */
 export async function uninstallPack(
   opts: {
-    hiveSlug: string;
+    potSlug: string;
     packId: string;
     /** The resolvable pack (for the edited-row comparison); null when gone. */
     pack: LearningPack | null;
@@ -327,7 +327,7 @@ export async function uninstallPack(
 ): Promise<UninstallResult> {
   const backend = deps.backend ?? getMemoryBackend();
   const keepEdited = opts.keepEdited !== false;
-  const entries = await backend.list({ scope: hiveScopeKey(opts.hiveSlug) });
+  const entries = await backend.list({ scope: hiveScopeKey(opts.potSlug) });
   const mine = entries.filter((e) => packIdOf(e) === opts.packId);
 
   const kept: Array<{ id: string; text: string }> = [];
@@ -364,10 +364,10 @@ export async function uninstallPack(
 
 export const DISABLED_PACKS_SETTING = 'learning-packs:disabled';
 
-export async function disabledPacksFor(workspaceId: string, hiveSlug: string): Promise<string[]> {
+export async function disabledPacksFor(workspaceId: string, potSlug: string): Promise<string[]> {
   try {
     const { getHiveSetting } = await import('../hive-settings-store');
-    const rec = await getHiveSetting(workspaceId, hiveSlug, DISABLED_PACKS_SETTING);
+    const rec = await getHiveSetting(workspaceId, potSlug, DISABLED_PACKS_SETTING);
     const v: unknown = rec?.value ?? null; // store JSON-parses the value column
     return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [];
   } catch {
@@ -377,16 +377,16 @@ export async function disabledPacksFor(workspaceId: string, hiveSlug: string): P
 
 export async function setPackEnabled(opts: {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   packId: string;
   enabled: boolean;
 }): Promise<{ ok: true; disabled: string[] }> {
-  const cur = await disabledPacksFor(opts.workspaceId, opts.hiveSlug);
+  const cur = await disabledPacksFor(opts.workspaceId, opts.potSlug);
   const next = opts.enabled ? cur.filter((p) => p !== opts.packId) : [...new Set([...cur, opts.packId])];
   const { setHiveSetting } = await import('../hive-settings-store');
   await setHiveSetting({
     workspaceId: opts.workspaceId,
-    hiveHomeSlug: opts.hiveSlug,
+    hiveHomeSlug: opts.potSlug,
     settingKey: DISABLED_PACKS_SETTING,
     value: next, // store serializes JSON values
   });
@@ -427,12 +427,12 @@ const SWEEP_MAX_ROWS = 200;
  * caller's deliberate act. Pairs are deduped (a↔b reported once).
  */
 export async function sweepHiveConflicts(
-  opts: { hiveSlug: string },
+  opts: { potSlug: string },
   deps: ManageDeps = {},
 ): Promise<SweepResult> {
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
-  const all = await backend.list({ scope: hiveScopeKey(opts.hiveSlug) });
+  const all = await backend.list({ scope: hiveScopeKey(opts.potSlug) });
   const rows = all.slice(0, SWEEP_MAX_ROWS);
   const byId = new Map(rows.map((r) => [r.id, r]));
 
@@ -443,7 +443,7 @@ export async function sweepHiveConflicts(
     const found = await Promise.all(
       batch.map(async (row) => {
         try {
-          const neighbors = (await backend.search(row.text, { scope: hiveScopeKey(opts.hiveSlug), limit: CLASSIFY_TOP_K + 1 }))
+          const neighbors = (await backend.search(row.text, { scope: hiveScopeKey(opts.potSlug), limit: CLASSIFY_TOP_K + 1 }))
             .filter((n) => n.id !== row.id);
           if (neighbors.length === 0) return [];
           const report = await checkConflicts({
@@ -473,7 +473,7 @@ export async function sweepHiveConflicts(
       }
     }
   }
-  return { hive: opts.hiveSlug, scanned: rows.length, pairs, capped: all.length > rows.length };
+  return { hive: opts.potSlug, scanned: rows.length, pairs, capped: all.length > rows.length };
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -492,18 +492,18 @@ export interface UpgradePlanResult {
 }
 
 export async function planPackUpgrade(
-  opts: { hiveSlug: string; pack: LearningPack },
+  opts: { potSlug: string; pack: LearningPack },
   deps: ManageDeps = {},
 ): Promise<UpgradePlanResult> {
   const backend = deps.backend ?? getMemoryBackend();
-  const entries = await backend.list({ scope: hiveScopeKey(opts.hiveSlug) });
+  const entries = await backend.list({ scope: hiveScopeKey(opts.potSlug) });
   const mine = entries.filter((e) => packIdOf(e) === opts.pack.manifest.id);
   const presentItemIds = new Set(
     mine.map((e) => (typeof e.metadata?.pack_item_id === 'string' ? e.metadata.pack_item_id : '')).filter(Boolean),
   );
   const missing = opts.pack.items.filter((i) => !presentItemIds.has(i.id));
   const newItems = await classifyPackInstall(
-    { hiveSlug: opts.hiveSlug, pack: { ...opts.pack, items: missing } },
+    { potSlug: opts.potSlug, pack: { ...opts.pack, items: missing } },
     deps,
   );
   return {

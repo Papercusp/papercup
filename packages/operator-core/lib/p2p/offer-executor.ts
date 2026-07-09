@@ -97,7 +97,7 @@ export interface ExecuteClaimedOfferArgs {
   stampedGrantorEpoch: number;
   /** The caller's RESOLVED identity workspace (C3; 'default' refused). */
   workspaceId: string | null | undefined;
-  hiveSlug: string;
+  potSlug: string;
   /** This host's grantor user — the epoch fence subject AND receipt author. */
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
@@ -164,7 +164,7 @@ export async function executeClaimedOffer(
       "offer execute refused: unresolvable workspace partition (WI-1564) — a spawn recorded under 'default' never federates its receipts.",
     );
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) return refuse('hive_required', 'offer execution is hive-scoped; pass the hive HOME slug.');
 
   const receipt = async (fields: {
@@ -175,7 +175,7 @@ export async function executeClaimedOffer(
     try {
       const r = await emit({
         workspaceId: ws,
-        hiveSlug: hive,
+        potSlug: hive,
         kind: 'refusal',
         offerId: args.offer.offerId,
         action: fields.action,

@@ -177,7 +177,7 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
     const res = await announceLocalPresence(
       beeIdentity(),
       { intent: `${BEE} idle — awaiting the Queen's brief`, currentView: null, harnessSlug: HARNESS },
-      { append: (op) => b.handle.append(op), prev: null, now: () => announceMs, hiveSlug: rig.hiveSlug },
+      { append: (op) => b.handle.append(op), prev: null, now: () => announceMs, potSlug: rig.potSlug },
     );
     expect(res.announced).toBe(true);
     lastAnnounce = res.last!;
@@ -270,7 +270,7 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
     const res = await announceLocalPresence(
       beeIdentity(),
       { intent: `${BEE} working WI-1`, currentView: 'work-item:WI-1', harnessSlug: HARNESS },
-      { append: (op) => b.handle.append(op), prev: lastAnnounce, now: () => t2, hiveSlug: rig.hiveSlug },
+      { append: (op) => b.handle.append(op), prev: lastAnnounce, now: () => t2, potSlug: rig.potSlug },
     );
     expect(res.announced).toBe(true);
 
@@ -292,6 +292,6 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
     expect(presenceRows).toHaveLength(1);
     expect(presenceRows[0].device_pubkey).toBe(b.announcePubkey);
-    expect(presenceRows[0].pot_slug).toBe(rig.hiveSlug); // the P-008 Hive scoping rode along
+    expect(presenceRows[0].pot_slug).toBe(rig.potSlug); // the P-008 Hive scoping rode along
   }, 120_000);
 });

@@ -41,7 +41,7 @@ export interface FoldPresence {
   heartbeatAt: string | null;
   lastActiveAt: string | null;
   agentRole: string | null;
-  hiveSlug: string | null;
+  potSlug: string | null;
   userId: string | null;
   stale: boolean;
   federated?: boolean;
@@ -56,7 +56,7 @@ export interface HiveRosterEntry extends AgentAssignment {
   startedAt: string | null;
   lastActiveAt: string | null;
   agentRole: string | null;
-  hiveSlug: string | null;
+  potSlug: string | null;
   userId: string | null;
   federated: boolean;
   // ── Tier-1 (P-003) — populated for local agents; null/empty for federated peers
@@ -106,11 +106,11 @@ function assignmentFromPresence(p: FoldPresence): AgentAssignment {
  *  peers are kept when their hive_slug matches (already hive-keyed) or unset. */
 export function filterPresenceToHive(
   presence: FoldPresence[],
-  hiveSlug: string,
+  potSlug: string,
   includeUnattributed: boolean,
 ): FoldPresence[] {
   return presence.filter(
-    (p) => p.hiveSlug === hiveSlug || (includeUnattributed && p.hiveSlug == null),
+    (p) => p.potSlug === potSlug || (includeUnattributed && p.potSlug == null),
   );
 }
 
@@ -142,7 +142,7 @@ export function foldHiveRoster(
       startedAt: p?.startedAt ?? null,
       lastActiveAt: p?.lastActiveAt ?? null,
       agentRole: p?.agentRole ?? null,
-      hiveSlug: p?.hiveSlug ?? null,
+      potSlug: p?.potSlug ?? null,
       userId: p?.userId ?? null,
       federated: Boolean(p?.federated),
       lastActiveSecAgo: computeLastActiveSecAgo(p?.lastActiveAt ?? null, nowMs),
@@ -230,7 +230,7 @@ export function renderRosterSnapshot(lines: RosterSnapshotLine[], maxPeers = 12)
 }
 
 export interface ListHiveRosterOpts {
-  hiveSlug: string;
+  potSlug: string;
   workspaceId?: string | null;
   /** Include local agents with NULL hive_slug (SU / standalone) sharing the
    *  workspace. Default true. */
@@ -247,11 +247,11 @@ export interface ListHiveRosterOpts {
  * hive and exactly what each is doing".
  */
 export async function listHiveRoster(opts: ListHiveRosterOpts): Promise<HiveRosterEntry[]> {
-  const { hiveSlug, workspaceId } = opts;
+  const { potSlug, workspaceId } = opts;
   const includeUnattributed = opts.includeUnattributed !== false;
   const readPresence = opts.readPresence ?? ((o) => listPresence(o));
   const presenceAll = await readPresence({ workspaceId });
-  const presence = filterPresenceToHive(presenceAll, hiveSlug, includeUnattributed);
+  const presence = filterPresenceToHive(presenceAll, potSlug, includeUnattributed);
   const inHive = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
   const [tier1, rows] = await Promise.all([

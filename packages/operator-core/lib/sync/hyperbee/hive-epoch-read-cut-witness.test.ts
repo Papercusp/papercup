@@ -80,7 +80,7 @@ import type { LocalWriteOp } from './boot';
 const { keychainStore } = await import('../../identity/keychain');
 const { generateEd25519KeypairDer } = await import('../../identity/ed25519');
 
-const HIVE = 'fixawitness-hive'; // hiveId = the hive HOME slug (deriveEpochKey + OpAAD id).
+const HIVE = 'fixawitness-hive'; // potId = the hive HOME slug (deriveEpochKey + OpAAD id).
 const TABLE = 'harness-features';
 
 interface Device {
@@ -159,7 +159,7 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
       const cap = buildEpochEncryptCapability({
         crypto,
         resolveKey: ownerResolveKey,
-        hiveId: HIVE,
+        potId: HIVE,
         getCurrentEpoch: async () => epoch,
       });
       const op: LocalWriteOp = { type: 'put', table: TABLE, hbKey, value, ts: 0, schema_version: 1, writerPubkey };
@@ -181,7 +181,7 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
       });
       const resolveKey = buildEpochKeyResolver({ crypto, provider, isOwner: async () => false });
       const pending = new PendingEpochContent();
-      const gate = buildEpochDecryptGate({ crypto, resolveKey, hiveId: HIVE, pending });
+      const gate = buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE, pending });
       return {
         provider,
         pending,
@@ -251,7 +251,7 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
     // epoch-2 key, yet that key cannot decrypt the epoch-3 ciphertext under the REAL AEAD.
     const bEpoch1Key = await beeB.provider.keyForEpoch(HIVE, 2); // B legitimately holds this
     await expect(
-      decryptOpPayload(crypto, ct2, { hiveId: HIVE, epoch: 3, id: opIdentity('F-2', writerPubkey) }, bEpoch1Key),
+      decryptOpPayload(crypto, ct2, { potId: HIVE, epoch: 3, id: opIdentity('F-2', writerPubkey) }, bEpoch1Key),
       'B replicates the ciphertext but its only held key (epoch 2) cannot decrypt epoch-3 content',
     ).rejects.toThrow();
 
@@ -260,7 +260,7 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
     const oldPlaintext = await decryptOpPayload(
       crypto,
       ct1,
-      { hiveId: HIVE, epoch: 2, id: opIdentity('F-1', writerPubkey) },
+      { potId: HIVE, epoch: 2, id: opIdentity('F-1', writerPubkey) },
       bEpoch1Key,
     );
     expect(JSON.parse(new TextDecoder().decode(oldPlaintext))).toEqual({ note: 'content-1' });
@@ -272,7 +272,7 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
     const stub: HiveEpochCrypto = await resolveHiveEpochCrypto(false);
     await expect(stub.deriveEpochKey(HIVE, 0)).rejects.toThrow(/not implemented/i);
     await expect(
-      stub.encryptOp(new Uint8Array([1, 2, 3]), new Uint8Array(32) as never, { hiveId: HIVE, epoch: 0, opId: 'x' }),
+      stub.encryptOp(new Uint8Array([1, 2, 3]), new Uint8Array(32) as never, { potId: HIVE, epoch: 0, opId: 'x' }),
     ).rejects.toThrow(/not implemented/i);
   });
 });

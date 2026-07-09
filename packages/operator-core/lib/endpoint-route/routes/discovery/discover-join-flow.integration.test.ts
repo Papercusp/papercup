@@ -19,7 +19,7 @@
  *     rejected at ingest (verifyHiveAnnounce drops `private`), and filtered at the
  *     projection. The triple guarantee.
  *   - join-hive: the discovered hive's `memberLinks` flow into the route and
- *     materialize the joiner-side `remote_hive` view (`hiveSlug`).
+ *     materialize the joiner-side `remote_hive` view (`potSlug`).
  *   - join-invite: joining via the SAME invite secret the hive was published with.
  *
  * Faithful-but-deterministic seam: the full HTTP set-hive composition
@@ -101,9 +101,9 @@ const owner: HiveOwnerIdentity = {
 const MEMBER_TOPIC = 'a'.repeat(64);
 const MEMBER_LINK = 'papercusp://harness?topic=' + MEMBER_TOPIC;
 
-function meta(over: Partial<HiveDirectoryMeta> & Pick<HiveDirectoryMeta, 'hiveId' | 'visibility'>): HiveDirectoryMeta {
+function meta(over: Partial<HiveDirectoryMeta> & Pick<HiveDirectoryMeta, 'potId' | 'visibility'>): HiveDirectoryMeta {
   return {
-    title: over.title ?? over.hiveId,
+    title: over.title ?? over.potId,
     description: 'desc',
     memberTopics: [MEMBER_TOPIC],
     memberLinks: [MEMBER_LINK],
@@ -146,7 +146,7 @@ beforeEach(() => {
   bustProjectsLiteCache.mockReset();
   joinHiveAsView.mockResolvedValue({
     ok: true,
-    hiveSlug: 'acme',
+    potSlug: 'acme',
     members: [{ slug: 'acme', link: MEMBER_LINK, ok: true, detail: 'joined' }],
   });
 
@@ -183,7 +183,7 @@ async function browse(args: Record<string, unknown> = {}) {
   return JSON.parse(res.content[0].text) as {
     ok: boolean;
     count: number;
-    rows: Array<{ hiveId: string; visibility: string; memberLinks: string[]; memberCount: number; title: string }>;
+    rows: Array<{ potId: string; visibility: string; memberLinks: string[]; memberCount: number; title: string }>;
   };
 }
 
@@ -209,7 +209,7 @@ async function postJoinInvite(body: unknown) {
 
 describe('discover→join flow: set-hive visibility → announce topic (T2)', () => {
   it('public → announces on the GLOBAL directory topic', async () => {
-    const { res, frames } = await publish(meta({ hiveId: 'acme', visibility: 'public' }));
+    const { res, frames } = await publish(meta({ potId: 'acme', visibility: 'public' }));
     expect(res).toMatchObject({ announced: true, visibility: 'public' });
     expect(frames).toHaveLength(1);
     expect(frames[0].topicHex).toBe(GLOBAL_TOPIC);
@@ -218,7 +218,7 @@ describe('discover→join flow: set-hive visibility → announce topic (T2)', ()
 
   it('invite → announces on the SECRET-gated invite topic, NOT the global one', async () => {
     const { res, frames } = await publish(
-      meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET }),
+      meta({ potId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET }),
     );
     expect(res).toMatchObject({ announced: true, visibility: 'invite' });
     expect(frames).toHaveLength(1);
@@ -228,7 +228,7 @@ describe('discover→join flow: set-hive visibility → announce topic (T2)', ()
   });
 
   it('private → never announces (no frame ever reaches the wire)', async () => {
-    const { res, frames } = await publish(meta({ hiveId: 'secret', visibility: 'private' }));
+    const { res, frames } = await publish(meta({ potId: 'secret', visibility: 'private' }));
     expect(res).toMatchObject({ announced: false, visibility: 'private' });
     expect(res.reachablePeers).toBe(0);
     expect(frames).toHaveLength(0);
@@ -237,13 +237,13 @@ describe('discover→join flow: set-hive visibility → announce topic (T2)', ()
 
 describe('discover→join flow: discovery:pots lists published hives (T2)', () => {
   it('lists a published PUBLIC hive with its member links + count', async () => {
-    const { frames } = await publish(meta({ hiveId: 'acme', title: 'Acme Hive', visibility: 'public' }));
+    const { frames } = await publish(meta({ potId: 'acme', title: 'Acme Hive', visibility: 'public' }));
     expect((await ingest(frames))[0]).toMatchObject({ accepted: true });
 
     const out = await browse();
     expect(out.count).toBe(1);
     expect(out.rows[0]).toMatchObject({
-      hiveId: 'acme',
+      potId: 'acme',
       title: 'Acme Hive',
       visibility: 'public',
       memberLinks: [MEMBER_LINK],
@@ -253,13 +253,13 @@ describe('discover→join flow: discovery:pots lists published hives (T2)', () =
 
   it('lists a published INVITE hive (row visibility reflects invite)', async () => {
     const { frames } = await publish(
-      meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET }),
+      meta({ potId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET }),
     );
     expect((await ingest(frames))[0]).toMatchObject({ accepted: true });
 
     const out = await browse();
     expect(out.count).toBe(1);
-    expect(out.rows[0]).toMatchObject({ hiveId: 'inv', visibility: 'invite' });
+    expect(out.rows[0]).toMatchObject({ potId: 'inv', visibility: 'invite' });
   });
 
   it('lists BOTH a public + invite hive once each is ingested', async () => {
@@ -267,16 +267,16 @@ describe('discover→join flow: discovery:pots lists published hives (T2)', () =
     await ingest(await publishFrames('inv', 'invite', INVITE_SECRET));
     const out = await browse();
     expect(out.count).toBe(2);
-    expect(new Set(out.rows.map((r) => r.hiveId))).toEqual(new Set(['acme', 'inv']));
+    expect(new Set(out.rows.map((r) => r.potId))).toEqual(new Set(['acme', 'inv']));
   });
 });
 
 describe('discover→join flow: a PRIVATE hive is NOT discoverable (T2)', () => {
   it('produces no wire frame, so the joiner never sees it', async () => {
-    const { frames } = await publish(meta({ hiveId: 'secret', visibility: 'private' }));
+    const { frames } = await publish(meta({ potId: 'secret', visibility: 'private' }));
     await ingest(frames); // nothing to ingest
     const out = await browse();
-    expect(out.rows.find((r) => r.hiveId === 'secret')).toBeUndefined();
+    expect(out.rows.find((r) => r.potId === 'secret')).toBeUndefined();
   });
 
   it('rejects a hand-forged private announce at INGEST (defense in depth)', async () => {
@@ -298,7 +298,7 @@ describe('discover→join flow: a PRIVATE hive is NOT discoverable (T2)', () => 
     const forged = await buildHiveAnnounce(body, (b) => Promise.resolve(nodeSign(null, b, ownerPriv)));
     const res = await joinerDir.ingestAnnounce(forged);
     expect(res.accepted).toBe(false);
-    expect((await browse()).rows.find((r) => r.hiveId === 'forged-private')).toBeUndefined();
+    expect((await browse()).rows.find((r) => r.potId === 'forged-private')).toBeUndefined();
   });
 
   it('does NOT leak a private hive even alongside a discoverable public one', async () => {
@@ -306,25 +306,25 @@ describe('discover→join flow: a PRIVATE hive is NOT discoverable (T2)', () => 
     await ingest(await publishFrames('secret', 'private')); // never announces
     const out = await browse();
     expect(out.count).toBe(1);
-    expect(out.rows[0].hiveId).toBe('acme');
+    expect(out.rows[0].potId).toBe('acme');
   });
 });
 
 describe('discover→join flow: JOIN the discovered hive (T2)', () => {
   it('join-hive: the DISCOVERED hive’s member links materialize the remote_hive view', async () => {
     await ingest(await publishFrames('acme', 'public'));
-    const row = (await browse()).rows.find((r) => r.hiveId === 'acme')!;
+    const row = (await browse()).rows.find((r) => r.potId === 'acme')!;
     expect(row.memberLinks).toEqual([MEMBER_LINK]);
 
     // Drive the join with the links sourced from the real discovery output.
-    const { status, body } = await postJoinHive({ hiveId: row.hiveId, memberLinks: row.memberLinks });
+    const { status, body } = await postJoinHive({ potId: row.potId, memberLinks: row.memberLinks });
     expect(status).toBe(200);
-    expect(body).toMatchObject({ ok: true, hiveSlug: 'acme' });
+    expect(body).toMatchObject({ ok: true, potSlug: 'acme' });
     // The route composed the join over exactly the discovered links + workspace,
     // then busted the registry cache so the new view groups immediately.
     expect(joinHiveAsView).toHaveBeenCalledTimes(1);
     expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({
-      hiveId: 'acme',
+      potId: 'acme',
       memberLinks: [MEMBER_LINK],
       workspaceId: 'ws-test',
     });
@@ -336,7 +336,7 @@ describe('discover→join flow: JOIN the discovered hive (T2)', () => {
     // confirms a hive is present on that topic → honest joined:true.
     inviteConfirm = {
       found: true,
-      hive: { hiveId: 'inv', title: 'Acme Invite', visibility: 'invite' },
+      hive: { potId: 'inv', title: 'Acme Invite', visibility: 'invite' },
       peersOnTopic: 1,
     };
     const link = formatHiveInviteLink({ secret: INVITE_SECRET, title: 'Acme Invite' });
@@ -358,9 +358,9 @@ describe('discover→join flow: JOIN the discovered hive (T2)', () => {
 });
 
 /** Publish a hive of the given visibility and return its captured wire frames. */
-async function publishFrames(hiveId: string, visibility: HiveDirectoryMeta['visibility'], inviteSecret?: string) {
+async function publishFrames(potId: string, visibility: HiveDirectoryMeta['visibility'], inviteSecret?: string) {
   const { frames } = await publish(
-    meta({ hiveId, visibility, ...(inviteSecret ? { inviteSecret } : {}) }),
+    meta({ potId, visibility, ...(inviteSecret ? { inviteSecret } : {}) }),
   );
   return frames;
 }

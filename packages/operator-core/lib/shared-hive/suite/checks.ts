@@ -452,12 +452,12 @@ async function checkPresenceElectionPg(runId: string, sql: Sql): Promise<CheckRe
   const otherHive = `__hivetest_other_${runId}`;
   const harness = `__hivetest_h_${runId}`;
   const now = Date.now();
-  const seed = async (pubkey: string, ml: string, lastSeenMs: number, hiveSlug: string | null) =>
+  const seed = async (pubkey: string, ml: string, lastSeenMs: number, potSlug: string | null) =>
     sql.unsafe(
       `INSERT INTO harness_shared.shared_presence
          (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey, pot_slug, last_seen_at)
        VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))`,
-      [ws, harness, 1, ml, pubkey, hiveSlug, lastSeenMs],
+      [ws, harness, 1, ml, pubkey, potSlug, lastSeenMs],
     );
   try {
     await seed('aaa-fresh', 'm-aaa', now - 1_000, hive); // global-min live → authority

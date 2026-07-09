@@ -40,14 +40,14 @@ describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
     const r = body(await callTool({ pot: 'h', pack: 'p1', enabled: false }, { principal: { workspaceId: 'ws-prin' } }));
     expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(r.results[0]).toMatchObject({ ok: true, pot: 'h', pack: 'p1', enabled: false });
-    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-prin', hiveSlug: 'h', packId: 'p1', enabled: false });
+    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-prin', potSlug: 'h', packId: 'p1', enabled: false });
   });
 
   it('packs:[…] flips MANY for the same hive; per-item results keyed by hive+pack', async () => {
     const r = body(await callTool({ pot: 'h', packs: ['p1', 'p2'], enabled: true }));
     expect(r.counts).toEqual({ ok: 2, failed: 0 });
     expect(r.results.map((x: { pack: string }) => x.pack)).toEqual(['p1', 'p2']);
-    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h', packId: 'p2', enabled: true });
+    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', potSlug: 'h', packId: 'p2', enabled: true });
   });
 
   it('a core throw fails only that item; top-level ok stays true', async () => {
@@ -64,7 +64,7 @@ describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
   it('items:[…] heterogeneous flips across hives', async () => {
     const r = body(await callTool({ items: [{ pot: 'h1', pack: 'p1', enabled: true }, { pot: 'h2', pack: 'p2', enabled: false }] }));
     expect(r.counts).toEqual({ ok: 2, failed: 0 });
-    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h1', packId: 'p1', enabled: true });
-    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h2', packId: 'p2', enabled: false });
+    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', potSlug: 'h1', packId: 'p1', enabled: true });
+    expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', potSlug: 'h2', packId: 'p2', enabled: false });
   });
 });

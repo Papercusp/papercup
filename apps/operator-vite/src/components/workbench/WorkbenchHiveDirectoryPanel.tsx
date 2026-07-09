@@ -29,7 +29,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
 
 interface HiveRow {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   owner: string;
@@ -81,8 +81,8 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
 
   const join = useCallback(async (hive: HiveRow) => {
     if (hive.memberLinks.length === 0) return;
-    setJoining(hive.hiveId);
-    setJoinMsg((m) => ({ ...m, [hive.hiveId]: 'Joining…' }));
+    setJoining(hive.potId);
+    setJoinMsg((m) => ({ ...m, [hive.potId]: 'Joining…' }));
     // P-007 (hive-from-repo-hardening D-007): join the HIVE, not N loose
     // harnesses — one composed call that runs every member join AND
     // materializes the local hive view (grouping/rail/strip on our side).
@@ -90,24 +90,24 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
       const res = await fetch('/api/discovery/join-pot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hiveId: hive.hiveId, title: hive.title, memberLinks: hive.memberLinks }),
+        body: JSON.stringify({ potId: hive.potId, title: hive.title, memberLinks: hive.memberLinks }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
-        hiveSlug?: string;
+        potSlug?: string;
         members?: { ok: boolean }[];
         error?: string;
       };
       const okCount = body.members?.filter((m) => m.ok).length ?? 0;
       setJoinMsg((m) => ({
         ...m,
-        [hive.hiveId]:
+        [hive.potId]:
           res.ok && body.ok
-            ? `Joined ${t('pot', { lower: true })} '${body.hiveSlug}' — ${okCount}/${hive.memberLinks.length} member(s)`
+            ? `Joined ${t('pot', { lower: true })} '${body.potSlug}' — ${okCount}/${hive.memberLinks.length} member(s)`
             : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
       }));
     } catch (e) {
-      setJoinMsg((m) => ({ ...m, [hive.hiveId]: `Join failed: ${e instanceof Error ? e.message : e}` }));
+      setJoinMsg((m) => ({ ...m, [hive.potId]: `Join failed: ${e instanceof Error ? e.message : e}` }));
     }
     setJoining(null);
   }, [t]);
@@ -153,7 +153,7 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
           ? `Join every member harness of this ${t('pot', { lower: true })}`
           : `This ${t('pot', { lower: true })} published topics only; a full join link is required`;
         return (
-          <div key={h.hiveId} style={card}>
+          <div key={h.potId} style={card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <strong>{h.title}</strong>
               <span style={{ fontSize: 11, color: 'var(--fg-mute, #888)' }}>
@@ -167,15 +167,15 @@ export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React
                 <span style={{ display: 'inline-flex' }}>
                   <button
                     type="button"
-                    disabled={!joinable || joining === h.hiveId}
+                    disabled={!joinable || joining === h.potId}
                     onClick={() => void join(h)}
                   >
-                    {joining === h.hiveId ? 'Joining…' : 'Join'}
+                    {joining === h.potId ? 'Joining…' : 'Join'}
                   </button>
                 </span>
               </Tooltip>
               {!joinable ? <span style={{ ...mute, padding: 0, marginLeft: 8 }}>link required</span> : null}
-              {joinMsg[h.hiveId] ? <span style={{ ...mute, padding: 0, marginLeft: 8 }}>{joinMsg[h.hiveId]}</span> : null}
+              {joinMsg[h.potId] ? <span style={{ ...mute, padding: 0, marginLeft: 8 }}>{joinMsg[h.potId]}</span> : null}
             </div>
           </div>
         );

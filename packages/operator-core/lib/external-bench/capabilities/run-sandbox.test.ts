@@ -44,10 +44,10 @@ describe('openRunSandbox', () => {
       suite: 'swe-bench-pro',
       arm: '+memory',
       runId: 'run-1',
-      hiveSlug: 'sbx-hive',
+      potSlug: 'sbx-hive',
     });
 
-    expect(sandbox.hiveSlug).toBe('sbx-hive');
+    expect(sandbox.potSlug).toBe('sbx-hive');
     expect(sandbox.memberSlug).toBe('sbx-hive-m');
     expect(sandbox.workspaceId).toBe('ws-test');
     expect(sandbox.id).toEqual({ suite: 'swe-bench-pro', arm: '+memory', runId: 'run-1' });
@@ -66,8 +66,8 @@ describe('openRunSandbox', () => {
   it('generates a unique hive slug per sandbox when none is supplied', async () => {
     const a = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'ours', runId: 'r' });
     const b = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'ours', runId: 'r' });
-    expect(a.hiveSlug).not.toBe(b.hiveSlug);
-    expect(a.hiveSlug).toMatch(/^xbench-cap-s-ours-/);
+    expect(a.potSlug).not.toBe(b.potSlug);
+    expect(a.potSlug).toMatch(/^xbench-cap-s-ours-/);
   });
 
   it('dispose() tears the hive down (dropMember → dissolveHive) and is idempotent', async () => {
@@ -76,7 +76,7 @@ describe('openRunSandbox', () => {
       suite: 's',
       arm: 'a',
       runId: 'r',
-      hiveSlug: 'sbx-dispose',
+      potSlug: 'sbx-dispose',
     });
     hiveOps.calls.length = 0; // ignore boot calls; focus on teardown.
 
@@ -96,16 +96,16 @@ describe('openRunSandbox', () => {
       throw new Error('register failed');
     };
     await expect(
-      openRunSandbox(deps(hiveOps), { suite: 's', arm: 'a', runId: 'r', hiveSlug: 'sbx-fail' }),
+      openRunSandbox(deps(hiveOps), { suite: 's', arm: 'a', runId: 'r', potSlug: 'sbx-fail' }),
     ).rejects.toThrow('register failed');
     // createHive ran, then teardown dissolved it — no leaked hive.
     expect(hiveOps.calls.map((c) => c.op)).toEqual(['createHive', 'dropMember', 'dissolveHive']);
   });
 
   it('two sandboxes isolate distinct hive_slug + memberSlug namespaces', async () => {
-    const a = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'A', runId: 'r', hiveSlug: 'hive-A' });
-    const b = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'B', runId: 'r', hiveSlug: 'hive-B' });
-    expect(a.hiveSlug).not.toBe(b.hiveSlug);
+    const a = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'A', runId: 'r', potSlug: 'hive-A' });
+    const b = await openRunSandbox(deps(fakeHiveOps()), { suite: 's', arm: 'B', runId: 'r', potSlug: 'hive-B' });
+    expect(a.potSlug).not.toBe(b.potSlug);
     expect(a.memberSlug).not.toBe(b.memberSlug);
   });
 });

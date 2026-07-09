@@ -67,7 +67,7 @@ export interface ScopeRosterDeps {
   /** The caller's resolved identity workspace (C3 — run through resolveP2pGrantWorkspace). */
   workspaceId: string | null | undefined;
   /** The hive HOME slug the fleet's grants/epochs federate under. */
-  hiveSlug: string;
+  potSlug: string;
   /** P-101 directory, when it exists. Absent ⇒ owner-only (tier-1). */
   directory?: FleetDirectory;
   sqlOverride?: OrgSql;
@@ -124,7 +124,7 @@ export class GrantBackedScopeRoster implements ScopeRoster {
     const rows = (await sql`
       SELECT high_water_epoch
         FROM harness_shared.p2p_grantor_epochs
-       WHERE workspace_id = ${ws} AND harness_slug = ${this.deps.hiveSlug}
+       WHERE workspace_id = ${ws} AND harness_slug = ${this.deps.potSlug}
          AND grantor_github_user_id = ${scope.ownerGithubUserId}
        LIMIT 1`) as unknown as { high_water_epoch: string | number }[];
     const e = rows[0]?.high_water_epoch;

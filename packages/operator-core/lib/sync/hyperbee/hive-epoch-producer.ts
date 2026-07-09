@@ -33,7 +33,7 @@ export interface HiveProducerCtx {
   /** The hive's home_slug — the hive_settings epoch scope. */
   hiveHomeSlug: string;
   /** The hive's crypto identity id (deriveEpochKey / keychain key id). */
-  hiveId: string;
+  potId: string;
 }
 
 /**
@@ -51,7 +51,7 @@ export async function encryptForCurrentEpoch(
   sql?: Sql,
 ): Promise<EpochEncryptResult> {
   const epoch = await getHiveEpoch(ctx.workspaceId, ctx.hiveHomeSlug, sql);
-  const key = await crypto.deriveEpochKey(ctx.hiveId, epoch);
-  const ciphertext = await encryptOpPayload(crypto, payload, { hiveId: ctx.hiveId, epoch, id }, key);
+  const key = await crypto.deriveEpochKey(ctx.potId, epoch);
+  const ciphertext = await encryptOpPayload(crypto, payload, { potId: ctx.potId, epoch, id }, key);
   return { epoch, ciphertext };
 }

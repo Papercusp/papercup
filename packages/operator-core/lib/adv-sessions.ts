@@ -818,10 +818,14 @@ export async function latestLiveAdvSessionByLabel(
  * adv-sessions-live-roster P-003.
  */
 export async function listEndedAdvSessions(
-  opts: { workspaceId?: string | null; limit?: number } = {},
+  opts: { workspaceId?: string | null; limit?: number; before?: string | null } = {},
 ): Promise<AdvSessionRow[]> {
   const limit = opts.limit ?? 50;
   const ws = opts.workspaceId ?? null;
+  // Keyset cursor for the "inactive sessions" infinite scroll: only rows that
+  // ended strictly BEFORE this timestamp. ended_at DESC + `before` = the next
+  // page; null = the first page. (agents-pill-inactive-search-2026-07-09 P-001)
+  const before = opts.before ?? null;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -851,12 +855,65 @@ export async function listEndedAdvSessions(
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         AND (${before}::timestamptz IS NULL OR ended_at < ${before}::timestamptz)
        ORDER BY ended_at DESC
        LIMIT ${limit}
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
     warnUnlessMissingTable(e, 'listEndedAdvSessions');
+    return [];
+  }
+}
+
+/**
+ * adv_sessions rows matched by their transcript handles — `session_id` (a
+ * claude transcript uuid) or `omp_thread_id`. Used by the transcript-search
+ * route to attach session metadata (label/plan/agent/endedAt + the codex
+ * open-key `id`) to session_turns hits (agents-pill-inactive-search-2026-07-09
+ * P-002). Newest row per handle wins downstream (rows come back newest-first).
+ */
+export async function advSessionsByTranscriptHandles(
+  handles: { sessionIds?: readonly string[]; ompThreadIds?: readonly string[] },
+): Promise<AdvSessionRow[]> {
+  const sessionIds = handles.sessionIds && handles.sessionIds.length ? [...handles.sessionIds] : null;
+  const ompThreadIds = handles.ompThreadIds && handles.ompThreadIds.length ? [...handles.ompThreadIds] : null;
+  if (!sessionIds && !ompThreadIds) return [];
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
+          OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))
+       ORDER BY started_at DESC
+       LIMIT 500
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    warnUnlessMissingTable(e, 'advSessionsByTranscriptHandles');
     return [];
   }
 }

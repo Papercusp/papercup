@@ -50,7 +50,7 @@ function mkDeps(over: Partial<ScorecardEmissionPulseDeps> = {}): {
     recordFire,
     deps: {
       enabled: async () => true,
-      controlState: async () => ({ hiveSlug: 'papercusp' }),
+      controlState: async () => ({ potSlug: 'papercusp' }),
       freshness: vi.fn(async () => freshnessResult()),
       computeHealth: async () => EMPTY_HEALTH,
       capture: capture as never,
@@ -87,7 +87,7 @@ describe('runScorecardEmissionPulse', () => {
 
   it('the DECOUPLING assertion: files even though overwatch is stopped — started is never consulted', async () => {
     // controlState deliberately returns NO started bit; the pulse must not need one.
-    const { deps, capture } = mkDeps({ controlState: async () => ({ hiveSlug: 'papercusp' }) });
+    const { deps, capture } = mkDeps({ controlState: async () => ({ potSlug: 'papercusp' }) });
     const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
     expect(r.outcome).toBe('filed');
     expect(capture).toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe('runScorecardEmissionPulse', () => {
   });
 
   it('no hive for the workspace → skipped', async () => {
-    const { deps, capture } = mkDeps({ controlState: async () => ({ hiveSlug: null }) });
+    const { deps, capture } = mkDeps({ controlState: async () => ({ potSlug: null }) });
     const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
     expect(r.outcome).toBe('skipped');
     expect(r.reason).toContain('no hive');

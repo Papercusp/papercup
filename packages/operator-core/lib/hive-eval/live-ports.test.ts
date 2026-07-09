@@ -131,13 +131,13 @@ describe('makeLiveHivePorts orchestration (P-063, fake ops)', () => {
     const ports = makeLiveHivePorts(ops, { workspaceId: 'ws' });
     const boot = await ports.bootHive({ scenario, cell, identity });
 
-    expect(boot.hiveSlug).toBe(identity.hiveSlug);
+    expect(boot.potSlug).toBe(identity.potSlug);
     expect(boot.repoPath).toContain('/clone');
     expect(calls.exec.some((c) => c.includes('git init'))).toBe(true);
     expect(calls.exec.some((c) => c.includes('rev-parse'))).toBe(true);
     expect(calls.exec.some((c) => c.includes('git clone'))).toBe(true);
-    expect(calls.created).toEqual([identity.hiveSlug]); // the Queen seat
-    expect(calls.registered).toEqual([`${identity.hiveSlug}m@${identity.hiveSlug}`]); // substrate as member
+    expect(calls.created).toEqual([identity.potSlug]); // the Queen seat
+    expect(calls.registered).toEqual([`${identity.potSlug}m@${identity.potSlug}`]); // substrate as member
   });
 
   it('seedScenario seeds every work-item + its block edges into the member harness', async () => {
@@ -186,8 +186,8 @@ describe('makeLiveHivePorts orchestration (P-063, fake ops)', () => {
     expect(collected.traceRef).toBe('ref://x');
 
     await ports.teardown({ boot });
-    expect(calls.dropped).toEqual([`${identity.hiveSlug}m`]);
-    expect(calls.dissolved).toEqual([identity.hiveSlug]);
+    expect(calls.dropped).toEqual([`${identity.potSlug}m`]);
+    expect(calls.dissolved).toEqual([identity.potSlug]);
     expect(calls.rm).toHaveLength(2); // base + clone
   });
 });

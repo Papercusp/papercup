@@ -911,10 +911,10 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     expect(payload.ok).toBe(true);
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as {
-      beeId: string;
+      cupId: string;
       spec: { view: { filter: unknown } };
     };
-    expect(call.beeId).toBe('fleet:drain-fleet');
+    expect(call.cupId).toBe('fleet:drain-fleet');
     // Plan-scoped AND kind-filtered: an `all` node combining the plan leaf with the kind leaf.
     expect(call.spec.view.filter).toEqual({
       all: [

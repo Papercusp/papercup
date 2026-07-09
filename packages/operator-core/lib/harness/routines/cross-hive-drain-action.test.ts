@@ -12,9 +12,9 @@ import { ensureCrossHiveBoundariesWired, listWiredCrossHiveBoundaries } from '..
 
 const mkBoundary = (
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   drainImpl: () => Promise<{ delivered: number; pending: number; failedPeers: string[]; backedOffPeers: string[] }>,
-) => ({ workspaceId, hiveSlug, drain: vi.fn(drainImpl) });
+) => ({ workspaceId, potSlug, drain: vi.fn(drainImpl) });
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.restoreAllMocks());

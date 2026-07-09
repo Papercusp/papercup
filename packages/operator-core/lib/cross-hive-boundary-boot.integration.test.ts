@@ -106,9 +106,9 @@ function makeTransportMesh() {
   return { make, subs };
 }
 
-const metaFor = (hiveId: string, visibility: HiveDirectoryMeta['visibility']): HiveDirectoryMeta => ({
-  hiveId,
-  title: hiveId,
+const metaFor = (potId: string, visibility: HiveDirectoryMeta['visibility']): HiveDirectoryMeta => ({
+  potId,
+  title: potId,
   description: '',
   visibility,
   memberTopics: [],
@@ -181,7 +181,7 @@ describe('boot ensure → the boundary is LIVE with PG-grant sovereignty intact'
     // The external peer A wires itself directly (it is not ours to boot).
     const aWiring = wireCrossHiveBoundary({
       workspaceId: WS,
-      hiveSlug: 'hive-a',
+      potSlug: 'hive-a',
       hivePubkey: A.pubkey,
       transport: mesh.make(A.pubkey),
       signer: A.signer,

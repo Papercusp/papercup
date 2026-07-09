@@ -99,6 +99,57 @@ export async function findCodexRolloutPath(
 }
 
 /**
+ * A codex rollout jsonl matched by its ROLLOUT UUID (the trailing uuid of
+ * `rollout-<ts>-<uuid>.jsonl`) under the GLOBAL `~/.codex` home — the id the
+ * session-turns transcript index keys codex turns by (session-ingest's codex
+ * adapter), so a transcript-search hit can deep-link a codex session that has
+ * no adv-session row key (agents-pill-inactive-search-2026-07-09 P-005).
+ * Same bounded ≤4-level walk as findCodexRolloutPath; newest mtime wins when
+ * the uuid somehow appears twice. Null when the rollout no longer exists.
+ */
+export async function findCodexRolloutPathByUuid(
+  rolloutId: string,
+  opts: { homeOverride?: string } = {},
+): Promise<string | null> {
+  if (!/^[0-9a-f][0-9a-f-]{7,}$/i.test(rolloutId)) return null;
+  const cacheKey = `uuid:${rolloutId}`;
+  const cached = codexPathCache.get(cacheKey);
+  if (cached) {
+    if ((await statMtime(cached)) !== null) return cached;
+    codexPathCache.delete(cacheKey);
+  }
+  const root = join(opts.homeOverride ?? join(homedir(), '.codex'), 'sessions');
+  const wanted = `-${rolloutId.toLowerCase()}.jsonl`;
+  let best: { path: string; mtime: number } | null = null;
+  let years: string[];
+  try {
+    years = await fs.readdir(root);
+  } catch {
+    return null;
+  }
+  for (const y of years) {
+    let months: string[];
+    try { months = await fs.readdir(join(root, y)); } catch { continue; }
+    for (const m of months) {
+      let days: string[];
+      try { days = await fs.readdir(join(root, y, m)); } catch { continue; }
+      for (const d of days) {
+        let files: string[];
+        try { files = await fs.readdir(join(root, y, m, d)); } catch { continue; }
+        for (const f of files) {
+          if (!f.startsWith('rollout-') || !f.toLowerCase().endsWith(wanted)) continue;
+          const p = join(root, y, m, d, f);
+          const mtime = await statMtime(p);
+          if (mtime !== null && (!best || mtime > best.mtime)) best = { path: p, mtime };
+        }
+      }
+    }
+  }
+  if (best) codexPathCache.set(cacheKey, best.path);
+  return best?.path ?? null;
+}
+
+/**
  * "Actively thinking" proxies for the roster's pulsing indicator — the codex /
  * omp analogues of claude-sessions' isSessionThinking: the session's transcript
  * file was appended within `activeMs`. Best-effort; false when unresolvable.

@@ -88,7 +88,7 @@ export interface RecordDispatchInput {
    * per-hive dispatch diagnostics align with the per-hive improvement lens (P-040).
    * NULL for an operator-scoped (workspace-global) item.
    */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
 }
 
 /**
@@ -102,7 +102,7 @@ export async function recordDispatchFired(input: RecordDispatchInput): Promise<s
     const rows = await sql<{ id: string }[]>`
       INSERT INTO harness_shared.improvement_dispatches
         (workspace_id, item_id, attempt, runner_harness, pot_slug)
-      VALUES (${input.workspaceId}, ${input.itemId}, ${input.attempt}, ${input.runnerHarness}, ${input.hiveSlug ?? null})
+      VALUES (${input.workspaceId}, ${input.itemId}, ${input.attempt}, ${input.runnerHarness}, ${input.potSlug ?? null})
       RETURNING id`;
     return rows[0]?.id ?? null;
   } catch (e) {

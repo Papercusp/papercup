@@ -64,7 +64,7 @@ export default defineTool({
 export const deployTeardownHiveTool = defineTool({
   name: 'deploy:teardown_pot',
   description:
-    'Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
+    'Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same potId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
   guidance: {
     when: 'Done with a deployed pot (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
     seeAlso: [

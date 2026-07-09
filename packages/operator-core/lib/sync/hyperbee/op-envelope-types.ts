@@ -58,7 +58,7 @@ export interface OpEnvelope {
    * `decryptOpPayload`. Optional + additive: absent ⇒ plaintext op (today's path, and
    * membership/key-distribution ops which must stay readable). The encrypt/decrypt AAD
    * is bound via the shared deterministic `deriveOpId(table, hbKey, writerPubkey)`, so
-   * both sides assemble the identical OpAAD{hiveId, epoch, opId}.
+   * both sides assemble the identical OpAAD{potId, epoch, opId}.
    */
   epoch?: number;
 }

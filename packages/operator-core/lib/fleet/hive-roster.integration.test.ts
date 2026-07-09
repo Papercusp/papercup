@@ -33,7 +33,7 @@ async function truncateAll(): Promise<void> {
 async function seedPresence(
   ownerId: string,
   opts: {
-    hiveSlug?: string | null;
+    potSlug?: string | null;
     lastActiveAgeSec?: number | null;
     agentRole?: string | null;
     intent?: string;
@@ -50,7 +50,7 @@ async function seedPresence(
       now() - ${`${opts.heartbeatAgeSec ?? 0} seconds`}::interval,
       ${opts.lastActiveAgeSec == null ? null : admin`now() - ${`${opts.lastActiveAgeSec} seconds`}::interval`},
       ${opts.agentRole ?? null},
-      ${opts.hiveSlug === undefined ? HIVE : opts.hiveSlug}
+      ${opts.potSlug === undefined ? HIVE : opts.potSlug}
     )
   `;
 }
@@ -88,26 +88,26 @@ beforeEach(async () => {
 
 describe('listHiveRoster (presence-v2 P-006 fold, real PG)', () => {
   it('hive-scopes: keeps the hive + NULL-hive standalone, drops other hives', async () => {
-    await seedPresence('su-in', { hiveSlug: HIVE });
-    await seedPresence('su-null', { hiveSlug: null }); // SU / standalone
-    await seedPresence('su-other', { hiveSlug: 'other-hive' });
+    await seedPresence('su-in', { potSlug: HIVE });
+    await seedPresence('su-null', { potSlug: null }); // SU / standalone
+    await seedPresence('su-other', { potSlug: 'other-hive' });
 
-    const roster = await listHiveRoster({ hiveSlug: HIVE, workspaceId: WS });
+    const roster = await listHiveRoster({ potSlug: HIVE, workspaceId: WS });
     const ids = roster.map((e) => e.agentId).sort();
     expect(ids).toEqual(['su-in', 'su-null']);
     expect(roster.some((e) => e.agentId === 'su-other')).toBe(false);
   });
 
   it('includeUnattributed:false excludes NULL-hive agents', async () => {
-    await seedPresence('su-in', { hiveSlug: HIVE });
-    await seedPresence('su-null', { hiveSlug: null });
-    const roster = await listHiveRoster({ hiveSlug: HIVE, workspaceId: WS, includeUnattributed: false });
+    await seedPresence('su-in', { potSlug: HIVE });
+    await seedPresence('su-null', { potSlug: null });
+    const roster = await listHiveRoster({ potSlug: HIVE, workspaceId: WS, includeUnattributed: false });
     expect(roster.map((e) => e.agentId)).toEqual(['su-in']);
   });
 
   it('folds presence identity + mig-277 scalars + Tier-1 + the fleet work-detail per agent', async () => {
     await seedPresence('su-busy', {
-      hiveSlug: HIVE,
+      potSlug: HIVE,
       agentRole: 'su',
       lastActiveAgeSec: 30,
       intent: 'building the fold',
@@ -116,12 +116,12 @@ describe('listHiveRoster (presence-v2 P-006 fold, real PG)', () => {
     await seedPlanClaim('su-busy', 'P-006'); // Tier-1 claimedItems
     await seedWorkItem('HR-TEST-1', 'su-busy'); // work-item → doing/load
 
-    const roster = await listHiveRoster({ hiveSlug: HIVE, workspaceId: WS });
+    const roster = await listHiveRoster({ potSlug: HIVE, workspaceId: WS });
     const e = roster.find((r) => r.agentId === 'su-busy');
     expect(e).toBeDefined();
     // mig-277 scalars
     expect(e!.agentRole).toBe('su');
-    expect(e!.hiveSlug).toBe(HIVE);
+    expect(e!.potSlug).toBe(HIVE);
     expect(e!.lastActiveSecAgo).not.toBeNull();
     expect(e!.lastActiveSecAgo!).toBeGreaterThanOrEqual(25);
     // Tier-1 claim lane
@@ -133,9 +133,9 @@ describe('listHiveRoster (presence-v2 P-006 fold, real PG)', () => {
   });
 
   it('listHiveRosterSnapshot returns the lean per-agent lines', async () => {
-    await seedPresence('su-x', { hiveSlug: HIVE, agentRole: 'su', lastActiveAgeSec: 5 });
+    await seedPresence('su-x', { potSlug: HIVE, agentRole: 'su', lastActiveAgeSec: 5 });
     await seedWorkItem('HR-TEST-2', 'su-x');
-    const snap = await listHiveRosterSnapshot({ hiveSlug: HIVE, workspaceId: WS });
+    const snap = await listHiveRosterSnapshot({ potSlug: HIVE, workspaceId: WS });
     const line = snap.find((l) => l.ownerId === 'su-x');
     expect(line).toBeDefined();
     expect(line!.doing).toBe('HR-TEST-2'); // id only

@@ -33,7 +33,7 @@ export function productionSpawnHydrationDeps(): SpawnHydrationDeps {
         : Promise.resolve(null),
     // Hive-roster snapshot (su-2ab53), rendered to the trusted `### Hive peers` body.
     getRoster: async ({ harness, workspaceId }) =>
-      renderRosterSnapshot(await listHiveRosterSnapshot({ hiveSlug: harness, workspaceId })),
+      renderRosterSnapshot(await listHiveRosterSnapshot({ potSlug: harness, workspaceId })),
     // The bee's own / predecessor carry-note (su-0de71), so a successor inherits state.
     getCheckpoint: ({ harness, workItemId, workspaceId }) =>
       getWorkItemCheckpoint({ harness, workItemId, workspaceId }),

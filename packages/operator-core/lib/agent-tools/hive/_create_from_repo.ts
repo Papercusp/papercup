@@ -98,7 +98,7 @@ export interface CreateHiveFromRepoOpts {
 }
 
 export interface CreateHiveFromRepoCreated {
-  hiveSlug: string;
+  potSlug: string;
   memberSlug: string;
   memberPath: string;
   defaultBranch?: string;
@@ -291,12 +291,12 @@ function kebab(s: string): string {
 export function deriveSlugs(
   base: string,
   taken: ReadonlySet<string>,
-): { memberSlug: string; hiveSlug: string } | null {
+): { memberSlug: string; potSlug: string } | null {
   for (let i = 0; i < 9; i++) {
     const candidate = i === 0 ? base : `${base}-${i + 1}`;
     const member = candidate;
     const hive = `${candidate}-hive`;
-    if (!taken.has(member) && !taken.has(hive)) return { memberSlug: member, hiveSlug: hive };
+    if (!taken.has(member) && !taken.has(hive)) return { memberSlug: member, potSlug: hive };
   }
   return null;
 }
@@ -395,7 +395,7 @@ export async function createHiveFromRepo(
   if (!base) return { ok: false, error: 'invalid_slug', message: `cannot derive a slug from '${parsed.repo}'` };
 
   let memberSlug: string;
-  let hiveSlug: string;
+  let potSlug: string;
   const intoHive = opts.intoHive;
   if (intoHive) {
     const home = reg.projects.find((p) => p.slug === intoHive);
@@ -411,14 +411,14 @@ export async function createHiveFromRepo(
       return { ok: false, error: 'slug_exhausted', message: `slugs ${base}..${base}-9 are all taken` };
     }
     memberSlug = member.memberSlug;
-    hiveSlug = intoHive;
+    potSlug = intoHive;
   } else {
     const slugs = deriveSlugs(base, taken);
     if (!slugs) {
       return { ok: false, error: 'slug_exhausted', message: `slugs ${base}..${base}-9 are all taken` };
     }
     memberSlug = slugs.memberSlug;
-    hiveSlug = slugs.hiveSlug;
+    potSlug = slugs.potSlug;
   }
 
   const cleanup: string[] = [];
@@ -464,7 +464,7 @@ export async function createHiveFromRepo(
     // shape-filtered by what detection learned about the repo.
     const projectShapes = shapesFromDetection(bp.detection);
     hive = await createHive({
-      slug: hiveSlug,
+      slug: potSlug,
       workspaceId: opts.workspaceId,
       ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
       ...(opts.learningPack !== undefined ? { learningPack: opts.learningPack } : {}),
@@ -483,13 +483,13 @@ export async function createHiveFromRepo(
     slug: memberSlug,
     path: memberPath,
     blueprint: bp.blueprint,
-    hive: hiveSlug,
+    hive: potSlug,
     workspaceId: opts.workspaceId,
   });
   if (!member.ok) {
     mark('create', 'error');
     if (hive) {
-      await removeHiveHome(hiveSlug, opts.workspaceId).catch(() => {});
+      await removeHiveHome(potSlug, opts.workspaceId).catch(() => {});
       if (hive.path) await rmDir(hive.path).catch(() => {});
       cleanup.push('hive home removed');
     }
@@ -540,7 +540,7 @@ export async function createHiveFromRepo(
   const memberEntry: ProjectEntry = {
     slug: memberSlug,
     path: memberPath,
-    hive_slug: hiveSlug,
+    hive_slug: potSlug,
     github_remote: parsed.cloneUrl,
     ...(repoId !== undefined ? { github_repository_id: repoId } : {}),
     ...(defaultBranch ? { github_default_branch: defaultBranch } : {}),
@@ -563,7 +563,7 @@ export async function createHiveFromRepo(
   //       into-hive re-adds don't touch the existing home's setting. Best-effort —
   //       like the publish step, never fails the create.
   if (!intoHive) {
-    await setBeaconConsent(opts.workspaceId, hiveSlug, visibility === 'public').catch(() => {});
+    await setBeaconConsent(opts.workspaceId, potSlug, visibility === 'public').catch(() => {});
   }
 
   // 8 — publish per derived visibility (P-007). Best-effort: NEVER fails the
@@ -579,7 +579,7 @@ export async function createHiveFromRepo(
     const republish = deps.republish ?? republishHiveAfterMemberAdd;
     publishOutcome = await republish({
       workspaceId: opts.workspaceId,
-      hiveSlug,
+      potSlug,
       onlyRepoIds: repoId !== undefined ? [repoId] : [],
       ...(repoIsPrivate !== undefined ? { repoIsPrivate } : {}),
     }).catch((e) => ({
@@ -590,7 +590,7 @@ export async function createHiveFromRepo(
   } else {
     publishOutcome = await publish({
       workspaceId: opts.workspaceId,
-      hiveSlug,
+      potSlug,
       title: `${parsed.owner}/${parsed.repo}`,
       description: `Hive for ${parsed.cloneUrl}`,
       visibility,
@@ -612,7 +612,7 @@ export async function createHiveFromRepo(
   return {
     ok: true,
     created: {
-      hiveSlug,
+      potSlug,
       memberSlug,
       memberPath,
       ...(defaultBranch ? { defaultBranch } : {}),

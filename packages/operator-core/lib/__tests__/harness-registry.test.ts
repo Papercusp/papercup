@@ -102,7 +102,7 @@ describe('saveHarnessRegistry — sibling-field preservation', () => {
     prevState = { projects: [{ slug: 'a', path: '/a' }] };
     await saveHarnessRegistry({
       projects: [{ slug: 'a', path: '/a' }],
-      hiveDirectoryMeta: { h1: { hiveId: 'h1', title: 'Hive', description: '', visibility: 'public', memberTopics: [], createdAt: 1 } },
+      hiveDirectoryMeta: { h1: { potId: 'h1', title: 'Hive', description: '', visibility: 'public', memberTopics: [], createdAt: 1 } },
     } as never);
     expect(writes[0].payload.hiveDirectoryMeta).toBeTruthy();
   });
@@ -150,7 +150,7 @@ describe('mutateHarnessRegistry — atomic RMW (audit P-006 / EI-82)', () => {
     prevState = {
       projects: [{ slug: 'a', path: '/a' }],
       hiveControlFrames: { hv: { id: 'f1' } },
-      hiveDirectoryMeta: { hv: { hiveId: 'hv', createdAt: 1 } },
+      hiveDirectoryMeta: { hv: { potId: 'hv', createdAt: 1 } },
     };
     await mutateHarnessRegistry((reg) => ({
       ...reg,

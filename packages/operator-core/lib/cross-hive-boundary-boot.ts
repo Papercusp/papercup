@@ -57,7 +57,7 @@ import { signalOwnedHiveKeyMissing, clearOwnedHiveKeyHealth } from './hive-owner
 /** One wired (workspace, hive) boundary + the ports its drain needs. */
 export interface WiredCrossHiveBoundary {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   /** This Hive's Ed25519 identity pubkey (the dial address peers use). */
   hivePubkey: string;
   wiring: CrossHiveBoundaryWiring;
@@ -73,27 +73,27 @@ export interface WiredCrossHiveBoundary {
 const _wired = new Map<string, WiredCrossHiveBoundary>();
 const _inflight = new Map<string, Promise<EnsureCrossHiveBoundariesResult>>();
 
-function key(workspaceId: string, hiveSlug: string): string {
-  return `${workspaceId}::${hiveSlug}`;
+function key(workspaceId: string, potSlug: string): string {
+  return `${workspaceId}::${potSlug}`;
 }
 
 export interface EnsureCrossHiveBoundariesOpts {
   /** Owned-hive metadata source. Default: listOwnedHiveMeta(workspaceId). */
   listHives?: (workspaceId: string) => Promise<HiveDirectoryMeta[]>;
   /** Hive identity pubkey loader. Default: loadHivePubkey (keychain/hives). */
-  loadPubkey?: (workspaceId: string, hiveSlug: string) => Promise<string | null>;
+  loadPubkey?: (workspaceId: string, potSlug: string) => Promise<string | null>;
   /** The shared process swarm. Default getSharedSwarm() (lazy — only fetched
    *  when a hive actually needs a live transport). */
   swarm?: HyperswarmLike;
   /** Transport factory (tests inject a fake mesh). Default: the live
    *  makeSwarmCrossHiveTransport over `swarm`. */
   makeTransport?: (o: {
-    hiveSlug: string;
+    potSlug: string;
     selfHivePubkey: string;
     onPeerHello: (peerPubkey: string) => void;
   }) => CrossHiveTransport;
-  /** Outbox factory. Default: PgCrossHiveOutbox(ws, hiveSlug). */
-  makeOutbox?: (workspaceId: string, hiveSlug: string) => CrossHiveOutbox & DrainableOutbox;
+  /** Outbox factory. Default: PgCrossHiveOutbox(ws, potSlug). */
+  makeOutbox?: (workspaceId: string, potSlug: string) => CrossHiveOutbox & DrainableOutbox;
   /** Extra deps threaded VERBATIM into wireCrossHiveBoundary (test seams:
    *  requestPorts, loadGrants, signer, sql). Never set in production. */
   wireDeps?: Partial<WireCrossHiveBoundaryDeps>;
@@ -154,45 +154,45 @@ async function reconcileWorkspace(
   }
 
   const published = metas.filter((m) => m.visibility !== 'private');
-  const publishedSlugs = new Set(published.map((m) => m.hiveId));
+  const publishedSlugs = new Set(published.map((m) => m.potId));
 
   // 1. Tear down boundaries whose Hive is no longer published — private Hives
   //    stay (go) dark. Close errors are non-fatal; the entry is gone either way.
   for (const entry of [..._wired.values()]) {
-    if (entry.workspaceId !== workspaceId || publishedSlugs.has(entry.hiveSlug)) continue;
-    _wired.delete(key(workspaceId, entry.hiveSlug));
-    unregisterCrossHiveBoundary(workspaceId, entry.hiveSlug);
+    if (entry.workspaceId !== workspaceId || publishedSlugs.has(entry.potSlug)) continue;
+    _wired.delete(key(workspaceId, entry.potSlug));
+    unregisterCrossHiveBoundary(workspaceId, entry.potSlug);
     try {
       await entry.wiring.close();
     } catch {
       /* non-fatal */
     }
-    out.closed.push(entry.hiveSlug);
+    out.closed.push(entry.potSlug);
      
-    console.log(`[cross-hive-boot] boundary closed for ${workspaceId}/${entry.hiveSlug} (no longer published)`);
+    console.log(`[cross-hive-boot] boundary closed for ${workspaceId}/${entry.potSlug} (no longer published)`);
   }
 
   // 2. Wire each published Hive not yet wired. Per-hive best-effort.
   for (const meta of published) {
-    const k = key(workspaceId, meta.hiveId);
+    const k = key(workspaceId, meta.potId);
     if (_wired.has(k)) {
-      out.alreadyWired.push(meta.hiveId);
+      out.alreadyWired.push(meta.potId);
       continue;
     }
     try {
-      const entry = await wireOneHive(workspaceId, meta.hiveId, opts);
+      const entry = await wireOneHive(workspaceId, meta.potId, opts);
       if (!entry) {
-        out.skipped.push(meta.hiveId);
+        out.skipped.push(meta.potId);
         continue;
       }
       _wired.set(k, entry);
       // The send tools (pot:ask / pot:request_work, B-04) resolve the live
       // boundary through the shared registry — never a second transport.
-      registerCrossHiveBoundary(workspaceId, meta.hiveId, entry.wiring);
-      out.wired.push(meta.hiveId);
+      registerCrossHiveBoundary(workspaceId, meta.potId, entry.wiring);
+      out.wired.push(meta.potId);
        
       console.log(
-        `[cross-hive-boot] boundary live for ${workspaceId}/${meta.hiveId} ` +
+        `[cross-hive-boot] boundary live for ${workspaceId}/${meta.potId} ` +
           `(${meta.visibility}; pubkey ${entry.hivePubkey.slice(0, 8)}…)`,
       );
       if (opts.drainOnWire !== false) {
@@ -201,10 +201,10 @@ async function reconcileWorkspace(
         void entry.drain().catch(() => {});
       }
     } catch (e) {
-      out.skipped.push(meta.hiveId);
+      out.skipped.push(meta.potId);
        
       console.warn(
-        `[cross-hive-boot] boundary wire failed for ${workspaceId}/${meta.hiveId} (skipped): ` +
+        `[cross-hive-boot] boundary wire failed for ${workspaceId}/${meta.potId} (skipped): ` +
           `${e instanceof Error ? e.message : e}`,
       );
     }
@@ -216,32 +216,32 @@ async function reconcileWorkspace(
 /** Compose one Hive's boundary: pubkey → transport (+ reconnect drain hook) → outbox → wiring. */
 async function wireOneHive(
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   opts: EnsureCrossHiveBoundariesOpts,
 ): Promise<WiredCrossHiveBoundary | null> {
   const loadPubkey =
     opts.loadPubkey ?? (await import('./identity/hive-keypair')).loadHivePubkey;
-  const hivePubkey = await loadPubkey(workspaceId, hiveSlug).catch(() => null);
+  const hivePubkey = await loadPubkey(workspaceId, potSlug).catch(() => null);
   if (!hivePubkey) {
     // OWNED (this slug came from listOwnedHiveMeta) but the on-box identity key is
     // gone (D-024 split-brain / D-023 BUG A orphaned owner keys) — the owner can
     // neither dial nor sign/serve this hive. Escalate LOUD + deduped instead of a
     // silent boot-log warn; best-effort so it never breaks the per-hive wire.
-    void signalOwnedHiveKeyMissing({ workspaceId, hiveSlug, context: 'cross-hive-boot' }).catch(() => {});
+    void signalOwnedHiveKeyMissing({ workspaceId, potSlug, context: 'cross-hive-boot' }).catch(() => {});
     return null;
   }
   // Key loaded — clear any outstanding owner-key alert so a future loss re-alerts.
-  clearOwnedHiveKeyHealth({ workspaceId, hiveSlug });
+  clearOwnedHiveKeyHealth({ workspaceId, potSlug });
 
   const outbox = opts.makeOutbox
-    ? opts.makeOutbox(workspaceId, hiveSlug)
-    : new PgCrossHiveOutbox(workspaceId, hiveSlug, opts.sql);
+    ? opts.makeOutbox(workspaceId, potSlug)
+    : new PgCrossHiveOutbox(workspaceId, potSlug, opts.sql);
 
   // A peer's HELLO = it just became reachable → force-drain ITS queue now
   // (bypassing backoff). Looked up via the registry so the callback is inert
   // until the entry is registered, and after the entry is closed.
   const onPeerHello = (peerPubkey: string): void => {
-    const entry = _wired.get(key(workspaceId, hiveSlug));
+    const entry = _wired.get(key(workspaceId, potSlug));
     if (!entry) return;
     void entry.drain({ forcePeers: [peerPubkey] }).catch(() => {});
   };
@@ -249,7 +249,7 @@ async function wireOneHive(
   let transport = opts.wireDeps?.transport;
   if (!transport) {
     if (opts.makeTransport) {
-      transport = opts.makeTransport({ hiveSlug, selfHivePubkey: hivePubkey, onPeerHello });
+      transport = opts.makeTransport({ potSlug, selfHivePubkey: hivePubkey, onPeerHello });
     } else {
       const swarm =
         opts.swarm ?? (await (await import('./sync/hyperbee/swarm')).getSharedSwarm());
@@ -260,8 +260,8 @@ async function wireOneHive(
   // The boundary's system identity — what an admitted ask's conversation /
   // work-request's work_item is attributed to (makeLiveBoundaryPorts).
   const identity: AgentIdentity = {
-    ownerId: `xhive-boundary-${hiveSlug}`,
-    ownerLabel: `cross-Hive boundary (${hiveSlug})`,
+    ownerId: `xhive-boundary-${potSlug}`,
+    ownerLabel: `cross-Hive boundary (${potSlug})`,
     source: 'principal',
     workspaceId,
     userId: null,
@@ -269,19 +269,19 @@ async function wireOneHive(
 
   const wiring = wireCrossHiveBoundary({
     workspaceId,
-    hiveSlug,
+    potSlug,
     hivePubkey,
     transport,
     outbox,
     identity,
-    harness: hiveSlug,
+    harness: potSlug,
     ...(opts.sql ? { sql: opts.sql } : {}),
     ...(opts.wireDeps ?? {}),
   });
 
   return {
     workspaceId,
-    hiveSlug,
+    potSlug,
     hivePubkey,
     wiring,
     drain: (o = {}) =>
@@ -313,7 +313,7 @@ export async function closeAllCrossHiveBoundaries(): Promise<number> {
   let closed = 0;
   await Promise.all(
     entries.map(async (e) => {
-      unregisterCrossHiveBoundary(e.workspaceId, e.hiveSlug);
+      unregisterCrossHiveBoundary(e.workspaceId, e.potSlug);
       try {
         await e.wiring.close();
         closed += 1;

@@ -127,3 +127,74 @@ describe('synthesize() — single server-side TTS registry', () => {
     expect(synthesizeFromRoute).toBe(synthesize);
   });
 });
+
+/**
+ * Upstream status classification (voice-thorough-test-2026-07-09, WI-3527).
+ *
+ * Every upstream failure used to collapse to 502, so "your ElevenLabs key was
+ * rejected / you're out of credits" (401 — the user fixes it) was indisputable
+ * from "the provider is down" (5xx — the user waits). A real defunded EL account
+ * surfaced from the settings preview as a bare `502`. These pin the classes.
+ */
+describe('synthesize() — upstream failure classification', () => {
+  const respond = (status: number, body: BodyInit | null = 'ERR') => {
+    const mock = vi.fn(async () => new Response(body, { status }));
+    vi.stubGlobal('fetch', mock);
+    return mock;
+  };
+
+  it('upstream 401 → 401 (credential rejected / out of credits), not 502', async () => {
+    respond(401);
+    const r = await synthesize('elevenlabs', 'hi', undefined, PREFS);
+    expect(r).toMatchObject({ ok: false, status: 401 });
+    if (!r.ok) expect(r.error).toContain('elevenlabs 401');
+  });
+
+  it('upstream 403 → 401 (also a credential problem)', async () => {
+    respond(403);
+    expect(await synthesize('elevenlabs', 'hi', undefined, PREFS)).toMatchObject({ ok: false, status: 401 });
+  });
+
+  it('upstream 429 → 429 (rate-limited / quota exhausted), not 502', async () => {
+    respond(429);
+    expect(await synthesize('openai', 'hi', undefined, PREFS)).toMatchObject({ ok: false, status: 429 });
+  });
+
+  it('upstream 400 → 400 (bad voice/model — e.g. kokoro rejecting an unknown voice)', async () => {
+    respond(400);
+    expect(await synthesize('kokoro', 'hi', 'zz_nonexistent', PREFS)).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('upstream 404 → 400, NEVER 404 (404 is reserved for the no-key contract)', async () => {
+    respond(404);
+    const r = await synthesize('cartesia', 'hi', undefined, PREFS);
+    // If this leaked a 404, operator-tts-preview would mislabel a live provider
+    // error as 'no-key' and the settings panel would tell the user to add a key
+    // they already have.
+    expect(r).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('upstream 5xx → 502 (infrastructure, not the user)', async () => {
+    respond(503);
+    expect(await synthesize('kokoro', 'hi', undefined, PREFS)).toMatchObject({ ok: false, status: 502 });
+  });
+
+  it('2xx with an empty body → 502', async () => {
+    respond(200, null);
+    expect(await synthesize('kokoro', 'hi', undefined, PREFS)).toMatchObject({ ok: false, status: 502 });
+  });
+
+  it('a thrown/timed-out fetch → 502 unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+    const r = await synthesize('kokoro', 'hi', undefined, PREFS);
+    expect(r).toMatchObject({ ok: false, status: 502 });
+    if (!r.ok) expect(r.error).toContain('unreachable');
+  });
+
+  it("the EL container:'wav' branch classifies through the same guard (no bespoke copy)", async () => {
+    respond(401);
+    expect(
+      await synthesize('elevenlabs', 'hi', undefined, PREFS, { container: 'wav' }),
+    ).toMatchObject({ ok: false, status: 401 });
+  });
+});

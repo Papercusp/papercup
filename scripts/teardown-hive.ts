@@ -34,7 +34,7 @@ async function main() {
     accountId: account,
   } as const;
 
-  const spec = { hiveId: 'demo-swarm', members, swarm, queen: { placement: 'local' as const } };
+  const spec = { potId: 'demo-swarm', members, swarm, queen: { placement: 'local' as const } };
   const log = (lvl: string, m: string) => console.log(`[${new Date().toISOString().slice(11, 19)}][${lvl}] ${m}`);
   log('info', `tearing down Hive 'demo-swarm' members=[${members.join(', ')}] (DESTROY ends billing; registry handles cleared)…`);
   const r = await teardownHive(spec as never, ws, defaultHiveDeployDeps(log));

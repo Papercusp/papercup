@@ -4,7 +4,7 @@
  *
  * The hive create/edit surface carries title + description + visibility; this is
  * where those land. Stored in the `harness_registry` blob (workspace PG, no
- * migration) keyed by hiveId, alongside the deployment frames. The boot-join
+ * migration) keyed by potId, alongside the deployment frames. The boot-join
  * (hive-directory-boot.ts) reads `listOwnedHiveMeta()` to register + announce a
  * workspace's public/invite hives; `saveOwnedHiveMeta` is the create/edit write.
  *
@@ -23,32 +23,32 @@ export async function listOwnedHiveMeta(workspaceId?: string): Promise<HiveDirec
 }
 
 /** One hive's metadata, or null. */
-export async function getOwnedHiveMeta(hiveId: string, workspaceId?: string): Promise<HiveDirectoryMeta | null> {
+export async function getOwnedHiveMeta(potId: string, workspaceId?: string): Promise<HiveDirectoryMeta | null> {
   const reg = await loadHarnessRegistry(workspaceId);
-  return reg.hiveDirectoryMeta?.[hiveId] ?? null;
+  return reg.hiveDirectoryMeta?.[potId] ?? null;
 }
 
 /** Create or update a hive's directory metadata (the create/edit write). */
 export async function saveOwnedHiveMeta(meta: HiveDirectoryMeta, workspaceId?: string): Promise<void> {
   if (meta.visibility === 'invite' && !meta.inviteSecret) {
-    throw new Error(`saveOwnedHiveMeta: hive ${meta.hiveId} is invite-visibility but has no inviteSecret`);
+    throw new Error(`saveOwnedHiveMeta: hive ${meta.potId} is invite-visibility but has no inviteSecret`);
   }
   // Atomic RMW (audit P-006 class) — and saveHarnessRegistry historically
   // DROPPED hiveDirectoryMeta on write, so this module's saves never stuck.
   await mutateHarnessRegistry(
     (reg) => ({
       ...reg,
-      hiveDirectoryMeta: { ...(reg.hiveDirectoryMeta ?? {}), [meta.hiveId]: meta },
+      hiveDirectoryMeta: { ...(reg.hiveDirectoryMeta ?? {}), [meta.potId]: meta },
     }),
     workspaceId,
   );
 }
 
 /** Remove a hive's directory metadata (delete / stop publishing). */
-export async function deleteOwnedHiveMeta(hiveId: string, workspaceId?: string): Promise<void> {
+export async function deleteOwnedHiveMeta(potId: string, workspaceId?: string): Promise<void> {
   await mutateHarnessRegistry((reg) => {
-    if (!reg.hiveDirectoryMeta?.[hiveId]) return reg;
-    const { [hiveId]: _gone, ...rest } = reg.hiveDirectoryMeta;
+    if (!reg.hiveDirectoryMeta?.[potId]) return reg;
+    const { [potId]: _gone, ...rest } = reg.hiveDirectoryMeta;
     return { ...reg, hiveDirectoryMeta: rest };
   }, workspaceId);
 }

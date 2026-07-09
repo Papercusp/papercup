@@ -10,7 +10,7 @@ import {
 // A fully-populated, unhealthy brief covering every panel + a mix of anomalies.
 function unhealthyBrief(): OverwatchBrief {
   return {
-    hiveSlug: 'papercup-hive',
+    potSlug: 'papercup-hive',
     wokeBy: 'timer',
     queen: { started: true, lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc', consecutiveZeroTokenWakes: 0 },
     bees: { running: 4, completed: 11, churning: 2, deadClaims: 1, invalidModelFailures: 3 },
@@ -159,7 +159,7 @@ test('renderOverwatchBrief — wokeBy omitted / whitespace-only suppresses the W
 
 test('emptyOverwatchBrief — neutral fail-soft default: healthy, zeroed, no anomalies, independent instances', () => {
   const a = emptyOverwatchBrief('hive-a');
-  assert.equal(a.hiveSlug, 'hive-a');
+  assert.equal(a.potSlug, 'hive-a');
   assert.equal(a.anomalies.length, 0);
   assert.equal(a.crossMonitor.queenAlive, true);
   assert.equal(a.queen.stalled, false);

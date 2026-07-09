@@ -141,9 +141,9 @@ export async function routeFileLockOp<T>(
   // P-009: when this harness federates within a shared Hive, its file-claim locks
   // serialize at the HIVE's authority (one authority across all the Hive's Swarms),
   // not the harness's. Default resolver returns null → harness scope (unchanged).
-  const hiveSlug = (deps.harnessToHiveSlug ?? getHarnessToHiveSlug())(harnessSlug);
-  const scope: { kind: 'hive' | 'harness'; key: string } = hiveSlug
-    ? { kind: 'hive', key: hiveSlug }
+  const potSlug = (deps.harnessToHiveSlug ?? getHarnessToHiveSlug())(harnessSlug);
+  const scope: { kind: 'hive' | 'harness'; key: string } = potSlug
+    ? { kind: 'hive', key: potSlug }
     : { kind: 'harness', key: harnessSlug };
 
   // Hot-path guard: when the scope has NO live remote peers (the common case — a

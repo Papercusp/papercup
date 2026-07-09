@@ -2815,7 +2815,7 @@ export async function setWorkItemPriority(
         harnessSlug: wi.harness,
         featureId: id,
         requestedOrder: ord,
-        hiveSlug: lease.hiveSlug ?? 'unknown',
+        potSlug: lease.potSlug ?? 'unknown',
         holderLabel: lease.holderLabel ?? 'an unidentified peer Swarm',
       }).catch(() => undefined);
       const cur = await sql<{ feature_order: number | null }[]>`

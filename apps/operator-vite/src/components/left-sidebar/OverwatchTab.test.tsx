@@ -40,7 +40,7 @@ vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 import OverwatchTab from './OverwatchTab';
 
 const brief = {
-  hiveSlug: 'papercup-hive',
+  potSlug: 'papercup-hive',
   queen: { lastWakeAt: '2026-06-15T09:00:00.000Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: '2026-06-15T10:00:00.000Z', coordOwner: null },
   bees: { running: 3, completed: 0, churning: 1, deadClaims: 0 },
   workFeed: { frontier: 5, autoEligibleStuck: 0, deadRoutines: 1, blockedStranded: 2 },
@@ -55,7 +55,7 @@ const brief = {
 };
 
 const control = {
-  hiveSlug: 'papercup-hive',
+  potSlug: 'papercup-hive',
   started: true,
   cadenceSec: 600,
   flagEnabled: true,

@@ -76,7 +76,7 @@ function synthHiveResult(
     const decision = plan.decisions[i];
     return {
       attempt: synthAttempt(task, i < opts.resolvedCount),
-      beeId: `bee-${i}`,
+      cupId: `bee-${i}`,
       placedAtMs: 1000,
       startedAtMs: 1000,
       finishedAtMs: 1000 + 60_000,

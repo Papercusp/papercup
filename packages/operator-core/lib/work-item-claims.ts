@@ -30,7 +30,7 @@ export interface WorkItemClaim {
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   claimId: string;
   owner: string;
   ownerLabel: string | null;
@@ -50,7 +50,7 @@ export interface AcquireOpts {
   workItemId: string;
   owner: string;
   /** The authority scope (Hive home of the harness). Omit → routes by harnessSlug (single-harness fallback). */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   ownerLabel?: string | null;
   /** This Swarm's device pubkey — recorded for the fail-open reconcile (P-005). */
   holderPubkey?: string | null;
@@ -91,8 +91,8 @@ export const WORK_ITEM_CLAIM_OP_KINDS = {
 } as const;
 
 /** The authority scope key for an op: the Hive home if present, else the harness slug. */
-function scopeOf(opts: { hiveSlug?: string | null; harnessSlug: string }): string {
-  return opts.hiveSlug && opts.hiveSlug.length > 0 ? opts.hiveSlug : opts.harnessSlug;
+function scopeOf(opts: { potSlug?: string | null; harnessSlug: string }): string {
+  return opts.potSlug && opts.potSlug.length > 0 ? opts.potSlug : opts.harnessSlug;
 }
 
 /**
@@ -122,7 +122,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
       (workspace_id, harness_slug, work_item_id, pot_slug, owner, owner_label, holder_pubkey,
        intent, ttl_sec, acquired_ts, expires_ts, last_activity_ts)
     VALUES
-      (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.hiveSlug ?? null},
+      (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.potSlug ?? null},
        ${opts.owner}, ${opts.ownerLabel ?? null}, ${opts.holderPubkey ?? null},
        ${opts.intent ?? ''}, ${ttlSec}, clock_timestamp(),
        clock_timestamp() + make_interval(secs => ${ttlSec}), clock_timestamp())
@@ -169,7 +169,7 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
       (workspace_id, harness_slug, work_item_id, pot_slug, owner, owner_label, holder_pubkey,
        intent, ttl_sec, acquired_ts, expires_ts, last_activity_ts)
     VALUES
-      (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.hiveSlug ?? null},
+      (${opts.workspaceId}, ${opts.harnessSlug}, ${opts.workItemId}, ${opts.potSlug ?? null},
        ${opts.owner}, ${opts.ownerLabel ?? null}, ${opts.holderPubkey ?? null},
        ${opts.intent ?? ''}, ${ttlSec}, clock_timestamp(),
        clock_timestamp() + make_interval(secs => ${ttlSec}), clock_timestamp())
@@ -197,7 +197,7 @@ export interface HeartbeatClaimParams {
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   claimId: string;
   owner: string;
   ttlSecOverride?: number;
@@ -254,7 +254,7 @@ export interface ReleaseClaimParams {
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   claimId: string;
   owner: string;
 }
@@ -286,7 +286,7 @@ export interface ReleaseClaimForItemParams {
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   /** The item's CURRENT holder (its `taken_by`/assignee) at release time — NOT
    *  necessarily the exact claimId, since the base work-item release path (voluntary
    *  `work_items:release`, EI-6832) doesn't track the lease's claimId at all. Owner-
@@ -516,14 +516,14 @@ export async function listActiveClaimFreshnessForOwner(
 }
 
 /** All live (non-lapsed) claims for a Hive — the "what's already taken" view the backlog reads. */
-export async function listLiveClaimsForHive(workspaceId: string, hiveSlug: string): Promise<WorkItemClaim[]> {
+export async function listLiveClaimsForHive(workspaceId: string, potSlug: string): Promise<WorkItemClaim[]> {
   const { sql } = getOrgPg();
   const rows = await sql<ClaimDbRow[]>`
     SELECT workspace_id, harness_slug, work_item_id, pot_slug, claim_id, owner,
              owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
              last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
       FROM harness_shared.work_item_claims
-     WHERE workspace_id = ${workspaceId} AND pot_slug = ${hiveSlug}
+     WHERE workspace_id = ${workspaceId} AND pot_slug = ${potSlug}
        AND expires_ts > clock_timestamp()
      ORDER BY work_item_id
   `;
@@ -569,7 +569,7 @@ function claimFromDb(r: ClaimDbRow): WorkItemClaim {
     workspaceId: r.workspace_id,
     harnessSlug: r.harness_slug,
     workItemId: r.work_item_id,
-    hiveSlug: r.pot_slug,
+    potSlug: r.pot_slug,
     claimId: r.claim_id,
     owner: r.owner,
     ownerLabel: r.owner_label,
@@ -588,7 +588,7 @@ function synthMissing(opts: AcquireOpts): WorkItemClaim {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     workItemId: opts.workItemId,
-    hiveSlug: opts.hiveSlug ?? null,
+    potSlug: opts.potSlug ?? null,
     claimId: '00000000-0000-0000-0000-000000000000',
     owner: 'unknown',
     ownerLabel: null,

@@ -43,7 +43,7 @@ export class InMemoryPresenceStore implements PresenceStore {
     const merged: PresenceInput = {
       ...input,
       agentRole: input.agentRole ?? existing?.input.agentRole ?? null,
-      hiveSlug: input.hiveSlug ?? existing?.input.hiveSlug ?? null,
+      potSlug: input.potSlug ?? existing?.input.potSlug ?? null,
     };
     this.rows.set(identity.ownerId, {
       identity,
@@ -92,14 +92,14 @@ export class InMemoryPresenceStore implements PresenceStore {
   }
 
   async list(
-    opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
+    opts: { workspaceId?: string | null; potSlug?: string | null } = {},
   ): Promise<PresenceRecord[]> {
     const ws = opts.workspaceId ?? null;
-    const hive = opts.hiveSlug ?? null;
+    const hive = opts.potSlug ?? null;
     const now = this.now();
     return [...this.rows.values()]
       .map((r) => this.toRecord(r, now))
-      .filter((r) => (ws == null || r.workspaceId === ws) && (hive == null || r.hiveSlug === hive))
+      .filter((r) => (ws == null || r.workspaceId === ws) && (hive == null || r.potSlug === hive))
       // Deterministic ownerId order (presence-v2 P-005 / D-006) — cache- and
       // diff-stable, unlike the old heartbeat-DESC which reorders every read.
       .sort((a, b) => a.ownerId.localeCompare(b.ownerId));
@@ -137,7 +137,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       heartbeatAt: new Date(r.heartbeatAt).toISOString(),
       lastActiveAt: r.lastActiveAt != null ? new Date(r.lastActiveAt).toISOString() : null,
       agentRole: r.input.agentRole ?? null,
-      hiveSlug: r.input.hiveSlug ?? null,
+      potSlug: r.input.potSlug ?? null,
       compactionLimit: null,
       contextTokens: null,
       contextEstimatedAt: null,

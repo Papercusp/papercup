@@ -106,7 +106,7 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     const { status, body } = await call('http://127.0.0.1/api/discovery/pots');
     expect(status).toBe(200);
     expect(body.count).toBe(1);
-    expect(body.rows[0]).toMatchObject({ hiveId: 'ash', title: 'Ash Hive', memberLinks: ['papercusp://harness?topic=a'] });
+    expect(body.rows[0]).toMatchObject({ potId: 'ash', title: 'Ash Hive', memberLinks: ['papercusp://harness?topic=a'] });
   });
 
   it('projects hivePubkey so the Comb rollup can match listings to the announce (comb-hive-native-sharing P-001)', async () => {
@@ -115,9 +115,9 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     await dir.ingestAnnounce(await announce({ hive_id: 'keyed', hive_pubkey: pk }));
     await dir.ingestAnnounce(await announce({ hive_id: 'unkeyed' }));
     const { body } = await call('http://127.0.0.1/api/discovery/pots');
-    const rows = body.rows as Array<{ hiveId: string; hivePubkey: string | null }>;
-    expect(rows.find((r) => r.hiveId === 'keyed')?.hivePubkey).toBe(pk);
-    expect(rows.find((r) => r.hiveId === 'unkeyed')?.hivePubkey).toBeNull();
+    const rows = body.rows as Array<{ potId: string; hivePubkey: string | null }>;
+    expect(rows.find((r) => r.potId === 'keyed')?.hivePubkey).toBe(pk);
+    expect(rows.find((r) => r.potId === 'unkeyed')?.hivePubkey).toBeNull();
   });
 
   it('403s a non-loopback caller via the declared loopback tier (auth-tier Wave 1)', async () => {
@@ -164,7 +164,7 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     expect(status).toBe(200);
     expect(body.count).toBe(1);
     expect(body.rows[0]).toMatchObject({
-      hiveId: 'papercusp',
+      potId: 'papercusp',
       title: 'Papercusp',
       description: 'Self-admitted offline hive',
       owner: 'remote',
@@ -184,7 +184,7 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     await dir.ingestAnnounce(await announce({ hive_id: 'secret', visibility: 'private' }));
     const { status, body } = await call('http://127.0.0.1/api/discovery/pots');
     expect(status).toBe(200);
-    const ids = (body.rows as Array<{ hiveId: string }>).map((r) => r.hiveId);
+    const ids = (body.rows as Array<{ potId: string }>).map((r) => r.potId);
     expect(ids).toContain('pub');
     expect(ids).not.toContain('secret');
   });
@@ -193,7 +193,7 @@ describe('GET /api/discovery/pots route (P-007)', () => {
     const dir = configureHiveDirectoryForTest(fakeDeps());
     await dir.ingestAnnounce(await announce({ hive_id: 'inv', visibility: 'invite' }));
     const { body } = await call('http://127.0.0.1/api/discovery/pots');
-    const row = (body.rows as Array<{ hiveId: string; visibility: string }>).find((r) => r.hiveId === 'inv');
+    const row = (body.rows as Array<{ potId: string; visibility: string }>).find((r) => r.potId === 'inv');
     expect(row?.visibility).toBe('invite');
   });
 });

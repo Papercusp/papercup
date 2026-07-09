@@ -36,7 +36,7 @@ const WS = 'ws-1';
 // A DiscoveredHive is much wider than the binding; only hivePubkey + ownerDevicePubkey
 // are read. Cast through unknown so the fixtures stay minimal.
 const disco = (hivePubkey: string, ownerDevicePubkey: string): unknown => ({
-  hiveId: `hive:${hivePubkey}`,
+  potId: `hive:${hivePubkey}`,
   title: 't',
   ownerDevicePubkey,
   hivePubkey,
@@ -89,7 +89,7 @@ describe('loadHiveOwnerDeviceBindings — live directory + PG cache merge (D-007
 
   it('skips incomplete entries from either source (missing hivePubkey / ownerDevicePubkey)', async () => {
     listDiscoveredHives.mockReturnValue([
-      { hiveId: 'x', title: 't', ownerDevicePubkey: 'OD_no_pubkey' }, // no hivePubkey
+      { potId: 'x', title: 't', ownerDevicePubkey: 'OD_no_pubkey' }, // no hivePubkey
       disco('HP_ok', 'OD_ok'),
     ]);
     readOperatorState.mockResolvedValue({

@@ -86,11 +86,11 @@ export async function wirePresenceAnnounceForHarness(
   // Resolve the harness's home Hive ONCE (stable for the boot session). Best-effort:
   // a failure → announce harness-scoped (hive_slug null), never blocks the loop.
   const resolveHive = opts.resolveHiveSlug ?? hiveHomeSlugForHarness;
-  let hiveSlug: string | null = null;
+  let potSlug: string | null = null;
   try {
-    hiveSlug = await resolveHive(handle.workspaceId, handle.harnessSlug);
+    potSlug = await resolveHive(handle.workspaceId, handle.harnessSlug);
   } catch {
-    hiveSlug = null;
+    potSlug = null;
   }
 
   const resolveIdentity =
@@ -110,17 +110,17 @@ export async function wirePresenceAnnounceForHarness(
   const topicHex = (handle.swarm as { topicHex?: unknown } | null)?.topicHex;
   const gossipTopicHex = typeof topicHex === 'string' && topicHex ? topicHex : null;
   let gossipWriterOn = false;
-  if (gossipTopicHex && hiveSlug) {
+  if (gossipTopicHex && potSlug) {
     gossipWriterOn = await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false);
     let writer: PresenceGossipWriter | undefined;
     if (gossipWriterOn) {
-      writer = await buildGossipWriter(handle, getState, hiveSlug, opts);
+      writer = await buildGossipWriter(handle, getState, potSlug, opts);
       if (!writer) gossipWriterOn = false; // gh-unauthed → stay on the log path gate (no-op anyway)
     }
     await registerPresenceGossipTopic({
       topicHex: gossipTopicHex,
       workspaceId: handle.workspaceId,
-      hiveHomeSlug: hiveSlug,
+      hiveHomeSlug: potSlug,
       ...(writer ? { writer } : {}),
     });
   }
@@ -142,7 +142,7 @@ export async function wirePresenceAnnounceForHarness(
             await handle.append(op); // non-put presence ops keep the log path
           }
         : (op) => handle.append(op),
-    hiveSlug,
+    potSlug,
     intervalMs,
     now: opts.now,
     setIntervalFn: opts.setIntervalFn,
@@ -242,7 +242,7 @@ const SESSION_ANNOUNCE_REFRESH_MS =
 async function buildGossipWriter(
   handle: PresenceWireHandle,
   getState: () => PresenceState,
-  hiveSlug: string,
+  potSlug: string,
   opts: WirePresenceOpts,
 ): Promise<PresenceGossipWriter | undefined> {
   try {
@@ -254,7 +254,7 @@ async function buildGossipWriter(
       sign: (bytes) => signWithDeviceKey(id.keychainId, bytes),
       githubUserId: id.githubUserId,
       machineLabel,
-      hiveSlug,
+      potSlug,
       getOwnRow: async () =>
         buildPresenceAnnounceRow(
           {
@@ -264,7 +264,7 @@ async function buildGossipWriter(
           },
           getState(),
           now(),
-          hiveSlug,
+          potSlug,
         ),
     };
   } catch {

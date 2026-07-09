@@ -36,7 +36,7 @@ describe('HRW empty-frontier partition', () => {
   it('partitions the empty frontier disjointly across hives', () => {
     const empty = ['local|planning|low', 'local|planning|medium', 'module|execution|high', 'architectural|mixed|low'];
     const hiveIds = ['hive-a', 'hive-b', 'hive-c'];
-    const assignments = hiveIds.map((hiveId) => partitionEmptyNichesForHive(empty, hiveIds, hiveId));
+    const assignments = hiveIds.map((potId) => partitionEmptyNichesForHive(empty, hiveIds, potId));
     const flattened = assignments.flat();
 
     expect(new Set(flattened).size).toBe(flattened.length);

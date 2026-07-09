@@ -62,7 +62,7 @@ function toFleetTaskResult(r: TacRunResult, placedAtMs: number, startedAtMs: num
         ...(r.submission?.modality === 'in-container' ? { envRef: r.submission.envRef } : {}),
       },
     },
-    beeId: r.attempt.trajectoryRef || `tac-${r.attempt.instanceId}-${r.attempt.seed}`,
+    cupId: r.attempt.trajectoryRef || `tac-${r.attempt.instanceId}-${r.attempt.seed}`,
     placedAtMs,
     startedAtMs,
     finishedAtMs,

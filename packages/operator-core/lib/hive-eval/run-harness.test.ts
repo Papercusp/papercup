@@ -50,7 +50,7 @@ describe('runHiveScenarioOnce', () => {
     expect(rec.observations.costUsd).toBe(0.5);
     expect(rec.parallelism.idealWallClockUnits).toBe(3);
     expect(rec.distilledTrace).toContain('demo');
-    const expectedSlug = hiveEvalRunIdentity({ instanceId: 'inst-1', scenarioId: 'demo', repeat: 0, seed: 7 }).hiveSlug;
+    const expectedSlug = hiveEvalRunIdentity({ instanceId: 'inst-1', scenarioId: 'demo', repeat: 0, seed: 7 }).potSlug;
     expect(fake.booted).toEqual([expectedSlug]);
     expect(fake.tornDown).toEqual([expectedSlug]); // always torn down on success
   });

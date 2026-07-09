@@ -10,7 +10,7 @@ const PK = Buffer.alloc(32, 9).toString('base64');
 
 function desc(over: Partial<LocalHiveDescriptor> = {}): LocalHiveDescriptor {
   return {
-    hiveId: 'shop-hive',
+    potId: 'shop-hive',
     title: 'Shop',
     description: '',
     workspaceId: 'ws',

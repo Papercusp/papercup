@@ -53,26 +53,26 @@ describe('GET /api/discovery/beacon-consent (Gap 9)', () => {
     expect(getRoute.auth).toBe('loopback');
   });
 
-  it('400s a missing hiveId WITHOUT touching the accessor', async () => {
+  it('400s a missing potId WITHOUT touching the accessor', async () => {
     const { status, body } = await get('');
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'invalid_args' });
     expect(getBeaconPublishConsent).not.toHaveBeenCalled();
   });
 
-  it('projects the stored consent for a present hiveId', async () => {
+  it('projects the stored consent for a present potId', async () => {
     getBeaconPublishConsent.mockResolvedValue(true);
-    const { status, body } = await get('?hiveId=acme');
+    const { status, body } = await get('?potId=acme');
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, hiveId: 'acme', consent: true });
+    expect(body).toEqual({ ok: true, potId: 'acme', consent: true });
     expect(getBeaconPublishConsent).toHaveBeenCalledWith('ws-test', 'acme');
   });
 
   it('reads consent:false when absent (default-OFF, D-002) — and degrades on accessor throw', async () => {
     getBeaconPublishConsent.mockRejectedValue(new Error('pg down'));
-    const { status, body } = await get('?hiveId=acme');
+    const { status, body } = await get('?potId=acme');
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, hiveId: 'acme', consent: false });
+    expect(body).toEqual({ ok: true, potId: 'acme', consent: false });
   });
 });
 
@@ -82,8 +82,8 @@ describe('POST /api/discovery/beacon-consent (Gap 9)', () => {
   });
 
   it.each([
-    ['missing hiveId', { consent: true }],
-    ['empty hiveId', { hiveId: '', consent: true }],
+    ['missing potId', { consent: true }],
+    ['empty potId', { potId: '', consent: true }],
   ])('400s invalid_args (%s) WITHOUT touching the accessor', async (_l, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);
@@ -92,8 +92,8 @@ describe('POST /api/discovery/beacon-consent (Gap 9)', () => {
   });
 
   it.each([
-    ['non-boolean consent (string)', { hiveId: 'acme', consent: 'yes' }],
-    ['missing consent', { hiveId: 'acme' }],
+    ['non-boolean consent (string)', { potId: 'acme', consent: 'yes' }],
+    ['missing consent', { potId: 'acme' }],
   ])('400s a non-boolean consent (%s) without touching the accessor', async (_l, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);
@@ -110,29 +110,29 @@ describe('POST /api/discovery/beacon-consent (Gap 9)', () => {
 
   it('persists a valid consent and echoes it back', async () => {
     setBeaconPublishConsent.mockResolvedValue(undefined);
-    const { status, body } = await post({ hiveId: 'acme', consent: true });
+    const { status, body } = await post({ potId: 'acme', consent: true });
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, hiveId: 'acme', consent: true });
+    expect(body).toEqual({ ok: true, potId: 'acme', consent: true });
     expect(setBeaconPublishConsent).toHaveBeenCalledWith('ws-test', 'acme', true);
   });
 
   it('persists consent:false (explicit opt-out)', async () => {
     setBeaconPublishConsent.mockResolvedValue(undefined);
-    const { status, body } = await post({ hiveId: 'acme', consent: false });
+    const { status, body } = await post({ potId: 'acme', consent: false });
     expect(status).toBe(200);
-    expect(body).toEqual({ ok: true, hiveId: 'acme', consent: false });
+    expect(body).toEqual({ ok: true, potId: 'acme', consent: false });
   });
 
   it('404s hive_not_found when the underlying store rejects with a "no Hive" message', async () => {
     setBeaconPublishConsent.mockRejectedValue(new Error('no Hive named acme in this workspace'));
-    const { status, body } = await post({ hiveId: 'acme', consent: true });
+    const { status, body } = await post({ potId: 'acme', consent: true });
     expect(status).toBe(404);
     expect(body).toMatchObject({ code: 'hive_not_found' });
   });
 
   it('502s set_failed for any other store error', async () => {
     setBeaconPublishConsent.mockRejectedValue(new Error('connection reset'));
-    const { status, body } = await post({ hiveId: 'acme', consent: true });
+    const { status, body } = await post({ potId: 'acme', consent: true });
     expect(status).toBe(502);
     expect(body).toMatchObject({ code: 'set_failed' });
   });

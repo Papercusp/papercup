@@ -12,7 +12,7 @@
  *     epoch-N+ content defers forever (bounded), never decrypted.
  *
  * Both halves share ONE epoch-key resolver (owner `deriveEpochKey` | member unwrap via the
- * EpochKeyProvider) + the SAME `deriveOpId` AAD + `hiveId` = the hive HOME slug, so
+ * EpochKeyProvider) + the SAME `deriveOpId` AAD + `potId` = the hive HOME slug, so
  * encrypt↔decrypt are symmetric. Pure glue over injected seams (crypto, the key resolver,
  * the current-epoch reader, the pending buffer) — fully unit-testable without PG/boot.
  *
@@ -28,10 +28,10 @@ import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
 import { BASELINE_EPOCH } from './hive-epoch-state';
 
-/** Resolve the epoch key for `(hiveId, epoch)` on THIS peer: owner derives, member
+/** Resolve the epoch key for `(potId, epoch)` on THIS peer: owner derives, member
  *  unwraps. Rejects (EpochKeyUnavailableError) on a member whose wrapped row hasn't
  *  arrived — which the decrypt gate turns into a DEFER (the cut, when it never comes). */
-export type EpochKeyResolver = (hiveId: string, epoch: number) => Promise<EpochKey>;
+export type EpochKeyResolver = (potId: string, epoch: number) => Promise<EpochKey>;
 
 /**
  * Build the SHARED owner|member key resolver both halves use. The OWNER (holds the hive
@@ -53,14 +53,14 @@ export function buildEpochKeyResolver(deps: {
   // deriveEpochKey. Only SUCCESSES are cached — a member miss must keep throwing so the
   // gate DEFERS and retries once the epoch-key row federates in.
   const keyCache = new Map<string, EpochKey>();
-  return async (hiveId, epoch) => {
-    const cacheKey = `${hiveId}:${epoch}`;
+  return async (potId, epoch) => {
+    const cacheKey = `${potId}:${epoch}`;
     const cached = keyCache.get(cacheKey);
     if (cached) return cached;
     if (ownerCache === undefined) ownerCache = await deps.isOwner();
     let key: EpochKey;
     if (!ownerCache) {
-      key = await deps.provider.keyForEpoch(hiveId, epoch);
+      key = await deps.provider.keyForEpoch(potId, epoch);
     } else {
       // OWNER. Resolve the AUTHORITATIVE distributed key FIRST — the provider chain
       // (federated `hive_epoch_keys` rows / the BUNDLED seed key) — and mint via
@@ -79,9 +79,9 @@ export function buildEpochKeyResolver(deps: {
       // owner/advancer box (no bundled seed, no self-wrapped row) the provider simply
       // misses and we fall through to deriveEpochKey — its own minted key — unchanged.
       try {
-        key = await deps.provider.keyForEpoch(hiveId, epoch);
+        key = await deps.provider.keyForEpoch(potId, epoch);
       } catch {
-        key = await deps.crypto.deriveEpochKey(hiveId, epoch);
+        key = await deps.crypto.deriveEpochKey(potId, epoch);
       }
     }
     keyCache.set(cacheKey, key);
@@ -115,7 +115,7 @@ export interface EpochOpGateDeps {
   /** owner-derive | member-unwrap — the shared resolver (built at boot). */
   resolveKey: EpochKeyResolver;
   /** the hive identity for the AAD + key id (= the hive HOME slug). */
-  hiveId: string;
+  potId: string;
 }
 
 /**
@@ -141,10 +141,10 @@ export function buildEpochEncryptCapability(
       // on a 2-box pair: replication dead BOTH directions (the P-059 signature;
       // proven live on the gate rig 2026-07-03, inst-a/b.log 728+ drain failures).
       if (epoch === BASELINE_EPOCH) return null; // plaintext — no epoch stamp
-      const key = await deps.resolveKey(deps.hiveId, epoch);
+      const key = await deps.resolveKey(deps.potId, epoch);
       // OpIdentity (object) — encryptOpPayload derives the opId internally via buildOpAAD.
       const id = { tableTag: op.table, rowKey: op.hbKey, authorPubkey: op.writerPubkey ?? '' };
-      const ct = await encryptOpPayload(deps.crypto, valueToBytes(op.value), { hiveId: deps.hiveId, epoch, id }, key);
+      const ct = await encryptOpPayload(deps.crypto, valueToBytes(op.value), { potId: deps.potId, epoch, id }, key);
       return { epoch, value: encodeCiphertext(ct) };
     },
   };
@@ -207,11 +207,11 @@ export function buildEpochDecryptGate(
       const where = `${op.table ?? '?'}/${(op.hbKey ?? '?').slice(0, 24)} e${op.epoch} w${(op.writerPubkey ?? '?').slice(0, 8)}`;
       let key: EpochKey;
       try {
-        key = await deps.resolveKey(deps.hiveId, op.epoch);
+        key = await deps.resolveKey(deps.potId, op.epoch);
       } catch (e) {
         // key not yet local (remaining member waiting; or removed member forever) → defer.
-        trace('epoch_defer', `${where} hive=${deps.hiveId} no-key-yet: ${(e as Error)?.message ?? e}`);
-        deps.pending.defer(op, deps.hiveId, op.epoch);
+        trace('epoch_defer', `${where} hive=${deps.potId} no-key-yet: ${(e as Error)?.message ?? e}`);
+        deps.pending.defer(op, deps.potId, op.epoch);
         return false;
       }
 
@@ -219,16 +219,16 @@ export function buildEpochDecryptGate(
       const id = { tableTag: op.table ?? '', rowKey: op.hbKey ?? '', authorPubkey: op.writerPubkey ?? '' };
       let plaintext: Uint8Array;
       try {
-        plaintext = await decryptOpPayload(deps.crypto, ct, { hiveId: deps.hiveId, epoch: op.epoch, id }, key);
+        plaintext = await decryptOpPayload(deps.crypto, ct, { potId: deps.potId, epoch: op.epoch, id }, key);
       } catch (e) {
         // have a key but can't decrypt (wrong epoch / tampered AAD) → drop = read cut.
-        // WI-808: this is the SILENT drop — most often an AAD mismatch (hiveId is the
+        // WI-808: this is the SILENT drop — most often an AAD mismatch (potId is the
         // LOCAL home slug, not a federated field, so it can differ owner↔joiner).
-        trace('epoch_decrypt_fail', `${where} hive=${deps.hiveId} DROP: ${(e as Error)?.message ?? e}`);
+        trace('epoch_decrypt_fail', `${where} hive=${deps.potId} DROP: ${(e as Error)?.message ?? e}`);
         return false;
       }
       // Apply the now-PLAINTEXT op; clear `epoch` so downstream sees a normal op.
-      trace('epoch_applied', `${where} hive=${deps.hiveId}`);
+      trace('epoch_applied', `${where} hive=${deps.potId}`);
       return inner({ ...op, value: bytesToValue(plaintext), epoch: undefined });
     };
 }

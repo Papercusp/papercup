@@ -122,7 +122,7 @@ describe('handleRevokeContributor', () => {
   // ── P-006: Hive-scope revoke ──────────────────────────────────────────────
   const HIVE_INPUT: RevokeContributorEndpointInput = {
     workspaceId: 'ws1',
-    hiveSlug: 'acme-hive',
+    potSlug: 'acme-hive',
     githubUserId: 12345,
   };
 

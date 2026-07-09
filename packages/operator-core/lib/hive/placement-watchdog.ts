@@ -1665,7 +1665,7 @@ export async function summarizeOpenPlacements(
  *  a permanent "Paused/Stalled" off the stale recordHiveWake ledger (the owner's
  *  "I relaunched the app but still can't see her running" regression). ISO or null;
  *  best-effort (never throws). */
-export async function latestQueenWakeAt(workspaceId: string, hiveSlug: string): Promise<string | null> {
+export async function latestQueenWakeAt(workspaceId: string, potSlug: string): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ t: string | Date | null }[]>`
@@ -1673,7 +1673,7 @@ export async function latestQueenWakeAt(workspaceId: string, hiveSlug: string): 
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${workspaceId}
          AND child_role IN ('queen', 'mug')
-         AND harness_slug = ${hiveSlug}`;
+         AND harness_slug = ${potSlug}`;
     const t = rows[0]?.t;
     return t ? new Date(t).toISOString() : null;
   } catch {

@@ -89,7 +89,7 @@ function refuse(
       `action=${row.action}${row.offer_id ? ` offer=${row.offer_id}` : ''} hive=${row.harness_slug}`,
   );
   void bumpRefusedOpCounter(
-    { workspaceId: opts.workspaceId, hiveSlug: row.harness_slug, reason: `receipt-apply:${reason}` },
+    { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `receipt-apply:${reason}` },
     opts.sql as Parameters<typeof bumpRefusedOpCounter>[1],
   ).catch(() => {});
 }

@@ -40,7 +40,7 @@ async function call(args: Record<string, unknown>) {
 
 beforeEach(() => {
   setHiveListing.mockReset();
-  setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: true });
+  setHiveListing.mockResolvedValue({ ok: true, potId: 'h', visibility: 'public', saved: true, announced: true });
 });
 
 describe('discovery:set_pot args validation (DISC-1)', () => {
@@ -70,11 +70,11 @@ describe('discovery:set_pot args validation (DISC-1)', () => {
 
 describe('discovery:set_pot handler forwarding (P-015)', () => {
   it('forwards an invite listing carrying the inviteSecret + active workspace', async () => {
-    setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'invite', saved: true, announced: true });
+    setHiveListing.mockResolvedValue({ ok: true, potId: 'h', visibility: 'invite', saved: true, announced: true });
     await call({ potId: 'h', title: 'T', visibility: 'invite', inviteSecret: 'sekret' });
     expect(setHiveListing).toHaveBeenCalledTimes(1);
     expect(setHiveListing.mock.calls[0][0]).toMatchObject({
-      hiveId: 'h',
+      potId: 'h',
       title: 'T',
       visibility: 'invite',
       inviteSecret: 'sekret',
@@ -85,7 +85,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
   it('OMITS inviteSecret from the meta for a public listing', async () => {
     await call({ potId: 'h', title: 'T', visibility: 'public' });
     const meta = setHiveListing.mock.calls[0][0] as Record<string, unknown>;
-    expect(meta).toMatchObject({ hiveId: 'h', visibility: 'public' });
+    expect(meta).toMatchObject({ potId: 'h', visibility: 'public' });
     expect('inviteSecret' in meta).toBe(false);
   });
 
@@ -114,7 +114,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
   });
 
   it('returns the composition result verbatim', async () => {
-    setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: false, announceError: 'x' });
+    setHiveListing.mockResolvedValue({ ok: true, potId: 'h', visibility: 'public', saved: true, announced: false, announceError: 'x' });
     const out = await call({ potId: 'h', title: 'T', visibility: 'public' });
     expect(out).toMatchObject({ ok: true, announced: false, announceError: 'x' });
   });

@@ -206,7 +206,7 @@ function ProgressStrip({ steps }: { steps: { id: StripStepId; status: StripStatu
 // ── Response shapes (the P-006..P-010 contracts) ───────────────────────────
 
 interface HiveHit {
-  hiveId: string;
+  potId: string;
   title: string;
   ownerGithubLogin?: string;
   hivePubkey?: string;
@@ -235,7 +235,7 @@ interface PublishOutcome {
 }
 
 interface CreatedResult {
-  hiveSlug: string;
+  potSlug: string;
   memberSlug: string;
   memberPath: string;
   defaultBranch?: string;
@@ -536,8 +536,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           || !!(result.seededLearnings?.error || result.duplicateOf || bindingUnverified);
         if (!mustStay) {
           clearTimer();
-          if (mode === 'into-hive') onCreated(result.memberSlug, { hive: result.hiveSlug });
-          else onCreated(result.hiveSlug);
+          if (mode === 'into-hive') onCreated(result.memberSlug, { hive: result.potSlug });
+          else onCreated(result.potSlug);
           return;
         }
         settleCreated(steps, publish, result.seededLearnings);
@@ -577,21 +577,21 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            hiveId: offer.hive?.hiveId ?? 'hive',
+            potId: offer.hive?.potId ?? 'hive',
             ...(offer.hive?.title ? { title: offer.hive.title } : {}),
             memberLinks: links,
           }),
         });
         const body = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          hiveSlug?: string;
+          potSlug?: string;
           members?: { ok: boolean }[];
         };
         const ok = body.members?.filter((m) => m.ok).length ?? 0;
         setJoinSummary({
           ok,
           total: links.length,
-          ...(body.hiveSlug ? { firstSlug: body.hiveSlug } : {}),
+          ...(body.potSlug ? { firstSlug: body.potSlug } : {}),
         });
       } catch {
         setJoinSummary({ ok: 0, total: links.length });
@@ -734,7 +734,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
                 // is the parent's close path). Focus the joined hive when its local
                 // slug is known; otherwise still close with an empty slug. It must
                 // NOT fall back to onBack(): a discovery-join with no returned
-                // hiveSlug dropped the user back on the "Add a Hive" picker with no
+                // potSlug dropped the user back on the "Add a Hive" picker with no
                 // way to dismiss it (stuck-modal report).
                 onCreated(joinSummary?.firstSlug ?? '');
               }}
@@ -767,12 +767,12 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     return (
       <div>
         <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-          ✓ {intoExisting ? `Added to ${result.hiveSlug}` : `${hiveLabel} created`}
+          ✓ {intoExisting ? `Added to ${result.potSlug}` : `${hiveLabel} created`}
         </h2>
         <ProgressStrip steps={activeSteps.map((id) => ({ id, status: stepStatuses[id] ?? 'pending' }))} />
         <InfoCard>
           <div>
-            {hiveLabel}: <code>{result.hiveSlug}</code> · member: <code>{result.memberSlug}</code>
+            {hiveLabel}: <code>{result.potSlug}</code> · member: <code>{result.memberSlug}</code>
             {result.defaultBranch ? <> · default branch <code>{result.defaultBranch}</code></> : null}
           </div>
           {/* learning-packs P-006: the seeded-learnings line + the edit surface link. */}
@@ -781,7 +781,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
               Started with {result.seededLearnings.count} default learnings (pack{' '}
               <code>{result.seededLearnings.packId}</code>
               {result.seededLearnings.packVersion ? <> v{result.seededLearnings.packVersion}</> : null}) —{' '}
-              <a href={`/adv?tab=learning&lview=learnings&lhive=${encodeURIComponent(result.hiveSlug)}`}>
+              <a href={`/adv?tab=learning&lview=learnings&lhive=${encodeURIComponent(result.potSlug)}`}>
                 view &amp; edit
               </a>
               . Your agents treat them as starting wisdom, not gospel.
@@ -842,8 +842,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             type="button"
             onClick={() =>
               intoExisting
-                ? onCreated(result.memberSlug, { hive: result.hiveSlug })
-                : onCreated(result.hiveSlug)
+                ? onCreated(result.memberSlug, { hive: result.potSlug })
+                : onCreated(result.potSlug)
             }
             style={primaryBtn}
           >

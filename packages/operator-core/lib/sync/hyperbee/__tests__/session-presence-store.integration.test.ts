@@ -87,7 +87,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-A',
         githubUserId: 42,
         machineLabel: 'laptop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [entry('su-a1'), entry('s-bee-1', { kind: 'cup', plan_slug: 'p1' })],
         frameTs: T0,
       },
@@ -105,7 +105,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-A',
         githubUserId: 42,
         machineLabel: 'laptop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [entry('su-a1', { intent: 'now reviewing' }), entry('su-a2')],
         frameTs: T0 + 10_000,
       },
@@ -123,7 +123,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-A',
         githubUserId: 42,
         machineLabel: 'laptop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [entry('su-a1', { intent: 'ancient state' }), entry('su-ghost')],
         frameTs: T0 - 60_000, // older than everything applied above
       },
@@ -145,7 +145,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-B',
         githubUserId: 77,
         machineLabel: 'desktop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [entry('su-b1')],
         frameTs: T0 + 20_000,
       },
@@ -162,7 +162,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-B',
         githubUserId: 77,
         machineLabel: 'desktop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [],
         frameTs: T0 + 30_000,
       },
@@ -180,7 +180,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-C',
         githubUserId: 9,
         machineLabel: 'vm',
-        hiveSlug: 'other-hive',
+        potSlug: 'other-hive',
         sessions: [entry('su-c1', { harness_slug: 'other-hive' })],
         frameTs: nowMs,
       },
@@ -195,13 +195,13 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     expect(live[0].last_seen_ms).toBe(nowMs);
     // Hive scope: hive-home has no LIVE rows at this point.
     const hiveScoped = await listLiveSessionPresence(
-      { workspaceId: WS, hiveSlug: 'hive-home', staleMs: 30_000, nowMs },
+      { workspaceId: WS, potSlug: 'hive-home', staleMs: 30_000, nowMs },
       db.sql,
     );
     expect(hiveScoped).toEqual([]);
     // …but a wide-enough window sees the older hive-home rows, hive-scoped.
     const wide = await listLiveSessionPresence(
-      { workspaceId: WS, hiveSlug: 'hive-home', staleMs: 24 * 60 * 60 * 1000, nowMs },
+      { workspaceId: WS, potSlug: 'hive-home', staleMs: 24 * 60 * 60 * 1000, nowMs },
       db.sql,
     );
     expect(wide.every((r) => r.pot_slug === 'hive-home')).toBe(true);
@@ -216,7 +216,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
         devicePubkey: 'dev-fleet',
         githubUserId: 11,
         machineLabel: 'tower',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions: [
           entry('su-lead', { fleet_slug: 'git-plan', fleet_role: 'leader' }),
           entry('su-mem', { fleet_slug: 'git-plan', fleet_role: 'member' }),

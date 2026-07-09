@@ -64,7 +64,7 @@ function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAsk[] } {
       const row: CrossHiveAsk = {
         id: input.correlationId,
         workspaceId: ws,
-        hiveSlug: slug,
+        potSlug: slug,
         peerPubkey: input.peerPubkey,
         direction: input.direction ?? 'out',
         kind: input.kind,
@@ -101,7 +101,7 @@ function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAsk[] } {
 describe('sendCrossHiveAsk (composition)', () => {
   const baseInput = {
     workspaceId: 'ws-1',
-    hiveSlug: 'home',
+    potSlug: 'home',
     peerPubkey: 'peer-pub',
     kind: 'ask' as const,
     subject: 's',

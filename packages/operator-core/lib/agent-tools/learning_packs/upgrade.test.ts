@@ -80,7 +80,7 @@ describe('learning_packs:upgrade tool', () => {
 
   it('applies the new items (clean) and reports installed/available versions', async () => {
     const res = body(await callTool({ pot: 'h', pack: 'p1' }));
-    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', createdBy: 'user-1' }));
+    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ potSlug: 'h', createdBy: 'user-1' }));
     expect(res).toMatchObject({ ok: true, installedVersions: ['1.0.0'], availableVersion: '1.1.0' });
   });
 });

@@ -71,7 +71,7 @@ export default defineTool({
     // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     const res = await getNextForBee({
-      beeId: ident.ownerId,
+      cupId: ident.ownerId,
       // WI-1564: MUST match the partition scheduler:set_claim_spec writes
       // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
       // while the queen writes the workspace partition (or a federated spec
@@ -91,7 +91,7 @@ export default defineTool({
     // posture as set_claim_spec's EI-6079 wakeability warning.
     const warning =
       res && res.specSource === 'default'
-        ? 'You have no per-bee or fleet claim spec — this claim used plain oldest-first DEFAULT_CLAIM_SPEC, which can hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {beeId: you} to scope your own pulls.'
+        ? 'You have no per-bee or fleet claim spec — this claim used plain oldest-first DEFAULT_CLAIM_SPEC, which can hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {cupId: you} to scope your own pulls.'
         : undefined;
     return {
       content: [

@@ -205,7 +205,7 @@ export async function buildSessionsFrame(
     devicePubkey: string;
     githubUserId: number;
     machineLabel: string;
-    hiveSlug: string | null;
+    potSlug: string | null;
   },
   sessions: SessionPresenceEntry[],
   nowMs: number,
@@ -218,7 +218,7 @@ export async function buildSessionsFrame(
     ts: nowMs,
     github_user_id: identity.githubUserId,
     machine_label: identity.machineLabel,
-    hive_slug: identity.hiveSlug,
+    hive_slug: identity.potSlug,
     sessions: sessions.slice(0, MAX_SESSIONS_PER_FRAME),
   };
   const sig = await sign(presenceFrameSigningBytes(body));
@@ -363,7 +363,7 @@ export interface CreatePresenceGossipOpts {
       devicePubkey: string;
       githubUserId: number;
       machineLabel: string;
-      hiveSlug: string | null;
+      potSlug: string | null;
       sessions: SessionPresenceEntry[];
     },
     frameTs: number,
@@ -454,7 +454,7 @@ export async function handleInboundPresenceFrame(
             devicePubkey: frame.device_pubkey,
             githubUserId: frame.github_user_id!,
             machineLabel: frame.machine_label!,
-            hiveSlug: frame.hive_slug ?? null,
+            potSlug: frame.hive_slug ?? null,
             sessions: frame.sessions,
           },
           frame.ts,

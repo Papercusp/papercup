@@ -56,14 +56,14 @@ export function createBundledEpochKeyProvider(
     return docPromise;
   };
   return {
-    async keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey> {
+    async keyForEpoch(potId: string, epoch: number): Promise<EpochKey> {
       const doc = await loadDoc();
-      const b64 = doc?.[hiveId]?.[String(epoch)];
-      if (typeof b64 !== 'string' || !b64) throw new EpochKeyUnavailableError(hiveId, epoch);
+      const b64 = doc?.[potId]?.[String(epoch)];
+      if (typeof b64 !== 'string' || !b64) throw new EpochKeyUnavailableError(potId, epoch);
       const key = Uint8Array.from(Buffer.from(b64, 'base64'));
       // A truncated/garbage key is worse than none — fail closed so a caller with the
       // member provider falls back instead of decrypting with a bad key.
-      if (key.length !== 32) throw new EpochKeyUnavailableError(hiveId, epoch);
+      if (key.length !== 32) throw new EpochKeyUnavailableError(potId, epoch);
       return key as EpochKey;
     },
   };

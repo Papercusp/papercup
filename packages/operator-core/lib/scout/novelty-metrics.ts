@@ -227,8 +227,8 @@ export function computeNoveltyGainReport(inputs: NoveltyGainInputs): NoveltyGain
 export interface NoveltyGainScope {
   workspaceId: string;
   harnessSlug: string;
-  /** Per-hive lens scope (ScoutLedgerOpts.hiveSlug); optional. */
-  hiveSlug?: string;
+  /** Per-hive lens scope (ScoutLedgerOpts.potSlug); optional. */
+  potSlug?: string;
 }
 
 /** Injectable reader port — tests inject fixtures; production uses lazy PG imports. */
@@ -281,7 +281,7 @@ function productionReaders(): NoveltyGainReaders {
       const rows = await readRoutedIdeas({
         workspaceId: scope.workspaceId,
         harnessSlug: scope.harnessSlug,
-        hiveSlug: scope.hiveSlug,
+        potSlug: scope.potSlug,
       });
       return rows.map(mapProvenanceToNoveltyRow);
     },

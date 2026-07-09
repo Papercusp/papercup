@@ -12,7 +12,7 @@ import { WORK_ITEM_CLAIM_OP_KINDS, type WorkItemClaim, type AcquireResult, type 
 
 function fakeClaim(over: Partial<WorkItemClaim> = {}): WorkItemClaim {
   return {
-    workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', hiveSlug: 'hive-a',
+    workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', potSlug: 'hive-a',
     claimId: 'cid-1', owner: 'su-a', ownerLabel: null, holderPubkey: 'pk-a', intent: '',
     ttlSec: 1800, acquiredTs: '2026-06-08T12:00:00.000Z', expiresTs: '2026-06-08T12:30:00.000Z',
     lastActivityTs: '2026-06-08T12:00:00.000Z', expired: false, ...over,
@@ -56,7 +56,7 @@ describe('registerWorkItemClaimAuthorityOps', () => {
   it('routes a valid acquire envelope to the coordinator + returns its result', async () => {
     const { coord, calls } = makeFake();
     registerWorkItemClaimAuthorityOps(coord);
-    const payload = { workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', owner: 'su-a', hiveSlug: 'hive-a', holderPubkey: 'pk-a' };
+    const payload = { workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', owner: 'su-a', potSlug: 'hive-a', holderPubkey: 'pk-a' };
     const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload });
     expect(res.ok).toBe(true);
     expect((res.result as { ok: boolean }).ok).toBe(true);
@@ -123,7 +123,7 @@ describe('caller-standing gate (EI-284)', () => {
 
   const payload = {
     workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', owner: 'su-b',
-    hiveSlug: 'hive-a', holderPubkey: 'pk-revoked',
+    potSlug: 'hive-a', holderPubkey: 'pk-revoked',
   };
 
   it('REFUSES a revoked caller’s acquire with refused:caller_revoked — coordinator never runs', async () => {

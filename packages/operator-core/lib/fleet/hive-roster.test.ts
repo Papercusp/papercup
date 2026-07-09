@@ -28,7 +28,7 @@ function pres(p: Partial<FoldPresence> & { ownerId: string }): FoldPresence {
     heartbeatAt: null,
     lastActiveAt: null,
     agentRole: null,
-    hiveSlug: null,
+    potSlug: null,
     userId: null,
     stale: false,
     ...p,
@@ -83,9 +83,9 @@ const tier1 = (m: Record<string, Partial<PresenceTier1Joins>>): Map<string, Pres
 
 describe('filterPresenceToHive', () => {
   const rows = [
-    pres({ ownerId: 'a', hiveSlug: 'papercup' }),
-    pres({ ownerId: 'b', hiveSlug: 'other' }),
-    pres({ ownerId: 'c', hiveSlug: null }), // SU / standalone
+    pres({ ownerId: 'a', potSlug: 'papercup' }),
+    pres({ ownerId: 'b', potSlug: 'other' }),
+    pres({ ownerId: 'c', potSlug: null }), // SU / standalone
   ];
 
   it('keeps the matching hive and (by default) NULL-hive standalone agents', () => {
@@ -119,7 +119,7 @@ describe('foldHiveRoster', () => {
       ownerLabel: 'su · su-x',
       host: 'box1',
       agentRole: 'su',
-      hiveSlug: 'papercup',
+      potSlug: 'papercup',
       lastActiveAt: '2026-06-14T03:59:30Z',
     });
     const [e] = foldHiveRoster([p], [a], tier1({ 'su-x': { claimedItems: ['P-006'], model: 'opus', awaitingEvent: true, awaitingEventKey: 'release:green' } }), NOW);
@@ -131,7 +131,7 @@ describe('foldHiveRoster', () => {
     expect(e.claims).toHaveLength(1);
     // presence + mig-277 scalars attached
     expect(e.agentRole).toBe('su');
-    expect(e.hiveSlug).toBe('papercup');
+    expect(e.potSlug).toBe('papercup');
     expect(e.host).toBe('box1');
     expect(e.lastActiveSecAgo).toBe(30); // 04:00:00 − 03:59:30
     // Tier-1 attached
@@ -154,7 +154,7 @@ describe('foldHiveRoster', () => {
   });
 
   it('folds a federated peer (presence-only) with the federated flag, no Tier-1', () => {
-    const p = pres({ ownerId: 'fed:99@boxZ', ownerLabel: 'gh:99 · boxZ', hiveSlug: 'papercup', federated: true });
+    const p = pres({ ownerId: 'fed:99@boxZ', ownerLabel: 'gh:99 · boxZ', potSlug: 'papercup', federated: true });
     const [e] = foldHiveRoster([p], [], tier1({}), NOW);
     expect(e.federated).toBe(true);
     expect(e.ownerLabel).toBe('gh:99 · boxZ');
@@ -190,7 +190,7 @@ describe('foldHiveRoster', () => {
 describe('toRosterSnapshot (the lean dossier shape — directed-wake P-021 seam)', () => {
   it('projects to one-line-per-agent scalars, dropping the heavy arrays', () => {
     const entries = foldHiveRoster(
-      [pres({ ownerId: 'su-x', ownerLabel: 'su · su-x', agentRole: 'su', hiveSlug: 'papercup', lastActiveAt: '2026-06-14T03:59:00Z' })],
+      [pres({ ownerId: 'su-x', ownerLabel: 'su · su-x', agentRole: 'su', potSlug: 'papercup', lastActiveAt: '2026-06-14T03:59:00Z' })],
       [asg({ agentId: 'su-x', alive: true, doing: WI('WI-1', 0), queued: [WI('WI-1', 0), WI('WI-2', 1)], load: 2 })],
       tier1({ 'su-x': { claimedItems: ['P-006'], awaitingEvent: true } }),
       NOW,

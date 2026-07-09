@@ -1,5 +1,5 @@
 /**
- * GET /api/discovery/pot-meta?hiveId=… — the OWNER side of one hive's share
+ * GET /api/discovery/pot-meta?potId=… — the OWNER side of one hive's share
  * state (comb-hive-native-sharing-2026-06-11 P-004/P-005).
  *
  * Projects the workspace's OWNED directory meta for one hive (the
@@ -24,25 +24,25 @@ export default defineTool({
   auth: 'loopback',
   async handler(req) {
     const url = new URL(req.url);
-    const hiveId = (url.searchParams.get('hiveId') ?? '').trim();
-    if (!hiveId) {
-      return Response.json({ error: 'hiveId required', code: 'invalid_args' }, { status: 400 });
+    const potId = (url.searchParams.get('potId') ?? '').trim();
+    if (!potId) {
+      return Response.json({ error: 'potId required', code: 'invalid_args' }, { status: 400 });
     }
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const ws = activeWorkspaceId();
     const { getOwnedHiveMeta } = await import('../../../hive-directory-meta');
-    const meta = await getOwnedHiveMeta(hiveId, ws);
+    const meta = await getOwnedHiveMeta(potId, ws);
     const hivePubkey = await import('../../../identity/hive-keypair')
-      .then(({ loadHivePubkey }) => loadHivePubkey(ws, hiveId))
+      .then(({ loadHivePubkey }) => loadHivePubkey(ws, potId))
       .catch(() => null);
     const memberRepos = await import('../../../hive-member-repos')
-      .then(({ deriveHiveMemberRepoRefs }) => deriveHiveMemberRepoRefs(ws, hiveId))
+      .then(({ deriveHiveMemberRepoRefs }) => deriveHiveMemberRepoRefs(ws, potId))
       .catch(() => [] as string[]);
     return Response.json({
-      hiveId,
+      potId,
       found: meta !== null,
       visibility: meta?.visibility ?? null,
-      title: meta?.title ?? hiveId,
+      title: meta?.title ?? potId,
       description: meta?.description ?? '',
       inviteSecret: meta?.inviteSecret ?? null,
       hivePubkey,

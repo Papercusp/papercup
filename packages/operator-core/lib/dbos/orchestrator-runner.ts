@@ -1422,7 +1422,7 @@ export function wireOrchestratorInvokeRunner(): void {
         workspaceId: workspaceId ?? activeWorkspaceId(),
         harnessSlug,
         workItemId: featureId,
-        hiveSlug: claim.hiveSlug,
+        potSlug: claim.potSlug,
         claimId: claim.claimId,
         owner: claim.owner,
         holderPubkey: claim.holderPubkey,

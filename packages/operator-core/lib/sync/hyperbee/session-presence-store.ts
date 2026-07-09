@@ -24,7 +24,7 @@ export interface ApplySessionSetInput {
   devicePubkey: string;
   githubUserId: number;
   machineLabel: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   sessions: SessionPresenceEntry[];
   /** The frame's ts (epoch ms) — the set's coherence point. */
   frameTs: number;
@@ -45,7 +45,7 @@ export async function applySessionPresenceSet(
          github_user_id, machine_label, device_pubkey, last_seen_at, schema_version,
          fleet_slug, fleet_role)
       VALUES
-        (${input.workspaceId}, ${input.hiveSlug}, ${s.harness_slug}, ${s.owner_id},
+        (${input.workspaceId}, ${input.potSlug}, ${s.harness_slug}, ${s.owner_id},
          ${s.kind}, ${s.intent}, ${s.plan_slug}, ${input.githubUserId},
          ${input.machineLabel}, ${input.devicePubkey},
          to_timestamp(${input.frameTs} / 1000.0), 1,
@@ -110,7 +110,7 @@ export interface SessionPresenceRowOut {
 /** Live (within staleMs) session-presence rows, optionally hive-scoped —
  *  the unified roster's federated session leg (P-006). */
 export async function listLiveSessionPresence(
-  opts: { workspaceId: string; hiveSlug?: string | null; staleMs: number; nowMs?: number },
+  opts: { workspaceId: string; potSlug?: string | null; staleMs: number; nowMs?: number },
   sqlIn?: postgres.Sql,
 ): Promise<SessionPresenceRowOut[]> {
   const sql = sqlIn ?? getOrgPg().sql;
@@ -125,7 +125,7 @@ export async function listLiveSessionPresence(
     FROM harness_shared.shared_session_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND last_seen_at > ${floor}
-      ${opts.hiveSlug ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
+      ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
     ORDER BY last_seen_at DESC
   `;
   return rows.map((r) => ({

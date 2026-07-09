@@ -2,14 +2,14 @@
  * run-sandbox.ts — {@link RunSandbox}, the per-(suite-run × arm) isolation boundary
  * (plan benchmark-capability-injection-redesign-2026-06-17, P-002 / D-003 / D-007).
  *
- * A run-sandbox is backed by a per-run EPHEMERAL HIVE. Its `hiveSlug` is the single
+ * A run-sandbox is backed by a per-run EPHEMERAL HIVE. Its `potSlug` is the single
  * shared namespace every capability scopes through:
- *   - memory → `memory:*` with `hive_slug = hiveSlug` (the hive's shared pool — see
+ *   - memory → `memory:*` with `hive_slug = potSlug` (the hive's shared pool — see
  *     memory:remember's `hive_slug` arg: "every agent in every member harness of that
  *     hive recalls it");
  *   - work-queue → `work_items:*` scoped to `memberSlug` (the member harness holds the
  *     run's items);
- *   - coord → `coord:*` scoped to `hiveSlug` (peer messages stay in the sandbox).
+ *   - coord → `coord:*` scoped to `potSlug` (peer messages stay in the sandbox).
  *
  * BOOT mirrors `su-independent-backlog.ts`'s real ops EXACTLY: `createHive` (idle Queen
  * seat) → `registerMember` (the member harness, with `hive_slug` → the home so it scopes
@@ -40,7 +40,7 @@ export interface OpenRunSandboxArgs {
    * defaults to a per-sandbox scratch dir under the system tmp (no repo is needed for the
    * capability-only sandbox — the member exists to scope the work-queue).
    */
-  hiveSlug?: string;
+  potSlug?: string;
   /** The member harness's clone path. Defaults to a per-sandbox scratch dir. */
   clonePath?: string;
 }
@@ -57,28 +57,28 @@ export interface OpenRunSandboxArgs {
 export async function openRunSandbox(deps: OpenRunSandboxDeps, args: OpenRunSandboxArgs): Promise<RunSandbox> {
   const workspaceId = args.workspaceId ?? deps.workspaceId;
   const id: SandboxId = { suite: args.suite, arm: args.arm, runId: args.runId };
-  const hiveSlug = args.hiveSlug ?? generateSandboxSlug(args);
-  const memberSlug = `${hiveSlug}-m`;
-  const clonePath = args.clonePath ?? defaultClonePath(deps, hiveSlug);
+  const potSlug = args.potSlug ?? generateSandboxSlug(args);
+  const memberSlug = `${potSlug}-m`;
+  const clonePath = args.clonePath ?? defaultClonePath(deps, potSlug);
 
   const hiveOps = deps.hiveOps;
 
   // CREATE the ephemeral hive (the shared namespace's home). A create failure aborts —
   // there is nothing to tear down yet.
-  await hiveOps.createHive({ slug: hiveSlug, workspaceId });
+  await hiveOps.createHive({ slug: potSlug, workspaceId });
 
   // From here a boot failure must dissolve the created hive before rethrowing (no leak).
   try {
-    await hiveOps.registerMember({ member: memberSlug, clonePath, hiveHome: hiveSlug, workspaceId });
+    await hiveOps.registerMember({ member: memberSlug, clonePath, hiveHome: potSlug, workspaceId });
     await hiveOps.seedFeature({
       member: memberSlug,
-      featureId: bootstrapFeatureId(hiveSlug),
+      featureId: bootstrapFeatureId(potSlug),
       title: `capability-sandbox bootstrap (${args.suite}/${args.arm})`,
       spec: 'Bootstrap feature scaffolding the run-sandbox work-queue. Benchmark tasks enqueue real work_items here.',
       workspaceId,
     });
   } catch (err) {
-    await disposeHive(hiveOps, { hiveSlug, memberSlug, workspaceId }).catch(() => {});
+    await disposeHive(hiveOps, { potSlug, memberSlug, workspaceId }).catch(() => {});
     throw err;
   }
 
@@ -86,12 +86,12 @@ export async function openRunSandbox(deps: OpenRunSandboxDeps, args: OpenRunSand
   const dispose = async (): Promise<void> => {
     if (disposed) return; // idempotent — a double-dispose must not double-tear-down.
     disposed = true;
-    await disposeHive(hiveOps, { hiveSlug, memberSlug, workspaceId });
+    await disposeHive(hiveOps, { potSlug, memberSlug, workspaceId });
   };
 
   return {
     id,
-    hiveSlug,
+    potSlug,
     memberSlug,
     workspaceId,
     runTool: deps.runTool,
@@ -102,15 +102,15 @@ export async function openRunSandbox(deps: OpenRunSandboxDeps, args: OpenRunSand
 /** Tear the ephemeral hive down: drop the member, then dissolve the hive. Best-effort each. */
 async function disposeHive(
   hiveOps: SandboxHiveOps,
-  input: { hiveSlug: string; memberSlug: string; workspaceId: string },
+  input: { potSlug: string; memberSlug: string; workspaceId: string },
 ): Promise<void> {
   await hiveOps.dropMember({ member: input.memberSlug, workspaceId: input.workspaceId }).catch(() => {});
-  await hiveOps.dissolveHive({ hiveHome: input.hiveSlug, workspaceId: input.workspaceId }).catch(() => {});
+  await hiveOps.dissolveHive({ hiveHome: input.potSlug, workspaceId: input.workspaceId }).catch(() => {});
 }
 
 /** The member's lone bootstrap feature id (stable per hive). */
-function bootstrapFeatureId(hiveSlug: string): string {
-  return `xbench-cap-bootstrap-${hiveSlug}`;
+function bootstrapFeatureId(potSlug: string): string {
+  return `xbench-cap-bootstrap-${potSlug}`;
 }
 
 /**
@@ -126,9 +126,9 @@ function generateSandboxSlug(args: OpenRunSandboxArgs): string {
 }
 
 /** Per-sandbox scratch clone path (the member registers here; no repo is required). */
-function defaultClonePath(deps: OpenRunSandboxDeps, hiveSlug: string): string {
+function defaultClonePath(deps: OpenRunSandboxDeps, potSlug: string): string {
   const base = deps.scratchParent ?? '/tmp/xbench-capabilities';
-  return `${base}/${hiveSlug}`;
+  return `${base}/${potSlug}`;
 }
 
 /**

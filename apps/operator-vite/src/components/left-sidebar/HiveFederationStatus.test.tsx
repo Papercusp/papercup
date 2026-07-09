@@ -116,7 +116,7 @@ describe('drainLabel (install-wide SYNC honesty — EI-1618/EI-1599)', () => {
 
 describe('<HiveFederationStatus>', () => {
   it('renders an announced hive\'s reach + the install substrate line', async () => {
-    mockSync(status({ hives: [{ hiveId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
+    mockSync(status({ hives: [{ potId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-reach-h1')).textContent).toBe('discoverable to 4 peers');
     expect(screen.getByTestId('fed-substrate').textContent).toContain('2 harnesses booted');
@@ -125,7 +125,7 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('shows a 0-peer published hive as STRANDED (void copy + down dot), never "synced"', async () => {
-    mockSync(status({ hives: [{ hiveId: 'h0', title: 'Lonely', visibility: 'public', memberCount: 1, reachablePeers: 0 }] }));
+    mockSync(status({ hives: [{ potId: 'h0', title: 'Lonely', visibility: 'public', memberCount: 1, reachablePeers: 0 }] }));
     render(<HiveFederationStatus />);
     const reach = await screen.findByTestId('fed-reach-h0');
     expect(reach.textContent).toBe('no peers connected yet — broadcasting into the void');
@@ -135,7 +135,7 @@ describe('<HiveFederationStatus>', () => {
   });
 
   it('shows a private hive honestly (not announced), not a 0-peer failure', async () => {
-    mockSync(status({ hives: [{ hiveId: 'hp', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 }] }));
+    mockSync(status({ hives: [{ potId: 'hp', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 }] }));
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-reach-hp')).textContent).toBe('private — not announced');
   });

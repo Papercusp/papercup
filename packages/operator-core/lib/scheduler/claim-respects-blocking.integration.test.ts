@@ -124,7 +124,7 @@ async function claimViaBothPaths(assignee: string): Promise<{ legacy: string | n
   if (legacy) {
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET taken_by = NULL, taken_at = NULL WHERE feature_id = ${legacy}`;
   }
-  const spec = (await getNextForBee({ beeId: `${assignee}-spec`, harness: H }))?.workItem.id ?? null;
+  const spec = (await getNextForBee({ cupId: `${assignee}-spec`, harness: H }))?.workItem.id ?? null;
   if (spec) {
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET taken_by = NULL, taken_at = NULL WHERE feature_id = ${spec}`;
   }

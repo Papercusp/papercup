@@ -63,7 +63,7 @@ export interface SelfHiveMember {
   /** The member harness slug (e.g. `papercusp-platform`). */
   memberSlug: string;
   /** The hive home slug (e.g. `papercusp-platform-hive`). */
-  hiveSlug: string;
+  potSlug: string;
   /** Absolute path of the member's working tree (the push source / export target). */
   path: string;
   /** Normalized HTTPS clone URL of the upstream (canonical Papercusp). */
@@ -189,19 +189,19 @@ export async function defaultResolveSelfHiveMember(
   workspaceId: string,
 ): Promise<SelfHiveMember | null> {
   const reg = await loadHarnessRegistry(workspaceId);
-  const hiveSlug = `${slug}-hive`;
+  const potSlug = `${slug}-hive`;
   // Prefer the member whose hive_slug points at the self-hive home AND has an
   // upstream remote (the cloned Papercusp checkout). Fall back to any member of
   // the hive with a path, so a fork-only / coords-less member still resolves.
   const members = reg.projects.filter(
-    (p: ProjectEntry) => p.hive_slug === hiveSlug && p.harness_kind !== 'hive' && p.path,
+    (p: ProjectEntry) => p.hive_slug === potSlug && p.harness_kind !== 'hive' && p.path,
   );
   const member =
     members.find((p) => Boolean(p.github_remote)) ?? members[0];
   if (!member) return null;
   return {
     memberSlug: member.slug,
-    hiveSlug,
+    potSlug,
     path: member.path,
     ...(member.github_remote ? { upstreamRemote: member.github_remote } : {}),
     ...(member.github_default_branch ? { defaultBranch: member.github_default_branch } : {}),
@@ -371,7 +371,7 @@ async function contributeLearningPack(
   if (packId && title && description) {
     try {
       exported = await seams.exportPack({
-        hiveSlug: member.hiveSlug,
+        potSlug: member.potSlug,
         packId,
         title,
         description,
@@ -407,7 +407,7 @@ async function contributeLearningPack(
       needs,
       plan: {
         action: 'export → publish (Comb)',
-        hiveSlug: member.hiveSlug,
+        potSlug: member.potSlug,
         memberPath: member.path,
         ...(exported?.ok ? { exported: exported.exported, packDir: exported.packDir } : {}),
         moderation: 'the Comb listing publishes PENDING (operator approval gates public visibility, D-007)',

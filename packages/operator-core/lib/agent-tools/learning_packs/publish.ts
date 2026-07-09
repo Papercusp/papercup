@@ -52,7 +52,7 @@ export const exportTool = defineTool({
     if (!(await learningPacksEnabled())) return text(FLAG_OFF);
     const { exportHiveLearningsToPack } = await import('../../learning-packs/export');
     const result = await exportHiveLearningsToPack({
-      hiveSlug: args.pot,
+      potSlug: args.pot,
       packId: args.packId,
       title: args.title,
       description: args.description,

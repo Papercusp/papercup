@@ -55,7 +55,7 @@ describe('github-fork-egress (P-004: ratified request → fork branch → PR)', 
 
   const baseInput = () => ({
     repoPath: store,
-    hiveSlug: 'hive-bridge',
+    potSlug: 'hive-bridge',
     upstreamRemote: 'github.com/acme/widgets',
     upstreamOwner: 'acme',
     upstreamRepo: 'widgets',

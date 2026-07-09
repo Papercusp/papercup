@@ -11,7 +11,7 @@
  *     decoupled from the data-gathering half.
  *
  *  2. THE AGGREGATOR WRAPPER (pending) — `computeOverwatchBrief(workspaceId,
- *     hiveSlug)`: calls `computeSystemHealth(workspaceId)` (system-health-tab
+ *     potSlug)`: calls `computeSystemHealth(workspaceId)` (system-health-tab
  *     P-002, owned by the Health-tab brief — co-owned per D-006), maps its
  *     SystemHealth panels onto the `OverwatchBrief` actionable subset, then runs
  *     `detectAnomalies`. The mapping is a thin structural bind once
@@ -371,8 +371,8 @@ function msToIso(ms: number | null): string | null {
  *    `workFeed.autoEligibleStuck` (su-3b017 adds the attempts:0 count when wiring)
  *    default to 0.
  */
-export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): OverwatchBrief {
-  const brief = emptyOverwatchBrief(hiveSlug);
+export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): OverwatchBrief {
+  const brief = emptyOverwatchBrief(potSlug);
   const panels = health.panels;
 
   const queen = panels.queen.data;
@@ -473,11 +473,11 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
  * so the wake still fires with a coherent, non-alarming brief rather than failing
  * the launch (mirrors `computeQueenWakeBrief`'s graceful degradation).
  */
-export async function computeOverwatchBrief(workspaceId: string, hiveSlug: string, opts: { wokeBy?: string } = {}): Promise<OverwatchBrief> {
+export async function computeOverwatchBrief(workspaceId: string, potSlug: string, opts: { wokeBy?: string } = {}): Promise<OverwatchBrief> {
   const wokeBy = opts.wokeBy?.trim();
   try {
     const health = await computeSystemHealth(workspaceId);
-    const brief = mapSystemHealthToBrief(health, hiveSlug);
+    const brief = mapSystemHealthToBrief(health, potSlug);
     if (wokeBy) brief.wokeBy = wokeBy;
     // Fold owner steering before anomaly detection so an intentional full
     // pause suppresses "Queen should place/triage" nudges while structural
@@ -486,14 +486,14 @@ export async function computeOverwatchBrief(workspaceId: string, hiveSlug: strin
       const { getOrgPg } = await import('@papercusp/db-org');
       const { getOwnerSteering, isPausedNow } = await import('../owner-steering');
       const { sql } = getOrgPg();
-      const steering = await getOwnerSteering(workspaceId, hiveSlug, sql);
+      const steering = await getOwnerSteering(workspaceId, potSlug, sql);
       brief.ownerSteering = {
         pauseNewWork: isPausedNow(steering, Date.now()),
         pausedUntil: steering.pausedUntil,
         eligiblePlans: [...steering.eligiblePlans],
       };
     } catch (e) {
-      console.warn(`[overwatch-brief] could not read owner steering for '${hiveSlug}' — pause-aware anomaly suppression disabled:`, e instanceof Error ? e.message : e);
+      console.warn(`[overwatch-brief] could not read owner steering for '${potSlug}' — pause-aware anomaly suppression disabled:`, e instanceof Error ? e.message : e);
     }
     // Resolve the Queen's coord owner so the overwatch can address a nudge to her
     // (it lands in her next wake brief's inbox — the SAME resolveQueenOwner the
@@ -503,9 +503,9 @@ export async function computeOverwatchBrief(workspaceId: string, hiveSlug: strin
       const { getOrgPg } = await import('@papercusp/db-org');
       const { resolveQueenOwner } = await import('../hive/placement-watchdog');
       const { sql } = getOrgPg();
-      brief.queen.coordOwner = await resolveQueenOwner(sql, workspaceId, hiveSlug);
+      brief.queen.coordOwner = await resolveQueenOwner(sql, workspaceId, potSlug);
     } catch (e) {
-      console.warn(`[overwatch-brief] could not resolve the Queen coord owner for '${hiveSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
+      console.warn(`[overwatch-brief] could not resolve the Queen coord owner for '${potSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
     }
     // Pre-fold the overwatch's OWN coord inbox (mirrors the Queen's brief) so it sees
     // replies / owner directives without a separate coord:inbox call. The owner is the
@@ -519,7 +519,7 @@ export async function computeOverwatchBrief(workspaceId: string, hiveSlug: strin
       const ownerRows = await sql<{ coord_owner_id: string }[]>`
         SELECT coord_owner_id FROM harness_shared.adv_sessions
          WHERE workspace_id = ${workspaceId}
-           AND label LIKE ${'overwatch · ' + hiveSlug + '/%'}
+           AND label LIKE ${'overwatch · ' + potSlug + '/%'}
            AND coord_owner_id IS NOT NULL
          ORDER BY started_at DESC LIMIT 1`;
       const owner = ownerRows[0]?.coord_owner_id ?? null;
@@ -537,12 +537,12 @@ export async function computeOverwatchBrief(workspaceId: string, hiveSlug: strin
         if (items.length > 0) brief.inbox = items;
       }
     } catch (e) {
-      console.warn(`[overwatch-brief] could not fold the overwatch inbox for '${hiveSlug}':`, e instanceof Error ? e.message : e);
+      console.warn(`[overwatch-brief] could not fold the overwatch inbox for '${potSlug}':`, e instanceof Error ? e.message : e);
     }
     return withAnomalies(brief);
   } catch (err) {
-    console.warn(`[overwatch-brief] computeSystemHealth failed for hive '${hiveSlug}' — returning the neutral fail-soft brief:`, err instanceof Error ? err.message : err);
-    const fallback = emptyOverwatchBrief(hiveSlug);
+    console.warn(`[overwatch-brief] computeSystemHealth failed for hive '${potSlug}' — returning the neutral fail-soft brief:`, err instanceof Error ? err.message : err);
+    const fallback = emptyOverwatchBrief(potSlug);
     if (wokeBy) fallback.wokeBy = wokeBy;
     return fallback;
   }

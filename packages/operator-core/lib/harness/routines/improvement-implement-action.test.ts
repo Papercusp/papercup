@@ -157,9 +157,9 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
     await run();
 
     expect(ledgerFired).toEqual([
-      // hiveSlug is null for an operator-scoped item (cand() defaults scope:'operator') —
+      // potSlug is null for an operator-scoped item (cand() defaults scope:'operator') —
       // the P-012 per-hive dispatch stamp only resolves for `harness:` scopes.
-      { workspaceId: 'ws-1', itemId: 'EI-1', attempt: 2, runnerHarness: 'improvement-runner-harness', hiveSlug: null },
+      { workspaceId: 'ws-1', itemId: 'EI-1', attempt: 2, runnerHarness: 'improvement-runner-harness', potSlug: null },
     ]);
     expect(ledgerResults).toEqual([{ dispatchId: 'd-1', result: { ok: true, spawnedRunId: 'launch-123-abc' } }]);
   });
@@ -257,7 +257,7 @@ describe('system:improvement-implement — runner-harness defaults to ctx.instal
     // the install slug as the runner.
     expect(dispatched.map((s) => s.id)).toEqual(['EI-NOENV']);
     expect(ledgerFired).toEqual([
-      { workspaceId: 'ws-1', itemId: 'EI-NOENV', attempt: 1, runnerHarness: 'papercup', hiveSlug: null },
+      { workspaceId: 'ws-1', itemId: 'EI-NOENV', attempt: 1, runnerHarness: 'papercup', potSlug: null },
     ]);
   });
 
@@ -268,7 +268,7 @@ describe('system:improvement-implement — runner-harness defaults to ctx.instal
     await run();
 
     expect(ledgerFired).toEqual([
-      { workspaceId: 'ws-1', itemId: 'EI-OVERRIDE', attempt: 1, runnerHarness: 'a-different-runner', hiveSlug: null },
+      { workspaceId: 'ws-1', itemId: 'EI-OVERRIDE', attempt: 1, runnerHarness: 'a-different-runner', potSlug: null },
     ]);
   });
 });

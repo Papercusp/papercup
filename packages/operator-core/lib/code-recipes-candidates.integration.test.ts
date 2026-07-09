@@ -31,7 +31,7 @@ async function seedRuns(
   sql: postgres.Sql,
   recipeId: string,
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   opts: { runs: number; agents: string[]; successes?: number },
 ): Promise<void> {
   const successes = opts.successes ?? opts.runs;
@@ -39,7 +39,7 @@ async function seedRuns(
     await recordRecipeRun(sql, {
       recipeId,
       workspaceId,
-      hiveSlug,
+      potSlug,
       agentOwner: opts.agents[i % opts.agents.length],
       agentRole: 'cup',
       success: i < successes,

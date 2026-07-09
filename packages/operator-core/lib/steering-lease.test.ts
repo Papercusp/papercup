@@ -36,7 +36,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
     });
     expect(v.holder).toBe(true);
     expect(v.reason).toBe('authority');
-    expect(v.hiveSlug).toBe('the-hive');
+    expect(v.potSlug).toBe('the-hive');
     expect(v.liveCount).toBe(1);
   });
 
@@ -88,7 +88,7 @@ describe('checkSteeringLease — holder resolution over the per-Hive authority',
     });
     const v = await checkSteeringLease(WS, 'member');
     expect(v.holder).toBe(false);
-    expect(v.hiveSlug).toBe('injected-hive');
+    expect(v.potSlug).toBe('injected-hive');
     expect(v.holderLabel).toBe('an unidentified peer Swarm'); // no peer ref resolved
   });
 });
@@ -107,7 +107,7 @@ describe('checkSteeringLease — P-021 queen-home override of the election', () 
         throw new Error('election must not be consulted when home decides');
       },
     });
-    expect(v).toMatchObject({ holder: true, reason: 'queen-home', hiveSlug: 'the-hive' });
+    expect(v).toMatchObject({ holder: true, reason: 'queen-home', potSlug: 'the-hive' });
   });
 
   it('home != self ⇒ non-holder (reason not-queen-home), labelled by the recorded home', async () => {
@@ -158,7 +158,7 @@ describe('recordSteeringProposal — the propose half (comment + escalation)', (
         harnessSlug: 'member',
         featureId: 'F-042',
         requestedOrder: 3,
-        hiveSlug: 'the-hive',
+        potSlug: 'the-hive',
         holderLabel: 'box-b',
       },
       {
@@ -189,7 +189,7 @@ describe('recordSteeringProposal — the propose half (comment + escalation)', (
         harnessSlug: 'member',
         featureId: 'F-042',
         requestedOrder: null,
-        hiveSlug: 'the-hive',
+        potSlug: 'the-hive',
         holderLabel: 'box-b',
       },
       { comment: async () => {}, escalate: async (e) => void escalations.push(e) },
@@ -206,7 +206,7 @@ describe('recordSteeringProposal — the propose half (comment + escalation)', (
           harnessSlug: 'member',
           featureId: 'F-042',
           requestedOrder: 1,
-          hiveSlug: 'the-hive',
+          potSlug: 'the-hive',
           holderLabel: 'box-b',
         },
         {

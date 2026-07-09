@@ -159,10 +159,10 @@ export default function HarnessesWorkspace() {
   // exit all-mode (scope=expanded), set the hive, then the member (null when
   // it's the root — the default focus, keeping URLs clean).
   const drillIntoMember = useCallback(
-    async (hiveSlug: string, memberSlug: string) => {
+    async (potSlug: string, memberSlug: string) => {
       await setScopeMode('expanded');
-      await setSlug(hiveSlug);
-      await setHarness(memberSlug === hiveSlug ? null : memberSlug);
+      await setSlug(potSlug);
+      await setHarness(memberSlug === potSlug ? null : memberSlug);
     },
     [setScopeMode, setSlug, setHarness],
   );
@@ -197,7 +197,7 @@ export default function HarnessesWorkspace() {
               member surface. Gated so a solo non-hive harness is byte-identical. */}
           {showHiveHeader && (
             <HiveHeaderStrip
-              hiveSlug={slug}
+              potSlug={slug}
               hiveKind={hiveRoot?.harness_kind ?? null}
               isShared={hiveRoot?.is_shared}
               members={headerMembers}

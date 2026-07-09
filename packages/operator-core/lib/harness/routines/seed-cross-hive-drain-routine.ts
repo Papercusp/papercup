@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   // Delegate to the shared arm helper (the per-hive twin used by pot:create) so
   // the seeded row never drifts from what a freshly-created hive gets.
-  const { routineId } = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, hiveSlug: SLUG, active });
+  const { routineId } = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, potSlug: SLUG, active });
   console.log(`[seed-cross-hive-drain] routine ${routineId} seeded (install=${SLUG}, active=${active})`);
   await sql.end({ timeout: 5 });
 }

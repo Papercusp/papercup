@@ -25,7 +25,7 @@ function rosterRow(i: number, overrides: Record<string, unknown> = {}) {
     pid: 1000 + i,
     startedAt: "2026-07-01T00:00:00Z",
     agentRole: "su",
-    hiveSlug: null,
+    potSlug: null,
     fleetSlug: i % 2 ? "backend" : null,
     fleetRole: null,
     model: "claude-fable-5",

@@ -57,7 +57,7 @@ async function makeDevice(keychainId: string): Promise<{ keychainId: string; pub
 }
 
 const HIVE = 'hive-public-1';
-const AD = (epoch: number, opId: string): OpAAD => ({ hiveId: HIVE, epoch, opId });
+const AD = (epoch: number, opId: string): OpAAD => ({ potId: HIVE, epoch, opId });
 
 beforeEach(() => {
   mem.clear();

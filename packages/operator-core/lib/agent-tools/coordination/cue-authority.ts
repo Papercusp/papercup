@@ -55,14 +55,14 @@ export const CUE_AUTHORITY_FIELD = 'cueAuthority';
  */
 export function resolveCueAuthority(input: {
   kind: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   fleetSlug?: string | null;
   fleetRole?: string | null;
 }): CueAuthorityStamp | null {
   if (input.kind === 'mug' || input.kind === 'kettle') {
     return {
       authority: 'hive-queen',
-      authorityRef: (input.hiveSlug ?? '').trim() || '(hive)',
+      authorityRef: (input.potSlug ?? '').trim() || '(hive)',
       scope: 'hive-wide',
     };
   }

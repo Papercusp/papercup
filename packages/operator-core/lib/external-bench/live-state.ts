@@ -33,7 +33,7 @@ export interface LiveSampleRow {
 export interface BenchRunLiveState {
   runId: string;
   status: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** A genuinely in-flight run with a live fleet (vs a completed/imported run). */
   isLive: boolean;
   queen: {
@@ -78,14 +78,14 @@ function isOpusModel(model: string | null, modelClass: string | null): boolean {
 export function aggregateBenchRunLiveState(args: {
   runId: string;
   status: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   startedAtMs: number | null;
   nowMs: number;
   agents: LiveSpawnRow[];
   samples: LiveSampleRow[];
   taskCounts: Record<string, number>;
 }): BenchRunLiveState {
-  const { runId, status, hiveSlug, startedAtMs, nowMs, agents, samples, taskCounts } = args;
+  const { runId, status, potSlug, startedAtMs, nowMs, agents, samples, taskCounts } = args;
 
   // ── Queen ──
   const queenRows = agents.filter((a) => a.childRole === QUEEN_ROLE);
@@ -141,9 +141,9 @@ export function aggregateBenchRunLiveState(args: {
   };
 
   const activeStatus = status === 'running' || status === 'grading' || status === 'pending';
-  const isLive = hiveSlug != null && activeStatus && agents.length > 0;
+  const isLive = potSlug != null && activeStatus && agents.length > 0;
 
-  return { runId, status, hiveSlug, isLive, queen, bees: { total: beeRows.length, placed, working, done, evicted, failed, byStatus }, models, spendUsd, wallSec, taskProgress };
+  return { runId, status, potSlug, isLive, queen, bees: { total: beeRows.length, placed, working, done, evicted, failed, byStatus }, models, spendUsd, wallSec, taskProgress };
 }
 
 /** Fetch the live fleet state for a run (reads spawned_agents / agent_usage_samples
@@ -189,7 +189,7 @@ export async function getBenchRunLiveState(runId: string, opts: DbScope = {}): P
   return aggregateBenchRunLiveState({
     runId,
     status: run.status,
-    hiveSlug: run.pot_slug,
+    potSlug: run.pot_slug,
     startedAtMs: run.started_at ? Date.parse(run.started_at) : null,
     nowMs: Date.now(),
     agents,

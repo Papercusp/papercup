@@ -20,7 +20,7 @@ import type { DiscoveredHive } from './hive-directory';
 
 function hive(id: string): DiscoveredHive {
   return {
-    hiveId: id,
+    potId: id,
     title: id,
     description: '',
     ownerGithubLogin: 'alice',
@@ -48,7 +48,7 @@ describe('hive_directory_cache (real PG, migration 182)', () => {
   it('round-trips the discovered set through the cache table', async () => {
     await writeOperatorState('hive_directory_cache', { hives: [hive('ash'), hive('cup')] });
     const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache');
-    expect(row?.hives.map((x) => x.hiveId)).toEqual(['ash', 'cup']);
+    expect(row?.hives.map((x) => x.potId)).toEqual(['ash', 'cup']);
     expect(row?.hives[0]).toMatchObject({ title: 'ash', visibility: 'public', attested: true });
   });
 
@@ -56,7 +56,7 @@ describe('hive_directory_cache (real PG, migration 182)', () => {
     await writeOperatorState('hive_directory_cache', { hives: [hive('only')] });
     const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache');
     expect(row?.hives).toHaveLength(1);
-    expect(row?.hives[0].hiveId).toBe('only');
+    expect(row?.hives[0].potId).toBe('only');
   });
 
   it('returns null before any write (cold cache)', async () => {

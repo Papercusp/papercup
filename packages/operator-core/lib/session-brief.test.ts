@@ -74,7 +74,7 @@ describe('writeSessionBrief (best-effort upsert)', () => {
       currentPlanSlug: 'plan-x',
       currentFiles: ['a.ts', 'b.ts'],
       harnessSlug: 'papercusp',
-      hiveSlug: null,
+      potSlug: null,
     });
     expect(rec.calls).toHaveLength(1);
     const vals = rec.calls[0];

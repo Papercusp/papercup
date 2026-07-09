@@ -61,7 +61,7 @@ describe('seedPackIntoHive', () => {
     const { backend } = makeBackend();
     const res = await seedPackIntoHive({
       workspaceId: 'ws-1',
-      hiveSlug: 'my-hive',
+      potSlug: 'my-hive',
       pack,
       shapes: ['ui'],
     });
@@ -94,7 +94,7 @@ describe('seedPackIntoHive', () => {
 
   it('repo-less (no shapes) seeds any-only; undo forgets every written id', async () => {
     const { forgotten } = makeBackend();
-    const res = await seedPackIntoHive({ workspaceId: 'ws', hiveSlug: 'h', pack });
+    const res = await seedPackIntoHive({ workspaceId: 'ws', potSlug: 'h', pack });
     expect(res.seeded).toBe(1);
     expect(res.ids).toEqual(['id-1']);
     await res.undo();
@@ -103,7 +103,7 @@ describe('seedPackIntoHive', () => {
 
   it('unavailable store → ok:false, nothing written, undo is a no-op', async () => {
     const { backend, forgotten } = makeBackend({ available: false });
-    const res = await seedPackIntoHive({ workspaceId: 'ws', hiveSlug: 'h', pack });
+    const res = await seedPackIntoHive({ workspaceId: 'ws', potSlug: 'h', pack });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/memory_unavailable/);
     expect(res.seeded).toBe(0);
@@ -118,7 +118,7 @@ describe('seedPackIntoHive', () => {
       makeBackend({ failOn: ['body a'] });
       const res = await seedPackIntoHive({
         workspaceId: 'ws',
-        hiveSlug: 'h',
+        potSlug: 'h',
         pack,
         shapes: ['ui', 'cli'],
       });
@@ -134,7 +134,7 @@ describe('seedPackIntoHive', () => {
 
   it('createdBy overrides the system stamp', async () => {
     const { backend } = makeBackend();
-    await seedPackIntoHive({ workspaceId: 'ws', hiveSlug: 'h', pack, createdBy: 'user-7' });
+    await seedPackIntoHive({ workspaceId: 'ws', potSlug: 'h', pack, createdBy: 'user-7' });
     const [, o] = backend.remember.mock.calls[0] as unknown as RememberCall;
     expect((o.metadata as Record<string, unknown>).created_by).toBe('user-7');
   });

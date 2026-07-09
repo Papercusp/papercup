@@ -30,7 +30,7 @@ function providerThrowing(err: Error): EpochKeyProvider {
 function manifestWithEncryptedGit(via: 'epoch' | 'seed-key-op' = 'epoch'): SeedManifest {
   return {
     seedFormatVersion: 1,
-    hiveId: 'rig-hive',
+    potId: 'rig-hive',
     cutAtEpoch: 3,
     cutHlc: '0',
     cutTs: 1,
@@ -43,7 +43,7 @@ function manifestWithEncryptedGit(via: 'epoch' | 'seed-key-op' = 'epoch'): SeedM
         source: { type: 'resource', path: 'git' },
         encryption: {
           scheme: 'chacha20-poly1305',
-          keyRef: via === 'epoch' ? { via: 'epoch', hiveId: 'rig-hive', epoch: 3 } : { via: 'seed-key-op', hiveId: 'rig-hive' },
+          keyRef: via === 'epoch' ? { via: 'epoch', potId: 'rig-hive', epoch: 3 } : { via: 'seed-key-op', potId: 'rig-hive' },
         },
       },
     ],
@@ -55,7 +55,7 @@ const okRestore = (kind: string): RestoreHiveSeedResult => ({ ran: true, outcome
 describe('resolveSeedDecryptionKey', () => {
   it("via='epoch' ⇒ resolves the epoch key through the provider", async () => {
     const provider = providerWith(KEY);
-    const key = await resolveSeedDecryptionKey({ via: 'epoch', hiveId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider });
+    const key = await resolveSeedDecryptionKey({ via: 'epoch', potId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider });
     expect(key).toEqual(KEY);
     expect(provider.keyForEpoch).toHaveBeenCalledWith('rig-hive', 3);
   });
@@ -63,25 +63,25 @@ describe('resolveSeedDecryptionKey', () => {
   it("via='epoch' + key not yet held (EpochKeyUnavailableError) ⇒ null (defer), never throws", async () => {
     const provider = providerThrowing(new EpochKeyUnavailableError('rig-hive', 3));
     const logs: string[] = [];
-    const key = await resolveSeedDecryptionKey({ via: 'epoch', hiveId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider, log: (m) => logs.push(m) });
+    const key = await resolveSeedDecryptionKey({ via: 'epoch', potId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider, log: (m) => logs.push(m) });
     expect(key).toBeNull();
     expect(logs.some((l) => /not yet held/.test(l))).toBe(true);
   });
 
   it("via='epoch' + an unexpected provider error ⇒ null (defer), never throws", async () => {
     const provider = providerThrowing(new Error('pg exploded'));
-    const key = await resolveSeedDecryptionKey({ via: 'epoch', hiveId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider });
+    const key = await resolveSeedDecryptionKey({ via: 'epoch', potId: 'rig-hive', epoch: 3 }, { epochKeyProvider: provider });
     expect(key).toBeNull();
   });
 
   it("via='epoch' + no provider wired ⇒ null (defer)", async () => {
-    const key = await resolveSeedDecryptionKey({ via: 'epoch', hiveId: 'rig-hive', epoch: 3 }, {});
+    const key = await resolveSeedDecryptionKey({ via: 'epoch', potId: 'rig-hive', epoch: 3 }, {});
     expect(key).toBeNull();
   });
 
   it("via='seed-key-op' ⇒ null (no delivery path yet) + a log pointing at via='epoch'", async () => {
     const logs: string[] = [];
-    const key = await resolveSeedDecryptionKey({ via: 'seed-key-op', hiveId: 'rig-hive' }, { epochKeyProvider: providerWith(KEY), log: (m) => logs.push(m) });
+    const key = await resolveSeedDecryptionKey({ via: 'seed-key-op', potId: 'rig-hive' }, { epochKeyProvider: providerWith(KEY), log: (m) => logs.push(m) });
     expect(key).toBeNull();
     expect(logs.some((l) => /seed-key-op.*no post-admission delivery|use via='epoch'/.test(l))).toBe(true);
   });
@@ -99,7 +99,7 @@ describe('triggerDeferredGitRestore', () => {
 
   it('a manifest with NO encrypted store ⇒ no-op (nothing was deferred)', async () => {
     const plain: SeedManifest = {
-      seedFormatVersion: 1, hiveId: 'h', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      seedFormatVersion: 1, potId: 'h', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
       stores: [{ kind: 'corestore', hash: 'a', sizeBytes: 1, source: { type: 'resource', path: 'corestore' } }],
     };
     const restore = vi.fn();

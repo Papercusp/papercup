@@ -5,7 +5,7 @@
  *
  * This is the GENERICITY proof for the seed-bundle layer: the same cut/restore
  * capability the installer uses is driven end-to-end by an ARBITRARY consumer —
- * an arbitrary hiveId + arbitrary dirs, with no papercusp-installer bootstrap in
+ * an arbitrary potId + arbitrary dirs, with no papercusp-installer bootstrap in
  * sight — showing the layer is a reusable capability (D-006: dogfood is the first
  * consumer, not the only one), not a one-off wired to the installer. Distinct from
  * its siblings:
@@ -108,10 +108,10 @@ describe('seed-bundle second (generic) consumer', () => {
     const keyHex = logA.keyHex;
 
     // ---- CUT a combined seed via the TOP-LEVEL façade (the release CLI's API),
-    //      as an ARBITRARY consumer: arbitrary hiveId, no installer in sight. ----
+    //      as an ARBITRARY consumer: arbitrary potId, no installer in sight. ----
     const seedDir = tmpDir('p9-seed-');
     const cut = await cutHiveSeed({
-      hiveId: 'rig-hive',
+      potId: 'rig-hive',
       cutAtEpoch: 0,
       cutHlc: '0',
       cutTs: 1,
@@ -119,7 +119,7 @@ describe('seed-bundle second (generic) consumer', () => {
       git: { sourceRepoDir: srcRepo, originUrl: 'https://github.com/Papercusp/papercup', rev: '--all' },
       corestore: { sourceStore: srcStore, coreKeys: [keyHex] },
     });
-    expect(cut.manifest.hiveId).toBe('rig-hive');
+    expect(cut.manifest.potId).toBe('rig-hive');
     expect(cut.manifest.stores.map((s) => s.kind).sort()).toEqual(['corestore', 'git']);
 
     // ---- SOURCE ADVANCES beyond the cut (the live delta the join would carry) ----
@@ -201,7 +201,7 @@ describe('seed-bundle second (generic) consumer', () => {
     // Cut + restore the whole shape through ONE top-level façade round-trip.
     const seedDir = tmpDir('p9-shape-seed-');
     await cutHiveSeed({
-      hiveId: 'rig-hive',
+      potId: 'rig-hive',
       cutAtEpoch: 0,
       cutHlc: '0',
       cutTs: 1,

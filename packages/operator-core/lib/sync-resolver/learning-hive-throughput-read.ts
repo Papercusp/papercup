@@ -21,7 +21,7 @@ import {
 
 /** One hive's throughput view: latest metrics + recent trend + health verdict. */
 export interface HiveThroughputView {
-  hiveSlug: string;
+  potSlug: string;
   /** The newest tick (the live cards), or null when none recorded. */
   latest: HiveThroughputTickRow | null;
   /** Recent ticks, newest-first, for the trend sparkline. */
@@ -45,7 +45,7 @@ export function isUndefinedTable(err: unknown): boolean {
 export async function readHiveThroughputSnapshot(
   sql: Sql,
   workspaceId: string,
-  opts: { hiveSlug?: string; recentLimit?: number } = {},
+  opts: { potSlug?: string; recentLimit?: number } = {},
 ): Promise<HiveThroughputSnapshot> {
   const recentLimit = Math.min(Math.max(opts.recentLimit ?? 60, 1), 500);
   let rows: RawThroughputTickRow[] = [];
@@ -56,7 +56,7 @@ export async function readHiveThroughputSnapshot(
              stuck_count, completed, mttc_ms, question_rungs, detail
         FROM harness_shared.hive_throughput_ticks
        WHERE workspace_id = ${workspaceId}
-         ${opts.hiveSlug ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
+         ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
        ORDER BY tick_at DESC
        LIMIT 2000
     `) as RawThroughputTickRow[];
@@ -71,21 +71,21 @@ export async function readHiveThroughputSnapshot(
   const byHive = new Map<string, HiveThroughputTickRow[]>();
   for (const raw of rows) {
     const row = normalizeThroughputRow(raw);
-    const list = byHive.get(row.hiveSlug);
+    const list = byHive.get(row.potSlug);
     if (list) list.push(row);
-    else byHive.set(row.hiveSlug, [row]);
+    else byHive.set(row.potSlug, [row]);
   }
 
-  const hives: HiveThroughputView[] = [...byHive.entries()].map(([hiveSlug, ticks]) => {
+  const hives: HiveThroughputView[] = [...byHive.entries()].map(([potSlug, ticks]) => {
     const latest = ticks[0] ?? null;
     return {
-      hiveSlug,
+      potSlug,
       latest,
       recent: ticks.slice(0, recentLimit),
       operatingWell: latest ? isOperatingWell(latest) : false,
     };
   });
   // Stable order: hives with a stuck/starved latest tick first (attention), then alphabetical.
-  hives.sort((a, b) => Number(a.operatingWell) - Number(b.operatingWell) || a.hiveSlug.localeCompare(b.hiveSlug));
+  hives.sort((a, b) => Number(a.operatingWell) - Number(b.operatingWell) || a.potSlug.localeCompare(b.potSlug));
   return { hives };
 }

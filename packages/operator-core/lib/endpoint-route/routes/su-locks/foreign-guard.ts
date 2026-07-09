@@ -63,7 +63,7 @@ export default defineTool({
       try {
         await bumpRefusedOpCounter({
           workspaceId: verdict.workspaceId ?? 'unknown',
-          hiveSlug: verdict.fleetSlug ?? 'unknown',
+          potSlug: verdict.fleetSlug ?? 'unknown',
           reason: verdict.refusalCode,
         });
       } catch {

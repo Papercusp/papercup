@@ -21,8 +21,8 @@ import type { CheckOutboundGrant, SendCrossHiveAskDeps } from '../../cross-hive-
  * (and, inside assertOutboundGrant, the expiry + C-1-counted rate cap) gates
  * the send before any ledger row exists.
  */
-const checkOutboundGrant: CheckOutboundGrant = async (ws, hiveSlug, peerPubkey, kind, bodyBytes) => {
-  const verdict = await assertOutboundGrant(ws, hiveSlug, peerPubkey, kind, undefined, {
+const checkOutboundGrant: CheckOutboundGrant = async (ws, potSlug, peerPubkey, kind, bodyBytes) => {
+  const verdict = await assertOutboundGrant(ws, potSlug, peerPubkey, kind, undefined, {
     ...(bodyBytes != null ? { bodyBytes } : {}),
   });
   return { allowed: verdict.admitted, reason: verdict.reason };

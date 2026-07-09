@@ -39,7 +39,7 @@ export interface SteeringLeaseVerdict {
   holder: boolean;
   reason: 'not-in-hive' | 'authority' | 'remote-holder' | 'fail-open' | 'queen-home' | 'not-queen-home';
   /** The hive whose authority arbitrated (absent for not-in-hive/fail-open). */
-  hiveSlug?: string;
+  potSlug?: string;
   /** Live Swarms considered by the election (when resolved). */
   liveCount?: number;
   /** Human-readable holder label, set when a REMOTE Swarm holds the lease. */
@@ -51,7 +51,7 @@ export interface SteeringLeaseDeps {
   /** harness → its home Hive slug (null = not in a Hive). Default: hiveHomeSlugForHarness. */
   resolveHive?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /** The per-Hive lock authority. Default: lockAuthorityForHive. */
-  hiveAuthority?: (hiveSlug: string) => Promise<AuthorityResolution>;
+  hiveAuthority?: (potSlug: string) => Promise<AuthorityResolution>;
   /**
    * P-021: the Hive's recorded queen-home device pubkey (null when unset). Default:
    * getQueenHomePubkey. When SET it overrides the lock-authority election — the owner
@@ -60,7 +60,7 @@ export interface SteeringLeaseDeps {
    * through to the election (unchanged). The queen-guard's evaluateQueenTurnGate
    * makes the home-vs-self decision.
    */
-  resolveQueenHome?: (workspaceId: string, hiveSlug: string) => Promise<string | null>;
+  resolveQueenHome?: (workspaceId: string, potSlug: string) => Promise<string | null>;
   /** This Swarm's device pubkey (null when gh-unauthenticated). Default: resolveUsageActor().devicePubkey. */
   resolveSelfPubkey?: () => Promise<string | null>;
   /** Proposal sinks (recordSteeringProposal). Defaults: work-item comment + coord escalation. */
@@ -113,8 +113,8 @@ export async function checkSteeringLease(
       return (await resolveUsageActor())?.devicePubkey ?? null;
     });
   try {
-    const hiveSlug = await resolveHive(workspaceId, harnessSlug);
-    if (!hiveSlug) return { holder: true, reason: 'not-in-hive' };
+    const potSlug = await resolveHive(workspaceId, harnessSlug);
+    if (!potSlug) return { holder: true, reason: 'not-in-hive' };
 
     // P-021 (I2 / queen-guard D-008): an EXPLICITLY-RECORDED queen home overrides
     // the election. The owner deployed the Queen on a chosen Swarm; THAT Swarm
@@ -123,19 +123,19 @@ export async function checkSteeringLease(
     // today) the gate fails open and we fall through to the lock-authority election,
     // so behaviour is unchanged until a home is recorded. A node with no resolvable
     // self identity ALSO falls through (never strand a lone box on an unset self).
-    const queenHome = await resolveQueenHome(workspaceId, hiveSlug);
+    const queenHome = await resolveQueenHome(workspaceId, potSlug);
     if (queenHome) {
       const self = await resolveSelfPubkey();
       if (self) {
         const gate = evaluateQueenTurnGate({ selfPubkey: self, queenHomePubkey: queenHome });
         if (gate.ok && gate.reason === 'home-swarm') {
-          return { holder: true, reason: 'queen-home', hiveSlug };
+          return { holder: true, reason: 'queen-home', potSlug };
         }
         if (!gate.ok) {
           return {
             holder: false,
             reason: 'not-queen-home',
-            hiveSlug,
+            potSlug,
             holderLabel: `${queenHome.slice(0, 12)}… (recorded queen home)`,
           };
         }
@@ -144,14 +144,14 @@ export async function checkSteeringLease(
       // self unresolved → fall through to the election (fail-open).
     }
 
-    const res = await authority(hiveSlug);
+    const res = await authority(potSlug);
     if (res.isSelf) {
-      return { holder: true, reason: 'authority', hiveSlug, liveCount: res.liveCount };
+      return { holder: true, reason: 'authority', potSlug, liveCount: res.liveCount };
     }
     return {
       holder: false,
       reason: 'remote-holder',
-      hiveSlug,
+      potSlug,
       liveCount: res.liveCount,
       holderLabel: res.peer
         ? res.peer.machineLabel || `${res.peer.devicePubkey.slice(0, 12)}…`
@@ -172,7 +172,7 @@ export interface SteeringProposalInput {
   featureId: string;
   /** The feature_order the non-holder wanted (null = unprioritize). */
   requestedOrder: number | null;
-  hiveSlug: string;
+  potSlug: string;
   holderLabel: string;
 }
 
@@ -192,7 +192,7 @@ export async function recordSteeringProposal(
     input.requestedOrder === null ? 'clear its priority (unprioritize)' : `feature_order=${input.requestedOrder}`;
   const text =
     `Steering PROPOSAL (single-steerer lease, D-004 @ hive-network-surface-2026-06-11): ` +
-    `this Swarm does not hold hive '${input.hiveSlug}'s steering lease (holder: ${input.holderLabel}) — ` +
+    `this Swarm does not hold hive '${input.potSlug}'s steering lease (holder: ${input.holderLabel}) — ` +
     `the request to ${want} on ${input.featureId} was NOT committed. ` +
     `Holder Queen: dispose by re-applying via work_items:set_priority, or ignore.`;
 

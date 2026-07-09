@@ -223,7 +223,18 @@ export const accountsResetRateTool = defineTool({
         .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
         .catch(() => {});
     }
-    return bulkContent(env);
+    // EI-8797 residual: the store reset above is only the PERSISTED half — the live gateway process
+    // keeps its own in-memory failover pause, so /stats kept reporting healthyAccounts=0 after a
+    // confirmed reset (split-brain; capacity readers then under-count). Poke the live gateway to
+    // readmit the reset ids NOW. Best-effort (gateway down / pre-readmit binary ⇒ reachable:false)
+    // and REPORTED in the result, so the caller can verify the live pool cleared instead of assuming.
+    let gatewayReadmit: { reachable: boolean; readmitted: string[]; healthyAccounts?: number; error?: string } | undefined;
+    if (anyReset) {
+      const { readmitGatewayAccounts } = await import('../../inference-gateway/observability');
+      const okIds = env.results.filter((r) => r.ok).map((r) => r.id);
+      gatewayReadmit = await readmitGatewayAccounts(okIds);
+    }
+    return bulkContent(gatewayReadmit ? { ...env, gatewayReadmit } : env);
   },
 });
 

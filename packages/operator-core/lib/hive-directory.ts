@@ -57,7 +57,7 @@ export type { SignedHiveAnnounce, HiveVisibility } from './sync/hyperbee/hive-an
 
 /** A hive discovered on the directory topic (verified), as listed to UI surfaces. */
 export interface DiscoveredHive {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   ownerGithubLogin: string;
@@ -96,7 +96,7 @@ export interface DiscoveredHive {
 
 /** A hive THIS peer owns + announces. */
 export interface LocalHiveDescriptor {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   /**
@@ -178,7 +178,7 @@ export interface HiveDirectoryDeps {
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
   saveCache?(hives: DiscoveredHive[]): Promise<void>;
-  /** P-005: load the withdrawal tombstones (hiveId → unlist ts). Optional —
+  /** P-005: load the withdrawal tombstones (potId → unlist ts). Optional —
    *  omit for in-memory-only tombstones (a reboot could resurrect a dropped
    *  hive from the offline cache until its TTL). */
   loadTombstones?(): Promise<Record<string, number>>;
@@ -198,7 +198,7 @@ export interface HiveDirectoryDeps {
    * Best-effort: a throw/reject is caught + warned, never rejecting the announce.
    * Prod: captureBeaconSnapshot from network-board/beacon-history-pg.ts.
    */
-  onBeaconAccepted?(hiveId: string, hivePubkey: string | null, beacon: HiveStatusBeacon): Promise<void>;
+  onBeaconAccepted?(potId: string, hivePubkey: string | null, beacon: HiveStatusBeacon): Promise<void>;
   /** Clock seam for deterministic tests. */
   now?(): number;
 }
@@ -210,7 +210,7 @@ export class HiveDirectory {
   private readonly discovered = new Map<string, DiscoveredHive>();
   private readonly owned = new Map<string, LocalHiveDescriptor>();
   private readonly muted = new Set<string>();
-  /** P-005: withdrawal tombstones — hiveId → the unlist frame's ts. An
+  /** P-005: withdrawal tombstones — potId → the unlist frame's ts. An
    *  announce with ts ≤ this stays dropped; a newer one relists + clears. */
   private readonly tombstones = new Map<string, number>();
   private reannounceTimer: ManagedHandle | null = null;
@@ -233,8 +233,8 @@ export class HiveDirectory {
    *  topic. Returns 0 for an unknown/private hive (private never announces). This
    *  is what the publish path must report so an invite publish does not count the
    *  global-directory peers the invite announce never reaches. */
-  reachablePeersForHive(hiveId: string): number {
-    const desc = this.owned.get(hiveId);
+  reachablePeersForHive(potId: string): number {
+    const desc = this.owned.get(potId);
     if (!desc) return 0;
     const topic = this.topicForLocalHive(desc); // null = private (never announces)
     if (!topic) return 0;
@@ -255,10 +255,10 @@ export class HiveDirectory {
     if (!this.deps.loadCache) return this.discovered.size;
     const cached = await this.deps.loadCache().catch(() => [] as DiscoveredHive[]);
     for (const h of cached) {
-      if (this.muted.has(h.hiveId)) continue;
-      const tomb = this.tombstones.get(h.hiveId);
+      if (this.muted.has(h.potId)) continue;
+      const tomb = this.tombstones.get(h.potId);
       if (tomb !== undefined && h.announcedTs <= tomb) continue; // withdrawn
-      this.discovered.set(h.hiveId, h);
+      this.discovered.set(h.potId, h);
     }
     return this.discovered.size;
   }
@@ -306,7 +306,7 @@ export class HiveDirectory {
     // NEVER a rejected announce (the frame already passed sig + attestation).
     const beacon = sanitizeBeacon(frame.beacon);
     this.discovered.set(frame.hive_id, {
-      hiveId: frame.hive_id,
+      potId: frame.hive_id,
       title: frame.title,
       description: frame.description,
       ownerGithubLogin: frame.owner_github_login,
@@ -341,7 +341,7 @@ export class HiveDirectory {
     const nowMs = this.nowMs();
     const out: DiscoveredHive[] = [];
     for (const h of this.discovered.values()) {
-      if (this.muted.has(h.hiveId)) continue;
+      if (this.muted.has(h.potId)) continue;
       if (!opts.includeExpired && nowMs - h.lastSeenMs > DISCOVERED_HIVE_TTL_MS) continue;
       out.push(h);
     }
@@ -379,18 +379,18 @@ export class HiveDirectory {
    * frame, or null when the hive is unknown/private (a private hive never
    * announced — there is nothing to withdraw on the wire).
    */
-  async unlistLocalHive(hiveId: string): Promise<SignedHiveUnlist | null> {
-    const desc = this.owned.get(hiveId);
+  async unlistLocalHive(potId: string): Promise<SignedHiveUnlist | null> {
+    const desc = this.owned.get(potId);
     if (!desc) return null;
     const topic = this.topicForLocalHive(desc); // null = private, never on the wire
     if (!topic) {
-      this.owned.delete(hiveId);
+      this.owned.delete(potId);
       return null;
     }
     const frame = await buildHiveUnlist(
       {
         kind: HIVE_UNLIST_KIND,
-        hive_id: hiveId,
+        hive_id: potId,
         owner_device_pubkey: desc.ownerDevicePubkey,
         ts: this.nowMs(),
       },
@@ -399,7 +399,7 @@ export class HiveDirectory {
     await this.deps
       .broadcast(hiveTopicAsHex(topic), frame as unknown as SignedHiveAnnounce)
       .catch(() => {});
-    this.owned.delete(hiveId);
+    this.owned.delete(potId);
     return frame;
   }
 
@@ -409,22 +409,22 @@ export class HiveDirectory {
   }
 
   /** Locally hide a hive from the browse list (D-001 — no global moderation). */
-  mute(hiveId: string): void {
-    this.muted.add(hiveId);
+  mute(potId: string): void {
+    this.muted.add(potId);
   }
-  unmute(hiveId: string): void {
-    this.muted.delete(hiveId);
+  unmute(potId: string): void {
+    this.muted.delete(potId);
   }
-  isMuted(hiveId: string): boolean {
-    return this.muted.has(hiveId);
+  isMuted(potId: string): boolean {
+    return this.muted.has(potId);
   }
 
   /** Register a hive THIS peer owns so it can be (re-)announced. */
   registerLocalHive(desc: LocalHiveDescriptor): void {
-    this.owned.set(desc.hiveId, desc);
+    this.owned.set(desc.potId, desc);
   }
-  unregisterLocalHive(hiveId: string): void {
-    this.owned.delete(hiveId);
+  unregisterLocalHive(potId: string): void {
+    this.owned.delete(potId);
   }
 
   /** The topic a given visibility announces on (null = never announces). */
@@ -432,7 +432,7 @@ export class HiveDirectory {
     if (desc.visibility === 'public') return deriveDirectoryTopic();
     if (desc.visibility === 'invite') {
       if (!desc.inviteSecret) {
-        throw new Error(`hive ${desc.hiveId} is invite-visibility but has no inviteSecret`);
+        throw new Error(`hive ${desc.potId} is invite-visibility but has no inviteSecret`);
       }
       return deriveInviteTopic(desc.inviteSecret);
     }
@@ -455,7 +455,7 @@ export class HiveDirectory {
       ? await this.deps.enrichDescriptor(descIn).catch(() => descIn)
       : descIn;
     const body: HiveAnnounceBody = {
-      hive_id: desc.hiveId,
+      hive_id: desc.potId,
       title: desc.title,
       description: desc.description,
       owner_github_login: desc.ownerGithubLogin,
@@ -476,8 +476,8 @@ export class HiveDirectory {
     return buildHiveAnnounce(body, this.deps.sign);
   }
 
-  async announceLocalHive(hiveId: string): Promise<SignedHiveAnnounce | null> {
-    const desc = this.owned.get(hiveId);
+  async announceLocalHive(potId: string): Promise<SignedHiveAnnounce | null> {
+    const desc = this.owned.get(potId);
     if (!desc) return null;
     const topic = this.topicForLocalHive(desc);
     if (!topic) return null; // private
@@ -514,8 +514,8 @@ export class HiveDirectory {
   /** Re-announce every owned non-private hive (the timer body). Returns the count broadcast. */
   async reannounceAll(): Promise<number> {
     let n = 0;
-    for (const hiveId of this.owned.keys()) {
-      const frame = await this.announceLocalHive(hiveId).catch(() => null);
+    for (const potId of this.owned.keys()) {
+      const frame = await this.announceLocalHive(potId).catch(() => null);
       if (frame) n += 1;
     }
     return n;

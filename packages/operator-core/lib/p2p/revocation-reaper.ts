@@ -101,7 +101,7 @@ export interface ReapArgs {
   /** The caller's RESOLVED identity workspace (C3). A `default`/`*`/null partition
    *  is REFUSED loudly — a stranded reap that never federates is a security hole. */
   workspaceId: string | null | undefined;
-  hiveSlug: string;
+  potSlug: string;
   /** The enforcing side = the receipt author = this host's grantor user (X9 numeric). */
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
@@ -177,7 +177,7 @@ export async function reapForeignSessionsForRevocation(
       },
     };
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) {
     return { ok: false, refusal: { code: 'hive_required', detail: 'revocation reap is hive-scoped; pass the hive HOME slug.' } };
   }
@@ -218,7 +218,7 @@ export async function reapForeignSessionsForRevocation(
       const res = await deps.emitP2pReceipt(
         {
           workspaceId: ws,
-          hiveSlug: hive,
+          potSlug: hive,
           kind: 'refusal',
           offerId: w.offerId,
           action: 'work-offer:reap',

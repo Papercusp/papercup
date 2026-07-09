@@ -162,8 +162,8 @@ async function main() {
 
   // DURABILITY: persist each answer the moment it is collected (a rate-limit kill keeps every gradeable
   // answer already gathered). The full predictions/report are (re)written from result.taskResults at the end.
-  const collected = new Map<string, { answer: string; costUsd: number; stopReason: string; tokensIn: number; tokensOut: number; turns: number; generationError: string | null; beeId: string | null }>();
-  const onTaskCollected = (tr: { attempt: { instanceId: string; answer?: string; costUsd: number; stopReason: string; tokensIn: number; tokensOut: number; turns: number; generationError?: string }; beeId?: string | null }) => {
+  const collected = new Map<string, { answer: string; costUsd: number; stopReason: string; tokensIn: number; tokensOut: number; turns: number; generationError: string | null; cupId: string | null }>();
+  const onTaskCollected = (tr: { attempt: { instanceId: string; answer?: string; costUsd: number; stopReason: string; tokensIn: number; tokensOut: number; turns: number; generationError?: string }; cupId?: string | null }) => {
     const a = tr.attempt;
     const rec = {
       answer: a.answer ?? '',
@@ -173,7 +173,7 @@ async function main() {
       tokensOut: a.tokensOut ?? 0,
       turns: a.turns ?? 0,
       generationError: a.generationError ?? null,
-      beeId: tr.beeId ?? null,
+      cupId: tr.cupId ?? null,
     };
     collected.set(a.instanceId, rec);
     appendFileSync(answersPath, JSON.stringify({ taskId: a.instanceId, ...rec }) + '\n');
@@ -234,7 +234,7 @@ async function main() {
       tokensIn: a.tokensIn,
       tokensOut: a.tokensOut,
       turns: a.turns,
-      beeId: tr.beeId,
+      cupId: tr.cupId,
     });
   }
 

@@ -230,7 +230,7 @@ describe('wiring — quota enforcement at the chokepoints (no PG)', () => {
     const opened: string[] = [];
 
     const aWiring = wireCrossHiveBoundary({
-      workspaceId: 'ws-quota', hiveSlug: 'hive-a', hivePubkey: A.pubkey,
+      workspaceId: 'ws-quota', potSlug: 'hive-a', hivePubkey: A.pubkey,
       transport: mesh(A.pubkey), signer: A.signer,
       requestPorts: {
         async openAsk(e) { opened.push(e.subject); return { ref: 'conv-1' }; },
@@ -243,7 +243,7 @@ describe('wiring — quota enforcement at the chokepoints (no PG)', () => {
       emitEvent: async () => {},
     });
     const bWiring = wireCrossHiveBoundary({
-      workspaceId: 'ws-quota', hiveSlug: 'hive-b', hivePubkey: B.pubkey,
+      workspaceId: 'ws-quota', potSlug: 'hive-b', hivePubkey: B.pubkey,
       transport: mesh(B.pubkey), signer: B.signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],

@@ -442,6 +442,56 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // weather.current — local weather for the operator dashboard
+  // (platform-ops-batch-2026-07-09 P-003). Live third-party fetch (not a DB
+  // read), keyed by WEATHER_API_KEY (apps/operator/.env.local, gitignored —
+  // never hardcoded / never committed). A missing/failing key surfaces as a
+  // thrown error (the useSyncQuery caller renders its own not-configured
+  // state), not a silently-zeroed widget.
+  'weather.current': {
+    argsSchema: z.object({
+      lat: z.number(),
+      lon: z.number(),
+    }),
+    resolve: async (args) => {
+      const { fetchCurrentWeather } = await import('../weather/fetch-weather');
+      const { lat, lon } = args as { lat: number; lon: number };
+      const weather = await fetchCurrentWeather({ lat, lon });
+      return [weather];
+    },
+  },
+
+  // fleet.status — fleet-at-a-glance dashboard rows (platform-ops-batch-2026-07-09
+  // P-004, WI-3518): live members, current claim (intent + plan), last activity.
+  // Reuses the SAME presence-snapshot assembly coord:presence/coord:inbox share
+  // (presence-v2-2026-06-14) — never a parallel roster query — scoped to the
+  // whole workspace (an ops dashboard wants every fleet, not one hive's).
+  'fleet.status': {
+    resolve: async () => {
+      const { resolvePresenceScope, assemblePresenceSnapshot } = await import(
+        '../agent-tools/coordination/presence-snapshot'
+      );
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const resolved = await resolvePresenceScope(
+        { workspaceId: activeWorkspaceId(), harnessSlug: null, isSuperuser: true },
+        { scope: 'workspace' },
+      );
+      const snapshot = await assemblePresenceSnapshot(resolved, {});
+      return snapshot.active.map((row) => ({
+        ownerId: row.ownerId,
+        label: row.ownerLabel ?? row.ownerId,
+        role: row.agentRole ?? null,
+        intent: row.intent ?? null,
+        planSlug: row.currentPlanSlug ?? null,
+        potSlug: row.potSlug ?? null,
+        fleetSlug: row.fleetSlug ?? null,
+        fleetRole: row.fleetRole ?? null,
+        sessionState: row.sessionState ?? null,
+        lastActiveSecAgo: row.lastActiveSecAgo ?? null,
+      })) as unknown[];
+    },
+  },
+
   // toastLog.recent — first migration. Mirrors the original ZQL:
   //   zql.toastLog.orderBy('createdAt', 'desc').limit(limit)
   // The flat-row return matches what useSyncQuery's SSEAdapter
@@ -1750,11 +1800,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // the coord_presence / feature_claims / claim_audit / spawned_agents table
   // bridge (same tables as fleetAssignments.byHarness).
   'hiveRoster.byHive': {
-    argsSchema: z.object({ hiveSlug: z.string(), workspaceId: z.string().optional() }),
+    argsSchema: z.object({ potSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { hiveSlug, workspaceId } = args as { hiveSlug: string; workspaceId?: string };
+      const { potSlug, workspaceId } = args as { potSlug: string; workspaceId?: string };
       const { listHiveRoster } = await import('../fleet/hive-roster');
-      return (await listHiveRoster({ hiveSlug, workspaceId: workspaceId ?? null })) as unknown[];
+      return (await listHiveRoster({ potSlug, workspaceId: workspaceId ?? null })) as unknown[];
     },
   },
 
@@ -1786,8 +1836,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('@papercusp/agent-mcp'),
       ]);
       const workspaceId = activeWorkspaceId();
-      const hiveSlug = (await hiveHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
-      const roster = await listHiveRoster({ hiveSlug, workspaceId });
+      const potSlug = (await hiveHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
+      const roster = await listHiveRoster({ potSlug, workspaceId });
       const roleByOwner = new Map<string, string | null>();
       try {
         for (const s of await listAdvSessions(200)) {
@@ -3251,15 +3301,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // grant store). Hive-scoped (grants federate per hive home slug); includes
   // revoked rows so the matrix can show revocation state — the client filters.
   // Writes go through the p2p-grant-set loopback route, which re-invalidates
-  // with the SAME {hiveSlug} args (args-scoped subscription → args-scoped emit).
+  // with the SAME {potSlug} args (args-scoped subscription → args-scoped emit).
   'p2p.grants': {
-    argsSchema: z.object({ hiveSlug: z.string().min(1).max(120) }),
+    argsSchema: z.object({ potSlug: z.string().min(1).max(120) }),
     resolve: async (args) => {
-      const { hiveSlug } = args as { hiveSlug: string };
+      const { potSlug } = args as { potSlug: string };
       try {
         const { listPeerGrants } = await import('../p2p/grant-store');
         const { activeWorkspaceId } = await import('../workspace-registry');
-        return await listPeerGrants({ workspaceId: activeWorkspaceId(), hiveSlug, includeRevoked: true });
+        return await listPeerGrants({ workspaceId: activeWorkspaceId(), potSlug, includeRevoked: true });
       } catch (err) {
         const code = (err as { code?: string })?.code;
         const msg = err instanceof Error ? err.message : String(err);
@@ -3440,7 +3490,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       try {
         const ws = activeWorkspaceId();
         return await routeWithWorkspace(async (tx) => [
-          await readHiveThroughputSnapshot(tx, ws, hive ? { hiveSlug: hive } : {}),
+          await readHiveThroughputSnapshot(tx, ws, hive ? { potSlug: hive } : {}),
         ]);
       } catch (err) {
         console.warn('[learning.hiveThroughput] read failed:', err instanceof Error ? err.message : err);
@@ -3574,16 +3624,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // column); an unknown/empty hive degrades to [] (never a 500 — the picker shows the
   // empty state).
   'hive.overrides': {
-    argsSchema: z.object({ hiveSlug: z.string(), workspaceId: z.string().optional() }),
+    argsSchema: z.object({ potSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { hiveSlug, workspaceId } = args as { hiveSlug: string; workspaceId?: string };
+      const { potSlug, workspaceId } = args as { potSlug: string; workspaceId?: string };
       try {
         const [{ activeWorkspaceId }, { listHiveInstancePromptOverrides, listHiveLocalBlueprintConfig }] =
           await Promise.all([import('../workspace-registry'), import('../hive-settings-store')]);
         const ws = workspaceId ?? activeWorkspaceId();
         const [prompts, config] = await Promise.all([
-          listHiveInstancePromptOverrides(ws, hiveSlug),
-          listHiveLocalBlueprintConfig(ws, hiveSlug),
+          listHiveInstancePromptOverrides(ws, potSlug),
+          listHiveLocalBlueprintConfig(ws, potSlug),
         ]);
         const rows: Array<{ kind: 'prompt' | 'config'; name: string; value: unknown }> = [];
         for (const [role, md] of Object.entries(prompts)) rows.push({ kind: 'prompt', name: role, value: md });
@@ -4063,7 +4113,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // network.hive.beacons — the tier-4 dossier's beacon HISTORY (hive-network-
   // surface P-014 item 2 / D-007 GAP 2, migration 236): how a foreign hive's
   // self-reported status evolved, newest-first. `hiveKey` is the C-3 tier-4 row
-  // key — DiscoveredHive.hiveId or its pubkey-b64, whichever the drill-in holds.
+  // key — DiscoveredHive.potId or its pubkey-b64, whichever the drill-in holds.
   // Live: captureBeaconSnapshot fires notifySyncInvalidate on each accepted
   // announce; plus the consumer's standard 60s safety-net refetch.
   'network.hive.beacons': {

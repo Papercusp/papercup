@@ -30,7 +30,7 @@ import type { CrossHiveAsksStore } from './cross-hive-asks-store-port';
  */
 export type CheckOutboundGrant = (
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   peerPubkey: string,
   kind: CrossHiveRequestKind,
   bodyBytes?: number,
@@ -40,7 +40,7 @@ export interface SendCrossHiveAskDeps {
   /** Resolve this Hive's live, boot-wired boundary (the registry getter). */
   resolveBoundary: (
     workspaceId: string,
-    hiveSlug: string,
+    potSlug: string,
   ) => CrossHiveBoundaryWiring | undefined | Promise<CrossHiveBoundaryWiring | undefined>;
   /** Outbound admission policy (B-05's assertOutboundGrant, adapted). */
   checkOutboundGrant: CheckOutboundGrant;
@@ -53,7 +53,7 @@ export interface SendCrossHiveAskDeps {
 export interface SendCrossHiveAskInput {
   workspaceId: string;
   /** THIS (asking) Hive's home slug — grants, signer and boundary are scoped to it. */
-  hiveSlug: string;
+  potSlug: string;
   /** The target peer Hive's pubkey (from `discovery:pots`). */
   peerPubkey: string;
   kind: CrossHiveRequestKind;
@@ -90,7 +90,7 @@ export async function sendCrossHiveAsk(
   input: SendCrossHiveAskInput,
   deps: SendCrossHiveAskDeps,
 ): Promise<SendCrossHiveAskResult> {
-  const { workspaceId, hiveSlug, peerPubkey, kind, subject, body, askedBy } = input;
+  const { workspaceId, potSlug, peerPubkey, kind, subject, body, askedBy } = input;
 
   // 1. Outbound admission: default-deny to peers this Hive hasn't been granted
   //    outbound (B-05), within the grant's P-013 quotas (expiry / size / rate —
@@ -98,7 +98,7 @@ export async function sendCrossHiveAsk(
   //    rejected before any side effect (no ledger row, no send).
   const grant = await deps.checkOutboundGrant(
     workspaceId,
-    hiveSlug,
+    potSlug,
     peerPubkey,
     kind,
     Buffer.byteLength(body, 'utf8'),
@@ -109,18 +109,18 @@ export async function sendCrossHiveAsk(
 
   // 2. Resolve the live boundary. A dark/unpublished/pre-boot Hive has none — we
   //    never construct a duplicate transport, so this is a hard, clear failure.
-  const boundary = await deps.resolveBoundary(workspaceId, hiveSlug);
+  const boundary = await deps.resolveBoundary(workspaceId, potSlug);
   if (!boundary) {
     return {
       ok: false,
-      reason: `cross-Hive boundary for '${hiveSlug}' is not live — publish the Hive (only directory-published Hives wire a boundary) and ensure the operator has booted`,
+      reason: `cross-Hive boundary for '${potSlug}' is not live — publish the Hive (only directory-published Hives wire a boundary) and ensure the operator has booted`,
     };
   }
 
   // 3. Record the outbound ask FIRST (durable, state `queued`) so the asking-side
   //    record survives a crash mid-send; the envelope id is the correlation id.
   const correlationId = (deps.newId ?? randomUUID)();
-  await deps.store.insertQueued(workspaceId, hiveSlug, {
+  await deps.store.insertQueued(workspaceId, potSlug, {
     peerPubkey,
     kind,
     correlationId,
@@ -133,7 +133,7 @@ export async function sendCrossHiveAsk(
   // 4. Sign + send (durable store-and-forward). On delivery, advance queued → sent.
   const sendResult = await boundary.send(peerPubkey, { id: correlationId, kind, subject, body });
   if (sendResult.delivered) {
-    await deps.store.markSentByCorrelationId(workspaceId, hiveSlug, correlationId);
+    await deps.store.markSentByCorrelationId(workspaceId, potSlug, correlationId);
   }
   const state: 'sent' | 'queued' = sendResult.delivered ? 'sent' : 'queued';
 

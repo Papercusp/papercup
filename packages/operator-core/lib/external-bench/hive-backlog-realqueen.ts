@@ -127,7 +127,7 @@ export interface RealQueenEnrolled {
   workItemId: string;
   checkout: TaskCheckout;
   /** The bee spawn id that served it (filled at collect from spawned_agents / hive_placements). */
-  beeId: string | null;
+  cupId: string | null;
   placedAtMs: number | null;
   disposition: 'spawn' | 'warm-inject' | null;
 }
@@ -172,7 +172,7 @@ export interface RealQueenBacklogOps {
   /** surveyHive's ready-frontier + started-plan counts (the drained inputs) across all members. */
   survey(input: { hiveHome: string; workspaceId: string }): Promise<{ frontierLen: number; plansLen: number }>;
   /** Placements still in flight = the drain terminator. For the hive arm: hive_placements non-terminal.
-   *  For the FIFO arm: members placed (beeId set) whose feature is non-terminal & bee not terminal. */
+   *  For the FIFO arm: members placed (cupId set) whose feature is non-terminal & bee not terminal. */
   countInFlight(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<number>;
   /** Count live bees (for the peak-concurrency metric — sampled every poll, the fixed counter). */
   countLiveBees(input: { hiveHome: string; workspaceId: string }): Promise<number>;
@@ -192,7 +192,7 @@ export interface RealQueenBacklogOps {
     plan: BatchPlacementPlan;
     members: RealQueenEnrolled[];
     workspaceId: string;
-  }): Promise<{ placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] }>;
+  }): Promise<{ placements: { instanceId: string; cupId: string; disposition: 'spawn' | 'warm-inject' }[] }>;
   /** Stop the hive — bound spend at drain/timeout (setHiveStarted false). */
   pauseFleet(input: { hiveHome: string; workspaceId: string }): Promise<void>;
   /** Per enrolled task: the diff + cost/timing → FleetTaskResult (cost summed from agent_usage_samples). */
@@ -396,10 +396,10 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
               const plan = fifoPlanner!({ tasks: gathered.tasks, bees: gathered.bees, headroom: gathered.headroom });
               const { placements } = await ops.placeFifoBatch({ hiveHome: home, plan, members, workspaceId: ws });
               for (const p of placements) {
-                coordEvents.push({ ts: ops.now(), kind: 'placement', taskId: p.instanceId, agent: p.beeId, detail: p.disposition });
+                coordEvents.push({ ts: ops.now(), kind: 'placement', taskId: p.instanceId, agent: p.cupId, detail: p.disposition });
                 const st = members.find((m) => m.task.instanceId === p.instanceId);
                 if (st) {
-                  st.beeId = p.beeId;
+                  st.cupId = p.cupId;
                   st.placedAtMs = ops.now();
                   st.disposition = p.disposition;
                 }
@@ -651,7 +651,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
           clonePath: checkout.dir,
           workItemId: featureId,
           checkout,
-          beeId: null,
+          cupId: null,
           placedAtMs: null,
           disposition: null,
         };
@@ -709,7 +709,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
         // and no bee has terminated for it yet.
       }
       // FIFO arm (and the real-Queen fallthrough): feature/bee-derived in-flight over placed members.
-      const placedMembers = members.filter((m) => m.beeId != null);
+      const placedMembers = members.filter((m) => m.cupId != null);
       // For the real-Queen arm, no bee was recorded by the driver (the Queen placed), so check ALL members.
       const toCheck = arm === HIVE_REALQUEEN_ARM ? members : placedMembers;
       if (toCheck.length === 0) return arm === HIVE_REALQUEEN_ARM ? members.length : 0;
@@ -757,8 +757,8 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
 
     async gatherForFifo({ members }) {
       // FIFO consumes members in ARRIVAL/backlog (enrollment) order — un-ranked (the no-Queen contract).
-      // EXCLUDE already-placed members (beeId set) so the loop doesn't re-place every poll.
-      const unplaced = members.filter((m) => m.beeId == null);
+      // EXCLUDE already-placed members (cupId set) so the loop doesn't re-place every poll.
+      const unplaced = members.filter((m) => m.cupId == null);
       const [{ gatherFrontier, gatherLiveBees }, { getSpawnHeadroom }] = await Promise.all([
         import('../fleet/placement-gather'),
         import('../fleet/operator-spawn'),
@@ -793,7 +793,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       }
 
       // Infer the target harness from the first unplaced member (they all have external-bench blueprint)
-      const targetHarness = members.find((m) => m.beeId == null)?.member ?? homePrefix;
+      const targetHarness = members.find((m) => m.cupId == null)?.member ?? homePrefix;
 
       // Invoke fleet:place_batch on :3170 (staging operator host) with the FIFO-ordered tasks
       const stagingOperatorBase = 'http://localhost:3170';
@@ -840,15 +840,15 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       }
 
       // Convert tool result to the expected placement format
-      const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
+      const placements: { instanceId: string; cupId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
       const exec = toolResult.result ?? { placements: [] };
       for (const p of exec.placements) {
         const featureId = p.task;
         const instanceId = instanceByFeatureId.get(featureId) ?? featureId;
         if (p.action === 'spawned' || p.action === 'injected') {
           const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
-          const beeId = p.spawn_id ?? p.bee ?? instanceId;
-          placements.push({ instanceId, beeId, disposition });
+          const cupId = p.spawn_id ?? p.bee ?? instanceId;
+          placements.push({ instanceId, cupId, disposition });
         }
       }
       return { placements };
@@ -887,7 +887,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       const stopReason = stopReasonForFeatureStatus(status, generationError);
 
       const firstSpawn = spawnRows[0];
-      const beeId = enrolled.beeId ?? firstSpawn?.spawnId ?? member;
+      const cupId = enrolled.cupId ?? firstSpawn?.spawnId ?? member;
       const placedAtMs = enrolled.placedAtMs ?? firstSpawn?.startedAtMs ?? Date.now();
       const startedAtMs = firstSpawn?.startedAtMs ?? placedAtMs;
       const finishedAtMs = firstSpawn?.finishedAtMs ?? Date.now();
@@ -908,11 +908,11 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
         trajectoryRef: `xbench-realqueen://${member}`,
         stopReason,
         ...(generationError ? { generationError } : {}),
-        armMeta: { member, hiveArm: arm, beeId },
+        armMeta: { member, hiveArm: arm, cupId },
       };
       return {
         attempt,
-        beeId,
+        cupId,
         placedAtMs,
         startedAtMs,
         finishedAtMs,

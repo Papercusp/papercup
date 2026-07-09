@@ -567,9 +567,9 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../p2p/grant-store', () => ({ listPeerGrants }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
-    const out = (await r('p2p.grants', { hiveSlug: 'papercusp' })) as unknown[];
+    const out = (await r('p2p.grants', { potSlug: 'papercusp' })) as unknown[];
     expect(out).toEqual(grants);
-    expect(listPeerGrants).toHaveBeenCalledWith({ workspaceId: 'ws-test', hiveSlug: 'papercusp', includeRevoked: true });
+    expect(listPeerGrants).toHaveBeenCalledWith({ workspaceId: 'ws-test', potSlug: 'papercusp', includeRevoked: true });
     vi.doUnmock('../p2p/grant-store');
     vi.doUnmock('../workspace-registry');
   });
@@ -582,7 +582,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
-    const out = (await r('p2p.grants', { hiveSlug: 'papercusp' })) as unknown[];
+    const out = (await r('p2p.grants', { potSlug: 'papercusp' })) as unknown[];
     expect(out).toEqual([]);
     vi.doUnmock('../p2p/grant-store');
     vi.doUnmock('../workspace-registry');

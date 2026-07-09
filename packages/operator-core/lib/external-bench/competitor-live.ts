@@ -202,7 +202,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
         async (task): Promise<{ result: FleetTaskResult; events: CoordEvent[] }> => {
           const placedAtMs = now();
           const fail = (attempt: ArmAttempt, startedTaskMs: number, events: CoordEvent[]) => ({
-            result: { attempt, beeId: cfg.competitorId, placedAtMs, startedAtMs: startedTaskMs, finishedAtMs: now(), disposition: 'spawn' as const },
+            result: { attempt, cupId: cfg.competitorId, placedAtMs, startedAtMs: startedTaskMs, finishedAtMs: now(), disposition: 'spawn' as const },
             events,
           });
 
@@ -255,7 +255,7 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
               ...(res.ok ? {} : { generationError: res.error ?? 'runner error' }),
             };
             return {
-              result: { attempt, beeId: cfg.competitorId, placedAtMs, startedAtMs: startedTaskMs, finishedAtMs: now(), disposition: 'spawn' },
+              result: { attempt, cupId: cfg.competitorId, placedAtMs, startedAtMs: startedTaskMs, finishedAtMs: now(), disposition: 'spawn' },
               events: tag(res.events, task.instanceId),
             };
           } finally {

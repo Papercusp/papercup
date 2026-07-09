@@ -85,10 +85,10 @@ beforeEach(() => {
     },
   }));
   vi.doMock('../../hive/provision-learning-loop', () => ({
-    teardownHiveLearningLoop: async ({ hiveSlug }: { hiveSlug: string }) => {
-      teardownLoopCalls.push(hiveSlug);
+    teardownHiveLearningLoop: async ({ potSlug }: { potSlug: string }) => {
+      teardownLoopCalls.push(potSlug);
       if (teardownLoopThrows) throw new Error('boom');
-      return { hiveSlug, gymAutoloop: true, scoutRoutine: true, governorRegistrants: true };
+      return { potSlug, gymAutoloop: true, scoutRoutine: true, governorRegistrants: true };
     },
   }));
   vi.doMock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: () => true }));
@@ -137,7 +137,7 @@ describe('pot:dissolve', () => {
     expect(teardownLoopCalls).toEqual(['h']);
     expect(res.learningLoopTornDown).toBe(true);
     expect(res.learningLoop).toEqual({
-      hiveSlug: 'h',
+      potSlug: 'h',
       gymAutoloop: true,
       scoutRoutine: true,
       governorRegistrants: true,

@@ -82,7 +82,7 @@ type DeviceRow =
 /* Wire type — mirrors PeerGrant (operator-core/lib/p2p/grant-store.ts), kept
  * local per the client wire-type decoupling convention. */
 interface PeerGrant {
-  hiveSlug: string;
+  potSlug: string;
   grantorGithubUserId: number;
   grantorLogin: string | null;
   granteeKind: 'fleet' | 'pool';
@@ -102,7 +102,7 @@ const GRANT_PRESETS = ['Observer', 'Collaborator', 'Delegate', 'Operator'] as co
 
 interface GrantSetArgs {
   action: 'set' | 'revoke';
-  hiveSlug: string;
+  potSlug: string;
   granteeKind: 'fleet' | 'pool';
   granteeRef: string;
   preset?: string | null;
@@ -414,7 +414,7 @@ function AddGrantForm({
         disabled={busy || ref.trim().length === 0}
         style={{ ...btnStyle, fontWeight: 600 }}
         onClick={() =>
-          void onAdd({ action: 'set', hiveSlug: hive, granteeKind: kind, granteeRef: ref.trim(), preset, note: note.trim() || null }).then(() => {
+          void onAdd({ action: 'set', potSlug: hive, granteeKind: kind, granteeRef: ref.trim(), preset, note: note.trim() || null }).then(() => {
             setRef('');
             setNote('');
           })
@@ -452,10 +452,10 @@ export default function P2pSettingsPage() {
   const hive = hiveParam ?? hiveOptions[0] ?? null;
 
   // Peers matrix — the P-001 grant store (mig 463). Args-scoped subscription:
-  // the grant-set route re-invalidates with the SAME {hiveSlug} args.
+  // the grant-set route re-invalidates with the SAME {potSlug} args.
   const { data: grantsData, error: grantsError } = useSyncQuery<PeerGrant>({
     queryName: 'p2p.grants',
-    args: { hiveSlug: hive ?? '' },
+    args: { potSlug: hive ?? '' },
   });
   const grantRows = useMemo<PeerGrant[]>(() => (hive ? (grantsData ?? []) : []), [grantsData, hive]);
   const setGrant = useSyncMutate<GrantSetArgs, { ok: boolean; error?: string }>('p2p.grantSet', p2pGrantSetRest);
@@ -701,7 +701,7 @@ export default function P2pSettingsPage() {
                                     onClick: () =>
                                       void (async () => {
                                         try {
-                                          await setGrant({ action: 'revoke', hiveSlug: hive, granteeKind: g.granteeKind, granteeRef: g.granteeRef });
+                                          await setGrant({ action: 'revoke', potSlug: hive, granteeKind: g.granteeKind, granteeRef: g.granteeRef });
                                           toast.success(`Revoked ${g.granteeRef}.`);
                                         } catch (e) {
                                           toast.error(`Couldn't revoke: ${e instanceof Error ? e.message : 'failed'}`);

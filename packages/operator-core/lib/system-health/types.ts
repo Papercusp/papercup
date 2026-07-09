@@ -122,7 +122,7 @@ export interface HealthPanel<T = unknown> {
 
 /** Queen loop health — the failure mode the tab exists for (origin 2026-06-15). */
 export interface QueenHealth {
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** Is the colony meant to be running (getHiveStarted)? false = paused. */
   started: boolean;
   /** started && stale past the stall threshold && demand queued && not mid-turn. */

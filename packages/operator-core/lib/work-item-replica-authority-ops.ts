@@ -57,7 +57,7 @@ function asClaimOpts(payload: unknown): ClaimReplicaOpts {
   return {
     workspaceId: typeof o.workspaceId === 'string' ? o.workspaceId : undefined,
     harnessSlug: reqStr(o, 'harnessSlug', 'replica.claim-slot'),
-    hiveSlug: (o.hiveSlug as string | null | undefined) ?? null,
+    potSlug: (o.potSlug as string | null | undefined) ?? null,
     workItemId: reqStr(o, 'workItemId', 'replica.claim-slot'),
     owner: reqStr(o, 'owner', 'replica.claim-slot'),
     ownerLabel: (o.ownerLabel as string | null | undefined) ?? null,
@@ -72,7 +72,7 @@ function asLeaseParams(payload: unknown, kind: string): ReplicaLeaseParams {
   return {
     workspaceId: typeof o.workspaceId === 'string' ? o.workspaceId : undefined,
     harnessSlug: reqStr(o, 'harnessSlug', kind),
-    hiveSlug: (o.hiveSlug as string | null | undefined) ?? null,
+    potSlug: (o.potSlug as string | null | undefined) ?? null,
     workItemId: reqStr(o, 'workItemId', kind),
     replicaIndex: o.replicaIndex,
     claimId: reqStr(o, 'claimId', kind),
@@ -88,7 +88,7 @@ function asRecordOpts(payload: unknown): RecordReplicaResultOpts {
   return {
     workspaceId: typeof o.workspaceId === 'string' ? o.workspaceId : undefined,
     harnessSlug: reqStr(o, 'harnessSlug', 'replica.record-result'),
-    hiveSlug: (o.hiveSlug as string | null | undefined) ?? null,
+    potSlug: (o.potSlug as string | null | undefined) ?? null,
     workItemId: reqStr(o, 'workItemId', 'replica.record-result'),
     replicaIndex: o.replicaIndex,
     owner: reqStr(o, 'owner', 'replica.record-result'),
@@ -96,13 +96,13 @@ function asRecordOpts(payload: unknown): RecordReplicaResultOpts {
   };
 }
 
-function asListPayload(payload: unknown): { workItemId: string; harness: string; workspaceId?: string; hiveSlug?: string | null } {
+function asListPayload(payload: unknown): { workItemId: string; harness: string; workspaceId?: string; potSlug?: string | null } {
   const o = asObj(payload);
   return {
     workItemId: reqStr(o, 'workItemId', 'replica.list'),
     harness: reqStr(o, 'harness', 'replica.list'),
     workspaceId: typeof o.workspaceId === 'string' ? o.workspaceId : undefined,
-    hiveSlug: (o.hiveSlug as string | null | undefined) ?? null,
+    potSlug: (o.potSlug as string | null | undefined) ?? null,
   };
 }
 
@@ -111,7 +111,7 @@ function asJudgeOpts(payload: unknown): JudgeRedundancyOpts {
   return {
     workspaceId: typeof o.workspaceId === 'string' ? o.workspaceId : undefined,
     harness: reqStr(o, 'harness', 'replica.judge'),
-    hiveSlug: (o.hiveSlug as string | null | undefined) ?? null,
+    potSlug: (o.potSlug as string | null | undefined) ?? null,
     workItemId: reqStr(o, 'workItemId', 'replica.judge'),
     intent: typeof o.intent === 'string' ? o.intent : undefined,
     projectContext: typeof o.projectContext === 'string' ? o.projectContext : undefined,

@@ -65,62 +65,62 @@ afterAll(async () => {
 
 describe('bee_claim_specs store (mig 372)', () => {
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {
-    const r1 = await setClaimSpec({ beeId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
+    const r1 = await setClaimSpec({ cupId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(r1.ok).toBe(true);
     expect(r1.revision).toBe(DEFAULT_CLAIM_SPEC.revision);
 
-    const got = await getClaimSpec({ beeId: 'su-bee-1' }, db.sql);
+    const got = await getClaimSpec({ cupId: 'su-bee-1' }, db.sql);
     expect(got.specVersion).toBe(DEFAULT_CLAIM_SPEC.specVersion);
     expect(got.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
 
-    const r2 = await setClaimSpec({ beeId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    const r2 = await setClaimSpec({ cupId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC }, db.sql);
     expect(r2.ok).toBe(true);
     expect(r2.revision).toBe((r1.revision ?? 0) + 1);
   });
 
   it('returns DEFAULT_CLAIM_SPEC for a bee with no stored spec', async () => {
-    expect(await getClaimSpec({ beeId: 'no-such-bee' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+    expect(await getClaimSpec({ cupId: 'no-such-bee' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
   });
 
   it('rejects an invalid spec (the validation gate) and stores nothing', async () => {
-    const r = await setClaimSpec({ beeId: 'su-bee-2', spec: { garbage: true } }, db.sql);
+    const r = await setClaimSpec({ cupId: 'su-bee-2', spec: { garbage: true } }, db.sql);
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeGreaterThan(0);
-    expect(await getClaimSpec({ beeId: 'su-bee-2' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+    expect(await getClaimSpec({ cupId: 'su-bee-2' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
   });
 });
 
 describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_claim_spec)', () => {
   it('returns source:"bee" + the full row metadata for a bee with an explicit spec', async () => {
-    await setClaimSpec({ beeId: 'su-rec-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-x' }, db.sql);
-    const rec = await getClaimSpecRecord({ beeId: 'su-rec-1' }, db.sql);
+    await setClaimSpec({ cupId: 'su-rec-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-x' }, db.sql);
+    const rec = await getClaimSpecRecord({ cupId: 'su-rec-1' }, db.sql);
     expect(rec.source).toBe('bee');
     expect(rec.spec.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
     expect(rec.revision).toBe(DEFAULT_CLAIM_SPEC.revision);
     expect(rec.updatedBy).toBe('leader-x');
     expect(rec.updatedAt).not.toBeNull();
-    expect(rec.harnessSlug ?? null).toBeNull(); // operator-scope (no hiveSlug passed)
+    expect(rec.harnessSlug ?? null).toBeNull(); // operator-scope (no potSlug passed)
     expect(rec.fleetSlug).toBeUndefined();
   });
 
   it('the revision bumps are visible on re-read (confirms a re-steer landed)', async () => {
-    await setClaimSpec({ beeId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
-    const before = await getClaimSpecRecord({ beeId: 'su-rec-2' }, db.sql);
-    await setClaimSpec({ beeId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-y' }, db.sql);
-    const after = await getClaimSpecRecord({ beeId: 'su-rec-2' }, db.sql);
+    await setClaimSpec({ cupId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    const before = await getClaimSpecRecord({ cupId: 'su-rec-2' }, db.sql);
+    await setClaimSpec({ cupId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-y' }, db.sql);
+    const after = await getClaimSpecRecord({ cupId: 'su-rec-2' }, db.sql);
     expect(after.revision).toBe((before.revision ?? 0) + 1);
     expect(after.updatedBy).toBe('leader-y');
   });
 
   it('returns source:"default" (DEFAULT_CLAIM_SPEC, no metadata) for a bee/fleet with no stored spec', async () => {
-    const rec = await getClaimSpecRecord({ beeId: 'no-such-bee-rec' }, db.sql);
+    const rec = await getClaimSpecRecord({ cupId: 'no-such-bee-rec' }, db.sql);
     expect(rec).toEqual({ source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null });
   });
 
   it('reads a FLEET-level spec directly via its sentinel key (fleetSpecBeeKey)', async () => {
     const fleetKey = fleetSpecBeeKey('drain-fleet-x');
-    await setClaimSpec({ beeId: fleetKey, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-z' }, db.sql);
-    const rec = await getClaimSpecRecord({ beeId: fleetKey }, db.sql);
+    await setClaimSpec({ cupId: fleetKey, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-z' }, db.sql);
+    const rec = await getClaimSpecRecord({ cupId: fleetKey }, db.sql);
     expect(rec.source).toBe('bee'); // the sentinel row itself IS the "bee" row for this key
     expect(rec.updatedBy).toBe('leader-z');
   });
@@ -128,9 +128,9 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
 
 describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
   it('returns specId@revision per bee with a stored spec (highest revision), absent otherwise', async () => {
-    await setClaimSpec({ beeId: 'su-h1', spec: DEFAULT_CLAIM_SPEC }, db.sql); // revision 0
-    await setClaimSpec({ beeId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
-    await setClaimSpec({ beeId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql); // re-steer → revision 1
+    await setClaimSpec({ cupId: 'su-h1', spec: DEFAULT_CLAIM_SPEC }, db.sql); // revision 0
+    await setClaimSpec({ cupId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await setClaimSpec({ cupId: 'su-h2', spec: DEFAULT_CLAIM_SPEC }, db.sql); // re-steer → revision 1
 
     const heads = await getClaimSpecHeadsForBees(['su-h1', 'su-h2', 'su-no-spec'], undefined, db.sql);
     expect(heads.get('su-h1')).toEqual({ specId: DEFAULT_CLAIM_SPEC.specId, revision: 0 });
@@ -143,14 +143,14 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
   });
   it('P-016: a hive-scoped spec ENQUEUES a federation outbox row; operator-scope stays LOCAL', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
-    // operator-scope (hiveSlug null) — no capture (the mig-438 WHEN gate).
-    await setClaimSpec({ beeId: 'su-bee-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
+    // operator-scope (potSlug null) — no capture (the mig-438 WHEN gate).
+    await setClaimSpec({ cupId: 'su-bee-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(
       await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-local'`,
     ).toHaveLength(0);
     // hive-scoped — one put outbox row keyed by bee_id, tagged with the hive home slug.
     await setClaimSpec(
-      { beeId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'my-hive' },
+      { cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' },
       db.sql,
     );
     const rows = await db.sql<{ op: string; key: string; harness_slug: string }[]>`
@@ -159,7 +159,7 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
     expect(rows[0]).toMatchObject({ op: 'put', key: 'su-bee-fed', harness_slug: 'my-hive' });
     // a re-steer (revision bump) of the hive-scoped spec captures again (UPDATE gate).
     await setClaimSpec(
-      { beeId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'my-hive' },
+      { cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' },
       db.sql,
     );
     expect(
@@ -172,8 +172,8 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
 describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)', () => {
   it('re-homing a spec to a DIFFERENT hive scope federates a TOMBSTONE (del) to the OLD scope + a put to the NEW', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
-    await setClaimSpec({ beeId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'hiveA' }, db.sql);
-    const r = await setClaimSpec({ beeId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'hiveB' }, db.sql);
+    await setClaimSpec({ cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
+    const r = await setClaimSpec({ cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveB' }, db.sql);
     expect(r.ok).toBe(true);
     const ops = await db.sql<{ op: string; harness_slug: string }[]>`
       SELECT op, harness_slug FROM harness_shared.substrate_outbox
@@ -191,13 +191,13 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
     expect(row.harness_slug).toBe('hiveB');
     expect(row.revision).toBe(DEFAULT_CLAIM_SPEC.revision + 1);
     // get_next reads the live row — one spec, under the new scope (no strand).
-    expect(await getClaimSpec({ beeId: 'su-rehome' }, db.sql)).toMatchObject({ specId: DEFAULT_CLAIM_SPEC.specId });
+    expect(await getClaimSpec({ cupId: 'su-rehome' }, db.sql)).toMatchObject({ specId: DEFAULT_CLAIM_SPEC.specId });
   });
 
   it('DOWNGRADING a hive-scoped spec to operator-scope (null) still tombstones the old scope; the new local row is not federated', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
-    await setClaimSpec({ beeId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'hiveA' }, db.sql);
-    await setClaimSpec({ beeId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: null }, db.sql);
+    await setClaimSpec({ cupId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
+    await setClaimSpec({ cupId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: null }, db.sql);
     const ops = await db.sql<{ op: string; harness_slug: string | null }[]>`
       SELECT op, harness_slug FROM harness_shared.substrate_outbox
        WHERE table_name='bee_claim_specs' AND key='su-downgrade' ORDER BY id`;
@@ -214,8 +214,8 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
 
   it('a SAME-scope re-steer does NOT tombstone (only the in-place UPDATE capture)', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
-    await setClaimSpec({ beeId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'hiveA' }, db.sql);
-    await setClaimSpec({ beeId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: 'hiveA' }, db.sql);
+    await setClaimSpec({ cupId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
+    await setClaimSpec({ cupId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
     const ops = await db.sql<{ op: string }[]>`
       SELECT op FROM harness_shared.substrate_outbox
        WHERE table_name='bee_claim_specs' AND key='su-samescope' ORDER BY id`;
@@ -239,7 +239,7 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
   it('REGRESSION: a workspace-threaded hive-scoped write lands the ROW, the READ, and the OUTBOX capture all under that workspace', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
     const r = await setClaimSpec(
-      { beeId: 'wi1564-fed', workspaceId: WS, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: HIVE },
+      { cupId: 'wi1564-fed', workspaceId: WS, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: HIVE },
       db.sql,
     );
     expect(r.ok).toBe(true);
@@ -252,10 +252,10 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
 
     // READ agrees: the same workspace sees the spec; the 'default' partition
     // does NOT (this asymmetry is exactly why BOTH handlers must thread it).
-    expect(await getClaimSpec({ beeId: 'wi1564-fed', workspaceId: WS }, db.sql)).toMatchObject({
+    expect(await getClaimSpec({ cupId: 'wi1564-fed', workspaceId: WS }, db.sql)).toMatchObject({
       specId: DEFAULT_CLAIM_SPEC.specId,
     });
-    expect(await getClaimSpec({ beeId: 'wi1564-fed' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+    expect(await getClaimSpec({ cupId: 'wi1564-fed' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
 
     // CAPTURE agrees: the outbox row rides (WS, HIVE) — the handle the booted
     // drain actually serves. Under ('default', HIVE) it stranded forever (D5).
@@ -267,7 +267,7 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
 
   it('the strand combo (hive-scoped + default partition) still writes but returns the LOUD WI-1564 warning', async () => {
     const r = await setClaimSpec(
-      { beeId: 'wi1564-strand', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', hiveSlug: HIVE },
+      { cupId: 'wi1564-strand', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: HIVE },
       db.sql,
     );
     expect(r.ok).toBe(true); // fail-soft: local get_next on 'default' still works
@@ -275,8 +275,8 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
     expect(r.warning).toMatch(/WI-1564/);
   });
 
-  it('no warning for operator-scope (hiveSlug null) on the default partition — local-only is the intent there', async () => {
-    const r = await setClaimSpec({ beeId: 'wi1564-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
+  it('no warning for operator-scope (potSlug null) on the default partition — local-only is the intent there', async () => {
+    const r = await setClaimSpec({ cupId: 'wi1564-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(r.ok).toBe(true);
     expect(r.warning).toBeUndefined();
   });
@@ -285,8 +285,8 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
 describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-spec projection)', () => {
   const HIVE = 'my-hive';
   type Tier = 'observe' | 'message' | 'wake' | 'steer';
-  const specRow = (beeId: string) =>
-    ({ harness_slug: HIVE, bee_id: beeId, spec: { ...DEFAULT_CLAIM_SPEC }, revision: 0, updated_by: 'mug' }) as never;
+  const specRow = (cupId: string) =>
+    ({ harness_slug: HIVE, bee_id: cupId, spec: { ...DEFAULT_CLAIM_SPEC }, revision: 0, updated_by: 'mug' }) as never;
   const proj = (tier: Tier) =>
     buildBeeClaimSpecProjection({
       workspaceId: 'default',
@@ -295,8 +295,8 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
       hiveHomeSlug: HIVE, // ⇒ enforcement active
       resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
     });
-  const applied = async (beeId: string) =>
-    (await db.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id='default' AND bee_id=${beeId}`).length > 0;
+  const applied = async (cupId: string) =>
+    (await db.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id='default' AND bee_id=${cupId}`).length > 0;
 
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.bee_claim_specs WHERE bee_id LIKE 'm6-%'`;

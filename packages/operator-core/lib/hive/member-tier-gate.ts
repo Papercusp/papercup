@@ -77,7 +77,7 @@ export interface ResolvedTier {
 
 export interface ResolveTierOpts {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   githubUserId: number;
   /** Live = re-derive from GitHub (owner-actions); else read the cache, fall back to live. */
   live?: boolean;
@@ -93,12 +93,12 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1h; owner-actions bypass with live=true.
  * permission comes from GitHub and the identity must be a verified hive member.
  */
 export async function resolveHiveMemberTier(opts: ResolveTierOpts): Promise<ResolvedTier> {
-  const { workspaceId, hiveSlug, githubUserId } = opts;
-  const repo = await resolveHiveRepo(workspaceId, hiveSlug);
+  const { workspaceId, potSlug, githubUserId } = opts;
+  const repo = await resolveHiveRepo(workspaceId, potSlug);
   if (!repo) return { tier: 'owner', reason: 'solo-unbound' };
 
   const { sql } = getOrgPg();
-  const member = await getHiveMember(workspaceId, hiveSlug, githubUserId);
+  const member = await getHiveMember(workspaceId, potSlug, githubUserId);
   if (!member) return { tier: 'read-only', reason: 'not-a-member' };
   if (member.bindingStatus !== 'verified') return { tier: 'read-only', reason: 'unverified' };
 
@@ -107,7 +107,7 @@ export async function resolveHiveMemberTier(opts: ResolveTierOpts): Promise<Reso
     const cached = await sql<{ repo_permission: string | null; permission_checked_at: string | null }[]>`
       SELECT repo_permission, permission_checked_at
         FROM harness_shared.hive_members
-       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${hiveSlug} AND github_user_id = ${githubUserId}
+       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${potSlug} AND github_user_id = ${githubUserId}
        LIMIT 1`;
     const row = cached[0];
     const at = row?.permission_checked_at != null ? Number(row.permission_checked_at) : null;
@@ -128,7 +128,7 @@ export async function resolveHiveMemberTier(opts: ResolveTierOpts): Promise<Reso
     await sql`
       UPDATE harness_shared.hive_members
          SET repo_permission = ${perm}, permission_checked_at = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${hiveSlug} AND github_user_id = ${githubUserId}`;
+       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${potSlug} AND github_user_id = ${githubUserId}`;
   } catch {
     /* cache is advisory */
   }
@@ -155,7 +155,7 @@ export interface HiveTierGateResult {
  */
 export async function requireHiveTier(args: {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   minTier: HiveMemberTier;
   resolveIdentity?: () => Promise<LocalGithubIdentity>;
 }): Promise<HiveTierGateResult> {
@@ -165,7 +165,7 @@ export async function requireHiveTier(args: {
 
   // SOLO short-circuit: the local owner always passes on their own unbound hive,
   // even without gh auth — a single-user hive must never lock its owner out.
-  const repo = await resolveHiveRepo(args.workspaceId, args.hiveSlug);
+  const repo = await resolveHiveRepo(args.workspaceId, args.potSlug);
   if (!repo) return { ok: true, tier: 'owner', reason: 'solo-unbound' };
 
   const identity = await (args.resolveIdentity ?? resolveLocalGithubIdentity)();
@@ -174,13 +174,13 @@ export async function requireHiveTier(args: {
     return {
       ok: false,
       reason: 'gh-auth-required',
-      message: `'${args.hiveSlug}' is a shared hive (${repo.fullName}); a '${args.minTier}' action needs your GitHub identity. Run \`gh auth login\`.`,
+      message: `'${args.potSlug}' is a shared hive (${repo.fullName}); a '${args.minTier}' action needs your GitHub identity. Run \`gh auth login\`.`,
     };
   }
 
   const resolved = await resolveHiveMemberTier({
     workspaceId: args.workspaceId,
-    hiveSlug: args.hiveSlug,
+    potSlug: args.potSlug,
     githubUserId: identity.githubUserId,
     live: args.minTier === 'owner', // high-stakes → live re-derive (no stale cache)
   });

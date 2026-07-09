@@ -318,7 +318,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
 
     expect(r.ok).toBe(true);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
-    expect(r.created).toMatchObject({ memberSlug: MEMBER, hiveSlug: HOME });
+    expect(r.created).toMatchObject({ memberSlug: MEMBER, potSlug: HOME });
     expect(r.gitSync).toMatchObject({
       seeded: true,
       active: GIT_SYNC_SEED_ACTIVE_CREATOR,
@@ -451,12 +451,12 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
     jrepoDir = await makeWorkRepo(`s2-${JREPO}`);
 
     const r = await joinHiveAsView(
-      { hiveId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
+      { potId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
       deps(),
     );
 
     expect(r.ok).toBe(true);
-    expect(r.hiveSlug).toBe(HIVE_ID);
+    expect(r.potSlug).toBe(HIVE_ID);
     expect(r.members).toHaveLength(1);
     expect(r.members[0].slug).toBe(JREPO);
     expect(r.members[0].detail).toBe('joined; git_sync:seeded');
@@ -503,7 +503,7 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
     const callsBefore = joinLinkCalls;
 
     const r = await joinHiveAsView(
-      { hiveId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
+      { potId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
       deps(),
     );
 

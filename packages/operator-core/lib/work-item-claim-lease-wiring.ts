@@ -68,17 +68,17 @@ export async function leaseClaimedWorkItem(opts: {
   workspaceId?: string;
 }): Promise<boolean> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  let hiveSlug: string | null = null;
+  let potSlug: string | null = null;
   try {
-    hiveSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
+    potSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
   } catch {
-    hiveSlug = null; // not part of a Hive / resolution failed → harness-scoped fallback
+    potSlug = null; // not part of a Hive / resolution failed → harness-scoped fallback
   }
   const res = await acquireClaim({
     workspaceId,
     harnessSlug: opts.harness,
     workItemId: opts.workItemId,
-    hiveSlug,
+    potSlug,
     owner: opts.owner,
     intent: 'work-stealing claim (claim_next)',
   });
@@ -100,16 +100,16 @@ export async function releaseWorkItemLease(opts: { harness: string; workItemId: 
   if (!claimLeaseOn || !opts.owner) return;
   try {
     const workspaceId = activeWorkspaceId();
-    // Same hiveSlug resolution as leaseClaimedWorkItem (above), so a release routes to
+    // Same potSlug resolution as leaseClaimedWorkItem (above), so a release routes to
     // the SAME authority scope the original acquire did — on a single box this is a
     // no-op (authority = self either way); cross-Swarm it matters.
-    let hiveSlug: string | null = null;
+    let potSlug: string | null = null;
     try {
-      hiveSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
+      potSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
     } catch {
-      hiveSlug = null;
+      potSlug = null;
     }
-    await releaseClaimForItem({ workspaceId, harnessSlug: opts.harness, workItemId: opts.workItemId, hiveSlug, owner: opts.owner });
+    await releaseClaimForItem({ workspaceId, harnessSlug: opts.harness, workItemId: opts.workItemId, potSlug, owner: opts.owner });
   } catch {
     // best-effort — a stale lease that outlives its TTL is a temporary DX papercut,
     // never worth risking the caller's actual release for.
@@ -164,13 +164,13 @@ export async function gcOrphanIssueLeases(): Promise<number> {
  * can RENEW the lease + SELF-ABORT if it is stolen mid-run (shared-hive-loop-e2e-testing
  * D-007). Plain data — threaded through `PipelineInput` (DBOS-serializable). `workItemId`,
  * `harnessSlug`, `workspaceId` are already on `PipelineInput`, so only the lease identity
- * lives here. The heartbeat re-keys on (workItemId, claimId, owner) routed by `hiveSlug`.
+ * lives here. The heartbeat re-keys on (workItemId, claimId, owner) routed by `potSlug`.
  */
 export interface WorkItemClaimLeaseHandle {
   claimId: string;
   /** THIS Swarm's lease owner (its device pubkey, or the swarm-local fallback). */
   owner: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   holderPubkey: string | null;
 }
 
@@ -213,17 +213,17 @@ export async function leaseFeatureForExecutor(opts: {
   try {
     const booted = getBootedHarness(opts.workspaceId, opts.harness);
     const owner = (booted ? resolveMyPubkey(booted) : null) ?? `swarm-local:${opts.harness}`;
-    let hiveSlug: string | null = null;
+    let potSlug: string | null = null;
     try {
-      hiveSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harness);
+      potSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harness);
     } catch {
-      hiveSlug = null;
+      potSlug = null;
     }
     const res = await acquireClaim({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harness,
       workItemId: opts.featureId,
-      hiveSlug,
+      potSlug,
       owner,
       holderPubkey: owner,
       intent: 'executor dispatch (orchestrator)',
@@ -235,7 +235,7 @@ export async function leaseFeatureForExecutor(opts: {
       claim: {
         claimId: res.claim.claimId,
         owner: res.claim.owner,
-        hiveSlug: res.claim.hiveSlug,
+        potSlug: res.claim.potSlug,
         holderPubkey: res.claim.holderPubkey,
       },
     };

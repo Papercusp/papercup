@@ -71,7 +71,7 @@ export interface NetworkBoardRow {
   /** Capability-tier rung (D-001). */
   tier: NetworkTier;
   /** Stable identity: the hive home-slug (tiers 1–2), the peer device/identity key
-   *  (tier 3), or the foreign Hive's pubkey-b64 / hiveId (tier 4). Unique per row. */
+   *  (tier 3), or the foreign Hive's pubkey-b64 / potId (tier 4). Unique per row. */
   key: string;
   /** Human label for the row (hive title / machine label / foreign-hive title). */
   title: string;

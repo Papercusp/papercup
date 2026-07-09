@@ -115,7 +115,7 @@ export default defineTool({
     let lastLeaseLoss: { id: string } | null = null;
     const claimViaScheduler = async () => {
       const res = await getNextForBee({
-        beeId: assignee,
+        cupId: assignee,
         workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
         harness: args.harness,
         states: args.states,

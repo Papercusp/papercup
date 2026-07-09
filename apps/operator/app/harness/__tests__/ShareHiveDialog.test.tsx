@@ -32,7 +32,7 @@ const STORED_SECRET = 'deadbeef'.repeat(4); // 32 hex chars
 
 function meta(over: Partial<HiveShareMeta> = {}): HiveShareMeta {
   return {
-    hiveId: 'acme',
+    potId: 'acme',
     found: false,
     visibility: null,
     title: 'acme',
@@ -45,7 +45,7 @@ function meta(over: Partial<HiveShareMeta> = {}): HiveShareMeta {
 }
 
 type SetHiveInput = {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   visibility: 'public' | 'invite' | 'private';
@@ -72,7 +72,7 @@ function seams(over?: {
 describe('ShareHiveForm — prefill + state (P-004)', () => {
   it('an unpublished hive: Currently unpublished, public preselected, slug prefill', async () => {
     const s = seams({ meta: meta({ found: false }) });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await waitFor(() =>
       expect(screen.getByTestId('share-hive-current').textContent).toContain('unpublished'),
     );
@@ -84,7 +84,7 @@ describe('ShareHiveForm — prefill + state (P-004)', () => {
     const s = seams({
       meta: meta({ found: true, visibility: 'invite', title: 'Acme Hive', description: 'the stack', inviteSecret: STORED_SECRET }),
     });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await waitFor(() =>
       expect((screen.getByTestId('share-hive-title') as HTMLInputElement).value).toBe('Acme Hive'),
     );
@@ -96,7 +96,7 @@ describe('ShareHiveForm — prefill + state (P-004)', () => {
     const s = seams({
       meta: meta({ found: true, visibility: 'invite', title: 'Acme Hive', inviteSecret: STORED_SECRET, hivePubkey: PUBKEY }),
     });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     const link = (await screen.findByTestId('share-hive-invite-link')).textContent!;
     expect(parseHiveInviteLink(link)).toEqual({
       secret: STORED_SECRET,
@@ -107,7 +107,7 @@ describe('ShareHiveForm — prefill + state (P-004)', () => {
 
   it('lists the member repos that will be listed, stripping the #id suffix for display', async () => {
     const s = seams({ meta: meta({ memberRepos: ['acme/web#11', 'acme/api'] }) });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-repos');
     expect(screen.getByText(/will be listed \(2\)/)).toBeTruthy();
     expect(screen.getByText('acme/web')).toBeTruthy();
@@ -117,7 +117,7 @@ describe('ShareHiveForm — prefill + state (P-004)', () => {
   it('flips the member-repo copy to "unlisted" when private is selected', async () => {
     const user = userEvent.setup();
     const s = seams({ meta: meta({ memberRepos: ['acme/web'] }) });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-repos');
     await user.click(screen.getByTestId('share-hive-viz-private'));
     expect(screen.getByText(/will be unlisted \(1\)/)).toBeTruthy();
@@ -131,7 +131,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
     // peer count; announced with 0 reachable peers says "registered, not yet
     // discoverable" instead of claiming a directory publish.
     const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: true, reachablePeers: 3 } });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.clear(screen.getByTestId('share-hive-title'));
     await user.type(screen.getByTestId('share-hive-title'), 'Acme Hive');
@@ -139,14 +139,14 @@ describe('ShareHiveForm — submit (P-004)', () => {
     await user.click(screen.getByTestId('share-hive-submit'));
     await screen.findByText('Published — announced to 3 connected peers.');
     expect(s.calls).toEqual([
-      { hiveId: 'acme', title: 'Acme Hive', description: 'the stack', visibility: 'public' },
+      { potId: 'acme', title: 'Acme Hive', description: 'the stack', visibility: 'public' },
     ]);
   });
 
   it('invite with NO stored secret MINTS one and hands out the full artifact', async () => {
     const user = userEvent.setup();
     const s = seams({ meta: meta({ found: false, hivePubkey: PUBKEY }) });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-viz-invite'));
     await user.click(screen.getByTestId('share-hive-submit'));
@@ -165,7 +165,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
     const s = seams({
       meta: meta({ found: true, visibility: 'public', inviteSecret: STORED_SECRET }),
     });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-viz-invite'));
     await user.click(screen.getByTestId('share-hive-submit'));
@@ -179,7 +179,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
       meta: meta({ found: true, visibility: 'public' }),
       outcome: { ok: true, withdrawn: true },
     });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-viz-private'));
     expect(screen.getByTestId('share-hive-submit').textContent).toBe('Withdraw from directory');
@@ -192,7 +192,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
   it('a failed save surfaces the error and hands out NO invite link', async () => {
     const user = userEvent.setup();
     const s = seams({ meta: meta({ found: false }), outcome: { ok: false, error: 'directory down' } });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-viz-invite'));
     await user.click(screen.getByTestId('share-hive-submit'));
@@ -207,7 +207,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
   it('announced with 0 reachable peers says registered-not-discoverable, NOT "announced to 0 peers"', async () => {
     const user = userEvent.setup();
     const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: true, reachablePeers: 0 } });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-submit'));
     await screen.findByText(
@@ -221,7 +221,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
   it('an announce that did not go out (announced:false) says "pending transport", not published', async () => {
     const user = userEvent.setup();
     const s = seams({ meta: meta({ found: false }), outcome: { ok: true, announced: false, reachablePeers: 0 } });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-submit'));
     await screen.findByText('Saved (announce pending transport).');
@@ -232,7 +232,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
     const user = userEvent.setup();
     const saved: string[] = [];
     const s = seams({ meta: meta({ found: false }) });
-    render(<ShareHiveForm hiveSlug="acme" onSaved={(v) => saved.push(v)} {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" onSaved={(v) => saved.push(v)} {...s.props} />);
     await screen.findByTestId('share-hive-current');
     await user.click(screen.getByTestId('share-hive-submit'));
     await waitFor(() => expect(saved).toEqual(['public']));
@@ -243,7 +243,7 @@ describe('ShareHiveForm — submit (P-004)', () => {
     const s = seams({
       meta: meta({ found: true, visibility: 'invite', inviteSecret: STORED_SECRET }),
     });
-    render(<ShareHiveForm hiveSlug="acme" {...s.props} />);
+    render(<ShareHiveForm potSlug="acme" {...s.props} />);
     const link = (await screen.findByTestId('share-hive-invite-link')).textContent!;
     await user.click(screen.getByTestId('share-hive-invite-copy'));
     expect(await window.navigator.clipboard.readText()).toBe(link);
@@ -255,7 +255,7 @@ describe('ShareHiveDialog (P-004)', () => {
   it('renders the form in a modal when open, with the lexicon label in the heading', async () => {
     const s = seams({ meta: meta({ found: false }) });
     render(
-      <ShareHiveDialog hiveSlug="acme" hiveLabel="pot" open onOpenChange={() => {}} {...s.props} />,
+      <ShareHiveDialog potSlug="acme" hiveLabel="pot" open onOpenChange={() => {}} {...s.props} />,
       { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
     );
     await screen.findByTestId('share-hive-form');
@@ -268,7 +268,7 @@ describe('ShareHiveDialog (P-004)', () => {
   it('renders nothing when closed', () => {
     const s = seams();
     render(
-      <ShareHiveDialog hiveSlug="acme" open={false} onOpenChange={() => {}} {...s.props} />,
+      <ShareHiveDialog potSlug="acme" open={false} onOpenChange={() => {}} {...s.props} />,
       { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
     );
     expect(screen.queryByTestId('share-hive-form')).toBeNull();
@@ -278,7 +278,7 @@ describe('ShareHiveDialog (P-004)', () => {
 describe('PublishHiveCard — the picker share-offer embed (P-004)', () => {
   it('embeds the compact share form with the full visibility choice (no one-click default-public)', async () => {
     const s = seams({ meta: meta({ found: false }) });
-    render(<PublishHiveCard hiveSlug="acme" {...s.props} />);
+    render(<PublishHiveCard potSlug="acme" {...s.props} />);
     screen.getByTestId('publish-hive-card');
     await screen.findByTestId('share-hive-form');
     // The explicit choice replaced the one-click: all three options present,

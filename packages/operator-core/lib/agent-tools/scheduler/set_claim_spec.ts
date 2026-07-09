@@ -53,10 +53,10 @@ const FACTORY_PUSH_ROLES = new Set([
  * leader/member returns null — no false-positive on every SU fleet member (su-loop-capability-parity
  * P-003). Exported for the advisory unit test.
  */
-export function claimSpecInertWarning(beeId: string, spawnedRole: string | null): string | null {
+export function claimSpecInertWarning(cupId: string, spawnedRole: string | null): string | null {
   if (!spawnedRole || !FACTORY_PUSH_ROLES.has(spawnedRole)) return null;
   return (
-    `cupId "${beeId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
+    `cupId "${cupId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
     'that is HANDED a FEATURE_ID and never calls scheduler:get_next — so this claim-spec is INERT ' +
     '(it will never select any work). Claim-specs steer SELF-PULLING agents: a coding-hive bee ' +
     '(role="cup"), the queen, or an su fleet leader/member instructed to pull via get_next. ' +
@@ -81,10 +81,10 @@ export function claimSpecInertWarning(beeId: string, spawnedRole: string | null)
  * since the bee may simply not have reached its first await YET and will be
  * wakeable moments later.
  */
-export function claimSpecWakeabilityWarning(beeId: string, wakeable: boolean | null): string | null {
+export function claimSpecWakeabilityWarning(cupId: string, wakeable: boolean | null): string | null {
   if (wakeable !== false) return null; // true, or unknown (null) — never cry wolf on a lookup miss
   return (
-    `cupId "${beeId}" has NO live coord:inbox-wake standing await right now — a subsequent ` +
+    `cupId "${cupId}" has NO live coord:inbox-wake standing await right now — a subsequent ` +
     'coord:send { wake:"required" } warm-inject to this bee will return woken:0 even though ' +
     "fleet:assignments may show it alive (EI-6079: a fresh spawn hasn't reached its first await " +
     'yet, or the session already ended/was reaped). The spec is stored regardless (it applies ' +
@@ -101,13 +101,13 @@ export function claimSpecWakeabilityWarning(beeId: string, wakeable: boolean | n
  * superuser, etc.) — the caller then skips the warning. Swallows every lookup error: a claim-spec
  * write must never fail on this advisory probe.
  */
-async function lookupSpawnedRole(beeId: string): Promise<string | null> {
+async function lookupSpawnedRole(cupId: string): Promise<string | null> {
   try {
     const sql = getOrgPg().sql;
     const rows = (await sql`
       SELECT child_role
         FROM harness_shared.spawned_agents
-       WHERE spawn_id = ${beeId} OR session_owner = ${beeId} OR session_id = ${beeId}
+       WHERE spawn_id = ${cupId} OR session_owner = ${cupId} OR session_id = ${cupId}
        ORDER BY started_at DESC
        LIMIT 1`) as Array<{ child_role: string | null }>;
     return rows[0]?.child_role ?? null;
@@ -199,39 +199,39 @@ export default defineTool({
     // ctx harness wins (a harness-scoped queen); else the workspace's one shared
     // hive; else null (operator-scope / local-only — today's behavior). Best-effort:
     // a scope-resolve failure degrades to local (never blocks the spec write).
-    let hiveSlug: string | null = null;
+    let potSlug: string | null = null;
     try {
       const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
       const ctxHarness =
         typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
           ? ctxHarnessRaw
           : undefined;
-      if (ctxHarness) hiveSlug = ctxHarness;
+      if (ctxHarness) potSlug = ctxHarness;
       else if (ident.workspaceId && ident.workspaceId !== '*') {
         const scope = await resolveWorkspaceHiveScope(ident.workspaceId);
-        if (scope.kind === 'one') hiveSlug = scope.homeSlug;
+        if (scope.kind === 'one') potSlug = scope.homeSlug;
       }
     } catch {
-      hiveSlug = null;
+      potSlug = null;
     }
     // WI-1564 (LIVE-1 D5): thread the caller's workspace — omitting it landed
     // the row under DEFAULT_COORD_WORKSPACE 'default', whose (workspace, hive)
     // outbox handle no drain serves, so a hive-scoped spec NEVER federated.
     // The reader (scheduler:get_next) resolves through the SAME helper.
     const res = await setClaimSpec({
-      beeId: targetBeeId,
+      cupId: targetBeeId,
       workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
       spec: args.spec,
       updatedBy: ident.ownerId,
-      hiveSlug,
+      potSlug,
     });
 
     // Best-effort inert-spec guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
     // spec only STEERS a SELF-PULLING agent (a coding-hive bee, the queen, or an su fleet
     // leader/member instructed to pull) that calls scheduler:get_next. The observed mistake was
     // setting claim-specs on a coding-FACTORY role (scoper/architect/worker/…), which never calls
-    // get_next — the spec just sits there, INERT. Resolve the beeId's spawned role and, when it's a
-    // factory push-role, attach a prominent `warning`. Advisory ONLY (not a hard reject): the beeId
+    // get_next — the spec just sits there, INERT. Resolve the cupId's spawned role and, when it's a
+    // factory push-role, attach a prominent `warning`. Advisory ONLY (not a hard reject): the cupId
     // may be a session id with no nursery row, a queen, or an su fleet member — none of which warn
     // (su-loop-capability-parity P-003: no false-positive on every SU fleet member).
     // (Skipped for a FLEET target — the sentinel key is not a spawned agent.)

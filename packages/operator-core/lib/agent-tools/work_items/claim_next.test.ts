@@ -88,7 +88,7 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
       claimedUnder: { specId: 'fleet-bugs', revision: 3 },
     });
     expect(getNextForBeeM).toHaveBeenCalledWith({
-      beeId: 'su-me',
+      cupId: 'su-me',
       workspaceId: 'ws-1',
       harness: 'papercusp',
       states: ['open'],
@@ -102,7 +102,7 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
   it('uses the explicit assignee as the scheduler bee id', async () => {
     await body({ harness: 'papercusp', assignee: 'su-other' });
 
-    expect(getNextForBeeM).toHaveBeenCalledWith(expect.objectContaining({ beeId: 'su-other' }));
+    expect(getNextForBeeM).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-other' }));
     expect(claimNextM).not.toHaveBeenCalled();
   });
 

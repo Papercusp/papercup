@@ -51,29 +51,29 @@ beforeEach(() => {
 
 describe('POST /agent-mcp/pot-override-set', () => {
   it('rejects a non-loopback request', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'su', value: 'x' }, { loopback: false });
+    const res = await callPost({ potSlug: 'h', kind: 'prompt', name: 'su', value: 'x' }, { loopback: false });
     expect(res.status).toBe(403);
     expect(setPromptMock).not.toHaveBeenCalled();
   });
 
-  it('400s on missing hiveSlug / kind / name', async () => {
+  it('400s on missing potSlug / kind / name', async () => {
     expect((await callPost({ kind: 'prompt', name: 'su', value: 'x' })).status).toBe(400);
-    expect((await callPost({ hiveSlug: 'h', name: 'su', value: 'x' })).status).toBe(400);
-    expect((await callPost({ hiveSlug: 'h', kind: 'prompt', value: 'x' })).status).toBe(400);
+    expect((await callPost({ potSlug: 'h', name: 'su', value: 'x' })).status).toBe(400);
+    expect((await callPost({ potSlug: 'h', kind: 'prompt', value: 'x' })).status).toBe(400);
   });
 
   it('sets a prose role override + invalidates hive.overrides', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'mug', value: 'be bold' });
+    const res = await callPost({ potSlug: 'h', kind: 'prompt', name: 'mug', value: 'be bold' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; cleared: boolean };
     expect(body).toMatchObject({ ok: true, cleared: false });
     expect(setPromptMock).toHaveBeenCalledWith('w', 'h', 'mug', 'be bold');
     expect(deletePromptMock).not.toHaveBeenCalled();
-    expect(invalidateMock).toHaveBeenCalledWith('hive.overrides', { hiveSlug: 'h' });
+    expect(invalidateMock).toHaveBeenCalledWith('hive.overrides', { potSlug: 'h' });
   });
 
   it('clears a prose override when the value is empty', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'prompt', name: 'mug', value: '   ' });
+    const res = await callPost({ potSlug: 'h', kind: 'prompt', name: 'mug', value: '   ' });
     const body = (await res.json()) as { ok: boolean; cleared: boolean };
     expect(body).toMatchObject({ ok: true, cleared: true });
     expect(deletePromptMock).toHaveBeenCalledWith('w', 'h', 'mug');
@@ -82,7 +82,7 @@ describe('POST /agent-mcp/pot-override-set', () => {
 
   it('sets a scout config + reports accepted/dropped via the real parser', async () => {
     const res = await callPost({
-      hiveSlug: 'h',
+      potSlug: 'h',
       kind: 'config',
       name: 'scout',
       value: { buckets: { maxMoonshots: 3 }, bogusKey: 1 },
@@ -99,7 +99,7 @@ describe('POST /agent-mcp/pot-override-set', () => {
   });
 
   it('clears a config section when the value is null', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'config', name: 'scout', value: null });
+    const res = await callPost({ potSlug: 'h', kind: 'config', name: 'scout', value: null });
     const body = (await res.json()) as { ok: boolean; cleared: boolean };
     expect(body).toMatchObject({ ok: true, cleared: true });
     expect(deleteConfigMock).toHaveBeenCalledWith('w', 'h', 'scout');
@@ -107,7 +107,7 @@ describe('POST /agent-mcp/pot-override-set', () => {
   });
 
   it('400s a config value that is not an object', async () => {
-    const res = await callPost({ hiveSlug: 'h', kind: 'config', name: 'scout', value: [1, 2, 3] });
+    const res = await callPost({ potSlug: 'h', kind: 'config', name: 'scout', value: [1, 2, 3] });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body.error).toBe('config_value_must_be_object');

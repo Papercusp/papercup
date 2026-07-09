@@ -53,13 +53,13 @@ export default defineTool({
         .string()
         .min(1)
         .optional()
-        .describe('HARNESS-scoped revoke: the harness slug. Provide EITHER harnessSlug OR hiveSlug.'),
+        .describe('HARNESS-scoped revoke: the harness slug. Provide EITHER harnessSlug OR potSlug.'),
       potSlug: z
         .string()
         .min(1)
         .optional()
         .describe(
-          "HIVE-scoped revoke: the Hive's home slug — revokes the contributor from the WHOLE Hive's federation (all its harnesses) at once (P-006). Provide EITHER harnessSlug OR hiveSlug.",
+          "HIVE-scoped revoke: the Hive's home slug — revokes the contributor from the WHOLE Hive's federation (all its harnesses) at once (P-006). Provide EITHER harnessSlug OR potSlug.",
         ),
       githubUserId: z
         .number()

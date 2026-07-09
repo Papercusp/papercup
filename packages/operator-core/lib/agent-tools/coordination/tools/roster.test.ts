@@ -14,7 +14,7 @@ vi.mock('../presence-snapshot', () => ({
   resolvePresenceScope: vi.fn(async (ctx, args) => ({
     scope: args.scope ?? 'hive',
     wsId: 'test-ws',
-    hiveId: args.hive ?? 'test-hive',
+    potId: args.hive ?? 'test-hive',
   })),
   assemblePresenceSnapshot: vi.fn(async (resolved, opts) => {
     const allActive = [
@@ -55,7 +55,7 @@ vi.mock('../presence-snapshot', () => ({
     return {
       as_of: '2026-07-01T10:40:00.000Z',
       scope: resolved.scope,
-      hive: resolved.hiveId,
+      hive: resolved.potId,
       summary: {
         active: active.length,
         stale: 1,

@@ -37,26 +37,26 @@ describe('sentinelScopeLabel', () => {
 describe('renderSentinelContext heading scoping', () => {
   it('renders the workspace scope label in the heading when ON', () => {
     const label = sentinelScopeLabel('papercusp-workspace', 'papercusp', true);
-    const block = renderSentinelContext({ hiveSlug: label });
+    const block = renderSentinelContext({ potSlug: label });
     expect(block).toContain('## Live system status — workspace papercusp-workspace (all hives)');
   });
 
   it('renders the per-hive label when OFF (unchanged behaviour)', () => {
     const label = sentinelScopeLabel('papercusp-workspace', 'papercusp', false);
-    const block = renderSentinelContext({ hiveSlug: label });
+    const block = renderSentinelContext({ potSlug: label });
     expect(block).toContain('## Live system status — papercusp');
     expect(block).not.toContain('(all hives)');
   });
 
   it('an all-quiet system still renders the heading + an explicit "no anomalies" (silence is trustworthy)', () => {
-    const block = renderSentinelContext({ hiveSlug: 'papercusp' });
+    const block = renderSentinelContext({ potSlug: 'papercusp' });
     expect(block).toContain('## Live system status — papercusp');
     expect(block).toContain('_no anomalies — system healthy._');
   });
 
   it('renders open deep delegations as a dedicated follow-up-status section', () => {
     const block = renderSentinelContext({
-      hiveSlug: 'papercusp',
+      potSlug: 'papercusp',
       delegations: [
         {
           id: 'WI-301',

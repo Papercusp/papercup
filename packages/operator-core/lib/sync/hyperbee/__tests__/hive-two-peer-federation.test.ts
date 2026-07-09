@@ -287,7 +287,7 @@ describe('Shared Hive federation — Track B presence federates over the Hive to
       const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
       const workspaceId = 'ws-hive-presence-test';
       const harnessSlug = 'acme-rd';
-      const hiveSlug = 'acme-hive';
+      const potSlug = 'acme-hive';
 
       const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
       const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
@@ -346,7 +346,7 @@ describe('Shared Hive federation — Track B presence federates over the Hive to
           machineLabel: 'machine-A',
           devicePubkey: idA.devicePubkey,
         }),
-        resolveHiveSlug: async () => hiveSlug,
+        resolveHiveSlug: async () => potSlug,
         setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
       });
       expect(loopA, 'publisher should start for a swarmed harness').not.toBeNull();
@@ -373,7 +373,7 @@ describe('Shared Hive federation — Track B presence federates over the Hive to
           device_pubkey: idA.devicePubkey,
           github_user_id: 4242,
           machine_label: 'machine-A',
-          hive_slug: hiveSlug, // the P-008/P-009 carry — what lockAuthorityForHive scopes by
+          hive_slug: potSlug, // the P-008/P-009 carry — what lockAuthorityForHive scopes by
         },
       });
     },

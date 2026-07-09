@@ -40,7 +40,7 @@ const store = new PgPresenceStore({
  * Upsert the caller's presence row — "set my presence to exactly this".
  * Always bumps heartbeat_at AND last_active_at (a declared write is genuine
  * activity, D-003). Resolves the populate-once scalars agentRole (D-004, from
- * the identity) + hiveSlug (from `harnessSlug` via hiveHomeSlugForHarness) when
+ * the identity) + potSlug (from `harnessSlug` via hiveHomeSlugForHarness) when
  * the caller hasn't already set them. Omitted optional fields reset to defaults.
  */
 export async function writePresence(
@@ -49,16 +49,16 @@ export async function writePresence(
   harnessSlug?: string | null,
 ): Promise<void> {
   const agentRole = input.agentRole ?? deriveAgentRole(identity);
-  let hiveSlug = input.hiveSlug ?? null;
-  if (hiveSlug == null && harnessSlug) {
+  let potSlug = input.potSlug ?? null;
+  if (potSlug == null && harnessSlug) {
     try {
       const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-      hiveSlug = await hiveHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+      potSlug = await hiveHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
     } catch {
-      hiveSlug = null; // best-effort: presence must write even if hive lookup fails
+      potSlug = null; // best-effort: presence must write even if hive lookup fails
     }
   }
-  await store.write(identity, { ...input, agentRole, hiveSlug });
+  await store.write(identity, { ...input, agentRole, potSlug });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
   // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the
@@ -115,7 +115,7 @@ export async function writePresence(
     currentPlanSlug: input.currentPlanSlug,
     currentFiles: input.currentFiles,
     harnessSlug: harnessSlug ?? null,
-    hiveSlug,
+    potSlug,
   });
 }
 
@@ -195,9 +195,9 @@ export async function clearPresence(ownerId: string): Promise<void> {
 }
 
 /** List presence records in deterministic ownerId order (P-005), optionally
- *  scoped to a workspace and/or a Hive (hiveSlug — the P-004 hive-scoped read). */
+ *  scoped to a workspace and/or a Hive (potSlug — the P-004 hive-scoped read). */
 export async function listPresence(
-  opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
+  opts: { workspaceId?: string | null; potSlug?: string | null } = {},
 ): Promise<PresenceRecord[]> {
   return store.list(opts);
 }

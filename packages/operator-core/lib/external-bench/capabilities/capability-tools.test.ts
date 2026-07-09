@@ -42,13 +42,13 @@ function recordingRunTool(): RunTool & { calls: Array<{ name: string; args: Reco
   return Object.assign(fn, { calls });
 }
 
-async function openWith(runTool: RunTool, hiveSlug: string): Promise<RunSandbox> {
+async function openWith(runTool: RunTool, potSlug: string): Promise<RunSandbox> {
   const deps: OpenRunSandboxDeps = { workspaceId: 'ws-test', hiveOps: noopHiveOps(), runTool };
-  return openRunSandbox(deps, { suite: 's', arm: 'a', runId: 'r', hiveSlug });
+  return openRunSandbox(deps, { suite: 's', arm: 'a', runId: 'r', potSlug });
 }
 
 describe('CapabilityTool — verb + sandbox scope', () => {
-  it('memory.remember fires memory:remember with hive_slug = sandbox.hiveSlug', async () => {
+  it('memory.remember fires memory:remember with hive_slug = sandbox.potSlug', async () => {
     const runTool = recordingRunTool();
     const sandbox = await openWith(runTool, 'hive-mem');
     await memoryRememberTool(sandbox).invoke({ fact: 'tests live next to source' });
@@ -137,7 +137,7 @@ describe('memory isolation — A is searchable in A, never in B or production', 
    */
   function isolatingRunTool(): RunTool {
     const byHive = new Map<string, string[]>(); // hive_slug → facts
-    const memberToHive = (member: string) => member.replace(/-m$/, ''); // memberSlug → hiveSlug
+    const memberToHive = (member: string) => member.replace(/-m$/, ''); // memberSlug → potSlug
     return async (name, args) => {
       if (name === 'memory:remember') {
         const hive = String(args.hive_slug);

@@ -40,7 +40,7 @@ interface OverrideRow {
   value: unknown;
 }
 interface SetArgs {
-  hiveSlug: string;
+  potSlug: string;
   kind: 'prompt' | 'config';
   name: string;
   value: unknown;
@@ -301,7 +301,7 @@ export default function HiveCustomizationPage() {
 
   const { data: overrideData, error } = useSyncQuery<OverrideRow>({
     queryName: 'hive.overrides',
-    args: { hiveSlug: hive ?? '' },
+    args: { potSlug: hive ?? '' },
   });
   const rows = useMemo<OverrideRow[]>(() => (hive ? (overrideData ?? []) : []), [overrideData, hive]);
 
@@ -329,7 +329,7 @@ export default function HiveCustomizationPage() {
     async (md: string) => {
       if (!hive) return;
       try {
-        await setOverride({ hiveSlug: hive, kind: 'prompt', name: role, value: md });
+        await setOverride({ potSlug: hive, kind: 'prompt', name: role, value: md });
         toast.success(`Saved ${role} persona override`);
       } catch (e) {
         toast.error(`Couldn't save: ${e instanceof Error ? e.message : 'failed'}`);
@@ -340,7 +340,7 @@ export default function HiveCustomizationPage() {
   const clearProse = useCallback(async () => {
     if (!hive) return;
     try {
-      await setOverride({ hiveSlug: hive, kind: 'prompt', name: role, value: '' });
+      await setOverride({ potSlug: hive, kind: 'prompt', name: role, value: '' });
       toast.success(`Cleared ${role} persona override`);
     } catch (e) {
       toast.error(`Couldn't clear: ${e instanceof Error ? e.message : 'failed'}`);
@@ -351,7 +351,7 @@ export default function HiveCustomizationPage() {
     async (value: unknown): Promise<SetResp> => {
       if (!hive) return { ok: false };
       try {
-        const resp = await setOverride({ hiveSlug: hive, kind: 'config', name: section, value });
+        const resp = await setOverride({ potSlug: hive, kind: 'config', name: section, value });
         toast.success(`Saved ${section} config`);
         return resp;
       } catch (e) {
@@ -364,7 +364,7 @@ export default function HiveCustomizationPage() {
   const clearConfig = useCallback(async () => {
     if (!hive) return;
     try {
-      await setOverride({ hiveSlug: hive, kind: 'config', name: section, value: null });
+      await setOverride({ potSlug: hive, kind: 'config', name: section, value: null });
       toast.success(`Cleared ${section} config`);
     } catch (e) {
       toast.error(`Couldn't clear: ${e instanceof Error ? e.message : 'failed'}`);

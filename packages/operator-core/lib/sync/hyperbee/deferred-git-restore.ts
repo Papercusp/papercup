@@ -69,7 +69,7 @@ export async function resolveSeedDecryptionKey(
     return null;
   }
   try {
-    const key = await deps.epochKeyProvider.keyForEpoch(keyRef.hiveId, keyRef.epoch);
+    const key = await deps.epochKeyProvider.keyForEpoch(keyRef.potId, keyRef.epoch);
     // EpochKey is a branded Uint8Array; hand back a plain view for the decrypt seam.
     return Uint8Array.from(key);
   } catch (e) {

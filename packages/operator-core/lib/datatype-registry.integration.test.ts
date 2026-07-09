@@ -54,7 +54,7 @@ describe('datatype_registry store (real PG)', () => {
     const row = await upsertDatatype(db.adminSql, {
       id: 'bet',
       workspaceId: ws,
-      hiveSlug: 'oddsmith-ops',
+      potSlug: 'oddsmith-ops',
       title: 'Bet',
       description: 'a thesis: market + p_model + edge + rationale',
       tier: 'generic-kind',

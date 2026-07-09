@@ -40,7 +40,7 @@ beforeEach(() => {
 });
 afterEach(() => __resetAuthorityOpsForTests());
 
-const baseScope = { workspaceId: 'ws', harnessSlug: 'h', hiveSlug: 'hive-a', workItemId: 'WI-1', owner: 'swarm-a' };
+const baseScope = { workspaceId: 'ws', harnessSlug: 'h', potSlug: 'hive-a', workItemId: 'WI-1', owner: 'swarm-a' };
 
 describe('registerWorkItemReplicaAuthorityOps', () => {
   it('registers all six replica op kinds (idempotent — a second call is a no-op)', () => {
@@ -53,7 +53,7 @@ describe('registerWorkItemReplicaAuthorityOps', () => {
     const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: K.claimSlot, payload: { ...baseScope, ttlSec: 60 } });
     expect(res.ok).toBe(true);
     expect(redundancy.claimReplicaSlotLocal).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'ws', harnessSlug: 'h', hiveSlug: 'hive-a', workItemId: 'WI-1', owner: 'swarm-a', ttlSec: 60 }),
+      expect.objectContaining({ workspaceId: 'ws', harnessSlug: 'h', potSlug: 'hive-a', workItemId: 'WI-1', owner: 'swarm-a', ttlSec: 60 }),
     );
   });
 
@@ -78,14 +78,14 @@ describe('registerWorkItemReplicaAuthorityOps', () => {
   });
 
   it('list dispatches to listReplicasLocal(workItemId, opts)', async () => {
-    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: K.list, payload: { workItemId: 'WI-1', harness: 'h', workspaceId: 'ws', hiveSlug: 'hive-a' } });
+    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: K.list, payload: { workItemId: 'WI-1', harness: 'h', workspaceId: 'ws', potSlug: 'hive-a' } });
     expect(res.ok).toBe(true);
     expect(res.result).toHaveLength(2);
     expect(redundancy.listReplicasLocal).toHaveBeenCalledWith('WI-1', expect.objectContaining({ harness: 'h', workspaceId: 'ws' }));
   });
 
   it('judge dispatches to judgeRedundancyGroupLocal with the AUTHORITY grader (not the caller’s)', async () => {
-    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: K.judge, payload: { workItemId: 'WI-1', harness: 'h', workspaceId: 'ws', hiveSlug: 'hive-a' } });
+    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: K.judge, payload: { workItemId: 'WI-1', harness: 'h', workspaceId: 'ws', potSlug: 'hive-a' } });
     expect(res.ok).toBe(true);
     expect(redundancy.judgeRedundancyGroupLocal).toHaveBeenCalledWith(
       expect.objectContaining({ workItemId: 'WI-1', harness: 'h' }),

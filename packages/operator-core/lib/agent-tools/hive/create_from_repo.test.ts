@@ -34,7 +34,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   ident.mockReturnValue({ source: 'operator' } as never);
-  createM.mockResolvedValue({ ok: true, created: { hiveSlug: 'y-hive', memberSlug: 'y' } } as never);
+  createM.mockResolvedValue({ ok: true, created: { potSlug: 'y-hive', memberSlug: 'y' } } as never);
 });
 
 describe('pot:create_from_repo handler', () => {
@@ -47,7 +47,7 @@ describe('pot:create_from_repo handler', () => {
 
   it('delegates with the resolved workspace and returns the composition result', async () => {
     const b = body(await call());
-    expect(b).toMatchObject({ ok: true, created: { hiveSlug: 'y-hive' } });
+    expect(b).toMatchObject({ ok: true, created: { potSlug: 'y-hive' } });
     expect(createM.mock.calls[0]![0]).toMatchObject({ githubUrl: 'https://github.com/x/y', workspaceId: 'ws-1' });
   });
 

@@ -11,7 +11,7 @@
  *
  * The mapping (palette table + the confirmed tool schemas):
  *   - memory.remember(fact) / memory.search(query) → `memory:remember` / `memory:search`
- *     with `hive_slug = sandbox.hiveSlug` (the hive's shared pool IS the namespace).
+ *     with `hive_slug = sandbox.potSlug` (the hive's shared pool IS the namespace).
  *   - workqueue.enqueue(subtask) / claim() / complete(id) → `work_items:create` /
  *     `work_items:claim_next` / `work_items:complete` scoped to `sandbox.memberSlug` (the
  *     member harness holds the run's work_items — its `harness` arg).
@@ -192,7 +192,7 @@ export interface MemorySearchArgs {
   limit?: number;
 }
 
-/** `memory.remember(fact)` → `memory:remember` with `hive_slug = sandbox.hiveSlug`. */
+/** `memory.remember(fact)` → `memory:remember` with `hive_slug = sandbox.potSlug`. */
 export function memoryRememberTool(sandbox: RunSandbox): CapabilityTool<MemoryRememberArgs, RunToolResult> {
   return {
     name: 'memory.remember',
@@ -213,7 +213,7 @@ export function memoryRememberTool(sandbox: RunSandbox): CapabilityTool<MemoryRe
         kind: args.kind ?? 'project',
         // The hive's shared pool IS the per-run namespace — isolated from production mem0
         // and from every other run/arm; accumulates across all tasks in THIS run (D-007).
-        hive_slug: sandbox.hiveSlug,
+        hive_slug: sandbox.potSlug,
         workspace: sandbox.workspaceId,
       }),
   };
@@ -383,7 +383,7 @@ export function coordConsultTool(sandbox: RunSandbox): CapabilityTool<CoordConsu
     invoke: (args) =>
       callTool(sandbox, 'coord:ask', {
         question: `[consult:${args.specialist}] ${args.question}`,
-        harness: sandbox.hiveSlug, // scope the question to the sandbox hive — never the live fleet.
+        harness: sandbox.potSlug, // scope the question to the sandbox hive — never the live fleet.
         force_open: true,
       }),
   };
@@ -431,7 +431,7 @@ export function coordAskTool(sandbox: RunSandbox): CapabilityTool<CoordAskArgs, 
     invoke: (args) =>
       callTool(sandbox, 'coord:ask', {
         question: args.question,
-        harness: sandbox.hiveSlug, // scope to the sandbox hive — never the live fleet.
+        harness: sandbox.potSlug, // scope to the sandbox hive — never the live fleet.
       }),
   };
 }

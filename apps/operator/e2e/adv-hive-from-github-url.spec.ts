@@ -22,7 +22,7 @@
  *           Public, and the slug auto-derives from the repo name
  *           (octocat/Hello-World → `hello-world`, home `hello-world-hive`).
  *   P-018c  an invalid URL fails inline client-side — NO network call.
- *   P-018d  a mocked created-response renders the success summary (hiveSlug /
+ *   P-018d  a mocked created-response renders the success summary (potSlug /
  *           memberSlug / publish outcome) and Done lands the new hive focused
  *           (`?slug=`).
  *   P-018e  a mocked existing-response (joinable) renders the JOIN-OFFER card
@@ -142,7 +142,7 @@ async function stubFromRepo(page: Page, responses: Array<Record<string, unknown>
 
 const CREATED_RESPONSE = {
   ok: true,
-  created: { hiveSlug: HOME_SLUG, memberSlug: DERIVED_SLUG, memberPath: `/tmp/${DERIVED_SLUG}`, defaultBranch: 'main' },
+  created: { potSlug: HOME_SLUG, memberSlug: DERIVED_SLUG, memberPath: `/tmp/${DERIVED_SLUG}`, defaultBranch: 'main' },
   publish: { announced: true, cupboard: { attempted: true, rowsCreated: 2, rowsFailed: 0 } },
 };
 
@@ -151,7 +151,7 @@ const EXISTING_JOINABLE_RESPONSE = {
   existing: {
     kind: 'hive',
     hive: {
-      hiveId: 'h-hello-world',
+      potId: 'h-hello-world',
       title: 'Hello World Hive',
       ownerGithubLogin: 'octocat',
       memberLinks: ['papercusp://harness?v=1&payload=e2e-member-link'],
@@ -166,7 +166,7 @@ const EXISTING_UNJOINABLE_RESPONSE = {
   ok: true,
   existing: {
     kind: 'hive',
-    hive: { hiveId: 'h-hello-world', title: 'Hello World Hive', ownerGithubLogin: 'octocat', memberLinks: [], claimStatus: 'unclaimed' },
+    hive: { potId: 'h-hello-world', title: 'Hello World Hive', ownerGithubLogin: 'octocat', memberLinks: [], claimStatus: 'unclaimed' },
     coords: { owner: 'octocat', repo: 'Hello-World' },
     source: 'cupboard',
   },
@@ -175,7 +175,7 @@ const EXISTING_UNJOINABLE_RESPONSE = {
 const FORCED_CREATED_RESPONSE = {
   ok: true,
   created: {
-    hiveSlug: HOME_SLUG,
+    potSlug: HOME_SLUG,
     memberSlug: DERIVED_SLUG,
     memberPath: `/tmp/${DERIVED_SLUG}`,
     defaultBranch: 'main',
@@ -299,7 +299,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
     await dialog.getByRole('button', { name: 'Create hive' }).click();
 
-    // Success summary settled from the REAL response (hiveSlug / memberSlug / publish).
+    // Success summary settled from the REAL response (potSlug / memberSlug / publish).
     await expect(dialog.getByRole('heading', { name: /Hive created/ })).toBeVisible({ timeout: 10_000 });
     await expect(dialog.locator('code', { hasText: HOME_SLUG }).first()).toBeVisible();
     await expect(dialog.locator('code', { hasText: DERIVED_SLUG }).first()).toBeVisible();

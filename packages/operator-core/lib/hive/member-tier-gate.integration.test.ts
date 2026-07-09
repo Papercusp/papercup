@@ -97,7 +97,7 @@ afterEach(() => setFlagOverridesForTest(null));
 describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
   it('SOLO/unbound hive → owner (the local owner is never locked out of their own hive)', async () => {
     // No binding row → solo.
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: noIdentity });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: noIdentity });
     expect(r.ok).toBe(true);
     expect(r.reason).toBe('solo-unbound');
     expect(h.repoPerm).not.toHaveBeenCalled(); // no GitHub call on a solo hive
@@ -107,7 +107,7 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('admin');
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
     expect(r.ok).toBe(true);
     expect(r.tier).toBe('owner');
     expect(h.repoPerm).toHaveBeenCalledWith('acme', 'widgets', 'alice'); // derived from the repo + member username
@@ -117,7 +117,7 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('read');
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
     expect(r.ok).toBe(false);
     expect(r.tier).toBe('read-only');
   });
@@ -126,14 +126,14 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('write');
-    expect((await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'collaborator', resolveIdentity: identity(1) })).ok).toBe(true);
-    expect((await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) })).ok).toBe(false);
+    expect((await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'collaborator', resolveIdentity: identity(1) })).ok).toBe(true);
+    expect((await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) })).ok).toBe(false);
   });
 
   it('SHARED + member binding UNVERIFIED → DENIED, and GitHub is never consulted', async () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice', bindingStatus: 'pending' });
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('unverified');
     expect(h.repoPerm).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
   it('SHARED + caller is NOT a hive member → DENIED', async () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(999) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(999) });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('not-a-member');
   });
@@ -151,14 +151,14 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockRejectedValue(new Error('GITHUB_API_DOWN'));
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('github-unresolvable');
   });
 
   it('SHARED + no resolvable GitHub identity → fail CLOSED (gh-auth-required)', async () => {
     await bindRepo();
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: noIdentity });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: noIdentity });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('gh-auth-required');
   });
@@ -168,7 +168,7 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('read'); // would DENY if the flag were on
-    const r = await gate.requireHiveTier({ workspaceId: WS, hiveSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
+    const r = await gate.requireHiveTier({ workspaceId: WS, potSlug: HIVE, minTier: 'owner', resolveIdentity: identity(1) });
     expect(r.ok).toBe(true);
     expect(r.reason).toBe('flag-off');
     expect(h.repoPerm).not.toHaveBeenCalled();
@@ -181,7 +181,7 @@ describe('resolveHiveMemberTier — cache vs live', () => {
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('maintain');
 
-    const live = await gate.resolveHiveMemberTier({ workspaceId: WS, hiveSlug: HIVE, githubUserId: 1, live: true });
+    const live = await gate.resolveHiveMemberTier({ workspaceId: WS, potSlug: HIVE, githubUserId: 1, live: true });
     expect(live).toMatchObject({ tier: 'owner', reason: 'github' });
     // Cache was written.
     const row = await db.sql<{ repo_permission: string | null }[]>`
@@ -191,7 +191,7 @@ describe('resolveHiveMemberTier — cache vs live', () => {
 
     // A non-live read uses the fresh cache — no second GitHub call.
     h.repoPerm.mockClear();
-    const cached = await gate.resolveHiveMemberTier({ workspaceId: WS, hiveSlug: HIVE, githubUserId: 1, live: false });
+    const cached = await gate.resolveHiveMemberTier({ workspaceId: WS, potSlug: HIVE, githubUserId: 1, live: false });
     expect(cached).toMatchObject({ tier: 'owner', reason: 'cache' });
     expect(h.repoPerm).not.toHaveBeenCalled();
   });

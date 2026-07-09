@@ -22,7 +22,7 @@ import type { EpochKeyProvider } from './hive-epoch-serving';
 export interface WrappedKeyLoader {
   /** The wrapped-key blob for (hive, epoch) sealed to `memberDevicePubkey`, or null
    *  when there is no such row (removed member / not-yet-distributed). */
-  load(hiveId: string, epoch: number, memberDevicePubkey: string): Promise<Uint8Array | null>;
+  load(potId: string, epoch: number, memberDevicePubkey: string): Promise<Uint8Array | null>;
 }
 
 /** The local device identity (keychain id + raw Ed25519 pubkey base64). */
@@ -34,7 +34,7 @@ export interface LocalDevice {
 /** Thrown (fail-closed) when this device holds no key for (hive, epoch). */
 export class EpochKeyUnavailableError extends Error {
   constructor(
-    readonly hiveId: string,
+    readonly potId: string,
     readonly epoch: number,
     // WI-2009 / wake-#5742 (v3 instrumentation, leg b): carry WHAT was queried so a
     // miss is diagnosable from the error alone — if the hive_epoch_keys row EXISTS
@@ -43,7 +43,7 @@ export class EpochKeyUnavailableError extends Error {
     detail?: { devicePubkey?: string; keychainId?: string },
   ) {
     super(
-      `no epoch key for (${hiveId}, epoch ${epoch}) on this device — cut off or not yet distributed` +
+      `no epoch key for (${potId}, epoch ${epoch}) on this device — cut off or not yet distributed` +
         (detail?.devicePubkey
           ? ` [queried member_device_pubkey=${detail.devicePubkey} keychainId=${detail.keychainId ?? '?'} row-found=false — WI-2009: a row under a DIFFERENT pubkey ⇒ split device identity]`
           : ''),
@@ -63,13 +63,13 @@ export function createEpochKeyProvider(
 ): EpochKeyProvider {
   const cache = new Map<string, EpochKey>();
   return {
-    async keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey> {
-      const ck = `${hiveId}\x1f${epoch}`;
+    async keyForEpoch(potId: string, epoch: number): Promise<EpochKey> {
+      const ck = `${potId}\x1f${epoch}`;
       const hit = cache.get(ck);
       if (hit) return hit;
-      const blob = await loader.load(hiveId, epoch, localDevice.pubkeyBase64);
+      const blob = await loader.load(potId, epoch, localDevice.pubkeyBase64);
       if (!blob)
-        throw new EpochKeyUnavailableError(hiveId, epoch, {
+        throw new EpochKeyUnavailableError(potId, epoch, {
           devicePubkey: localDevice.pubkeyBase64,
           keychainId: localDevice.keychainId,
         });

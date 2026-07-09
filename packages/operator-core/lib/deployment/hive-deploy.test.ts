@@ -31,12 +31,12 @@ function memDeps(over: Partial<HiveDeployDeps> = {}) {
       calls.push(`teardown:${slug}`);
       return { destroyed: true };
     },
-    async deployControlFrame(hiveId) {
-      calls.push(`control:${hiveId}`);
-      return frame(`queen-${hiveId}`);
+    async deployControlFrame(potId) {
+      calls.push(`control:${potId}`);
+      return frame(`queen-${potId}`);
     },
-    async teardownControlFrame(hiveId) {
-      calls.push(`teardown-control:${hiveId}`);
+    async teardownControlFrame(potId) {
+      calls.push(`teardown-control:${potId}`);
       return { destroyed: true };
     },
     ...over,
@@ -45,7 +45,7 @@ function memDeps(over: Partial<HiveDeployDeps> = {}) {
 }
 
 const spec = (over: Partial<HiveDeploySpec> = {}): HiveDeploySpec => ({
-  hiveId: 'h1',
+  potId: 'h1',
   members: ['a', 'b'],
   swarm,
   ...over,

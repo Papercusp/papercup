@@ -46,7 +46,7 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const workspaceId = resolveClaimSpecWorkspace(args.workspace ?? ident.workspaceId);
     const targetBeeId = args.fleet ? fleetSpecBeeKey(args.fleet.trim()) : (args.cupId as string);
-    const record = await getClaimSpecRecord({ beeId: targetBeeId, workspaceId });
+    const record = await getClaimSpecRecord({ cupId: targetBeeId, workspaceId });
     return { data: { ok: true, ...record } };
   },
 });

@@ -92,7 +92,7 @@ export interface EnablePlatformModeInput {
    * locally-registered `kind:'hive'` project. Default: a `loadHarnessRegistry`
    * read. Injectable seam for tests.
    */
-  checkSelfHiveRegistered?: (hiveSlug: string, workspaceId: string) => Promise<boolean>;
+  checkSelfHiveRegistered?: (potSlug: string, workspaceId: string) => Promise<boolean>;
 }
 
 export interface EnablePlatformModeResult {
@@ -101,7 +101,7 @@ export interface EnablePlatformModeResult {
   flagEnabled: { ok: boolean; reason?: string };
   /** The self-hive stand-up outcome. */
   selfHive:
-    | { ok: true; status: 'created'; hiveSlug: string; memberSlug: string }
+    | { ok: true; status: 'created'; potSlug: string; memberSlug: string }
     | { ok: true; status: 'already_standing'; detail: string }
     | { ok: false; status: 'failed'; error: string; message?: string };
   /** The layer-3 loop arming outcome (counts only — the full per-loop trail is large). */
@@ -114,9 +114,9 @@ export interface EnablePlatformModeResult {
 
 /** Default `checkSelfHiveRegistered` seam: is `<slug>-hive` already a locally
  *  registered `kind:'hive'` project in this workspace? (WI-1293) */
-async function defaultSelfHiveAlreadyRegistered(hiveSlug: string, workspaceId: string): Promise<boolean> {
+async function defaultSelfHiveAlreadyRegistered(potSlug: string, workspaceId: string): Promise<boolean> {
   const reg = await loadHarnessRegistry(workspaceId);
-  return reg.projects.some((p) => p.slug === hiveSlug && p.harness_kind === 'hive');
+  return reg.projects.some((p) => p.slug === potSlug && p.harness_kind === 'hive');
 }
 
 /**
@@ -131,7 +131,7 @@ export async function enablePlatformMode(
   const sql = input.sql ?? getOrgPg().sql;
   const repoUrl = input.repoUrl ?? PAPERCUSP_CANONICAL_REPO_URL;
   const slug = input.slug ?? PLATFORM_SELF_HIVE_SLUG;
-  const hiveSlug = `${slug}-hive`;
+  const potSlug = `${slug}-hive`;
   const setFlag = input.setFlag ?? setFlagOverride;
   const createSelfHive = input.createSelfHive ?? createHiveFromRepo;
   const armSingletons = input.armSingletons ?? materializeLearningSingletons;
@@ -169,7 +169,7 @@ export async function enablePlatformMode(
   //     actually gets stood up.
   let selfHive: EnablePlatformModeResult['selfHive'];
   try {
-    const alreadyRegistered = await checkSelfHiveRegistered(hiveSlug, workspaceId);
+    const alreadyRegistered = await checkSelfHiveRegistered(potSlug, workspaceId);
     if (alreadyRegistered) {
       selfHive = { ok: true, status: 'already_standing', detail: 'platform_self_hive' };
     } else {
@@ -185,7 +185,7 @@ export async function enablePlatformMode(
         selfHive = {
           ok: true,
           status: 'created',
-          hiveSlug: res.created.hiveSlug,
+          potSlug: res.created.potSlug,
           memberSlug: res.created.memberSlug,
         };
       } else if (res.ok && 'existing' in res) {

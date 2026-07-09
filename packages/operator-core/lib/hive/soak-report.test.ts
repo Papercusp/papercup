@@ -34,7 +34,7 @@ describe('parseBgHostGlobalJournal', () => {
 describe('computeSoakReport', () => {
   it('returns READY only when every threshold holds', () => {
     const report = computeSoakReport({
-      hiveSlug: 'papercusp',
+      potSlug: 'papercusp',
       surveyScope: 'members',
       surveySlugs: ['papercusp', 'papercusp-member'],
       windowHours: 24,
@@ -74,7 +74,7 @@ describe('computeSoakReport', () => {
 
   it('a quiet window (no loop wakes, no compactions) adds NO context-burn reasons', () => {
     const report = computeSoakReport({
-      hiveSlug: 'papercusp',
+      potSlug: 'papercusp',
       surveyScope: 'members',
       surveySlugs: ['papercusp'],
       windowHours: 24,
@@ -107,7 +107,7 @@ describe('computeSoakReport', () => {
 
   it('lists concrete failing reasons when the gate is red', () => {
     const report = computeSoakReport({
-      hiveSlug: 'papercusp',
+      potSlug: 'papercusp',
       surveyScope: 'workspace',
       surveySlugs: ['papercusp'],
       windowHours: 24,

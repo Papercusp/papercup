@@ -604,9 +604,9 @@ const scanSubharnesses = defineTool({
     // P-002 (hive-pr-rollup-and-subharness-membership): preview the membership
     // edge /register-subs would write, so the UI preview and the write can't
     // diverge. hive_slug = formal hive membership; parent_slug = legacy edge.
-    const hiveSlug = resolveSubHarnessHiveSlug(project);
-    const membership = hiveSlug
-      ? { kind: 'hive_slug' as const, value: hiveSlug }
+    const potSlug = resolveSubHarnessHiveSlug(project);
+    const membership = potSlug
+      ? { kind: 'hive_slug' as const, value: potSlug }
       : { kind: 'parent_slug' as const, value: slug };
     return Response.json({
       ok: true,
@@ -653,7 +653,7 @@ const registerSubs = defineTool({
     // entries so they group as members (hive-groups precedence: formal wins)
     // instead of riding the legacy parent_slug fallback. parent_slug still
     // goes to config.json below for self-description (dogfood-v5 D-007).
-    const hiveSlug = resolveSubHarnessHiveSlug(root);
+    const potSlug = resolveSubHarnessHiveSlug(root);
 
     const registered: Array<{ slug: string; path: string; created: boolean }> = [];
     const reconciled: Array<{ slug: string; path: string }> = [];
@@ -678,7 +678,7 @@ const registerSubs = defineTool({
             slug: subSlug,
             path: subPath,
             harness_kind: 'sub-harness',
-            ...(hiveSlug ? { hive_slug: hiveSlug } : {}),
+            ...(potSlug ? { hive_slug: potSlug } : {}),
           });
           created = true;
         }
@@ -707,7 +707,7 @@ const registerSubs = defineTool({
     // missing/drifted — re-running Register sub-harnesses IS the backfill
     // path (P-001; no migration, registry blob field).
     const hiveReconciled: string[] = [];
-    if (registered.length > 0 || reconciled.length > 0 || hiveSlug) {
+    if (registered.length > 0 || reconciled.length > 0 || potSlug) {
       // Atomic re-apply against the CURRENT registry (audit P-006 / EI-82):
       // the walk above worked on a snapshot; re-insert only what's still new.
       const erroredSlugs = new Set(errors.map((e) => e.slug));
@@ -719,20 +719,20 @@ const registerSubs = defineTool({
             slug: r.slug,
             path: r.path,
             harness_kind: 'sub-harness',
-            ...(hiveSlug ? { hive_slug: hiveSlug } : {}),
+            ...(potSlug ? { hive_slug: potSlug } : {}),
           }));
         let changed = additions.length > 0;
         let projects = changed ? [...cur.projects, ...additions] : cur.projects;
-        if (hiveSlug) {
+        if (potSlug) {
           const subSlugs = new Set(submodules.map((n) => n.qualifiedSlug));
           projects = projects.map((p) => {
             // Only this root's classified subtree; never slugs the loop errored on.
             if (!subSlugs.has(p.slug) || p.slug === rootSlug) return p;
             if (erroredSlugs.has(p.slug)) return p;
-            if (p.harness_kind !== 'sub-harness' || p.hive_slug === hiveSlug) return p;
+            if (p.harness_kind !== 'sub-harness' || p.hive_slug === potSlug) return p;
             hiveReconciled.push(p.slug);
             changed = true;
-            return { ...p, hive_slug: hiveSlug };
+            return { ...p, hive_slug: potSlug };
           });
         }
         return changed ? { ...cur, projects } : cur;
@@ -746,8 +746,8 @@ const registerSubs = defineTool({
       ok: true,
       rootSlug,
       discovered: submodules.length,
-      membership: hiveSlug
-        ? { kind: 'hive_slug' as const, value: hiveSlug }
+      membership: potSlug
+        ? { kind: 'hive_slug' as const, value: potSlug }
         : { kind: 'parent_slug' as const, value: rootSlug },
       registered,
       reconciled,

@@ -113,7 +113,7 @@ export interface SuTaskOutcome {
    */
   answer?: string;
   telemetry: GenerationTelemetry;
-  /** The agent/spawn id that served it (diagnostics + the FleetTaskResult.beeId field). */
+  /** The agent/spawn id that served it (diagnostics + the FleetTaskResult.cupId field). */
   agentId: string;
 }
 
@@ -133,7 +133,7 @@ export interface SuIndependentBacklogOps {
   /** The fleet concurrency cap (= the global `maxSimultaneousAgents`). Read ONCE at run start. */
   concurrencyCap(): number | Promise<number>;
   /** Create a temporary shared hive for the whole run (ONE hive, enrolled members per task). */
-  createHive(input: { runId: string; workspaceId: string }): Promise<{ hiveSlug: string }>;
+  createHive(input: { runId: string; workspaceId: string }): Promise<{ potSlug: string }>;
   /** Clone the task repo @ base into a fresh scratch worktree (the per-agent isolated checkout). */
   prepareTask(input: { task: BenchTask; budget: GenerationBudget; workspaceId: string }): Promise<SuIndependentEnrolled>;
   /**
@@ -143,14 +143,14 @@ export interface SuIndependentBacklogOps {
   enrollTask(input: {
     task: BenchTask;
     enrolled: SuIndependentEnrolled;
-    hiveSlug: string;
+    potSlug: string;
     workspaceId: string;
   }): Promise<{ memberSlug: string }>;
   /**
    * Spawn ONE enrolled member harness via FIFO through the hive (routes through :3170, proper env).
    * Returns the spawn_id so the result can be collected.
    */
-  placeFifoBatch(input: { hiveSlug: string; memberSlug: string; workspaceId: string }): Promise<{ spawnId: string }>;
+  placeFifoBatch(input: { potSlug: string; memberSlug: string; workspaceId: string }): Promise<{ spawnId: string }>;
   /**
    * Collect the result from a spawned member: extract its diff + cost from agent_usage_samples.
    * The spawn must have reached a terminal state.
@@ -166,7 +166,7 @@ export interface SuIndependentBacklogOps {
   /** Remove ONE task's scratch checkout (best-effort — the per-agent worktree). */
   teardownTask(input: { enrolled: SuIndependentEnrolled; workspaceId: string }): Promise<void>;
   /** Dissolve the temporary shared hive (best-effort). */
-  dissolveHive(input: { hiveSlug: string; workspaceId: string }): Promise<void>;
+  dissolveHive(input: { potSlug: string; workspaceId: string }): Promise<void>;
 }
 
 export interface SuIndependentBacklogOpts {
@@ -191,7 +191,7 @@ export interface SuIndependentBacklogOpts {
    * finalize/dissolveHive runs — can still retire THIS run's work-items (scoped {@link retireBenchDebris}),
    * never a concurrent peer's. Best-effort: a hook throw must never abort the drive.
    */
-  onHiveCreated?: (hiveSlug: string) => void | Promise<void>;
+  onHiveCreated?: (potSlug: string) => void | Promise<void>;
   /**
    * GAIA arm seam (plan benchmark-suite-gaia-2026-06-17). When present, the REAL ops binding
    * ({@link suIndependentBacklogOps}) runs the GAIA general-assistant path instead of the SWE-bench coding
@@ -265,18 +265,18 @@ export function suIndependentBacklogDriver(
         };
       };
 
-      let hiveSlug: string | null = null;
+      let potSlug: string | null = null;
       try {
         // CREATE the temporary shared hive that will host all member enrollments for this run.
-        let hiveCreated: { hiveSlug: string };
+        let hiveCreated: { potSlug: string };
         try {
           hiveCreated = await ops.createHive({ runId: req.runId, workspaceId: ws });
-          hiveSlug = hiveCreated.hiveSlug;
+          potSlug = hiveCreated.potSlug;
         } catch (e) {
           return finalize(`createHive failed: ${msg(e)}`);
         }
         // Surface the run's hive slug so the launcher can scope a signal-kill debris retire to THIS run.
-        await fireHook(opts.onHiveCreated, hiveSlug);
+        await fireHook(opts.onHiveCreated, potSlug);
 
         const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
         const deadline = startedAtMs + fleetTimeoutMs;
@@ -317,7 +317,7 @@ export function suIndependentBacklogDriver(
             // ENROLL the task as a temporary member harness in the hive.
             let memberEnrolled: { memberSlug: string };
             try {
-              memberEnrolled = await ops.enrollTask({ task, enrolled, hiveSlug: hiveSlug!, workspaceId: ws });
+              memberEnrolled = await ops.enrollTask({ task, enrolled, potSlug: potSlug!, workspaceId: ws });
               memberSlugs.push(memberEnrolled.memberSlug);
             } catch (e) {
               taskResults.push(
@@ -333,7 +333,7 @@ export function suIndependentBacklogDriver(
             // telemetry.stopReason='error'); a genuine infra throw lands an error result for this task.
             let spawnPlaced: { spawnId: string };
             try {
-              spawnPlaced = await ops.placeFifoBatch({ hiveSlug: hiveSlug!, memberSlug: memberEnrolled.memberSlug, workspaceId: ws });
+              spawnPlaced = await ops.placeFifoBatch({ potSlug: potSlug!, memberSlug: memberEnrolled.memberSlug, workspaceId: ws });
             } catch (e) {
               taskResults.push(
                 errorTaskResult(req.arm, task, String(req.seed), `placeFifoBatch failed: ${msg(e)}`),
@@ -380,7 +380,7 @@ export function suIndependentBacklogDriver(
         return finalize(msg(e));
       } finally {
         // ALWAYS dissolve the shared hive on run completion, whether succeeded or failed.
-        if (hiveSlug) await ops.dissolveHive({ hiveSlug, workspaceId: ws }).catch(() => {});
+        if (potSlug) await ops.dissolveHive({ potSlug, workspaceId: ws }).catch(() => {});
       }
     },
   };
@@ -415,7 +415,7 @@ function taskResultFromOutcome(
   };
   return {
     attempt,
-    beeId: outcome.agentId,
+    cupId: outcome.agentId,
     placedAtMs: startedAtMs, // there is no "placement" — the agent starts when the pool pulls it.
     startedAtMs,
     finishedAtMs,
@@ -451,7 +451,7 @@ function errorTaskResult(
   };
   return {
     attempt,
-    beeId: enrolled?.agentId ?? task.instanceId,
+    cupId: enrolled?.agentId ?? task.instanceId,
     placedAtMs: startedAtMs,
     startedAtMs,
     finishedAtMs,
@@ -557,7 +557,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
 
       const ops = await liveOps();
       await ops.createHive({ slug: hivePrefix, workspaceId: ws });
-      return { hiveSlug: hivePrefix };
+      return { potSlug: hivePrefix };
     },
 
     async prepareTask({ task }) {
@@ -581,7 +581,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       return enrolled;
     },
 
-    async enrollTask({ task, enrolled, hiveSlug, workspaceId }) {
+    async enrollTask({ task, enrolled, potSlug, workspaceId }) {
       // Enroll the task as a temporary member harness in the hive with a seeded feature.
       // Mirrors the realqueenBacklogOps.enrollTask pattern.
       const member = memberSlugForTask(hivePrefix, task.instanceId);
@@ -609,7 +609,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
 
       // Register the member with the hive.
       const ops = await liveOps();
-      await ops.registerMember({ member, clonePath: enrolled.checkout.dir, hiveHome: hiveSlug, workspaceId });
+      await ops.registerMember({ member, clonePath: enrolled.checkout.dir, hiveHome: potSlug, workspaceId });
 
       // Seed the single feature (the problem statement, or the GAIA question+answer.txt brief).
       const featureId = featureIdForTask(task.instanceId);
@@ -633,7 +633,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       return { memberSlug: member };
     },
 
-    async placeFifoBatch({ hiveSlug, memberSlug, workspaceId }) {
+    async placeFifoBatch({ potSlug, memberSlug, workspaceId }) {
       // The su-independent arm needs ONE fresh dedicated spawn per task. It places via
       // **fleet:place_batch** (the palette-eligible placement tool — cup:spawn is NOT runnable
       // through the run-tool palette: 403 not_palette_eligible) but FORCES a fresh spawn — never a
@@ -812,10 +812,10 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       await enrolled.checkout.cleanup().catch(() => {});
     },
 
-    async dissolveHive({ hiveSlug, workspaceId }) {
+    async dissolveHive({ potSlug, workspaceId }) {
       // Dissolve the temporary shared hive (best-effort).
       const ops = await liveOps();
-      await ops.dissolveHive({ hiveHome: hiveSlug, workspaceId }).catch(() => {});
+      await ops.dissolveHive({ hiveHome: potSlug, workspaceId }).catch(() => {});
     },
   };
 }

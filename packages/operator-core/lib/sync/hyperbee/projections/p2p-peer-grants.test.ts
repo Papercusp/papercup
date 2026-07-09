@@ -227,7 +227,7 @@ describe('WI-1940 — federated reap hook (revocation-reaper deferred #3)', () =
     expect(reapForeignSessionsForRevocation).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'ws-1',
-        hiveSlug: 'papercup-hive',
+        potSlug: 'papercup-hive',
         responderGithubUserId: 12345,
         responderDevicePubkey: 'device-A',
         trigger: { kind: 'grant-revoked', fleetSlug: 'p2p-dist' },

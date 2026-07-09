@@ -162,7 +162,7 @@ describe('offer-budget-receipts bridge (P-004)', () => {
     fleetSlug: 'ml-fleet',
     publisherRef: 'device:abc',
   };
-  const ctx = { workspaceId: 'ws1', hiveSlug: 'hive-home', responderGithubUserId: 4242 };
+  const ctx = { workspaceId: 'ws1', potSlug: 'hive-home', responderGithubUserId: 4242 };
 
   function capturingEmitter(): { emit: ReceiptEmitter; calls: EmitP2pReceiptArgs[] } {
     const calls: EmitP2pReceiptArgs[] = [];
@@ -172,7 +172,7 @@ describe('offer-budget-receipts bridge (P-004)', () => {
         ok: true,
         receipt: {
           workspaceId: 'ws1',
-          hiveSlug: 'hive-home',
+          potSlug: 'hive-home',
           receiptId: 'rcpt-1',
           kind: args.kind,
           offerId: args.offerId ?? null,

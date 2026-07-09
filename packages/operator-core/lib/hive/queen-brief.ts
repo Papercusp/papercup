@@ -94,7 +94,7 @@ export interface QueenBriefFloor {
    * unambiguous anchor to catch a stale/foreign-scope carry-note against,
    * instead of silently trusting whatever hive the note happens to name.
    */
-  hiveSlug?: string;
+  potSlug?: string;
   /** What woke the Queen this turn (event key / note / 'timer' / 'backstop'). */
   wokeBy?: string;
   /** Spawn concurrency budget. */
@@ -281,9 +281,9 @@ export function renderQueenBrief(input: QueenBriefInput): string {
   // the first concrete fact a fresh-per-wake Queen reads — an unambiguous
   // cross-check point against a carry-note/journal that may (by the substrate's
   // own workspace-wide scope, not this brief's fault) reference a different hive.
-  if (f.hiveSlug && f.hiveSlug.trim()) {
+  if (f.potSlug && f.potSlug.trim()) {
     out.push('');
-    out.push(`**Hive (this wake):** ${f.hiveSlug.trim()}`);
+    out.push(`**Hive (this wake):** ${f.potSlug.trim()}`);
   }
 
   if (f.wokeBy && f.wokeBy.trim()) {
@@ -308,8 +308,8 @@ export function renderQueenBrief(input: QueenBriefInput): string {
   // the hive above, so an entry here may be trailing intention from a wake for a
   // DIFFERENT hive. Only worth stating when there's a ground-truth hive to check
   // against; keep it one line so it doesn't drown the note itself.
-  const scopeCaveat = f.hiveSlug?.trim()
-    ? ` — shared across every hive this Queen operates; if it names a different hive than **${f.hiveSlug.trim()}** above, IGNORE it and re-derive from this wake's floor instead`
+  const scopeCaveat = f.potSlug?.trim()
+    ? ` — shared across every hive this Queen operates; if it names a different hive than **${f.potSlug.trim()}** above, IGNORE it and re-derive from this wake's floor instead`
     : '';
   const journal = (input.carryJournal ?? []).filter((e) => (e.note ?? '').trim().length > 0);
   if (journal.length > 0) {

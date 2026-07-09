@@ -36,7 +36,7 @@ export type HiveShareVisibility = 'public' | 'invite' | 'private';
 
 /** The owner's share-state projection (GET /api/discovery/pot-meta). */
 export interface HiveShareMeta {
-  hiveId: string;
+  potId: string;
   /** false = never published (the "unpublished" chrome state). */
   found: boolean;
   visibility: HiveShareVisibility | null;
@@ -62,19 +62,19 @@ export interface SetHiveOutcome {
 }
 
 /** Default meta read: GET /api/discovery/pot-meta. null on any failure. */
-export async function defaultFetchShareMeta(hiveSlug: string): Promise<HiveShareMeta | null> {
+export async function defaultFetchShareMeta(potSlug: string): Promise<HiveShareMeta | null> {
   try {
-    const res = await fetch(`/api/discovery/pot-meta?hiveId=${encodeURIComponent(hiveSlug)}`);
+    const res = await fetch(`/api/discovery/pot-meta?potId=${encodeURIComponent(potSlug)}`);
     if (!res?.ok) return null;
     const body = (await res.json()) as Partial<HiveShareMeta>;
     return {
-      hiveId: String(body.hiveId ?? hiveSlug),
+      potId: String(body.potId ?? potSlug),
       found: body.found === true,
       visibility:
         body.visibility === 'public' || body.visibility === 'invite' || body.visibility === 'private'
           ? body.visibility
           : null,
-      title: typeof body.title === 'string' && body.title ? body.title : hiveSlug,
+      title: typeof body.title === 'string' && body.title ? body.title : potSlug,
       description: typeof body.description === 'string' ? body.description : '',
       inviteSecret: typeof body.inviteSecret === 'string' ? body.inviteSecret : null,
       hivePubkey: typeof body.hivePubkey === 'string' ? body.hivePubkey : null,
@@ -87,7 +87,7 @@ export async function defaultFetchShareMeta(hiveSlug: string): Promise<HiveShare
 
 /** Default write: POST /api/discovery/set-pot (the one flip composition). */
 export async function defaultSetHiveListing(input: {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   visibility: HiveShareVisibility;
@@ -155,7 +155,7 @@ function visibilityOptions(comb: string): ReadonlyArray<{
 }
 
 export interface ShareHiveFormProps {
-  hiveSlug: string;
+  potSlug: string;
   /** Lexicon-resolved noun for copy ("hive" / "pot"). */
   hiveLabel?: string;
   /** Tighter spacing for embedded contexts (the picker share-offer card). */
@@ -163,12 +163,12 @@ export interface ShareHiveFormProps {
   /** Fired after a successful save with the saved visibility (chrome refresh). */
   onSaved?: (visibility: HiveShareVisibility) => void;
   /** Injection seams for tests. Defaults hit the loopback routes. */
-  fetchShareMeta?: (hiveSlug: string) => Promise<HiveShareMeta | null>;
+  fetchShareMeta?: (potSlug: string) => Promise<HiveShareMeta | null>;
   setHiveListing?: typeof defaultSetHiveListing;
 }
 
 export function ShareHiveForm({
-  hiveSlug,
+  potSlug,
   hiveLabel = 'hive',
   compact = false,
   onSaved,
@@ -180,7 +180,7 @@ export function ShareHiveForm({
   // Mid-edit drafts + load/save lifecycle — render state, not URL state.
   const [meta, setMeta] = useState<HiveShareMeta | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
-  const [title, setTitle] = useState(hiveSlug);
+  const [title, setTitle] = useState(potSlug);
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<HiveShareVisibility>('public');
   const [busy, setBusy] = useState(false);
@@ -191,7 +191,7 @@ export function ShareHiveForm({
   useEffect(() => {
     let alive = true;
     setMetaLoaded(false);
-    void fetchShareMeta(hiveSlug).then((m) => {
+    void fetchShareMeta(potSlug).then((m) => {
       if (!alive) return;
       setMetaLoaded(true);
       if (!m) return;
@@ -217,7 +217,7 @@ export function ShareHiveForm({
     return () => {
       alive = false;
     };
-  }, [hiveSlug, fetchShareMeta]);
+  }, [potSlug, fetchShareMeta]);
 
   async function submit(): Promise<void> {
     // Reuse the stored secret on edit — re-minting orphans every link already
@@ -228,8 +228,8 @@ export function ShareHiveForm({
     setOutcome(null);
     setInviteCopied(false);
     const res = await setHiveListing({
-      hiveId: hiveSlug,
-      title: title.trim() || hiveSlug,
+      potId: potSlug,
+      title: title.trim() || potSlug,
       description: description.trim(),
       visibility,
       ...(inviteSecret ? { inviteSecret } : {}),
@@ -243,7 +243,7 @@ export function ShareHiveForm({
           formatHiveInviteLink({
             ...(meta?.hivePubkey ? { pubkeyBase64: meta.hivePubkey } : {}),
             secret: inviteSecret,
-            title: title.trim() || hiveSlug,
+            title: title.trim() || potSlug,
           }),
         );
       } else {
@@ -302,7 +302,7 @@ export function ShareHiveForm({
           value={title}
           maxLength={200}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder={hiveSlug}
+          placeholder={potSlug}
         />
       </label>
       <label className="pc-share-hive__field">
@@ -426,7 +426,7 @@ export function ShareHiveDialog({ open, onOpenChange, ...form }: ShareHiveDialog
       }}
     >
       <h2 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
-        Share {label} <code>{form.hiveSlug}</code>
+        Share {label} <code>{form.potSlug}</code>
       </h2>
       <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--fg-dim)' }}>
         Sharing happens at the {label} level — choose who can find and join it.

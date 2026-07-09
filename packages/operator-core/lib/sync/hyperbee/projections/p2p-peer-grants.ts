@@ -107,7 +107,7 @@ function refuse(
       `grantee=${row.grantee_kind}:${row.grantee_ref} hive=${row.harness_slug}`,
   );
   void bumpRefusedOpCounter(
-    { workspaceId: opts.workspaceId, hiveSlug: row.harness_slug, reason: `grant-apply:${reason}` },
+    { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `grant-apply:${reason}` },
     opts.sql as Parameters<typeof bumpRefusedOpCounter>[1],
   ).catch(() => {
     /* counter is advisory; never break the apply loop */
@@ -207,7 +207,7 @@ async function writeToPg(
   await advanceGrantorHighWater(
     {
       workspaceId: opts.workspaceId,
-      hiveSlug: row.harness_slug,
+      potSlug: row.harness_slug,
       grantorGithubUserId: row.grantor_github_user_id,
       epoch: row.grantor_epoch,
     },
@@ -241,7 +241,7 @@ async function writeToPg(
       const r = await reapForeignSessionsForRevocation(
         {
           workspaceId: opts.workspaceId,
-          hiveSlug: row.harness_slug,
+          potSlug: row.harness_slug,
           responderGithubUserId: row.grantor_github_user_id,
           responderDevicePubkey: sourceLogDevice,
           trigger: { kind: 'grant-revoked', fleetSlug: row.grantee_ref },

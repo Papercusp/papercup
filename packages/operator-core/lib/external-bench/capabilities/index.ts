@@ -7,7 +7,7 @@
  *
  * The three pieces:
  *   - {@link RunSandbox} ({@link openRunSandbox}) — the per-(suite-run × arm) isolation
- *     boundary, backed by a per-run ephemeral hive whose `hiveSlug` is the shared namespace.
+ *     boundary, backed by a per-run ephemeral hive whose `potSlug` is the shared namespace.
  *   - {@link CapabilityTool} wrappers — thin functions exposing the real `memory:*` /
  *     `work_items:*` / `coord:*` verbs as agent-callable tools, each bound to a sandbox.
  *   - {@link CapabilityProfile} + {@link materializeProfile} — named capability sets

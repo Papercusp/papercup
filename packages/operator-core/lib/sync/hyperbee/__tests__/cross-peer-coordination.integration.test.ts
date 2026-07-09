@@ -228,7 +228,7 @@ describe('cross-peer coordination on a shared Hive — claim arbitration over th
           workspaceId: 'default',
           harnessSlug: HARNESS_SLUG,
           workItemId: 'F-XPEER-1',
-          hiveSlug: HIVE_SLUG,
+          potSlug: HIVE_SLUG,
           owner,
           holderPubkey: self.devicePubkey,
         };
@@ -583,7 +583,7 @@ describe('cross-peer coordination on a shared Hive — claim lease lifecycle acr
         workspaceId: 'default',
         harnessSlug: HARNESS_SLUG,
         workItemId: ITEM,
-        hiveSlug: HIVE_SLUG,
+        potSlug: HIVE_SLUG,
         claimId,
         owner: 'client-swarm',
       };

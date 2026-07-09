@@ -145,7 +145,7 @@ describe('beacon over the wire — consume on peer B', () => {
 
 describe('publish gate — announce carries a beacon IFF the enrich seam yields one', () => {
   const base: LocalHiveDescriptor = {
-    hiveId: 'hive-pub',
+    potId: 'hive-pub',
     title: 'Pub',
     description: 'd',
     workspaceId: 'ws-1',

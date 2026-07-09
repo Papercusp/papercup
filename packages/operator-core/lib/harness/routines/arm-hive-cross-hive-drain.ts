@@ -29,15 +29,15 @@ export const CROSS_HIVE_DRAIN_TARGET_ROLE = 'system:cross-hive-outbox-drain';
 export const CROSS_HIVE_DRAIN_CRON = '30 */2 * * * *';
 
 /** Sanitize the hive slug into a routines.id (mirrors the seed scripts). */
-export function hiveCrossHiveDrainRoutineId(hiveSlug: string): string {
-  return `rt_${hiveSlug}_cross_hive_outbox_drain`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+export function hiveCrossHiveDrainRoutineId(potSlug: string): string {
+  return `rt_${potSlug}_cross_hive_outbox_drain`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
 export interface ArmHiveCrossHiveDrainInput {
   sql: Sql;
   workspaceId: string;
   /** The hive's OWN home install_slug. */
-  hiveSlug: string;
+  potSlug: string;
   /** Seed active (default true — the action self-gates to a no-op without peers). */
   active?: boolean;
 }
@@ -55,13 +55,13 @@ export interface ArmHiveCrossHiveDrainResult {
 export async function armHiveCrossHiveDrainRoutine(
   input: ArmHiveCrossHiveDrainInput,
 ): Promise<ArmHiveCrossHiveDrainResult> {
-  const { sql, workspaceId, hiveSlug, active = true } = input;
-  const routineId = hiveCrossHiveDrainRoutineId(hiveSlug);
+  const { sql, workspaceId, potSlug, active = true } = input;
+  const routineId = hiveCrossHiveDrainRoutineId(potSlug);
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
-    VALUES (${routineId}, ${hiveSlug}, ${workspaceId}, ${CROSS_HIVE_DRAIN_ROUTINE_NAME}, 'cron',
+    VALUES (${routineId}, ${potSlug}, ${workspaceId}, ${CROSS_HIVE_DRAIN_ROUTINE_NAME}, 'cron',
             ${JSON.stringify({ cron: CROSS_HIVE_DRAIN_CRON })}::text::jsonb, ${CROSS_HIVE_DRAIN_TARGET_ROLE},
             ${JSON.stringify({})}::text::jsonb, 'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
@@ -75,7 +75,7 @@ export async function armHiveCrossHiveDrainRoutine(
     try {
       await sql`
         DELETE FROM harness_shared.routines
-         WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug} AND name = ${CROSS_HIVE_DRAIN_ROUTINE_NAME}`;
+         WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug} AND name = ${CROSS_HIVE_DRAIN_ROUTINE_NAME}`;
     } catch {
       /* best-effort */
     }

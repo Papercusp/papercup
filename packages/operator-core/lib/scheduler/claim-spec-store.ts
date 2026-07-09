@@ -8,7 +8,7 @@
  *                   longer validates (tolerate a stale spec rather than wedge the bee).
  *   getNextForBee — the bee's get_next: load the bee's spec → getNextWorkItem(spec, bee, opts).
  *
- * Keyed by the bee's session/owner id (`beeId` — the identity a tool ctx resolves via actor-identity
+ * Keyed by the bee's session/owner id (`cupId` — the identity a tool ctx resolves via actor-identity
  * and the id the Queen addresses a bee by). The store fns take an optional `sql` (dependency-injected
  * for tests); production passes getOrgPg().sql.
  */
@@ -53,7 +53,7 @@ export function resolveClaimSpecWorkspace(
 /** Queen: validate + store a bee's claim spec (upsert; revision bumps unless the spec carries a higher one). */
 export async function setClaimSpec(
   args: {
-    beeId: string;
+    cupId: string;
     workspaceId?: string;
     spec: unknown;
     updatedBy?: string;
@@ -62,7 +62,7 @@ export async function setClaimSpec(
      *  remote bee's get_next sees it; null/omitted ⇒ operator-scope, local-only
      *  (today's behavior). Resolved by the caller via the same shared-hive scope
      *  rule coord:send uses. */
-    hiveSlug?: string | null;
+    potSlug?: string | null;
   },
   sqlOverride?: OrgSql,
 ): Promise<SetClaimSpecResult> {
@@ -70,13 +70,13 @@ export async function setClaimSpec(
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
-  const hiveSlug = args.hiveSlug ?? null;
+  const potSlug = args.potSlug ?? null;
   // WI-1564: hive-scoped + 'default' partition = the strand combo. The write
   // still proceeds (fail-soft; local get_next reads under the same default),
   // but LOUDLY — the outbox capture rides ('default', hive), which no booted
   // drain handle serves, so the spec never federates.
   const strandWarning =
-    hiveSlug !== null && ws === DEFAULT_COORD_WORKSPACE
+    potSlug !== null && ws === DEFAULT_COORD_WORKSPACE
       ? `hive-scoped claim spec stored under the '${DEFAULT_COORD_WORKSPACE}' workspace partition — ` +
         `the federation outbox-drain only serves booted (workspace, hive) handles, so this spec will ` +
         `NOT federate to peers (WI-1564). Thread the caller's workspaceId (resolveClaimSpecWorkspace).`
@@ -105,22 +105,22 @@ export async function setClaimSpec(
   // strand fix.)
   const prior = (await sql`
     SELECT harness_slug, revision FROM harness_shared.bee_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as {
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as {
     harness_slug: string | null;
     revision: number;
   }[];
   const priorScope = prior[0]?.harness_slug ?? null;
-  const scopeChange = priorScope !== null && priorScope !== hiveSlug;
+  const scopeChange = priorScope !== null && priorScope !== potSlug;
 
   if (scopeChange) {
     // Atomic: the tombstone (DELETE→old scope) + the re-insert (→new scope) commit
     // together, so a bee never observes a no-spec window mid-re-home.
     const nextRev = Math.max(prior[0]!.revision + 1, v.spec.revision);
     const rows = (await sql.begin(async (tx) => {
-      await tx`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.beeId}`;
+      await tx`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}`;
       return (await tx`
         INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
-        VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
+        VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
         RETURNING revision`) as { revision: number }[];
     })) as unknown as { revision: number }[];
     return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
@@ -128,7 +128,7 @@ export async function setClaimSpec(
 
   const rows = (await sql`
     INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
-    VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
+    VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
       spec = EXCLUDED.spec,
       revision = GREATEST(harness_shared.bee_claim_specs.revision + 1, EXCLUDED.revision),
@@ -163,14 +163,14 @@ export function fleetSpecBeeKey(fleetSlug: string): string {
  * WINS over the fleet spec (the leader's targeted re-steer of one member sticks).
  */
 export async function getClaimSpec(
-  args: { beeId: string; workspaceId?: string },
+  args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
 ): Promise<ClaimSpec> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
     SELECT spec FROM harness_shared.bee_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as { spec: unknown }[];
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as { spec: unknown }[];
   if (rows.length > 0) {
     const v = validateClaimSpec(rows[0]!.spec);
     return v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC;
@@ -181,7 +181,7 @@ export async function getClaimSpec(
   // both read under the SAME caller-resolved workspace (resolveClaimSpecWorkspace).
   try {
     const { latestFleetMembership } = await import('../fleet-membership-store');
-    const membership = await latestFleetMembership(ws, args.beeId);
+    const membership = await latestFleetMembership(ws, args.cupId);
     if (membership?.fleetSlug) {
       const frows = (await sql`
         SELECT spec FROM harness_shared.bee_claim_specs
@@ -201,7 +201,7 @@ export async function getClaimSpec(
 
 /** The bee's get_next: claim the next work-item per the bee's stored spec (the global floors always apply). */
 export async function getNextForBee(args: {
-  beeId: string;
+  cupId: string;
   workspaceId?: string;
   harness: string;
   heldPaths?: string[];
@@ -222,8 +222,8 @@ export async function getNextForBee(args: {
   // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
-    : await getClaimSpecRecord({ beeId: args.beeId, workspaceId: args.workspaceId });
-  const result = await getNextWorkItem(record.spec, { assignee: args.beeId, heldPaths: args.heldPaths }, {
+    : await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId });
+  const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
     harness: args.harness,
     ...(args.swarmId ? { swarmId: args.swarmId } : {}),
     ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
@@ -262,7 +262,7 @@ export interface ClaimSpecRecord {
  * caller can tell an explicit override from an inherited or absent one.
  */
 export async function getClaimSpecRecord(
-  args: { beeId: string; workspaceId?: string },
+  args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
 ): Promise<ClaimSpecRecord> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
@@ -270,7 +270,7 @@ export async function getClaimSpecRecord(
   const rows = (await sql`
     SELECT spec, revision, updated_by, updated_at, harness_slug
       FROM harness_shared.bee_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as Array<{
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as Array<{
     spec: unknown;
     revision: number;
     updated_by: string | null;
@@ -292,7 +292,7 @@ export async function getClaimSpecRecord(
   // No per-bee row — try the fleet the bee belongs to (same inheritance getClaimSpec applies).
   try {
     const { latestFleetMembership } = await import('../fleet-membership-store');
-    const membership = await latestFleetMembership(ws, args.beeId);
+    const membership = await latestFleetMembership(ws, args.cupId);
     if (membership?.fleetSlug) {
       const frows = (await sql`
         SELECT spec, revision, updated_by, updated_at, harness_slug
@@ -334,7 +334,7 @@ export interface ClaimSpecHead {
 }
 
 /**
- * Batch-load the running spec HEAD (specId@revision) for a set of bees, keyed by beeId — the
+ * Batch-load the running spec HEAD (specId@revision) for a set of bees, keyed by cupId — the
  * spec-join behind the live-execution view (P-001, {@link import('./bee-runs').listBeeRuns}).
  * A bee with no stored spec is ABSENT from the map (⇒ DEFAULT ordering / no Queen-authored
  * spec). `bee_id` is globally unique (it is the claim's `taken_by`), so this joins by `bee_id`

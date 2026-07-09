@@ -141,6 +141,38 @@ This applies to **any** routine, not just green-checkpoint — a `system:git-syn
 `release-trigger`, gym, etc. can wedge the same way (a gym cycle wedged 7.5h on a
 dead repro host, 2026-06-12).
 
+**UPDATE 2026-07-09 — the reaper's fast-orphan guard falsely reaped HEALTHY
+backlogged fires (WI-3519).** In this DBOS version `dbos.workflow_queue` holds
+**zero rows total** even for a never-dequeued `ENQUEUED` workflow — the
+`NOT EXISTS (... workflow_queue ...)` fast-orphan check the reaper used to gate
+on was therefore **vacuous** (always true), not an anomaly signal. Under
+queue-slot starvation (`routines-critical` concurrency=2, two slow-but-checkpointing
+fires under host CPU pressure) every OTHER waiting fire aged past the orphan
+window and got cancelled+requeued on **every** sweep — live evidence: `oddsmith`
+`reaped_count` hit 114, `quartermaster` hit 100, flapping the stall watchdog
+STALLED/RECOVERED across ~10 harnesses even though nothing was actually dead.
+Fix (`reapDeadExecutorWorkflows`, `dbos-executor-reaper.ts`): the fast-orphan
+branch now ALSO requires the **queue itself** to be dead — no sibling workflow
+on the same `queue_name` either actively `PENDING` with a recent `updated_at`,
+or recently drained to `SUCCESS`/`ERROR`, within the orphan window.
+(`CANCELLED` is deliberately excluded from that liveness check — the reaper's
+own cancels bump `updated_at` and would self-mask a genuinely wedged queue.) A
+healthy backlog behind live workers is now left alone; the 60-min no-output
+window, explicit deadlines, and the dead-executor branch still backstop true
+wedges. **So: before treating a reaper `reaped_count` spike as evidence of a
+dead executor, check whether the queue had OTHER fires actively progressing at
+the time — a busy-but-alive queue is not a wedge.**
+
+**Also as of 2026-07-05/06 — a missing release-tooling checkout no longer
+crash-loops the routine.** `release-actions.ts` now calls
+`releaseToolingStatus(root, script)` before invoking `green-checkpoint.ts` /
+`deploy-cli.ts`: if the resolved integration/release root is missing `tsx` or
+the target script (a checkout that hasn't materialized yet, or was wiped), the
+action logs a `skipped-no-tooling` pipeline event and returns cleanly instead
+of throwing — a symptom that used to look like "the routine fired but errored"
+now reads as an explicit, distinguishable skip reason in
+`harness_shared.pipeline_events`.
+
 ## Layer 2: the post-deploy 406 (main advances but :3070 stays stale)
 
 Once `main` advances, `release-trigger` runs the scripted deploy — which can fail

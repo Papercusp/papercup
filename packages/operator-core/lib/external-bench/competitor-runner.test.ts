@@ -66,7 +66,7 @@ function fakeDriver(id: CompetitorArmId): CompetitorBacklogDriver {
     async run(r): Promise<HiveBacklogResult> {
       const taskResults = r.backlog.map((t, i) => ({
         attempt: completedAttempt(id, t.instanceId),
-        beeId: `${id}-agent-${i}`,
+        cupId: `${id}-agent-${i}`,
         placedAtMs: 100 + i,
         startedAtMs: 110 + i,
         finishedAtMs: 1100 + i,

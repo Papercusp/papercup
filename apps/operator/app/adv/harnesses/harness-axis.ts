@@ -59,10 +59,10 @@ function toMember(p: HarnessProjectLite, isRoot: boolean): HiveMember {
 }
 
 /**
- * The members of the hive rooted at `hiveSlug`. Membership precedence mirrors
+ * The members of the hive rooted at `potSlug`. Membership precedence mirrors
  * the server `groupByHive`: a child belongs to the hive when its formal
  * `hive_slug` (shared-hive-federation) OR its legacy `parent_slug` equals
- * `hiveSlug`. Order: the root harness itself FIRST (only when it is a real
+ * `potSlug`. Order: the root harness itself FIRST (only when it is a real
  * harness — a FORMAL `harness_kind:'hive'` home is the group, not a member, so
  * it is skipped), then the children sorted by slug.
  *
@@ -73,13 +73,13 @@ function toMember(p: HarnessProjectLite, isRoot: boolean): HiveMember {
  */
 export function hiveMembers(
   projects: readonly HarnessProjectLite[],
-  hiveSlug: string | null,
+  potSlug: string | null,
 ): HiveMember[] {
-  if (!hiveSlug) return [];
+  if (!potSlug) return [];
   const members: HiveMember[] = [];
   const seen = new Set<string>();
 
-  const root = projects.find((p) => p.slug === hiveSlug);
+  const root = projects.find((p) => p.slug === potSlug);
   // A FORMAL hive home (`harness_kind:'hive'`) is the GROUP itself, not a
   // selectable member — list only its real member harnesses under it (so the
   // dock/rail focus a real harness, not the empty hive entity). A LEGACY root (a
@@ -90,7 +90,7 @@ export function hiveMembers(
   }
 
   const children = projects
-    .filter((p) => p.slug !== hiveSlug && hiveOf(p) === hiveSlug)
+    .filter((p) => p.slug !== potSlug && hiveOf(p) === potSlug)
     .sort((a, b) => a.slug.localeCompare(b.slug));
   for (const child of children) {
     if (seen.has(child.slug)) continue;

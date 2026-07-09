@@ -95,7 +95,7 @@ describe('staggeredHiveScoutCron (P-050 — deterministic per-hive cron offset)'
 describe('provisionHiveLearningLoop', () => {
   it('writes a DARK gym row + an INACTIVE scout routine keyed to the hive slug', async () => {
     const { sql, calls } = makeFakeSql();
-    const res = await provisionHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug: 'alpha', now: 123 });
+    const res = await provisionHiveLearningLoop({ sql, workspaceId: 'w1', potSlug: 'alpha', now: 123 });
 
     expect(res.ok).toBe(true);
     expect(res.gymAutoloop).toBe(true);
@@ -134,9 +134,9 @@ describe('provisionHiveLearningLoop', () => {
   });
 
   it('staggers the scout cron PER-HIVE — two hives provision DISTINCT cron offsets (P-050)', async () => {
-    const cronFor = async (hiveSlug: string): Promise<string> => {
+    const cronFor = async (potSlug: string): Promise<string> => {
       const { sql, calls } = makeFakeSql();
-      await provisionHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug });
+      await provisionHiveLearningLoop({ sql, workspaceId: 'w1', potSlug });
       const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
       const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
       return JSON.parse(cron).cron as string;
@@ -154,7 +154,7 @@ describe('provisionHiveLearningLoop', () => {
     const res = await provisionHiveLearningLoop({
       sql,
       workspaceId: 'workspace-a',
-      hiveSlug: 'hive-a',
+      potSlug: 'hive-a',
     });
 
     expect(res.scoutRoutineId).toBe('rt_workspace_a_scout_cycle');
@@ -172,7 +172,7 @@ describe('provisionHiveLearningLoop', () => {
     const res = await provisionHiveLearningLoop({
       sql,
       workspaceId: 'w1',
-      hiveSlug: 'beta',
+      potSlug: 'beta',
       scoutMaxCostUsd: 0.25,
       scoutCron: '0 0 * * * *',
     });
@@ -188,7 +188,7 @@ describe('provisionHiveLearningLoop', () => {
 
   it('undo deletes both rows (best-effort, never throws)', async () => {
     const { sql, calls } = makeFakeSql();
-    const res = await provisionHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug: 'gamma' });
+    const res = await provisionHiveLearningLoop({ sql, workspaceId: 'w1', potSlug: 'gamma' });
     calls.length = 0; // isolate the undo's writes
     await res.undo();
 
@@ -209,7 +209,7 @@ describe('provisionHiveLearningLoop', () => {
       if (text.includes('DELETE')) return Promise.reject(new Error('pg down'));
       return Promise.resolve([] as unknown[]);
     };
-    const res = await provisionHiveLearningLoop({ sql: tag as unknown as Sql, workspaceId: 'w1', hiveSlug: 'delta' });
+    const res = await provisionHiveLearningLoop({ sql: tag as unknown as Sql, workspaceId: 'w1', potSlug: 'delta' });
     await expect(res.undo()).resolves.toBeUndefined();
   });
 });
@@ -217,10 +217,10 @@ describe('provisionHiveLearningLoop', () => {
 describe('teardownHiveLearningLoop (P-021 — the pot:dissolve inverse)', () => {
   it('deletes the gym row, the scout routine, AND the gym:<hive>/scout:<hive> governor registrants', async () => {
     const { sql, calls } = makeFakeSql();
-    const res = await teardownHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug: 'alpha' });
+    const res = await teardownHiveLearningLoop({ sql, workspaceId: 'w1', potSlug: 'alpha' });
 
     expect(res).toEqual({
-      hiveSlug: 'alpha',
+      potSlug: 'alpha',
       gymAutoloop: true,
       scoutRoutine: true,
       governorRegistrants: true,
@@ -270,7 +270,7 @@ describe('teardownHiveLearningLoop (P-021 — the pot:dissolve inverse)', () => 
     const res = await teardownHiveLearningLoop({
       sql: tag as unknown as Sql,
       workspaceId: 'w1',
-      hiveSlug: 'beta',
+      potSlug: 'beta',
     });
     expect(res.gymAutoloop).toBe(false); // the failed removal
     expect(res.scoutRoutine).toBe(true); // unaffected
@@ -286,7 +286,7 @@ describe('teardownHiveLearningLoop (P-021 — the pot:dissolve inverse)', () => 
     const res = await teardownHiveLearningLoop({
       sql: tag as unknown as Sql,
       workspaceId: 'w1',
-      hiveSlug: 'gamma',
+      potSlug: 'gamma',
     });
     expect(res.gymAutoloop).toBe(true);
     expect(res.scoutRoutine).toBe(true);

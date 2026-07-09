@@ -113,7 +113,7 @@ export interface HiveBacklogOps {
     plan: BatchPlacementPlan;
     arm: string;
     workspaceId: string;
-  }): Promise<{ placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] }>;
+  }): Promise<{ placements: { instanceId: string; cupId: string; disposition: 'spawn' | 'warm-inject' }[] }>;
   /** Placements still in flight (0 = the backlog is drained). */
   countInFlight(input: { hiveHome: string; workspaceId: string }): Promise<number>;
   /** Pause the fleet — a timed-out/drained run must not keep spending. */
@@ -200,7 +200,7 @@ export function liveHiveBacklogDriver(ops: HiveBacklogOps, opts: LiveHiveBacklog
               const plan = planner({ tasks: frontier, bees, headroom });
               const { placements } = await ops.placeBatch({ hiveHome: home, plan, arm: req.arm, workspaceId: ws });
               for (const p of placements) {
-                coordEvents.push({ ts: ops.now(), kind: 'placement', taskId: p.instanceId, agent: p.beeId, detail: p.disposition });
+                coordEvents.push({ ts: ops.now(), kind: 'placement', taskId: p.instanceId, agent: p.cupId, detail: p.disposition });
               }
             }
           }
@@ -307,7 +307,7 @@ function featureIdForTask(instanceId: string): string {
 interface LiveEnrolledState extends EnrolledTask {
   checkout: TaskCheckout;
   /** The bee spawn id placeBatch assigned (filled at placement). */
-  beeId: string | null;
+  cupId: string | null;
   placedAtMs: number | null;
   disposition: 'spawn' | 'warm-inject' | null;
 }
@@ -464,7 +464,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
           clonePath: checkout.dir,
           workItemId: featureId,
           checkout,
-          beeId: null,
+          cupId: null,
           placedAtMs: null,
           disposition: null,
         };
@@ -487,14 +487,14 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       //   - 'queen-ablated'→ ARRIVAL/backlog (enrollment) order — un-ranked, so the FIFO ablation is clean.
       // Enrollment order === arrival order (we enroll the backlog in req.backlog order), so the Map's
       // insertion order IS the arrival order. Importance order re-sorts by the seeded feature priority.
-      // EXCLUDE already-placed members (beeId set): a member is placed once, then its bee self-claims its
+      // EXCLUDE already-placed members (cupId set): a member is placed once, then its bee self-claims its
       // lone feature off the directive. Until that self-claim lands the feature still reads unassigned, so
       // WITHOUT this guard the loop would re-place it every poll (a fresh bee each tick) before the first
       // bee claims — the double-placement the post-spawn-claim used to (wrongly) prevent. The drain loop
       // keeps the placed member alive via countInFlight (placed + non-terminal), so dropping it from the
       // frontier here doesn't lose it. shared gatherFrontier ALSO drops it once the bee self-claims
       // (wi.assignee set) — this is the belt; that's the suspenders.
-      const members = [...state.values()].filter((m) => m.beeId == null);
+      const members = [...state.values()].filter((m) => m.cupId == null);
       if (members.length === 0) return [] as unknown as BatchPlacementInput['tasks'];
       const ids =
         arm === QUEEN_ABLATED_ARM
@@ -554,33 +554,33 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         workspaceId: ws,
       });
 
-      // Map executeBatch's per-decision results back to {instanceId, beeId, disposition}. The decision
+      // Map executeBatch's per-decision results back to {instanceId, cupId, disposition}. The decision
       // task id is the WORK-ITEM/feature id we placed (`F-<HEX>`, featureIdForTask) — resolve the real
       // instanceId + state via the featureId→instanceId index. `spawned`/`injected` are the placements
       // that actually fanned a bee; the rest (unplaced/deferred/raced/failed) carry no bee.
       const placedAtMs = Date.now();
-      const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
+      const placements: { instanceId: string; cupId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
       for (const p of exec.placements) {
         const featureId = p.task; // === work-item id we placed (F-<HEX>), NOT the raw instanceId
         const instanceId = instanceByFeatureId.get(featureId) ?? featureId;
         const st = state.get(instanceId);
         if (p.action === 'spawned' || p.action === 'injected') {
           const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
-          const beeId = p.spawn_id ?? p.bee ?? instanceId;
+          const cupId = p.spawn_id ?? p.bee ?? instanceId;
           // Record the placement in state. We deliberately do NOT pre-claim the feature to the bee here
           // (confirmed at the first full-driver run that doing so HURT): a post-spawn `claimWorkItem` races
-          // the bee's own boot — and worse, once `taken_by=beeId` is set, the bee's directed
+          // the bee's own boot — and worse, once `taken_by=cupId` is set, the bee's directed
           // `work_items:claim_next` (which requires `taken_by IS NULL`) finds nothing and the bee gives up
           // taskless before its lane read settles. The bee SELF-claims its lone feature off the directive
           // brief + FEATURE_ID (proven: the direct-spawn probe self-claimed and wrote a real 29-line diff).
           // Double-placement is prevented by excluding already-placed members from the frontier (gatherFrontier
-          // below), and `st.beeId` set here is what flips this member to in-flight for the drain loop.
+          // below), and `st.cupId` set here is what flips this member to in-flight for the drain loop.
           if (st) {
-            st.beeId = beeId;
+            st.cupId = cupId;
             st.placedAtMs = placedAtMs;
             st.disposition = disposition;
           }
-          placements.push({ instanceId, beeId, disposition });
+          placements.push({ instanceId, cupId, disposition });
         }
       }
       return { placements };
@@ -598,9 +598,9 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       // "bee placed but not yet recorded"). Once the bee finishes — feature → passed/escalated/blocked OR
       // the bee spawn row is done/failed (a bee that exited without finishing must not hang the loop) — the
       // member drops out and, when all do, the backlog is drained and we collect. Members never placed
-      // (beeId null) stay on the frontier, not in-flight.
+      // (cupId null) stay on the frontier, not in-flight.
       const sql = await sqlClient();
-      const placedMembers = [...state.values()].filter((m) => m.beeId != null);
+      const placedMembers = [...state.values()].filter((m) => m.cupId != null);
       if (placedMembers.length === 0) return 0;
       let inFlight = 0;
       for (const m of placedMembers) {
@@ -665,7 +665,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
 
       // Bee + timing provenance: prefer the placement record (placeBatch), fall back to the spawn row.
       const firstSpawn = spawnRows[0];
-      const beeId = st?.beeId ?? firstSpawn?.spawnId ?? enrolled.member;
+      const cupId = st?.cupId ?? firstSpawn?.spawnId ?? enrolled.member;
       const placedAtMs = st?.placedAtMs ?? firstSpawn?.startedAtMs ?? Date.now();
       const startedAtMs = firstSpawn?.startedAtMs ?? placedAtMs;
       const finishedAtMs = firstSpawn?.finishedAtMs ?? Date.now();
@@ -685,12 +685,12 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         trajectoryRef: `xbench-hive://${member}`,
         stopReason,
         ...(generationError ? { generationError } : {}),
-        armMeta: { member, hiveArm: arm, beeId },
+        armMeta: { member, hiveArm: arm, cupId },
       };
 
       return {
         attempt,
-        beeId,
+        cupId,
         placedAtMs,
         startedAtMs,
         finishedAtMs,

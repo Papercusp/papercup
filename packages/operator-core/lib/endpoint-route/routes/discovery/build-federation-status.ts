@@ -40,7 +40,7 @@ import { probeSubstrateSidecar } from '../../../service-health';
 const DRAIN_STALL_LAG_MS = 60_000;
 
 export interface OwnedHiveStatusRow {
-  hiveId: string;
+  potId: string;
   title: string;
   visibility: 'public' | 'invite' | 'private';
   /** Member harness count (display signal). */
@@ -96,13 +96,13 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
   try {
     const owned = await listOwnedHiveMeta(workspaceId);
     hives = owned.map((h) => ({
-      hiveId: h.hiveId,
+      potId: h.potId,
       title: h.title,
       visibility: h.visibility,
       memberCount: h.memberTopics.length,
       // reachablePeersForHive: 0 for a private hive (never announced) or one not
       // yet registered in the directory — honest, not a hidden failure.
-      reachablePeers: h.visibility === 'private' ? 0 : dir.reachablePeersForHive(h.hiveId),
+      reachablePeers: h.visibility === 'private' ? 0 : dir.reachablePeersForHive(h.potId),
     }));
   } catch {
     hives = [];

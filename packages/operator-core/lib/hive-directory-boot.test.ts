@@ -56,7 +56,7 @@ const NOW = 1_700_000_000_000;
 /** Build a VALID signed announce frame (passes verifyHiveAnnounce + the fake
  *  verifyAttestation) so dir.ingestAnnounce actually lands it in `discovered`. */
 async function signedAnnounce(
-  hiveId: string,
+  potId: string,
   visibility: HiveVisibility,
   extra: { member_links?: string[]; hive_pubkey?: string } = {},
 ): Promise<Awaited<ReturnType<typeof buildHiveAnnounce>>> {
@@ -66,8 +66,8 @@ async function signedAnnounce(
     .toString('base64');
   return buildHiveAnnounce(
     {
-      hive_id: hiveId,
-      title: hiveId,
+      hive_id: potId,
+      title: potId,
       description: 'd',
       owner_github_login: 'bob',
       owner_github_user_id: 99,
@@ -129,7 +129,7 @@ function fakeSwarm() {
 }
 
 function meta(over: Partial<HiveDirectoryMeta> = {}): HiveDirectoryMeta {
-  return { hiveId: 'h1', title: 'Hive 1', description: 'd', visibility: 'public', memberTopics: [], createdAt: NOW - 1, ...over };
+  return { potId: 'h1', title: 'Hive 1', description: 'd', visibility: 'public', memberTopics: [], createdAt: NOW - 1, ...over };
 }
 
 beforeEach(() => {
@@ -140,7 +140,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
   it('hydrates the discovered set from the PG offline cache before the swarm reconnects', async () => {
     const f = fakeSwarm();
     const cached = {
-      hiveId: 'cached-hive',
+      potId: 'cached-hive',
       title: 'Cached Hive',
       description: 'seen last session',
       ownerGithubLogin: 'alice',
@@ -156,7 +156,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
     const dir = new HiveDirectory({ ...fakeDirDeps(), loadCache: async () => [cached] });
     const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
     // Offline listing works immediately — the cache hydrated at wire time.
-    expect(dir.listDiscoveredHives().map((h) => h.hiveId)).toContain('cached-hive');
+    expect(dir.listDiscoveredHives().map((h) => h.potId)).toContain('cached-hive');
     await wiring.stop();
   });
 
@@ -176,7 +176,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       swarm: f.swarm,
       keychainId: 'kc',
       owner: ownerIdentity(),
-      ownedHives: [meta({ hiveId: 'pub', visibility: 'public' }), meta({ hiveId: 'priv', visibility: 'private' })],
+      ownedHives: [meta({ potId: 'pub', visibility: 'public' }), meta({ potId: 'priv', visibility: 'private' })],
       dir,
     });
     f.connect();
@@ -207,7 +207,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       swarm: f.swarm,
       keychainId: 'kc',
       owner: ownerIdentity(),
-      ownedHives: [meta({ hiveId: 'pub', visibility: 'public' })],
+      ownedHives: [meta({ potId: 'pub', visibility: 'public' })],
       dir,
     });
     expect(announce).toHaveBeenCalledWith('pub');
@@ -221,7 +221,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       swarm: f.swarm,
       keychainId: 'kc',
       owner: ownerIdentity(),
-      ownedHives: [meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: 'sekret' })],
+      ownedHives: [meta({ potId: 'inv', visibility: 'invite', inviteSecret: 'sekret' })],
       dir,
     });
     // Two distinct 32-byte topics joined: the global directory + the invite topic.
@@ -247,7 +247,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
         // secret has DRIFTED to the old random value (the WI-867 failure).
         ownedHives: [
           meta({
-            hiveId: 'papercusp',
+            potId: 'papercusp',
             visibility: 'invite',
             inviteSecret: 'drifted-old-secret',
             hivePubkey: 'CANON_PUBKEY_B64',
@@ -282,7 +282,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
         keychainId: 'kc',
         owner: ownerIdentity(),
         ownedHives: [
-          meta({ hiveId: 'other', visibility: 'invite', inviteSecret: 'others-secret', hivePubkey: 'DIFFERENT_PUBKEY' }),
+          meta({ potId: 'other', visibility: 'invite', inviteSecret: 'others-secret', hivePubkey: 'DIFFERENT_PUBKEY' }),
         ],
         dir,
       });
@@ -304,8 +304,8 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       keychainId: 'kc',
       owner: ownerIdentity(),
       ownedHives: [
-        meta({ hiveId: 'pub', visibility: 'public' }),
-        meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: 'sekret' }),
+        meta({ potId: 'pub', visibility: 'public' }),
+        meta({ potId: 'inv', visibility: 'invite', inviteSecret: 'sekret' }),
       ],
       dir,
     });
@@ -324,16 +324,16 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
     const calls: string[] = [];
     const n = await reconcilePublicHiveListings(
       [
-        { hiveId: 'pub-a', visibility: 'public' },
-        { hiveId: 'inv-b', visibility: 'invite' },
-        { hiveId: 'priv-c', visibility: 'private' },
-        { hiveId: 'pub-d', visibility: 'public' },
+        { potId: 'pub-a', visibility: 'public' },
+        { potId: 'inv-b', visibility: 'invite' },
+        { potId: 'priv-c', visibility: 'private' },
+        { potId: 'pub-d', visibility: 'public' },
       ],
       'ws-1',
-      async ({ hiveSlug, workspaceId }) => {
+      async ({ potSlug, workspaceId }) => {
         expect(workspaceId).toBe('ws-1');
-        calls.push(hiveSlug);
-        if (hiveSlug === 'pub-d') throw new Error('cupboard still down'); // best-effort
+        calls.push(potSlug);
+        if (potSlug === 'pub-d') throw new Error('cupboard still down'); // best-effort
         return {};
       },
     );
@@ -375,7 +375,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       await dir.ingestAnnounce(frame);
       const res = await p;
       expect(res.found).toBe(true);
-      expect(res.hive?.hiveId).toBe('remote-invite');
+      expect(res.hive?.potId).toBe('remote-invite');
       expect(res.hive?.visibility).toBe('invite');
       await wiring.stop();
     });

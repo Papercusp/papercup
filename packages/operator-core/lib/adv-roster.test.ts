@@ -36,7 +36,7 @@ function presence(overrides: Partial<PresenceRecord> = {}): PresenceRecord {
     heartbeatAt: iso(NOW - 5_000),
     lastActiveAt: iso(NOW - 5_000),
     agentRole: null,
-    hiveSlug: null,
+    potSlug: null,
     stale: false,
     userId: null,
     revoked: false,

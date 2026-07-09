@@ -128,7 +128,7 @@ export function synthesizeRecordedRosterRows(
       // adv_sessions carries no hive attribution yet → the synthesized leg is
       // workspace/all-scope only (P-002 adds hive_slug to the recording so the
       // hive-scoped Queen view can include un-self-registered bees too).
-      hiveSlug: null,
+      potSlug: null,
       stale: false,
       userId: null,
       revoked: false,

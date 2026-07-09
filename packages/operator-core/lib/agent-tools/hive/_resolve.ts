@@ -61,7 +61,7 @@ export interface HiveDescriptor {
    * -local hive. Distinct from the first-class `pubkey` identity below: this is the
    * frame-derived deployment handle; `pubkey` is the canonical dial-able Hive id.
    */
-  hiveId?: string;
+  potId?: string;
   /**
    * The Hive's first-class identity: its raw-32 base64 Ed25519 PUBLIC key
    * (shared-hive-federation-2026-06-08 P-002). This is the dial-able id and the
@@ -119,12 +119,12 @@ export function describeHive(
   wake: HiveWakeView,
   pubkey?: string,
 ): HiveDescriptor {
-  const hiveId = frameHiveId(p);
+  const potId = frameHiveId(p);
   return {
     slug: p.slug,
     path: p.path,
     kind: HIVE_KIND,
-    ...(hiveId ? { hiveId } : {}),
+    ...(potId ? { potId } : {}),
     ...(pubkey ? { pubkey } : {}),
     ...(p.remote_hive ? { remote: true as const } : {}),
     deployment: p.deployment ?? { target: 'local' },
@@ -155,7 +155,7 @@ export function liveAgentCountByHarness(
 }
 
 /**
- * Resolve one hive by its home-slug (or, forward-compat, its hiveId). Returns
+ * Resolve one hive by its home-slug (or, forward-compat, its potId). Returns
  * null when no `kind:'hive'` project matches — callers surface a clean
  * `hive_not_found` rather than guessing.
  */

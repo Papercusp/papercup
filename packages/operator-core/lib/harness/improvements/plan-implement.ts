@@ -24,6 +24,17 @@
  *   - **in-flight** — an item claimed recently (assignee + fresh assignedAt) is a
  *     dispatch already running; skip it. A stale claim (the runner died) becomes
  *     eligible again after `staleClaimMs`.
+ *   - **post-touch cooldown** (EI-8385) — an item touched (any claim, release, or
+ *     state change) within `postTouchCooldownMs` is ALSO skipped, even with a
+ *     null assignee. Guards a cross-lane race: the interactive backlog-drain
+ *     fleet (scheduler:get_next / work_items:claim) can claim + release the
+ *     SAME item the auto-implement lane has an open dispatch on; the instant
+ *     assignee clears, `assignedAt`-based in-flight goes stale well before the
+ *     underlying dispatch actually finishes, so the loop re-dispatches a
+ *     duplicate worker. `updatedAt` (bumped by every touch, not just this
+ *     lane's own claim) closes that gap with a short, cheap cooldown — NOT a
+ *     substitute for a real dispatch-ledger join, just enough slack that a
+ *     just-touched item doesn't look "long since abandoned".
  *   - **attempts cap** — an item already dispatched `maxAttempts` times never
  *     auto-dispatches again (improvements:resolve routes it to a human on the
  *     exhausted could-not-fix, so it also leaves the auto lane in triage).
@@ -38,6 +49,12 @@ import { DEFAULT_MAX_ATTEMPTS } from './resolve-core';
 /** How long a claim marks an item in-flight before it is considered stale
  *  (the runner died / never resolved). 4 cadence ticks at the 30-min default. */
 export const DEFAULT_STALE_CLAIM_MS = 2 * 60 * 60 * 1000;
+
+/** EI-8385: how long after ANY touch (claim, release, state change — not just
+ *  this lane's own claim) an item stays treated as in-flight regardless of its
+ *  current assignee. Short on purpose — this is slack for a racing claim/release
+ *  from another consumer of the same backlog, not a real liveness check. */
+export const DEFAULT_POST_TOUCH_COOLDOWN_MS = 15 * 60 * 1000;
 
 export interface ImplementRunInput {
   items: ImprovementCandidate[];
@@ -55,6 +72,8 @@ export interface ImplementRunInput {
   laneEnvOutage?: boolean;
   /** Claim freshness window for the in-flight skip (close-loop D-001). */
   staleClaimMs?: number;
+  /** Post-touch cooldown window for the cross-lane race guard (EI-8385). */
+  postTouchCooldownMs?: number;
   policy?: RiskTierPolicy;
   /**
    * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`, Phase 2). When true the
@@ -95,6 +114,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
   const cap = Math.max(0, Math.floor(input.maxPerRun));
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const staleClaimMs = input.staleClaimMs ?? DEFAULT_STALE_CLAIM_MS;
+  const postTouchCooldownMs = input.postTouchCooldownMs ?? DEFAULT_POST_TOUCH_COOLDOWN_MS;
   const nowMs = input.nowMs ?? Date.now();
   const digest = buildDigest(input.items, {
     policy: input.policy,
@@ -105,10 +125,21 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
 
   // Close-loop dispatch guards (D-001): skip in-flight + attempts-exhausted.
   const inFlight = (s: ScoredItem): boolean => {
-    if (!s.assignee) return false;
-    if (!s.assignedAt) return true; // claimed, age unknown → assume in flight
-    const age = nowMs - Date.parse(s.assignedAt);
-    return Number.isFinite(age) ? age < staleClaimMs : true;
+    if (s.assignee) {
+      if (!s.assignedAt) return true; // claimed, age unknown → assume in flight
+      const age = nowMs - Date.parse(s.assignedAt);
+      if (!Number.isFinite(age) || age < staleClaimMs) return true;
+    }
+    // EI-8385: no CURRENT assignee doesn't mean nothing is in flight — another
+    // consumer of the same backlog (the interactive drain fleet) may have just
+    // claimed + released this exact item while the auto-implement lane's own
+    // dispatch is still running. A very recent touch (any lifecycle update) is
+    // treated as in-flight for this short cooldown regardless of assignee.
+    if (s.updatedAt) {
+      const touchedAge = nowMs - Date.parse(s.updatedAt);
+      if (Number.isFinite(touchedAge) && touchedAge < postTouchCooldownMs) return true;
+    }
+    return false;
   };
   const exhausted = (s: ScoredItem): boolean => (s.attempts ?? 0) >= maxAttempts;
   const dispatchable = auto.filter((s) => !inFlight(s) && !exhausted(s));

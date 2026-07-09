@@ -8,7 +8,7 @@
  * (hive-directory-meta.ts); the announce rides the live directory singleton
  * (a no-op broadcast until the substrate boot-join wires the transport).
  *
- * Idempotent create-or-edit: calling again with the same hiveId edits +
+ * Idempotent create-or-edit: calling again with the same potId edits +
  * re-announces (the directory converges on the newer ts).
  */
 import { z } from 'zod';
@@ -64,7 +64,7 @@ export default defineTool({
     const { setHiveListing } = await import('../../hive-set-listing');
     const res = await setHiveListing(
       {
-        hiveId: args.potId,
+        potId: args.potId,
         title: args.title,
         description: args.description,
         visibility: args.visibility as HiveDirectoryMeta['visibility'],

@@ -3169,13 +3169,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // its directory records (owner or publisher of a live fleet ⇒ participant).
         const fleetDirectory = new PgFleetDirectory({
           workspaceId: opts.workspaceId,
-          hiveSlug: rosterHiveSlug,
+          potSlug: rosterHiveSlug,
         });
         scopeFederation = new ScopeFederation({
           registry: scopeRegistry,
           roster: getScopeRoster({
             workspaceId: opts.workspaceId,
-            hiveSlug: rosterHiveSlug,
+            potSlug: rosterHiveSlug,
             directory: fleetDirectory,
           }),
           selfGithubUserId: identity.githubUserId,
@@ -3192,7 +3192,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', reason);
             void bumpRefusedOpCounter({
               workspaceId: opts.workspaceId,
-              hiveSlug: rosterHiveSlug,
+              potSlug: rosterHiveSlug,
               reason,
             }).catch(() => {});
           },

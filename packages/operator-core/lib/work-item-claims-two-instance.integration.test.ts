@@ -124,7 +124,7 @@ async function swarmClaim(selfPubkey: string, owner: string, workItemId: string)
     workspaceId: 'default',
     harnessSlug: 'h1',
     workItemId,
-    hiveSlug: 'my-hive',
+    potSlug: 'my-hive',
     owner,
     holderPubkey: selfPubkey,
   };

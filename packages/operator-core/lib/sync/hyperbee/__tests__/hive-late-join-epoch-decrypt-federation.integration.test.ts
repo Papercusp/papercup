@@ -291,7 +291,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       const ownerEncrypt = buildEpochEncryptCapability({
         crypto,
         resolveKey: ownerResolveKey,
-        hiveId: HIVE_SLUG,
+        potId: HIVE_SLUG,
         getCurrentEpoch: () => getHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql),
       });
       expect(await getHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql)).toBe(0); // baseline
@@ -383,7 +383,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
           : tag === 'engineer-issues'
             ? (issuesProj as TableProjection<unknown>)
             : null;
-      const joinerGate = buildEpochDecryptGate({ crypto, resolveKey: joinerResolveKey, hiveId: HIVE_SLUG, pending });
+      const joinerGate = buildEpochDecryptGate({ crypto, resolveKey: joinerResolveKey, potId: HIVE_SLUG, pending });
       const joinerApply = joinerGate((op) => applyOpVia(contentLookup, op, { ownLogKeyHex: JOINER_LOG_HEX }));
 
       // ── 3a. NEGATIVE CONTROL (the regression state): content arrives BEFORE the

@@ -79,7 +79,7 @@ export default defineTool({
         // this item's { ok:false, hive, pack, error } via runBulk's keyOf catch.
         await setPackEnabled({
           workspaceId,
-          hiveSlug: it.pot,
+          potSlug: it.pot,
           packId: it.pack,
           enabled: it.enabled,
         });

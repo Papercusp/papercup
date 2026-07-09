@@ -38,14 +38,14 @@ const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', '
 /** The per-hive signals a beacon summarizes — injected so the build is testable. */
 export interface BeaconSignalSources {
   /** Distinct live agents working the hive right now. */
-  liveAgents(workspaceId: string, hiveSlug: string): Promise<number>;
+  liveAgents(workspaceId: string, potSlug: string): Promise<number>;
   /** Queue depth + the focus/last-completed one-liners, from the hive's backlog. */
   workSignals(
     workspaceId: string,
-    hiveSlug: string,
+    potSlug: string,
   ): Promise<{ queueDepth: number; focus: string; lastCompleted: string }>;
   /** PUBLISH consent gate (absent = OFF). */
-  consented(workspaceId: string, hiveSlug: string): Promise<boolean>;
+  consented(workspaceId: string, potSlug: string): Promise<boolean>;
   /** Clock (ms). */
   now(): number;
 }
@@ -55,17 +55,17 @@ export function defaultBeaconSignalSources(): BeaconSignalSources {
   return {
     now: () => Date.now(),
 
-    liveAgents: async (workspaceId, hiveSlug) => {
+    liveAgents: async (workspaceId, potSlug) => {
       const { listFleetAssignments } = await import('./fleet/assignments');
       const { liveAgentCountByHarness } = await import('./agent-tools/hive/_resolve');
       const rows = await listFleetAssignments({ workspaceId });
-      return liveAgentCountByHarness(rows).get(hiveSlug) ?? 0;
+      return liveAgentCountByHarness(rows).get(potSlug) ?? 0;
     },
 
-    workSignals: async (_workspaceId, hiveSlug) => {
+    workSignals: async (_workspaceId, potSlug) => {
       const { listWorkItems } = await import('./work-items');
       // newest updatedAt first (listWorkItems default order).
-      const items = await listWorkItems({ harness: hiveSlug, limit: 200 });
+      const items = await listWorkItems({ harness: potSlug, limit: 200 });
       let queueDepth = 0;
       let focus = '';
       let lastCompleted = '';
@@ -80,9 +80,9 @@ export function defaultBeaconSignalSources(): BeaconSignalSources {
       return { queueDepth, focus, lastCompleted };
     },
 
-    consented: async (workspaceId, hiveSlug) => {
+    consented: async (workspaceId, potSlug) => {
       const { getBeaconPublishConsent } = await import('./beacon-consent');
-      return getBeaconPublishConsent(workspaceId, hiveSlug);
+      return getBeaconPublishConsent(workspaceId, potSlug);
     },
   };
 }
@@ -94,13 +94,13 @@ export function defaultBeaconSignalSources(): BeaconSignalSources {
  */
 export async function buildHiveBeacon(
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   sources: BeaconSignalSources,
 ): Promise<HiveStatusBeacon> {
   const [liveAgents, work] = await Promise.all([
-    sources.liveAgents(workspaceId, hiveSlug).catch(() => 0),
+    sources.liveAgents(workspaceId, potSlug).catch(() => 0),
     sources
-      .workSignals(workspaceId, hiveSlug)
+      .workSignals(workspaceId, potSlug)
       .catch(() => ({ queueDepth: 0, focus: '', lastCompleted: '' })),
   ]);
   return makeBeacon({
@@ -146,12 +146,12 @@ export interface MaybeBuildBeaconOpts {
  */
 export async function maybeBuildHiveBeacon(
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   opts: MaybeBuildBeaconOpts = {},
 ): Promise<HiveStatusBeacon | undefined> {
   const sources = opts.sources ?? defaultBeaconSignalSources();
   const ttlMs = opts.ttlMs ?? BEACON_MEMO_TTL_MS;
-  const key = `${workspaceId}\x00${hiveSlug}`;
+  const key = `${workspaceId}\x00${potSlug}`;
   const now = sources.now();
 
   if (ttlMs > 0) {
@@ -161,8 +161,8 @@ export async function maybeBuildHiveBeacon(
 
   let beacon: HiveStatusBeacon | undefined;
   try {
-    const ok = await sources.consented(workspaceId, hiveSlug).catch(() => false);
-    beacon = ok ? await buildHiveBeacon(workspaceId, hiveSlug, sources) : undefined;
+    const ok = await sources.consented(workspaceId, potSlug).catch(() => false);
+    beacon = ok ? await buildHiveBeacon(workspaceId, potSlug, sources) : undefined;
   } catch {
     beacon = undefined;
   }

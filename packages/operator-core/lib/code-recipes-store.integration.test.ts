@@ -123,7 +123,7 @@ describe('code_recipes store (real PG)', () => {
     await recordRecipeRun(db.adminSql, {
       recipeId: 'runner',
       workspaceId: ws,
-      hiveSlug: 'alpha',
+      potSlug: 'alpha',
       agentOwner: 'agent-a',
       agentRole: 'cup',
       success: true,
@@ -132,7 +132,7 @@ describe('code_recipes store (real PG)', () => {
     await recordRecipeRun(db.adminSql, {
       recipeId: 'runner',
       workspaceId: ws,
-      hiveSlug: 'alpha',
+      potSlug: 'alpha',
       agentOwner: 'agent-b',
       agentRole: 'su',
       success: false,
@@ -205,11 +205,11 @@ describe('code_recipes store (real PG)', () => {
       await upsertRecipe(db.adminSql, { id: 'dup-1', title: 'Dup 1', description: 'd', script: 's' });
       await upsertRecipe(db.adminSql, { id: 'dup-2', title: 'Dup 2', description: 'd', script: 's' });
       // Survivor: 2 runs / 2 success; dup-1: 3 runs / 2 success; dup-2: 1 run / 0 success.
-      for (let i = 0; i < 2; i++) await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, hiveSlug: 'alpha', success: true });
-      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: true });
-      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: true });
-      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, hiveSlug: 'alpha', success: false });
-      await recordRecipeRun(db.adminSql, { recipeId: 'dup-2', workspaceId: ws, hiveSlug: 'alpha', success: false });
+      for (let i = 0; i < 2; i++) await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, potSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: false });
+      await recordRecipeRun(db.adminSql, { recipeId: 'dup-2', workspaceId: ws, potSlug: 'alpha', success: false });
 
       const { survivor, mergedIds } = await mergeRecipes(db.adminSql, {
         survivorId: 'survivor',
@@ -236,8 +236,8 @@ describe('code_recipes store (real PG)', () => {
       const ws = 'ws-cr-merge-self';
       await upsertRecipe(db.adminSql, { id: 'keep', title: 'Keep', description: 'd', script: 's' });
       await upsertRecipe(db.adminSql, { id: 'real-dup', title: 'Dup', description: 'd', script: 's' });
-      await recordRecipeRun(db.adminSql, { recipeId: 'keep', workspaceId: ws, hiveSlug: null, success: true });
-      await recordRecipeRun(db.adminSql, { recipeId: 'real-dup', workspaceId: ws, hiveSlug: null, success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'keep', workspaceId: ws, potSlug: null, success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'real-dup', workspaceId: ws, potSlug: null, success: true });
 
       const { survivor, mergedIds } = await mergeRecipes(db.adminSql, {
         survivorId: 'keep',
@@ -256,7 +256,7 @@ describe('code_recipes store (real PG)', () => {
       const ws = 'ws-cr-merge-idem';
       await upsertRecipe(db.adminSql, { id: 's', title: 'S', description: 'd', script: 's' });
       await upsertRecipe(db.adminSql, { id: 'd', title: 'D', description: 'd', script: 's' });
-      await recordRecipeRun(db.adminSql, { recipeId: 'd', workspaceId: ws, hiveSlug: null, success: true });
+      await recordRecipeRun(db.adminSql, { recipeId: 'd', workspaceId: ws, potSlug: null, success: true });
 
       const first = await mergeRecipes(db.adminSql, { survivorId: 's', duplicateIds: ['d'] });
       expect(first.mergedIds).toEqual(['d']);
@@ -278,7 +278,7 @@ describe('code_recipes store (real PG)', () => {
     async function seedAged(
       ws: string,
       id: string,
-      opts: { hiveSlug?: string | null; runCount: number; daysAgo: number | null; status?: string },
+      opts: { potSlug?: string | null; runCount: number; daysAgo: number | null; status?: string },
     ) {
       await upsertRecipe(db.adminSql, {
         id,
@@ -360,8 +360,8 @@ describe('code_recipes store (real PG)', () => {
 
     it('sweeps globally across hives', async () => {
       const ws = 'ws-cr-sweep-hive';
-      await seedAged(ws, 'alpha-stale', { hiveSlug: 'alpha', runCount: 1, daysAgo: 50 });
-      await seedAged(ws, 'beta-stale', { hiveSlug: 'beta', runCount: 1, daysAgo: 50 });
+      await seedAged(ws, 'alpha-stale', { potSlug: 'alpha', runCount: 1, daysAgo: 50 });
+      await seedAged(ws, 'beta-stale', { potSlug: 'beta', runCount: 1, daysAgo: 50 });
 
       const { swept } = await sweepRecipes(db.adminSql, { staleDays: 30, maxRunCount: 1 });
       expect(swept.map((r) => r.id).sort()).toEqual(['alpha-stale', 'beta-stale']);

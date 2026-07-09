@@ -84,7 +84,7 @@ describe("declareOverwatchTimeWake (the shared declare-next-wake seam)", () => {
       name: string;
       targetRole: string;
       triggerConfig: Record<string, unknown>;
-      payloadTemplate: { role: string; blueprintId: string; hiveSlug: string };
+      payloadTemplate: { role: string; blueprintId: string; potSlug: string };
       nextFireAt: Date;
       active: boolean;
     };
@@ -97,7 +97,7 @@ describe("declareOverwatchTimeWake (the shared declare-next-wake seam)", () => {
     expect(input.targetRole).toBe(OVERWATCH_WAKE_TARGET_ACTION);
     expect(input.targetRole).not.toBe("system:blueprint-run");
     expect(input.payloadTemplate.role).toBe(OVERWATCH_ROLE);
-    expect(input.payloadTemplate.hiveSlug).toBe(SLUG);
+    expect(input.payloadTemplate.potSlug).toBe(SLUG);
     expect(input.triggerConfig).toEqual({}); // no cron expr ⇒ one-shot
     expect(input.active).toBe(true);
     expect(input.nextFireAt.getTime()).toBe(NOW + 600_000);
@@ -157,11 +157,11 @@ describe("declareOverwatchTimeWake (the shared declare-next-wake seam)", () => {
     const input = upsertRoutine.mock.calls[0][1] as {
       installSlug: string;
       workspaceId: string;
-      payloadTemplate: { hiveSlug: string };
+      payloadTemplate: { potSlug: string };
     };
     expect(input.installSlug).toBe(WS);
     expect(input.workspaceId).toBe(WS);
-    expect(input.payloadTemplate.hiveSlug).toBe(SLUG);
+    expect(input.payloadTemplate.potSlug).toBe(SLUG);
   });
 });
 

@@ -69,7 +69,7 @@ function fakeOps(over: Partial<HiveBacklogOps> = {}): { ops: HiveBacklogOps; cal
     placeBatch: async ({ plan }) => {
       const placements = plan.decisions.map((d) => ({
         instanceId: (d.task as unknown as { id: string }).id,
-        beeId: `bee-${(d.task as unknown as { id: string }).id}`,
+        cupId: `bee-${(d.task as unknown as { id: string }).id}`,
         disposition: 'spawn' as const,
       }));
       calls.placed.push(...placements.map((p) => p.instanceId));
@@ -79,7 +79,7 @@ function fakeOps(over: Partial<HiveBacklogOps> = {}): { ops: HiveBacklogOps; cal
     pauseFleet: async () => { calls.paused++; },
     collectTask: async ({ enrolled, arm }): Promise<FleetTaskResult> => {
       calls.collected.push(enrolled.task.instanceId);
-      return { attempt: fakeAttempt(enrolled.task.instanceId, arm), beeId: `bee-${enrolled.task.instanceId}`, placedAtMs: 1, startedAtMs: 2, finishedAtMs: 3, disposition: 'spawn' };
+      return { attempt: fakeAttempt(enrolled.task.instanceId, arm), cupId: `bee-${enrolled.task.instanceId}`, placedAtMs: 1, startedAtMs: 2, finishedAtMs: 3, disposition: 'spawn' };
     },
     teardown: async () => { calls.torn++; },
   };

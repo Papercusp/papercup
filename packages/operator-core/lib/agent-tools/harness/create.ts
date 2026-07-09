@@ -458,7 +458,7 @@ export default defineTool({
         const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
         const { getOrgPg } = await import('@papercusp/db-org');
         const { sql } = getOrgPg();
-        await seedHiveReleaseRoutines({ sql, workspaceId, hiveSlug: args.slug });
+        await seedHiveReleaseRoutines({ sql, workspaceId, potSlug: args.slug });
       } catch (e) {
         console.warn(
           `[harness:create] release-routine seed failed (${args.slug}): ${e instanceof Error ? e.message : String(e)}`,

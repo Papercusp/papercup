@@ -25,7 +25,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
 
 export interface FedHive {
-  hiveId: string;
+  potId: string;
   title: string;
   visibility: 'public' | 'invite' | 'private';
   memberCount: number;
@@ -157,17 +157,17 @@ export default function HiveFederationStatus() {
             data.hives.map((h) => {
               const stranded = h.visibility !== 'private' && h.reachablePeers === 0;
               return (
-                <div className="pclsb-row" key={h.hiveId} data-testid={`fed-hive-${h.hiveId}`}>
+                <div className="pclsb-row" key={h.potId} data-testid={`fed-hive-${h.potId}`}>
                   <span className={`pclsb-dot ${stranded ? 'is-down' : 'is-up'}`} aria-hidden="true" />
                   <div className="pclsb-row__main">
-                    <div className="pclsb-row__title" title={h.hiveId}>
+                    <div className="pclsb-row__title" title={h.potId}>
                       {h.title}
                       <span style={{ color: 'var(--fg-mute, #888)', fontWeight: 400 }}>
                         {'  ·  '}
                         {h.visibility}
                       </span>
                     </div>
-                    <div className="pclsb-row__sub" data-testid={`fed-reach-${h.hiveId}`}>
+                    <div className="pclsb-row__sub" data-testid={`fed-reach-${h.potId}`}>
                       {reachLabel(h)}
                     </div>
                   </div>

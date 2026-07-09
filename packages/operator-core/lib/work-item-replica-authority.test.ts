@@ -3,7 +3,7 @@
  * (EI-266; mirrors work-item-claim-authority.test.ts).
  *
  * The redundancy store routes EVERY replica op through this singleton
- * (`getWorkItemReplicaAuthority().route(hiveSlug, op)`). On a single box the
+ * (`getWorkItemReplicaAuthority().route(potSlug, op)`). On a single box the
  * default `LocalWorkItemReplicaAuthority` runs `op.local()` directly; the cutover
  * installs a real multi-peer router via `setWorkItemReplicaAuthority()` with zero
  * store changes. These tests lock the seam's contract.
@@ -56,8 +56,8 @@ describe('the mutable replica-authority singleton (cutover swap-in point)', () =
     const routed: Array<{ hive: string }> = [];
     const custom: WorkItemReplicaAuthority = {
       isSelf: async () => false,
-      route: async (hiveSlug, o) => {
-        routed.push({ hive: hiveSlug });
+      route: async (potSlug, o) => {
+        routed.push({ hive: potSlug });
         return o.local();
       },
     };

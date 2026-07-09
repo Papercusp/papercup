@@ -16,7 +16,7 @@ import {
 function validManifest(over: Partial<SeedManifest> = {}): SeedManifest {
   return {
     seedFormatVersion: SEED_FORMAT_VERSION,
-    hiveId: 'papercusp',
+    potId: 'papercusp',
     cutAtEpoch: 0,
     cutHlc: 'hlc-abc',
     cutTs: 1000,
@@ -26,7 +26,7 @@ function validManifest(over: Partial<SeedManifest> = {}): SeedManifest {
         hash: 'gh1',
         sizeBytes: 10,
         source: { type: 'resource', path: 'seed/git.bundle' },
-        encryption: { scheme: 'xchacha20poly1305', keyRef: { via: 'seed-key-op', hiveId: 'papercusp' } },
+        encryption: { scheme: 'xchacha20poly1305', keyRef: { via: 'seed-key-op', potId: 'papercusp' } },
       },
       { kind: 'corestore', hash: 'ch1', sizeBytes: 20, source: { type: 'resource', path: 'seed/corestore' } },
     ],
@@ -62,7 +62,7 @@ describe('validateManifest', () => {
   it.each([
     ['a non-object', 42, /must be an object/],
     ['wrong version', validManifest({ seedFormatVersion: 999 }), /seedFormatVersion must be/],
-    ['empty hiveId', validManifest({ hiveId: '' }), /hiveId must be/],
+    ['empty potId', validManifest({ potId: '' }), /potId must be/],
     ['negative epoch', validManifest({ cutAtEpoch: -1 }), /cutAtEpoch/],
     ['non-integer epoch', validManifest({ cutAtEpoch: 1.5 }), /cutAtEpoch/],
     ['empty cutHlc', validManifest({ cutHlc: '' }), /cutHlc/],
@@ -99,7 +99,7 @@ describe('validateManifest', () => {
 
   it('accepts an epoch keyRef', () => {
     const m = validManifest({
-      stores: [{ kind: 'g', hash: 'h', sizeBytes: 1, source: { type: 'resource', path: 'p' }, encryption: { scheme: 'x', keyRef: { via: 'epoch', hiveId: 'papercusp', epoch: 3 } } }],
+      stores: [{ kind: 'g', hash: 'h', sizeBytes: 1, source: { type: 'resource', path: 'p' }, encryption: { scheme: 'x', keyRef: { via: 'epoch', potId: 'papercusp', epoch: 3 } } }],
     });
     expect(validateManifest(m).ok).toBe(true);
   });
@@ -116,7 +116,7 @@ describe('encode/decode', () => {
   });
 
   it('encodeManifest throws on an invalid manifest', () => {
-    expect(() => encodeManifest(validManifest({ hiveId: '' }))).toThrow(SeedManifestError);
+    expect(() => encodeManifest(validManifest({ potId: '' }))).toThrow(SeedManifestError);
   });
 
   it('decodeManifest throws on bad JSON', () => {
@@ -210,7 +210,7 @@ describe('restoreSeed', () => {
   it('fails fast on an invalid manifest', async () => {
     const reg = new SeedProviderRegistry();
     reg.register(okProvider('git'));
-    const res = await restoreSeed(validManifest({ hiveId: '' }), reg, resolve, {});
+    const res = await restoreSeed(validManifest({ potId: '' }), reg, resolve, {});
     expect(res.ok).toBe(false);
     expect(res.outcomes).toHaveLength(1);
     expect(res.outcomes[0]).toMatchObject({ kind: '(manifest)', ok: false });

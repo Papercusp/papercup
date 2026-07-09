@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 
 /**
@@ -91,10 +91,15 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   // appended) — driven by the session stream's `thinking` status event. The
   // live-turn section + the "● thinking" header badge key off this.
   const [thinking, setThinking] = useState(false);
+  // Deep-link anchor (search-hit → transcript): the server's `anchor` event —
+  // `{found:true, index}` = the backfill index of the matched entry (scroll
+  // target); `{found:false}` = the term wasn't found (tail backfill shown).
+  const [anchor, setAnchor] = useState<{ found: boolean; index?: number } | null>(null);
   useEffect(() => {
     setStatus('connecting');
     setEvents([]);
     setThinking(false);
+    setAnchor(null);
     // The one-shot `backfill` is sent ONCE per connection — if it arrives
     // corrupted (e.g. the stream dropped mid-event and resumed), nothing in-band
     // ever re-sends it and the pane would wedge on "connecting…" while small
@@ -124,13 +129,17 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
         thinking: (data) => {
           try { setThinking(Boolean((JSON.parse(data) as { active?: boolean }).active)); } catch { /* ignore */ }
         },
+        // Deep-link anchor: which backfill entry a search hit landed on.
+        anchor: (data) => {
+          try { setAnchor(JSON.parse(data) as { found: boolean; index?: number }); } catch { /* ignore */ }
+        },
         done: () => { setStatus('done'); setThinking(false); },
       },
       onError: () => { setStatus('error'); setThinking(false); },
     });
     return () => { source.close(); };
   }, [slug, phase, runId, streamUrl]);
-  return { events, status, thinking };
+  return { events, status, thinking, anchor };
 }
 
 /** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when
@@ -211,7 +220,47 @@ export function groupEntriesIntoTurns(entries: readonly TimelineEntry[]): Turn[]
   return turns;
 }
 
-export function Entry({ entry }: { entry: TimelineEntry }) {
+/**
+ * Wrap every case-insensitive occurrence of `term` in a highlight <mark> —
+ * the search-hit highlighting for the thinking pane (agents-pill-inactive-
+ * search-2026-07-09 P-005). Plain-string split, never HTML injection. Pure —
+ * exported for tests.
+ */
+export function renderHighlighted(text: string | undefined, term?: string | null): ReactNode {
+  if (!text || !term) return text ?? null;
+  const lc = text.toLowerCase();
+  const tlc = term.toLowerCase();
+  if (!tlc || !lc.includes(tlc)) return text;
+  const parts: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  for (;;) {
+    const at = lc.indexOf(tlc, i);
+    if (at === -1) {
+      if (i < text.length) parts.push(text.slice(i));
+      break;
+    }
+    if (at > i) parts.push(text.slice(i, at));
+    parts.push(
+      <mark
+        key={key++}
+        data-testid="thinking-highlight"
+        style={{
+          background: 'color-mix(in srgb, var(--accent, #38bdf8), transparent 55%)',
+          color: 'inherit',
+          borderRadius: 2,
+          padding: '0 1px',
+        }}
+      >
+        {text.slice(at, at + tlc.length)}
+      </mark>,
+    );
+    i = at + tlc.length;
+  }
+  return parts;
+}
+
+export function Entry({ entry, highlightTerm }: { entry: TimelineEntry; highlightTerm?: string }) {
   if (entry.kind === 'prompt') {
     return (
       <div style={{ margin: '0 0 8px', padding: '4px 8px', background: 'color-mix(in srgb, var(--accent), transparent 88%)', borderLeft: '2px solid var(--accent, #38bdf8)', borderRadius: 3 }}>
@@ -220,7 +269,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
           ⟩ prompt
         </div>
         <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', color: 'var(--fg)' }}>
-          {entry.text}
+          {renderHighlighted(entry.text, highlightTerm)}
         </pre>
       </div>
     );
@@ -235,7 +284,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
           wordBreak: 'break-word',
           fontFamily: 'inherit',
         }}>
-          {entry.text}
+          {renderHighlighted(entry.text, highlightTerm)}
         </pre>
       </div>
     );
@@ -248,7 +297,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
           ▸ tool_use: <strong>{entry.toolName}</strong>
         </div>
         <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--fg-mute)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-          {compactJson(entry.toolInput)}
+          {renderHighlighted(compactJson(entry.toolInput), highlightTerm)}
         </pre>
       </div>
     );
@@ -261,7 +310,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
           ◂ tool_result
         </div>
         <pre style={{ margin: 0, fontSize: 10.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflow: 'auto' }}>
-          {entry.text}
+          {renderHighlighted(entry.text, highlightTerm)}
         </pre>
       </div>
     );
@@ -270,7 +319,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
     return (
       <div style={{ margin: '0 0 8px', fontSize: 10.5, color: 'var(--fg-mute)', fontStyle: 'italic' }}>
         <EntryTime ts={entry.ts} />
-        ⌘ {entry.text}
+        ⌘ {renderHighlighted(entry.text, highlightTerm)}
       </div>
     );
   }
@@ -290,7 +339,7 @@ export function Entry({ entry }: { entry: TimelineEntry }) {
         </div>
         {entry.text && (
           <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit' }}>
-            {entry.text}
+            {renderHighlighted(entry.text, highlightTerm)}
           </pre>
         )}
       </div>

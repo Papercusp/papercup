@@ -563,7 +563,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
       itemId: candidate.id,
       attempt: (candidate.attempts ?? 0) + 1,
       runnerHarness,
-      hiveSlug: dispatchHiveSlug,
+      potSlug: dispatchHiveSlug,
     });
     try {
       const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });

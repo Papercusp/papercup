@@ -77,7 +77,7 @@ describe('theAgentCompanyBacklogDriver', () => {
     expect(t0.attempt.armMeta!.envRef).toBe('ctr-sde-task-0');
     expect(t0.attempt.armMeta!.inContainer).toBe(true); // preserved from the runner's stamp
     expect(t0.disposition).toBe('spawn');
-    expect(t0.beeId).toBe('tac-sde-task-0-0'); // trajectoryRef empty → synthesized id
+    expect(t0.cupId).toBe('tac-sde-task-0-0'); // trajectoryRef empty → synthesized id
   });
 
   it('never throws when a drive op fails — lands a submitted=false (excluded) row', async () => {

@@ -42,7 +42,7 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { EpochEncryptCapability } from './outbox-drain';
 
 export interface HiveRekeyBootDeps {
-  /** The Hive home slug (= hiveId) — also what the drain hook keys `pending.drainEpoch` on. */
+  /** The Hive home slug (= potId) — also what the drain hook keys `pending.drainEpoch` on. */
   hiveHomeSlug: string;
   /** Wrap the per-pass enforcement stack OUTERMOST: `applyImpl = epochGate(enforcedApply)`. */
   epochGate: (inner: (op: OpEnvelope) => Promise<boolean>) => (op: OpEnvelope) => Promise<boolean>;
@@ -186,7 +186,7 @@ export async function buildHiveRekeyBootDeps(opts: {
     const epochGate = buildEpochDecryptGate({
       crypto,
       resolveKey,
-      hiveId: hiveHomeSlug,
+      potId: hiveHomeSlug,
       pending,
       // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
       // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
@@ -196,11 +196,11 @@ export async function buildHiveRekeyBootDeps(opts: {
     const epochEncrypt = buildEpochEncryptCapability({
       crypto,
       resolveKey,
-      hiveId: hiveHomeSlug,
+      potId: hiveHomeSlug,
       getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, hiveHomeSlug),
     });
     // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
-    // resolved hiveHomeSlug — which is the AAD `hiveId`, so a decrypt-fail's hive=… can be
+    // resolved hiveHomeSlug — which is the AAD `potId`, so a decrypt-fail's hive=… can be
     // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
     recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
     // seed-57-drop diagnostic: the SUCCESS path — the gate IS installed. If this prints yet the

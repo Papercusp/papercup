@@ -14,7 +14,7 @@ const identity: PresenceIdentity = { githubUserId: 42, machineLabel: 'laptop', d
 const state: PresenceState = { intent: 'reviewing', currentView: '/adv', harnessSlug: 'acme-rd' };
 
 describe('buildPresenceAnnounceRow — hive_slug carry', () => {
-  it('defaults hive_slug to null when no hiveSlug is passed (non-Hive / unwired)', () => {
+  it('defaults hive_slug to null when no potSlug is passed (non-Hive / unwired)', () => {
     const row = buildPresenceAnnounceRow(identity, state, 1_000);
     expect(row.hive_slug).toBeNull();
     expect(row.harness_slug).toBe('acme-rd');

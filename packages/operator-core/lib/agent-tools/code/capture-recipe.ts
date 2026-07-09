@@ -200,7 +200,7 @@ export async function captureRecipe(
     // P-003 collision-fix: explicit title ⇒ slug; auto-derived ⇒ slug+scriptHash.
     const id = recipeId(title, description, input.script, { title: input.title });
 
-    const hiveSlug = input.harness
+    const potSlug = input.harness
       ? await deps.resolveHive(input.workspaceId, input.harness).catch(() => null)
       : null;
 
@@ -248,7 +248,7 @@ export async function captureRecipe(
     await recordRecipeRun(deps.sql, {
       recipeId: id,
       workspaceId: input.workspaceId,
-      hiveSlug,
+      potSlug,
       agentOwner: input.ownerId,
       agentRole: input.role,
       success: true,

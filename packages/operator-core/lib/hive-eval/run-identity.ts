@@ -23,10 +23,10 @@ export interface HiveEvalRunKey {
 
 export interface HiveEvalRunIdentity {
   /** Throwaway hive home slug → `harness_<slug>` schema; hyphen-free for unquoted PG use. */
-  hiveSlug: string;
+  potSlug: string;
   /** Stable, human-readable run id (the runs-table primary key). */
   runId: string;
-  /** Scratch dir name for the substrate clone (== hiveSlug; filesystem-safe). */
+  /** Scratch dir name for the substrate clone (== potSlug; filesystem-safe). */
   cloneDirName: string;
 }
 
@@ -49,11 +49,11 @@ export function hiveEvalRunIdentity(key: HiveEvalRunKey): HiveEvalRunIdentity {
   const hash = sha256hex(canonical).slice(0, HASH_LEN);
   const hint = sanitizeSlugPart(key.scenarioId).slice(0, MAX_HINT_LEN);
 
-  let hiveSlug = `heval${hint}${hash}`;
-  if (hiveSlug.length > MAX_SLUG_LEN) hiveSlug = hiveSlug.slice(0, MAX_SLUG_LEN);
+  let potSlug = `heval${hint}${hash}`;
+  if (potSlug.length > MAX_SLUG_LEN) potSlug = potSlug.slice(0, MAX_SLUG_LEN);
 
   // Human-readable + stable: same key → same row (idempotent re-run / replay).
   const runId = `${key.instanceId}::${key.scenarioId}::r${key.repeat}`;
 
-  return { hiveSlug, runId, cloneDirName: hiveSlug };
+  return { potSlug, runId, cloneDirName: potSlug };
 }

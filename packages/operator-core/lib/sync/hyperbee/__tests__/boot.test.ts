@@ -2070,7 +2070,7 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
 // swarm-less packaged install (offline / gh-unauthenticated) merged NOTHING from the
 // WI-3232-restored seed corestore — pot visible, content empty (the owner's Windows VM).
 // These tests pin the new third admission source: the installer seed manifest's coreKeys,
-// admitted at boot iff the manifest's hiveId matches this boot's resolved hive home.
+// admitted at boot iff the manifest's potId matches this boot's resolved hive home.
 describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', () => {
   const SEED_LOG_KEY = 'ee'.repeat(32);
   const HIVE_HOME = 'papercusp';
@@ -2081,15 +2081,15 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
     return dir;
   }
 
-  /** Minimal manifest-bearing seed dir; hiveId is the admission gate under test. */
-  function writeSeedDir(hiveId: string): string {
+  /** Minimal manifest-bearing seed dir; potId is the admission gate under test. */
+  function writeSeedDir(potId: string): string {
     const dir = mkdtempSync(join(tmpdir(), 'mb-seed-'));
     cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
     writeFileSync(
       join(dir, 'manifest.json'),
       JSON.stringify({
         seedFormatVersion: 1,
-        hiveId,
+        potId,
         cutAtEpoch: 1,
         cutHlc: '001:00000:aa',
         cutTs: 1,

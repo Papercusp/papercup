@@ -42,7 +42,7 @@ import type { OpEnvelope } from './op-envelope-types';
 export interface DeferredContentOp {
   /** The applied-against projection set is the caller's; we hold only the op. */
   op: OpEnvelope;
-  hiveId: string;
+  potId: string;
   epoch: number;
   /** Insertion order — for deterministic FIFO drain + oldest-first eviction. */
   seq: number;
@@ -54,9 +54,9 @@ export interface DeferredContentOp {
  *  deferral loses nothing — a re-fold re-defers it). */
 export const DEFAULT_MAX_PENDING = 10_000;
 
-/** `${hiveId}\x00${epoch}` — the bucket key (NUL can't appear in a slug). */
-function bucketKey(hiveId: string, epoch: number): string {
-  return `${hiveId}\x00${epoch}`;
+/** `${potId}\x00${epoch}` — the bucket key (NUL can't appear in a slug). */
+function bucketKey(potId: string, epoch: number): string {
+  return `${potId}\x00${epoch}`;
 }
 
 /**
@@ -81,27 +81,27 @@ export class PendingEpochContent {
    * inflate the buffer. Returns true if stored (false if it was already pending).
    * Enforces `maxPending` by evicting the GLOBALLY-oldest deferral first.
    */
-  defer(op: OpEnvelope, hiveId: string, epoch: number): boolean {
-    const k = bucketKey(hiveId, epoch);
+  defer(op: OpEnvelope, potId: string, epoch: number): boolean {
+    const k = bucketKey(potId, epoch);
     let list = this.buckets.get(k);
     if (!list) {
       list = [];
       this.buckets.set(k, list);
     }
     if (list.some((d) => sameOp(d.op, op))) return false; // already pending (re-fold)
-    list.push({ op, hiveId, epoch, seq: this.seqCounter++ });
+    list.push({ op, potId, epoch, seq: this.seqCounter++ });
     this.total++;
     if (this.total > this.maxPending) this.evictOldest();
     return true;
   }
 
   /**
-   * The epoch-N key for `hiveId` just became available (a `hive_epoch_keys` row
+   * The epoch-N key for `potId` just became available (a `hive_epoch_keys` row
    * for it applied). Remove + return that bucket's deferred ops in FIFO order so
    * the caller can re-apply them (now decryptable). Returns [] if none pending.
    */
-  drainEpoch(hiveId: string, epoch: number): DeferredContentOp[] {
-    const k = bucketKey(hiveId, epoch);
+  drainEpoch(potId: string, epoch: number): DeferredContentOp[] {
+    const k = bucketKey(potId, epoch);
     const list = this.buckets.get(k);
     if (!list || list.length === 0) return [];
     this.buckets.delete(k);

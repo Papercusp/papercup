@@ -78,8 +78,8 @@ export interface CorestoreCutSpec {
 }
 
 export interface HiveSeedCutInputs {
-  /** Which hive this seed reconstitutes (manifest.hiveId). */
-  readonly hiveId: string;
+  /** Which hive this seed reconstitutes (manifest.potId). */
+  readonly potId: string;
   /** Hive epoch at cut time (a member decrypts seeded content iff it holds this
    *  epoch's key — guaranteed for new members by grantEpochKeysToMembers). */
   readonly cutAtEpoch: number;
@@ -159,7 +159,7 @@ export function formatBytes(bytes: number): string {
  * a clean `outDir`.
  */
 export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCutResult> {
-  const { hiveId, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore } = inputs;
+  const { potId, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore } = inputs;
   if (!git && !corestore) throw new Error('cutHiveSeed: at least one of { git, corestore } must be provided');
   await mkdir(outDir, { recursive: true });
 
@@ -197,7 +197,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
 
   const manifest: SeedManifest = {
     seedFormatVersion: SEED_FORMAT_VERSION,
-    hiveId,
+    potId,
     cutAtEpoch,
     cutHlc,
     cutTs,

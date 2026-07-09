@@ -16,7 +16,7 @@ export interface PgFleetLeaderLeaseStoreDeps {
   /** The caller's identity workspace (run through resolveP2pGrantWorkspace, C3). */
   workspaceId: string | null | undefined;
   /** The hive HOME slug the lease row federates under. */
-  hiveSlug: string;
+  potSlug: string;
   sqlOverride?: Sql;
 }
 
@@ -55,9 +55,9 @@ export class PgFleetLeaderLeaseStore implements FleetLeaderLeaseStore {
     return ws;
   }
 
-  private hiveSlug(): string {
-    if (!this.deps.hiveSlug) throw new Error('PgFleetLeaderLeaseStore: hiveSlug required');
-    return this.deps.hiveSlug;
+  private potSlug(): string {
+    if (!this.deps.potSlug) throw new Error('PgFleetLeaderLeaseStore: potSlug required');
+    return this.deps.potSlug;
   }
 
   private sql(): Sql {
@@ -70,7 +70,7 @@ export class PgFleetLeaderLeaseStore implements FleetLeaderLeaseStore {
       SELECT device_pubkey, leader_github_user_id, since_ms, roster_epoch
         FROM harness_shared.p2p_fleet_leader_leases
        WHERE workspace_id = ${this.workspaceId()}
-         AND harness_slug = ${this.hiveSlug()}
+         AND harness_slug = ${this.potSlug()}
          AND owner_github_user_id = ${scope.ownerGithubUserId}
          AND fleet_slug = ${scope.slug}
        LIMIT 1
@@ -81,13 +81,13 @@ export class PgFleetLeaderLeaseStore implements FleetLeaderLeaseStore {
   async write(scope: ScopeId, lease: FleetLeaderLease | null): Promise<void> {
     assertFleetScope(scope);
     const workspaceId = this.workspaceId();
-    const hiveSlug = this.hiveSlug();
+    const potSlug = this.potSlug();
     const sql = this.sql();
     if (lease == null) {
       await sql`
         DELETE FROM harness_shared.p2p_fleet_leader_leases
          WHERE workspace_id = ${workspaceId}
-           AND harness_slug = ${hiveSlug}
+           AND harness_slug = ${potSlug}
            AND owner_github_user_id = ${scope.ownerGithubUserId}
            AND fleet_slug = ${scope.slug}
       `;
@@ -101,7 +101,7 @@ export class PgFleetLeaderLeaseStore implements FleetLeaderLeaseStore {
          device_pubkey, leader_github_user_id, since_ms, roster_epoch,
          created_at, updated_at)
       VALUES
-        (${workspaceId}, ${hiveSlug}, ${scope.ownerGithubUserId}, ${scope.slug},
+        (${workspaceId}, ${potSlug}, ${scope.ownerGithubUserId}, ${scope.slug},
          ${lease.devicePubkey}, ${lease.githubUserId}, ${lease.sinceMs}, ${lease.rosterEpoch},
          ${now}, ${now})
       ON CONFLICT (workspace_id, harness_slug, owner_github_user_id, fleet_slug) DO UPDATE SET

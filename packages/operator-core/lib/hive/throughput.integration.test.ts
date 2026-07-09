@@ -20,7 +20,7 @@ const WS = 'ws-throughput';
 async function insertTick(
   sql: Sql,
   row: {
-    hiveSlug: string;
+    potSlug: string;
     tickAt: string;
     frontierDepth: number;
     placements: number;
@@ -38,7 +38,7 @@ async function insertTick(
       (workspace_id, pot_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
        stuck_count, completed, mttc_ms, question_rungs, detail)
     VALUES
-      (${WS}, ${row.hiveSlug}, ${row.tickAt}, ${row.frontierDepth}, ${row.placements},
+      (${WS}, ${row.potSlug}, ${row.tickAt}, ${row.frontierDepth}, ${row.placements},
        ${row.beesBusy}, ${row.beesCap}, ${row.stuckCount}, ${row.completed}, ${row.mttcMs},
        ${JSON.stringify(row.questionRungs)}::text::jsonb, ${JSON.stringify(row.detail)}::text::jsonb)`;
 }
@@ -56,7 +56,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
 
   it('round-trips ticks: newest-per-hive latest, recent trend, operating-well verdict', async () => {
     await insertTick(sql, {
-      hiveSlug: 'papercup',
+      potSlug: 'papercup',
       tickAt: '2026-06-13T08:00:00Z',
       frontierDepth: 5,
       placements: 3,
@@ -69,7 +69,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
       detail: { utilization: 0.25 },
     });
     await insertTick(sql, {
-      hiveSlug: 'papercup',
+      potSlug: 'papercup',
       tickAt: '2026-06-13T08:00:30Z', // newer
       frontierDepth: 2,
       placements: 1,
@@ -85,7 +85,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
     const snap = await readHiveThroughputSnapshot(sql, WS);
     expect(snap.hives).toHaveLength(1);
     const h = snap.hives[0]!;
-    expect(h.hiveSlug).toBe('papercup');
+    expect(h.potSlug).toBe('papercup');
     expect(h.latest?.frontierDepth).toBe(2); // newest tick
     expect(h.latest?.beesBusy).toBe(5);
     expect(h.latest?.utilization).toBeCloseTo(0.3125, 4);
@@ -96,7 +96,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
 
   it('a starved latest tick (busy==cap, frontier>0) reads as not operating well', async () => {
     await insertTick(sql, {
-      hiveSlug: 'busyhive',
+      potSlug: 'busyhive',
       tickAt: '2026-06-13T09:00:00Z',
       frontierDepth: 9,
       placements: 0,
@@ -108,7 +108,7 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
       questionRungs: {},
       detail: { utilization: 1 },
     });
-    const snap = await readHiveThroughputSnapshot(sql, WS, { hiveSlug: 'busyhive' });
+    const snap = await readHiveThroughputSnapshot(sql, WS, { potSlug: 'busyhive' });
     expect(snap.hives).toHaveLength(1);
     expect(snap.hives[0]?.operatingWell).toBe(false);
     expect(snap.hives[0]?.latest?.mttcMs).toBeNull();
@@ -122,6 +122,6 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
     const snap = await readHiveThroughputSnapshot(sql, WS);
     // Only WS hives — 'papercup' + 'busyhive', never ws-other's row.
     expect(snap.hives.every((h) => h.latest != null)).toBe(true);
-    expect(snap.hives.map((h) => h.hiveSlug).sort()).toEqual(['busyhive', 'papercup']);
+    expect(snap.hives.map((h) => h.potSlug).sort()).toEqual(['busyhive', 'papercup']);
   });
 });

@@ -272,7 +272,7 @@ export function electionDeps(
     now: nowFn,
     staleMs: 600_000,
     resolveSelf: async () => self,
-    fetchHivePresenceRows: (hiveSlug: string) => queryPresenceRowsForHive(sql as never, hiveSlug),
+    fetchHivePresenceRows: (potSlug: string) => queryPresenceRowsForHive(sql as never, potSlug),
   };
 }
 
@@ -403,7 +403,7 @@ export function claimVia(
     workspaceId: 'default',
     harnessSlug: HARNESS_SLUG,
     workItemId,
-    hiveSlug: HIVE_SLUG,
+    potSlug: HIVE_SLUG,
     owner,
     holderPubkey: self.devicePubkey,
   };

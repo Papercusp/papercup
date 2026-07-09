@@ -155,7 +155,7 @@ export async function probeGatewayHealthz(timeouts: readonly number[] = [2500, 6
 interface HealthCtx {
   ws: string;
   now: number;
-  hiveSlug: string | null;
+  potSlug: string | null;
   started: boolean;
   /** Shared open-placement read (best-effort; null if it failed). */
   openPlacements: { recovering: number; cursed: number; stranded: number; workingTracked: number } | null;
@@ -218,10 +218,10 @@ function untilMin(ms: number | null, now: number): string {
 
 async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
   return panelSafe<QueenHealth>('mug', async () => {
-    const { ws, now, hiveSlug, started } = ctx;
-    if (!hiveSlug) {
+    const { ws, now, potSlug, started } = ctx;
+    if (!potSlug) {
       const data: QueenHealth = {
-        hiveSlug: null, started: false, stalled: false, midTurn: false, armed: false,
+        potSlug: null, started: false, stalled: false, midTurn: false, armed: false,
         lastWakeAt: null, staleForMs: null, nextFireAt: null, cadenceOk: false,
         watchdogFires24h: 0, demand: { todoItems: 0, startedPlans: 0 },
         decisionsWindow: { total: 0, auto: 0, gated: 0 }, workingTracked: 0,
@@ -232,10 +232,10 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
     const { sql } = getOrgPg();
     const { hiveLivenessCheck, hiveMidTurn, hiveDemandCheck, recentWatchdogFires } = await import('../hive/watchdog');
     const [live, midTurn, demand, watchdogFires24h] = await Promise.all([
-      hiveLivenessCheck(sql, hiveSlug, { workspaceId: ws, now }),
-      hiveMidTurn(hiveSlug).catch(() => false),
+      hiveLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
+      hiveMidTurn(potSlug).catch(() => false),
       hiveDemandCheck(ws).catch(() => ({ demand: false, todoItems: 0, startedPlans: 0 })),
-      recentWatchdogFires(ws, hiveSlug).catch(() => 0),
+      recentWatchdogFires(ws, potSlug).catch(() => 0),
     ]);
     let decisionsWindow = { total: 0, auto: 0, gated: 0 };
     try {
@@ -264,12 +264,12 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
     let consecutiveZeroTokenWakes = 0;
     try {
       const { queenWakeEfficiency } = await import('../hive/queen-wake-efficiency');
-      const eff = await queenWakeEfficiency(ws, { harnessSlug: hiveSlug, limit: 10 });
+      const eff = await queenWakeEfficiency(ws, { harnessSlug: potSlug, limit: 10 });
       consecutiveZeroTokenWakes = countLeadingZeroTokenWakes(eff.samples);
     } catch { /* usage unreadable — leave 0 (fail-soft) */ }
 
     const data: QueenHealth = {
-      hiveSlug, started, stalled, midTurn, armed: live.armed,
+      potSlug, started, stalled, midTurn, armed: live.armed,
       lastWakeAt, staleForMs: live.staleForMs, nextFireAt, cadenceOk,
       watchdogFires24h, demand: { todoItems: demand.todoItems, startedPlans: demand.startedPlans },
       decisionsWindow, workingTracked: ctx.openPlacements?.workingTracked ?? 0,
@@ -410,9 +410,9 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
 
 async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHealth>> {
   return panelSafe<WorkFeedHealth>('workFeed', async () => {
-    const { ws, hiveSlug } = ctx;
+    const { ws, potSlug } = ctx;
     let frontier = 0, frontierBlocked = 0, startedPlans = 0;
-    if (hiveSlug) {
+    if (potSlug) {
       try {
         // K1 (workspace-scoped-coordination P-003 / D-002): the ONE central-dispatcher
         // Queen's work-feed spans ALL the workspace's hives when WORKSPACE_COORDINATION
@@ -422,13 +422,13 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
         if (await isWorkspaceCoordinationOn()) {
           const { surveyWorkspace } = await import('../hive/survey');
-          const ws_survey = await surveyWorkspace(ws, { fallbackHome: hiveSlug });
+          const ws_survey = await surveyWorkspace(ws, { fallbackHome: potSlug });
           frontier = ws_survey.crossHive.frontier.length;
           frontierBlocked = ws_survey.crossHive.frontierBlocked;
           startedPlans = ws_survey.crossHive.plans.length;
         } else {
           const { surveyHive } = await import('../hive/survey');
-          const survey = await surveyHive(ws, hiveSlug);
+          const survey = await surveyHive(ws, potSlug);
           frontier = survey.frontier.length;
           frontierBlocked = survey.frontierBlocked;
           startedPlans = survey.plans.length;
@@ -565,14 +565,14 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
 
 async function collectWatchdog(ctx: HealthCtx): Promise<HealthPanel<WatchdogHealth>> {
   return panelSafe<WatchdogHealth>('watchdog', async () => {
-    const { ws, hiveSlug, now } = ctx;
+    const { ws, potSlug, now } = ctx;
     let fires24h = 0, livenessArmed = false, staleForMs: number | null = null;
-    if (hiveSlug) {
+    if (potSlug) {
       const { sql } = getOrgPg();
       const { hiveLivenessCheck, recentWatchdogFires } = await import('../hive/watchdog');
       const [live, fires] = await Promise.all([
-        hiveLivenessCheck(sql, hiveSlug, { workspaceId: ws, now }),
-        recentWatchdogFires(ws, hiveSlug).catch(() => 0),
+        hiveLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
+        recentWatchdogFires(ws, potSlug).catch(() => 0),
       ]);
       fires24h = fires;
       livenessArmed = live.armed;
@@ -1173,16 +1173,16 @@ async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEf
 
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
   return panelSafe<OverwatchPanelHealth>('kettle', async () => {
-    const { ws, now, hiveSlug } = ctx;
+    const { ws, now, potSlug } = ctx;
     // Reuse B-08's read surface (D-006 — never a second aggregation): the persisted
     // started bit + cadence (B-07) + the wake liveness (B-09) + the activation flag.
     const { getOverwatchControlState } = await import('../overwatch/snapshot');
-    const cs = await getOverwatchControlState({ workspaceId: ws, hiveSlug: hiveSlug ?? undefined });
+    const cs = await getOverwatchControlState({ workspaceId: ws, potSlug: potSlug ?? undefined });
     let watchdogFires24h = 0;
-    if (cs.hiveSlug) {
+    if (cs.potSlug) {
       try {
         const { recentOverwatchWatchdogFires } = await import('../overwatch/watchdog');
-        watchdogFires24h = await recentOverwatchWatchdogFires(ws, cs.hiveSlug);
+        watchdogFires24h = await recentOverwatchWatchdogFires(ws, cs.potSlug);
       } catch { /* fires table unreadable — leave 0 */ }
     }
     const lastWakeAt = cs.lastWakeAt ? new Date(cs.lastWakeAt).getTime() : null;
@@ -1198,7 +1198,7 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
         const { checkScorecardFreshness } = await import('../scorecard-freshness');
         const f = await checkScorecardFreshness({
           rubricRef: 'hive-coordination-health',
-          sourceHive: cs.hiveSlug ?? undefined,
+          sourceHive: cs.potSlug ?? undefined,
           since: new Date(lastWakeAt).toISOString(),
         });
         scorecardEmission = { status: f.status, lastCompleteAt: f.lastCompleteAt, missingCount: f.latestMissingKeys.length };
@@ -1267,20 +1267,20 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   const now = Date.now();
 
   // Resolve the hive (prefer a started one) + the shared best-effort reads.
-  let hiveSlug: string | null = null;
+  let potSlug: string | null = null;
   let started = false;
   try {
     const { listHives } = await import('../agent-tools/hive/_resolve');
     const { getHiveStarted } = await import('../hive/started');
     const hives = await listHives(ws);
     for (const h of hives) {
-      if (await getHiveStarted(ws, h.slug).catch(() => false)) { hiveSlug = h.slug; started = true; break; }
+      if (await getHiveStarted(ws, h.slug).catch(() => false)) { potSlug = h.slug; started = true; break; }
     }
-    if (!hiveSlug && hives.length > 0) hiveSlug = hives[0].slug;
+    if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
   } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
 
   let openPlacements: HealthCtx['openPlacements'] = null;
-  if (hiveSlug) {
+  if (potSlug) {
     try {
       const { summarizeOpenPlacements } = await import('../hive/placement-watchdog');
       // K1 (workspace-scoped-coordination P-003 / D-006): the one workspace Queen
@@ -1290,7 +1290,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
       // the single representative hive, byte-identical to today.
       const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
       const on = await isWorkspaceCoordinationOn();
-      let scopeSlugs = [hiveSlug];
+      let scopeSlugs = [potSlug];
       if (on) {
         try {
           const { listHives } = await import('../agent-tools/hive/_resolve');
@@ -1325,16 +1325,16 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   // or uncomputable — never a false dark. Dynamic import + fail-soft so the
   // overwatch module can never break the shared health aggregation.
   let overwatchAlive: boolean | null = null;
-  if (hiveSlug) {
+  if (potSlug) {
     try {
       const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
-      overwatchAlive = await isOverwatchAlive(ws, hiveSlug, { now });
+      overwatchAlive = await isOverwatchAlive(ws, potSlug, { now });
     } catch {
       /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
     }
   }
 
-  const ctx: HealthCtx = { ws, now, hiveSlug, started, openPlacements, gatewayEnabled, gatewayReachable, overwatchAlive };
+  const ctx: HealthCtx = { ws, now, potSlug, started, openPlacements, gatewayEnabled, gatewayReachable, overwatchAlive };
 
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,

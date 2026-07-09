@@ -124,8 +124,8 @@ vi.mock('@/app/harness/CreateHarnessPicker', () => ({
     ) : null,
 }));
 vi.mock('@/app/harness/PublishHiveCard', () => ({
-  PublishHiveCard: ({ hiveSlug }: { hiveSlug: string }) => (
-    <div data-testid="publish-hive-card" data-slug={hiveSlug} />
+  PublishHiveCard: ({ potSlug }: { potSlug: string }) => (
+    <div data-testid="publish-hive-card" data-slug={potSlug} />
   ),
 }));
 // The active hive's directory share-meta (GET /api/discovery/pot-meta) drives

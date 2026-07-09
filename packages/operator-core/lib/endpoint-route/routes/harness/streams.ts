@@ -663,15 +663,29 @@ const sessionThinkingStream = defineTool({
     // tail-backfill + poll-follow machinery — only resolver + parser differ.
     const codexSessionKey = (url.searchParams.get('codexSessionKey') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
     const ompThreadId = (url.searchParams.get('ompThreadId') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+    // A codex session keyed by its ROLLOUT UUID (the session-turns index key) —
+    // the transcript-search deep-link for codex sessions with no adv-row key.
+    const codexRolloutId = (url.searchParams.get('codexRolloutId') ?? '').replace(/[^A-Za-z0-9-]/g, '');
+    // Deep-link anchor (agents-pill-inactive-search-2026-07-09 P-005): `find` =
+    // the search term (a plain substring for entry matching, never a
+    // path/pattern — length-capped only) and `anchorTs` = the matched turn's
+    // timestamp. When `find` is present the backfill window CENTERS on the
+    // matched entry instead of tailing the file, and an `anchor` event tells
+    // the client which backfill index to scroll to.
+    const find = (url.searchParams.get('find') ?? '').slice(0, 300);
+    const anchorTsRaw = (url.searchParams.get('anchorTs') ?? '').trim();
+    const anchorTs = anchorTsRaw && !Number.isNaN(Date.parse(anchorTsRaw)) ? anchorTsRaw : null;
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 15_000,
       setup: async (sink) => {
         const { resolveInteractiveTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
-        const { findCodexRolloutPath, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
+        const { findCodexRolloutPath, findCodexRolloutPathByUuid, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
         const { createCodexTimelineParser, createOmpTimelineParser } = await import('../../../session-timeline-parsers');
         const source = codexSessionKey
           ? { resolve: () => findCodexRolloutPath(codexSessionKey), newParser: createCodexTimelineParser }
+          : codexRolloutId
+            ? { resolve: () => findCodexRolloutPathByUuid(codexRolloutId), newParser: createCodexTimelineParser }
           : ompThreadId
             ? { resolve: () => findOmpSessionPath(ompThreadId), newParser: createOmpTimelineParser }
             : sessionId
@@ -729,8 +743,71 @@ const sessionThinkingStream = defineTool({
           }
         };
 
+        // ── 1b) Anchored backfill (deep-link from a transcript-search hit):
+        //       stream the WHOLE file through the AnchorWindowCollector and
+        //       backfill a window CENTERED on the matched entry, then emit
+        //       `anchor` with the in-backfill index for the client to scroll
+        //       to. Memory-bounded (only the window region is retained) and —
+        //       with an anchorTs — stops reading once the trailing context is
+        //       collected. No match ⇒ fall back to the tail backfill and say
+        //       so (`anchor {found:false}`), never a dead pane. ──
+        const anchoredBackfillFrom = async (p: string): Promise<boolean> => {
+          try {
+            const { AnchorWindowCollector } = await import('../../../session-anchor-window');
+            const { StringDecoder } = await import('node:string_decoder');
+            const stat = statSync(p);
+            const collector = new AnchorWindowCollector({ find, anchorTs });
+            const parser = source!.newParser();
+            const decoder = new StringDecoder('utf8');
+            const chunk = Buffer.alloc(1024 * 1024);
+            let lineRest = '';
+            let offset = 0;
+            const fd = openSync(p, 'r');
+            try {
+              while (offset < stat.size && !collector.done) {
+                const n = readSync(fd, chunk, 0, chunk.length, offset);
+                if (n <= 0) break;
+                offset += n;
+                lineRest += decoder.write(chunk.subarray(0, n));
+                let nl: number;
+                while ((nl = lineRest.indexOf('\n')) !== -1 && !collector.done) {
+                  const line = lineRest.slice(0, nl).trim();
+                  lineRest = lineRest.slice(nl + 1);
+                  if (!line) continue;
+                  for (const e of parser.parseLine(line)) collector.push(e);
+                }
+              }
+              if (!collector.done) {
+                const last = (lineRest + decoder.end()).trim();
+                if (last) for (const e of parser.parseLine(last)) collector.push(e);
+                for (const e of parser.flush()) collector.push(e);
+              }
+            } finally {
+              closeSync(fd);
+            }
+            const res = collector.result();
+            if (!res) {
+              // Term not found (transcript rotated / truncated at ingest) —
+              // honest fallback: normal tail backfill + a found:false anchor.
+              const active = backfillFrom(p);
+              sink.event('anchor', { found: false });
+              return active;
+            }
+            sink.event('backfill', res.entries.map(capEntryText));
+            sink.event('anchor', { found: true, index: res.anchorIndex });
+            // Live-follow continues from EOF: entries between the window and
+            // the file end are elided from the pane (it is a jumped-to view).
+            pos = stat.size;
+            return Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
+          } catch {
+            sink.event('backfill', []);
+            sink.event('anchor', { found: false });
+            return false;
+          }
+        };
+
         if (path) {
-          emitThinking(backfillFrom(path));
+          emitThinking(find ? await anchoredBackfillFrom(path) : backfillFrom(path));
         } else {
           // No transcript file YET — for a LIVE session that hasn't taken its
           // first turn this is "waiting", NOT "run ended": send the empty
@@ -756,11 +833,11 @@ const sessionThinkingStream = defineTool({
             if (resolving) return;
             resolving = true;
             void source.resolve()
-              .then((p) => {
+              .then(async (p) => {
                 if (sink.closed || path || !p) return;
                 path = p;
                 followParser = source.newParser();
-                emitThinking(backfillFrom(p));
+                emitThinking(find ? await anchoredBackfillFrom(p) : backfillFrom(p));
               })
               .finally(() => { resolving = false; });
             return;

@@ -19,7 +19,7 @@ import {
 } from './sync/hyperbee/hive-epoch-boundary-wiring';
 
 export interface SetHiveListingInput {
-  hiveId: string;
+  potId: string;
   title: string;
   description?: string;
   visibility: HiveDirectoryMeta['visibility'];
@@ -31,7 +31,7 @@ export interface SetHiveListingInput {
 
 export interface SetHiveListingResult {
   ok: true;
-  hiveId: string;
+  potId: string;
   visibility: HiveDirectoryMeta['visibility'];
   saved: true;
   announced: boolean;
@@ -52,7 +52,7 @@ export async function setHiveListing(
   workspaceId: string,
 ): Promise<SetHiveListingResult> {
   const meta: HiveDirectoryMeta = {
-    hiveId: input.hiveId,
+    potId: input.potId,
     title: input.title,
     description: input.description ?? '',
     workspaceId, // P-004: the announce-build enricher derives against this
@@ -76,7 +76,7 @@ export async function setHiveListing(
       // P-005: ACTIVE withdrawal — broadcast the signed unlist tombstone so
       // peers drop the listing immediately (instead of waiting out the TTL).
       const { withdrawHiveFromDirectory } = await import('./hive-publish');
-      const res = await withdrawHiveFromDirectory(getHiveDirectory(), meta.hiveId);
+      const res = await withdrawHiveFromDirectory(getHiveDirectory(), meta.potId);
       tombstoneSent = res.withdrawn;
     } catch {
       /* directory not wired — nothing was announcing */
@@ -85,7 +85,7 @@ export async function setHiveListing(
       const { unlistHiveCupboardRows } = await import('./cupboard/unlist-hive-rows');
       unlist = (await unlistHiveCupboardRows({
         workspaceId,
-        hiveSlug: meta.hiveId,
+        potSlug: meta.potId,
       })) as unknown as Record<string, unknown>;
     } catch (e) {
       unlist = { failed: true, error: e instanceof Error ? e.message : String(e) };
@@ -99,7 +99,7 @@ export async function setHiveListing(
     try {
       await advanceEpochOnHiveBoundary({
         workspaceId,
-        hiveHomeSlug: meta.hiveId,
+        hiveHomeSlug: meta.potId,
         enabled: await isHiveRekeyEnabled(),
       });
     } catch {
@@ -107,7 +107,7 @@ export async function setHiveListing(
     }
     return {
       ok: true,
-      hiveId: meta.hiveId,
+      potId: meta.potId,
       visibility: 'private',
       saved: true,
       announced: false,
@@ -132,7 +132,7 @@ export async function setHiveListing(
     const { ensureHiveDirectoryWired } = await import('./hive-directory-boot');
     await ensureHiveDirectoryWired(workspaceId).catch(() => null);
     const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
-    const res = await republishHiveAfterMemberAdd({ workspaceId, hiveSlug: meta.hiveId });
+    const res = await republishHiveAfterMemberAdd({ workspaceId, potSlug: meta.potId });
     if ('skipped' in res) {
       announceError = `publish skipped: ${res.skipped}`;
     } else {
@@ -146,7 +146,7 @@ export async function setHiveListing(
 
   return {
     ok: true,
-    hiveId: meta.hiveId,
+    potId: meta.potId,
     visibility: meta.visibility,
     saved: true,
     announced,

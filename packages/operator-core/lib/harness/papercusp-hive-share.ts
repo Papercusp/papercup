@@ -178,7 +178,7 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
     // each other.
     await setListing(
       {
-        hiveId: PAPERCUSP_HIVE_SLUG,
+        potId: PAPERCUSP_HIVE_SLUG,
         title: 'Papercusp',
         description: 'Papercusp building itself — shared dogfood hive.',
         visibility: 'invite',

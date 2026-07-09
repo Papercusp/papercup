@@ -152,10 +152,10 @@ export function partitionNicheKeyByHive(niche: string, hiveIds: readonly string[
 export function partitionEmptyNichesForHive(
   emptyNicheKeys: readonly string[],
   hiveIds: readonly string[],
-  hiveId: string,
+  potId: string,
 ): string[] {
   return [...emptyNicheKeys]
-    .filter((niche) => partitionNicheKeyByHive(niche, hiveIds) === hiveId)
+    .filter((niche) => partitionNicheKeyByHive(niche, hiveIds) === potId)
     .sort();
 }
 
@@ -165,19 +165,19 @@ export function partitionEmptyNichesForHive(
  * THIS hive's HRW-assigned DISJOINT slice of the empty frontier. Every hive in
  * `hiveIds` running this over the SAME frontier gets a non-overlapping partition
  * whose union is the whole empty set — so peers explore disjoint empty regions
- * instead of piling into the same niche. Include `hiveId` in `hiveIds`.
+ * instead of piling into the same niche. Include `potId` in `hiveIds`.
  */
 export function hiveEmptyFrontierFromElites(
   frontierElites: readonly { nicheKey: string }[],
   hiveIds: readonly string[],
-  hiveId: string,
+  potId: string,
   domains: readonly string[] = DOMAIN_VOCAB,
 ): string[] {
   const empty = computeEmptyNicheKeys(
     frontierElites.map((e) => e.nicheKey),
     domains,
   );
-  return partitionEmptyNichesForHive(empty, hiveIds, hiveId);
+  return partitionEmptyNichesForHive(empty, hiveIds, potId);
 }
 
 /**
@@ -190,9 +190,9 @@ export async function computeHiveEmptyFrontier(
   sql: Sql,
   scope: FrontierScope,
   hiveIds: readonly string[],
-  hiveId: string,
+  potId: string,
   domains: readonly string[] = DOMAIN_VOCAB,
 ): Promise<string[]> {
   const frontier = await listFrontierElites(sql, scope);
-  return hiveEmptyFrontierFromElites(frontier, hiveIds, hiveId, domains);
+  return hiveEmptyFrontierFromElites(frontier, hiveIds, potId, domains);
 }

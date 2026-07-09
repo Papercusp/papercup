@@ -27,7 +27,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 
 interface Body {
-  hiveSlug?: unknown;
+  potSlug?: unknown;
   kind?: unknown;
   /** prompt → role; config → section. */
   name?: unknown;
@@ -53,8 +53,8 @@ export default defineTool({
       return Response.json({ ok: false, error: 'invalid_json' }, { status: 400 });
     }
 
-    const hiveSlug = typeof body.hiveSlug === 'string' ? body.hiveSlug.trim() : '';
-    if (!hiveSlug) {
+    const potSlug = typeof body.potSlug === 'string' ? body.potSlug.trim() : '';
+    if (!potSlug) {
       return Response.json({ ok: false, error: 'missing_hive_slug' }, { status: 400 });
     }
     const kind = body.kind === 'prompt' || body.kind === 'config' ? body.kind : '';
@@ -77,7 +77,7 @@ export default defineTool({
       if (kind === 'prompt') {
         const md = typeof body.value === 'string' ? body.value : '';
         if (md.trim().length === 0) {
-          await store.deleteHiveInstancePromptOverride(ws, hiveSlug, name);
+          await store.deleteHiveInstancePromptOverride(ws, potSlug, name);
           cleared = true;
         } else {
           // Additive-override guard (owner directive 2026-06-24): an override is APPENDED
@@ -88,9 +88,9 @@ export default defineTool({
           const warning = additiveOverrideWarning(md);
           if (warning) {
             extra = { ...extra, warning };
-            console.warn(`[hive-override-set] ${hiveSlug}/${name}: ${warning}`);
+            console.warn(`[hive-override-set] ${potSlug}/${name}: ${warning}`);
           }
-          await store.setHiveInstancePromptOverride(ws, hiveSlug, name, md);
+          await store.setHiveInstancePromptOverride(ws, potSlug, name, md);
         }
       } else {
         // kind === 'config'
@@ -99,7 +99,7 @@ export default defineTool({
           v == null ||
           (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0);
         if (isEmpty) {
-          await store.deleteHiveLocalBlueprintConfig(ws, hiveSlug, name);
+          await store.deleteHiveLocalBlueprintConfig(ws, potSlug, name);
           cleared = true;
         } else {
           if (typeof v !== 'object' || Array.isArray(v)) {
@@ -120,17 +120,17 @@ export default defineTool({
             );
             extra = { accepted, resolved: resolveScoutConfig(accepted), dropped };
           }
-          await store.setHiveLocalBlueprintConfig(ws, hiveSlug, name, v);
+          await store.setHiveLocalBlueprintConfig(ws, potSlug, name, v);
         }
       }
 
       // The /settings/hive-customization editors read `hive.overrides` via useSyncQuery
-      // with args `{ hiveSlug }`; invalidate the SAME key so they refetch (args-scoped
-      // exact-key match — the page subscribes with just `{ hiveSlug }`).
+      // with args `{ potSlug }`; invalidate the SAME key so they refetch (args-scoped
+      // exact-key match — the page subscribes with just `{ potSlug }`).
       const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('hive.overrides', { hiveSlug }).catch(() => {});
+      await notifySyncInvalidate('hive.overrides', { potSlug }).catch(() => {});
 
-      return Response.json({ ok: true, workspaceId: ws, hiveSlug, kind, name, cleared, ...extra });
+      return Response.json({ ok: true, workspaceId: ws, potSlug, kind, name, cleared, ...extra });
     } catch (err) {
       // setHiveSetting throws when the Hive doesn't exist ("settings belong to a Hive")
       // — a 400 (bad target), not a 500.

@@ -12,7 +12,7 @@
  *      serving layer." This is that pin. The three inputs (tableTag, rowKey,
  *      authorPubkey) are all federated op fields, identical on owner (encrypt) and
  *      member (decrypt), so the derived opId matches across peers.
- *   2. `encryptOpPayload` / `decryptOpPayload` — assemble `OpAAD {hiveId, epoch, opId}`
+ *   2. `encryptOpPayload` / `decryptOpPayload` — assemble `OpAAD {potId, epoch, opId}`
  *      and call ed300's `encryptOp`/`decryptOp`. Thin, so the AAD is assembled in ONE
  *      place (encrypt and decrypt cannot drift).
  *   3. `resolveHiveEpochCrypto` — the flag gate: the real `createHiveEpochCrypto()`
@@ -56,8 +56,8 @@ export function deriveOpId(id: OpIdentity): string {
 }
 
 /** Build the AEAD associated data for an op under (hive, epoch). */
-export function buildOpAAD(hiveId: string, epoch: number, id: OpIdentity): OpAAD {
-  return { hiveId, epoch, opId: deriveOpId(id) };
+export function buildOpAAD(potId: string, epoch: number, id: OpIdentity): OpAAD {
+  return { potId, epoch, opId: deriveOpId(id) };
 }
 
 /**
@@ -68,10 +68,10 @@ export function buildOpAAD(hiveId: string, epoch: number, id: OpIdentity): OpAAD
 export function encryptOpPayload(
   crypto: HiveEpochCrypto,
   payload: Uint8Array,
-  ctx: { hiveId: string; epoch: number; id: OpIdentity },
+  ctx: { potId: string; epoch: number; id: OpIdentity },
   epochKey: EpochKey,
 ): Promise<Uint8Array> {
-  return crypto.encryptOp(payload, epochKey, buildOpAAD(ctx.hiveId, ctx.epoch, ctx.id));
+  return crypto.encryptOp(payload, epochKey, buildOpAAD(ctx.potId, ctx.epoch, ctx.id));
 }
 
 /**
@@ -83,10 +83,10 @@ export function encryptOpPayload(
 export function decryptOpPayload(
   crypto: HiveEpochCrypto,
   ciphertext: Uint8Array,
-  ctx: { hiveId: string; epoch: number; id: OpIdentity },
+  ctx: { potId: string; epoch: number; id: OpIdentity },
   epochKey: EpochKey,
 ): Promise<Uint8Array> {
-  return crypto.decryptOp(ciphertext, epochKey, buildOpAAD(ctx.hiveId, ctx.epoch, ctx.id));
+  return crypto.decryptOp(ciphertext, epochKey, buildOpAAD(ctx.potId, ctx.epoch, ctx.id));
 }
 
 /**
@@ -99,7 +99,7 @@ export function decryptOpPayload(
 export interface EpochKeyProvider {
   /** Resolve the content key for (hive, epoch) for the local device. Rejects when the
    *  local device has no access to that epoch (the removed-member cut-off). */
-  keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey>;
+  keyForEpoch(potId: string, epoch: number): Promise<EpochKey>;
 }
 
 /**

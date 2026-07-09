@@ -27,16 +27,16 @@ import { listFleetAssignments } from '../fleet/assignments';
  * wakes the owner reviews, and its presence may read stale while paused — a
  * wake staged for it must still surface on the hive's board.
  */
-export function hiveOwnerIds(rows: FleetAssignmentRow[], hiveSlug: string): Set<string> {
+export function hiveOwnerIds(rows: FleetAssignmentRow[], potSlug: string): Set<string> {
   const out = new Set<string>();
   for (const r of rows) {
-    if (r.harnessSlug === hiveSlug && r.agentId) out.add(r.agentId);
+    if (r.harnessSlug === potSlug && r.agentId) out.add(r.agentId);
   }
   return out;
 }
 
 /**
- * Pure: staged wakes whose owner is attributed to `hiveSlug`. Owners with no
+ * Pure: staged wakes whose owner is attributed to `potSlug`. Owners with no
  * fleet row at all (long-gone sessions awaiting the EI-314 sweep) have no hive
  * attribution and are deliberately absent — the fleet-wide board remains the
  * whole truth.
@@ -44,9 +44,9 @@ export function hiveOwnerIds(rows: FleetAssignmentRow[], hiveSlug: string): Set<
 export function filterWakesToHive(
   wakes: PendingWake[],
   fleetRows: FleetAssignmentRow[],
-  hiveSlug: string,
+  potSlug: string,
 ): PendingWake[] {
-  const owners = hiveOwnerIds(fleetRows, hiveSlug);
+  const owners = hiveOwnerIds(fleetRows, potSlug);
   return wakes.filter((w) => owners.has(w.ownerId));
 }
 
@@ -61,12 +61,12 @@ export interface ListHiveWakesOpts {
  * failing the board.
  */
 export async function listHiveWakes(
-  hiveSlug: string,
+  potSlug: string,
   opts: ListHiveWakesOpts = {},
 ): Promise<PendingWake[]> {
   const [wakes, fleetRows] = await Promise.all([
     listAllPendingWakes().catch(() => [] as PendingWake[]),
     listFleetAssignments({ workspaceId: opts.workspaceId }).catch(() => [] as FleetAssignmentRow[]),
   ]);
-  return filterWakesToHive(wakes, fleetRows, hiveSlug);
+  return filterWakesToHive(wakes, fleetRows, potSlug);
 }

@@ -35,7 +35,7 @@ import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 const RECIPE = {
   id: 'fetch-and-summarize',
   workspaceId: 'ws-1',
-  hiveSlug: 'papercusp',
+  potSlug: 'papercusp',
   title: 'Fetch and summarize',
   description: 'pulls a URL then summarizes',
   script: '// ...',

@@ -87,7 +87,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     heartbeatAt: r.heartbeat_at,
     lastActiveAt: r.last_active_at,
     agentRole: r.agent_role,
-    hiveSlug: r.pot_slug,
+    potSlug: r.pot_slug,
     compactionLimit: r.compaction_limit,
     contextTokens: r.context_tokens,
     contextEstimatedAt: r.context_estimated_at,
@@ -118,7 +118,7 @@ export class PgPresenceStore implements PresenceStore {
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
         ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
         ${input.host ?? ''}, ${input.pid ?? null},
-        ${input.agentRole ?? null}, ${input.hiveSlug ?? null}, now(), now()
+        ${input.agentRole ?? null}, ${input.potSlug ?? null}, now(), now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
         owner_label       = EXCLUDED.owner_label,
@@ -218,12 +218,12 @@ export class PgPresenceStore implements PresenceStore {
   }
 
   async list(
-    opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
+    opts: { workspaceId?: string | null; potSlug?: string | null } = {},
   ): Promise<PresenceRecord[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const ws = opts.workspaceId ?? null;
-    const hive = opts.hiveSlug ?? null;
+    const hive = opts.potSlug ?? null;
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,

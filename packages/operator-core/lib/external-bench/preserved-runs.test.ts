@@ -53,7 +53,7 @@ function fixtureRun(): PreservedArmRun {
     totals: { costUsd: 33.97, tokensIn: 19727, tokensOut: 250219 },
     perTask: ALL.map((instanceId, i) => ({
       instanceId,
-      beeId: `s-${i}`,
+      cupId: `s-${i}`,
       disposition: 'spawn',
       // flipt + vuls produced empty diffs (no-diff → cost 0).
       stopReason: instanceId.includes('flipt') || instanceId.includes('vuls') ? 'no-diff' : 'done',

@@ -57,7 +57,7 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
     // The bounded-confirmation found a real announce on the invite topic.
     confirmResult = {
       found: true,
-      hive: { hiveId: 'hive-acme', title: 'Acme Shop', visibility: 'invite' },
+      hive: { potId: 'hive-acme', title: 'Acme Shop', visibility: 'invite' },
       peersOnTopic: 2,
     };
     const link = formatHiveInviteLink({
@@ -73,7 +73,7 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
       found: true,
       subscribed: true,
       peersOnTopic: 2,
-      hive: { hiveId: 'hive-acme', title: 'Acme Shop' },
+      hive: { potId: 'hive-acme', title: 'Acme Shop' },
     });
     expect(joined).toEqual([SECRET]); // the EXACT secret string — topic derivation is verbatim
   });

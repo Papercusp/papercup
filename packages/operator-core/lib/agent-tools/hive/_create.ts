@@ -388,7 +388,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           } else {
             const res = await seedPackIntoHive({
               workspaceId: ws,
-              hiveSlug: opts.slug,
+              potSlug: opts.slug,
               pack: loaded.pack,
               ...(opts.projectShapes ? { shapes: opts.projectShapes } : {}),
               ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
@@ -429,7 +429,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         if (await getFlag(FLAGS.PER_HIVE_LEARNING_LOOPS, 'system')) {
           const { provisionHiveLearningLoop } = await import('../../hive/provision-learning-loop');
           const { sql } = getOrgPg();
-          const res = await provisionHiveLearningLoop({ sql, workspaceId: ws, hiveSlug: opts.slug });
+          const res = await provisionHiveLearningLoop({ sql, workspaceId: ws, potSlug: opts.slug });
           undo.push(res.undo);
           provisionedLoop = {
             gymAutoloop: res.gymAutoloop,
@@ -455,7 +455,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     try {
       const { armHiveCrossHiveDrainRoutine } = await import('../../harness/routines/arm-hive-cross-hive-drain');
       const { sql } = getOrgPg();
-      const armed = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, hiveSlug: opts.slug });
+      const armed = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, potSlug: opts.slug });
       undo.push(armed.undo);
     } catch (e) {
       console.warn(
@@ -657,7 +657,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         try {
           const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
           const { sql } = getOrgPg();
-          const seeded = await seedHiveReleaseRoutines({ sql, workspaceId: ws, hiveSlug: opts.slug });
+          const seeded = await seedHiveReleaseRoutines({ sql, workspaceId: ws, potSlug: opts.slug });
           if (seeded.seeded) undo.push(seeded.undo);
         } catch (e) {
           console.warn(

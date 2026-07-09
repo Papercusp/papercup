@@ -106,7 +106,7 @@ describe('discovery:pots endpoint (P-005)', () => {
 
     expect(out.count).toBe(1);
     expect(out.rows[0]).toMatchObject({
-      hiveId: 'papercusp',
+      potId: 'papercusp',
       title: 'Papercusp',
       description: 'Self-admitted offline hive',
       owner: 'remote',
@@ -124,7 +124,7 @@ describe('discovery:pots endpoint (P-005)', () => {
     const out = await call({});
     expect(out.count).toBe(1);
     expect(out.rows[0]).toMatchObject({
-      hiveId: 'ash',
+      potId: 'ash',
       title: 'Ash Hive',
       description: 'shop work',
       owner: 'alice',
@@ -164,7 +164,7 @@ describe('discovery:pots endpoint (P-005)', () => {
     const out = await call({ limit: 1 });
     expect(out.count).toBe(1);
     expect(out.rows).toHaveLength(1);
-    expect(out.rows[0].hiveId).toBe('pub');
+    expect(out.rows[0].potId).toBe('pub');
     expect(out.rows[0].visibility).toBe('public');
   });
 });

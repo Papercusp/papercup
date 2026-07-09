@@ -386,7 +386,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const ownerEpochEncrypt: EpochEncryptCapability = buildEpochEncryptCapability({
         crypto,
         resolveKey: ownerResolveKey,
-        hiveId: HIVE_HOME,
+        potId: HIVE_HOME,
         getCurrentEpoch: () => getHiveEpoch(WORKSPACE_ID, HIVE_HOME, dbOwner.adminSql),
       });
 
@@ -423,7 +423,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         ]);
         const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
         const inner = (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex });
-        const gate = buildEpochDecryptGate({ crypto, resolveKey, hiveId: HIVE_HOME, pending: bPending });
+        const gate = buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE_HOME, pending: bPending });
         return gate(inner);
       }
       const drainB = () =>

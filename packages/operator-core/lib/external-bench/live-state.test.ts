@@ -11,7 +11,7 @@ const sample = (model: string, costUsd = 1): LiveSampleRow => ({ model, modelCla
 describe('aggregateBenchRunLiveState', () => {
   it('a healthy live run: queen alive, bees bucketed, opus-only, spend + wall', () => {
     const st = aggregateBenchRunLiveState({
-      runId: 'r', status: 'running', hiveSlug: 'hive-r', startedAtMs: NOW - 300_000, nowMs: NOW,
+      runId: 'r', status: 'running', potSlug: 'hive-r', startedAtMs: NOW - 300_000, nowMs: NOW,
       agents: [queen(600_000), bee('running'), bee('working'), bee('done'), bee('evicted'), bee('failed')],
       samples: [sample('claude-opus-4-8'), sample('opus')],
       taskCounts: { todo: 2, in_progress: 1, collected: 3, graded: 5 },
@@ -35,7 +35,7 @@ describe('aggregateBenchRunLiveState', () => {
 
   it('detects a non-opus model leak', () => {
     const st = aggregateBenchRunLiveState({
-      runId: 'r', status: 'running', hiveSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
+      runId: 'r', status: 'running', potSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
       agents: [queen(600_000)],
       samples: [sample('claude-opus-4-8'), sample('claude-sonnet-4-6'), sample('claude-haiku-4-5')],
       taskCounts: {},
@@ -47,7 +47,7 @@ describe('aggregateBenchRunLiveState', () => {
 
   it('counts queen reclaims (a respawned queen)', () => {
     const st = aggregateBenchRunLiveState({
-      runId: 'r', status: 'running', hiveSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
+      runId: 'r', status: 'running', potSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
       agents: [queen(600_000, 'done'), queen(120_000, 'running', 1)],
       samples: [], taskCounts: {},
     });
@@ -59,7 +59,7 @@ describe('aggregateBenchRunLiveState', () => {
 
   it('a completed/imported run (no hive): not live, signals null', () => {
     const st = aggregateBenchRunLiveState({
-      runId: 'm3', status: 'done', hiveSlug: null, startedAtMs: null, nowMs: NOW,
+      runId: 'm3', status: 'done', potSlug: null, startedAtMs: null, nowMs: NOW,
       agents: [], samples: [], taskCounts: { graded: 11 },
     });
     expect(st.isLive).toBe(false);
@@ -71,7 +71,7 @@ describe('aggregateBenchRunLiveState', () => {
 
   it('no samples yet → opus-only unknown (null), not a false pass', () => {
     const st = aggregateBenchRunLiveState({
-      runId: 'r', status: 'running', hiveSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
+      runId: 'r', status: 'running', potSlug: 'hive-r', startedAtMs: NOW - 1000, nowMs: NOW,
       agents: [queen(60_000)], samples: [], taskCounts: {},
     });
     expect(st.models.opusOnly).toBeNull();

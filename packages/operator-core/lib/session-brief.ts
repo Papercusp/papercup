@@ -35,7 +35,7 @@ export interface SessionBriefInput {
   /** Harness the work is in (the agent's home harness). */
   harnessSlug?: string | null;
   /** Resolved home hive, if any. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   /**
    * The Claude/native session UUID, if the caller has it. declare-intent's context
    * carries only ownerId today, so this is usually null; reserved for the Phase-2
@@ -53,7 +53,7 @@ export interface SessionBriefRecord {
   currentPlanSlug: string | null;
   currentFiles: string[];
   harnessSlug: string | null;
-  hiveSlug: string | null;
+  potSlug: string | null;
   nativeSessionId: string | null;
   firstSeenAt: string;
   updatedAt: string;
@@ -86,7 +86,7 @@ export async function writeSessionBrief(
         ${input.currentPlanSlug ?? null},
         ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
         ${input.harnessSlug ?? null},
-        ${input.hiveSlug ?? null},
+        ${input.potSlug ?? null},
         ${input.nativeSessionId ?? null},
         now(), now()
       )
@@ -119,7 +119,7 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     currentPlanSlug: (r.current_plan_slug as string | null) ?? null,
     currentFiles: Array.isArray(r.current_files) ? (r.current_files as string[]) : [],
     harnessSlug: (r.harness_slug as string | null) ?? null,
-    hiveSlug: (r.pot_slug as string | null) ?? null,
+    potSlug: (r.pot_slug as string | null) ?? null,
     nativeSessionId: (r.native_session_id as string | null) ?? null,
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),

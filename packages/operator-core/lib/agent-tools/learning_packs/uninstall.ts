@@ -35,7 +35,7 @@ export default defineTool({
     const { uninstallPack } = await import('../../learning-packs/manage');
     const loaded = await loadLearningPack(args.pack);
     const result = await uninstallPack({
-      hiveSlug: args.pot,
+      potSlug: args.pot,
       packId: args.pack,
       pack: loaded?.pack ?? null,
       ...(args.keepEdited !== undefined ? { keepEdited: args.keepEdited } : {}),

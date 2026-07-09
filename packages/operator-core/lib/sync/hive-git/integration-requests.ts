@@ -46,7 +46,7 @@ export type IntegrationRequestState = 'pending' | 'ratified';
 /** One queue: per (workspace, hive, managed member repo) — G-1b scope. */
 export interface IntegrationRequestScope {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   repoKey: string;
 }
 
@@ -86,7 +86,7 @@ export async function queueIntegrationRequest(
       (workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
        author_github_user_id, reason, state, created_ts)
     VALUES
-      (${input.workspaceId}, ${input.hiveSlug}, ${input.repoKey}, ${input.devicePubkey},
+      (${input.workspaceId}, ${input.potSlug}, ${input.repoKey}, ${input.devicePubkey},
        ${input.headSha}, ${input.authorGithubUserId ?? null},
        ${input.reason ?? 'below-steer-tier'}, 'pending', ${now})
     ON CONFLICT (workspace_id, pot_slug, repo_key, device_pubkey, head_sha) DO NOTHING
@@ -100,7 +100,7 @@ export async function queueIntegrationRequest(
       SELECT workspace_id, pot_slug, repo_key, device_pubkey, head_sha
       FROM harness_shared.hive_integration_requests
       WHERE workspace_id = ${input.workspaceId}
-        AND pot_slug = ${input.hiveSlug}
+        AND pot_slug = ${input.potSlug}
         AND repo_key = ${input.repoKey}
         AND device_pubkey = ${input.devicePubkey}
       ORDER BY (state = 'ratified') DESC, created_ts DESC, head_sha
@@ -128,7 +128,7 @@ export interface IntegrationRequest extends IntegrationRequestScope {
 export async function listIntegrationRequests(
   opts: {
     workspaceId: string;
-    hiveSlug?: string;
+    potSlug?: string;
     repoKey?: string;
     devicePubkey?: string;
     state?: IntegrationRequestState;
@@ -156,7 +156,7 @@ export async function listIntegrationRequests(
            author_github_user_id, reason, state, created_ts, ratified_ts
     FROM harness_shared.hive_integration_requests
     WHERE workspace_id = ${opts.workspaceId}
-      ${opts.hiveSlug !== undefined ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
+      ${opts.potSlug !== undefined ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
       ${opts.repoKey !== undefined ? sql`AND repo_key = ${opts.repoKey}` : sql``}
       ${opts.devicePubkey !== undefined ? sql`AND device_pubkey = ${opts.devicePubkey}` : sql``}
       ${opts.state !== undefined ? sql`AND state = ${opts.state}` : sql``}
@@ -165,7 +165,7 @@ export async function listIntegrationRequests(
   `;
   return rows.map((r) => ({
     workspaceId: r.workspace_id,
-    hiveSlug: r.pot_slug,
+    potSlug: r.pot_slug,
     repoKey: r.repo_key,
     devicePubkey: r.device_pubkey,
     headSha: r.head_sha,
@@ -192,7 +192,7 @@ export async function ratifyIntegrationRequest(
     UPDATE harness_shared.hive_integration_requests
     SET state = 'ratified', ratified_ts = COALESCE(ratified_ts, ${now})
     WHERE workspace_id = ${key.workspaceId}
-      AND pot_slug = ${key.hiveSlug}
+      AND pot_slug = ${key.potSlug}
       AND repo_key = ${key.repoKey}
       AND device_pubkey = ${key.devicePubkey}
       AND head_sha = ${key.headSha}
@@ -227,7 +227,7 @@ export async function listRatifiedStates(
     SELECT device_pubkey, head_sha
     FROM harness_shared.hive_integration_requests
     WHERE workspace_id = ${scope.workspaceId}
-      AND pot_slug = ${scope.hiveSlug}
+      AND pot_slug = ${scope.potSlug}
       AND repo_key = ${scope.repoKey}
       AND state = 'ratified'
       AND (device_pubkey, head_sha) IN (
@@ -280,7 +280,7 @@ export async function gateMemberHeadsForIntegration(
     // WI-1552 fix (1): a targeted membership check for exactly these heads,
     // not a top-500-newest window (see listRatifiedStates doc).
     ratified = await listRatifiedStates(
-      { workspaceId: opts.workspaceId, hiveSlug: opts.hiveSlug, repoKey: opts.repoKey },
+      { workspaceId: opts.workspaceId, potSlug: opts.potSlug, repoKey: opts.repoKey },
       opts.heads
         .filter((h) => h.sha)
         .map((h) => ({ devicePubkey: h.devicePubkeyBase64, headSha: h.sha })),
@@ -315,7 +315,7 @@ export async function gateMemberHeadsForIntegration(
       await queueIntegrationRequest(
         {
           workspaceId: opts.workspaceId,
-          hiveSlug: opts.hiveSlug,
+          potSlug: opts.potSlug,
           repoKey: opts.repoKey,
           devicePubkey: head.devicePubkeyBase64,
           headSha: head.sha,

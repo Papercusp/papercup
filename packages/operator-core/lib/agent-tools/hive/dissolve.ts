@@ -109,7 +109,7 @@ export default defineTool({
     // the hive's repo, re-derived LIVE from GitHub — never federated state) may
     // dissolve a SHARED hive. Composes with the root-only/confirm gates above; a
     // SOLO/unbound hive is a no-op (the local owner keeps owner tier).
-    const gate = await requireHiveTier({ workspaceId, hiveSlug: hive.slug, minTier: 'owner' });
+    const gate = await requireHiveTier({ workspaceId, potSlug: hive.slug, minTier: 'owner' });
     if (!gate.ok) {
       return text({
         ok: false,
@@ -138,11 +138,11 @@ export default defineTool({
       ...new Set(rows.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string)),
     ];
     const cancelledSpawns: string[] = [];
-    for (const beeId of beeIds) {
+    for (const cupId of beeIds) {
       try {
         const res = await cancelSubtree(sql, {
           workspaceId,
-          rootSpawnId: beeId,
+          rootSpawnId: cupId,
           reason: 'pot:dissolve',
           actor,
         });
@@ -152,7 +152,7 @@ export default defineTool({
           abortLocalSpawn(c.spawnId);
         }
       } catch (e) {
-        console.warn(`[pot:dissolve] cancel bee ${beeId} failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`[pot:dissolve] cancel bee ${cupId} failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     steps.cancelledSpawns = cancelledSpawns;
@@ -184,7 +184,7 @@ export default defineTool({
     // but never fails the dissolve (P-021 / D-003). Without it per-hive routines
     // leak past dissolve and a stale scout routine could re-arm.
     try {
-      const loop = await teardownHiveLearningLoop({ sql, workspaceId, hiveSlug: hive.slug });
+      const loop = await teardownHiveLearningLoop({ sql, workspaceId, potSlug: hive.slug });
       steps.learningLoopTornDown = true;
       steps.learningLoop = loop;
     } catch (e) {

@@ -60,11 +60,11 @@ describe('joinHiveAsView (P-007)', () => {
   it('joins every member link and materializes the remote-hive view with coords + hive_slug', async () => {
     const { deps, calls } = fakes();
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
-    expect(res.hiveSlug).toBe('shop-hive');
+    expect(res.potSlug).toBe('shop-hive');
     expect(calls.joined.map((j) => j.slug)).toEqual(['shop', 'docs']);
     expect(calls.dirs).toEqual(['/remote-hives/shop-hive']);
 
@@ -82,10 +82,10 @@ describe('joinHiveAsView (P-007)', () => {
   it('a local harness owning the hive name is never clobbered — the view slug suffixes', async () => {
     const { deps, calls } = fakes([{ slug: 'shop-hive', path: '/local/own' }]);
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
-    expect(res.hiveSlug).toBe('shop-hive-2');
+    expect(res.potSlug).toBe('shop-hive-2');
     expect(calls.registry.find((p) => p.slug === 'shop-hive')!.remote_hive).toBeUndefined();
     expect(calls.registry.find((p) => p.slug === 'shop-hive-2')!).toMatchObject({ remote_hive: true });
   });
@@ -104,11 +104,11 @@ describe('joinHiveAsView (P-007)', () => {
         : { seeded: true, active: false, push: false, pushReason: 'joiner_side', cron: '0 0 * * * *' };
     };
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
-    expect(res.hiveSlug).toBe('shop-hive');
+    expect(res.potSlug).toBe('shop-hive');
     expect(calls.joined.map((j) => j.slug)).toEqual(['docs']); // shop skipped
     expect(res.members.find((m) => m.slug === 'shop')?.detail).toBe(
       'already_registered; git_sync:routine_exists',
@@ -122,7 +122,7 @@ describe('joinHiveAsView (P-007)', () => {
     const { deps, calls } = fakes();
     deps.joinLink = async () => ({ ok: false, detail: 'gh_auth_required' });
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res).toMatchObject({ ok: false, error: 'no_member_joined' });
@@ -132,7 +132,7 @@ describe('joinHiveAsView (P-007)', () => {
   it('malformed member links are rejected up front (zero side effects)', async () => {
     const { deps, calls } = fakes();
     const res = await joinHiveAsView(
-      { hiveId: 'x', memberLinks: ['papercusp://harness?nope=1'], workspaceId: 'ws' },
+      { potId: 'x', memberLinks: ['papercusp://harness?nope=1'], workspaceId: 'ws' },
       deps,
     );
     expect(res).toMatchObject({ ok: false, error: 'invalid_member_links' });
@@ -149,7 +149,7 @@ describe('joinHiveAsView (P-007)', () => {
       return { ok: true, detail: 'joined' };
     };
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -165,7 +165,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
   it('every joined member is seeded joiner-side with a per-install-salted cron key and the post-mutate entry', async () => {
     const { deps, calls } = fakes();
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws-1' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws-1' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -194,7 +194,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
   it('the remote_hive VIEW is never passed to the seeder — only member clones are', async () => {
     const { deps, calls } = fakes();
     await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     const seededSlugs = calls.seeded.map((s) => s.installSlug);
@@ -211,7 +211,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
       throw new Error('routines table on fire');
     };
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -221,7 +221,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     const second = fakes();
     second.deps.seedGitSync = async () => ({ seeded: false, reason: 'error', message: 'pg down' });
     const res2 = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       second.deps,
     );
     expect(res2.ok).toBe(true);
@@ -232,7 +232,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     const { deps } = fakes();
     deps.seedGitSync = async () => ({ seeded: false, reason: 'ineligible', ineligibleReason: 'no_path' });
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -243,7 +243,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     const { deps, calls } = fakes();
     deps.joinLink = async () => ({ ok: true, detail: 'joined' }); // never registers
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -258,7 +258,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
   it('materializes the remote Hive identity row with the owner pubkey (EI-681)', async () => {
     const { deps, calls } = fakes();
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -275,7 +275,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     const { deps, calls } = fakes();
     deps.resolveHivePubkey = async () => null; // announce carried no pubkey
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -286,7 +286,7 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     const { deps, calls } = fakes();
     deps.resolveHivePubkey = async () => null;
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -303,11 +303,11 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
       throw new Error('pg down');
     };
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
-    expect(res.hiveSlug).toBe('shop-hive');
+    expect(res.potSlug).toBe('shop-hive');
   });
 });
 
@@ -318,10 +318,10 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
     const { deps, calls } = fakes([OWNED, { slug: 'shop', path: '/local/shop', github_repository_id: 100 }]);
     deps.getLocalHive = async () => ({ pubkeyBase64: HIVE_PUBKEY });
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
-    expect(res).toMatchObject({ ok: true, hiveSlug: 'shop-hive', self_hive: true, members: [] });
+    expect(res).toMatchObject({ ok: true, potSlug: 'shop-hive', self_hive: true, members: [] });
     expect(calls.joined).toEqual([]); // no member re-join
     expect(calls.dirs).toEqual([]); // no view dir
     // the phantom -2 view never materializes and the member's hive_slug is untouched
@@ -334,7 +334,7 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
     deps.getLocalHive = async () => ({ pubkeyBase64: HIVE_PUBKEY });
     // fixture resolveHivePubkey already returns HIVE_PUBKEY
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.self_hive).toBe(true);
@@ -345,12 +345,12 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
     const { deps, calls } = fakes([OWNED]);
     deps.getLocalHive = async () => ({ pubkeyBase64: 'x'.repeat(43) + '=' }); // different identity
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
     expect(res.self_hive).toBeUndefined();
-    expect(res.hiveSlug).toBe('shop-hive-2');
+    expect(res.potSlug).toBe('shop-hive-2');
     expect(calls.registry.find((p) => p.slug === 'shop-hive-2')!).toMatchObject({ remote_hive: true });
   });
 
@@ -359,10 +359,10 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
     deps.resolveHivePubkey = async () => null;
     deps.getLocalHive = async () => null;
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
-    expect(res).toMatchObject({ ok: true, hiveSlug: 'shop-hive', self_hive: true });
+    expect(res).toMatchObject({ ok: true, potSlug: 'shop-hive', self_hive: true });
     expect(calls.joined).toEqual([]);
   });
 
@@ -371,11 +371,11 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
       { slug: 'shop-hive', path: '/remote-hives/shop-hive', harness_kind: 'hive', remote_hive: true },
     ]);
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(res.self_hive).toBeUndefined();
-    expect(res.hiveSlug).toBe('shop-hive'); // reused view
+    expect(res.potSlug).toBe('shop-hive'); // reused view
     expect(calls.joined.map((j) => j.slug)).toEqual(['shop']);
   });
 });
@@ -385,7 +385,7 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     const { deps, calls } = fakes();
     const res = await joinHiveAsView(
       {
-        hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, ownerDevicePubkey: 'OD_announce',
+        potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, ownerDevicePubkey: 'OD_announce',
         memberLinks: [link('shop', 100)], workspaceId: 'ws',
       },
       deps,
@@ -402,7 +402,7 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     const { deps, calls } = fakes();
     deps.resolveOwnerDevicePubkey = async () => 'OD_directory';
     await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
@@ -418,10 +418,10 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     ]);
     deps.resolveOwnerDevicePubkey = async () => 'OD_backfill';
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       deps,
     );
-    expect(res.hiveSlug).toBe('shop-hive');
+    expect(res.potSlug).toBe('shop-hive');
     expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
       hive_pubkey: HIVE_PUBKEY,
       owner_device_pubkey: 'OD_backfill',
@@ -433,7 +433,7 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     deps.resolveHivePubkey = async () => null;
     deps.resolveOwnerDevicePubkey = async () => null;
     await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
       deps,
     );
     const view = calls.registry.find((p) => p.slug === 'shop-hive')!;
@@ -450,7 +450,7 @@ describe("2c′ home-view boot/rekey (WI-971: the joiner's hive-home drain)", ()
       rekeyed.push(slug);
     };
     const res = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -469,7 +469,7 @@ describe("2c′ home-view boot/rekey (WI-971: the joiner's hive-home drain)", ()
         rekeyed.push(slug);
       };
       const res = await joinHiveAsView(
-        { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
         deps,
       );
       expect(res.ok).toBe(true);
@@ -494,7 +494,7 @@ describe("2c′ home-view boot/rekey (WI-971: the joiner's hive-home drain)", ()
         if (slug === 'shop') throw new Error('boom');
       };
       const res = await joinHiveAsView(
-        { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
         deps,
       );
       expect(res.ok).toBe(true);

@@ -211,7 +211,7 @@ function saturatedOnlyByOwnerCeiling(
  */
 export function detectThroughputBreaches(
   metrics: HiveThroughputMetrics,
-  hiveSlug: string,
+  potSlug: string,
   context?: HiveThroughputBreachContext,
 ): HiveThroughputBreach[] {
   const breaches: HiveThroughputBreach[] = [];
@@ -224,8 +224,8 @@ export function detectThroughputBreaches(
     breaches.push({
       kind: 'starvation',
       severity: 'warn',
-      watchdogKey: `governor-starvation:${hiveSlug}`,
-      title: `Hive ${hiveSlug}: fleet saturated with work still queued`,
+      watchdogKey: `governor-starvation:${potSlug}`,
+      title: `Hive ${potSlug}: fleet saturated with work still queued`,
       body:
         `All ${metrics.beesCap} bee slot(s) are busy while ${metrics.frontierDepth} ready ` +
         `item(s) wait for placement. The frontier can only grow until a bee frees a slot — ` +
@@ -236,8 +236,8 @@ export function detectThroughputBreaches(
     breaches.push({
       kind: 'stuck',
       severity: 'error',
-      watchdogKey: `orphaned-spawn:${hiveSlug}:throughput`,
-      title: `Hive ${hiveSlug}: ${metrics.stuckCount} placed bee(s) stuck`,
+      watchdogKey: `orphaned-spawn:${potSlug}:throughput`,
+      title: `Hive ${potSlug}: ${metrics.stuckCount} placed bee(s) stuck`,
       body:
         `${metrics.stuckCount} running bee(s) have a stale heartbeat (no progress past the ` +
         `stuck threshold). A stalled placement holds its slot without advancing — it needs a ` +
@@ -301,7 +301,7 @@ function ms(v: string | Date | null | undefined): number | null {
  * breach signals through captureImprovement and pushes the Learning tab.
  */
 export async function recordHiveThroughputTick(opts: {
-  hiveSlug: string;
+  potSlug: string;
   workspaceId?: string;
   now?: number;
 }): Promise<HiveThroughputTickResult> {
@@ -336,13 +336,13 @@ export async function recordHiveThroughputTick(opts: {
            AND started_at > ${windowStart}`.catch(() => [] as SpawnRow[]),
       sql<Array<{ tick_at: string | Date }>>`
         SELECT tick_at FROM harness_shared.hive_throughput_ticks
-         WHERE workspace_id = ${ws} AND pot_slug = ${opts.hiveSlug}
+         WHERE workspace_id = ${ws} AND pot_slug = ${opts.potSlug}
          ORDER BY tick_at DESC LIMIT 1`.catch(() => [] as Array<{ tick_at: string | Date }>),
       // WI-267: the hive's REAL placeable-frontier depth (member-scoped; feature-kind,
       // todo, unassigned, not-cursed) — NOT the workspace-wide demand.todoItems — so the
       // starvation breach gates on what THIS Queen can actually place. Fail-soft ⇒ 0 (a
       // flaky read must never manufacture a false 'saturated with work queued' alarm).
-      hivePlaceableFrontierDepth(ws, opts.hiveSlug).catch(() => 0),
+      hivePlaceableFrontierDepth(ws, opts.potSlug).catch(() => 0),
     ]);
 
     const spawns: HiveSpawnSnapshot[] = spawnRows.map((r) => ({
@@ -370,20 +370,20 @@ export async function recordHiveThroughputTick(opts: {
         import('../owner-steering'),
         import('../fleet/operator-spawn'),
       ]);
-      const steering = await getOwnerSteering(ws, opts.hiveSlug);
+      const steering = await getOwnerSteering(ws, opts.potSlug);
       ownerMaxBees = steering.maxBees ?? null;
       systemCeiling = spawnConcurrencyCeiling();
     } catch {
       // Fail open: a steering read fault must not hide a genuine starvation breach.
     }
-    const breaches = detectThroughputBreaches(metrics, opts.hiveSlug, { ownerMaxBees, systemCeiling });
+    const breaches = detectThroughputBreaches(metrics, opts.potSlug, { ownerMaxBees, systemCeiling });
 
     await sql`
       INSERT INTO harness_shared.hive_throughput_ticks
         (workspace_id, pot_slug, frontier_depth, placements, bees_busy, bees_cap,
          stuck_count, completed, mttc_ms, question_rungs, detail)
       VALUES
-        (${ws}, ${opts.hiveSlug}, ${metrics.frontierDepth}, ${metrics.placements},
+        (${ws}, ${opts.potSlug}, ${metrics.frontierDepth}, ${metrics.placements},
          ${metrics.beesBusy}, ${metrics.beesCap}, ${metrics.stuckCount}, ${metrics.completed},
          ${metrics.mttcMs}, ${JSON.stringify(metrics.questionRungs)}::text::jsonb,
          ${JSON.stringify({
@@ -403,7 +403,7 @@ export async function recordHiveThroughputTick(opts: {
           body: b.body,
           kind: 'bug',
           severity: b.severity === 'error' ? 'major' : 'minor',
-          scope: `harness:${opts.hiveSlug}`,
+          scope: `harness:${opts.potSlug}`,
           sourceRole: 'system',
           source: 'su',
           watchdogKey: b.watchdogKey,
@@ -425,7 +425,7 @@ export async function recordHiveThroughputTick(opts: {
 
     return { recorded: true, metrics, breaches };
   } catch (e) {
-    console.warn(`[hive-throughput] tick failed (${opts.hiveSlug}): ${e instanceof Error ? e.message : e}`);
+    console.warn(`[hive-throughput] tick failed (${opts.potSlug}): ${e instanceof Error ? e.message : e}`);
     return { recorded: false, metrics: empty, breaches: [] };
   }
 }
@@ -434,7 +434,7 @@ export async function recordHiveThroughputTick(opts: {
 
 /** One throughput tick row, camelCase mirror of the migration-261 columns. */
 export interface HiveThroughputTickRow extends HiveThroughputMetrics {
-  hiveSlug: string;
+  potSlug: string;
   tickAt: string;
 }
 
@@ -466,7 +466,7 @@ export function normalizeThroughputRow(r: RawThroughputTickRow): HiveThroughputT
   const detailUtil = asJsonObject(r.detail)?.utilization;
   const rungs = asJsonObject(r.question_rungs);
   return {
-    hiveSlug: String(r.pot_slug ?? ''),
+    potSlug: String(r.pot_slug ?? ''),
     tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : new Date(r.tick_at).toISOString(),
     frontierDepth: Number(r.frontier_depth ?? 0),
     beesBusy,

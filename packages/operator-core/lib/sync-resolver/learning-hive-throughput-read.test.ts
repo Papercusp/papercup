@@ -52,7 +52,7 @@ describe('readHiveThroughputSnapshot', () => {
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap.hives).toHaveLength(1);
     const h = snap.hives[0]!;
-    expect(h.hiveSlug).toBe('papercup');
+    expect(h.potSlug).toBe('papercup');
     expect(h.latest?.frontierDepth).toBe(1); // newest tick
     expect(h.recent).toHaveLength(2);
     expect(h.operatingWell).toBe(true); // slack fleet, no stuck
@@ -68,9 +68,9 @@ describe('readHiveThroughputSnapshot', () => {
       row({ pot_slug: 'zeta', stuck_count: 0, bees_busy: 8, bees_cap: 8, frontier_depth: 5, detail: null }),
     ]);
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
-    expect(snap.hives.map((h) => h.hiveSlug)).toEqual(['zeta', 'alpha']); // attention-first
-    expect(snap.hives.find((h) => h.hiveSlug === 'zeta')?.operatingWell).toBe(false);
-    expect(snap.hives.find((h) => h.hiveSlug === 'alpha')?.operatingWell).toBe(true);
+    expect(snap.hives.map((h) => h.potSlug)).toEqual(['zeta', 'alpha']); // attention-first
+    expect(snap.hives.find((h) => h.potSlug === 'zeta')?.operatingWell).toBe(false);
+    expect(snap.hives.find((h) => h.potSlug === 'alpha')?.operatingWell).toBe(true);
   });
 
   it('a stuck latest tick fails operating-well', async () => {

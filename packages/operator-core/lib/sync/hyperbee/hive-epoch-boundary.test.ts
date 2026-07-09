@@ -46,7 +46,7 @@ async function makeDevice(keychainId: string): Promise<{ keychainId: string; pub
   return { keychainId, pubkeyBase64 };
 }
 
-const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', hiveId: 'hive-1' };
+const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', potId: 'hive-1' };
 const enc = (s: string) => new TextEncoder().encode(s);
 
 beforeEach(() => { mem.clear(); settings.clear(); });
@@ -81,8 +81,8 @@ describe('advanceEpochAndWrap — end-to-end cut-off (real crypto + serving)', (
     expect(res.wrapped.map((w) => w.memberDevicePubkey)).not.toContain(removed.pubkeyBase64);
 
     // Owner encrypts new-epoch content under the minted key.
-    const ownerKey = await c.deriveEpochKey(CTX.hiveId, res.newEpoch);
-    const opCtx = { hiveId: CTX.hiveId, epoch: res.newEpoch, id: { tableTag: 'harness-features', rowKey: 'F-9', authorPubkey: 'owner' } };
+    const ownerKey = await c.deriveEpochKey(CTX.potId, res.newEpoch);
+    const opCtx = { potId: CTX.potId, epoch: res.newEpoch, id: { tableTag: 'harness-features', rowKey: 'F-9', authorPubkey: 'owner' } };
     const ct = await encryptOpPayload(c, enc('post-boundary secret'), opCtx, ownerKey);
 
     // REMAINING member: unwrap its row → decrypt → reads it.

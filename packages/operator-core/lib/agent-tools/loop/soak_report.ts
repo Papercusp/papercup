@@ -27,13 +27,13 @@ export default defineTool({
     windowHours: z.number().int().min(MIN_SOAK_WINDOW_HOURS).max(MAX_SOAK_WINDOW_HOURS).optional(),
   }),
   async handler(args, ctx) {
-    const hiveSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
-    if (!hiveSlug) {
+    const potSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    if (!potSlug) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no hive home harness resolved' }) }],
       };
     }
-    const report = await readHiveSoakReport(hiveSlug, { windowHours: args.windowHours });
+    const report = await readHiveSoakReport(potSlug, { windowHours: args.windowHours });
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, report }) }],
     };

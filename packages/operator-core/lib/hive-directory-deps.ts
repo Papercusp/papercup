@@ -109,9 +109,9 @@ function productionDeps(): HiveDirectoryDeps {
     // P-014 item 2: capture beacon history for the tier-4 dossier. Lazy-import
     // keeps this module from pulling in PG at startup; the capture itself is
     // already best-effort (the directory wraps it in a catch).
-    onBeaconAccepted: async (hiveId, hivePubkey, beacon) => {
+    onBeaconAccepted: async (potId, hivePubkey, beacon) => {
       const { captureBeaconSnapshot } = await import('./network-board/beacon-history-pg');
-      await captureBeaconSnapshot(hiveId, hivePubkey, beacon);
+      await captureBeaconSnapshot(potId, hivePubkey, beacon);
     },
   };
 }

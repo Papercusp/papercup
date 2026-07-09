@@ -153,13 +153,13 @@ export default defineTool({
         // recording failure must not fail the run.
         if (result.ok && !dryRun) {
           try {
-            const hiveSlug = ctx.harnessSlug
+            const potSlug = ctx.harnessSlug
               ? await hiveHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
               : null;
             await recordRecipeRun(sql, {
               recipeId: recipe.id,
               workspaceId,
-              hiveSlug,
+              potSlug,
               agentOwner: ownerId,
               agentRole: ctx.role ?? null,
               success: true,

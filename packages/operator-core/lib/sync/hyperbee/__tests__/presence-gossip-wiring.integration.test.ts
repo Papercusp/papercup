@@ -258,7 +258,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   it('a sessions frame lands with hive_slug PINNED to the receiver binding (sender hive ignored)', async () => {
     channel.inbound!(
       await buildSessionsFrame(
-        { devicePubkey: member.pubB64, githubUserId: 42, machineLabel: 'laptop', hiveSlug: 'evil-foreign-hive' },
+        { devicePubkey: member.pubB64, githubUserId: 42, machineLabel: 'laptop', potSlug: 'evil-foreign-hive' },
         [
           { owner_id: 'su-remote-1', kind: 'su', intent: 'x', plan_slug: null, harness_slug: HIVE, last_active_ms: T0 },
           { owner_id: 's-bee-9', kind: 'cup', intent: null, plan_slug: 'p', harness_slug: HIVE, last_active_ms: T0 },
@@ -331,7 +331,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
           sign: member.sign,
           githubUserId: 42,
           machineLabel: 'laptop',
-          hiveSlug: HIVE,
+          potSlug: HIVE,
           getOwnRow: async () => row({ intent: 'writer beat' }),
         },
       }),

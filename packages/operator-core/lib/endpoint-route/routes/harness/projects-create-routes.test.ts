@@ -123,7 +123,7 @@ describe('POST /api/harness/pots/from-repo — error→status map (Gap 7)', () =
       // hive-visibility-from-repo-privacy: the client no longer chooses visibility;
       // createHiveFromRepo derives it from the resolved repo's `private` flag. The
       // route must NOT forward a client-sent `visibility` (any value is dropped).
-      createHiveFromRepo.mockResolvedValue({ ok: true, created: { hiveSlug: 'r', memberSlug: 'r', memberPath: '/p' } });
+      createHiveFromRepo.mockResolvedValue({ ok: true, created: { potSlug: 'r', memberSlug: 'r', memberPath: '/p' } });
       await post(fromRepoRoute, { githubUrl: 'https://github.com/o/r', visibility: vis });
       expect(createHiveFromRepo).toHaveBeenCalledTimes(1);
       expect(createHiveFromRepo.mock.calls[0][0]).not.toHaveProperty('visibility');
@@ -131,7 +131,7 @@ describe('POST /api/harness/pots/from-repo — error→status map (Gap 7)', () =
   );
 
   it('returns the success envelope (200) on ok', async () => {
-    const created = { ok: true, created: { hiveSlug: 'repo', memberSlug: 'repo', memberPath: '/p' } };
+    const created = { ok: true, created: { potSlug: 'repo', memberSlug: 'repo', memberPath: '/p' } };
     createHiveFromRepo.mockResolvedValue(created);
     const { status, body } = await post(fromRepoRoute, { githubUrl: 'https://github.com/o/repo' });
     expect(status).toBe(200);

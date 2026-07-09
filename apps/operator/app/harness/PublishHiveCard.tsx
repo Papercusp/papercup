@@ -16,11 +16,11 @@ import React from 'react';
 import { ShareHiveForm, type ShareHiveFormProps } from './ShareHiveDialog';
 
 export function PublishHiveCard({
-  hiveSlug,
+  potSlug,
   hiveLabel = 'hive',
   ...seams
 }: {
-  hiveSlug: string;
+  potSlug: string;
   hiveLabel?: string;
 } & Pick<ShareHiveFormProps, 'fetchShareMeta' | 'setHiveListing' | 'onSaved'>) {
   return (
@@ -34,12 +34,12 @@ export function PublishHiveCard({
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 6 }}>
-        Share {hiveLabel} <code>{hiveSlug}</code>
+        Share {hiveLabel} <code>{potSlug}</code>
       </div>
       <div style={{ color: 'var(--fg-dim)', marginBottom: 10 }}>
         Sharing happens at the {hiveLabel} level — choose who can find and join it.
       </div>
-      <ShareHiveForm hiveSlug={hiveSlug} hiveLabel={hiveLabel} compact {...seams} />
+      <ShareHiveForm potSlug={potSlug} hiveLabel={hiveLabel} compact {...seams} />
     </div>
   );
 }

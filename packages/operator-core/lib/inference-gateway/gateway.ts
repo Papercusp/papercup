@@ -4052,6 +4052,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
+    if (req.method === 'POST' && url.startsWith('/admin/readmit')) {
+      // EI-8797 residual: accounts:reset-rate clears the PERSISTED account-pool store, but this
+      // process's failover pool keeps its own in-memory pause map (exhaustedUntil) — a split-brain
+      // that left /stats reporting healthyAccounts=0 after a confirmed reset. This endpoint is the
+      // live-process dual of the store reset: readmit the named account (`?account=<id>`) — or EVERY
+      // pool account when no id is given — into rotation NOW, and report the fresh healthyAccounts
+      // so the caller can verify the split actually cleared instead of assuming.
+      req.resume(); // drain any request body so the socket releases cleanly
+      const q = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
+      const account = new URLSearchParams(q).get('account')?.trim() ?? '';
+      if (!pool.readmit) {
+        sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: this pool has no readmit (single-account pool)' }, gateway: true });
+        return;
+      }
+      const ids = account ? [account] : (pool.entries ? pool.entries() : []).map((e) => e.accountId);
+      for (const id of ids) pool.readmit(id);
+      sendJson(res, 200, { ok: true, readmitted: ids, healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1 });
+      return;
+    }
     if (req.method === 'POST' && url === '/admin/reload') {
       // B-HOT-2: on-demand HOT-RELOAD — re-resolve the DB account pool + swap it live NOW (vs the 60s poll).
       if (!deps.onAdminReload) {

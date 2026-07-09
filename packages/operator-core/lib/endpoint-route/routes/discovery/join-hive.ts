@@ -2,7 +2,7 @@
  * POST /api/discovery/join-pot — join a discovered hive AS A HIVE
  * (hive-from-repo-hardening-2026-06-11 P-007 / D-007).
  *
- * Body: { hiveId, title?, hivePubkey?, memberLinks: string[] }
+ * Body: { potId, title?, hivePubkey?, memberLinks: string[] }
  * Composes the existing per-member-link join for every link, then
  * materializes the joiner-side registry VIEW (a `remote_hive`-flagged
  * kind:'hive' entry + hive_slug on the joined members) so the Harnesses tab
@@ -21,19 +21,19 @@ export default defineTool({
   auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
-    let body: { hiveId?: string; title?: string; hivePubkey?: unknown; memberLinks?: unknown } = {};
+    let body: { potId?: string; title?: string; hivePubkey?: unknown; memberLinks?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
       /* empty body */
     }
-    const hiveId = String(body.hiveId ?? '').trim();
+    const potId = String(body.potId ?? '').trim();
     const memberLinks = Array.isArray(body.memberLinks)
       ? body.memberLinks.filter((l): l is string => typeof l === 'string' && l.length > 0)
       : [];
-    if (!hiveId || memberLinks.length === 0) {
+    if (!potId || memberLinks.length === 0) {
       return Response.json(
-        { error: 'hiveId and memberLinks[] required', code: 'invalid_args' },
+        { error: 'potId and memberLinks[] required', code: 'invalid_args' },
         { status: 400 },
       );
     }
@@ -46,7 +46,7 @@ export default defineTool({
     const { joinHiveAsView } = await import('../../../harness/join-hive');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const res = await joinHiveAsView({
-      hiveId,
+      potId,
       ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
       ...(typeof body.hivePubkey === 'string' && body.hivePubkey.trim()
         ? { hivePubkey: body.hivePubkey.trim() }

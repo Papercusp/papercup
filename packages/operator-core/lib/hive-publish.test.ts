@@ -38,7 +38,7 @@ function deps(reachable = 0): HiveDirectoryDeps & { broadcasts: Array<{ topic: s
 
 function meta(over: Partial<HiveDirectoryMeta> = {}): HiveDirectoryMeta {
   return {
-    hiveId: 'my-hive',
+    potId: 'my-hive',
     title: 'My Hive',
     description: 'mine',
     visibility: 'public',

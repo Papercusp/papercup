@@ -47,7 +47,7 @@ function attempt(over: Partial<ArmAttempt> = {}): ArmAttempt {
 function taskResult(over: Partial<FleetTaskResult> = {}): FleetTaskResult {
   return {
     attempt: attempt(),
-    beeId: 'bee-1',
+    cupId: 'bee-1',
     placedAtMs: 1_000,
     startedAtMs: 1_100,
     finishedAtMs: 61_100,

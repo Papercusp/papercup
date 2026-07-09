@@ -27,9 +27,9 @@ export interface HiveSteeringTreeProps {
   illegalCount: number;
   busy: boolean;
   loading: boolean;
-  onToggleHive: (hiveSlug: string) => void;
-  onTogglePlan: (hiveSlug: string, planSlug: string) => void;
-  onSetHivePlans: (hiveSlug: string, on: boolean) => void;
+  onToggleHive: (potSlug: string) => void;
+  onTogglePlan: (potSlug: string, planSlug: string) => void;
+  onSetHivePlans: (potSlug: string, on: boolean) => void;
   onSetAllHives: (on: boolean) => void;
 }
 
@@ -59,7 +59,7 @@ function TriCheckbox({
   );
 }
 
-function PlanRow({ plan, hiveSlug, busy, onTogglePlan }: { plan: TreePlan; hiveSlug: string; busy: boolean; onTogglePlan: HiveSteeringTreeProps['onTogglePlan'] }) {
+function PlanRow({ plan, potSlug, busy, onTogglePlan }: { plan: TreePlan; potSlug: string; busy: boolean; onTogglePlan: HiveSteeringTreeProps['onTogglePlan'] }) {
   return (
     <li className={`pc-queen__plan pc-queen__tree-plan${plan.checked ? ' pc-queen__plan--on' : ''}`}>
       <div className="pc-queen__planlabel">
@@ -67,7 +67,7 @@ function PlanRow({ plan, hiveSlug, busy, onTogglePlan }: { plan: TreePlan; hiveS
           className="pc-queen__check"
           checked={plan.checked}
           disabled={busy}
-          onChange={() => onTogglePlan(hiveSlug, plan.slug)}
+          onChange={() => onTogglePlan(potSlug, plan.slug)}
           ariaLabel={plan.title}
         />
         <span className="pc-queen__planslug" title={plan.slug}>{plan.title}</span>
@@ -144,7 +144,7 @@ function HiveNode({
             )}
             <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
               {hive.plans.map((p) => (
-                <PlanRow key={p.slug} plan={p} hiveSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
+                <PlanRow key={p.slug} plan={p} potSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
               ))}
             </ul>
           </Collapsible.Content>

@@ -124,7 +124,7 @@ export async function getWrappedKey(
  * The member-side `WrappedKeyLoader` for the EpochKeyProvider, bound to (workspace,
  * Hive home). `load` returns the device's wrapped blob as bytes (base64-decoded), or
  * null when absent (removed member / not-yet-arrived → the provider fails closed).
- * The `hiveId` arg is the crypto identity (used by the provider for deriveEpochKey +
+ * The `potId` arg is the crypto identity (used by the provider for deriveEpochKey +
  * caching); the PG lookup keys by the bound `hiveHomeSlug`.
  */
 export function createPgWrappedKeyLoader(

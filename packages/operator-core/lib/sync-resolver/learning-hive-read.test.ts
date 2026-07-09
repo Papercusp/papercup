@@ -112,7 +112,7 @@ describe('LP-6: cross-check — planPackUpgrade captures the FULL version set th
     };
     vi.mocked(getMemoryBackend).mockReturnValue(backend as unknown as ReturnType<typeof getMemoryBackend>);
     const plan = await planPackUpgrade(
-      { hiveSlug: 'h', pack },
+      { potSlug: 'h', pack },
       { backend: backend as never, judge: async () => ({ conflicts: [] }) },
     );
     // The rollup keeps only first-seen; the upgrade planner keeps the whole set.

@@ -139,10 +139,10 @@ export type BootHistoryKind =
   // federated content op that never landed on a joiner left NO signal — indistinguishable
   // from the gate never being installed. These name the cause:
   //   - 'epoch_gate_built'    — rekeyDeps non-null: the decrypt gate IS wrapping applyImpl
-  //                             for this harness (carries the resolved hiveHomeSlug = AAD hiveId).
+  //                             for this harness (carries the resolved hiveHomeSlug = AAD potId).
   //   - 'epoch_defer'         — an encrypted op deferred: its epoch key is not yet local.
   //   - 'epoch_decrypt_fail'  — have a key but decrypt failed (wrong key / AAD mismatch:
-  //                             hiveId is the LOCAL home slug, not a federated field) → DROP.
+  //                             potId is the LOCAL home slug, not a federated field) → DROP.
   //   - 'epoch_applied'       — an encrypted op decrypted + applied (the success path).
   | 'epoch_gate_built'
   // WI-808 decisive entry trace: an encrypted-looking op (epoch stamped OR `{__rekey}`

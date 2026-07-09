@@ -20,7 +20,7 @@ export default defineTool({
   timeoutSec: 120,
   async handler(req) {
     let body: {
-      hiveId?: string;
+      potId?: string;
       title?: string;
       description?: string;
       visibility?: string;
@@ -31,10 +31,10 @@ export default defineTool({
     } catch {
       /* empty body */
     }
-    const hiveId = String(body.hiveId ?? '').trim();
-    const title = String(body.title ?? '').trim() || hiveId;
-    if (!hiveId) {
-      return Response.json({ error: 'hiveId required', code: 'invalid_args' }, { status: 400 });
+    const potId = String(body.potId ?? '').trim();
+    const title = String(body.title ?? '').trim() || potId;
+    if (!potId) {
+      return Response.json({ error: 'potId required', code: 'invalid_args' }, { status: 400 });
     }
     if (!isHiveVisibility(body.visibility)) {
       return Response.json(
@@ -52,7 +52,7 @@ export default defineTool({
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const res = await setHiveListing(
       {
-        hiveId,
+        potId,
         title,
         ...(typeof body.description === 'string' ? { description: body.description } : {}),
         visibility: body.visibility,

@@ -1741,13 +1741,12 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
       // while still red — the rising-urgency `broadcast` tiers cover the "still red"
       // drumbeat instead of re-pushing every tick).
       try {
-        const { notifyAttention } = await import('../../attention-notify');
+        const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
         await notifyAttention({
           kind: 'intervention',
           title: 'Release gate RED',
           body: summary,
           importance: 'urgent',
-          workspaceId: cfg.workspaceId,
           data: { source: 'green-checkpoint' },
         });
       } catch {
@@ -1980,14 +1979,13 @@ if (require.main === module) {
             });
           })
           .catch(() => {});
-        void import('../../attention-notify')
+        void import('@papercusp/operator-core/lib/attention-notify')
           .then(async ({ notifyAttention }) => {
             await notifyAttention({
               kind: 'intervention',
               title: 'Release pipeline RED — green-checkpoint self-watchdog fired',
-              body: red.summary,
+              body: red.summary ?? 'self-watchdog fired with no summary',
               importance: 'urgent',
-              workspaceId: cfg.workspaceId,
               data: { candidate: red.candidate, reason: red.reason },
             });
           })

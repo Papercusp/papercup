@@ -18,8 +18,8 @@ let scaffoldImpl: () => Promise<void>;
 let tmpParent: string;
 let ensureCalls: Array<[string, string]>;
 let deleteHiveCalls: Array<[string, string]>;
-let provisionCalls: Array<{ workspaceId: string; hiveSlug: string }>;
-let queenHomeCalls: Array<{ workspaceId: string; hiveSlug: string; devicePubkey: string }>;
+let provisionCalls: Array<{ workspaceId: string; potSlug: string }>;
+let queenHomeCalls: Array<{ workspaceId: string; potSlug: string; devicePubkey: string }>;
 // WI-280: owner self-registration in hive_members at create — see the mock block below.
 let upsertHiveMemberCalls: unknown[];
 // per-hive-git-and-release-gate-2026-06-29: the mock blueprint's knobs + output sink are
@@ -30,7 +30,7 @@ let blueprintOutput: { kind: string } | undefined;
 // P-009: the self_repo-home pipeline seeds (git-sync + green-checkpoint) are mocked — their
 // own behavior is pinned in git-sync-routine.test.ts / seed-hive-release-routines.test.ts.
 let gitSyncSeedCalls: Array<{ installSlug: string }>;
-let releaseSeedCalls: Array<{ hiveSlug: string }>;
+let releaseSeedCalls: Array<{ potSlug: string }>;
 // EI-3388: capture what `operatorResolveExtends` was called with, so we can assert
 // createHiveHarness threads an existingPath repo's `.papercusp/blueprints` in as a
 // local resolver tier (mirroring harness:create's `path` -> localDirs pattern) instead
@@ -108,8 +108,8 @@ beforeEach(() => {
     },
   }));
   vi.doMock('../../harness/routines/seed-hive-release-routines', () => ({
-    seedHiveReleaseRoutines: async (o: { hiveSlug: string }) => {
-      releaseSeedCalls.push({ hiveSlug: o.hiveSlug });
+    seedHiveReleaseRoutines: async (o: { potSlug: string }) => {
+      releaseSeedCalls.push({ potSlug: o.potSlug });
       return { seeded: false, reason: 'flag_off', undo: async () => {} };
     },
   }));
@@ -159,9 +159,9 @@ beforeEach(() => {
   // shares that pool). The flag gate resolves ON via the @papercusp/flags/server
   // mock above.
   vi.doMock('../../hive/provision-learning-loop', () => ({
-    provisionHiveLearningLoop: async (input: { workspaceId: string; hiveSlug: string }) => {
-      provisionCalls.push({ workspaceId: input.workspaceId, hiveSlug: input.hiveSlug });
-      return { ok: true, hiveSlug: input.hiveSlug, gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5, undo: async () => {} };
+    provisionHiveLearningLoop: async (input: { workspaceId: string; potSlug: string }) => {
+      provisionCalls.push({ workspaceId: input.workspaceId, potSlug: input.potSlug });
+      return { ok: true, potSlug: input.potSlug, gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5, undo: async () => {} };
     },
   }));
   // P-021 (domain-generic-hive): the queen-home-pubkey record step is mocked (its
@@ -171,7 +171,7 @@ beforeEach(() => {
   // vitest-fail-on-console treats as a failure.
   vi.doMock('../../hive-settings-store', () => ({
     setQueenHomePubkey: async (ws: string, slug: string, pk: string) => {
-      queenHomeCalls.push({ workspaceId: ws, hiveSlug: slug, devicePubkey: pk });
+      queenHomeCalls.push({ workspaceId: ws, potSlug: slug, devicePubkey: pk });
     },
     deleteHiveSetting: async () => true,
     QUEEN_HOME_PUBKEY_SETTING_KEY: 'queen-home-pubkey',
@@ -241,10 +241,10 @@ describe('createHiveHarness', () => {
     expect(res.seededLearnings).toEqual({ packId: 'papercusp-default', packVersion: '1.0.0', count: 1 });
     // per-hive-learning-loops P-020: the per-hive loop is provisioned, keyed to the
     // hive's OWN slug, and reported in the result.
-    expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive' }]);
+    expect(provisionCalls).toEqual([{ workspaceId: 'default', potSlug: 'test-hive' }]);
     // domain-generic-hive P-021: the creating node IS the local Queen home — its
     // device pubkey is recorded as the hive's queen-home-pubkey (the split-brain guard).
-    expect(queenHomeCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive', devicePubkey: 'pk-creator' }]);
+    expect(queenHomeCalls).toEqual([{ workspaceId: 'default', potSlug: 'test-hive', devicePubkey: 'pk-creator' }]);
     expect(res.provisionedLoop).toEqual({ gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5 });
   });
 
@@ -383,7 +383,7 @@ describe('createHiveHarness', () => {
       expect(res.repoInit?.remoteReason).toBe('mocked'); // publish WAS called (default repoRemote:'auto')
       // P-009: the self_repo home seeds git-sync (staging accumulates) + the green-checkpoint.
       expect(gitSyncSeedCalls.map((c) => c.installSlug)).toContain('codinghive');
-      expect(releaseSeedCalls.map((c) => c.hiveSlug)).toContain('codinghive');
+      expect(releaseSeedCalls.map((c) => c.potSlug)).toContain('codinghive');
     });
 
     it('repoRemote:local-only skips the remote publish entirely (stays local-only, no publish call)', async () => {
@@ -430,7 +430,7 @@ describe('createHiveHarness', () => {
         expect(existsSync(join(existing, '.papercusp', 'blueprint.yaml'))).toBe(true);
         // Identity minted, loop provisioned — the rest of create is unchanged.
         expect(ensureCalls).toEqual([['default', 'linked-hive']]);
-        expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'linked-hive' }]);
+        expect(provisionCalls).toEqual([{ workspaceId: 'default', potSlug: 'linked-hive' }]);
         // EI-3388: the blueprint resolver was given the linked repo's own
         // .papercusp/blueprints as a local tier, so a custom blueprint authored
         // there (e.g. a hive-scoped `extends` parent) resolves without a manual

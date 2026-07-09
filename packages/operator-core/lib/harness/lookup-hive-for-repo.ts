@@ -41,7 +41,7 @@ export interface RepoCoords {
 
 /** A Hive hit (directory or Cupboard) — the join-offer payload. */
 export interface HiveHit {
-  hiveId: string;
+  potId: string;
   title: string;
   ownerGithubLogin?: string;
   /** Raw-32-byte base64 Ed25519 Hive identity pubkey, when the Hive minted one. */
@@ -235,7 +235,7 @@ export async function lookupHiveForRepo(
         kind: 'hive',
         coords,
         hive: {
-          hiveId: hit.hiveId,
+          potId: hit.potId,
           title: hit.title,
           ownerGithubLogin: hit.ownerGithubLogin,
           ...(hit.hivePubkey ? { hivePubkey: hit.hivePubkey } : {}),
@@ -263,7 +263,7 @@ export async function lookupHiveForRepo(
           kind: 'hive',
           coords,
           hive: {
-            hiveId: listing.hive_title ?? `${coords.owner}/${coords.repo}`,
+            potId: listing.hive_title ?? `${coords.owner}/${coords.repo}`,
             title: listing.hive_title ?? `${coords.owner}/${coords.repo}`,
             ...(listing.publisher_github_login
               ? { ownerGithubLogin: listing.publisher_github_login }

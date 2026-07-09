@@ -190,7 +190,7 @@ describe('new-hive mode', () => {
         status: 200,
         body: {
           ok: true,
-          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web', defaultBranch: 'main' },
+          created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web', defaultBranch: 'main' },
           bindingUnverified: false,
           publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } },
         },
@@ -218,7 +218,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
     });
     renderForm();
@@ -234,7 +234,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
     });
     renderForm();
@@ -253,7 +253,7 @@ describe('new-hive mode', () => {
         body: {
           ok: true,
           created: {
-            hiveSlug: 'web-hive',
+            potSlug: 'web-hive',
             memberSlug: 'web',
             memberPath: '/tmp/web',
             seededLearnings: { packId: 'papercusp-default', packVersion: '1.0.0', count: 28 },
@@ -283,7 +283,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
       },
     });
     renderForm();
@@ -299,7 +299,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
     });
     renderForm({ initialPrivate: false });
@@ -322,7 +322,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, inviteSecret: 's3cret', cupboard: { attempted: false, skipped: 'invite' } } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, inviteSecret: 's3cret', cupboard: { attempted: false, skipped: 'invite' } } },
       },
     });
     renderForm({ initialPrivate: true });
@@ -341,7 +341,7 @@ describe('new-hive mode', () => {
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
+        body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
     });
     renderForm({ initialPrivate: undefined });
@@ -360,7 +360,7 @@ describe('new-hive mode', () => {
         body: {
           ok: true,
           created: {
-            hiveSlug: 'web-hive',
+            potSlug: 'web-hive',
             memberSlug: 'web',
             memberPath: '/tmp/web',
             seededLearnings: { packId: 'papercusp-default', packVersion: '1.0.0', count: 28 },
@@ -394,7 +394,7 @@ describe('new-hive mode', () => {
         status: 200,
         body: {
           ok: true,
-          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
+          created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
           bindingUnverified: false,
           publish: {
             announced: true,
@@ -428,7 +428,7 @@ describe('new-hive mode', () => {
         body: {
           ok: true,
           created: {
-            hiveSlug: 'web-hive',
+            potSlug: 'web-hive',
             memberSlug: 'web',
             memberPath: '/tmp/web',
             duplicateOf: { kind: 'hive', hivePubkey: 'pk', source: 'directory' },
@@ -452,7 +452,7 @@ describe('new-hive mode', () => {
         status: 200,
         body: {
           ok: true,
-          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
+          created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
           // Otherwise a clean create, but the central index couldn't be reached
           // during lookup — surface the reconcile note rather than closing on it.
           bindingUnverified: true,
@@ -518,7 +518,7 @@ describe('join offer (existing hive)', () => {
     existing: {
       kind: 'hive',
       hive: {
-        hiveId: 'hive-1',
+        potId: 'hive-1',
         title: 'Acme Web',
         ownerGithubLogin: 'octocat',
         claimStatus: 'claimed',
@@ -536,7 +536,7 @@ describe('join offer (existing hive)', () => {
       '/api/harness/pots/from-repo': { status: 200, body: existingHive([memberLink('web', 1), memberLink('api', 2)]) },
       '/api/discovery/join-pot': {
         status: 200,
-        body: { ok: true, hiveSlug: 'acme-web', members: [{ ok: true }, { ok: true }] },
+        body: { ok: true, potSlug: 'acme-web', members: [{ ok: true }, { ok: true }] },
       },
     });
     const { onCreated } = renderForm();
@@ -556,7 +556,7 @@ describe('join offer (existing hive)', () => {
     const joins = postedBodies('/api/discovery/join-pot');
     expect(joins).toHaveLength(1);
     expect(joins[0]).toMatchObject({
-      hiveId: 'hive-1', // the offer's hiveId, passed through verbatim
+      potId: 'hive-1', // the offer's potId, passed through verbatim
       memberLinks: [memberLink('web', 1), memberLink('api', 2)],
     });
     expect(postedBodies('/api/harness/join-link')).toHaveLength(0);
@@ -566,16 +566,16 @@ describe('join offer (existing hive)', () => {
     expect(onCreated).toHaveBeenCalledWith('acme-web');
   });
 
-  it('a join with NO returned hiveSlug still CLOSES on Done — never falls back to onBack (stuck-modal report)', async () => {
+  it('a join with NO returned potSlug still CLOSES on Done — never falls back to onBack (stuck-modal report)', async () => {
     // The user's report: joining a shared hive "worked" but dropped them back on
     // the "Add a Hive" picker with no way to dismiss it. Root cause: a
-    // discovery-join whose response omits hiveSlug left firstSlug undefined, and
+    // discovery-join whose response omits potSlug left firstSlug undefined, and
     // Done fell back to onBack() — which re-renders the picker. Done must ALWAYS
     // close (onCreated is the parent's close path), even with no slug to focus.
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/pots/from-repo': { status: 200, body: existingHive([memberLink('web', 1)]) },
-      // join succeeded (members ok) but the route returned NO hiveSlug
+      // join succeeded (members ok) but the route returned NO potSlug
       '/api/discovery/join-pot': { status: 200, body: { ok: true, members: [{ ok: true }] } },
     });
     const { onCreated, onBack } = renderForm();
@@ -602,7 +602,7 @@ describe('join offer (existing hive)', () => {
           JSON.stringify({
             ok: true,
             created: {
-              hiveSlug: 'web-hive',
+              potSlug: 'web-hive',
               memberSlug: 'web',
               memberPath: '/tmp/web',
               duplicateOf: { kind: 'hive', source: 'directory' },
@@ -685,7 +685,7 @@ describe('into-hive mode', () => {
         status: 200,
         body: {
           ok: true,
-          created: { hiveSlug: 'acme', memberSlug: 'web', memberPath: '/tmp/web' },
+          created: { potSlug: 'acme', memberSlug: 'web', memberPath: '/tmp/web' },
           bindingUnverified: false,
           publish: { skipped: 'unpublished_hive' },
         },

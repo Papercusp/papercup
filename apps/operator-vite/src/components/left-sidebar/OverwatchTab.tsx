@@ -162,7 +162,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   const tone = running ? 'good' : preArmed ? 'warn' : 'mute';
   const stateLabel = running ? 'Running' : preArmed ? 'Pre-armed' : 'Paused';
   const cadenceMin = control ? Math.round(control.cadenceSec / 60) : null;
-  const slug = control?.hiveSlug ?? brief?.hiveSlug ?? null;
+  const slug = control?.potSlug ?? brief?.potSlug ?? null;
   const anomalyCount = brief?.anomalies.length ?? 0;
   const critCount = brief?.anomalies.filter((a) => a.severity === 'critical').length ?? 0;
   const lastWake = ageLabel(control?.staleForMs ?? null);

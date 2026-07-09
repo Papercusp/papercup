@@ -11,10 +11,10 @@ import { resolveSeedLogKeys } from './seed-log-admission';
 const KEY_A = 'a'.repeat(64);
 const KEY_B = '0123456789abcdef'.repeat(4).toUpperCase();
 
-function manifestJson(opts: { hiveId?: string; stores?: unknown[] } = {}): string {
+function manifestJson(opts: { potId?: string; stores?: unknown[] } = {}): string {
   return JSON.stringify({
     seedFormatVersion: 1,
-    hiveId: opts.hiveId ?? 'papercusp',
+    potId: opts.potId ?? 'papercusp',
     cutAtEpoch: 1,
     cutHlc: '001:00000:aa',
     cutTs: 1783385378879,

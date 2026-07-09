@@ -65,14 +65,14 @@ export async function runCrossHiveDrainTick(
       if (out.delivered > 0 || out.failedPeers.length > 0) {
          
         console.log(
-          `[cross-hive-drain] ${b.workspaceId}/${b.hiveSlug}: delivered=${out.delivered} ` +
+          `[cross-hive-drain] ${b.workspaceId}/${b.potSlug}: delivered=${out.delivered} ` +
             `pending=${out.pending} offlinePeers=${out.failedPeers.length} backedOff=${out.backedOffPeers.length}`,
         );
       }
     } catch (e) {
        
       console.warn(
-        `[cross-hive-drain] drain failed for ${b.workspaceId}/${b.hiveSlug}: ${e instanceof Error ? e.message : e}`,
+        `[cross-hive-drain] drain failed for ${b.workspaceId}/${b.potSlug}: ${e instanceof Error ? e.message : e}`,
       );
     }
   }

@@ -46,6 +46,27 @@ export interface SynthOptions {
   container?: 'mp3' | 'wav';
 }
 
+/**
+ * Map an upstream provider's HTTP status onto the status we report.
+ *
+ * These used to ALL collapse to 502, which made a user-fixable credential
+ * problem ("ElevenLabs rejected your key" / "you're out of credits") look
+ * identical to an infrastructure outage ("the provider is down") — the exact
+ * confusion hit on 2026-07-09, when a defunded EL account surfaced as a bare
+ * `502` from the settings preview. Both the preview route and the TUI pass this
+ * status straight to the user, so the classes must be distinguishable.
+ *
+ * 404 is deliberately NEVER produced here — it is reserved for "key not
+ * configured", which keeps the preview route's `'no-key'` contract unambiguous
+ * even when a provider itself answers 404.
+ */
+function upstreamStatus(providerStatus: number): number {
+  if (providerStatus === 401 || providerStatus === 403) return 401; // credential rejected / no credits
+  if (providerStatus === 429) return 429; // rate-limited / quota exhausted
+  if (providerStatus >= 400 && providerStatus < 500) return 400; // bad voice / model / request
+  return 502; // upstream 5xx, or anything we can't classify
+}
+
 /** Wrap raw little-endian PCM16 bytes into a RIFF/WAVE the WAV decoder accepts. */
 function pcm16ToWav(raw: ArrayBuffer, sampleRate: number): ArrayBuffer {
   const evenBytes = raw.byteLength - (raw.byteLength % 2); // PCM16 = 2 bytes/sample
@@ -68,8 +89,19 @@ export async function synthesize(
   opts?: SynthOptions,
 ): Promise<Synth> {
   const wantWav = opts?.container === 'wav';
+  /**
+   * Shared non-ok / empty-body guard. Returns a failure Synth when the response
+   * is unusable, else null. Every provider branch goes through this so a new
+   * engine cannot reintroduce a bespoke (mis)classification.
+   */
+  const guard = (r: Response): Synth | null => {
+    if (!r.ok) return { ok: false, error: `${engine} ${r.status}`, status: upstreamStatus(r.status) };
+    if (!r.body) return { ok: false, error: `${engine} ${r.status} (empty body)`, status: 502 };
+    return null;
+  };
   const upstream = async (r: Response, contentType: string): Promise<Synth> => {
-    if (!r.ok || !r.body) return { ok: false, error: `${engine} ${r.status}`, status: 502 };
+    const bad = guard(r);
+    if (bad) return bad;
     return { ok: true, audio: await r.arrayBuffer(), contentType };
   };
   try {
@@ -105,7 +137,8 @@ export async function synthesize(
               signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
             },
           );
-          if (!r.ok || !r.body) return { ok: false, error: `${engine} ${r.status}`, status: 502 };
+          const bad = guard(r);
+          if (bad) return bad;
           return { ok: true, audio: pcm16ToWav(await r.arrayBuffer(), 24_000), contentType: 'audio/wav' };
         }
         const r = await fetch(

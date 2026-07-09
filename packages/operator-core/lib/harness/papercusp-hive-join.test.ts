@@ -43,10 +43,10 @@ describe('joinCanonicalPapercuspHive', () => {
       joinInviteTopic: async () => undefined,
       confirmInviteAnnounce: async () => ({
         found: true,
-        hive: { hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link1'] },
+        hive: { potId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link1'] },
       }),
     }),
-    joinHive: async () => ({ ok: true, hiveSlug: 'papercusp' }),
+    joinHive: async () => ({ ok: true, potSlug: 'papercusp' }),
     setHomeWorkspace: () => {},
     ...over,
   });
@@ -91,11 +91,11 @@ describe('joinCanonicalPapercuspHive', () => {
         confirmInviteAnnounce: async () => ({ found: false }),
       }),
       listDiscovered: async () => [
-        { hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['cached-link'] },
+        { potId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['cached-link'] },
       ],
       joinHive: async (o) => {
         joined = o;
-        return { ok: true, hiveSlug: 'papercusp' };
+        return { ok: true, potSlug: 'papercusp' };
       },
     });
     expect(res.state).toBe('joined');
@@ -114,11 +114,11 @@ describe('joinCanonicalPapercuspHive', () => {
         confirmInviteAnnounce: async () => ({ found: false }),
       }),
       listDiscovered: async () => [
-        { hiveId: 'papercusp', hivePubkey: 'EVIL==', memberLinks: ['hijack-link'] },
+        { potId: 'papercusp', hivePubkey: 'EVIL==', memberLinks: ['hijack-link'] },
       ],
       joinHive: async () => {
         joinCalled = true;
-        return { ok: true, hiveSlug: 'papercusp' };
+        return { ok: true, potSlug: 'papercusp' };
       },
     });
     expect(res.state).toBe('skipped');
@@ -132,7 +132,7 @@ describe('joinCanonicalPapercuspHive', () => {
       ...baseDeps(),
       joinHive: async (o) => {
         joined = o;
-        return { ok: true, hiveSlug: 'papercusp' };
+        return { ok: true, potSlug: 'papercusp' };
       },
     });
     expect(res.state).toBe('joined');
@@ -147,12 +147,12 @@ describe('joinCanonicalPapercuspHive', () => {
       ...baseDeps(),
       ensureWired: async () => ({
         joinInviteTopic: async () => undefined,
-        confirmInviteAnnounce: async () => ({ found: true, hive: { hiveId: 'papercusp', memberLinks: [] } }),
+        confirmInviteAnnounce: async () => ({ found: true, hive: { potId: 'papercusp', memberLinks: [] } }),
       }),
-      listDiscovered: async () => [{ hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link2'] }],
+      listDiscovered: async () => [{ potId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link2'] }],
       joinHive: async (o) => {
         joined = o;
-        return { ok: true, hiveSlug: 'papercusp' };
+        return { ok: true, potSlug: 'papercusp' };
       },
     });
     expect(res.state).toBe('joined');

@@ -50,9 +50,9 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: h.getOrgPg }));
 import { getOverwatchSnapshot, getOverwatchControlState } from './snapshot';
 
 /** A minimal SystemHealth — the mapper is mocked, so only the slug-resolution
- *  path (panels.queen.data.hiveSlug) + evaluatedAt are read here. */
-function healthFixture(hiveSlug: string | null, evaluatedAt: number) {
-  return { evaluatedAt, panels: { queen: { data: hiveSlug ? { hiveSlug } : null } } } as never;
+ *  path (panels.queen.data.potSlug) + evaluatedAt are read here. */
+function healthFixture(potSlug: string | null, evaluatedAt: number) {
+  return { evaluatedAt, panels: { queen: { data: potSlug ? { potSlug } : null } } } as never;
 }
 
 beforeEach(() => {
@@ -111,7 +111,7 @@ describe('getOverwatchSnapshot', () => {
 
     expect(h.mapSystemHealthToBrief).not.toHaveBeenCalled();
     // emptyOverwatchBrief('papercup-hive') — the env home slug, since no health.
-    expect(out).toMatchObject({ hiveSlug: 'papercup-hive', anomalies: [] });
+    expect(out).toMatchObject({ potSlug: 'papercup-hive', anomalies: [] });
   });
 });
 
@@ -130,7 +130,7 @@ describe('getOverwatchControlState', () => {
     const out = await getOverwatchControlState();
 
     expect(out).toEqual({
-      hiveSlug: 'papercup-hive',
+      potSlug: 'papercup-hive',
       started: true,
       cadenceSec: 600,
       flagEnabled: true,
@@ -149,7 +149,7 @@ describe('getOverwatchControlState', () => {
     const out = await getOverwatchControlState();
 
     expect(out).toEqual({
-      hiveSlug: null,
+      potSlug: null,
       started: false,
       cadenceSec: 600,
       flagEnabled: false,

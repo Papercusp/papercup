@@ -62,7 +62,7 @@ interface SpawnRow {
 
 /**
  * Build the live {@link LiveGroundTruthDeps} over a throwaway hive's rows. Reads are scoped by
- * `(workspace_id, harness_slug)` = `(ctx.workspaceId, ctx.hiveSlug)`. The whole hive's features +
+ * `(workspace_id, harness_slug)` = `(ctx.workspaceId, ctx.potSlug)`. The whole hive's features +
  * spawns are fetched once and joined in JS (a scenario has a handful of items, so no per-item query).
  */
 export function makeLiveGroundTruthDeps(cfg: LiveGroundTruthConfig): LiveGroundTruthDeps {
@@ -76,7 +76,7 @@ export function makeLiveGroundTruthDeps(cfg: LiveGroundTruthConfig): LiveGroundT
     sql<FeatureRow[]>`
       SELECT feature_id, status, verifier_last_error, audit_reasons
       FROM harness_shared.harness_features_consolidated
-      WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${ctx.hiveSlug}
+      WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${ctx.potSlug}
     `;
 
   return {
@@ -93,7 +93,7 @@ export function makeLiveGroundTruthDeps(cfg: LiveGroundTruthConfig): LiveGroundT
       const rows = await sql<SpawnRow[]>`
         SELECT feature_id, status
         FROM harness_shared.spawned_agents
-        WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${ctx.hiveSlug} AND feature_id IS NOT NULL
+        WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${ctx.potSlug} AND feature_id IS NOT NULL
       `;
       // A feature is genuinely WORKED iff some bee ran it to a worked status — the runtime's record
       // of real execution, never the Queen's claim (D-005).

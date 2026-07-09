@@ -62,7 +62,7 @@ export interface FederatedPresenceOpts {
   harnessSlug?: string | null;
   /** Restrict to one Hive (shared_presence is hive-keyed, mig 187) — the P-004
    *  hive-scoped read's federated leg. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   /** Staleness window — a peer not seen within it is `stale`. Default = PRESENCE_STALE_MS. */
   staleMs?: number;
   /** Injectable clock (tests). */
@@ -97,7 +97,7 @@ export function mapSharedPresenceRow(
     // mig 187) — it's the federated leg of the P-004 hive-scoped read.
     lastActiveAt: null,
     agentRole: null,
-    hiveSlug: row.pot_slug,
+    potSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,
@@ -114,7 +114,7 @@ export function mapSharedPresenceRow(
  */
 export async function queryFederatedPresenceRows(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
-  opts: { workspaceId?: string | null; harnessSlug?: string | null; hiveSlug?: string | null } = {},
+  opts: { workspaceId?: string | null; harnessSlug?: string | null; potSlug?: string | null } = {},
 ): Promise<SharedPresenceDbRow[]> {
   const rows = (await sql`
     SELECT workspace_id, harness_slug, pot_slug, github_user_id, machine_label, device_pubkey,
@@ -137,7 +137,7 @@ export async function queryFederatedPresenceRows(
     }))
     .filter((r) => (opts.workspaceId ? r.workspace_id === opts.workspaceId : true))
     .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true))
-    .filter((r) => (opts.hiveSlug ? r.pot_slug === opts.hiveSlug : true));
+    .filter((r) => (opts.potSlug ? r.pot_slug === opts.potSlug : true));
 }
 
 /**
@@ -164,7 +164,7 @@ export function mapSessionPresenceRow(
     heartbeatAt: iso,
     lastActiveAt: iso,
     agentRole: row.kind,
-    hiveSlug: row.pot_slug,
+    potSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,
@@ -206,7 +206,7 @@ export async function listFederatedPresence(
     try {
       const sessions = await listLiveSessionPresence({
         workspaceId: opts.workspaceId,
-        hiveSlug: opts.hiveSlug ?? null,
+        potSlug: opts.potSlug ?? null,
         staleMs: staleMs * 4,
         nowMs,
       });

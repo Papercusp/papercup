@@ -14,7 +14,7 @@
  *
  * Distinct from the work-item CLAIM seam (one live grip per item) — this serializes
  * the N SLOTS of a redundancy group — but the routing shape is identical: the store
- * only ever calls `getWorkItemReplicaAuthority().route(hiveSlug, op)`, and on a
+ * only ever calls `getWorkItemReplicaAuthority().route(potSlug, op)`, and on a
  * single box the default `LocalWorkItemReplicaAuthority` runs every op locally
  * (byte-identical to the pre-routing behavior). When the cross-Swarm mesh transport
  * lands, `setWorkItemReplicaAuthority()` installs the real resolver
@@ -27,9 +27,9 @@ import type { AuthorityOp } from './authority';
 
 export interface WorkItemReplicaAuthority {
   /** True if this peer is the replica authority for the Hive. Single box → always true. */
-  isSelf(hiveSlug: string): Promise<boolean>;
+  isSelf(potSlug: string): Promise<boolean>;
   /** Run a replica op AT the authority: `op.local()` when isSelf, else RPC `op.remote` to the authority peer. */
-  route<T>(hiveSlug: string, op: AuthorityOp<T>): Promise<T>;
+  route<T>(potSlug: string, op: AuthorityOp<T>): Promise<T>;
 }
 
 /** The single-peer / single-box authority: this peer is always the authority. */

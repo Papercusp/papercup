@@ -14,7 +14,7 @@
  * EPOCH KEY readable (bundled-epoch-key-provider.ts, owner-authorised for alpha), so the
  * content-trust decision for everything the manifest names was made at cut time; the
  * hash-verified manifest's `coreKeys` list is the same authority. Admission is gated on
- * `manifest.hiveId === <this boot's hive home>` so a seed never leaks logs into an
+ * `manifest.potId === <this boot's hive home>` so a seed never leaks logs into an
  * unrelated hive/harness boot.
  *
  * Member-content note (why admission alone suffices for the dogfood pot): the WI-259
@@ -37,7 +37,7 @@ import { resolveSeedDir, SEED_MANIFEST_FILE } from './restore-hive-seed';
 const CORE_KEY_HEX = /^[0-9a-f]{64}$/i;
 
 export interface ResolveSeedLogKeysOpts {
-  /** The hive home this boot is peered on; admission requires manifest.hiveId to match. */
+  /** The hive home this boot is peered on; admission requires manifest.potId to match. */
   readonly hiveHomeSlug: string;
   /** Injected for tests; defaults to the real filesystem read. */
   readonly readFileImpl?: (path: string) => Promise<string>;
@@ -58,7 +58,7 @@ export async function resolveSeedLogKeys(opts: ResolveSeedLogKeysOpts): Promise<
     const readFileImpl = opts.readFileImpl ?? ((p: string) => readFile(p, 'utf8'));
     const raw = await readFileImpl(join(resolved.seedDir, SEED_MANIFEST_FILE));
     const manifest = decodeManifest(raw); // throws on structural invalidity → catch → []
-    if (manifest.hiveId !== opts.hiveHomeSlug) return [];
+    if (manifest.potId !== opts.hiveHomeSlug) return [];
     const entry = manifest.stores.find((s) => s.kind === 'corestore');
     const keys = (entry?.meta as { coreKeys?: unknown } | undefined)?.coreKeys;
     if (!Array.isArray(keys)) return [];

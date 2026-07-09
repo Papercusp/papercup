@@ -98,7 +98,7 @@ export interface ContextBurnMetrics {
 }
 
 export interface HiveSoakReport {
-  hiveSlug: string;
+  potSlug: string;
   surveyScope: 'members' | 'workspace';
   surveySlugs: string[];
   windowHours: number;
@@ -119,7 +119,7 @@ export interface HiveSoakReportSnapshot {
 }
 
 export interface SoakReportInput {
-  hiveSlug: string;
+  potSlug: string;
   surveyScope: 'members' | 'workspace';
   surveySlugs: string[];
   windowHours: number;
@@ -224,7 +224,7 @@ export function computeSoakReport(input: SoakReportInput): HiveSoakReport {
   }
 
   return {
-    hiveSlug: input.hiveSlug,
+    potSlug: input.potSlug,
     surveyScope: input.surveyScope,
     surveySlugs: input.surveySlugs,
     windowHours: input.windowHours,
@@ -340,14 +340,14 @@ function computeDeployLatency(rows: PipelineEventRow[]): DeployLatencyMetrics {
 }
 
 export async function readHiveSoakReport(
-  hiveSlug: string,
+  potSlug: string,
   opts: { windowHours?: number; sql?: Sql } = {},
 ): Promise<HiveSoakReport> {
   const windowHours = clampWindowHours(opts.windowHours);
   const sql = opts.sql ?? getOrgPg().sql;
   const workspaceId = activeWorkspaceId();
-  const membership = await resolveHiveMembership(workspaceId, hiveSlug);
-  const surveySlugs = membership.surveySlugs.length > 0 ? membership.surveySlugs : [hiveSlug];
+  const membership = await resolveHiveMembership(workspaceId, potSlug);
+  const surveySlugs = membership.surveySlugs.length > 0 ? membership.surveySlugs : [potSlug];
 
   const [
     ticker,
@@ -382,7 +382,7 @@ export async function readHiveSoakReport(
              )::int AS infra_curses
         FROM harness_shared.hive_placements
        WHERE workspace_id = ${workspaceId}
-         AND install_slug = ${hiveSlug}
+         AND install_slug = ${potSlug}
          AND updated_at >= now() - make_interval(hours => ${windowHours})
     `,
     sql<EscalationAggRow[]>`
@@ -416,13 +416,13 @@ export async function readHiveSoakReport(
                  AND status IN ('advanced', 'up-to-date')
              )::int AS green_success
         FROM harness_shared.pipeline_events
-       WHERE install_slug = ${hiveSlug}
+       WHERE install_slug = ${potSlug}
          AND created_at >= now() - make_interval(hours => ${windowHours})
     `,
     sql<PipelineEventRow[]>`
       SELECT kind, status, created_at
         FROM harness_shared.pipeline_events
-       WHERE install_slug = ${hiveSlug}
+       WHERE install_slug = ${potSlug}
          AND created_at >= now() - make_interval(hours => ${windowHours})
          AND (
            (kind = 'green_checkpoint' AND status IN ('advanced', 'up-to-date'))
@@ -482,7 +482,7 @@ export async function readHiveSoakReport(
   const sessionsCompacting = Number(compaction.sessions ?? 0);
 
   return computeSoakReport({
-    hiveSlug,
+    potSlug,
     surveyScope: membership.scope,
     surveySlugs,
     windowHours,

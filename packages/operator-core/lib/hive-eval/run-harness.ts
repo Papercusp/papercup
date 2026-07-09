@@ -46,7 +46,7 @@ export interface HiveScenarioCell {
 
 /** What `bootHive` returns — where + how to drive the throwaway hive. Opaque to the engine. */
 export interface HiveBootResult {
-  hiveSlug: string;
+  potSlug: string;
   /** The throwaway hive's repo checkout (acceptance/bug detection run here — HE-04). */
   repoPath: string;
   workspaceId: string;
@@ -69,7 +69,7 @@ export interface HiveRunHandle {
   runId: string;
   instanceId: string;
   scenarioId: string;
-  hiveSlug: string;
+  potSlug: string;
   terminalState: HiveRunTerminalState;
   /** Measured boot→drive wall-clock (ms). */
   wallClockMs: number;
@@ -251,7 +251,7 @@ export function hiveScenarioSubject(
         runId: identity.runId,
         instanceId: cell.instanceId,
         scenarioId: cell.scenario.id,
-        hiveSlug: boot.hiveSlug,
+        potSlug: boot.potSlug,
         terminalState: drive.terminalState,
         wallClockMs,
         frontierDrained: drive.frontierDrained,
@@ -336,13 +336,13 @@ export function makeFakeHivePorts(behavior: (cell: HiveScenarioCell) => FakeHive
     async bootHive({ cell, identity }) {
       const b = behavior(cell);
       if (b.throwAt === 'boot') throw new Error(`fake boot failure for ${cell.scenario.id}`);
-      booted.push(identity.hiveSlug);
-      return { hiveSlug: identity.hiveSlug, repoPath: `/tmp/${identity.hiveSlug}`, workspaceId: 'ws-fake', handle: { cell } };
+      booted.push(identity.potSlug);
+      return { potSlug: identity.potSlug, repoPath: `/tmp/${identity.potSlug}`, workspaceId: 'ws-fake', handle: { cell } };
     },
     async seedScenario({ scenario, boot }) {
       const b = behavior((boot.handle as { cell: HiveScenarioCell }).cell);
       if (b.throwAt === 'seed') throw new Error(`fake seed failure for ${scenario.id}`);
-      seeded.push(boot.hiveSlug);
+      seeded.push(boot.potSlug);
     },
     async driveToCompletion({ scenario, cell }) {
       const b = behavior(cell);
@@ -365,7 +365,7 @@ export function makeFakeHivePorts(behavior: (cell: HiveScenarioCell) => FakeHive
       return { distilledTrace: `fake trace for ${cell.scenario.id} r${cell.repeat}`, traceRef: `fake://${cell.scenario.id}/r${cell.repeat}` };
     },
     async teardown({ boot }) {
-      tornDown.push(boot.hiveSlug);
+      tornDown.push(boot.potSlug);
     },
   };
   return { ports, booted, seeded, tornDown };

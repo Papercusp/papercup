@@ -38,7 +38,7 @@ export default defineTool({
     const ids = mergeIds(args.id, args.ids);
     // Shared harness ⇒ resolve the workspace + replica hive ONCE, not per item.
     const workspaceId = activeWorkspaceId();
-    const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+    const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
     const env = await runBulk(
       ids,
       async (id) => {
@@ -46,7 +46,7 @@ export default defineTool({
         if (redundancy == null) {
           return { ok: false as const, id, error: `work-item ${id} not found in harness ${args.harness}` };
         }
-        const replicas = await listReplicas(id, { harness: args.harness, workspaceId, hiveSlug });
+        const replicas = await listReplicas(id, { harness: args.harness, workspaceId, potSlug });
         const completeCount = replicas.filter((r) => r.status === 'complete').length;
         return {
           ok: true as const,

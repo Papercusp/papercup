@@ -82,11 +82,11 @@ describe('join → leave round-trip (P-012 inverse property)', () => {
 
     // ── JOIN ──
     const joined = await joinHiveAsView(
-      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
       joinDeps,
     );
     expect(joined.ok).toBe(true);
-    const viewSlug = joined.hiveSlug!;
+    const viewSlug = joined.potSlug!;
     // After join: a remote_hive view + 2 members (with hive_slug) + 2 routines.
     expect(state.registry.find((p) => p.slug === viewSlug)).toMatchObject({ remote_hive: true });
     expect(state.registry.filter((p) => p.hive_slug === viewSlug).map((p) => p.slug).sort()).toEqual([
@@ -113,10 +113,10 @@ describe('join → leave round-trip (P-012 inverse property)', () => {
     const { state, joinDeps, leaveDeps } = world([{ slug: 'my-local', path: '/local' }]);
 
     const joined = await joinHiveAsView(
-      { hiveId: 'far-hive', memberLinks: [link('far', 300)], workspaceId: 'ws' },
+      { potId: 'far-hive', memberLinks: [link('far', 300)], workspaceId: 'ws' },
       joinDeps,
     );
-    await leaveHive({ workspaceId: 'ws', slug: joined.hiveSlug! }, leaveDeps);
+    await leaveHive({ workspaceId: 'ws', slug: joined.potSlug! }, leaveDeps);
 
     // The local harness is untouched; the joined hive is fully gone.
     expect(state.registry).toEqual([{ slug: 'my-local', path: '/local' }]);
@@ -126,12 +126,12 @@ describe('join → leave round-trip (P-012 inverse property)', () => {
   it('leave is idempotent: a second leave after a clean leave is a no-op ok', async () => {
     const { state, joinDeps, leaveDeps } = world();
     const joined = await joinHiveAsView(
-      { hiveId: 'h', memberLinks: [link('a', 1)], workspaceId: 'ws' },
+      { potId: 'h', memberLinks: [link('a', 1)], workspaceId: 'ws' },
       joinDeps,
     );
-    const first = await leaveHive({ workspaceId: 'ws', slug: joined.hiveSlug! }, leaveDeps);
+    const first = await leaveHive({ workspaceId: 'ws', slug: joined.potSlug! }, leaveDeps);
     expect(first.ok).toBe(true);
-    const second = await leaveHive({ workspaceId: 'ws', slug: joined.hiveSlug! }, leaveDeps);
+    const second = await leaveHive({ workspaceId: 'ws', slug: joined.potSlug! }, leaveDeps);
     expect(second).toMatchObject({ ok: true, alreadyLeft: true });
     expect(state.registry).toEqual([]);
   });

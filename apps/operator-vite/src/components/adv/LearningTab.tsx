@@ -1308,7 +1308,7 @@ function ThroughputView() {
   const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
   const soak = useSyncQuery<HiveSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
   const hives = sync.data?.[0]?.hives ?? [];
-  const soakByHive = new Map((soak.data?.[0]?.hives ?? []).map((report) => [report.hiveSlug, report]));
+  const soakByHive = new Map((soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]));
 
   return (
     <section className="pc-learning__section">
@@ -1323,21 +1323,21 @@ function ThroughputView() {
       ) : (
         hives.map((h) => {
           const m = h.latest;
-          const report = soakByHive.get(h.hiveSlug);
+          const report = soakByHive.get(h.potSlug);
           const rungs = m?.questionRungs ?? {};
           const rungTotal = Object.values(rungs).reduce<number>((a, b) => a + (Number(b) || 0), 0);
           const tickMs = m?.tickAt ? Date.parse(m.tickAt) : NaN;
           const utilPct = m ? Math.round(m.utilization * 100) : 0;
           const saturated = !!m && !h.operatingWell && m.utilization >= 1 && m.frontierDepth > 0;
           return (
-            <div key={h.hiveSlug} className="pc-learning__throughputhive">
-              <div className="pc-learning__flow" aria-label={`${h.hiveSlug} throughput health`}>
+            <div key={h.potSlug} className="pc-learning__throughputhive">
+              <div className="pc-learning__flow" aria-label={`${h.potSlug} throughput health`}>
                 <span
                   className={`pc-learning__flowchip ${h.operatingWell ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
                   title={`The ${t('pot', { lower: true })} whose ${t('brain')}-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements).`}
                 >
                   <Activity size={11} aria-hidden />
-                  {h.hiveSlug}
+                  {h.potSlug}
                   <strong>{m && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'no ticks'}</strong>
                   <em>{h.operatingWell ? 'operating well' : 'needs attention'}</em>
                 </span>
@@ -1359,7 +1359,7 @@ function ThroughputView() {
               </div>
 
               {report ? (
-                <div className="pc-learning__flow" aria-label={`${h.hiveSlug} production readiness`}>
+                <div className="pc-learning__flow" aria-label={`${h.potSlug} production readiness`}>
                   <span className="pc-learning__flowchip" title="Machine-checkable production-readiness verdict over the rolling soak window.">
                     <ShieldCheck size={11} aria-hidden />
                     reasons
@@ -1371,7 +1371,7 @@ function ThroughputView() {
                     </span>
                   ) : (
                     report.reasons.slice(0, 5).map((reason, i) => (
-                      <span key={`${report.hiveSlug}-reason-${i}`} className="pc-learning__lens" title={reason}>
+                      <span key={`${report.potSlug}-reason-${i}`} className="pc-learning__lens" title={reason}>
                         <em>{reason}</em>
                       </span>
                     ))
@@ -1379,7 +1379,7 @@ function ThroughputView() {
                 </div>
               ) : null}
 
-              <div className="pc-learning__scoreboard" aria-label={`${h.hiveSlug} throughput`}>
+              <div className="pc-learning__scoreboard" aria-label={`${h.potSlug} throughput`}>
                 <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint={`Ready work waiting for placement (todo items) — the queue the ${t('brain')} pours from.`} />
                 <Stat
                   label={`${t('contributor', { plural: true, lower: true })} busy`}
@@ -1401,7 +1401,7 @@ function ThroughputView() {
               </div>
 
               {rungTotal > 0 ? (
-                <div className="pc-learning__flow" aria-label={`${h.hiveSlug} question rungs`}>
+                <div className="pc-learning__flow" aria-label={`${h.potSlug} question rungs`}>
                   <span className="pc-learning__flowchip" title={`Where ${t('contributor', { lower: true })} questions resolved: ${t('contributor', { lower: true })}-self / peer-vote / ${t('brain')} / owner. The lower the rung, the less the owner was needed.`}>
                     <HelpCircle size={11} aria-hidden />
                     question rungs

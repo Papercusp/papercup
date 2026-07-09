@@ -54,10 +54,10 @@ export async function hasRemotePeers(
  * a harness key.
  */
 export async function hasRemoteHivePeers(
-  hiveSlug: string,
+  potSlug: string,
   deps: RemotePeersCacheDeps = {},
 ): Promise<boolean> {
-  return cachedHasRemotePeer(`hive:${hiveSlug}`, () => lockAuthorityForHive(hiveSlug, deps), deps);
+  return cachedHasRemotePeer(`hive:${potSlug}`, () => lockAuthorityForHive(potSlug, deps), deps);
 }
 
 /** Shared TTL-cached "is there a live remote peer?" over any scope's resolution. */
@@ -87,8 +87,8 @@ export function invalidateRemotePeers(harnessSlug?: string): void {
 }
 
 /** Invalidate a Hive's remote-peers cache entry. */
-export function invalidateRemoteHivePeers(hiveSlug: string): void {
-  _cache.delete(`hive:${hiveSlug}`);
+export function invalidateRemoteHivePeers(potSlug: string): void {
+  _cache.delete(`hive:${potSlug}`);
 }
 
 /** Test-only: reset the cache. */

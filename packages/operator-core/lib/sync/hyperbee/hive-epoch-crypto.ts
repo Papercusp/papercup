@@ -34,7 +34,7 @@ export type EpochKey = Uint8Array & { readonly __brand: 'HiveEpochKey' };
  * different (hive, epoch, op) — authenticated but not encrypted.
  */
 export interface OpAAD {
-  hiveId: string;
+  potId: string;
   epoch: number;
   /** Stable op identity (e.g. table+key+author) so a ct can't be moved between rows. */
   opId: string;
@@ -55,7 +55,7 @@ export interface HiveEpochCrypto {
    * they obtain the epoch key via `unwrapEpochKey` from their distributed wrapped blob.
    * (ed300's design, 2026-06-19.)
    */
-  deriveEpochKey(hiveId: string, epoch: number): Promise<EpochKey>;
+  deriveEpochKey(potId: string, epoch: number): Promise<EpochKey>;
 
   /**
    * Wrap `key` TO a single remaining member's device pubkey → an opaque blob only that

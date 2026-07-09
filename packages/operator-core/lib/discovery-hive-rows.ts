@@ -6,7 +6,7 @@ import type { DiscoveredHive } from './hive-directory';
 import type { HiveStatusBeacon } from './hive-beacon';
 
 export interface HiveDirectoryBrowseRow {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   owner: string;
@@ -23,7 +23,7 @@ export interface HiveDirectoryBrowseRow {
 function discoveredRow(h: DiscoveredHive): HiveDirectoryBrowseRow {
   const memberLinks = h.memberLinks ?? [];
   return {
-    hiveId: h.hiveId,
+    potId: h.potId,
     title: h.title,
     description: h.description,
     owner: h.ownerGithubLogin,
@@ -46,7 +46,7 @@ function joinedRemoteRow(project: ProjectEntry, hive: HiveRecord | null): HiveDi
   if (!hivePubkey) return null;
   const now = Date.now();
   return {
-    hiveId: project.slug,
+    potId: project.slug,
     title: hive?.title ?? project.slug,
     description: hive?.description ?? '',
     owner: 'remote',
@@ -85,13 +85,13 @@ export async function buildHiveDirectoryRows(opts: {
   if (opts.includeJoinedRemoteViews !== false) {
     const workspaceId = opts.workspaceId ?? activeWorkspaceId();
     const joined = await joinedRemoteRows(workspaceId).catch(() => [] as HiveDirectoryBrowseRow[]);
-    const seenHiveIds = new Set(rows.map((r) => r.hiveId));
+    const seenHiveIds = new Set(rows.map((r) => r.potId));
     const seenPubkeys = new Set(rows.map((r) => r.hivePubkey).filter((x): x is string => Boolean(x)));
     for (const row of joined) {
-      if (seenHiveIds.has(row.hiveId)) continue;
+      if (seenHiveIds.has(row.potId)) continue;
       if (row.hivePubkey && seenPubkeys.has(row.hivePubkey)) continue;
       rows.push(row);
-      seenHiveIds.add(row.hiveId);
+      seenHiveIds.add(row.potId);
       if (row.hivePubkey) seenPubkeys.add(row.hivePubkey);
     }
   }

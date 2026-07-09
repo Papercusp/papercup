@@ -55,10 +55,10 @@ describe('deriveOpId — deterministic + stable + sensitive', () => {
   });
 });
 
-describe('buildOpAAD — assembles {hiveId, epoch, opId}', () => {
+describe('buildOpAAD — assembles {potId, epoch, opId}', () => {
   it('carries the derived opId + the passed hive/epoch', () => {
     const aad = buildOpAAD('hive-1', 3, ID_A);
-    expect(aad).toEqual({ hiveId: 'hive-1', epoch: 3, opId: deriveOpId(ID_A) });
+    expect(aad).toEqual({ potId: 'hive-1', epoch: 3, opId: deriveOpId(ID_A) });
   });
 });
 
@@ -73,10 +73,10 @@ describe('encrypt/decryptOpPayload pass the correct AAD (fake crypto)', () => {
       decryptOp: async (c, _k, ad) => { seen.push(ad); return c; },
     };
     const key = new Uint8Array(32) as EpochKey;
-    const ctx = { hiveId: 'hive-9', epoch: 7, id: ID_A };
+    const ctx = { potId: 'hive-9', epoch: 7, id: ID_A };
     await encryptOpPayload(fake, enc('x'), ctx, key);
     await decryptOpPayload(fake, enc('x'), ctx, key);
-    const want = { hiveId: 'hive-9', epoch: 7, opId: deriveOpId(ID_A) };
+    const want = { potId: 'hive-9', epoch: 7, opId: deriveOpId(ID_A) };
     expect(seen[0]).toEqual(want);
     expect(seen[1]).toEqual(want); // encrypt + decrypt assemble the IDENTICAL AAD
   });
@@ -87,7 +87,7 @@ describe('serving round-trip + C-001 cut-off (real createHiveEpochCrypto)', () =
     const { createHiveEpochCrypto } = await import('./hive-epoch-crypto-impl');
     const c = createHiveEpochCrypto();
     const k1 = await c.deriveEpochKey('hive-1', 1);
-    const ctx = { hiveId: 'hive-1', epoch: 1, id: ID_A };
+    const ctx = { potId: 'hive-1', epoch: 1, id: ID_A };
     const payload = enc('secret feature body');
 
     const ct = await encryptOpPayload(c, payload, ctx, k1);

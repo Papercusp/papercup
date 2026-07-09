@@ -77,13 +77,13 @@ export interface SandboxHiveOps {
 
 /**
  * The per-(suite-run × arm) isolation boundary (P-002 / D-003 / D-007). A run-sandbox
- * is backed by a per-run EPHEMERAL HIVE whose `hiveSlug` is the SHARED NAMESPACE for
+ * is backed by a per-run EPHEMERAL HIVE whose `potSlug` is the SHARED NAMESPACE for
  * all three capabilities:
- *   - memory → `memory:*` scoped by `hive_slug = hiveSlug` (the hive's shared pool —
+ *   - memory → `memory:*` scoped by `hive_slug = potSlug` (the hive's shared pool —
  *     isolated from production mem0 and from every other run/arm);
  *   - work-queue → `work_items:*` scoped to `memberSlug` (the member harness holds the
  *     run's work_items; they die with the hive);
- *   - coord → `coord:*` scoped to `hiveSlug` (peer messages stay inside the sandbox; no
+ *   - coord → `coord:*` scoped to `potSlug` (peer messages stay inside the sandbox; no
  *     real fleet agent is addressed).
  *
  * It PERSISTS for the whole run/arm — memory ACCUMULATES across every task in the run,
@@ -93,7 +93,7 @@ export interface SandboxHiveOps {
  */
 export interface RunSandbox {
   /** The ephemeral hive slug — the shared namespace for memory (hive_slug) + coord (harness scope). */
-  readonly hiveSlug: string;
+  readonly potSlug: string;
   /** The member harness slug — the work-queue (`work_items:*`) scope. */
   readonly memberSlug: string;
   /** Identifies the (suite, arm, runId) this sandbox isolates — diagnostics + report attribution. */

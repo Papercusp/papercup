@@ -48,7 +48,7 @@ function stripMeta(sql: string): string {
     .join('\n');
 }
 
-const SCOPE = { workspaceId: 'ws_intreq', hiveSlug: 'hive-1', repoKey: 'papercup' };
+const SCOPE = { workspaceId: 'ws_intreq', potSlug: 'hive-1', repoKey: 'papercup' };
 const SHA = (n: number) => n.toString(16).padStart(40, '0');
 
 function device(): string {

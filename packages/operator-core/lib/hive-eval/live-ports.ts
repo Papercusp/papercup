@@ -206,11 +206,11 @@ export function makeLiveHivePorts(ops: LiveHiveOps, opts: LiveHivePortsOpts): Hi
     now: () => ops.now(),
 
     async bootHive({ identity }): Promise<HiveBootResult> {
-      const root = ops.scratchRoot(identity.hiveSlug);
+      const root = ops.scratchRoot(identity.potSlug);
       const base = `${root}/base`;
       const clone = `${root}/clone`;
-      const home = identity.hiveSlug;
-      const member = `${identity.hiveSlug}m`; // hyphen-free (run-identity) ⇒ safe schema id
+      const home = identity.potSlug;
+      const member = `${identity.potSlug}m`; // hyphen-free (run-identity) ⇒ safe schema id
 
       // 1. Materialize the seed-app fixture as a one-commit repo (the clone source + pin).
       await ops.copyDir(SEED_APP_DIR, base);
@@ -225,7 +225,7 @@ export function makeLiveHivePorts(ops: LiveHiveOps, opts: LiveHivePortsOpts): Hi
       await ops.registerMember({ member, clonePath: clone, hiveHome: home, workspaceId: ws });
 
       const handle: LiveBootHandle = { home, member, base, clone };
-      return { hiveSlug: home, repoPath: clone, workspaceId: ws, handle };
+      return { potSlug: home, repoPath: clone, workspaceId: ws, handle };
     },
 
     async seedScenario({ scenario, boot }): Promise<void> {

@@ -31,7 +31,7 @@ describe('defaultResolveSelfHiveMember', () => {
     const r = await defaultResolveSelfHiveMember('web', 'ws');
     expect(r).toMatchObject({
       memberSlug: 'has-remote',
-      hiveSlug: 'web-hive',
+      potSlug: 'web-hive',
       path: '/b',
       upstreamRemote: 'git@github.com:o/r.git',
       defaultBranch: 'main',

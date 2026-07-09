@@ -53,8 +53,8 @@ import { hiveKeychainId } from '../identity/hive-keypair';
 
 export interface JoinHiveOpts {
   /** The discovered hive's id (becomes the local view slug, collision-suffixed). */
-  hiveId: string;
-  /** Display title (defaults to hiveId). */
+  potId: string;
+  /** Display title (defaults to potId). */
   title?: string;
   /** Owner Hive identity pubkey from the discovery listing/invite. */
   hivePubkey?: string;
@@ -80,11 +80,11 @@ export interface JoinedMember {
 export interface JoinHiveResult {
   ok: boolean;
   /** The local view's slug (may be suffixed on collision). */
-  hiveSlug?: string;
+  potSlug?: string;
   members: JoinedMember[];
   error?: string;
   /** The join was a NO-OP because the discovered hive IS a locally-owned hive
-   *  (the directory self-echo guard); hiveSlug is the LOCAL owned slug. */
+   *  (the directory self-echo guard); potSlug is the LOCAL owned slug. */
   self_hive?: true;
 }
 
@@ -105,7 +105,7 @@ export interface JoinHiveDeps {
    *  directory's listDiscoveredHives). EI-681: the joiner needs the OWNER's HIVE
    *  pubkey to re-key its joined harnesses onto the SAME federation topic the
    *  owner uses — a member-link carries only the topic HASH, not the pubkey. */
-  resolveHivePubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
+  resolveHivePubkey?: (workspaceId: string, potId: string) => Promise<string | null>;
   /** Get-or-create the remote Hive's identity row (default: insertHiveIfAbsent).
    *  Best-effort — a missing pubkey or a write failure NEVER fails the join. */
   upsertHiveIdentity?: (input: {
@@ -129,7 +129,7 @@ export interface JoinHiveDeps {
   ) => Promise<{ pubkeyBase64: string } | null>;
   /** Resolve the discovered Hive's OWNER device pubkey (default: the local
    *  verified directory's listing — same source as resolveHivePubkey). */
-  resolveOwnerDevicePubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
+  resolveOwnerDevicePubkey?: (workspaceId: string, potId: string) => Promise<string | null>;
 }
 
 /** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
@@ -137,12 +137,12 @@ export interface JoinHiveDeps {
  *  topic hash). Returns null when absent — the caller skips the identity write. */
 async function defaultResolveHivePubkey(
   _workspaceId: string,
-  hiveId: string,
+  potId: string,
 ): Promise<string | null> {
   try {
     const { getHiveDirectory } = await import('../hive-directory-deps');
     const hives = await getHiveDirectory().listDiscoveredHives({ includeExpired: true });
-    return hives.find((h) => h.hiveId === hiveId)?.hivePubkey ?? null;
+    return hives.find((h) => h.potId === potId)?.hivePubkey ?? null;
   } catch {
     return null;
   }
@@ -153,12 +153,12 @@ async function defaultResolveHivePubkey(
  *  verifyHiveAnnounce, which binds owner_device_pubkey ↔ hive_pubkey). */
 async function defaultResolveOwnerDevicePubkey(
   _workspaceId: string,
-  hiveId: string,
+  potId: string,
 ): Promise<string | null> {
   try {
     const { getHiveDirectory } = await import('../hive-directory-deps');
     const hives = await getHiveDirectory().listDiscoveredHives({ includeExpired: true });
-    const h = hives.find((x) => x.hiveId === hiveId) as { ownerDevicePubkey?: string } | undefined;
+    const h = hives.find((x) => x.potId === potId) as { ownerDevicePubkey?: string } | undefined;
     return h?.ownerDevicePubkey ?? null;
   } catch {
     return null;
@@ -238,7 +238,7 @@ export async function joinHiveAsView(
       : null) ??
     // D-007: the member links carry the hive pubkey too — deterministic at join.
     links.map((l) => l.parsed?.hivePubkey).find((v) => !!v) ??
-    (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+    (await resolveHivePubkey(opts.workspaceId, opts.potId).catch(() => null));
   const localOwnedHives = reg.projects.filter(
     (p) => p.harness_kind === 'hive' && p.remote_hive !== true,
   );
@@ -247,10 +247,10 @@ export async function joinHiveAsView(
       if (announcedPubkey) {
         const rec = await getLocalHive(opts.workspaceId, local.slug).catch(() => null);
         if (rec?.pubkeyBase64 === announcedPubkey) {
-          return { ok: true, hiveSlug: local.slug, members: [], self_hive: true };
+          return { ok: true, potSlug: local.slug, members: [], self_hive: true };
         }
-      } else if (local.slug === opts.hiveId) {
-        return { ok: true, hiveSlug: local.slug, members: [], self_hive: true };
+      } else if (local.slug === opts.potId) {
+        return { ok: true, potSlug: local.slug, members: [], self_hive: true };
       }
     }
   }
@@ -259,11 +259,11 @@ export async function joinHiveAsView(
   // re-join); otherwise pick a free slug (a LOCAL harness owning the name is
   // never clobbered — suffix instead).
   const existingView = reg.projects.find(
-    (p) => p.remote_hive === true && (p.slug === opts.hiveId || p.slug.startsWith(`${opts.hiveId}-`)),
+    (p) => p.remote_hive === true && (p.slug === opts.potId || p.slug.startsWith(`${opts.potId}-`)),
   );
   const taken = new Set(reg.projects.map((p) => p.slug));
-  const hiveSlug = existingView?.slug ?? freeSlug(kebab(opts.hiveId) || 'remote-hive', taken);
-  if (!hiveSlug) {
+  const potSlug = existingView?.slug ?? freeSlug(kebab(opts.potId) || 'remote-hive', taken);
+  if (!potSlug) {
     return { ok: false, members: [], error: 'view_slug_exhausted' };
   }
 
@@ -300,7 +300,7 @@ export async function joinHiveAsView(
 
   // 2 — materialize the registry VIEW: the remote home + hive_slug + upstream
   //     coords on every successfully-joined member (one atomic mutate).
-  const viewPath = joinPath(remoteHivesRoot, hiveSlug);
+  const viewPath = joinPath(remoteHivesRoot, potSlug);
   await ensureDir(viewPath).catch(() => {});
   const linkBySlug = new Map(
     members.filter((m) => m.ok).map((m) => [m.slug, links.find((l) => l.raw === m.link)?.parsed]),
@@ -321,7 +321,7 @@ export async function joinHiveAsView(
     // formatHarnessLink emits hivePubkey+ownerDevicePubkey together) — the
     // DETERMINISTIC source present at every real join, no directory timing.
     links.map((l) => l.parsed?.ownerDevicePubkey).find((v) => !!v) ??
-    (await resolveOwnerDevicePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+    (await resolveOwnerDevicePubkey(opts.workspaceId, opts.potId).catch(() => null));
   const viewIdentityCoords = {
     ...(announcedPubkey ? { hive_pubkey: announcedPubkey } : {}),
     ...(ownerDevicePubkey ? { owner_device_pubkey: ownerDevicePubkey } : {}),
@@ -331,9 +331,9 @@ export async function joinHiveAsView(
   // git-sync seeding below feeds these to the eligibility/seed composition.
   const memberEntries = new Map<string, ProjectEntry>();
   await mutateRegistry((cur: HarnessRegistry) => {
-    const hasView = cur.projects.some((p) => p.slug === hiveSlug);
+    const hasView = cur.projects.some((p) => p.slug === potSlug);
     const projects = cur.projects.map((p) => {
-      if (p.slug === hiveSlug && p.remote_hive === true) {
+      if (p.slug === potSlug && p.remote_hive === true) {
         // Idempotent re-join BACKFILLS the identity coords onto an existing view
         // (views created before this stamping existed lack them).
         return { ...p, ...viewIdentityCoords };
@@ -342,7 +342,7 @@ export async function joinHiveAsView(
       if (!link) return p;
       const next = {
         ...p,
-        hive_slug: hiveSlug,
+        hive_slug: potSlug,
         // Upstream coords from the join link (the fork-PR context + future
         // member_repos derivation read these — P-002/P-013 of the parent plan).
         ...(p.github_remote
@@ -362,7 +362,7 @@ export async function joinHiveAsView(
         : [
             ...projects,
             {
-              slug: hiveSlug,
+              slug: potSlug,
               path: viewPath,
               harness_kind: 'hive',
               remote_hive: true,
@@ -393,19 +393,19 @@ export async function joinHiveAsView(
     ((input: { workspaceId: string; homeSlug: string; pubkeyBase64: string; keychainId: string }) =>
       upsertRemoteHiveIdentity({
         ...input,
-        title: opts.title ?? opts.hiveId,
-        repairKeychainIds: [hiveKeychainId(opts.workspaceId, hiveSlug)],
+        title: opts.title ?? opts.potId,
+        repairKeychainIds: [hiveKeychainId(opts.workspaceId, potSlug)],
       }));
   try {
     const pubkeyBase64 =
       (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim() ? opts.hivePubkey.trim() : null) ??
-      (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+      (await resolveHivePubkey(opts.workspaceId, opts.potId).catch(() => null));
     if (pubkeyBase64) {
       await upsertHiveIdentity({
         workspaceId: opts.workspaceId,
-        homeSlug: hiveSlug,
+        homeSlug: potSlug,
         pubkeyBase64,
-        keychainId: `remote:${opts.hiveId}`,
+        keychainId: `remote:${opts.potId}`,
       });
     }
   } catch {
@@ -443,11 +443,11 @@ export async function joinHiveAsView(
   //      (A-003 a′). Best-effort: a failure must NEVER fail the join — but say
   //      so loudly (same posture as the member-rekey swallow below).
   try {
-    await rekeyHarness(opts.workspaceId, hiveSlug);
+    await rekeyHarness(opts.workspaceId, potSlug);
   } catch (e) {
      
     console.error(
-      `[join-hive] 2c′ home-view boot/rekey FAILED for ${hiveSlug} — the joiner's hive-home ` +
+      `[join-hive] 2c′ home-view boot/rekey FAILED for ${potSlug} — the joiner's hive-home ` +
         `outbox stays undrained until restart: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
@@ -498,5 +498,5 @@ export async function joinHiveAsView(
     m.detail = `${m.detail}; git_sync:${outcome.seeded ? 'seeded' : outcome.reason}`;
   }
 
-  return { ok: true, hiveSlug, members };
+  return { ok: true, potSlug, members };
 }

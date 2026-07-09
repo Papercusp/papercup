@@ -45,7 +45,7 @@ function enrolled(t: BenchTask): RealQueenEnrolled {
     clonePath: `/tmp/${t.instanceId}`,
     workItemId: `F-${t.instanceId.toUpperCase().replace(/[^A-Z0-9]/g, '')}`,
     checkout: { dir: `/tmp/${t.instanceId}`, repo: t.repo!, baseCommit: t.baseCommit!, cleanup: async () => {} },
-    beeId: null,
+    cupId: null,
     placedAtMs: null,
     disposition: null,
   };
@@ -105,7 +105,7 @@ function fakeOps(record: string[], opts: { realQueenStarted?: () => void } = {})
     async countLiveQueens() { return polls === 0 ? 1 : 0; },
     async gatherForFifo({ members }) {
       record.push('gatherForFifo');
-      const unplaced = members.filter((m) => m.beeId == null);
+      const unplaced = members.filter((m) => m.cupId == null);
       return {
         tasks: (polls === 0 ? unplaced.map((m) => ({ id: m.workItemId, importance: 'normal' })) : []) as never,
         bees: [] as never,
@@ -119,7 +119,7 @@ function fakeOps(record: string[], opts: { realQueenStarted?: () => void } = {})
         .filter((d) => d.disposition === 'spawn')
         .map((d, i) => {
           const m = members[i];
-          return { instanceId: m.task.instanceId, beeId: `s-${i}`, disposition: 'spawn' as const };
+          return { instanceId: m.task.instanceId, cupId: `s-${i}`, disposition: 'spawn' as const };
         });
       return { placements };
     },
@@ -131,7 +131,7 @@ function fakeOps(record: string[], opts: { realQueenStarted?: () => void } = {})
           diff: 'diff --git a b', tokensIn: 1, tokensOut: 1, costUsd: 0.1, turns: 1, wallClockMs: 1,
           trajectoryRef: 'x', stopReason: 'done',
         },
-        beeId: e.beeId ?? 's-x', placedAtMs: 0, startedAtMs: 0, finishedAtMs: 1, disposition: 'spawn',
+        cupId: e.cupId ?? 's-x', placedAtMs: 0, startedAtMs: 0, finishedAtMs: 1, disposition: 'spawn',
       };
     },
     async collectCoordEvents({ arm }) {

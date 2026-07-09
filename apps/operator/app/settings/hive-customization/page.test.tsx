@@ -89,7 +89,7 @@ describe('HiveCustomizationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save override/i }));
     expect(mutateMock).toHaveBeenCalledTimes(1);
     expect(mutateMock.mock.calls[0]![0]).toMatchObject({
-      hiveSlug: 'acme-hive',
+      potSlug: 'acme-hive',
       kind: 'prompt',
       name: 'su',
       value: 'domain delta',
@@ -104,7 +104,7 @@ describe('HiveCustomizationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save config/i }));
     expect(mutateMock).toHaveBeenCalledTimes(1);
     expect(mutateMock.mock.calls[0]![0]).toMatchObject({
-      hiveSlug: 'acme-hive',
+      potSlug: 'acme-hive',
       kind: 'config',
       name: 'scout',
       value: { buckets: { maxMoonshots: 2 } },

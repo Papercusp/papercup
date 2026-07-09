@@ -75,14 +75,14 @@ function str(v: unknown): string | undefined {
 }
 
 export async function readHiveLearnings(
-  hiveSlug: string,
+  potSlug: string,
   deps: HiveLearningsDeps,
 ): Promise<HiveLearningsSnapshot> {
   let entries: MemoryEntry[];
   try {
-    entries = await deps.listPool(`hive:${hiveSlug}`);
+    entries = await deps.listPool(`hive:${potSlug}`);
   } catch {
-    return { hive: hiveSlug, rows: [], packs: [], organicCount: 0, unavailable: true };
+    return { hive: potSlug, rows: [], packs: [], organicCount: 0, unavailable: true };
   }
 
   // Resolve each referenced pack ONCE (batched — never per-row).
@@ -141,7 +141,7 @@ export async function readHiveLearnings(
   });
 
   return {
-    hive: hiveSlug,
+    hive: potSlug,
     rows,
     packs,
     organicCount: rows.filter((r) => !r.packId).length,

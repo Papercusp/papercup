@@ -19,7 +19,7 @@ import { hiveScopeKey } from '../memory/hive-scope';
 import { LEARNING_KINDS, type LearningKind } from './pack-format';
 
 export interface ExportPackInput {
-  hiveSlug: string;
+  potSlug: string;
   packId: string;
   title: string;
   description: string;
@@ -83,7 +83,7 @@ export async function exportHiveLearningsToPack(input: ExportPackInput): Promise
   const avail = await backend.available();
   if (!avail.ok) return { ok: false, error: `memory_unavailable: ${avail.reason}` };
 
-  const entries = await backend.list({ scope: hiveScopeKey(input.hiveSlug) });
+  const entries = await backend.list({ scope: hiveScopeKey(input.potSlug) });
   const isPackRow = (e: MemoryEntry) => e.metadata?.source === 'pack';
   const exportable = input.includePackRows === true ? entries : entries.filter((e) => !isPackRow(e));
   const skippedPackRows = entries.length - exportable.length;

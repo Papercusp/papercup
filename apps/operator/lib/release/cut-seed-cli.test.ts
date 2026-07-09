@@ -33,7 +33,7 @@ describe('pickGitEncryption', () => {
       cutAtEpoch: 0,
       deriveEpochKey,
     });
-    expect(enc?.keyRef).toEqual({ via: 'seed-key-op', hiveId: 'papercusp' });
+    expect(enc?.keyRef).toEqual({ via: 'seed-key-op', potId: 'papercusp' });
     expect(enc?.key).toEqual(Uint8Array.from(Buffer.from(HEX32, 'hex')));
     expect(deriveEpochKey).not.toHaveBeenCalled(); // explicit key wins; no crypto touched
   });
@@ -53,7 +53,7 @@ describe('pickGitEncryption', () => {
       cutAtEpoch: 3,
       deriveEpochKey,
     });
-    expect(enc?.keyRef).toEqual({ via: 'epoch', hiveId: 'papercusp', epoch: 3 });
+    expect(enc?.keyRef).toEqual({ via: 'epoch', potId: 'papercusp', epoch: 3 });
     expect(enc?.key).toEqual(EPOCH_KEY);
     expect(deriveEpochKey).toHaveBeenCalledWith('papercusp', 3);
   });
@@ -61,7 +61,7 @@ describe('pickGitEncryption', () => {
   it('an explicit --epoch (no workspace) also takes the epoch path', async () => {
     const deriveEpochKey = vi.fn(async () => EPOCH_KEY);
     const enc = await pickGitEncryption({ epochProvided: true, hive: 'papercusp', cutAtEpoch: 5, deriveEpochKey });
-    expect(enc?.keyRef).toEqual({ via: 'epoch', hiveId: 'papercusp', epoch: 5 });
+    expect(enc?.keyRef).toEqual({ via: 'epoch', potId: 'papercusp', epoch: 5 });
     expect(deriveEpochKey).toHaveBeenCalledWith('papercusp', 5);
   });
 
@@ -221,7 +221,7 @@ const GIT_ENTRY: SeedStoreEntry = {
   hash: 'gh1',
   sizeBytes: 100,
   source: { type: 'resource', path: 'git' },
-  encryption: { scheme: 'xchacha20poly1305', keyRef: { via: 'epoch', hiveId: 'papercusp', epoch: 0 } },
+  encryption: { scheme: 'xchacha20poly1305', keyRef: { via: 'epoch', potId: 'papercusp', epoch: 0 } },
 };
 const CORESTORE_ENTRY: SeedStoreEntry = {
   kind: 'corestore',
@@ -230,7 +230,7 @@ const CORESTORE_ENTRY: SeedStoreEntry = {
   source: { type: 'resource', path: 'corestore' },
 };
 function manifest(stores: SeedStoreEntry[], cutAtEpoch = 0): SeedManifest {
-  return { seedFormatVersion: 1, hiveId: 'papercusp', cutAtEpoch, cutHlc: '0:0', cutTs: 1, stores };
+  return { seedFormatVersion: 1, potId: 'papercusp', cutAtEpoch, cutHlc: '0:0', cutTs: 1, stores };
 }
 
 describe('encodeEpochKeysFile (WI-3232 bundled epoch keys, WI-3297 multi-epoch)', () => {
@@ -292,7 +292,7 @@ describe('graftCorestoreEntry (WI-3232 --reuse-corestore)', () => {
     const grafted = graftCorestoreEntry(manifest([GIT_ENTRY]), CORESTORE_ENTRY);
     expect(grafted.stores.map((s) => s.kind)).toEqual(['git', 'corestore']);
     expect(grafted.stores[1]).toEqual(CORESTORE_ENTRY);
-    expect(grafted.hiveId).toBe('papercusp'); // preserves the rest of the manifest
+    expect(grafted.potId).toBe('papercusp'); // preserves the rest of the manifest
   });
   it('refuses to double-add a corestore', () => {
     expect(() => graftCorestoreEntry(manifest([GIT_ENTRY, CORESTORE_ENTRY]), CORESTORE_ENTRY)).toThrow(/already has a corestore/);

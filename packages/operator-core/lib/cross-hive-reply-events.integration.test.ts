@@ -73,7 +73,7 @@ function outAsk(correlationId: string, peerPubkey: string): AskRow {
   const now = new Date().toISOString();
   return {
     workspaceId: WS,
-    hiveSlug: 'hive-a',
+    potSlug: 'hive-a',
     id: `uuid-${correlationId}`,
     peerPubkey,
     direction: 'out',
@@ -118,7 +118,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     const B = hiveIdentity();
     const mesh = makeTransportMesh();
     wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: 'hive-a', hivePubkey: A.pubkey,
+      workspaceId: WS, potSlug: 'hive-a', hivePubkey: A.pubkey,
       transport: mesh(A.pubkey), signer: A.signer, requestPorts: ports,
       loadGrants: async () => [],
       outbox: new InMemoryCrossHiveOutbox(),
@@ -127,7 +127,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
       ...(ledger ? { askLedger: ledger } : {}),
     });
     const bWiring = wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: 'hive-b', hivePubkey: B.pubkey,
+      workspaceId: WS, potSlug: 'hive-b', hivePubkey: B.pubkey,
       transport: mesh(B.pubkey), signer: B.signer, requestPorts: ports,
       loadGrants: async () => [],
       outbox: new InMemoryCrossHiveOutbox(),
@@ -228,7 +228,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     // Hive C — validly signed, but NOT the peer hive-a asked.
     const C = hiveIdentity();
     const cWiring = wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: 'hive-c', hivePubkey: C.pubkey,
+      workspaceId: WS, potSlug: 'hive-c', hivePubkey: C.pubkey,
       transport: t.mesh(C.pubkey), signer: C.signer, requestPorts: ports,
       loadGrants: async () => [],
       outbox: new InMemoryCrossHiveOutbox(),

@@ -45,7 +45,7 @@ export function slugifyDatatype(name: string): string {
 export interface DatatypeRow {
   id: string;
   workspaceId: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   title: string;
   description: string;
   tier: DatatypeTier;
@@ -74,7 +74,7 @@ export interface UpsertDatatypeInput {
   /** Stable kebab slug (the id, unique within the workspace). Derive via {@link slugifyDatatype}. */
   id: string;
   workspaceId: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   title: string;
   description: string;
   tier: DatatypeTier;
@@ -131,7 +131,7 @@ function mapRow(r: DbRow): DatatypeRow {
   return {
     id: r.id,
     workspaceId: r.workspace_id,
-    hiveSlug: r.pot_slug,
+    potSlug: r.pot_slug,
     title: r.title,
     description: r.description,
     tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind'),
@@ -175,7 +175,7 @@ export async function upsertDatatype(
        payload_schema, authoritative_writer, self_improvement, published, tags,
        embedding, created_by, updated_at)
     VALUES (
-      ${input.id}, ${input.workspaceId}, ${input.hiveSlug ?? null}, ${input.title},
+      ${input.id}, ${input.workspaceId}, ${input.potSlug ?? null}, ${input.title},
       ${input.description}, ${input.tier}, ${input.workItemKind ?? null},
       ${input.payloadSchema ? JSON.stringify(input.payloadSchema) : null}::text::jsonb,
       ${input.authoritativeWriter ?? 'papercusp'},
@@ -558,7 +558,7 @@ export async function installPublishedDatatype(
   const row = await upsertDatatype(sql, {
     id: s.id,
     workspaceId: targetWorkspaceId,
-    hiveSlug: null,
+    potSlug: null,
     title: s.title,
     description: s.description,
     tier: s.tier,

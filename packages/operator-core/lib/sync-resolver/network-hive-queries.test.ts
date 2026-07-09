@@ -20,7 +20,7 @@ describe('network.hive.* resolvers', () => {
   });
 
   it('network.hive.beacons projects listBeaconHistory flat and threads hiveKey + limit', async () => {
-    const rows = [{ id: 'b1', hiveId: 'hid', hivePubkey: 'pk', beacon: { v: 1 }, capturedAt: 't' }];
+    const rows = [{ id: 'b1', potId: 'hid', hivePubkey: 'pk', beacon: { v: 1 }, capturedAt: 't' }];
     const listBeaconHistory = vi.fn(async () => rows);
     vi.doMock('../network-board/beacon-history-pg', () => ({ listBeaconHistory }));
     const { resolveNamedQueryV2: r } = await import('./index');

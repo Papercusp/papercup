@@ -215,7 +215,7 @@ export interface OverwatchInboxItem {
 
 export interface OverwatchBrief {
   /** The hive this brief monitors (v1 = one hive; D-005 per-hive scope). */
-  hiveSlug: string;
+  potSlug: string;
   /** What woke overwatch this turn (event key / `'timer'` / `'backstop'`), if known. */
   wokeBy?: string;
   queen: OverwatchQueenHealth;
@@ -252,9 +252,9 @@ export const DEFAULT_OVERWATCH_BRIEF_CAPS: OverwatchBriefCaps = {
  * (the B-03 fail-soft requirement). Also the construction seam for B-08/B-09
  * stubs + tests. NOT data-gathering — a static shape, no I/O.
  */
-export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
+export function emptyOverwatchBrief(potSlug: string): OverwatchBrief {
   return {
-    hiveSlug,
+    potSlug,
     queen: {
       started: true,
       lastWakeAt: null,
@@ -312,7 +312,7 @@ export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
 
 export interface OverwatchControlState {
   /** The hive the overwatch supervises (D-005 per-hive); null when none resolvable. */
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** The persisted `overwatch_started` bit (B-07) — true = the loop should be running. */
   started: boolean;
   /** The configured wake cadence in seconds (B-07; default 600). */
@@ -357,7 +357,7 @@ export interface OverwatchRun {
 
 export interface OverwatchLiveness {
   /** The hive the overwatch supervises (D-005 per-hive); null when none resolvable. */
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** The persisted `overwatch_started` bit — the loop is supposed to be running. */
   started: boolean;
   /** The `papercusp-overwatch` activation flag (D-009). started && !flagEnabled = PRE-ARMED. */
@@ -433,7 +433,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   const cap = { ...DEFAULT_OVERWATCH_BRIEF_CAPS, ...caps };
   const out: string[] = [];
 
-  out.push(`## Overwatch wake brief — system-health snapshot for ${brief.hiveSlug}`);
+  out.push(`## Overwatch wake brief — system-health snapshot for ${brief.potSlug}`);
   out.push(
     'This is the deterministic snapshot the watchdog computed for this wake — the state of ' +
       "the hive's Queen, bees, work-feed, tokens, plans, and observation lane, plus the " +

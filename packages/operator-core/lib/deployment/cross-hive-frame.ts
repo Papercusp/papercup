@@ -115,7 +115,7 @@ async function main(): Promise<void> {
       },
     };
     const wiring = wireCrossHiveBoundary({
-      workspaceId: 'xhive-e2e', hiveSlug: 'hive-b', hivePubkey: cfg.selfPubkey,
+      workspaceId: 'xhive-e2e', potSlug: 'hive-b', hivePubkey: cfg.selfPubkey,
       transport, signer, requestPorts: recordingPorts,
       loadGrants: async () => grants, outbox: new InMemoryCrossHiveOutbox(),
       askLedger: NULL_CROSS_HIVE_ASK_LEDGER, // $0 frame: never touch PG, even if reachable
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     // for the owner's pot:cross_grant.
     const outboundGrants: CrossHiveGrant[] = [{ peerHivePubkey: cfg.peerPubkey, allowedKinds: ['ask'] }];
     const wiring = wireCrossHiveBoundary({
-      workspaceId: 'xhive-e2e', hiveSlug: 'hive-a', hivePubkey: cfg.selfPubkey,
+      workspaceId: 'xhive-e2e', potSlug: 'hive-a', hivePubkey: cfg.selfPubkey,
       transport, signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],

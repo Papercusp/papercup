@@ -226,9 +226,9 @@ export async function buildOperatorPrompt(
       // digest legs already span every hive (D-008), so present it as
       // workspace-scoped rather than mislabeled with one harness. OFF =
       // byte-identical (the primary hive). Only the LABEL changes — the anomalies
-      // leg's hiveSlug (overwatch addressing) stays primaryHive.
+      // leg's potSlug (overwatch addressing) stays primaryHive.
       const scopeLabel = sentinelScopeLabel(wsId, primaryHive, await isWorkspaceCoordinationOn());
-      const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, primaryHive), { hiveSlug: scopeLabel });
+      const ctxInput = await gatherSentinelContext(buildSentinelContextDeps(wsId, primaryHive), { potSlug: scopeLabel });
       const ctxBlock = renderSentinelContext(ctxInput);
       if (ctxBlock.trim()) systemSections.push(ctxBlock);
     } catch (err) {

@@ -459,7 +459,7 @@ function naPanel<T>(key: PanelKey): HealthPanel<T> {
 }
 
 const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
-  hiveSlug: 'papercup-hive',
+  potSlug: 'papercup-hive',
   started: true,
   stalled: false,
   midTurn: false,
@@ -591,7 +591,7 @@ function fakeHealth(
 
 test('mapSystemHealthToBrief — a healthy snapshot maps to a clean (no-anomaly) brief', () => {
   const brief = withAnomalies(mapSystemHealthToBrief(fakeHealth(), 'papercup-hive'));
-  assert.equal(brief.hiveSlug, 'papercup-hive');
+  assert.equal(brief.potSlug, 'papercup-hive');
   assert.deepEqual(brief.anomalies, []);
   assert.equal(brief.queen.stalled, false);
   assert.equal(brief.crossMonitor.queenAlive, true);
@@ -742,7 +742,7 @@ test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + a
   const b = await computeOverwatchBrief('ws', 'papercup-hive', {
     wokeBy: 'timer',
   });
-  assert.equal(b.hiveSlug, 'papercup-hive');
+  assert.equal(b.potSlug, 'papercup-hive');
   assert.equal(b.wokeBy, 'timer');
   assert.equal(b.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
 });

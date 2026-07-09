@@ -51,7 +51,7 @@ export interface PresenceScopeArgs {
 export interface ResolvedPresenceScope {
   scope: 'hive' | 'workspace' | 'all';
   wsId: string | null;
-  hiveId: string | null;
+  potId: string | null;
   scopeNote?: string;
 }
 
@@ -105,7 +105,7 @@ export interface PresenceSnapshot {
 export function computeRosterEtag(
   rows: RosterRow[],
   scope: string,
-  hiveId: string | null,
+  potId: string | null,
 ): string {
   const projected = rows
     .map((r) => deltaEligibleProjection(r))
@@ -113,7 +113,7 @@ export function computeRosterEtag(
   const h = createHash('sha1');
   h.update(scope);
   h.update('\0');
-  h.update(hiveId ?? '');
+  h.update(potId ?? '');
   h.update('\0');
   h.update(JSON.stringify(projected));
   return h.digest('hex').slice(0, 16);
@@ -155,8 +155,8 @@ export async function resolvePresenceScope(
   // used to fall through to wsId=null (= ALL workspaces' roster). Default to the active
   // workspace instead, so only an EXPLICIT scope:'all' is cross-workspace.
   const wsId = scope === 'all' ? null : (callerWs ?? activeWorkspaceId());
-  const hiveId = scope === 'hive' ? hiveFilter : null;
-  return { scope, wsId, hiveId, scopeNote };
+  const potId = scope === 'hive' ? hiveFilter : null;
+  return { scope, wsId, potId, scopeNote };
 }
 
 /**
@@ -199,10 +199,10 @@ export async function assemblePresenceSnapshot(
   resolved: ResolvedPresenceScope,
   opts: { owner?: string; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
-  const { wsId, hiveId, scope, scopeNote } = resolved;
+  const { wsId, potId, scope, scopeNote } = resolved;
   const [records, federated, recordedLive] = await Promise.all([
-    listPresence({ workspaceId: wsId, hiveSlug: hiveId }),
-    listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
+    listPresence({ workspaceId: wsId, potSlug: potId }),
+    listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
     // CLI not yet self-registered in coord_presence — so a recorded session is
     // visible the instant it launches, never gated on a self-heartbeat. Skipped
@@ -210,7 +210,7 @@ export async function assemblePresenceSnapshot(
     // including it could leak cross-hive agents; P-002 adds hive_slug). Runs for
     // the workspace/all views — the su/operator/admin roster where the gap lives.
     // listRecordedLiveSessions is itself best-effort ([] on DB error).
-    hiveId == null
+    potId == null
       ? listRecordedLiveSessions({ workspaceId: wsId })
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
     // Blunt 24h GC of long-dead rows (the pre-existing backstop, still here as a
@@ -352,7 +352,7 @@ export async function assemblePresenceSnapshot(
   const selected = selectRosterRows(fullEnriched, opts.owner);
   // P-006: the delta-eligible ETag (identity+state) for the `since:` short-circuit,
   // computed from the SELECTED rows so it matches EXACTLY what this read returns.
-  const etag = computeRosterEtag(selected, scope, hiveId);
+  const etag = computeRosterEtag(selected, scope, potId);
   let activeRows = selected.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
@@ -390,7 +390,7 @@ export async function assemblePresenceSnapshot(
   return {
     as_of: new Date(now).toISOString(),
     scope,
-    ...(hiveId ? { hive: hiveId } : {}),
+    ...(potId ? { hive: potId } : {}),
     ...(scopeNote ? { scope_note: scopeNote } : {}),
     summary: {
       active: active.length,

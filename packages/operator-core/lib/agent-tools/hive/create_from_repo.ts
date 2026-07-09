@@ -26,7 +26,7 @@ export default defineTool({
   name: 'pot:create_from_repo',
   profile: 'engineer',
   description:
-    'Create a pot FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
+    'Create a pot FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{potSlug, memberSlug, memberPath}, publish}.',
   guidance: {
     when: 'Onboarding a GitHub repository as a NEW pot in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
     notWhen:

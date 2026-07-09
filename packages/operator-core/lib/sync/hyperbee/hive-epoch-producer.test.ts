@@ -29,7 +29,7 @@ const { createHiveEpochCrypto } = await import('./hive-epoch-crypto-impl');
 const { encryptForCurrentEpoch } = await import('./hive-epoch-producer');
 const { decryptOpPayload } = await import('./hive-epoch-serving');
 
-const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', hiveId: 'hive-1' };
+const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', potId: 'hive-1' };
 const ID = { tableTag: 'harness-features', rowKey: 'F-1', authorPubkey: 'owner' };
 const enc = (s: string) => new TextEncoder().encode(s);
 const setEpoch = (n: number) => settings.set(sk(CTX.workspaceId, CTX.hiveHomeSlug, 'epoch'), n);
@@ -45,8 +45,8 @@ describe('encryptForCurrentEpoch — encrypt under the hive current epoch', () =
     expect(Buffer.from(ciphertext).equals(Buffer.from(enc('secret body')))).toBe(false); // actually encrypted
 
     // A reader holding epoch-5's key (via the same crypto) decrypts it through the serving consumer.
-    const key5 = await c.deriveEpochKey(CTX.hiveId, 5);
-    const pt = await decryptOpPayload(c, ciphertext, { hiveId: CTX.hiveId, epoch: 5, id: ID }, key5);
+    const key5 = await c.deriveEpochKey(CTX.potId, 5);
+    const pt = await decryptOpPayload(c, ciphertext, { potId: CTX.potId, epoch: 5, id: ID }, key5);
     expect(new TextDecoder().decode(pt)).toBe('secret body');
   });
 
@@ -54,8 +54,8 @@ describe('encryptForCurrentEpoch — encrypt under the hive current epoch', () =
     const c = createHiveEpochCrypto();
     const { epoch, ciphertext } = await encryptForCurrentEpoch(c, CTX, enc('e0'), ID);
     expect(epoch).toBe(0);
-    const key0 = await c.deriveEpochKey(CTX.hiveId, 0);
-    const pt = await decryptOpPayload(c, ciphertext, { hiveId: CTX.hiveId, epoch: 0, id: ID }, key0);
+    const key0 = await c.deriveEpochKey(CTX.potId, 0);
+    const pt = await decryptOpPayload(c, ciphertext, { potId: CTX.potId, epoch: 0, id: ID }, key0);
     expect(new TextDecoder().decode(pt)).toBe('e0');
   });
 
@@ -63,9 +63,9 @@ describe('encryptForCurrentEpoch — encrypt under the hive current epoch', () =
     const c = createHiveEpochCrypto();
     setEpoch(2);
     const { ciphertext } = await encryptForCurrentEpoch(c, CTX, enc('post-boundary'), ID);
-    const key1 = await c.deriveEpochKey(CTX.hiveId, 1); // an older-epoch holder's key
+    const key1 = await c.deriveEpochKey(CTX.potId, 1); // an older-epoch holder's key
     await expect(
-      decryptOpPayload(c, ciphertext, { hiveId: CTX.hiveId, epoch: 2, id: ID }, key1),
+      decryptOpPayload(c, ciphertext, { potId: CTX.potId, epoch: 2, id: ID }, key1),
     ).rejects.toBeTruthy();
   });
 });

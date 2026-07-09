@@ -88,7 +88,7 @@ export interface SeedOwnerBindingInput {
   /** the hive federation topic (hex) for the synthetic DiscoveredHive's memberTopics. */
   topic: string;
   /** best-effort hive id for the cache entry (consumer keys on hivePubkey, not this). */
-  hiveId: string;
+  potId: string;
 }
 
 export interface SeedOwnerBindingOutcome {
@@ -130,7 +130,7 @@ async function defaultSeedOwnerBinding(
         if (hives.some((h) => h && h.hivePubkey === input.hivePubkey)) return { hives };
         didSeed = true;
         const entry: DiscoveredHive = {
-          hiveId: input.hiveId,
+          potId: input.potId,
           title: '',
           description: '',
           ownerGithubLogin: input.ownerGithubLogin,
@@ -337,7 +337,7 @@ export async function handleJoinLink(
           ownerGithubLogin: link.repoOwner,
           attestationGistId: link.attestationGistId,
           topic: link.topic,
-          hiveId: `${link.repoName}-hive`,
+          potId: `${link.repoName}-hive`,
         });
       } catch {
         // Non-fatal — the announce-beacon ingest can still seed it later.

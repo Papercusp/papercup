@@ -36,7 +36,7 @@ describe('learning_packs:sweep tool', () => {
 
   it('sweeps the named hive and merges the result into an ok envelope', async () => {
     const res = body(await callTool({ pot: 'my-hive' }));
-    expect(mockSweep).toHaveBeenCalledWith({ hiveSlug: 'my-hive' });
+    expect(mockSweep).toHaveBeenCalledWith({ potSlug: 'my-hive' });
     expect(res).toMatchObject({ ok: true, scanned: 12, pairs: [] });
   });
 });

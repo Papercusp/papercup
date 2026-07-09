@@ -64,7 +64,7 @@ export interface InviteAnnounceConfirm {
    *  Carries the joiner-side memberLinks + hivePubkey so the caller can JOIN straight
    *  off the confirm, instead of a second listDiscovered lookup + pubkey re-match
    *  (which fails when the owner's actual pubkey differs from the baked one) — P-004. */
-  hive?: { hiveId: string; title: string; visibility: string; memberLinks?: string[]; hivePubkey?: string };
+  hive?: { potId: string; title: string; visibility: string; memberLinks?: string[]; hivePubkey?: string };
   /** Swarm peers currently paired on the invite topic (0 = nobody is home — the
    *  announce can never arrive). Informational; `found` is the decision. */
   peersOnTopic: number;
@@ -221,7 +221,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
         gossip.joinTopic(deriveInviteTopic(hive.inviteSecret));
       } catch (e) {
          
-        console.warn(`[hive-directory] failed to join invite topic for ${hive.hiveId}: ${e instanceof Error ? e.message : e}`);
+        console.warn(`[hive-directory] failed to join invite topic for ${hive.potId}: ${e instanceof Error ? e.message : e}`);
       }
     }
   }
@@ -251,7 +251,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
       await publishHiveToDirectory(dir, hive, opts.owner);
     } catch (e) {
        
-      console.warn(`[hive-directory] failed to publish hive ${hive.hiveId}: ${e instanceof Error ? e.message : e}`);
+      console.warn(`[hive-directory] failed to publish hive ${hive.potId}: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -292,15 +292,15 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
         dir
           .listDiscoveredHives({ includeExpired: true })
           .filter((h) => h.visibility === 'invite')
-          .map((h) => h.hiveId),
+          .map((h) => h.potId),
       );
       const findFresh = (): InviteAnnounceConfirm['hive'] | null => {
         const h = dir
           .listDiscoveredHives()
-          .find((d) => d.visibility === 'invite' && !seen.has(d.hiveId));
+          .find((d) => d.visibility === 'invite' && !seen.has(d.potId));
         return h
           ? {
-              hiveId: h.hiveId,
+              potId: h.potId,
               title: h.title,
               visibility: h.visibility,
               // Surface the join targets so the caller skips the listDiscovered re-match.
@@ -369,7 +369,7 @@ export async function wireHiveDirectoryForWorkspace(
     reannounceMs?: number;
     /** Hardening P-003 test seam — the full-publish-set reconcile for public
      *  hives. Default: hive-publish-from-repo's republishHiveAfterMemberAdd. */
-    republish?: (o: { workspaceId: string; hiveSlug: string }) => Promise<unknown>;
+    republish?: (o: { workspaceId: string; potSlug: string }) => Promise<unknown>;
   } = {},
 ): Promise<HiveDirectoryWiring | null> {
   try {
@@ -393,10 +393,10 @@ export async function wireHiveDirectoryForWorkspace(
     const { deriveHiveMemberRepoRefs } = await import('./hive-member-repos');
     const ownedHives = await Promise.all(
       ownedHivesRaw.map(async (h) => {
-        const pk = await loadHivePubkey(workspaceId, h.hiveId).catch(() => null);
+        const pk = await loadHivePubkey(workspaceId, h.potId).catch(() => null);
         // member_repos: the repo→Hive binding signal (P-003) — derived fresh at
         // publish time like the pubkey, never persisted in the registry meta.
-        const memberRepos = await deriveHiveMemberRepoRefs(workspaceId, h.hiveId).catch(
+        const memberRepos = await deriveHiveMemberRepoRefs(workspaceId, h.potId).catch(
           () => [] as string[],
         );
         return {
@@ -452,19 +452,19 @@ export async function wireHiveDirectoryForWorkspace(
  * extra announce it emits is harmless (newer-ts LWW).
  */
 export async function reconcilePublicHiveListings(
-  ownedHives: readonly Pick<HiveDirectoryMeta, 'hiveId' | 'visibility'>[],
+  ownedHives: readonly Pick<HiveDirectoryMeta, 'potId' | 'visibility'>[],
   workspaceId: string,
-  republish?: (o: { workspaceId: string; hiveSlug: string }) => Promise<unknown>,
+  republish?: (o: { workspaceId: string; potSlug: string }) => Promise<unknown>,
 ): Promise<number> {
   let reconciled = 0;
   try {
     const run =
       republish ??
-      (async (o: { workspaceId: string; hiveSlug: string }) =>
+      (async (o: { workspaceId: string; potSlug: string }) =>
         (await import('./hive-publish-from-repo')).republishHiveAfterMemberAdd(o));
     for (const h of ownedHives) {
       if (h.visibility !== 'public') continue;
-      const ok = await run({ workspaceId, hiveSlug: h.hiveId }).then(
+      const ok = await run({ workspaceId, potSlug: h.potId }).then(
         () => true,
         () => false,
       );

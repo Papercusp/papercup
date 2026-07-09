@@ -45,7 +45,7 @@ describe('emitP2pReceipt refusal paths (loud, SQL-free)', () => {
   it("refuses an unresolvable workspace (C3 — a receipt under 'default' never reaches the requester)", async () => {
     for (const ws of [null, 'default', '*']) {
       const r = await emitP2pReceipt(
-        { workspaceId: ws, hiveSlug: 'h', kind: 'refusal', action: 'wake', refusal: { code: 'no_grant', detail: 'x' }, responderGithubUserId: 1 },
+        { workspaceId: ws, potSlug: 'h', kind: 'refusal', action: 'wake', refusal: { code: 'no_grant', detail: 'x' }, responderGithubUserId: 1 },
         throwingSql,
       );
       expect(r.ok).toBe(false);
@@ -55,13 +55,13 @@ describe('emitP2pReceipt refusal paths (loud, SQL-free)', () => {
 
   it("refuses kind='refusal' without the structured refusal, and a non-numeric responder (X9)", async () => {
     const noRefusal = await emitP2pReceipt(
-      { workspaceId: 'ws-1', hiveSlug: 'h', kind: 'refusal', action: 'wake', responderGithubUserId: 1 },
+      { workspaceId: 'ws-1', potSlug: 'h', kind: 'refusal', action: 'wake', responderGithubUserId: 1 },
       throwingSql,
     );
     expect(noRefusal.ok).toBe(false);
     if (!noRefusal.ok) expect(noRefusal.refusal.code).toBe('refusal_required');
     const badResponder = await emitP2pReceipt(
-      { workspaceId: 'ws-1', hiveSlug: 'h', kind: 'excused-breach', action: 'wind-down', responderGithubUserId: 0 },
+      { workspaceId: 'ws-1', potSlug: 'h', kind: 'excused-breach', action: 'wind-down', responderGithubUserId: 0 },
       throwingSql,
     );
     expect(badResponder.ok).toBe(false);

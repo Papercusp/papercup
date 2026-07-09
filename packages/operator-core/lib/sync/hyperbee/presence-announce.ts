@@ -86,7 +86,7 @@ export interface PresenceIdentity {
 /**
  * Build the SharedPresenceRow value for an announce.
  *
- * `hiveSlug` (shared-hive-federation P-008/P-009) is the harness's home Hive slug
+ * `potSlug` (shared-hive-federation P-008/P-009) is the harness's home Hive slug
  * — the publisher resolves it once via hiveHomeSlugForHarness and threads it here
  * so each federated presence row carries it for the per-Hive lock authority.
  * Defaults null (a non-Hive harness, or a caller that hasn't wired Hive scope yet)
@@ -96,7 +96,7 @@ export function buildPresenceAnnounceRow(
   identity: PresenceIdentity,
   state: PresenceState,
   nowMs: number,
-  hiveSlug: string | null = null,
+  potSlug: string | null = null,
 ): SharedPresenceRow {
   return {
     harness_slug: state.harnessSlug,
@@ -107,7 +107,7 @@ export function buildPresenceAnnounceRow(
     current_view: state.currentView,
     last_seen_at: nowMs,
     schema_version: PRESENCE_SCHEMA_VERSION,
-    hive_slug: hiveSlug,
+    hive_slug: potSlug,
   };
 }
 
@@ -118,9 +118,9 @@ export function buildPresenceAnnounceOp(
   identity: PresenceIdentity,
   state: PresenceState,
   nowMs: number,
-  hiveSlug: string | null = null,
+  potSlug: string | null = null,
 ): LocalWriteOp {
-  const value = buildPresenceAnnounceRow(identity, state, nowMs, hiveSlug);
+  const value = buildPresenceAnnounceRow(identity, state, nowMs, potSlug);
   return {
     type: 'put',
     table: 'presence',
@@ -170,7 +170,7 @@ export interface AnnounceLocalPresenceDeps {
    *  each announce so the FEDERATED presence row carries it — the per-Hive lock
    *  authority scopes by it (lockAuthorityForHive's `WHERE hive_slug`). Null = a
    *  non-Hive harness. Additive: omitted → null (back-compat). */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
 }
 
 export interface AnnounceResult {
@@ -193,7 +193,7 @@ export async function announceLocalPresence(
   if (!shouldAnnounce(deps.prev, state, now, deps.cadence)) {
     return { announced: false };
   }
-  await deps.append(buildPresenceAnnounceOp(identity, state, now, deps.hiveSlug ?? null));
+  await deps.append(buildPresenceAnnounceOp(identity, state, now, deps.potSlug ?? null));
   return { announced: true, last: { state: { ...state }, atMs: now } };
 }
 
@@ -207,7 +207,7 @@ export interface PresenceAnnounceLoopDeps {
   append: (op: LocalWriteOp) => Promise<void>;
   /** The harness's home Hive slug (P-008/P-009) — resolved ONCE by the publisher
    *  (hiveHomeSlugForHarness) and stamped on every announce. Null = non-Hive. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   /** Tick rate (the decision cadence is shouldAnnounce's; the loop just polls). */
   intervalMs: number;
   cadence?: AnnounceCadenceOpts;
@@ -250,7 +250,7 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
         prev,
         now: deps.now,
         cadence: deps.cadence,
-        hiveSlug: deps.hiveSlug,
+        potSlug: deps.potSlug,
       });
       if (result.last) prev = result.last;
     } catch (err) {

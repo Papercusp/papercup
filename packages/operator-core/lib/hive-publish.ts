@@ -20,7 +20,7 @@ import type { HiveVisibility } from './sync/hyperbee/hive-announce';
 
 /** The directory-relevant metadata a hive carries (set on the create/edit surface). */
 export interface HiveDirectoryMeta {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   /** The owning workspace — lets the announce-build enricher (P-004 hardening)
@@ -35,7 +35,7 @@ export interface HiveDirectoryMeta {
   /**
    * The Hive's Ed25519 identity pubkey (raw-32-byte base64) — carried on the
    * announce so peers can DIAL this Hive for cross-Hive (P-006). Sourced at the
-   * publish call-site from `loadHivePubkey(ws, hiveId)` (the `hives.public_key`
+   * publish call-site from `loadHivePubkey(ws, potId)` (the `hives.public_key`
    * column); NOT persisted in the registry meta (it lives in the hives table).
    */
   hivePubkey?: string;
@@ -92,10 +92,10 @@ export async function publishHiveToDirectory(
   owner: HiveOwnerIdentity,
 ): Promise<PublishHiveResult> {
   if (meta.visibility === 'invite' && !meta.inviteSecret) {
-    throw new Error(`publishHiveToDirectory: hive ${meta.hiveId} is invite-visibility but has no inviteSecret`);
+    throw new Error(`publishHiveToDirectory: hive ${meta.potId} is invite-visibility but has no inviteSecret`);
   }
   dir.registerLocalHive({
-    hiveId: meta.hiveId,
+    potId: meta.potId,
     title: meta.title,
     description: meta.description,
     ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
@@ -112,7 +112,7 @@ export async function publishHiveToDirectory(
     ...(meta.inviteSecret ? { inviteSecret: meta.inviteSecret } : {}),
   });
   // private never announces (announceLocalHive returns null for it).
-  const frame = await dir.announceLocalHive(meta.hiveId);
+  const frame = await dir.announceLocalHive(meta.potId);
   const announced = frame !== null;
   // Deceptive-publish fix: report how many peers the broadcast could actually
   // reach. announced && reachablePeers===0 ⇒ "registered but nobody heard it".
@@ -122,7 +122,7 @@ export async function publishHiveToDirectory(
   return {
     registered: true,
     announced,
-    reachablePeers: announced ? dir.reachablePeersForHive(meta.hiveId) : 0,
+    reachablePeers: announced ? dir.reachablePeersForHive(meta.potId) : 0,
     visibility: meta.visibility,
   };
 }
@@ -133,8 +133,8 @@ export async function publishHiveToDirectory(
  * peers age it out via the TTL. Prefer `withdrawHiveFromDirectory` (P-005),
  * which ALSO broadcasts the signed unlist tombstone so peers drop immediately.
  */
-export function unpublishHiveFromDirectory(dir: HiveDirectory, hiveId: string): void {
-  dir.unregisterLocalHive(hiveId);
+export function unpublishHiveFromDirectory(dir: HiveDirectory, potId: string): void {
+  dir.unregisterLocalHive(potId);
 }
 
 /**
@@ -147,15 +147,15 @@ export function unpublishHiveFromDirectory(dir: HiveDirectory, hiveId: string): 
  */
 export async function withdrawHiveFromDirectory(
   dir: HiveDirectory,
-  hiveId: string,
+  potId: string,
 ): Promise<{ withdrawn: boolean }> {
   try {
-    const frame = await dir.unlistLocalHive(hiveId);
+    const frame = await dir.unlistLocalHive(potId);
     return { withdrawn: frame !== null };
   } catch {
     // Signing/broadcast unavailable (e.g. keychain not wired) — fall back to
     // the passive path so the listing at least stops re-announcing.
-    dir.unregisterLocalHive(hiveId);
+    dir.unregisterLocalHive(potId);
     return { withdrawn: false };
   }
 }

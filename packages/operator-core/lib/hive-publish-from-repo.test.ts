@@ -87,7 +87,7 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
 
 const BASE = {
   workspaceId: 'ws',
-  hiveSlug: 'shop-hive',
+  potSlug: 'shop-hive',
   title: 'acme/shop',
   description: 'Hive for acme/shop',
 } as const;
@@ -98,7 +98,7 @@ describe('publishCreatedHive (P-007)', () => {
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
 
     expect(out.announced).toBe(true);
-    expect(calls.savedMeta[0]).toMatchObject({ hiveId: 'shop-hive', visibility: 'public' });
+    expect(calls.savedMeta[0]).toMatchObject({ potId: 'shop-hive', visibility: 'public' });
 
     const announced = calls.published[0];
     expect(announced.hivePubkey).toBe(HIVE_PUBKEY);
@@ -186,12 +186,12 @@ describe('publishCreatedHive (P-007)', () => {
     const { deps, calls } = fakes();
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     // The from-repo `created` response can now hand a joiner everything POST
-    // /api/discovery/join-pot needs — { hiveId, memberLinks, hivePubkey } —
+    // /api/discovery/join-pot needs — { potId, memberLinks, hivePubkey } —
     // WITHOUT a second directory round-trip. Same set the announce broadcast.
     expect(out.memberLinks).toEqual(calls.published[0].memberLinks);
     expect(out.hivePubkey).toBe(HIVE_PUBKEY);
     // …and those links pass discovery/join-hive's body validation (non-empty
-    // strings, ≤ 64 — the exact gate that 400s "hiveId and memberLinks[] required").
+    // strings, ≤ 64 — the exact gate that 400s "potId and memberLinks[] required").
     const links = out.memberLinks!;
     expect(links.length).toBeGreaterThan(0);
     expect(links.length).toBeLessThanOrEqual(64);
@@ -286,7 +286,7 @@ describe('publishCreatedHive (P-007)', () => {
   it('republishHiveAfterMemberAdd: scoped rows for the new member only; existing rows untouched (P-009)', async () => {
     const { deps, calls } = fakes({
       getMeta: async () => ({
-        hiveId: 'shop-hive',
+        potId: 'shop-hive',
         title: 'acme/shop',
         description: '',
         visibility: 'public' as const,
@@ -309,7 +309,7 @@ describe('publishCreatedHive (P-007)', () => {
     });
     const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
     const out = await republishHiveAfterMemberAdd(
-      { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
+      { workspaceId: 'ws', potSlug: 'shop-hive', onlyRepoIds: [200] },
       deps,
     );
     if ('skipped' in out) throw new Error('expected a publish outcome');
@@ -325,7 +325,7 @@ describe('publishCreatedHive (P-007)', () => {
   it('republishHiveAfterMemberAdd: an unpublished/private hive is left untouched', async () => {
     const { deps, calls } = fakes({ getMeta: async () => null });
     const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
-    const out = await republishHiveAfterMemberAdd({ workspaceId: 'ws', hiveSlug: 'x' }, deps);
+    const out = await republishHiveAfterMemberAdd({ workspaceId: 'ws', potSlug: 'x' }, deps);
     expect(out).toEqual({ skipped: 'unpublished_hive' });
     expect(calls.published).toEqual([]);
   });
@@ -365,7 +365,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
   it('re-keys the HIVE-HOME harness (A-003 a′) + the id-bearing local members (not id-less members)', async () => {
     const { deps, calls } = fakes();
     await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
-    // A-003 (a′): the hive-HOME harness (meta.hiveId='shop-hive') is re-keyed FIRST
+    // A-003 (a′): the hive-HOME harness (meta.potId='shop-hive') is re-keyed FIRST
     // so its hive_members/hive_settings outbox drains + it joins the topic. This is
     // SAFE on the shared topic now — dc9db's (a′) announce extension carries multiple
     // log announces per topic + the boot.ts slug-filter prevents cross-merge. Then the
@@ -380,7 +380,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
   it('republishHiveAfterMemberAdd: re-keys the hive-home (A-003) + ONLY the new member (onlyRepoIds scope)', async () => {
     const { deps, calls } = fakes({
       getMeta: async () => ({
-        hiveId: 'shop-hive',
+        potId: 'shop-hive',
         title: 'acme/shop',
         description: '',
         visibility: 'public' as const,
@@ -402,7 +402,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
     });
     const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
     await republishHiveAfterMemberAdd(
-      { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
+      { workspaceId: 'ws', potSlug: 'shop-hive', onlyRepoIds: [200] },
       deps,
     );
     // A-003 (a′): the hive-home re-keys on EVERY (re)publish (NOT onlyRepoIds-gated);

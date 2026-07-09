@@ -71,7 +71,7 @@ export interface GroundTruthCtx {
   /** The throwaway repo checkout — commits + baseline tests are read here. */
   repoPath: string;
   /** The throwaway hive slug — work-item-state queries scope to it. */
-  hiveSlug: string;
+  potSlug: string;
   workspaceId: string;
 }
 

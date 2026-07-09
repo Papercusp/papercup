@@ -7,7 +7,7 @@
  *     real Hyperswarm)
  *   ↓ receive
  *   receiveCrossHive (verify sig → load THIS Hive's grants → admit → translate)
- *     · loadGrants = loadCrossHiveGrants(ws, hiveSlug)  ← the P-002 grant store
+ *     · loadGrants = loadCrossHiveGrants(ws, potSlug)  ← the P-002 grant store
  *     · requestPorts = makeLiveBoundaryPorts(...)        ← ask→conversation / work-request→work_item
  *     · replies (answer/decline) persist to the C-1 ask ledger + fire the C-4
  *       event `cross-hive:answered|declined:<correlationId>` (+ coord notify to
@@ -102,12 +102,12 @@ export interface CrossHiveBoundaryWiring {
 export interface WireCrossHiveBoundaryDeps {
   workspaceId: string;
   /** This Hive's home slug (grants + outbox + signer are scoped to it). */
-  hiveSlug: string;
+  potSlug: string;
   /** This Hive's Ed25519 identity pubkey (base64) — the dial address. */
   hivePubkey: string;
   /** The shared process swarm (getSharedSwarm()). Required unless `transport` is injected. */
   swarm?: HyperswarmLike;
-  /** Sign bytes with the Hive key. Default: `b => signWithHiveKey(ws, hiveSlug, b)`. */
+  /** Sign bytes with the Hive key. Default: `b => signWithHiveKey(ws, potSlug, b)`. */
   signer?: CrossHiveSigner;
   /** Translate an admitted request into a B-side object. Default: makeLiveBoundaryPorts. */
   requestPorts?: CrossHiveBoundaryPorts;
@@ -115,14 +115,14 @@ export interface WireCrossHiveBoundaryDeps {
   identity?: AgentIdentity;
   /** The harness an admitted work-request/conversation lands in (default ports). */
   harness?: string;
-  /** Load THIS Hive's admission grants. Default: loadCrossHiveGrants(ws, hiveSlug). */
+  /** Load THIS Hive's admission grants. Default: loadCrossHiveGrants(ws, potSlug). */
   loadGrants?: () => Promise<readonly CrossHiveGrant[]>;
   /**
    * Load THIS Hive's OUTBOUND egress grants (the send-path default-deny policy).
-   * Default: loadOutboundCrossHiveGrants(ws, hiveSlug).
+   * Default: loadOutboundCrossHiveGrants(ws, potSlug).
    */
   loadOutboundGrants?: () => Promise<readonly CrossHiveGrant[]>;
-  /** Durable outbox. Default: PgCrossHiveOutbox(ws, hiveSlug) (or in-memory if PG unavailable). */
+  /** Durable outbox. Default: PgCrossHiveOutbox(ws, potSlug) (or in-memory if PG unavailable). */
   outbox?: CrossHiveOutbox;
   /** Injected transport (tests). Default: makeSwarmCrossHiveTransport over `swarm`. */
   transport?: CrossHiveTransport;
@@ -204,10 +204,10 @@ export class InMemoryCrossHiveQuotaLedger implements CrossHiveQuotaLedger {
 /** The default PG-backed quota ledger over the C-1 `cross_hive_asks` store. */
 export function pgCrossHiveQuotaLedger(
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
   sql?: Sql,
 ): CrossHiveQuotaLedger {
-  const store = new PgCrossHiveAsks(workspaceId, hiveSlug, sql);
+  const store = new PgCrossHiveAsks(workspaceId, potSlug, sql);
   return {
     countRecentInbound: (peer, sinceMs) => store.countRecentByPeer(peer, 'in', sinceMs),
     countRecentOutbound: (peer, sinceMs) => store.countRecentByPeer(peer, 'out', sinceMs),
@@ -244,8 +244,8 @@ export function pgCrossHiveQuotaLedger(
  * is race-safe — a signed reply from a third-party Hive lands `not-found` and never
  * transitions the row or wakes the asking Queen.
  */
-export function pgCrossHiveAskLedger(workspaceId: string, hiveSlug: string, sql?: Sql): CrossHiveAskLedger {
-  const store = new PgCrossHiveAsks(workspaceId, hiveSlug, sql);
+export function pgCrossHiveAskLedger(workspaceId: string, potSlug: string, sql?: Sql): CrossHiveAskLedger {
+  const store = new PgCrossHiveAsks(workspaceId, potSlug, sql);
   return {
     async recordReply(input) {
       const existing = await store.getByCorrelationId(input.correlationId);
@@ -280,13 +280,13 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
     })();
 
   const signer: CrossHiveSigner =
-    deps.signer ?? ((bytes) => signWithHiveKey(deps.workspaceId, deps.hiveSlug, bytes));
+    deps.signer ?? ((bytes) => signWithHiveKey(deps.workspaceId, deps.potSlug, bytes));
 
   const loadGrants =
-    deps.loadGrants ?? (() => loadCrossHiveGrants(deps.workspaceId, deps.hiveSlug, deps.sql));
+    deps.loadGrants ?? (() => loadCrossHiveGrants(deps.workspaceId, deps.potSlug, deps.sql));
 
   const loadOutboundGrants =
-    deps.loadOutboundGrants ?? (() => loadOutboundCrossHiveGrants(deps.workspaceId, deps.hiveSlug, deps.sql));
+    deps.loadOutboundGrants ?? (() => loadOutboundCrossHiveGrants(deps.workspaceId, deps.potSlug, deps.sql));
 
   const requestPorts: CrossHiveBoundaryPorts =
     deps.requestPorts ??
@@ -300,13 +300,13 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
   const outbox: CrossHiveOutbox =
     deps.outbox ??
     (deps.sql || deps.workspaceId
-      ? new PgCrossHiveOutbox(deps.workspaceId, deps.hiveSlug, deps.sql)
+      ? new PgCrossHiveOutbox(deps.workspaceId, deps.potSlug, deps.sql)
       : new InMemoryCrossHiveOutbox());
 
-  const askLedger = deps.askLedger ?? pgCrossHiveAskLedger(deps.workspaceId, deps.hiveSlug, deps.sql);
+  const askLedger = deps.askLedger ?? pgCrossHiveAskLedger(deps.workspaceId, deps.potSlug, deps.sql);
   const emitEvent = deps.emitEvent ?? emitAwaitedEvent;
   const quotaLedger =
-    deps.quotaLedger ?? pgCrossHiveQuotaLedger(deps.workspaceId, deps.hiveSlug, deps.sql);
+    deps.quotaLedger ?? pgCrossHiveQuotaLedger(deps.workspaceId, deps.potSlug, deps.sql);
 
   const pushAskInvalidates = (): void => {
     void import('./sync-sse')
@@ -376,7 +376,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
         payload: result.row,
         summary: `cross-hive ${res.replyKind} from ${env.fromHivePubkey.slice(0, 8)}… — ${res.subject}`,
         ...(result.row.askedBy ? { to: [result.row.askedBy] } : {}),
-        source: `cross-hive:${deps.hiveSlug}`,
+        source: `cross-hive:${deps.potSlug}`,
         workspaceId: deps.workspaceId,
       });
     } catch (e) {

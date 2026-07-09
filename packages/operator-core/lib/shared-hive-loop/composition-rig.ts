@@ -639,7 +639,7 @@ export interface FakePipelineResult {
 export interface CompositionRigOpts {
   workspaceId?: string;
   harnessSlug?: string;
-  hiveSlug?: string;
+  potSlug?: string;
   /** Authority-election presence staleness window (compressed in chaos tests). */
   staleMs?: number;
   /** Hive-lease TTL for claim_next-style claims (seconds). */
@@ -663,7 +663,7 @@ export interface CompositionRigOpts {
 export class CompositionRig {
   readonly workspaceId: string;
   readonly harnessSlug: string;
-  readonly hiveSlug: string;
+  readonly potSlug: string;
   readonly staleMs: number;
   readonly claimTtlSec: number;
   cells!: { a: SwarmCell; b: SwarmCell };
@@ -689,7 +689,7 @@ export class CompositionRig {
   constructor(opts: CompositionRigOpts = {}) {
     this.workspaceId = opts.workspaceId ?? 'ws-shl-comp';
     this.harnessSlug = opts.harnessSlug ?? 'shl';
-    this.hiveSlug = opts.hiveSlug ?? 'shl-hive';
+    this.potSlug = opts.potSlug ?? 'shl-hive';
     this.staleMs = opts.staleMs ?? 10 * 60_000;
     this.claimTtlSec = opts.claimTtlSec ?? 300;
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 1_500;
@@ -1076,7 +1076,7 @@ export class CompositionRig {
       workspaceId: this.workspaceId,
       harnessSlug: this.harnessSlug,
       workItemId,
-      hiveSlug: this.hiveSlug,
+      potSlug: this.potSlug,
       owner: opts.owner ?? cell.owner,
       ownerLabel: `shl-cell-${cell.name}`,
       holderPubkey: cell.electionPubkey,
@@ -1084,7 +1084,7 @@ export class CompositionRig {
       intent: opts.intent ?? 'work-stealing claim (claim_next)',
     };
     const route = await routeToAuthorityForHive<AcquireResult>(
-      this.hiveSlug,
+      this.potSlug,
       {
         local: () => cell.store.acquire(payload),
         remote: { kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload, decode: (raw) => raw as AcquireResult },

@@ -50,11 +50,11 @@ function mockJoinFetch() {
     // not N per-link /api/harness/join-link POSTs. Response carries per-member
     // results so the panel can report "<okCount>/<total> member(s)".
     if (typeof url === 'string' && url === '/api/discovery/join-pot') {
-      const body = JSON.parse((init?.body as string) ?? '{}') as { memberLinks?: string[]; hiveId?: string };
+      const body = JSON.parse((init?.body as string) ?? '{}') as { memberLinks?: string[]; potId?: string };
       const members = (body.memberLinks ?? []).map(() => ({ ok: true }));
       return {
         ok: true,
-        json: async () => ({ ok: true, hiveSlug: `${body.hiveId}-hive`, members }),
+        json: async () => ({ ok: true, potSlug: `${body.potId}-hive`, members }),
       } as Response;
     }
     return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -74,7 +74,7 @@ afterEach(() => {
 describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
   it('renders discovered hives (title/owner/visibility)', async () => {
     dirRows = [
-      { hiveId: 'ash', title: 'Ash Hive', description: 'shop work', owner: 'alice', visibility: 'public', memberTopics: ['a'], memberLinks: ['papercusp://harness?topic=a'], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
+      { potId: 'ash', title: 'Ash Hive', description: 'shop work', owner: 'alice', visibility: 'public', memberTopics: ['a'], memberLinks: ['papercusp://harness?topic=a'], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
     render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     expect(await screen.findByText('Ash Hive')).toBeTruthy();
@@ -95,7 +95,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
 
   it('disables Join + shows "link required" for a topic-only hive (no member links)', async () => {
     dirRows = [
-      { hiveId: 'topic-only', title: 'Topic Hive', description: '', owner: 'bob', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: [], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
+      { potId: 'topic-only', title: 'Topic Hive', description: '', owner: 'bob', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: [], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
     ];
     render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     const btn = (await screen.findByRole('button', { name: 'Join' })) as HTMLButtonElement;
@@ -105,7 +105,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
 
   it('P-009: Refresh forces the push query to re-fetch (invalidate), not a poll', async () => {
     dirRows = [
-      { hiveId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
+      { potId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
     render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     fireEvent.click(await screen.findByTestId('hive-directory-refresh'));
@@ -114,7 +114,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
 
   it('Join makes ONE composed POST to /api/discovery/join-pot carrying every member link (D-007)', async () => {
     dirRows = [
-      { hiveId: 'joinable', title: 'Joinable', description: '', owner: 'cat', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
+      { potId: 'joinable', title: 'Joinable', description: '', owner: 'cat', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
     ];
     const fetchMock = mockJoinFetch();
     vi.stubGlobal('fetch', fetchMock);
@@ -126,8 +126,8 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     // Exactly ONE join-hive call (not N loose join-link calls), carrying both links.
     const joinCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/discovery/join-pot');
     expect(joinCalls).toHaveLength(1);
-    const sent = JSON.parse((joinCalls[0][1] as RequestInit).body as string) as { hiveId: string; memberLinks: string[] };
-    expect(sent.hiveId).toBe('joinable');
+    const sent = JSON.parse((joinCalls[0][1] as RequestInit).body as string) as { potId: string; memberLinks: string[] };
+    expect(sent.potId).toBe('joinable');
     expect(sent.memberLinks).toHaveLength(2);
     // The retired per-link endpoint is no longer hit.
     expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/harness/join-link')).toHaveLength(0);

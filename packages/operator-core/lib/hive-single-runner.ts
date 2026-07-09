@@ -57,7 +57,7 @@ export interface HiveSingleRunnerVerdict {
   run: boolean;
   reason: 'not-in-hive' | 'authority' | 'remote-runner' | 'fail-open';
   /** The Hive whose authority arbitrated (absent for not-in-hive / fail-open). */
-  hiveSlug?: string;
+  potSlug?: string;
   /** Live Swarms considered by the election (when resolved). */
   liveCount?: number;
   /** Human-readable runner label, set when a REMOTE Swarm is the runner. */
@@ -73,7 +73,7 @@ export interface HiveSingleRunnerDeps {
    * `authorityDeps` are forwarded to it (tests inject a fake presence roster +
    * clock here to drive the election deterministically).
    */
-  hiveAuthority?: (hiveSlug: string) => Promise<AuthorityResolution>;
+  hiveAuthority?: (potSlug: string) => Promise<AuthorityResolution>;
   /** Forwarded to the default lockAuthorityForHive (presence roster / clock / staleness). */
   authorityDeps?: LockAuthorityDeps;
 }
@@ -93,16 +93,16 @@ export async function checkHiveSingleRunner(
   const authority =
     deps.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug, deps.authorityDeps ?? {}));
   try {
-    const hiveSlug = await resolveHive(workspaceId, harnessSlug);
-    if (!hiveSlug) return { run: true, reason: 'not-in-hive' };
-    const res = await authority(hiveSlug);
+    const potSlug = await resolveHive(workspaceId, harnessSlug);
+    if (!potSlug) return { run: true, reason: 'not-in-hive' };
+    const res = await authority(potSlug);
     if (res.isSelf) {
-      return { run: true, reason: 'authority', hiveSlug, liveCount: res.liveCount };
+      return { run: true, reason: 'authority', potSlug, liveCount: res.liveCount };
     }
     return {
       run: false,
       reason: 'remote-runner',
-      hiveSlug,
+      potSlug,
       liveCount: res.liveCount,
       runnerLabel: res.peer
         ? res.peer.machineLabel || `${res.peer.devicePubkey.slice(0, 12)}…`

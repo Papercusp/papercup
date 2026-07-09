@@ -87,9 +87,9 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
 
 describe('deriveSlugs', () => {
   it('uses the base when free; suffixes on collision', () => {
-    expect(deriveSlugs('shop', new Set())).toEqual({ memberSlug: 'shop', hiveSlug: 'shop-hive' });
-    expect(deriveSlugs('shop', new Set(['shop']))).toEqual({ memberSlug: 'shop-2', hiveSlug: 'shop-2-hive' });
-    expect(deriveSlugs('shop', new Set(['shop-hive']))).toEqual({ memberSlug: 'shop-2', hiveSlug: 'shop-2-hive' });
+    expect(deriveSlugs('shop', new Set())).toEqual({ memberSlug: 'shop', potSlug: 'shop-hive' });
+    expect(deriveSlugs('shop', new Set(['shop']))).toEqual({ memberSlug: 'shop-2', potSlug: 'shop-2-hive' });
+    expect(deriveSlugs('shop', new Set(['shop-hive']))).toEqual({ memberSlug: 'shop-2', potSlug: 'shop-2-hive' });
   });
   it('gives up after -9', () => {
     const taken = new Set<string>(['shop']);
@@ -105,7 +105,7 @@ describe('createHiveFromRepo (P-006)', () => {
         ({
           kind: 'hive',
           coords: { owner: 'acme', repo: 'shop', identityResolved: true },
-          hive: { hiveId: 'h', title: 'H' },
+          hive: { potId: 'h', title: 'H' },
           source: 'directory',
           bindingUnverified: false,
         }) as RepoHiveLookup,
@@ -124,7 +124,7 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     expect(r.created).toMatchObject({
-      hiveSlug: 'shop-hive',
+      potSlug: 'shop-hive',
       memberSlug: 'shop',
       memberPath: '/clones/shop',
       defaultBranch: 'develop',
@@ -136,7 +136,7 @@ describe('createHiveFromRepo (P-006)', () => {
     const member = calls.registry.find((p) => p.slug === 'shop');
     expect(member).toBeUndefined(); // member row is created by harness:create (faked) — stamp applies only when present
     // publish got the public default + the repo title
-    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'public', title: 'acme/shop' });
+    expect(calls.publishes[0]).toMatchObject({ potSlug: 'shop-hive', visibility: 'public', title: 'acme/shop' });
     expect(r.publish).toMatchObject({ announced: true });
   });
 
@@ -184,7 +184,7 @@ describe('createHiveFromRepo (P-006)', () => {
     const { deps, calls } = fakes();
     const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
-    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'public' });
+    expect(calls.publishes[0]).toMatchObject({ potSlug: 'shop-hive', visibility: 'public' });
     expect(r.publish).toMatchObject({ announced: true });
   });
 
@@ -198,7 +198,7 @@ describe('createHiveFromRepo (P-006)', () => {
     const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     // a private repo still publishes — as a hidden, secret-gated invite listing
-    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'invite', repoIsPrivate: true });
+    expect(calls.publishes[0]).toMatchObject({ potSlug: 'shop-hive', visibility: 'invite', repoIsPrivate: true });
     expect(r.publish).toMatchObject({ announced: true });
   });
 
@@ -234,7 +234,7 @@ describe('createHiveFromRepo (P-006)', () => {
     const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     expect(r.created.memberSlug).toBe('shop-2');
-    expect(r.created.hiveSlug).toBe('shop-2-hive');
+    expect(r.created.potSlug).toBe('shop-2-hive');
     expect(r.bindingUnverified).toBe(true);
     expect(calls.hiveCreated).toEqual(['shop-2-hive']);
   });
@@ -256,7 +256,7 @@ describe('createHiveFromRepo (P-006)', () => {
         ({
           kind: 'hive',
           coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true },
-          hive: { hiveId: 'h', title: 'H', hivePubkey: 'HPK' },
+          hive: { potId: 'h', title: 'H', hivePubkey: 'HPK' },
           source: 'directory',
           bindingUnverified: false,
         }) as RepoHiveLookup,
@@ -337,11 +337,11 @@ describe('createHiveFromRepo (P-006)', () => {
     const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'myhive', workspaceId: 'ws' }, deps);
     expect(r.ok).toBe(true);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
-    expect(r.created).toMatchObject({ hiveSlug: 'myhive', memberSlug: 'shop' });
+    expect(r.created).toMatchObject({ potSlug: 'myhive', memberSlug: 'shop' });
     expect(calls.hiveCreated).toEqual([]); // no new home
     expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'myhive', path: '/clones/shop', workspaceId: 'ws' }]);
     expect(calls.publishes).toEqual([]); // the NEW-hive publish path is not used
-    expect(republishes[0]).toMatchObject({ hiveSlug: 'myhive', onlyRepoIds: [100] });
+    expect(republishes[0]).toMatchObject({ potSlug: 'myhive', onlyRepoIds: [100] });
   });
 
   it('into-hive mode fails fast on a non-hive scope (no clone)', async () => {

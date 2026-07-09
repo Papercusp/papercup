@@ -29,7 +29,7 @@ beforeEach(() => {
     getHiveBySlug: async (_ws: string, slug: string) => hives.get(slug) ?? null,
   }));
   vi.doMock('./hive-directory-meta', () => ({
-    getOwnedHiveMeta: async (hiveId: string) => metas.get(hiveId) ?? null,
+    getOwnedHiveMeta: async (potId: string) => metas.get(potId) ?? null,
   }));
   vi.doMock('./harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects }),

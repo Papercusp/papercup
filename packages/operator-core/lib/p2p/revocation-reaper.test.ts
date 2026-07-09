@@ -108,7 +108,7 @@ describe('foreignSessionMatchesRevocation (pure selector)', () => {
 });
 
 describe('reapForeignSessionsForRevocation (orchestration)', () => {
-  const base = { hiveSlug: 'my-hive', responderGithubUserId: 42 };
+  const base = { potSlug: 'my-hive', responderGithubUserId: 42 };
 
   it('reaps exactly the live sessions the grant revocation covers + emits a receipt each', async () => {
     const rows = [
@@ -185,7 +185,7 @@ describe('reapForeignSessionsForRevocation (orchestration)', () => {
   it('refuses without a hive slug (receipts are hive-scoped)', async () => {
     const { deps, list } = makeDeps([ws()]);
     const res = await reapForeignSessionsForRevocation(
-      { workspaceId: 'ws1', hiveSlug: '  ', responderGithubUserId: 42, trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
+      { workspaceId: 'ws1', potSlug: '  ', responderGithubUserId: 42, trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
       sqlStub,
       deps,
     );
@@ -234,7 +234,7 @@ describe('reapForeignSessionsForRevocation (orchestration)', () => {
 });
 
 describe('unclaimed-offer cancel sweep (WI-1935 — the wired deferred #2)', () => {
-  const base = { hiveSlug: 'my-hive', responderGithubUserId: 42 };
+  const base = { potSlug: 'my-hive', responderGithubUserId: 42 };
 
   it('grant-revoked → host-locally disposes the fleet\'s open offers (predicate by fleetSlug)', async () => {
     const { deps, cancelOffers } = makeDeps([], {

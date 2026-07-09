@@ -19,7 +19,7 @@ let ratifyIntegrationRequest: ReturnType<typeof vi.fn>;
 
 const SAMPLE_ROW = {
   workspaceId: ACTIVE_WS,
-  hiveSlug: 'hive-1',
+  potSlug: 'hive-1',
   repoKey: 'papercup',
   devicePubkey: 'dev-pk',
   headSha: 'a'.repeat(40),
@@ -78,7 +78,7 @@ describe('pot_git:integration_requests', () => {
     );
     expect(listIntegrationRequests.mock.calls[0]![0]).toMatchObject({
       workspaceId: 'ws-1',
-      hiveSlug: 'hive-1',
+      potSlug: 'hive-1',
       repoKey: 'papercup',
       devicePubkey: 'dev-pk',
       state: 'ratified',
@@ -96,7 +96,7 @@ describe('pot_git:integration_requests', () => {
     );
     expect(ratifyIntegrationRequest.mock.calls[0]![0]).toMatchObject({
       workspaceId: 'ws-1',
-      hiveSlug: 'hive-1',
+      potSlug: 'hive-1',
       repoKey: 'papercup',
       devicePubkey: 'dev-pk',
       headSha: SAMPLE_ROW.headSha,

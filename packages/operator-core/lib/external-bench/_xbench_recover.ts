@@ -113,7 +113,7 @@ async function main() {
 
     perTask.push({
       instanceId: r.instanceId,
-      beeId: spawnRows[0]?.spawnId ?? r.member,
+      cupId: spawnRows[0]?.spawnId ?? r.member,
       disposition: 'spawn',
       stopReason: diffBytes > 0 ? 'done' : generationError ? 'error' : 'no-diff',
       generationError,

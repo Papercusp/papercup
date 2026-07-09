@@ -76,7 +76,7 @@ const STEER_WORLD: ToolDispatchOverride = {
           {
             text: JSON.stringify({
               ok: true,
-              beeId: a.beeId ?? 'bee-su-7f3a1',
+              cupId: a.cupId ?? 'bee-su-7f3a1',
               revision: 3,
               note: 'spec stored; the bee pulls under it on its next scheduler:get_next',
             }),
@@ -124,16 +124,16 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
         const input = (tc.input ?? {}) as Record<string, unknown>;
         const spec = input.spec as Record<string, unknown> | undefined;
         // A REAL spec: a bee id + a spec object carrying a view/filter and/or a rank — not empty.
-        const beeOk = typeof input.beeId === 'string' && input.beeId.trim().length > 0;
+        const beeOk = typeof input.cupId === 'string' && input.cupId.trim().length > 0;
         const specOk = !!spec && typeof spec === 'object' && ('view' in spec || 'filter' in spec || 'rank' in spec);
         return beeOk && specOk;
       },
       {
         name: 'authors-real-claim-spec',
         claim:
-          'Expected the Queen to author a per-bee claim SPEC via scheduler:set_claim_spec — a beeId plus a spec object with a view/filter and/or a rank scoping the bee to the data-sync lane. No such call happened: she did not express the steer as a spec.',
+          'Expected the Queen to author a per-bee claim SPEC via scheduler:set_claim_spec — a cupId plus a spec object with a view/filter and/or a rank scoping the bee to the data-sync lane. No such call happened: she did not express the steer as a spec.',
         suggestion:
-          "queen.md 'Steer the scheduler — author per-bee claim SPECS': turn the lane (plan + path glob) into the bee's spec via scheduler:set_claim_spec { beeId, spec: { view: { filter }, rank } } and let the bee pull under it.",
+          "queen.md 'Steer the scheduler — author per-bee claim SPECS': turn the lane (plan + path glob) into the bee's spec via scheduler:set_claim_spec { cupId, spec: { view: { filter }, rank } } and let the bee pull under it.",
       },
     ),
     // She must NOT fall back to per-item micro-dispatch — the exact anti-pattern the spec replaces.

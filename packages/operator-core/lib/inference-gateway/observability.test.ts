@@ -1,7 +1,7 @@
 /** Tests for the gateway rate-observability read-model (P-014). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled } from './observability';
+import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled, readmitGatewayAccounts } from './observability';
 import type { GatewayStats } from './gateway';
 
 const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
@@ -21,7 +21,9 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   bareBurstRotateSuppressed: 0,
   maxQueued: 256,
   concurrencyCap: 24,
-  aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0 },
+  aimd: { effective: 24, cap: 24, floor: 4, pressure: 0, cleanStreak: 0, decreases: 0, increases: 0, hardFailures: 0 },
+  opusToSonnetDowngrades: 0,
+  proactiveEgressProbe: { enabled: false, intervalMs: 0, lastTickAt: 0, circuitOpens: 0, failStreakByAccount: {} },
   failovers: 0,
   upstreamErrors: 0,
   egressCircuitOpens: 0,
@@ -223,4 +225,42 @@ test('gatewayWholesaleThrottled — default path (no injected fetchImpl) is a NO
   // the real gateway and the test flaps the deploy gate.
   const throttled = await gatewayWholesaleThrottled();
   assert.equal(throttled, false);
+});
+
+// readmitGatewayAccounts — the accounts:reset-rate → live-gateway poke (EI-8797 residual: the store
+// reset alone leaves the gateway's in-memory pause map stale, so /stats keeps healthyAccounts=0).
+
+test('readmitGatewayAccounts — POSTs /admin/readmit per id and reports the gateway fresh healthyAccounts', async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push(`${init?.method ?? 'GET'} ${String(url)}`);
+    const id = decodeURIComponent(String(url).match(/account=([^&]+)/)?.[1] ?? '');
+    return new Response(JSON.stringify({ ok: true, readmitted: [id], healthyAccounts: 1 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  const r = await readmitGatewayAccounts(['aviynw7'], { port: 4321, fetchImpl });
+  assert.equal(r.reachable, true);
+  assert.deepEqual(r.readmitted, ['aviynw7']);
+  assert.equal(r.healthyAccounts, 1, 'reports the gateway-side count so the caller can VERIFY the split-brain cleared');
+  assert.deepEqual(calls, ['POST http://127.0.0.1:4321/admin/readmit?account=aviynw7']);
+});
+
+test('readmitGatewayAccounts — best-effort: gateway down → reachable:false, never throws (the store reset must still succeed)', async () => {
+  const r = await readmitGatewayAccounts(['x'], {
+    fetchImpl: (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as typeof fetch,
+  });
+  assert.equal(r.reachable, false);
+  assert.match(r.error ?? '', /ECONNREFUSED/);
+});
+
+test('readmitGatewayAccounts — deploy-skew (pre-readmit binary → 404) → reachable:false with status', async () => {
+  const r = await readmitGatewayAccounts(['x'], {
+    fetchImpl: (async () => new Response('not found', { status: 404 })) as typeof fetch,
+  });
+  assert.equal(r.reachable, false);
+  assert.match(r.error ?? '', /404/);
 });

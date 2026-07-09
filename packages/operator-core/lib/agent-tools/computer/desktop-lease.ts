@@ -36,24 +36,24 @@ const leases = new Map<string, SandboxDesktop>();
 const inflight = new Map<string, Promise<SandboxDesktop>>();
 
 /** Provision (or return the existing) sandbox desktop for a hive. Idempotent + race-safe. */
-export async function ensureHiveDesktop(hiveSlug: string, opts?: ProvisionOptions): Promise<SandboxDesktop> {
-  const existing = leases.get(hiveSlug);
+export async function ensureHiveDesktop(potSlug: string, opts?: ProvisionOptions): Promise<SandboxDesktop> {
+  const existing = leases.get(potSlug);
   if (existing) return existing;
-  const pending = inflight.get(hiveSlug);
+  const pending = inflight.get(potSlug);
   if (pending) return pending;
 
   const p = (async () => {
     const desktop = await provisionImpl(opts);
-    leases.set(hiveSlug, desktop);
+    leases.set(potSlug, desktop);
     return desktop;
-  })().finally(() => inflight.delete(hiveSlug));
-  inflight.set(hiveSlug, p);
+  })().finally(() => inflight.delete(potSlug));
+  inflight.set(potSlug, p);
   return p;
 }
 
 /** The leased desktop for a hive, or undefined. */
-export function hiveDesktop(hiveSlug: string): SandboxDesktop | undefined {
-  return leases.get(hiveSlug);
+export function hiveDesktop(potSlug: string): SandboxDesktop | undefined {
+  return leases.get(potSlug);
 }
 
 /**
@@ -62,8 +62,8 @@ export function hiveDesktop(hiveSlug: string): SandboxDesktop | undefined {
  * GUI apps on its leased desktop (`firefox &`); capability:computer then drives them.
  * Never `:0` — a lease is always a sandbox display.
  */
-export function displayForHive(hiveSlug: string): string | undefined {
-  return leases.get(hiveSlug)?.display;
+export function displayForHive(potSlug: string): string | undefined {
+  return leases.get(potSlug)?.display;
 }
 
 /**
@@ -72,8 +72,8 @@ export function displayForHive(hiveSlug: string): string | undefined {
  * when the hive has no desktop (→ the tool errors "no desktop leased", which is
  * the correct deny-by-default).
  */
-export function desktopEnvForHive(hiveSlug: string): Record<string, string> {
-  const d = leases.get(hiveSlug);
+export function desktopEnvForHive(potSlug: string): Record<string, string> {
+  const d = leases.get(potSlug);
   if (!d) return {};
   return {
     PAPERCUSP_COMPUTER_DISPLAY: d.display,
@@ -83,10 +83,10 @@ export function desktopEnvForHive(hiveSlug: string): Record<string, string> {
 }
 
 /** Tear down a hive's desktop (call from pot:dissolve). Idempotent. */
-export async function releaseHiveDesktop(hiveSlug: string): Promise<void> {
-  const d = leases.get(hiveSlug);
+export async function releaseHiveDesktop(potSlug: string): Promise<void> {
+  const d = leases.get(potSlug);
   if (!d) return;
-  leases.delete(hiveSlug);
+  leases.delete(potSlug);
   await d.release();
 }
 

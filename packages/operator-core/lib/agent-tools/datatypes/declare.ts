@@ -198,7 +198,7 @@ export default defineTool({
     const row = await upsertDatatype(sql, {
       id,
       workspaceId,
-      hiveSlug: ctx.harnessSlug ?? null,
+      potSlug: ctx.harnessSlug ?? null,
       title: args.title ?? args.name,
       description: args.description,
       tier,

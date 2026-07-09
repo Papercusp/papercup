@@ -82,7 +82,7 @@ function fakeOps(record: string[], o: FakeOpts = {}): { ops: SuIndependentBacklo
     concurrencyCap: () => cap,
     async createHive({ runId }) {
       record.push(`createHive:${runId}`);
-      return { hiveSlug: `hive-${runId}` };
+      return { potSlug: `hive-${runId}` };
     },
     async prepareTask({ task: t }) {
       record.push(`prepare:${t.instanceId}`);
@@ -135,8 +135,8 @@ function fakeOps(record: string[], o: FakeOpts = {}): { ops: SuIndependentBacklo
     async teardownTask({ enrolled }) {
       record.push(`teardown:${enrolled.task.instanceId}`);
     },
-    async dissolveHive({ hiveSlug }) {
-      record.push(`dissolveHive:${hiveSlug}`);
+    async dissolveHive({ potSlug }) {
+      record.push(`dissolveHive:${potSlug}`);
     },
   };
   return { ops, maxLive: () => maxLive };

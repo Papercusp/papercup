@@ -123,7 +123,7 @@ async function main() {
       JSON.stringify(
         {
           instanceId: a.instanceId,
-          beeId: tr.beeId,
+          cupId: tr.cupId,
           disposition: tr.disposition,
           stopReason: a.stopReason,
           generationError: a.generationError,

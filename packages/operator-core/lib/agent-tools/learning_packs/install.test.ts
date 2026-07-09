@@ -71,6 +71,6 @@ describe('learning_packs:install tool', () => {
   it('applies with resolutions even when clashes exist (acceptDefaults bypass)', async () => {
     mockClassify.mockResolvedValue(review({ duplicates: 2 }) as unknown as Awaited<ReturnType<typeof classifyPackInstall>>);
     await callTool({ pot: 'h', pack: 'p1', acceptDefaults: true });
-    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', createdBy: 'user-1' }));
+    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ potSlug: 'h', createdBy: 'user-1' }));
   });
 });

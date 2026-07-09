@@ -136,7 +136,7 @@ export async function declareOverwatchTimeWake(
         // sentinel, but the launch route is still harness-scoped. Preserve the
         // real hive home so the system action never tries to invoke
         // /api/harness/<workspace-id>/invoke.
-        hiveSlug: opts.installSlug,
+        potSlug: opts.installSlug,
         kickoff:
           opts.kickoff ??
           `Self-declared overwatch wake (declared ${new Date().toISOString()}). Survey system health and act on the anomalies.`,

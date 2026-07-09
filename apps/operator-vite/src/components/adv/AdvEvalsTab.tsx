@@ -193,7 +193,7 @@ interface BenchRunListEntry {
 }
 interface PreservedResolvedTask {
   instanceId: string;
-  beeId?: string;
+  cupId?: string;
   disposition?: string;
   stopReason?: string;
   costUsd?: number;
@@ -244,7 +244,7 @@ interface PreservedRunDetail {
 interface BenchRunLive {
   runId: string;
   status: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
   isLive: boolean;
   queen: { alive: boolean | null; ageSec: number | null; reclaims: number | null; status: string | null };
   bees: { total: number; placed: number; working: number; done: number; evicted: number; failed: number };

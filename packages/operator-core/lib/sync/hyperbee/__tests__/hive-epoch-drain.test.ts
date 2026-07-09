@@ -183,7 +183,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
     const cap = buildEpochEncryptCapability({
       crypto,
       resolveKey: async () => 'K' as unknown as EpochKey,
-      hiveId: HIVE,
+      potId: HIVE,
       getCurrentEpoch: async () => 3,
     });
     const enc = await cap.encryptOp(localOp());
@@ -204,7 +204,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
       return 'K' as unknown as EpochKey;
     };
     const pending = new PendingEpochContent();
-    const gate = buildEpochDecryptGate({ crypto, resolveKey, hiveId: HIVE, pending });
+    const gate = buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE, pending });
     const applied: OpEnvelope[] = [];
     const applyImpl = gate(async (op) => {
       applied.push(op);
@@ -234,7 +234,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
     const cap = buildEpochEncryptCapability({
       crypto,
       resolveKey: async () => 'K' as unknown as EpochKey,
-      hiveId: HIVE,
+      potId: HIVE,
       getCurrentEpoch: async () => 1,
     });
     const enc = await cap.encryptOp(localOp());
@@ -253,7 +253,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
     };
     const pending = new PendingEpochContent();
     const applied: OpEnvelope[] = [];
-    const applyImpl = buildEpochDecryptGate({ crypto, resolveKey, hiveId: HIVE, pending })(async (op) => {
+    const applyImpl = buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE, pending })(async (op) => {
       applied.push(op);
       return true;
     });

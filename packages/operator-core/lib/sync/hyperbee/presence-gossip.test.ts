@@ -236,7 +236,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
     devicePubkey: dev.pubB64,
     githubUserId: 42,
     machineLabel: 'laptop',
-    hiveSlug: 'hive-home',
+    potSlug: 'hive-home',
   });
   const entry = (ownerId: string, over?: Partial<SessionPresenceEntry>): SessionPresenceEntry => ({
     owner_id: ownerId,
@@ -308,7 +308,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
         devicePubkey: dev.pubB64,
         githubUserId: 42,
         machineLabel: 'laptop',
-        hiveSlug: 'hive-home',
+        potSlug: 'hive-home',
         sessions,
       },
       T0,
@@ -334,7 +334,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
     // The device signs a sessions frame declaring github_user_id 999 (a foreign
     // user), trying to announce sessions — incl. a spoofed owner_id — under it.
     const frame = await buildSessionsFrame(
-      { devicePubkey: dev.pubB64, githubUserId: 999, machineLabel: 'laptop', hiveSlug: 'hive-home' },
+      { devicePubkey: dev.pubB64, githubUserId: 999, machineLabel: 'laptop', potSlug: 'hive-home' },
       [entry('mug'), entry('su-victim-uuid')],
       T0,
       dev.sign,

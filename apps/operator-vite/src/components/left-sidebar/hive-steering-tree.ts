@@ -265,18 +265,18 @@ function finalize(
  */
 export function toggleHive(
   selection: SteeringSelection,
-  hiveSlug: string,
+  potSlug: string,
   hivePlans: HivePlanIndex,
   planToHive: ReadonlyMap<string, string>,
 ): SteeringSelection {
   const eh = new Set(selection.eligibleHives);
   const ep = new Set(selection.eligiblePlans);
-  const planSlugs = hivePlans.get(hiveSlug) ?? [];
-  if (eh.has(hiveSlug)) {
-    eh.delete(hiveSlug);
+  const planSlugs = hivePlans.get(potSlug) ?? [];
+  if (eh.has(potSlug)) {
+    eh.delete(potSlug);
     for (const p of planSlugs) ep.delete(p);
   } else {
-    eh.add(hiveSlug);
+    eh.add(potSlug);
     if (isNarrowed([...ep])) for (const p of planSlugs) ep.add(p);
   }
   return finalize(eh, ep, planToHive);
@@ -290,13 +290,13 @@ export function toggleHive(
  */
 export function togglePlan(
   selection: SteeringSelection,
-  hiveSlug: string,
+  potSlug: string,
   planSlug: string,
   hivePlans: HivePlanIndex,
   planToHive: ReadonlyMap<string, string>,
 ): SteeringSelection {
   const eh = new Set(selection.eligibleHives);
-  if (!eh.has(hiveSlug)) return selection; // guard: plan only togglable under a checked hive
+  if (!eh.has(potSlug)) return selection; // guard: plan only togglable under a checked hive
   let ep = new Set(selection.eligiblePlans);
   if (!isNarrowed([...ep])) {
     // currently "all" — the only meaningful click is an UNCHECK → narrow.
@@ -308,24 +308,24 @@ export function togglePlan(
     ep.add(planSlug);
   }
   // If the hive now has no eligible plans, it falls out of scope.
-  const planSlugs = hivePlans.get(hiveSlug) ?? [];
-  if (!planSlugs.some((p) => ep.has(p))) eh.delete(hiveSlug);
+  const planSlugs = hivePlans.get(potSlug) ?? [];
+  if (!planSlugs.some((p) => ep.has(p))) eh.delete(potSlug);
   return finalize(eh, ep, planToHive);
 }
 
 /** Set every plan of one checked hive on/off (the per-hive all/none). */
 export function setHivePlans(
   selection: SteeringSelection,
-  hiveSlug: string,
+  potSlug: string,
   on: boolean,
   hivePlans: HivePlanIndex,
   planToHive: ReadonlyMap<string, string>,
 ): SteeringSelection {
   const eh = new Set(selection.eligibleHives);
-  const planSlugs = hivePlans.get(hiveSlug) ?? [];
+  const planSlugs = hivePlans.get(potSlug) ?? [];
   if (on) {
     // "all of this hive" — add the hive; leave narrowing as-is (if narrowed, add its plans).
-    eh.add(hiveSlug);
+    eh.add(potSlug);
     let ep = new Set(selection.eligiblePlans);
     if (isNarrowed([...ep])) for (const p of planSlugs) ep.add(p);
     return finalize(eh, ep, planToHive);
@@ -333,7 +333,7 @@ export function setHivePlans(
   // "none of this hive" — drop the hive + its plans.
   const ep = new Set(selection.eligiblePlans);
   for (const p of planSlugs) ep.delete(p);
-  eh.delete(hiveSlug);
+  eh.delete(potSlug);
   return finalize(eh, ep, planToHive);
 }
 

@@ -116,9 +116,9 @@ async function pollUntil<T>(
   }
 }
 
-function publicHive(hiveId: string, title: string): HiveDirectoryMeta {
+function publicHive(potId: string, title: string): HiveDirectoryMeta {
   return {
-    hiveId,
+    potId,
     title,
     description: `${title} — live beacon E2E`,
     visibility: 'public',
@@ -156,7 +156,7 @@ describe.skipIf(!process.env.RUN_LIVE_HYPERSWARM)(
           trustedPubkeys: () => [aPub, bPub],
           ownedHives: [publicHive('hive-a', 'Alpha Hive')],
           // consent ON: attach the beacon at announce-build time.
-          enrichDescriptor: async (d) => (d.hiveId === 'hive-a' ? { ...d, beacon: BEACON } : d),
+          enrichDescriptor: async (d) => (d.potId === 'hive-a' ? { ...d, beacon: BEACON } : d),
         });
         aPub = a.devicePubkey;
 
@@ -170,7 +170,7 @@ describe.skipIf(!process.env.RUN_LIVE_HYPERSWARM)(
         bPub = b.devicePubkey;
 
         // B discovers A's hive over the pair-time getOwnAnnounces exchange...
-        const seen = await pollUntil(() => b.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-a'), {
+        const seen = await pollUntil(() => b.dir.listDiscoveredHives().find((h) => h.potId === 'hive-a'), {
           timeoutMs: 15_000,
           intervalMs: 200,
         });
@@ -179,7 +179,7 @@ describe.skipIf(!process.env.RUN_LIVE_HYPERSWARM)(
         expect(seen!.beacon).toEqual(BEACON);
 
         // B's own hive (no enrich beacon) carries none — the field is per-publisher.
-        const ownB = await pollUntil(() => a.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-b'), {
+        const ownB = await pollUntil(() => a.dir.listDiscoveredHives().find((h) => h.potId === 'hive-b'), {
           timeoutMs: 15_000,
           intervalMs: 200,
         });

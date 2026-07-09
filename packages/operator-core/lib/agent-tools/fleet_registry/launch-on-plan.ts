@@ -422,7 +422,7 @@ export const LEADER_STANDING_JOB: readonly string[] = [
   'WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
   'STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
   // su-loop-capability-parity P-002: steer-don't-dispatch (the queen model) + the completion mandate.
-  "STEER, don't micro-dispatch: your members self-PULL via `scheduler:get_next`; you decide WHICH item each gets by SETTING/BUMPING its claim-spec — `scheduler:set_claim_spec { beeId, spec }` with a PROPERTY FILTER (e.g. `{field:'plan',op:'=',value:'<slug>'}` + a rank), NEVER id-pins for a standing lane (an `id in [...]` pin is a static one-off wave only). Re-steer a running member by bumping its spec (the revision auto-applies on its next pull), not by hand-assigning items. And you OWN driving the plan to done THROUGH the fleet — keep the lanes covered + the dependency order honest; do NOT quietly fall back to doing the work solo.",
+  "STEER, don't micro-dispatch: your members self-PULL via `scheduler:get_next`; you decide WHICH item each gets by SETTING/BUMPING its claim-spec — `scheduler:set_claim_spec { cupId, spec }` with a PROPERTY FILTER (e.g. `{field:'plan',op:'=',value:'<slug>'}` + a rank), NEVER id-pins for a standing lane (an `id in [...]` pin is a static one-off wave only). Re-steer a running member by bumping its spec (the revision auto-applies on its next pull), not by hand-assigning items. And you OWN driving the plan to done THROUGH the fleet — keep the lanes covered + the dependency order honest; do NOT quietly fall back to doing the work solo.",
   'Keep each wake LEAN: one dev:pg_query for burn-down + active-worker count. Do NOT dump fleet:assignments coverage[] or a full coord:presence every wake — that blows your OWN context within a few cycles and is the #1 leader self-inflicted failure.',
   'AUDIT completions: spot-check a few terminalCompletionRefs (work_items:get) for real evidence — files touched, the exact test run + its result — not just a status flip.',
   // su-loop-capability-parity P-006: the wave-close rubric-graded scorecard folded into the
@@ -528,13 +528,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Works on Linux, macOS, and Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
   guidance: {
     when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
-      'Not for background bees (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
+      'Not for background cups (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start (promotes the plan + sets a plan-scoped claim spec before opening terminals), but run plans:start yourself so the Queen/orchestrator also gets plan-started visibility. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start (promotes the plan + sets a plan-scoped claim spec before opening terminals), but run plans:start yourself so the Mug/orchestrator also gets plan-started visibility. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -790,11 +790,11 @@ export default defineTool({
     let claimSpecApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
     try {
       claimSpecApplied = await setClaimSpec({
-        beeId: fleetSpecBeeKey(fleetSlug),
+        cupId: fleetSpecBeeKey(fleetSlug),
         workspaceId: resolveClaimSpecWorkspace(workspaceId),
         spec: buildFleetPlanClaimSpec(fleetSlug, args.plan, args.claimKinds),
         updatedBy: ownerId,
-        hiveSlug: null,
+        potSlug: null,
       });
     } catch (e: any) {
       claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
@@ -1124,7 +1124,7 @@ export default defineTool({
     if (promotionFailsafe?.ran) {
       if (promotionFailsafe.promoted > 0) {
         lines.push(
-          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items, so the fleet is NOT launching onto an empty backlog. Run plans:start yourself BEFORE launching next time (it also gives the Queen/orchestrator plan-started visibility, which this failsafe does not).`,
+          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items, so the fleet is NOT launching onto an empty backlog. Run plans:start yourself BEFORE launching next time (it also gives the Mug/orchestrator plan-started visibility, which this failsafe does not).`,
         );
       } else if (promotionFailsafe.flagOff) {
         lines.push(

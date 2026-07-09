@@ -17,7 +17,7 @@ import { buildHiveDirectoryRows } from '../../discovery-hive-rows';
 import type { HiveStatusBeacon } from '../../hive-beacon';
 
 export interface DiscoveredHiveRow {
-  hiveId: string;
+  potId: string;
   title: string;
   description: string;
   owner: string;

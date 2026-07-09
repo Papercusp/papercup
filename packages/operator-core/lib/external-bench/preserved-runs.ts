@@ -37,7 +37,7 @@ export function defaultBenchResultsDir(): string {
 /** One per-task row as persisted by the arm runner (lenient — additive fields ignored). */
 export interface PreservedPerTask {
   instanceId: string;
-  beeId?: string;
+  cupId?: string;
   disposition?: string;
   stopReason?: string;
   generationError?: string | null;

@@ -56,7 +56,7 @@ describe('learning_packs:export tool', () => {
   it('exports with the mapped args and appends the commit+publish hint on ok', async () => {
     const res = body(await call(exportTool, EXPORT_ARGS));
     expect(mockExport).toHaveBeenCalledWith(
-      expect.objectContaining({ hiveSlug: 'h', packId: 'my-pack', title: 'T', description: 'D', targetDir: '/repo' }),
+      expect.objectContaining({ potSlug: 'h', packId: 'my-pack', title: 'T', description: 'D', targetDir: '/repo' }),
     );
     expect(res.ok).toBe(true);
     expect(res.hint).toMatch(/learning_packs:publish/);

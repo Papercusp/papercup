@@ -201,7 +201,7 @@ function normalizePlanScopeArg(body: Record<string, unknown>): string | undefine
     body.harnessSlug,
     body.harness_slug,
     body.hive,
-    body.hiveSlug,
+    body.potSlug,
     body.hive_slug,
   );
   if (harness) body.harness = harness;

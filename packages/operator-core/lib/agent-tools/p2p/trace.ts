@@ -56,8 +56,8 @@ export default defineTool({
       });
     }
     const [receipts, counters] = await Promise.all([
-      listP2pReceipts({ workspaceId: ws, hiveSlug: args.pot, offerId: args.offerId ?? null, limit: args.limit }),
-      listRefusedOpCounters({ workspaceId: ws, hiveSlug: args.pot }),
+      listP2pReceipts({ workspaceId: ws, potSlug: args.pot, offerId: args.offerId ?? null, limit: args.limit }),
+      listRefusedOpCounters({ workspaceId: ws, potSlug: args.pot }),
     ]);
     return json({
       ok: true,

@@ -116,10 +116,10 @@ function joinerDeps(): HiveDirectoryDeps {
 }
 
 function registerOwnedHive(
-  over: Partial<LocalHiveDescriptor> & Pick<LocalHiveDescriptor, 'hiveId' | 'visibility'>,
+  over: Partial<LocalHiveDescriptor> & Pick<LocalHiveDescriptor, 'potId' | 'visibility'>,
 ): void {
   owner.registerLocalHive({
-    title: over.hiveId,
+    title: over.potId,
     description: 'd',
     ownerGithubLogin: 'alice',
     ownerGithubUserId: 1,
@@ -187,15 +187,15 @@ afterEach(() => {
 describe('discover→join flow (shared-hive-release T2)', () => {
   describe('set-hive visibility → announce topic', () => {
     it('public → announced on the GLOBAL directory topic, discovered by a browsing peer', async () => {
-      registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
+      registerOwnedHive({ potId: 'acme', visibility: 'public' });
       const frame = await owner.announceLocalHive('acme');
       expect(frame).not.toBeNull();
       // The peer subscribed to the global topic discovered it.
-      expect(joiner.listDiscoveredHives().map((h) => h.hiveId)).toContain('acme');
+      expect(joiner.listDiscoveredHives().map((h) => h.potId)).toContain('acme');
     });
 
     it('invite → announced on the SECRET-gated topic only, invisible to a global browser', async () => {
-      registerOwnedHive({ hiveId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET });
+      registerOwnedHive({ potId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET });
       await owner.announceLocalHive('inv');
 
       // The invite topic is distinct from the global directory topic …
@@ -203,18 +203,18 @@ describe('discover→join flow (shared-hive-release T2)', () => {
       const globalHex = hiveTopicAsHex(deriveDirectoryTopic());
       expect(inviteHex).not.toBe(globalHex);
       // … so a peer browsing ONLY the global directory never sees it.
-      expect(joiner.listDiscoveredHives().map((h) => h.hiveId)).not.toContain('inv');
+      expect(joiner.listDiscoveredHives().map((h) => h.potId)).not.toContain('inv');
 
       // A peer that holds the secret joins the invite topic → the owner's
       // (periodic) re-announce now reaches it (newer ts keeps LWW happy).
       subscribe(joiner, inviteHex);
       clock.ms += 1000;
       await owner.announceLocalHive('inv');
-      expect(joiner.listDiscoveredHives().map((h) => h.hiveId)).toContain('inv');
+      expect(joiner.listDiscoveredHives().map((h) => h.potId)).toContain('inv');
     });
 
     it('private → never announces (no frame on any topic, nothing discovered)', async () => {
-      registerOwnedHive({ hiveId: 'priv', visibility: 'private' });
+      registerOwnedHive({ potId: 'priv', visibility: 'private' });
       const frame = await owner.announceLocalHive('priv');
       expect(frame).toBeNull();
       expect(joiner.listDiscoveredHives()).toHaveLength(0);
@@ -248,46 +248,46 @@ describe('discover→join flow (shared-hive-release T2)', () => {
 
   describe('discovery:pots (GET /api/discovery/pots)', () => {
     it('lists a discovered public hive with its memberLinks', async () => {
-      registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
+      registerOwnedHive({ potId: 'acme', visibility: 'public' });
       await owner.announceLocalHive('acme');
 
       const { status, body } = await getHives();
       expect(status).toBe(200);
       expect(body.count).toBe(1);
       expect(body.rows[0]).toMatchObject({
-        hiveId: 'acme',
+        potId: 'acme',
         visibility: 'public',
         memberLinks: [MEMBER_LINK],
       });
     });
 
     it('never lists a private hive (it never reaches the directory)', async () => {
-      registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
-      registerOwnedHive({ hiveId: 'priv', visibility: 'private' });
+      registerOwnedHive({ potId: 'acme', visibility: 'public' });
+      registerOwnedHive({ potId: 'priv', visibility: 'private' });
       // reannounceAll broadcasts the public hive + skips the private one.
       await owner.reannounceAll();
 
       const { body } = await getHives();
-      expect(body.rows.map((r: { hiveId: string }) => r.hiveId)).toEqual(['acme']);
+      expect(body.rows.map((r: { potId: string }) => r.potId)).toEqual(['acme']);
       expect(body.rows.every((r: { visibility: string }) => r.visibility !== 'private')).toBe(true);
     });
   });
 
   describe('join-hive handoff', () => {
     it('forwards the DISCOVERED memberLinks into joinHiveAsView (discover→join)', async () => {
-      registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
+      registerOwnedHive({ potId: 'acme', visibility: 'public' });
       await owner.announceLocalHive('acme');
 
       // Drive the panel's flow: browse the directory, then Join with the row's links.
       const { body: listing } = await getHives();
       const row = listing.rows[0];
-      const { status, body } = await postJoinHive({ hiveId: row.hiveId, memberLinks: row.memberLinks });
+      const { status, body } = await postJoinHive({ potId: row.potId, memberLinks: row.memberLinks });
 
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: true });
       expect(joinHiveAsView).toHaveBeenCalledTimes(1);
       expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({
-        hiveId: 'acme',
+        potId: 'acme',
         memberLinks: [MEMBER_LINK],
         workspaceId: 'ws-test',
       });
@@ -312,9 +312,9 @@ describe('discover→join flow (shared-hive-release T2)', () => {
     });
 
     it('secret-gated discovery: joining the invite topic surfaces the owner’s invite hive', async () => {
-      registerOwnedHive({ hiveId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET, title: 'Inv' });
+      registerOwnedHive({ potId: 'inv', visibility: 'invite', inviteSecret: INVITE_SECRET, title: 'Inv' });
       // Invisible to a global browser before the invite is accepted.
-      expect(joiner.listDiscoveredHives().map((h) => h.hiveId)).not.toContain('inv');
+      expect(joiner.listDiscoveredHives().map((h) => h.potId)).not.toContain('inv');
 
       // The wiring's joinInviteTopic subscribes the browser to the invite topic;
       // the owner is announcing there, so the hive becomes visible.
@@ -324,9 +324,9 @@ describe('discover→join flow (shared-hive-release T2)', () => {
         await owner.announceLocalHive('inv');
       });
       const confirmInviteAnnounce = vi.fn(async () => {
-        const hive = joiner.listDiscoveredHives().find((h) => h.hiveId === 'inv');
+        const hive = joiner.listDiscoveredHives().find((h) => h.potId === 'inv');
         return hive
-          ? { found: true, peersOnTopic: 1, hive: { hiveId: hive.hiveId } }
+          ? { found: true, peersOnTopic: 1, hive: { potId: hive.potId } }
           : { found: false, peersOnTopic: 0 };
       });
       ensureHiveDirectoryWired.mockResolvedValue({ joinInviteTopic, confirmInviteAnnounce });
@@ -338,7 +338,7 @@ describe('discover→join flow (shared-hive-release T2)', () => {
       expect(body).toMatchObject({ ok: true, joined: true, found: true, subscribed: true });
       expect(joinInviteTopic).toHaveBeenCalledWith(INVITE_SECRET);
       // The secret-gated discovery actually landed the invite hive in the directory.
-      expect(joiner.listDiscoveredHives().map((h) => h.hiveId)).toContain('inv');
+      expect(joiner.listDiscoveredHives().map((h) => h.potId)).toContain('inv');
     });
 
     it('honest no-op: subscribed but nothing announcing → joined:false / subscribed:true', async () => {

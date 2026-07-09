@@ -124,7 +124,7 @@ function asReleaseForItemParams(payload: unknown): ReleaseClaimForItemParams {
 export interface CallerStandingScope {
   workspaceId: string;
   harnessSlug: string;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
 }
 
 /**

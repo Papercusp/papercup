@@ -53,7 +53,7 @@ describe('launch-wakeability: a recorded-live session ARMED at launch (no coord_
     // 2. bootstrap-su's armInboxWake write (the fix) — NO coord_presence row written.
     await upsertInboxWakeAwait({ subscriberId: sid, eventKey: inboxWakeKey(sid), workspaceId: WS });
 
-    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, hiveId: null });
+    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, potId: null });
     const row = findRow(snap, sid);
     expect(row, 'the recorded+armed session must appear in the roster').toBeDefined();
     expect(row!.wakeable).toBe(true);
@@ -70,7 +70,7 @@ describe('launch-wakeability: a recorded-live session ARMED at launch (no coord_
     // await for a brand-new, never-self-registered session.
     await armInboxWake({ ownerId: sid, workspaceId: WS });
 
-    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, hiveId: null });
+    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, potId: null });
     const row = findRow(snap, sid);
     expect(row, 'a session armed via the real armInboxWake must be parked').toBeDefined();
     expect(row!.wakeable).toBe(true);
@@ -81,7 +81,7 @@ describe('launch-wakeability: a recorded-live session ARMED at launch (no coord_
     const sid = 'su-RECTEST-unarmed';
     await recordAdvSession({ workspaceId: WS, mode: 'console', agent: 'claude', coordOwnerId: sid });
 
-    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, hiveId: null });
+    const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, potId: null });
     const row = findRow(snap, sid);
     expect(row, 'an unarmed recorded session is still visible').toBeDefined();
     expect(row!.wakeable).toBe(false);

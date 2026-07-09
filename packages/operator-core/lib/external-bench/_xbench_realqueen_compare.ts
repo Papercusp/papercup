@@ -273,7 +273,7 @@ async function main() {
     writeFileSync(`${OUT_DIR}/diffs-${ARM}/${a.instanceId}.diff`, diff, 'utf8');
     return {
       instanceId: a.instanceId,
-      beeId: tr.beeId,
+      cupId: tr.cupId,
       disposition: tr.disposition,
       stopReason: a.stopReason,
       generationError: a.generationError ?? null,

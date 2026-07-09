@@ -127,7 +127,7 @@ async function main() {
     writeFileSync(diffPath, diff, 'utf8');
     return {
       instanceId: a.instanceId,
-      beeId: tr.beeId,
+      cupId: tr.cupId,
       disposition: tr.disposition,
       stopReason: a.stopReason,
       generationError: a.generationError ?? null,

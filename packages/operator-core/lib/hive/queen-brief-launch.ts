@@ -304,7 +304,7 @@ export async function computeQueenWakeBrief(
       // EI-3419: ground-truth hive anchor — her carry-note/journal is
       // workspace-scoped (shared across every started hive), so this is the
       // only per-wake signal that reliably says which hive THIS brief is for.
-      hiveSlug: installSlug,
+      potSlug: installSlug,
       ...(wokeBy ? { wokeBy } : {}),
       openPlacements,
       ...(escalations.length > 0 ? { escalations } : {}),

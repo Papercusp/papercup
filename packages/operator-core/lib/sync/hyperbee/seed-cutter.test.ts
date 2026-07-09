@@ -106,7 +106,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const outDir = tmpDir('cutter-out-');
     const res = await cutHiveSeed({
-      hiveId: 'papercusp',
+      potId: 'papercusp',
       cutAtEpoch: 0,
       cutHlc: '0000000000000000',
       cutTs: 1_700_000_000_000,
@@ -126,7 +126,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
     expect(existsSync(res.manifestPath)).toBe(true);
     // manifest.json is valid + decodes back to the same content.
     const decoded = decodeManifest(readFileSync(res.manifestPath, 'utf8'));
-    expect(decoded.hiveId).toBe('papercusp');
+    expect(decoded.potId).toBe('papercusp');
     expect(decoded.cutAtEpoch).toBe(0);
     expect(decoded.stores).toHaveLength(2);
 
@@ -165,7 +165,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const fullOut = tmpDir('cutter-q1-full-');
     const full = await cutHiveSeed({
-      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
       outDir: fullOut,
       git: { sourceRepoDir: repo, originUrl: 'u', rev: '--all' },
       corestore: null,
@@ -173,7 +173,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const headOut = tmpDir('cutter-q1-head-');
     const head = await cutHiveSeed({
-      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
       outDir: headOut,
       git: { sourceRepoDir: repo, originUrl: 'u', rev: 'HEAD' },
       corestore: null,
@@ -199,7 +199,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const headOut = tmpDir('cutter-depth-head-');
     const head = await cutHiveSeed({
-      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
       outDir: headOut,
       git: { sourceRepoDir: repo, originUrl: 'u', rev: 'HEAD' },
       corestore: null,
@@ -207,7 +207,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const shallowOut = tmpDir('cutter-depth-shallow-');
     const shallow = await cutHiveSeed({
-      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
       outDir: shallowOut,
       git: { sourceRepoDir: repo, originUrl: 'u', rev: 'HEAD', depth: 1 },
       corestore: null,
@@ -228,20 +228,20 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
     const outDir = tmpDir('cutter-enc-out-');
     const res = await cutHiveSeed({
-      hiveId: 'papercusp', cutAtEpoch: 2, cutHlc: 'abc', cutTs: 5,
+      potId: 'papercusp', cutAtEpoch: 2, cutHlc: 'abc', cutTs: 5,
       outDir,
       git: {
         sourceRepoDir: repo,
         originUrl: 'https://github.com/Papercusp/papercup',
         rev: '--all',
-        encryption: { key, keyRef: { via: 'seed-key-op', hiveId: 'papercusp' } },
+        encryption: { key, keyRef: { via: 'seed-key-op', potId: 'papercusp' } },
       },
       corestore: { sourceStore: store, coreKeys: [keyHex] },
     });
 
     const gitEntry = res.manifest.stores.find((s) => s.kind === 'git')!;
     expect(gitEntry.encryption?.scheme).toBe('chacha20-poly1305');
-    expect(gitEntry.encryption?.keyRef).toEqual({ via: 'seed-key-op', hiveId: 'papercusp' });
+    expect(gitEntry.encryption?.keyRef).toEqual({ via: 'seed-key-op', potId: 'papercusp' });
     // The bundle on disk is ciphertext (no git-bundle signature).
     const sealed = readFileSync(join(outDir, GIT_SUBDIR, 'super.bundle')).subarray(0, 32).toString('latin1');
     expect(sealed).not.toMatch(/git bundle/);
@@ -253,7 +253,7 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
 
   it('rejects a cut with neither store', async () => {
     await expect(
-      cutHiveSeed({ hiveId: 'h', cutAtEpoch: 0, cutHlc: '0', cutTs: 0, outDir: tmpDir('cutter-empty-'), git: null, corestore: null }),
+      cutHiveSeed({ potId: 'h', cutAtEpoch: 0, cutHlc: '0', cutTs: 0, outDir: tmpDir('cutter-empty-'), git: null, corestore: null }),
     ).rejects.toThrow(/at least one of/);
   });
 });

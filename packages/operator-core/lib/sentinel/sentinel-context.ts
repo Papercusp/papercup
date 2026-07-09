@@ -90,7 +90,7 @@ export interface SentinelDelegation {
  *  empty-tolerant — a degraded gather still renders a coherent (smaller) block. */
 export interface SentinelContextInput {
   /** The hive/workspace this context covers (for the heading). */
-  hiveSlug?: string;
+  potSlug?: string;
   /** Salience-ranked live signals (curation:feed), already ranked surface-first. */
   signals?: readonly SentinelSignal[];
   /** Detected drift + suggested action (Overwatch brief), already severity-ordered. */
@@ -185,7 +185,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
   const caps = { ...DEFAULT_SENTINEL_CONTEXT_CAPS, ...input.caps };
   const out: string[] = [];
 
-  const scope = input.hiveSlug && input.hiveSlug.trim() ? ` — ${input.hiveSlug.trim()}` : '';
+  const scope = input.potSlug && input.potSlug.trim() ? ` — ${input.potSlug.trim()}` : '';
   out.push(`## Live system status${scope} (your standing context — you watch the whole system)`);
   out.push(
     'This is the deterministic snapshot of the running system, built from the ready-made ' +
@@ -266,7 +266,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
  * summary's digest legs already span the whole workspace — signals
  * (buildFleetReaders), patterns (buildStateOfHiveReaders) and bees
  * (listFleetAssignments({ workspaceId })) carry no hive filter, and the anomalies
- * leg runs computeSystemHealth(workspaceId) (workspace-scoped, hiveSlug used only
+ * leg runs computeSystemHealth(workspaceId) (workspace-scoped, potSlug used only
  * for addressing). See plan workspace-scoped-coordination-2026-06-20 D-008. So the
  * Sentinel (whose persona is "you watch the whole system") should present its
  * summary as WORKSPACE-scoped (all hives) rather than mislabeled with one
@@ -274,7 +274,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
  *
  * Pure (the flag value is passed in) so the live-chat + proactive-sweep call sites
  * stay consistent and it unit-tests with no DB. This changes ONLY the heading
- * LABEL — the anomalies leg's hiveSlug (computeOverwatchBrief addressing) is left
+ * LABEL — the anomalies leg's potSlug (computeOverwatchBrief addressing) is left
  * unchanged; the deeper per-hive anomaly depth rides on the overwatch/queen re-key
  * (P-004/P-003), which the Sentinel inherits for free.
  */
@@ -320,7 +320,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T, label: string): Promis
  */
 export async function gatherSentinelContext(
   deps: SentinelContextDeps,
-  opts: { hiveSlug?: string; caps?: Partial<SentinelContextCaps> } = {},
+  opts: { potSlug?: string; caps?: Partial<SentinelContextCaps> } = {},
 ): Promise<SentinelContextInput> {
   const [signals, anomalies, patternBundle, bees, delegations] = await Promise.all([
     safe(() => deps.signals(), [] as readonly SentinelSignal[], 'signals'),
@@ -334,7 +334,7 @@ export async function gatherSentinelContext(
     safe(() => deps.delegations(), [] as readonly SentinelDelegation[], 'delegations'),
   ]);
   return {
-    hiveSlug: opts.hiveSlug,
+    potSlug: opts.potSlug,
     signals,
     anomalies,
     patterns: patternBundle.patterns,
@@ -352,7 +352,7 @@ export async function gatherSentinelContext(
  * listFleetAssignments/groupByAgent) — NOT a re-derivation from raw coord. Lazy
  * imports keep this off the prompt-assembly hot path until a sentinel turn needs it.
  */
-export function buildSentinelContextDeps(workspaceId: string, hiveSlug: string): SentinelContextDeps {
+export function buildSentinelContextDeps(workspaceId: string, potSlug: string): SentinelContextDeps {
   return {
     async signals() {
       const { gatherFleetSignals } = await import('../curation/fleet-signals');
@@ -375,7 +375,7 @@ export function buildSentinelContextDeps(workspaceId: string, hiveSlug: string):
     },
     async anomalies() {
       const { computeOverwatchBrief } = await import('../overwatch/compute-brief');
-      const brief = await computeOverwatchBrief(workspaceId, hiveSlug, { wokeBy: 'sentinel-context' });
+      const brief = await computeOverwatchBrief(workspaceId, potSlug, { wokeBy: 'sentinel-context' });
       return brief.anomalies;
     },
     async patterns() {

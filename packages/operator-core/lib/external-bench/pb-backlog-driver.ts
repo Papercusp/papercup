@@ -98,7 +98,7 @@ function toFleetTaskResult(
   };
   return {
     attempt,
-    beeId: r.agentId ?? `pb-${r.paperId}-${seed}`,
+    cupId: r.agentId ?? `pb-${r.paperId}-${seed}`,
     placedAtMs,
     startedAtMs,
     finishedAtMs,

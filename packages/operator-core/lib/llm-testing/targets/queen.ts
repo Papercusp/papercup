@@ -190,14 +190,14 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       "Steer a bee's claim path by authoring (or re-steering) its per-bee claim SPEC — a versioned, declarative scoped VIEW (filter) + ORDERING (rank) over the live work-item DAG that the scheduler compiles into the bee's scheduler:get_next pulls. This is how the Queen decentralizes PICKUP while centralizing JUDGMENT: you decide WHICH items are eligible + in what order (the spec); the bee decides WHEN to take the next one (the pull). Re-steer a running bee by bumping the spec REVISION, not by re-dispatching each item.",
     input: obj(
       {
-        beeId: { type: 'string', description: "The bee to steer (its spawn/agent id)." },
+        cupId: { type: 'string', description: "The bee to steer (its spawn/agent id)." },
         spec: {
           type: 'object',
           description:
             "The claim spec: { view: { filter }, rank: { mode, terms } } over the primitive vocabulary (item fields priority/tags/kind/paths/plan/plan_item/age, predicates =/!=/</in/contains/glob with all/any/not, rank terms incl. affinity). The spec NARROWS + REORDERS within the global floors — it can never widen past a floor.",
         },
       },
-      ['beeId', 'spec'],
+      ['cupId', 'spec'],
     ),
   },
   {

@@ -25,7 +25,7 @@ export interface WindDownReceiptCtx {
   /** The host's resolved identity workspace (C3 — un-federating 'default' is refused downstream). */
   workspaceId: string | null | undefined;
   /** The hive HOME slug the receipt federates under. */
-  hiveSlug: string;
+  potSlug: string;
   /** The enforcing host — numeric GitHub user-id (X9). */
   responderGithubUserId: number;
   responderDevicePubkey?: string | null;
@@ -50,7 +50,7 @@ export async function emitOfferWindDownReceipt(
 ): Promise<EmitP2pReceiptResult> {
   const args: EmitP2pReceiptArgs = {
     workspaceId: ctx.workspaceId,
-    hiveSlug: ctx.hiveSlug,
+    potSlug: ctx.potSlug,
     kind: decision.receiptKind,
     offerId: offer.offerId,
     action: 'wind-down',

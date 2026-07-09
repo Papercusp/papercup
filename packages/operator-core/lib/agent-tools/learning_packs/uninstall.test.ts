@@ -43,7 +43,7 @@ describe('learning_packs:uninstall tool', () => {
   it('uninstalls by id even when the pack no longer resolves (pack:null tolerated)', async () => {
     mockLoad.mockResolvedValue(null as never);
     await callTool({ pot: 'h', pack: 'p-gone' });
-    expect(mockUninstall).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', packId: 'p-gone', pack: null }));
+    expect(mockUninstall).toHaveBeenCalledWith(expect.objectContaining({ potSlug: 'h', packId: 'p-gone', pack: null }));
   });
 
   it('forwards keepEdited when provided', async () => {

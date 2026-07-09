@@ -25,7 +25,7 @@ async function main() {
     accountId: account,
   } as const;
 
-  const spec = { hiveId: 'demo-swarm', members, swarm, queen: { placement: 'local' as const } };
+  const spec = { potId: 'demo-swarm', members, swarm, queen: { placement: 'local' as const } };
   const log = (lvl: string, m: string) => console.log(`[${new Date().toISOString().slice(11, 19)}][${lvl}] ${m}`);
   log('info', `deploying Hive 'demo-swarm' members=[${members.join(', ')}] → Hetzner Swarm on account '${account}' (queen=local)…`);
   const r = await deployHive(spec as never, ws, defaultHiveDeployDeps(log));

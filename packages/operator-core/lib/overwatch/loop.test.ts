@@ -72,7 +72,7 @@ beforeEach(() => {
   setOverwatchLaunchFire(null);
   overwatchEnabled.mockResolvedValue(true);
   getOverwatchStarted.mockResolvedValue(true);
-  computeOverwatchBrief.mockResolvedValue({ hiveSlug: SLUG, anomalies: [] });
+  computeOverwatchBrief.mockResolvedValue({ potSlug: SLUG, anomalies: [] });
   renderOverwatchBrief.mockReturnValue('RENDERED-BRIEF');
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
   resolveHiveHomeSlug.mockReturnValue('papercup-hive');
@@ -109,7 +109,7 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
     });
     await handleOverwatchLaunch(ctx);
     expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, SLUG, { wokeBy: 'why-i-woke' });
-    expect(renderOverwatchBrief).toHaveBeenCalledWith({ hiveSlug: SLUG, anomalies: [] });
+    expect(renderOverwatchBrief).toHaveBeenCalledWith({ potSlug: SLUG, anomalies: [] });
     expect(captured).not.toBeNull();
     expect(captured!.role).toBe('kettle');
     expect(captured!.brief).toBe('RENDERED-BRIEF');
@@ -126,14 +126,14 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
     await handleOverwatchLaunch({
       ...ctx,
       installSlug: WS,
-      payloadTemplate: { kickoff: 'workspace wake', hiveSlug: SLUG },
+      payloadTemplate: { kickoff: 'workspace wake', potSlug: SLUG },
     });
     expect(getOverwatchStarted).toHaveBeenCalledWith(WS, SLUG);
     expect(computeOverwatchBrief).toHaveBeenCalledWith(WS, SLUG, { wokeBy: 'workspace wake' });
     expect(captured!.installSlug).toBe(SLUG);
   });
 
-  it('old workspace-sentinel rows without hiveSlug fall back to the configured hive home', async () => {
+  it('old workspace-sentinel rows without potSlug fall back to the configured hive home', async () => {
     let captured: OverwatchLaunchFireInput | null = null;
     setOverwatchLaunchFire((input) => {
       captured = input;
@@ -234,7 +234,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await handleOverwatchLaunch({
       ...ctx,
       installSlug: WS,
-      payloadTemplate: { kickoff: 'workspace wake', hiveSlug: SLUG },
+      payloadTemplate: { kickoff: 'workspace wake', potSlug: SLUG },
     });
     const [url] = loopbackFetch.mock.calls[0] as [string, unknown];
     expect(url).toBe('http://op/api/harness/papercup-hive/invoke?role=kettle&ws=ws-1&bpkind=overwatch');

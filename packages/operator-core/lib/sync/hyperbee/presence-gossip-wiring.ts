@@ -59,7 +59,7 @@ export interface PresenceGossipWriter {
   /** Identity legs for SESSIONS frames (P-005). */
   githubUserId: number;
   machineLabel: string;
-  hiveSlug: string | null;
+  potSlug: string | null;
 }
 
 interface TopicBinding {
@@ -149,7 +149,7 @@ async function ensureState(): Promise<WiringState> {
         });
         // L9 (audit D-013): PIN the stored hive scope to the RECEIVER's registered
         // binding — never the sender-declared row.hive_slug. This is exactly the
-        // pin the sessions path already applies (applySessions → hiveSlug:
+        // pin the sessions path already applies (applySessions → potSlug:
         // binding.hiveHomeSlug); the put path was trusting the sender, so an
         // admitted member could plant a presence row under a FOREIGN hive scope —
         // and the per-hive lock authority scopes by this column
@@ -194,7 +194,7 @@ async function ensureState(): Promise<WiringState> {
             // Pin the stored hive scope to the RECEIVER's registered binding —
             // never the sender-declared hive_slug (an admitted member could
             // otherwise plant rows under a foreign hive scope).
-            hiveSlug: binding.hiveHomeSlug,
+            potSlug: binding.hiveHomeSlug,
             sessions: input.sessions,
             frameTs,
           },
@@ -296,7 +296,7 @@ export async function broadcastSessions(
         devicePubkey: writer.devicePubkey,
         githubUserId: writer.githubUserId,
         machineLabel: writer.machineLabel,
-        hiveSlug: writer.hiveSlug,
+        potSlug: writer.potSlug,
       },
       sessions,
       Date.now(),

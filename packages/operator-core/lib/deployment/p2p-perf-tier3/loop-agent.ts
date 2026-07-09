@@ -95,7 +95,7 @@ export interface LoopAgentConfig {
   machineLabel: string;
   workspaceId: string;
   harnessSlug: string;
-  hiveSlug: string;
+  potSlug: string;
   /** Raw-32-byte base64 Hive pubkey — the federation TOPIC every Swarm of this run
    *  shares (`deriveHiveFederationTopic`). Fresh per scenario: no DHT crosstalk. */
   hivePubkey: string;
@@ -431,7 +431,7 @@ async function main(): Promise<void> {
         workspaceId: cfg.workspaceId,
         harnessSlug: cfg.harnessSlug,
         workItemId: item,
-        hiveSlug: cfg.hiveSlug,
+        potSlug: cfg.potSlug,
         owner: cfg.owner,
         ownerLabel: cfg.machineLabel,
         holderPubkey: cfg.devicePubkey,
@@ -439,7 +439,7 @@ async function main(): Promise<void> {
         intent: `full-loop ${cfg.machineLabel}`,
       };
       return routeToAuthorityForHive<AcquireResult>(
-        cfg.hiveSlug,
+        cfg.potSlug,
         {
           local: () => store.acquire(opts),
           remote: {
@@ -457,13 +457,13 @@ async function main(): Promise<void> {
         workspaceId: cfg.workspaceId,
         harnessSlug: cfg.harnessSlug,
         workItemId: item,
-        hiveSlug: cfg.hiveSlug,
+        potSlug: cfg.potSlug,
         claimId: claim.claimId,
         owner: cfg.owner,
         holderPubkey: cfg.devicePubkey,
       };
       const route = await routeToAuthorityForHive<HeartbeatResult>(
-        cfg.hiveSlug,
+        cfg.potSlug,
         {
           local: () => store.heartbeat(p),
           remote: {

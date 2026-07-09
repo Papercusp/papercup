@@ -37,7 +37,7 @@ const wrap = { wrapper: withNuqsTestingAdapter() };
 
 function shareMeta(over: Partial<HiveShareMeta> = {}): HiveShareMeta {
   return {
-    hiveId: 'acme',
+    potId: 'acme',
     found: true,
     visibility: 'public',
     title: 'acme',
@@ -53,7 +53,7 @@ describe('HiveHeaderStrip', () => {
   it('renders the hive name + member count + set-up liveness', () => {
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         members={[
           { slug: 'acme', hasState: true },
@@ -72,7 +72,7 @@ describe('HiveHeaderStrip', () => {
 
   it('shows the Hive-home crown badge for a kind:hive root', () => {
     render(
-      <HiveHeaderStrip hiveSlug="acme" hiveKind="hive" members={[{ slug: 'acme', hasState: true }]} />,
+      <HiveHeaderStrip potSlug="acme" hiveKind="hive" members={[{ slug: 'acme', hasState: true }]} />,
       wrap,
     );
     expect(screen.getByText(/👑/).textContent).toContain('pot'); // hiveLabel passthrough
@@ -80,16 +80,16 @@ describe('HiveHeaderStrip', () => {
 
   it('renders the deploy badge only when deployed', () => {
     const { rerender } = render(
-      <HiveHeaderStrip hiveSlug="acme" members={[{ slug: 'acme' }]} />,
+      <HiveHeaderStrip potSlug="acme" members={[{ slug: 'acme' }]} />,
       wrap,
     );
     expect(screen.queryByText('deployed')).toBeNull();
-    rerender(<HiveHeaderStrip hiveSlug="acme" members={[{ slug: 'acme' }]} deployed />);
+    rerender(<HiveHeaderStrip potSlug="acme" members={[{ slug: 'acme' }]} deployed />);
     screen.getByText('deployed');
   });
 
   it('renders nothing for an empty slug', () => {
-    const { container } = render(<HiveHeaderStrip hiveSlug="" members={[]} />, wrap);
+    const { container } = render(<HiveHeaderStrip potSlug="" members={[]} />, wrap);
     expect(container.querySelector('[data-testid="hive-header-strip"]')).toBeNull();
   });
 });
@@ -102,7 +102,7 @@ describe('P-005 — the directory-state chrome (comb-hive-native-sharing-2026-06
   ] as const)('a published %s hive shows the %s badge from registry meta', async (viz, label) => {
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         members={[]}
         fetchShareMeta={async () => shareMeta({ visibility: viz })}
@@ -117,7 +117,7 @@ describe('P-005 — the directory-state chrome (comb-hive-native-sharing-2026-06
   it('a never-published hive shows Unpublished', async () => {
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         members={[]}
         fetchShareMeta={async () => shareMeta({ found: false, visibility: null })}
@@ -130,13 +130,13 @@ describe('P-005 — the directory-state chrome (comb-hive-native-sharing-2026-06
   });
 
   it('the legacy is_shared badge renders ONLY on non-hive pots (O-2)', async () => {
-    render(<HiveHeaderStrip hiveSlug="plain-root" isShared members={[]} />, wrap);
+    render(<HiveHeaderStrip potSlug="plain-root" isShared members={[]} />, wrap);
     expect(screen.getByLabelText('Shared')).toBeTruthy();
     expect(screen.queryByTestId('hive-directory-state')).toBeNull();
     cleanup();
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         isShared
         members={[]}
@@ -151,10 +151,10 @@ describe('P-005 — the directory-state chrome (comb-hive-native-sharing-2026-06
 
 describe('P-004 — the Share button → ShareHiveDialog (comb-hive-native-sharing-2026-06-11)', () => {
   it('renders the Share button only for a formal hive home', () => {
-    render(<HiveHeaderStrip hiveSlug="plain-root" members={[]} />, wrap);
+    render(<HiveHeaderStrip potSlug="plain-root" members={[]} />, wrap);
     expect(screen.queryByTestId('hive-share-button')).toBeNull();
     cleanup();
-    render(<HiveHeaderStrip hiveSlug="acme" hiveKind="hive" members={[]} />, wrap);
+    render(<HiveHeaderStrip potSlug="acme" hiveKind="hive" members={[]} />, wrap);
     expect(screen.getByTestId('hive-share-button')).toBeTruthy();
   });
 
@@ -162,7 +162,7 @@ describe('P-004 — the Share button → ShareHiveDialog (comb-hive-native-shari
     const user = (await import('@testing-library/user-event')).default.setup();
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         members={[]}
         fetchShareMeta={async () => shareMeta({ found: false, visibility: null })}
@@ -178,7 +178,7 @@ describe('P-004 — the Share button → ShareHiveDialog (comb-hive-native-shari
     const user = (await import('@testing-library/user-event')).default.setup();
     render(
       <HiveHeaderStrip
-        hiveSlug="acme"
+        potSlug="acme"
         hiveKind="hive"
         members={[]}
         fetchShareMeta={async () => shareMeta({ found: false, visibility: null })}
@@ -209,10 +209,10 @@ describe('B-07 / C-2 — the beacon-publish consent toggle (hive-network-surface
   });
 
   it('renders the consent control only for a formal hive home, carrying the ratified question', () => {
-    render(<HiveHeaderStrip hiveSlug="plain-root" members={[]} {...seams()} />, wrap);
+    render(<HiveHeaderStrip potSlug="plain-root" members={[]} {...seams()} />, wrap);
     expect(screen.queryByTestId('hive-beacon-consent')).toBeNull();
     cleanup();
-    render(<HiveHeaderStrip hiveSlug="acme-hive" hiveKind="hive" members={[]} {...seams()} />, wrap);
+    render(<HiveHeaderStrip potSlug="acme-hive" hiveKind="hive" members={[]} {...seams()} />, wrap);
     expect(screen.getByTestId('hive-beacon-consent')).toBeTruthy();
     // The publish-flow question rides the control (D-002: never ONLY a buried toggle).
     screen.getByText(/also publish a live status beacon\? \(recommended for/i);
@@ -220,7 +220,7 @@ describe('B-07 / C-2 — the beacon-publish consent toggle (hive-network-surface
 
   it('reads the current consent on mount (absent = OFF; granted = on)', async () => {
     render(
-      <HiveHeaderStrip hiveSlug="acme-hive" hiveKind="hive" members={[]} {...seams({ get: async () => true })} />,
+      <HiveHeaderStrip potSlug="acme-hive" hiveKind="hive" members={[]} {...seams({ get: async () => true })} />,
       wrap,
     );
     await waitFor(() => expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('on'));
@@ -231,7 +231,7 @@ describe('B-07 / C-2 — the beacon-publish consent toggle (hive-network-surface
     const calls: Array<[string, boolean]> = [];
     render(
       <HiveHeaderStrip
-        hiveSlug="acme-hive"
+        potSlug="acme-hive"
         hiveKind="hive"
         members={[]}
         {...seams({
@@ -254,7 +254,7 @@ describe('B-07 / C-2 — the beacon-publish consent toggle (hive-network-surface
     const user = (await import('@testing-library/user-event')).default.setup();
     render(
       <HiveHeaderStrip
-        hiveSlug="acme-hive"
+        potSlug="acme-hive"
         hiveKind="hive"
         members={[]}
         {...seams({ get: async () => false, set: async () => ({ ok: false, error: 'settings store down' }) })}

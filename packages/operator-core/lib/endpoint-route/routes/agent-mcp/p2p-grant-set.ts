@@ -12,15 +12,15 @@
  * ({ok:false, refusal}) surface verbatim — loud, never silently dropped (D-004).
  *
  * Loopback-only + owner authority (the trust-set / p2p-settings-set shape).
- * Fires the args-scoped notifySyncInvalidate('p2p.grants', {hiveSlug}) — the
- * page subscribes with the same {hiveSlug} args.
+ * Fires the args-scoped notifySyncInvalidate('p2p.grants', {potSlug}) — the
+ * page subscribes with the same {potSlug} args.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 
 interface Body {
   action?: unknown;
-  hiveSlug?: unknown;
+  potSlug?: unknown;
   granteeKind?: unknown;
   granteeRef?: unknown;
   preset?: unknown;
@@ -48,9 +48,9 @@ export default defineTool({
     const action = body.action === 'set' || body.action === 'revoke' ? body.action : null;
     if (!action) return Response.json({ ok: false, error: 'missing_action' }, { status: 400 });
 
-    const hiveSlug = typeof body.hiveSlug === 'string' ? body.hiveSlug.trim() : '';
+    const potSlug = typeof body.potSlug === 'string' ? body.potSlug.trim() : '';
     const granteeRef = typeof body.granteeRef === 'string' ? body.granteeRef.trim() : '';
-    if (!hiveSlug || !granteeRef) {
+    if (!potSlug || !granteeRef) {
       return Response.json({ ok: false, error: 'missing_hive_or_grantee' }, { status: 400 });
     }
 
@@ -84,7 +84,7 @@ export default defineTool({
       if (action === 'revoke') {
         result = await store.revokePeerGrant({
           workspaceId: ws,
-          hiveSlug,
+          potSlug,
           grantorGithubUserId: actor.githubUserId,
           granteeKind,
           granteeRef,
@@ -116,7 +116,7 @@ export default defineTool({
             : null;
         result = await store.setPeerGrant({
           workspaceId: ws,
-          hiveSlug,
+          potSlug,
           grantorGithubUserId: actor.githubUserId,
           granteeKind,
           granteeRef,
@@ -146,7 +146,7 @@ export default defineTool({
           const { reapForeignSessionsForRevocation } = await import('../../../p2p/revocation-reaper');
           const r = await reapForeignSessionsForRevocation({
             workspaceId: ws,
-            hiveSlug,
+            potSlug,
             responderGithubUserId: actor.githubUserId,
             trigger: { kind: 'grant-revoked', fleetSlug: granteeRef },
             actor: `p2p-grant-set:${actor.githubUserId}`,
@@ -157,9 +157,9 @@ export default defineTool({
         }
       }
 
-      // Args-scoped subscription ({hiveSlug}) → args-scoped invalidate with the SAME args.
+      // Args-scoped subscription ({potSlug}) → args-scoped invalidate with the SAME args.
       const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('p2p.grants', { hiveSlug }).catch(() => {});
+      await notifySyncInvalidate('p2p.grants', { potSlug }).catch(() => {});
 
       return Response.json({ ok: true, action, grant: result.grant, ...(reap ? { reap } : {}) });
     } catch (err) {

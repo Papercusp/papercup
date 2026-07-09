@@ -5,7 +5,6 @@ import http from 'node:http';
 import net from 'node:net';
 import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
-import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 interface Upstream {
@@ -3310,3 +3309,48 @@ test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher
   await r2.text();
   assert.ok(dispatchersSeen[1] !== undefined, 'proxy-pool restored: the proxy dispatcher is back');
 }, 20_000);
+
+test('POST /admin/readmit clears a live in-memory pool pause and reports fresh healthyAccounts (EI-8797 reset-rate split-brain)', async () => {
+  // accounts:reset-rate resets the PERSISTED store; this endpoint is its live-process dual. A pool
+  // with two paused accounts: readmit one by name (?account=A) → healthyAccounts 0→1; readmit with
+  // no arg → every pool entry rejoins → healthyAccounts 2.
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `t${id}`, invalidateToken: () => {} });
+  const A = acct('A');
+  const B = acct('B');
+  const paused = new Set(['A', 'B']);
+  const pool: AccountPool = {
+    active: () => A,
+    onExhausted: () => null,
+    readmit: (id) => {
+      paused.delete(id);
+    },
+    healthyCount: () => 2 - paused.size,
+    entries: () => [A, B],
+  };
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  }, { pool });
+  const one = (await (await ask('/admin/readmit?account=A', { method: 'POST' })).json()) as {
+    ok: boolean;
+    readmitted: string[];
+    healthyAccounts: number;
+  };
+  assert.equal(one.ok, true, 'named readmit ok');
+  assert.deepEqual(one.readmitted, ['A'], 'only the named account readmits');
+  assert.equal(one.healthyAccounts, 1, 'A back in rotation, B still paused — the response reports the FRESH count');
+  const all = (await (await ask('/admin/readmit', { method: 'POST' })).json()) as { readmitted: string[]; healthyAccounts: number };
+  assert.deepEqual(all.readmitted, ['A', 'B'], 'no-arg readmits every pool entry');
+  assert.equal(all.healthyAccounts, 2, 'whole pool back in rotation');
+});
+
+test('POST /admin/readmit on a pool without readmit (single-account) → 503, never a crash', async () => {
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const res = await ask('/admin/readmit?account=X', { method: 'POST' });
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as { error?: { message?: string } };
+  assert.match(body.error?.message ?? '', /no readmit/, 'explains the pool has no readmit');
+});

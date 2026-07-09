@@ -196,7 +196,7 @@ describe('github-bridge round trip (P-007: legacy ⇄ P2P convergence + fork-PR 
     const openedPrs: OpenPrArgs[] = [];
     const r = await egressRatifiedRequestAsForkPr({
       repoPath: store,
-      hiveSlug: 'hive-rt',
+      potSlug: 'hive-rt',
       request: { devicePubkey: joiner, headSha: j1, state: 'ratified', authorGithubUserId: 888 },
       upstreamRemote: 'github.com/acme/repo-1',
       upstreamOwner: 'acme',

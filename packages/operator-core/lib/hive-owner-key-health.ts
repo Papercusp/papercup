@@ -42,7 +42,7 @@ const OWNER_KEY_HEALTH_IDENTITY: AgentIdentity = {
 
 export interface OwnedHiveKeyMissingRef {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   /** Where the null key was detected ("cross-hive-boot", "epoch-key-reconcile"). */
   context: string;
 }
@@ -64,8 +64,8 @@ export interface OwnerKeyHealthDeps {
   recentlyAlerted?: (ref: OwnedHiveKeyMissingRef) => Promise<boolean>;
 }
 
-function dedupKey(workspaceId: string, hiveSlug: string): string {
-  return `${workspaceId}::${hiveSlug}`;
+function dedupKey(workspaceId: string, potSlug: string): string {
+  return `${workspaceId}::${potSlug}`;
 }
 
 /** Hives we've already escalated; cleared by clearOwnedHiveKeyHealth on recovery. */
@@ -88,7 +88,7 @@ async function defaultEscalate(ref: OwnedHiveKeyMissingRef, summary: string): Pr
       level: 'error',
       message: 'Hive owner key missing',
       description: `${summary} Restore this box's hive identity key (or re-own the hive) — until then the hive stays dark for its members.`,
-      harnessSlug: ref.hiveSlug,
+      harnessSlug: ref.potSlug,
       createdAt: Date.now(),
       actionLabel: 'Open Insights',
       actionHref: '/adv?tab=insights',
@@ -127,7 +127,7 @@ async function defaultRecentlyAlerted(ref: OwnedHiveKeyMissingRef): Promise<bool
       select 1
         from harness_shared.toast_log
        where message = 'Hive owner key missing'
-         and harness_slug = ${ref.hiveSlug}
+         and harness_slug = ${ref.potSlug}
          and created_at > ${cutoff}
        limit 1`;
     return rows.length > 0;
@@ -155,7 +155,7 @@ export async function signalOwnedHiveKeyMissing(
   deps: Partial<OwnerKeyHealthDeps> = {},
 ): Promise<boolean> {
   const d = { ...defaultDeps, ...deps };
-  const k = dedupKey(ref.workspaceId, ref.hiveSlug);
+  const k = dedupKey(ref.workspaceId, ref.potSlug);
   if (signaled.has(k)) return false; // already escalated THIS process; suppress until recovery
 
   // Cross-restart dedup: the in-memory `signaled` set above resets on every
@@ -173,7 +173,7 @@ export async function signalOwnedHiveKeyMissing(
   signaled.add(k);
 
   const summary =
-    `🔴 owner key MISSING for owned hive ${ref.workspaceId}/${ref.hiveSlug} (${ref.context}) — ` +
+    `🔴 owner key MISSING for owned hive ${ref.workspaceId}/${ref.potSlug} (${ref.context}) — ` +
     `this box owns the hive but loadHivePubkey returned null, so it cannot sign or serve it.`;
   try {
     d.warn(`[hive-owner-key-health] ${summary}`);
@@ -209,11 +209,11 @@ export async function signalHiveKeyDivergent(
   deps: Partial<OwnerKeyHealthDeps> = {},
 ): Promise<boolean> {
   const d = { ...defaultDeps, ...deps };
-  const k = 'divergent::' + dedupKey(ref.workspaceId, ref.hiveSlug);
+  const k = 'divergent::' + dedupKey(ref.workspaceId, ref.potSlug);
   if (signaled.has(k)) return false;
   signaled.add(k);
   const summary =
-    `🔴 hive identity key DIVERGENT for ${ref.workspaceId}/${ref.hiveSlug} (${ref.context}) — ` +
+    `🔴 hive identity key DIVERGENT for ${ref.workspaceId}/${ref.potSlug} (${ref.context}) — ` +
     `this box holds ${ref.heldPubkey.slice(0, 12)}… but the hive's canonical identity is ` +
     `${ref.canonicalPubkey.slice(0, 12)}…. This is the WI-1981 epoch-poison class: delete the ` +
     `divergent key from EVERY keychain tier (OS keychain AND the encrypted-file dirs — ` +
@@ -236,13 +236,13 @@ export async function signalHiveKeyDivergent(
  * Recovery edge: the owner key loaded for this hive again. Clears the dedup entry
  * so a FUTURE loss re-alerts. Call on the success path (a non-null pubkey).
  */
-export function clearOwnedHiveKeyHealth(ref: { workspaceId: string; hiveSlug: string }): void {
-  signaled.delete(dedupKey(ref.workspaceId, ref.hiveSlug));
+export function clearOwnedHiveKeyHealth(ref: { workspaceId: string; potSlug: string }): void {
+  signaled.delete(dedupKey(ref.workspaceId, ref.potSlug));
 }
 
 /** Whether this hive currently has an outstanding (un-recovered) owner-key alert. */
-export function isOwnedHiveKeyMissingSignaled(ref: { workspaceId: string; hiveSlug: string }): boolean {
-  return signaled.has(dedupKey(ref.workspaceId, ref.hiveSlug));
+export function isOwnedHiveKeyMissingSignaled(ref: { workspaceId: string; potSlug: string }): boolean {
+  return signaled.has(dedupKey(ref.workspaceId, ref.potSlug));
 }
 
 /** Test-only — reset the cross-tick dedup singleton. */

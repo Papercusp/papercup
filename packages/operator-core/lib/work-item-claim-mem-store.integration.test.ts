@@ -49,7 +49,7 @@ const base = (workItemId: string, owner: string, holderPubkey: string) => ({
   workspaceId: WS,
   harnessSlug: HS,
   workItemId,
-  hiveSlug: HIVE,
+  potSlug: HIVE,
   owner,
   holderPubkey,
 });

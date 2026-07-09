@@ -19,24 +19,24 @@ import {
 
 describe('resolveCueAuthority (P-003 — authority derived from the sender role)', () => {
   it('a queen/overwatch session speaks with hive-queen authority, hive-wide scope', () => {
-    expect(resolveCueAuthority({ kind: 'mug', hiveSlug: 'papercusp' })).toEqual({
+    expect(resolveCueAuthority({ kind: 'mug', potSlug: 'papercusp' })).toEqual({
       authority: 'hive-queen',
       authorityRef: 'papercusp',
       scope: 'hive-wide',
     });
-    expect(resolveCueAuthority({ kind: 'kettle', hiveSlug: 'papercusp' })).toMatchObject({
+    expect(resolveCueAuthority({ kind: 'kettle', potSlug: 'papercusp' })).toMatchObject({
       authority: 'hive-queen',
       scope: 'hive-wide',
     });
     // A hive-level session even outranks a fleet label it happens to carry.
     expect(
-      resolveCueAuthority({ kind: 'mug', hiveSlug: 'papercusp', fleetRole: 'leader', fleetSlug: 'x' }),
+      resolveCueAuthority({ kind: 'mug', potSlug: 'papercusp', fleetRole: 'leader', fleetSlug: 'x' }),
     ).toMatchObject({ authority: 'hive-queen', scope: 'hive-wide' });
   });
 
   it('a hive-level session with no known hive falls back to a (hive) ref, never empty', () => {
-    expect(resolveCueAuthority({ kind: 'mug', hiveSlug: null })?.authorityRef).toBe('(hive)');
-    expect(resolveCueAuthority({ kind: 'kettle', hiveSlug: '  ' })?.authorityRef).toBe('(hive)');
+    expect(resolveCueAuthority({ kind: 'mug', potSlug: null })?.authorityRef).toBe('(hive)');
+    expect(resolveCueAuthority({ kind: 'kettle', potSlug: '  ' })?.authorityRef).toBe('(hive)');
   });
 
   it('a fleet leader speaks with fleet-leader authority over its members only', () => {

@@ -120,7 +120,7 @@ export interface PickGitEncryptionInput {
   readonly cutAtEpoch: number;
   /** The owner's epoch-key resolver (crypto.deriveEpochKey) — injected so the branch
    *  logic unit-tests without the keychain/native crypto. */
-  readonly deriveEpochKey: (hiveId: string, epoch: number) => Promise<Uint8Array>;
+  readonly deriveEpochKey: (potId: string, epoch: number) => Promise<Uint8Array>;
   readonly warn?: (msg: string) => void;
 }
 
@@ -150,7 +150,7 @@ export async function pickGitEncryption(inp: PickGitEncryptionInput): Promise<Gi
         'will cold-clone the git half. FIXTURE/manual mode; a real release should seal under the epoch key ' +
         '(drop --encrypt-key-hex, pass --workspace-id).',
     );
-    return { key: Uint8Array.from(key), keyRef: { via: 'seed-key-op', hiveId: inp.hive } };
+    return { key: Uint8Array.from(key), keyRef: { via: 'seed-key-op', potId: inp.hive } };
   }
   if (inp.workspaceId || inp.epochProvided) {
     const epochKey = Uint8Array.from(await inp.deriveEpochKey(inp.hive, inp.cutAtEpoch));
@@ -162,7 +162,7 @@ export async function pickGitEncryption(inp: PickGitEncryptionInput): Promise<Gi
         'MUST have run on the OWNER box with the live epoch keychain — a wrong context mints a divergent key no ' +
         'member can unwrap (seed then cold-clones the git half).',
     );
-    return { key: epochKey, keyRef: { via: 'epoch', hiveId: inp.hive, epoch: inp.cutAtEpoch } };
+    return { key: epochKey, keyRef: { via: 'epoch', potId: inp.hive, epoch: inp.cutAtEpoch } };
   }
   warn(
     '[cut-seed] ⚠ NO encryption key + no --workspace-id/--epoch — git bundles will be PLAINTEXT. The dogfood repo ' +
@@ -633,7 +633,7 @@ async function main(): Promise<void> {
   await rm(outDir, { recursive: true, force: true });
 
   try {
-    const res = await cutHiveSeed({ hiveId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
+    const res = await cutHiveSeed({ potId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
 
     // WI-3232: graft the reused corestore back in + merge its manifest entry.
     if (reuseCorestoreDir && reused) {

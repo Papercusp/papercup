@@ -60,7 +60,7 @@ const fakeDeps = (reach: number): HiveDirectoryDeps => ({
 });
 
 const ownedDesc = (over: Record<string, unknown> = {}) => ({
-  hiveId: 'pub',
+  potId: 'pub',
   title: 'Pub',
   description: 'd',
   memberTopics: ['a'.repeat(64)],
@@ -107,14 +107,14 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
     const dir = configureHiveDirectoryForTest(fakeDeps(3));
     dir.registerLocalHive(ownedDesc());
     listOwnedHiveMeta.mockResolvedValue([
-      { hiveId: 'pub', title: 'Pub', description: 'd', visibility: 'public', memberTopics: ['t'], createdAt: NOW },
+      { potId: 'pub', title: 'Pub', description: 'd', visibility: 'public', memberTopics: ['t'], createdAt: NOW },
     ]);
 
     const { status, body } = await call('http://127.0.0.1/api/discovery/federation-status');
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.hives).toEqual([
-      { hiveId: 'pub', title: 'Pub', visibility: 'public', memberCount: 1, reachablePeers: 3 },
+      { potId: 'pub', title: 'Pub', visibility: 'public', memberCount: 1, reachablePeers: 3 },
     ]);
     expect(body.substrate).toEqual({
       active: true,
@@ -132,14 +132,14 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
 
   it('reports reachablePeers:0 for a private hive — it never announces (no fake reach)', async () => {
     const dir = configureHiveDirectoryForTest(fakeDeps(5)); // seam would return 5 if asked
-    dir.registerLocalHive(ownedDesc({ hiveId: 'priv', visibility: 'private' }));
+    dir.registerLocalHive(ownedDesc({ potId: 'priv', visibility: 'private' }));
     listOwnedHiveMeta.mockResolvedValue([
-      { hiveId: 'priv', title: 'Secret', description: 'd', visibility: 'private', memberTopics: [], createdAt: NOW },
+      { potId: 'priv', title: 'Secret', description: 'd', visibility: 'private', memberTopics: [], createdAt: NOW },
     ]);
 
     const { body } = await call('http://127.0.0.1/api/discovery/federation-status');
     expect(body.hives).toEqual([
-      { hiveId: 'priv', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 },
+      { potId: 'priv', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 },
     ]);
   });
 

@@ -53,7 +53,7 @@ export default defineTool({
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
     const result = await sendCrossHiveAsk(
-      { workspaceId: ws, hiveSlug: args.pot, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body, askedBy: args.askedBy },
+      { workspaceId: ws, potSlug: args.pot, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body, askedBy: args.askedBy },
       productionSendCrossHiveAskDeps(),
     );
     return json(result);

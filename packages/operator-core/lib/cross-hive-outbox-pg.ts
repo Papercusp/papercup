@@ -6,7 +6,7 @@
  * offline: sendCrossHive enqueues BEFORE the swarm send, flushCrossHiveOutbox
  * redelivers the pending rows on reconnect.
  *
- * Scoped to ONE sending Hive (workspace_id, hiveSlug). The row stores the full
+ * Scoped to ONE sending Hive (workspace_id, potSlug). The row stores the full
  * wire envelope (incl. from/to Hive pubkeys + sig) so a pending row reconstructs
  * exactly the bytes the peer verifies. Local-only (does NOT federate). Storage:
  * harness_shared.cross_hive_outbox (migration 196).
@@ -64,7 +64,7 @@ function rowToEnvelope(r: OutboxRow): CrossHiveWireEnvelope {
 export class PgCrossHiveOutbox implements CrossHiveOutbox {
   constructor(
     private readonly workspaceId: string,
-    private readonly hiveSlug: string,
+    private readonly potSlug: string,
     private readonly sql?: Sql,
   ) {}
 
@@ -80,7 +80,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
        ON CONFLICT (workspace_id, pot_slug, id) DO NOTHING`,
       [
         this.workspaceId,
-        this.hiveSlug,
+        this.potSlug,
         env.id,
         env.fromHivePubkey,
         env.toHivePubkey,
@@ -102,7 +102,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
          FROM harness_shared.cross_hive_outbox
         WHERE workspace_id = $1 AND pot_slug = $2
         ORDER BY created_at ASC, id ASC`,
-      [this.workspaceId, this.hiveSlug],
+      [this.workspaceId, this.potSlug],
     )) as unknown as OutboxRow[];
     return rows.map(rowToEnvelope);
   }
@@ -120,7 +120,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
          FROM harness_shared.cross_hive_outbox
         WHERE workspace_id = $1 AND pot_slug = $2
         ORDER BY created_at ASC, id ASC`,
-      [this.workspaceId, this.hiveSlug],
+      [this.workspaceId, this.potSlug],
     )) as unknown as Array<OutboxRow & { attempt_count: number; last_attempt_at: number | string }>;
     return rows.map((r) => ({
       env: rowToEnvelope(r),
@@ -135,7 +135,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
     await s.unsafe(
       `DELETE FROM harness_shared.cross_hive_outbox
         WHERE workspace_id = $1 AND pot_slug = $2 AND id = $3`,
-      [this.workspaceId, this.hiveSlug, id],
+      [this.workspaceId, this.potSlug, id],
     );
   }
 
@@ -151,7 +151,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
       `UPDATE harness_shared.cross_hive_outbox
           SET attempt_count = attempt_count + 1, last_attempt_at = $4
         WHERE workspace_id = $1 AND pot_slug = $2 AND id = $3`,
-      [this.workspaceId, this.hiveSlug, id, now],
+      [this.workspaceId, this.potSlug, id, now],
     );
   }
 }

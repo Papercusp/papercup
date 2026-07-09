@@ -325,8 +325,8 @@ export interface OverwatchScorecardEndCheckDeps {
   started?: (workspaceId: string, installSlug: string) => Promise<boolean>;
   controlState?: (opts: {
     workspaceId?: string;
-    hiveSlug?: string;
-  }) => Promise<{ lastWakeAt: string | null; hiveSlug: string | null }>;
+    potSlug?: string;
+  }) => Promise<{ lastWakeAt: string | null; potSlug: string | null }>;
   freshness?: typeof checkScorecardFreshness;
   computeHealth?: (workspaceId?: string) => Promise<SystemHealth>;
   capture?: typeof captureImprovement;
@@ -365,8 +365,8 @@ export async function overwatchScorecardEndCheck(
     if (!(await enabled())) return { outcome: 'skipped', reason: 'overwatch flag off' };
     if (!(await started(workspaceId, installSlug))) return { outcome: 'skipped', reason: 'overwatch not started' };
 
-    const cs = await controlState({ workspaceId, hiveSlug: installSlug });
-    const sourceHive = cs.hiveSlug ?? installSlug;
+    const cs = await controlState({ workspaceId, potSlug: installSlug });
+    const sourceHive = cs.potSlug ?? installSlug;
     const f = await freshness({
       rubricRef: COORDINATION_RUBRIC_REF,
       sourceHive,

@@ -99,7 +99,7 @@ export const PRESENCE_IDENTITY_FIELDS = [
   'pid',
   'startedAt',
   'agentRole',
-  'hiveSlug',
+  'potSlug',
   'fleetSlug',
   'fleetRole',
   'model',

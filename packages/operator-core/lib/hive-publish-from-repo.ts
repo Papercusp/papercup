@@ -60,7 +60,7 @@ export interface PublishCreatedHiveOutcome {
    * below) and the `existing` join-offer surfaces (lookup-hive-for-repo
    * HiveHit.memberLinks). Surfaced on the outcome so a freshly-created hive's
    * `created` response yields a join target a joiner can pass straight to POST
-   * /api/discovery/join-pot `{ hiveId, memberLinks, hivePubkey }` WITHOUT a
+   * /api/discovery/join-pot `{ potId, memberLinks, hivePubkey }` WITHOUT a
    * second directory round-trip (WI-931). Absent when no joinable topic exists
    * (no hive pubkey) or no id-bearing member repo is registered yet.
    */
@@ -87,8 +87,8 @@ export interface PublishCreatedHiveOutcome {
 
 export interface PublishCreatedHiveOpts {
   workspaceId: string;
-  /** The Hive home slug (== directory hiveId). */
-  hiveSlug: string;
+  /** The Hive home slug (== directory potId). */
+  potSlug: string;
   title: string;
   description: string;
   visibility: Exclude<HiveVisibility, 'private'>;
@@ -103,7 +103,7 @@ export interface PublishCreatedHiveDeps {
   saveMeta?: typeof saveOwnedHiveMeta;
   ensureWired?: (workspaceId: string, opts?: { force?: boolean }) => Promise<unknown>;
   resolveOwner?: () => Promise<HiveOwnerIdentity>;
-  loadPubkey?: (workspaceId: string, hiveSlug: string) => Promise<string | null>;
+  loadPubkey?: (workspaceId: string, potSlug: string) => Promise<string | null>;
   loadRegistry?: typeof loadHarnessRegistry;
   deriveMemberRepos?: typeof deriveHiveMemberRepoRefs;
   publishDirectory?: typeof publishHiveToDirectory;
@@ -148,7 +148,7 @@ export interface PublishCreatedHiveDeps {
    */
   rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
   /** Owned-meta read for republishHiveAfterMemberAdd. */
-  getMeta?: (hiveId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
+  getMeta?: (potId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
   now?: () => number;
   randomSecret?: () => string;
 }
@@ -201,7 +201,7 @@ export async function publishCreatedHive(
 
   // 1 — persist the listing meta (the durable half; the boot tick re-publishes it).
   const meta: HiveDirectoryMeta = {
-    hiveId: opts.hiveSlug,
+    potId: opts.potSlug,
     title: opts.title,
     description: opts.description,
     workspaceId: opts.workspaceId, // P-004: announce-build enrichment key
@@ -251,7 +251,7 @@ export async function publishCreatedHive(
 export async function republishHiveAfterMemberAdd(
   opts: {
     workspaceId: string;
-    hiveSlug: string;
+    potSlug: string;
     /** Restrict the Cupboard/local-binding legs to these repo ids (the new member). */
     onlyRepoIds?: number[];
     repoIsPrivate?: boolean;
@@ -260,9 +260,9 @@ export async function republishHiveAfterMemberAdd(
 ): Promise<PublishCreatedHiveOutcome | { skipped: 'unpublished_hive' }> {
   const getMeta =
     deps.getMeta ??
-    (async (hiveId: string, ws: string) =>
-      (await import('./hive-directory-meta')).getOwnedHiveMeta(hiveId, ws));
-  const meta = await getMeta(opts.hiveSlug, opts.workspaceId).catch(() => null);
+    (async (potId: string, ws: string) =>
+      (await import('./hive-directory-meta')).getOwnedHiveMeta(potId, ws));
+  const meta = await getMeta(opts.potSlug, opts.workspaceId).catch(() => null);
   if (!meta || meta.visibility === 'private') return { skipped: 'unpublished_hive' };
   return publishListingForMeta(
     meta as HiveDirectoryMeta & { visibility: Exclude<HiveVisibility, 'private'> },
@@ -304,15 +304,15 @@ async function publishListingForMeta(
     deps.loadPubkey ??
     (async (ws: string, slug: string) =>
       (await import('./identity/hive-keypair')).loadHivePubkey(ws, slug).catch(() => null));
-  const hivePubkey = await loadPubkey(opts.workspaceId, meta.hiveId).catch(() => null);
-  const memberRepos = await deriveMemberRepos(opts.workspaceId, meta.hiveId).catch(
+  const hivePubkey = await loadPubkey(opts.workspaceId, meta.potId).catch(() => null);
+  const memberRepos = await deriveMemberRepos(opts.workspaceId, meta.potId).catch(
     () => [] as string[],
   );
 
   const reg = await loadRegistry(opts.workspaceId).catch(() => ({ projects: [] as ProjectEntry[] }));
   const members = reg.projects.filter(
     (p) =>
-      (p.slug === meta.hiveId || p.hive_slug === meta.hiveId) &&
+      (p.slug === meta.potId || p.hive_slug === meta.potId) &&
       typeof p.github_remote === 'string' &&
       p.github_remote.length > 0,
   );
@@ -348,7 +348,7 @@ async function publishListingForMeta(
       // non-deterministic because the good <repo> link + this bad one both landed in memberLinks and
       // the picker took whichever enumerated first). The hive home is the federation identity, not a
       // cloneable member — skip it (by slug AND by a repo-name == hive-slug belt).
-      if (m.slug === meta.hiveId || parsed.repo === meta.hiveId) continue;
+      if (m.slug === meta.potId || parsed.repo === meta.potId) continue;
       memberLinks.push(
         formatHarnessLink({
           topic: hiveTopicHex,
@@ -514,7 +514,7 @@ async function publishListingForMeta(
       deps.rekeyHarness ??
       (async (ws: string, slug: string) =>
         (await import('./sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
-    // A-003 (a′): re-key the hive-HOME harness (`meta.hiveId`) onto the Hive topic
+    // A-003 (a′): re-key the hive-HOME harness (`meta.potId`) onto the Hive topic
     // too, so its substrate joins the topic + drains its outbox → hive_members /
     // hive_settings federate to joiners. The hive-home is repo-less (not in
     // `members`), so the per-member re-key below skips it. Now SAFE on the shared
@@ -528,7 +528,7 @@ async function publishListingForMeta(
     // `onlyRepoIds`-gated: the hive itself re-keys on every (re)publish. Best-effort
     // + fire-and-forget, like the member loop.
     try {
-      const ph = rekeyHarness(opts.workspaceId, meta.hiveId) as Promise<unknown> | undefined;
+      const ph = rekeyHarness(opts.workspaceId, meta.potId) as Promise<unknown> | undefined;
       if (ph && typeof ph.catch === 'function') ph.catch(() => {});
     } catch {
       /* a sync throw from the hive-home re-key must never fail or slow publish */

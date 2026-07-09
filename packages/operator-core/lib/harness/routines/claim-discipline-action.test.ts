@@ -44,7 +44,7 @@ function presenceRecord(over: {
     heartbeatAt: recentHeartbeat,
     lastActiveAt: recentHeartbeat,
     agentRole: null,
-    hiveSlug: null,
+    potSlug: null,
     stale: false,
     userId: 'user-1',
     revoked: over.revoked ?? false,

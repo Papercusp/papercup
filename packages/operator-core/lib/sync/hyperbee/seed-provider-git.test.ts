@@ -163,11 +163,11 @@ describe('git seed provider', () => {
       sourceRepoDir: src,
       stagingDir: staging,
       originUrl: 'https://github.com/Papercusp/papercup',
-      encryption: { key, keyRef: { via: 'seed-key-op', hiveId: 'papercusp' } },
+      encryption: { key, keyRef: { via: 'seed-key-op', potId: 'papercusp' } },
     });
     // Envelope recorded; bundle on disk is ciphertext (no git-bundle header).
     expect(entry.encryption?.scheme).toBe('chacha20-poly1305');
-    expect(entry.encryption?.keyRef).toEqual({ via: 'seed-key-op', hiveId: 'papercusp' });
+    expect(entry.encryption?.keyRef).toEqual({ via: 'seed-key-op', potId: 'papercusp' });
     const raw = readFileSync(join(staging, 'super.bundle')).subarray(0, 32).toString('latin1');
     expect(raw).not.toMatch(/git bundle/);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });

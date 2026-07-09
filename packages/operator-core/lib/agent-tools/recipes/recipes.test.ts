@@ -123,7 +123,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     getRecipeMock.mockResolvedValue({
       id: 'r1',
       workspaceId: 'ws-test',
-      hiveSlug: 'alpha',
+      potSlug: 'alpha',
       title: 'op recipe',
       description: 'authored by operator',
       script: 'return 1;',
@@ -169,7 +169,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     getRecipeMock.mockResolvedValue({
       id: 'r2',
       workspaceId: 'ws-test',
-      hiveSlug: 'alpha',
+      potSlug: 'alpha',
       title: 't',
       description: 'd',
       script: 'return 1;',
@@ -190,7 +190,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('does NOT record a run on a dry-run preview', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'r3', workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+      id: 'r3', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
       script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
     });
     await findTool('recipes:run').fn({ id: 'r3', dryRun: true }, mkCtx('worker'));
@@ -213,7 +213,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       id === 'gone'
         ? null
         : {
-            id, workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+            id, workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
             script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
           },
     );
@@ -244,7 +244,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
 
   it('inline { id } → one result with the recipe (script included)', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'r1', workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+      id: 'r1', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
       script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
       lastRunAt: null, status: 'active', tags: [],
     });
@@ -256,7 +256,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
   it('ids:[…] → many; a not-found id fails only itself', async () => {
     getRecipeMock.mockImplementation(async (_sql: unknown, id: string) =>
       id === 'x' ? null : {
-        id, workspaceId: 'ws-test', hiveSlug: 'alpha', title: 't', description: 'd',
+        id, workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
         script: 's', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
         lastRunAt: null, status: 'active', tags: [],
       },

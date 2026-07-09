@@ -69,7 +69,7 @@ export interface FleetTaskResult {
    *  downstream by BRIEF 3's OfficialGrader → fills `resolved`. */
   attempt: ArmAttempt;
   /** The bee (spawn id) that ran it. */
-  beeId: string;
+  cupId: string;
   /** When the scheduler placed it (ms epoch). */
   placedAtMs: number;
   /** When the bee started / finished the task (ms epoch). */

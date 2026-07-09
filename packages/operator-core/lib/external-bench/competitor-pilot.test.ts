@@ -35,7 +35,7 @@ function fakeDriver(id: 'openhands-async'): CompetitorBacklogDriver {
         arm: id, suite: r.suite, runId: r.runId, seed: r.seed,
         startedAtMs: 100, finishedAtMs: 1300, peakConcurrentBees: 2,
         taskResults: r.backlog.map((t, i) => ({
-          attempt: attempt(id, t.instanceId), beeId: `${id}-${i}`,
+          attempt: attempt(id, t.instanceId), cupId: `${id}-${i}`,
           placedAtMs: 100, startedAtMs: 110, finishedAtMs: 1100, disposition: 'spawn' as const,
         })),
         coordEvents,

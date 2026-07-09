@@ -159,11 +159,11 @@ export interface HarnessRegistry {
   projects: ProjectEntry[];
   /** Per-Hive Queen control-frame handles (cloud-deployment-layer P-016) — kept in
    *  the registry blob (workspace PG) alongside per-harness deployment frames, so
-   *  teardown can DESTROY the Queen across restarts. Keyed by hiveId. */
+   *  teardown can DESTROY the Queen across restarts. Keyed by potId. */
   hiveControlFrames?: Record<string, Frame>;
   /** Per-Hive directory metadata (p2p-hive-directory P-004) — title/description/
    *  visibility/memberTopics/inviteSecret the directory announces. Kept in the
-   *  registry blob (workspace PG, no migration) keyed by hiveId; a public/invite
+   *  registry blob (workspace PG, no migration) keyed by potId; a public/invite
    *  entry is announced on boot. Shape = the directory's `HiveDirectoryMeta`
    *  (lib/hive-publish.ts). */
   hiveDirectoryMeta?: Record<string, import('./hive-publish').HiveDirectoryMeta>;

@@ -158,6 +158,45 @@ export async function gatewayWholesaleThrottled(
 }
 
 /**
+ * EI-8797 residual: tell the LIVE gateway process to readmit `ids` into its failover rotation NOW.
+ * `accounts:reset-rate` resets the PERSISTED account-pool store, but the gateway keeps its own
+ * in-memory exhausted/pause map — without this poke, `/stats` keeps reporting healthyAccounts=0
+ * (split-brain) until the stale pause naturally expires, and capacity readers (fleet sizing,
+ * `fleet:capacity`) under-count. Best-effort BY DESIGN: returns `{ reachable:false, error }` when
+ * the gateway is down or predates `POST /admin/readmit` (deploy-skew) — never throws, so the store
+ * reset (the durable half) always succeeds regardless. Reports the gateway's fresh healthyAccounts
+ * so the caller can VERIFY the live pool cleared instead of assuming.
+ */
+export async function readmitGatewayAccounts(
+  ids: readonly string[],
+  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<{ reachable: boolean; readmitted: string[]; healthyAccounts?: number; error?: string }> {
+  const port = opts.port ?? gatewayPort();
+  const doFetch = opts.fetchImpl ?? fetch;
+  const readmitted: string[] = [];
+  let healthyAccounts: number | undefined;
+  for (const id of ids) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1200);
+    try {
+      const res = await doFetch(`http://127.0.0.1:${port}/admin/readmit?account=${encodeURIComponent(id)}`, {
+        method: 'POST',
+        signal: ctrl.signal,
+      });
+      if (!res.ok) return { reachable: false, readmitted, error: `gateway /admin/readmit ${res.status}` };
+      const body = (await res.json()) as { readmitted?: string[]; healthyAccounts?: number };
+      readmitted.push(...(body.readmitted ?? [id]));
+      healthyAccounts = body.healthyAccounts;
+    } catch (e) {
+      return { reachable: false, readmitted, error: (e as Error).message };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { reachable: true, readmitted, healthyAccounts };
+}
+
+/**
  * Fetch the RAW gateway `/stats` payload for the wedge/throttle detector (B-GW-5). Unlike
  * `fetchGatewayHeadroom` (which projects the normalized admin read-model), this returns the raw
  * shape the `gateway-wedge` detector reads — typed loosely (`RawGatewayStats`) because the live

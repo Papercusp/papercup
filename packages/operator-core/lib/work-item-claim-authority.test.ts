@@ -3,7 +3,7 @@
  * (work-item-claim-authority.ts; decentralized-dispatch-scaling-2026-06-08 D-002).
  *
  * The work-item-claims store routes EVERY claim op through this module's singleton
- * (`getWorkItemClaimAuthority().route(hiveSlug, op)`). On a single box the default
+ * (`getWorkItemClaimAuthority().route(potSlug, op)`). On a single box the default
  * `LocalWorkItemClaimAuthority` runs `op.local()` directly; Track B installs a real
  * multi-peer router via `setWorkItemClaimAuthority()` with zero store changes. These
  * tests lock the seam's contract: local always self-authoritative, route runs the
@@ -59,8 +59,8 @@ describe('the mutable authority singleton (Track-B swap-in point)', () => {
     const routed: Array<{ hive: string }> = [];
     const custom: WorkItemClaimAuthority = {
       isSelf: async () => false,
-      route: async (hiveSlug, o) => {
-        routed.push({ hive: hiveSlug });
+      route: async (potSlug, o) => {
+        routed.push({ hive: potSlug });
         return o.local();
       },
     };

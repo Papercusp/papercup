@@ -128,7 +128,7 @@ describe('buildGroundTruth (the claims ↔ ground-truth join, threaded through d
 });
 
 describe('collectGroundTruth (orchestration behind the ports)', () => {
-  const ctx: GroundTruthCtx = { scenario, repoPath: '/tmp/x', hiveSlug: 'heval-x', workspaceId: 'ws' };
+  const ctx: GroundTruthCtx = { scenario, repoPath: '/tmp/x', potSlug: 'heval-x', workspaceId: 'ws' };
 
   it('assembles the four reads into a RunGroundTruth', async () => {
     const ports: GroundTruthPorts = {
@@ -145,7 +145,7 @@ describe('collectGroundTruth (orchestration behind the ports)', () => {
 });
 
 describe('liveGroundTruthPorts (real join, injected gated reads)', () => {
-  const ctx: GroundTruthCtx = { scenario, repoPath: '/tmp/x', hiveSlug: 'heval-x', workspaceId: 'ws' };
+  const ctx: GroundTruthCtx = { scenario, repoPath: '/tmp/x', potSlug: 'heval-x', workspaceId: 'ws' };
 
   it('derives actuals from injected completion + injected commits, catches a no-commit fabrication', async () => {
     const ports = liveGroundTruthPorts({

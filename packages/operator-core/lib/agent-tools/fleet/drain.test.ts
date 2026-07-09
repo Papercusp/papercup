@@ -23,7 +23,7 @@ vi.mock('../coordination/identity', () => ({
 // (a roleless su- id short-circuits before this is even consulted).
 vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null) }));
 // P-003: the drain cue is stamped with the drainer's authority, resolved from
-// presence.agentRole/hiveSlug + fleet membership. Mock the fleet join so the unit
+// presence.agentRole/potSlug + fleet membership. Mock the fleet join so the unit
 // test never reaches getOrgPg; the sender's kind comes from the getPresence mock.
 vi.mock('../coordination/presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new Map()) }));
 
@@ -148,7 +148,7 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
     // Sender 's-queen' resolves to a queen-kind session with a known hive; the bee
     // target has no presence row (bee/auto → drainable).
     getPresenceM.mockImplementation((async (id: string) =>
-      id === 's-queen' ? { ownerId: id, agentRole: 'mug', hiveSlug: 'papercusp' } : null) as typeof getPresence);
+      id === 's-queen' ? { ownerId: id, agentRole: 'mug', potSlug: 'papercusp' } : null) as typeof getPresence);
     const b = await env({ bee_id: 's-bee-1' });
     expect(b.counts).toEqual({ ok: 1, failed: 0 });
     const [, msg] = sendMessage.mock.calls[0] as [unknown, { extra?: Record<string, unknown> }];

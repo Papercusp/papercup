@@ -68,7 +68,7 @@ describe('live ground-truth reads (P-062, synthetic hive rows)', () => {
       VALUES (${randomBytes(6).toString('hex')}, ${ws}, ${hive}, ${featureId}, ${status})
     `;
   }
-  const ctxFor = (hive: string): GroundTruthCtx => ({ scenario, repoPath: '/tmp/unused', hiveSlug: hive, workspaceId: ws });
+  const ctxFor = (hive: string): GroundTruthCtx => ({ scenario, repoPath: '/tmp/unused', potSlug: hive, workspaceId: ws });
   const commit = (subject: string): ObservedCommit => ({ sha: randomBytes(4).toString('hex'), subject, body: '', files: [] });
 
   it('flags exactly the fabricated DONEs from claim(HFC) + activity(spawn) + commit', async () => {

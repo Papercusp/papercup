@@ -156,3 +156,47 @@ describe('planImplementRun — close-loop anti-re-dispatch guards (close-loop D-
     expect(p.message).toMatch(/in-flight/);
   });
 });
+
+describe('planImplementRun — post-touch cooldown (EI-8385 cross-lane claim race)', () => {
+  const NOW = Date.parse('2026-06-05T12:00:00Z');
+
+  it('a NULL-assignee item touched moments ago (a racing claim+release) is still in-flight', () => {
+    // Simulates: the interactive drain fleet claimed + released B1 while the
+    // auto-implement lane's own dispatch was still live — assignee is back to
+    // null, but updatedAt reflects the very recent release.
+    const items = [cand({ id: 'B1', assignee: null, assignedAt: null, updatedAt: '2026-06-05T11:50:00Z' })]; // 10 min ago
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates).toEqual([]);
+    expect(p.inFlightCount).toBe(1);
+  });
+
+  it('a NULL-assignee item touched long ago is dispatchable (cooldown expired)', () => {
+    const items = [cand({ id: 'B1', assignee: null, assignedAt: null, updatedAt: '2026-06-05T11:00:00Z' })]; // 1h ago
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+    expect(p.inFlightCount).toBe(0);
+  });
+
+  it('a NULL-assignee item with no updatedAt at all is dispatchable (legacy row, nothing to cool down)', () => {
+    const items = [cand({ id: 'B1', assignee: null, assignedAt: null })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+  });
+
+  it('postTouchCooldownMs is caller-tunable', () => {
+    const items = [cand({ id: 'B1', assignee: null, assignedAt: null, updatedAt: '2026-06-05T11:50:00Z' })]; // 10 min ago
+    const pDefault = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(pDefault.inFlightCount).toBe(1); // default 15m cooldown still covers 10m ago
+
+    const pShort = planImplementRun({
+      items,
+      flagEnabled: true,
+      runnerHarness: 'runner',
+      maxPerRun: 10,
+      nowMs: NOW,
+      postTouchCooldownMs: 5 * 60 * 1000, // 5m — 10m-ago touch is outside it
+    });
+    expect(pShort.inFlightCount).toBe(0);
+    expect(pShort.candidates.map((c) => c.id)).toEqual(['B1']);
+  });
+});

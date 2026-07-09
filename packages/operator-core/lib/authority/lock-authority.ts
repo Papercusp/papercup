@@ -117,7 +117,7 @@ export interface LockAuthorityDeps {
   /** Fetch presence rows for a HIVE (P-009 — `WHERE hive_slug = ?`). Used by
    *  {@link lockAuthorityForHive}; `staleMs` threads the same LOOSE SQL pre-filter
    *  as the harness path. Freshness filtered in TS. */
-  fetchHivePresenceRows?: (hiveSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
+  fetchHivePresenceRows?: (potSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
   /** Resolve THIS peer's swarm identity, or null if it has none. */
   resolveSelf?: () => Promise<SelfSwarmIdentity | null>;
   /** Current epoch ms (injectable clock). */
@@ -188,7 +188,7 @@ async function defaultFetchPresenceRows(harnessSlug: string, staleMs: number): P
  */
 export async function queryPresenceRowsForHive(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
-  hiveSlug: string,
+  potSlug: string,
   staleMs: number = DEFAULT_AUTHORITY_STALE_MS,
 ): Promise<LivePeerRow[]> {
   // P-006: same LOOSE (2× staleness window) SQL pre-filter as the harness path —
@@ -202,7 +202,7 @@ export async function queryPresenceRowsForHive(
            machine_label,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
-    WHERE pot_slug = ${hiveSlug}
+    WHERE pot_slug = ${potSlug}
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
@@ -219,9 +219,9 @@ export async function queryPresenceRowsForHive(
   }));
 }
 
-async function defaultFetchHivePresenceRows(hiveSlug: string, staleMs: number): Promise<LivePeerRow[]> {
+async function defaultFetchHivePresenceRows(potSlug: string, staleMs: number): Promise<LivePeerRow[]> {
   const { sql } = getOrgPg();
-  return queryPresenceRowsForHive(sql as never, hiveSlug, staleMs);
+  return queryPresenceRowsForHive(sql as never, potSlug, staleMs);
 }
 
 async function defaultResolveSelf(): Promise<SelfSwarmIdentity | null> {
@@ -367,20 +367,20 @@ function evictionExclusions(
  * federation (P-008) populates remote Swarms' hive_slug presence rows.
  */
 export async function lockAuthorityForHive(
-  hiveSlug: string,
+  potSlug: string,
   deps: LockAuthorityDeps = {},
 ): Promise<AuthorityResolution> {
-  if (!hiveSlug || typeof hiveSlug !== 'string') {
-    throw new TypeError('lockAuthorityForHive: hiveSlug must be a non-empty string');
+  if (!potSlug || typeof potSlug !== 'string') {
+    throw new TypeError('lockAuthorityForHive: potSlug must be a non-empty string');
   }
   const fetchRows = deps.fetchHivePresenceRows ?? defaultFetchHivePresenceRows;
   const resolveSelf = deps.resolveSelf ?? defaultResolveSelf;
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const [rows, self] = await Promise.all([fetchRows(hiveSlug, staleMs), resolveSelf()]);
+  const [rows, self] = await Promise.all([fetchRows(potSlug, staleMs), resolveSelf()]);
   const nowMs = now();
-  const excluded = evictionExclusions(hiveSlug, rows, self, nowMs, deps);
+  const excluded = evictionExclusions(potSlug, rows, self, nowMs, deps);
   return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
 }
 
@@ -470,11 +470,11 @@ export async function routeToAuthority<T>(
  * harness's).
  */
 export async function routeToAuthorityForHive<T>(
-  hiveSlug: string,
+  potSlug: string,
   op: AuthorityOp<T>,
   deps: LockAuthorityDeps = {},
 ): Promise<RouteResult<T>> {
-  const resolution = await lockAuthorityForHive(hiveSlug, deps);
+  const resolution = await lockAuthorityForHive(potSlug, deps);
   if (resolution.isSelf || !resolution.peer) {
     return { value: await op.local(), via: 'local-authority' };
   }
@@ -484,7 +484,7 @@ export async function routeToAuthorityForHive<T>(
   if (transport && op.remote) {
     try {
       const raw = await transport.rpc(peer, {
-        harnessSlug: hiveSlug, // scope key (the transport field is named harnessSlug)
+        harnessSlug: potSlug, // scope key (the transport field is named harnessSlug)
         kind: op.remote.kind,
         payload: op.remote.payload,
       });
@@ -496,7 +496,7 @@ export async function routeToAuthorityForHive<T>(
   }
 
   const warning =
-    `lock authority for hive "${hiveSlug}" is a remote Swarm ` +
+    `lock authority for hive "${potSlug}" is a remote Swarm ` +
     `(${peer.machineLabel}, ${peer.devicePubkey.slice(0, 12)}…) and is unreachable — ` +
     `proceeding with a local-advisory grant; concurrent edits will be git-merged.`;
   return { value: await op.local(), via: 'fail-open', warning };

@@ -44,7 +44,7 @@ export function shapesFromDetection(detection: unknown): AppliesTo[] | undefined
 export interface SeedPackInput {
   workspaceId: string;
   /** The hive's home slug — rows land in scope `hive:<slug>`. */
-  hiveSlug: string;
+  potSlug: string;
   pack: LearningPack;
   /** Project shapes from detection; undefined ⇒ `any`-only (D-008/OQ-3). */
   shapes?: readonly AppliesTo[];
@@ -78,19 +78,19 @@ const SEED_CONCURRENCY = 4;
  */
 export async function rememberPackItem(opts: {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   pack: LearningPack;
   item: LearningPack['items'][number];
   createdBy?: string;
 }): Promise<string[]> {
   const backend = getMemoryBackend();
   const { ids } = await backend.remember(memoryTextOf(opts.item), {
-    scope: hiveScopeKey(opts.hiveSlug),
+    scope: hiveScopeKey(opts.potSlug),
     kind: opts.item.kind,
     verbatim: true,
     metadata: {
       scope: 'hive',
-      hive_slug: opts.hiveSlug,
+      hive_slug: opts.potSlug,
       workspace_id: opts.workspaceId,
       created_by: opts.createdBy ?? 'system',
       applies_to: opts.item.appliesTo,
@@ -135,7 +135,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
         try {
           return await rememberPackItem({
             workspaceId: input.workspaceId,
-            hiveSlug: input.hiveSlug,
+            potSlug: input.potSlug,
             pack,
             item,
             ...(input.createdBy ? { createdBy: input.createdBy } : {}),

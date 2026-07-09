@@ -73,7 +73,7 @@ export function crossHiveSigningBytes(body: CrossHiveEnvelopeBody): Buffer {
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
-/** Signs the canonical bytes. Production: `(b) => signWithHiveKey(ws, hiveSlug, b)`. */
+/** Signs the canonical bytes. Production: `(b) => signWithHiveKey(ws, potSlug, b)`. */
 export type CrossHiveSigner = (bytes: Buffer) => Promise<Buffer>;
 
 /** Sign a body into a wire envelope. */
@@ -171,7 +171,7 @@ export async function flushCrossHiveOutbox(deps: {
  *  durable record of an outbound request and the reply that settled it. */
 export interface CrossHiveAskRow {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   id: string;
   peerPubkey: string;
   direction: 'out' | 'in';
@@ -285,7 +285,7 @@ export type CrossHiveReceiveResult =
 export interface ReceiveDeps {
   /** THIS Hive's pubkey — an envelope not addressed to us is rejected. */
   selfHivePubkey: string;
-  /** Load this Hive's admission grants (production: `loadCrossHiveGrants(ws, hiveSlug)`). */
+  /** Load this Hive's admission grants (production: `loadCrossHiveGrants(ws, potSlug)`). */
   loadGrants: () => Promise<readonly CrossHiveGrant[]>;
   /** Translate an admitted REQUEST into a B-side object (boundary ports). */
   requestPorts: CrossHiveBoundaryPorts;

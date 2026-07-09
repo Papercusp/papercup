@@ -88,8 +88,8 @@ function fnv1a32(s: string): number {
  * 1800 distinct slots within a half-hour — ample to scatter realistic hive
  * counts. Returns a 6-field (seconds-resolution) cron `S M,M+30 * * * *`.
  */
-export function staggeredHiveScoutCron(hiveSlug: string): string {
-  const h = fnv1a32(hiveSlug);
+export function staggeredHiveScoutCron(potSlug: string): string {
+  const h = fnv1a32(potSlug);
   // Two independent fields from the one hash: low bits → minute, high bits → second.
   const minute = h % HIVE_SCOUT_CADENCE_MIN; // [0, 30)
   const second = Math.floor(h / HIVE_SCOUT_CADENCE_MIN) % 60; // [0, 60)
@@ -109,7 +109,7 @@ export interface ProvisionHiveLearningLoopInput {
   sql: Sql;
   workspaceId: string;
   /** The new hive's OWN home install_slug (NOT a `?? operatorHomeHarnessSlug()` default). */
-  hiveSlug: string;
+  potSlug: string;
   /** Override the per-cycle scout budget cap (USD). Default 0.5. */
   scoutMaxCostUsd?: number;
   /**
@@ -123,7 +123,7 @@ export interface ProvisionHiveLearningLoopInput {
 
 export interface ProvisionHiveLearningLoopResult {
   ok: boolean;
-  hiveSlug: string;
+  potSlug: string;
   /** The dark gym autoloop row was written. */
   gymAutoloop: boolean;
   /** The inactive scout routine row was written. */
@@ -139,12 +139,12 @@ export interface ProvisionHiveLearningLoopResult {
 }
 
 /** Sanitize an install_slug + routine name into a routines.id (mirrors the seed scripts). */
-export function hiveScoutRoutineId(hiveSlug: string): string {
-  return `rt_${hiveSlug}_${HIVE_SCOUT_ROUTINE_NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+export function hiveScoutRoutineId(potSlug: string): string {
+  return `rt_${potSlug}_${HIVE_SCOUT_ROUTINE_NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
-async function scoutRoutineScope(workspaceId: string, hiveSlug: string): Promise<string> {
-  return workspaceBrainScopeKey(workspaceId, hiveSlug, await isWorkspaceCoordinationOn());
+async function scoutRoutineScope(workspaceId: string, potSlug: string): Promise<string> {
+  return workspaceBrainScopeKey(workspaceId, potSlug, await isWorkspaceCoordinationOn());
 }
 
 /**
@@ -156,10 +156,10 @@ async function scoutRoutineScope(workspaceId: string, hiveSlug: string): Promise
 export async function provisionHiveLearningLoop(
   input: ProvisionHiveLearningLoopInput,
 ): Promise<ProvisionHiveLearningLoopResult> {
-  const { sql, workspaceId, hiveSlug } = input;
+  const { sql, workspaceId, potSlug } = input;
   const now = input.now ?? Date.now();
   const maxCostUsd = input.scoutMaxCostUsd ?? DEFAULT_HIVE_SCOUT_MAX_COST_USD;
-  const scoutScope = await scoutRoutineScope(workspaceId, hiveSlug);
+  const scoutScope = await scoutRoutineScope(workspaceId, potSlug);
   // P-050 legacy: OFF uses a deterministic per-hive cron offset. ON uses the
   // same deterministic function against the workspace sentinel, yielding one
   // stable workspace Scout routine instead of N per-hive routines.
@@ -175,7 +175,7 @@ export async function provisionHiveLearningLoop(
   //     for a fresh hive this is a pure INSERT, so the undo can delete the row.
   await setAutoloop(sql, {
     workspaceId,
-    harnessSlug: hiveSlug,
+    harnessSlug: potSlug,
     enabled: false,
     budgetUsd: null,
     now,
@@ -207,7 +207,7 @@ export async function provisionHiveLearningLoop(
     try {
       await sql`
         DELETE FROM harness_shared.gym_autoloop_config
-         WHERE workspace_id = ${workspaceId} AND harness_slug = ${hiveSlug}`;
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${potSlug}`;
     } catch {
       /* ignore */
     }
@@ -223,7 +223,7 @@ export async function provisionHiveLearningLoop(
 
   return {
     ok: true,
-    hiveSlug,
+    potSlug,
     gymAutoloop,
     scoutRoutine,
     scoutRoutineId: routineId,
@@ -236,11 +236,11 @@ export interface TeardownHiveLearningLoopInput {
   sql: Sql;
   workspaceId: string;
   /** The dissolving hive's OWN home install_slug — same key provisionHiveLearningLoop used. */
-  hiveSlug: string;
+  potSlug: string;
 }
 
 export interface TeardownHiveLearningLoopResult {
-  hiveSlug: string;
+  potSlug: string;
   /** The dark gym autoloop row was removed (or was already absent). */
   gymAutoloop: boolean;
   /** The inactive scout routine row was removed (or was already absent). */
@@ -256,8 +256,8 @@ export interface TeardownHiveLearningLoopResult {
  * teardownHiveLearningLoop — the lifecycle inverse of provisionHiveLearningLoop,
  * called from pot:dissolve (per-hive-learning-loops-2026-06-14 P-021; D-003).
  * Removes EVERYTHING the provision laid down for this hive:
- *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=hiveSlug),
- *   (b) the inactive scout routine (install_slug=hiveSlug, name='scout-cycle'),
+ *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=potSlug),
+ *   (b) the inactive scout routine (install_slug=potSlug, name='scout-cycle'),
  *   (c) the learning-governor registrants `gym:<hive>` + `scout:<hive>`.
  *   (d) the git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger)
  *       seeded for this install — git-sync-dx-hardening P-007 (they leaked per benchmark
@@ -272,9 +272,9 @@ export interface TeardownHiveLearningLoopResult {
 export async function teardownHiveLearningLoop(
   input: TeardownHiveLearningLoopInput,
 ): Promise<TeardownHiveLearningLoopResult> {
-  const { sql, workspaceId, hiveSlug } = input;
+  const { sql, workspaceId, potSlug } = input;
   const result: TeardownHiveLearningLoopResult = {
-    hiveSlug,
+    potSlug,
     gymAutoloop: false,
     scoutRoutine: false,
     governorRegistrants: false,
@@ -285,7 +285,7 @@ export async function teardownHiveLearningLoop(
   try {
     await sql`
       DELETE FROM harness_shared.gym_autoloop_config
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${hiveSlug}`;
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${potSlug}`;
     result.gymAutoloop = true;
   } catch {
     /* best-effort — a failure WARNS in the caller, never fails the dissolve */
@@ -295,7 +295,7 @@ export async function teardownHiveLearningLoop(
   try {
     await sql`
       DELETE FROM harness_shared.routines
-       WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug} AND name = ${HIVE_SCOUT_ROUTINE_NAME}`;
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug} AND name = ${HIVE_SCOUT_ROUTINE_NAME}`;
     result.scoutRoutine = true;
   } catch {
     /* best-effort */
@@ -303,13 +303,13 @@ export async function teardownHiveLearningLoop(
 
   // (c) learning-governor registrants gym:<hive> + blender:<hive>.
   try {
-    await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(hiveSlug) });
-    await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(hiveSlug) });
+    await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(potSlug) });
+    await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(potSlug) });
     // Pre-rename registrant rows (WI-2932): scoutLoopId minted `scout:<hive>`
     // before the blender rename — delete the legacy row too so a dissolve never
     // strands an orphaned governor registrant. DELETE this line when the S2
     // contract migration rewrites/reaps the legacy loop ids.
-    await deleteLearningLoop(sql, { workspaceId, loopId: `scout:${hiveSlug}` });
+    await deleteLearningLoop(sql, { workspaceId, loopId: `scout:${potSlug}` });
     result.governorRegistrants = true;
   } catch {
     /* best-effort */
@@ -323,7 +323,7 @@ export async function teardownHiveLearningLoop(
   try {
     await sql`
       DELETE FROM harness_shared.routines
-       WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug}
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug}
          AND target_role IN ('system:git-sync', 'system:green-checkpoint', 'system:release-trigger', 'system:cross-hive-outbox-drain')`;
     result.gitSyncRoutines = true;
   } catch {

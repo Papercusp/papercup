@@ -147,9 +147,9 @@ async function pollUntil<T>(
   }
 }
 
-function publicHive(hiveId: string, title: string): HiveDirectoryMeta {
+function publicHive(potId: string, title: string): HiveDirectoryMeta {
   return {
-    hiveId,
+    potId,
     title,
     description: `${title} — live two-peer E2E`,
     visibility: 'public',
@@ -195,12 +195,12 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
       // the pair-time getOwnAnnounces exchange on the global directory topic —
       // and vice versa.
       const onB = await pollUntil(
-        () => b.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-a'),
+        () => b.dir.listDiscoveredHives().find((h) => h.potId === 'hive-a'),
         { timeoutMs: 20_000, intervalMs: 250 },
       );
       expect(onB, "peer B never discovered peer A's public hive over the live directory topic").toBeTruthy();
       expect(onB).toMatchObject({
-        hiveId: 'hive-a',
+        potId: 'hive-a',
         title: 'Alpha Hive',
         ownerGithubLogin: 'alice',
         ownerDevicePubkey: a.devicePubkey,
@@ -211,14 +211,14 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
       expect(onB!.memberLinks).toEqual([`papercusp://harness?topic=${'a'.repeat(64)}&repo=1234`]);
 
       const onA = await pollUntil(
-        () => a.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-b'),
+        () => a.dir.listDiscoveredHives().find((h) => h.potId === 'hive-b'),
         { timeoutMs: 20_000, intervalMs: 250 },
       );
       expect(onA, "peer A never discovered peer B's public hive (reverse direction)").toBeTruthy();
-      expect(onA).toMatchObject({ hiveId: 'hive-b', title: 'Beta Hive', ownerGithubLogin: 'bob' });
+      expect(onA).toMatchObject({ potId: 'hive-b', title: 'Beta Hive', ownerGithubLogin: 'bob' });
 
       // Owned ≠ discovered: a peer's own hive is not in its browse list.
-      expect(a.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-a')).toBeUndefined();
+      expect(a.dir.listDiscoveredHives().find((h) => h.potId === 'hive-a')).toBeUndefined();
 
       // THE PROOF (edit convergence): A re-publishes hive-a with a new title —
       // the discovery:set_pot edit path — and B's record converges by LWW over
@@ -227,7 +227,7 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
       await publishHiveToDirectory(a.dir, { ...publicHive('hive-a', 'Alpha Hive (renamed)') }, a.owner);
       const renamed = await pollUntil(
         () => {
-          const h = b.dir.listDiscoveredHives().find((x) => x.hiveId === 'hive-a');
+          const h = b.dir.listDiscoveredHives().find((x) => x.potId === 'hive-a');
           return h && h.title === 'Alpha Hive (renamed)' ? h : undefined;
         },
         { timeoutMs: 20_000, intervalMs: 250 },
@@ -261,7 +261,7 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
         ownedHives: [
           publicHive('hive-pub', 'Public Hive'),
           {
-            hiveId: 'hive-inv',
+            potId: 'hive-inv',
             title: 'Tearoom (invite only)',
             description: 'invite-scoped hive — live two-peer E2E',
             visibility: 'invite',
@@ -282,18 +282,18 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
 
       // B (global topic only) discovers the public hive…
       const pub = await pollUntil(
-        () => b.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-pub'),
+        () => b.dir.listDiscoveredHives().find((h) => h.potId === 'hive-pub'),
         { timeoutMs: 20_000, intervalMs: 250 },
       );
       expect(pub, 'peer B never discovered the public hive').toBeTruthy();
       // …and the invite hive has NOT leaked onto the global topic.
-      expect(b.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-inv')).toBeUndefined();
+      expect(b.dir.listDiscoveredHives().find((h) => h.potId === 'hive-inv')).toBeUndefined();
 
       // B receives the invite secret out-of-band and joins the invite topic —
       // the "follow invite link" path. The invite hive must now list on B.
       await b.wiring.joinInviteTopic(INVITE_SECRET);
       const inv = await pollUntil(
-        () => b.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-inv'),
+        () => b.dir.listDiscoveredHives().find((h) => h.potId === 'hive-inv'),
         { timeoutMs: 20_000, intervalMs: 250 },
       );
       expect(
@@ -301,13 +301,13 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
         'peer B never received the INVITE hive after joining the invite topic — per-topic channel pairing broken',
       ).toBeTruthy();
       expect(inv).toMatchObject({
-        hiveId: 'hive-inv',
+        potId: 'hive-inv',
         title: 'Tearoom (invite only)',
         visibility: 'invite',
         ownerGithubLogin: 'alice',
       });
       // The public list is still scoped right (no duplicate/cross-topic bleed).
-      expect(b.dir.listDiscoveredHives().filter((h) => h.hiveId === 'hive-inv')).toHaveLength(1);
+      expect(b.dir.listDiscoveredHives().filter((h) => h.potId === 'hive-inv')).toHaveLength(1);
     },
     60_000,
   );

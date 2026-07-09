@@ -57,7 +57,7 @@ export interface HiveWorkspaceCardsProps {
   /** The active workspace's display name — the header above the list. */
   workspaceLabel?: string;
   /** Drill into a pot — caller writes `?slug=`(hive) + `?harness=`(member) and exits all-mode. */
-  onDrill: (hiveSlug: string, memberSlug: string) => void;
+  onDrill: (potSlug: string, memberSlug: string) => void;
   /** Open the create flow from the empty state. */
   onCreate?: () => void;
 }

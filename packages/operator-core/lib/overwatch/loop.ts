@@ -126,7 +126,7 @@ function stringPayloadField(
 /**
  * Workspace-scoped Overwatch stores the one-shot routine under the workspace
  * sentinel (installSlug === workspaceId), but every agent-facing operation still
- * targets the concrete hive harness. New wake rows carry `hiveSlug`; old sentinel
+ * targets the concrete hive harness. New wake rows carry `potSlug`; old sentinel
  * rows fall back to the configured hive home so they recover after deploy.
  *
  * EI-5842 (overwatch dead 5 days): the fallback MUST resolve to a registered
@@ -144,7 +144,7 @@ function stringPayloadField(
  */
 function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
   const fromPayload =
-    stringPayloadField(ctx.payloadTemplate, "hiveSlug") ??
+    stringPayloadField(ctx.payloadTemplate, "potSlug") ??
     stringPayloadField(ctx.payloadTemplate, "installSlug") ??
     stringPayloadField(ctx.payloadTemplate, "harness");
   if (fromPayload) return fromPayload;

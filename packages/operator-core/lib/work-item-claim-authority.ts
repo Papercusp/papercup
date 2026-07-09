@@ -21,7 +21,7 @@
  * transport lands (shared-hive-federation Track B's live cutover), `setWorkItemClaimAuthority()`
  * installs the real resolver (`lockAuthorityForHive()` + RPC routing) with ZERO
  * changes to the claim store — the store only ever calls
- * `getWorkItemClaimAuthority().route(hiveSlug, op)`.
+ * `getWorkItemClaimAuthority().route(potSlug, op)`.
  *
  * The op carried is the shared `AuthorityOp<T>` shape (`{ local, remote? }`): the
  * `local` leg runs against THIS peer's store (used when we are the authority OR on
@@ -33,9 +33,9 @@ import type { AuthorityOp } from './authority';
 
 export interface WorkItemClaimAuthority {
   /** True if this peer is the claim authority for the Hive. Single box → always true. */
-  isSelf(hiveSlug: string): Promise<boolean>;
+  isSelf(potSlug: string): Promise<boolean>;
   /** Run a claim op AT the authority: `op.local()` when isSelf, else RPC `op.remote` to the authority peer. */
-  route<T>(hiveSlug: string, op: AuthorityOp<T>): Promise<T>;
+  route<T>(potSlug: string, op: AuthorityOp<T>): Promise<T>;
 }
 
 /** The single-peer / single-box authority: this peer is always the authority. */

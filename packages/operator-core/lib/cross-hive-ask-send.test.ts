@@ -21,7 +21,7 @@ import type { CrossHiveBoundaryWiring } from './cross-hive-wiring';
 import type { CrossHiveAsksStore } from './cross-hive-asks-store-port';
 
 const INPUT: SendCrossHiveAskInput = {
-  workspaceId: 'ws', hiveSlug: 'home', peerPubkey: 'PEER', kind: 'ask', subject: 'S', body: 'B',
+  workspaceId: 'ws', potSlug: 'home', peerPubkey: 'PEER', kind: 'ask', subject: 'S', body: 'B',
 };
 
 function makeDeps(opts: { allowed?: boolean; reason?: string; boundary?: 'present' | 'missing'; delivered?: boolean } = {}) {

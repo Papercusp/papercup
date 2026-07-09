@@ -21,7 +21,7 @@ import {
 function task(instanceId: string, over: Partial<ArmSnapshotPerTask> = {}): ArmSnapshotPerTask {
   return {
     instanceId,
-    beeId: `bee-${instanceId}`,
+    cupId: `bee-${instanceId}`,
     disposition: 'spawn',
     stopReason: 'done',
     generationError: null,

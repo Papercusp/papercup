@@ -62,7 +62,7 @@ interface RolloutRow {
 }
 interface RunDetail {
   coordEvents?: Array<{ ts?: number; kind?: string; agent?: string; taskId?: string | null; detail?: string }>;
-  perTask?: Array<{ instanceId: string; beeId?: string; stopReason?: string; costUsd?: number }>;
+  perTask?: Array<{ instanceId: string; cupId?: string; stopReason?: string; costUsd?: number }>;
 }
 
 export interface PgReportReaders {
@@ -96,8 +96,8 @@ function toCoordTrace(detail: RunDetail | null | undefined): BenchReportCoordEve
 function toSpawnTree(detail: RunDetail | null | undefined): BenchReportSpawnNode[] | undefined {
   if (!detail?.perTask?.length) return undefined;
   const nodes = detail.perTask
-    .filter((t) => t.beeId)
-    .map((t) => ({ spawnId: t.beeId as string, parentSpawnId: null, role: 'cup', taskId: t.instanceId, status: t.stopReason, costUsd: t.costUsd }));
+    .filter((t) => t.cupId)
+    .map((t) => ({ spawnId: t.cupId as string, parentSpawnId: null, role: 'cup', taskId: t.instanceId, status: t.stopReason, costUsd: t.costUsd }));
   return nodes.length ? nodes : undefined;
 }
 

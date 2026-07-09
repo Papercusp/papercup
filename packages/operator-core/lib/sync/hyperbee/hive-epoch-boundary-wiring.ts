@@ -102,7 +102,7 @@ export async function loadAllHiveMemberDevicePubkeys(
  * @param cutOffPubkeys device pubkeys to EXCLUDE from the new epoch (the removed member /
  *   go-private exclusions). They get no wrapped row → cannot decrypt post-boundary content.
  *
- * hiveId for deriveEpochKey / the OpAAD is the hive HOME slug — the federated hive
+ * potId for deriveEpochKey / the OpAAD is the hive HOME slug — the federated hive
  * identity every peer agrees on (a joiner resolves it via the A-003 hiveHomeProjectionSlug
  * binding), so mint here ↔ encrypt/decrypt on any peer use an identical key id.
  *
@@ -149,7 +149,7 @@ export async function advanceEpochOnHiveBoundary(
 
   const { newEpoch, wrapped } = await advanceAndWrap(
     crypto,
-    { workspaceId: opts.workspaceId, hiveHomeSlug: opts.hiveHomeSlug, hiveId: opts.hiveHomeSlug },
+    { workspaceId: opts.workspaceId, hiveHomeSlug: opts.hiveHomeSlug, potId: opts.hiveHomeSlug },
     remaining,
     opts.sql,
   );

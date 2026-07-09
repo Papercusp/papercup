@@ -383,7 +383,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
       if (u.includes('/api/discovery/join-pot')) {
         const body = JSON.parse(String(init?.body ?? '{}')) as { memberLinks?: string[] };
         return new Response(
-          JSON.stringify({ ok: true, hiveSlug: 'demo-hive', members: (body.memberLinks ?? []).map(() => ({ ok: true })) }),
+          JSON.stringify({ ok: true, potSlug: 'demo-hive', members: (body.memberLinks ?? []).map(() => ({ ok: true })) }),
           { status: 200 },
         );
       }
@@ -397,7 +397,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
   it('resolves the announce by hive_pubkey: title, visibility, Join CTA → join-pot', async () => {
     directoryResponds([
       {
-        hiveId: 'demo', title: 'Demo Hive', description: '', owner: 'alice',
+        potId: 'demo', title: 'Demo Hive', description: '', owner: 'alice',
         visibility: 'public', memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'],
         memberCount: 2, hivePubkey: HIVE_PK,
       },
@@ -411,7 +411,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
       expect(screen.getByTestId('cupboard-hive-join-msg').textContent).toContain("Joined pot 'demo-hive' — 2/2"),
     );
     const joinCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('join-pot'))!;
-    expect(JSON.parse(String((joinCall[1] as RequestInit).body))).toMatchObject({ hiveId: 'demo' });
+    expect(JSON.parse(String((joinCall[1] as RequestInit).body))).toMatchObject({ potId: 'demo' });
   });
 
   it('honest empty-state + invite-link affordance when no announce resolves', async () => {

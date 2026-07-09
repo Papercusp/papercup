@@ -21,8 +21,8 @@ import { loadHarnessRegistry } from '../harness-registry';
 
 export const HIVE_SCOPE_PREFIX = 'hive:';
 
-export function hiveScopeKey(hiveSlug: string): string {
-  return `${HIVE_SCOPE_PREFIX}${hiveSlug}`;
+export function hiveScopeKey(potSlug: string): string {
+  return `${HIVE_SCOPE_PREFIX}${potSlug}`;
 }
 
 /** `hive:<slug>` → `<slug>`, or null when the scope isn't hive-shaped. */

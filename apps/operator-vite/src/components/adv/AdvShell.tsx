@@ -667,7 +667,7 @@ export default function AdvShell({
             color: 'var(--fg, #e8e8ea)',
           }}
         >
-          <PublishHiveCard hiveSlug={activeSlug} />
+          <PublishHiveCard potSlug={activeSlug} />
         </Modal>
       )}
       <div className="pc-advshell__body">{children}</div>

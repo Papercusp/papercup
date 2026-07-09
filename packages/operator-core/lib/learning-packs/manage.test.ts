@@ -85,7 +85,7 @@ describe('classifyPackInstall', () => {
         ? { conflicts: [{ memory_id: 'org-2', summary: 'b is contradicted' }] }
         : { conflicts: [] },
     );
-    const review = await classifyPackInstall({ hiveSlug: 'h', pack }, { backend: backend as never, judge });
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge });
     expect(review).toMatchObject({ packId: 'rails-pack', clean: 1, duplicates: 1, conflicts: 1 });
     const byId = Object.fromEntries(review.items.map((i) => [i.itemId, i]));
     expect(byId.a).toMatchObject({ status: 'duplicate', defaultAction: 'skip' });
@@ -99,7 +99,7 @@ describe('classifyPackInstall', () => {
     backend.search = vi.fn(async () => {
       throw new Error('pg down');
     });
-    const review = await classifyPackInstall({ hiveSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
     expect(review.clean).toBe(3);
   });
 
@@ -124,7 +124,7 @@ describe('classifyPackInstall', () => {
       },
     });
     const review = await classifyPackInstall(
-      { hiveSlug: 'h', pack },
+      { potSlug: 'h', pack },
       { backend: backend as never, judge: noConflictJudge },
     );
     expect(review).toMatchObject({ present: 3, clean: 0, duplicates: 0, conflicts: 0 });
@@ -142,13 +142,13 @@ describe('classifyPackInstall', () => {
     }));
     const { backend, remembered } = fakeBackend({ pool: present });
     const review = await classifyPackInstall(
-      { hiveSlug: 'h', pack },
+      { potSlug: 'h', pack },
       { backend: backend as never, judge: noConflictJudge },
     );
     const res = await applyPackInstall(
       {
         workspaceId: 'ws',
-        hiveSlug: 'h',
+        potSlug: 'h',
         pack,
         review,
         // Adversarial: force-install every present item.
@@ -178,12 +178,12 @@ describe('classifyPackInstall', () => {
     ];
     const { backend, remembered } = fakeBackend({ pool: present });
     const review = await classifyPackInstall(
-      { hiveSlug: 'h', pack },
+      { potSlug: 'h', pack },
       { backend: backend as never, judge: noConflictJudge },
     );
     expect(review).toMatchObject({ present: 2, clean: 1 });
     const res = await applyPackInstall(
-      { workspaceId: 'ws', hiveSlug: 'h', pack, review },
+      { workspaceId: 'ws', potSlug: 'h', pack, review },
       { backend: backend as never },
     );
     expect(res).toMatchObject({ installed: 1, skipped: 2 });
@@ -198,11 +198,11 @@ describe('applyPackInstall', () => {
         'always do a': [{ id: 'org-1', text: 'A — always do a', scope: 'hive:h', score: 0.95 }],
       },
     });
-    const review = await classifyPackInstall({ hiveSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
     const res = await applyPackInstall(
       {
         workspaceId: 'ws',
-        hiveSlug: 'h',
+        potSlug: 'h',
         pack,
         review,
         resolutions: [
@@ -225,9 +225,9 @@ describe('applyPackInstall', () => {
         'always do a': [{ id: 'org-1', text: 'A — always do a', scope: 'hive:h', score: 0.95 }],
       },
     });
-    const review = await classifyPackInstall({ hiveSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
     const res = await applyPackInstall(
-      { workspaceId: 'ws', hiveSlug: 'h', pack, review },
+      { workspaceId: 'ws', potSlug: 'h', pack, review },
       { backend: backend as never },
     );
     expect(res).toMatchObject({ installed: 2, skipped: 1 });
@@ -260,7 +260,7 @@ describe('uninstallPack', () => {
 
   it('removes pristine rows, keeps edited ones by default, never touches other origins', async () => {
     const { backend, forgotten } = fakeBackend({ pool });
-    const res = await uninstallPack({ hiveSlug: 'h', packId: 'rails-pack', pack }, { backend: backend as never });
+    const res = await uninstallPack({ potSlug: 'h', packId: 'rails-pack', pack }, { backend: backend as never });
     expect(res.removed).toBe(1);
     expect(forgotten).toEqual(['p1']);
     expect(res.kept).toEqual([{ id: 'p2', text: 'B — but we do it our way' }]);
@@ -269,7 +269,7 @@ describe('uninstallPack', () => {
   it('keepEdited: false removes everything with the pack provenance', async () => {
     const { backend, forgotten } = fakeBackend({ pool });
     const res = await uninstallPack(
-      { hiveSlug: 'h', packId: 'rails-pack', pack, keepEdited: false },
+      { potSlug: 'h', packId: 'rails-pack', pack, keepEdited: false },
       { backend: backend as never },
     );
     expect(res.removed).toBe(2);
@@ -298,7 +298,7 @@ describe('sweepHiveConflicts', () => {
         : { conflicts: [] },
     );
     const res = await import('./manage').then((m) =>
-      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge }),
+      m.sweepHiveConflicts({ potSlug: 'h' }, { backend: backend as never, judge }),
     );
     expect(res.scanned).toBe(3);
     expect(res.capped).toBe(false);
@@ -318,7 +318,7 @@ describe('sweepHiveConflicts', () => {
     const { backend } = fakeBackend({ pool });
     backend.search = vi.fn(async () => []); // no neighbors → no pairs
     const res = await import('./manage').then((m) =>
-      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
+      m.sweepHiveConflicts({ potSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
     );
     expect(res.scanned).toBe(200); // only the first 200 are searched
     expect(res.capped).toBe(true); // 201 > 200 ⇒ tail skipped, loud partial
@@ -346,7 +346,7 @@ describe('sweepHiveConflicts', () => {
         : { conflicts: [] },
     );
     const res = await import('./manage').then((m) =>
-      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge }),
+      m.sweepHiveConflicts({ potSlug: 'h' }, { backend: backend as never, judge }),
     );
     expect(res.capped).toBe(true);
     const pair = res.pairs.find((p) => p.aId === 'r0');
@@ -366,7 +366,7 @@ describe('sweepHiveConflicts', () => {
       return [];
     });
     const res = await import('./manage').then((m) =>
-      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
+      m.sweepHiveConflicts({ potSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
     );
     // The throw on r2 doesn't abort the sweep; r1 still scans, no pairs surface.
     expect(res.scanned).toBe(2);
@@ -378,10 +378,10 @@ describe('enable/disable + upgrade plan', () => {
   it('setPackEnabled round-trips through the hive setting', async () => {
     settingRec = null;
     expect(await disabledPacksFor('ws', 'h')).toEqual([]);
-    const off = await setPackEnabled({ workspaceId: 'ws', hiveSlug: 'h', packId: 'rails-pack', enabled: false });
+    const off = await setPackEnabled({ workspaceId: 'ws', potSlug: 'h', packId: 'rails-pack', enabled: false });
     expect(off.disabled).toEqual(['rails-pack']);
     expect(await disabledPacksFor('ws', 'h')).toEqual(['rails-pack']);
-    const on = await setPackEnabled({ workspaceId: 'ws', hiveSlug: 'h', packId: 'rails-pack', enabled: true });
+    const on = await setPackEnabled({ workspaceId: 'ws', potSlug: 'h', packId: 'rails-pack', enabled: true });
     expect(on.disabled).toEqual([]);
   });
 
@@ -396,7 +396,7 @@ describe('enable/disable + upgrade plan', () => {
         },
       ],
     });
-    const plan = await planPackUpgrade({ hiveSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    const plan = await planPackUpgrade({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
     expect(plan).toMatchObject({
       packId: 'rails-pack',
       installedVersions: ['1.0.0'],

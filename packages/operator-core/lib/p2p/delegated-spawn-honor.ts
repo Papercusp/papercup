@@ -358,7 +358,7 @@ export async function honorSpawnRequestFromProjection(
     if (!claimed) return { outcome: 'already_claimed' };
     await emitReceipt({
       workspaceId: args.workspaceId,
-      hiveSlug: args.hiveHomeSlug,
+      potSlug: args.hiveHomeSlug,
       kind: 'refusal',
       offerId: args.row.offer_id,
       action: 'delegated-seat:spawn',
@@ -433,7 +433,7 @@ export async function honorSpawnRequestFromProjection(
     );
     await emitReceipt({
       workspaceId: args.workspaceId,
-      hiveSlug: args.hiveHomeSlug,
+      potSlug: args.hiveHomeSlug,
       kind: 'refusal',
       offerId: args.row.offer_id,
       action: 'delegated-seat:spawn',

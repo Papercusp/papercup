@@ -56,7 +56,7 @@ const SNAPSHOT_MAX_AGE_MS = 30_000;
  */
 export async function getOverwatchSnapshot(opts?: {
   workspaceId?: string;
-  hiveSlug?: string;
+  potSlug?: string;
   maxAgeMs?: number;
 }): Promise<OverwatchBrief> {
   const ws = opts?.workspaceId ?? activeWorkspaceId();
@@ -79,13 +79,13 @@ export async function getOverwatchSnapshot(opts?: {
     void runSystemHealthTick(ws).catch(() => {});
   }
 
-  const hiveSlug =
-    opts?.hiveSlug ??
-    health?.panels.queen.data?.hiveSlug ??
+  const potSlug =
+    opts?.potSlug ??
+    health?.panels.queen.data?.potSlug ??
     resolveHiveHomeSlug() ??
     ws;
-  if (!health) return emptyOverwatchBrief(hiveSlug);
-  return withAnomalies(mapSystemHealthToBrief(health, hiveSlug));
+  if (!health) return emptyOverwatchBrief(potSlug);
+  return withAnomalies(mapSystemHealthToBrief(health, potSlug));
 }
 
 /** Resolve the hive the overwatch supervises (v1 single-hive, D-005): an explicit
@@ -112,17 +112,17 @@ async function resolveOverwatchInstallSlug(
  */
 export async function getOverwatchControlState(opts?: {
   workspaceId?: string;
-  hiveSlug?: string;
+  potSlug?: string;
 }): Promise<OverwatchControlState> {
   const ws = opts?.workspaceId ?? activeWorkspaceId();
-  const installSlug = await resolveOverwatchInstallSlug(ws, opts?.hiveSlug);
+  const installSlug = await resolveOverwatchInstallSlug(ws, opts?.potSlug);
   const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(
     () => false,
   );
 
   if (!installSlug) {
     return {
-      hiveSlug: null,
+      potSlug: null,
       started: false,
       cadenceSec: DEFAULT_OVERWATCH_CADENCE_SEC,
       flagEnabled,
@@ -148,7 +148,7 @@ export async function getOverwatchControlState(opts?: {
   ]);
 
   return {
-    hiveSlug: installSlug,
+    potSlug: installSlug,
     started,
     cadenceSec,
     flagEnabled,
@@ -186,7 +186,7 @@ function statusIsOk(status: string | null): boolean {
  * ALIVE/STALE verdict). Pure + deterministic so it unit-tests with no DB.
  */
 export function deriveOverwatchLiveness(input: {
-  hiveSlug: string | null;
+  potSlug: string | null;
   started: boolean;
   flagEnabled: boolean;
   cadenceSec: number;
@@ -194,7 +194,7 @@ export function deriveOverwatchLiveness(input: {
   now?: number;
 }): OverwatchLiveness {
   const now = input.now ?? Date.now();
-  const { hiveSlug, started, flagEnabled, cadenceSec, fire } = input;
+  const { potSlug, started, flagEnabled, cadenceSec, fire } = input;
   const lastMs = fire.lastFiredAt ? fire.lastFiredAt.getTime() : null;
   const ageMs = lastMs != null ? Math.max(0, now - lastMs) : null;
   const nextMs = lastMs != null ? lastMs + cadenceSec * 1000 : null;
@@ -220,7 +220,7 @@ export function deriveOverwatchLiveness(input: {
       : [];
 
   return {
-    hiveSlug,
+    potSlug,
     started,
     flagEnabled,
     cadenceSec,
@@ -289,18 +289,18 @@ async function readOverwatchFireRow(
  */
 export async function getOverwatchLiveness(opts?: {
   workspaceId?: string;
-  hiveSlug?: string;
+  potSlug?: string;
   now?: number;
 }): Promise<OverwatchLiveness> {
   const ws = opts?.workspaceId ?? activeWorkspaceId();
-  const installSlug = await resolveOverwatchInstallSlug(ws, opts?.hiveSlug);
+  const installSlug = await resolveOverwatchInstallSlug(ws, opts?.potSlug);
   const flagEnabled = await getFlag(FLAGS.OVERWATCH, `overwatch:${ws}`).catch(
     () => false,
   );
 
   if (!installSlug) {
     return deriveOverwatchLiveness({
-      hiveSlug: null,
+      potSlug: null,
       started: false,
       flagEnabled,
       cadenceSec: DEFAULT_OVERWATCH_CADENCE_SEC,
@@ -318,7 +318,7 @@ export async function getOverwatchLiveness(opts?: {
   ]);
 
   return deriveOverwatchLiveness({
-    hiveSlug: installSlug,
+    potSlug: installSlug,
     started,
     flagEnabled,
     cadenceSec,

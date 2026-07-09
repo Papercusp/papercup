@@ -219,10 +219,10 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     // (the reusable blueprint persona stays a file + generic). Best-effort.
     try {
       const { hiveHomeSlugForHarness } = await import('./hive-federation');
-      const hiveSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
-      if (hiveSlug) {
+      const potSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      if (potSlug) {
         const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
-        const inst = await getHiveInstancePromptOverride(input.workspaceId, hiveSlug, input.role);
+        const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, input.role);
         if (inst) promptOverrideText = promptOverrideText ? `${promptOverrideText}\n\n${inst}` : inst;
       }
     } catch {
@@ -576,9 +576,9 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     try {
       const { hiveHomeSlugForHarness } = await import('./hive-federation');
       const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
-      const hiveSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
-      if (hiveSlug) {
-        const inst = await getHiveInstancePromptOverride(input.workspaceId, hiveSlug, 'su');
+      const potSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      if (potSlug) {
+        const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, 'su');
         if (inst) suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${inst}`;
       }
     } catch {

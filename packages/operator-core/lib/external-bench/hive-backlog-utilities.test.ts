@@ -108,7 +108,7 @@ describe('makePoolBacklogDriver — the generic non-diff pool driver shell (tau2
   const task = (id: string): BenchTask => ({ benchmark: 'x', instanceId: id, problemStatement: id, graderMeta: {} });
   const fleetResult = (id: string, seed: string): FleetTaskResult => ({
     attempt: { arm: 'a', blueprintId: 'b', instanceId: id, seed, diff: '', tokensIn: 1, tokensOut: 1, costUsd: 0, turns: 1, wallClockMs: 1, trajectoryRef: '', stopReason: 'done' },
-    beeId: `bee-${id}`,
+    cupId: `bee-${id}`,
     placedAtMs: 0,
     startedAtMs: 0,
     finishedAtMs: 1,

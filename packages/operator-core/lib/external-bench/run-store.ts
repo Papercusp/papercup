@@ -53,7 +53,7 @@ export interface BenchRunInit {
   source?: BenchRunSource;
   status?: BenchRunStatus;
   config?: Record<string, unknown> | null;
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   taskCount?: number | null;
   recovered?: boolean;
 }
@@ -63,7 +63,7 @@ export interface BenchTaskRow {
   instanceId: string;
   taskStatus?: BenchTaskStatus;
   resolved?: boolean | null;
-  beeId?: string | null;
+  cupId?: string | null;
   disposition?: string | null;
   stopReason?: string | null;
   generationError?: string | null;
@@ -96,7 +96,7 @@ export interface BenchRunListEntry {
   wallMs: number | null;
   recovered: boolean;
   runError: string | null;
-  hiveSlug: string | null;
+  potSlug: string | null;
   fleetRunId: string | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -130,7 +130,7 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
        pot_slug, task_count, recovered, started_at, created_at, updated_at)
     VALUES
       (${init.id}, ${ws}, ${init.arm}, ${init.taskSetId}, ${suite}, ${init.model}, ${status}, ${source},
-       ${jb(init.config ?? null)}::text::jsonb, ${init.hiveSlug ?? null}, ${init.taskCount ?? null},
+       ${jb(init.config ?? null)}::text::jsonb, ${init.potSlug ?? null}, ${init.taskCount ?? null},
        ${init.recovered ?? false},
        ${status === 'running' ? sql`now()` : sql`null`}, now(), now())
     ON CONFLICT (id) DO UPDATE SET
@@ -143,10 +143,10 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
 }
 
 /** Record the spawned hive home slug (onHiveCreated) — for teardown + monitoring joins. */
-export async function setBenchRunHive(runId: string, hiveSlug: string, opts: DbScope = {}): Promise<void> {
+export async function setBenchRunHive(runId: string, potSlug: string, opts: DbScope = {}): Promise<void> {
   const { sql, ws } = resolveDb(opts);
   await sql`
-    UPDATE harness_shared.bench_runs SET pot_slug = ${hiveSlug}, updated_at = now()
+    UPDATE harness_shared.bench_runs SET pot_slug = ${potSlug}, updated_at = now()
      WHERE id = ${runId} AND workspace_id = ${ws}
   `;
   await invalidate(runId);
@@ -162,7 +162,7 @@ export async function upsertBenchRunTask(runId: string, task: BenchTaskRow, opts
        wall_clock_ms, diff_bytes, arm_meta, created_at, updated_at)
     VALUES
       (${runId}, ${ws}, ${task.instanceId}, ${task.taskStatus ?? 'todo'}, ${task.resolved ?? null},
-       ${task.beeId ?? null}, ${task.disposition ?? null}, ${task.stopReason ?? null},
+       ${task.cupId ?? null}, ${task.disposition ?? null}, ${task.stopReason ?? null},
        ${task.generationError ?? null}, ${task.tokensIn ?? null}, ${task.tokensOut ?? null},
        ${task.costUsd ?? null}, ${task.turns ?? null}, ${task.wallClockMs ?? null},
        ${task.diffBytes ?? null}, ${jb(task.armMeta ?? null)}::text::jsonb, now(), now())
@@ -192,7 +192,7 @@ export function taskRowFromFleetResult(tr: FleetTaskResult): BenchTaskRow {
   return {
     instanceId: a.instanceId,
     taskStatus: 'collected',
-    beeId: tr.beeId,
+    cupId: tr.cupId,
     disposition: tr.disposition,
     stopReason: a.stopReason,
     generationError: a.generationError ?? null,
@@ -430,7 +430,7 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
 
   const perTask: ResolvedPerTask[] = taskRows.map((t) => ({
     instanceId: t.instance_id,
-    beeId: t.bee_id ?? undefined,
+    cupId: t.bee_id ?? undefined,
     disposition: t.disposition ?? undefined,
     stopReason: t.stop_reason ?? undefined,
     generationError: t.generation_error,
@@ -539,7 +539,7 @@ export async function importPreservedRunToStore(
         instanceId: t.instanceId,
         taskStatus: t.resolved == null ? 'collected' : 'graded',
         resolved: t.resolved,
-        beeId: t.beeId ?? null,
+        cupId: t.cupId ?? null,
         disposition: t.disposition ?? null,
         stopReason: t.stopReason ?? null,
         generationError: t.generationError ?? null,
@@ -669,7 +669,7 @@ function toListEntry(r: RunRow): BenchRunListEntry {
     wallMs: r.wall_ms == null ? null : Number(r.wall_ms),
     recovered: Boolean(r.recovered),
     runError: r.run_error,
-    hiveSlug: r.pot_slug,
+    potSlug: r.pot_slug,
     fleetRunId: r.fleet_run_id,
     startedAt: r.started_at,
     finishedAt: r.finished_at,

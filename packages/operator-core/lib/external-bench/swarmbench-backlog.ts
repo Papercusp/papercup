@@ -147,7 +147,7 @@ export function swarmbenchBacklogDriver(runSim: RunSwarmSim, opts: SwarmbenchBac
             ...(res.error ? { error: res.error } : {}),
           },
         },
-        beeId: `swarm-${task.instanceId}-${seed}`,
+        cupId: `swarm-${task.instanceId}-${seed}`,
         placedAtMs: startedAtMs,
         startedAtMs,
         finishedAtMs,

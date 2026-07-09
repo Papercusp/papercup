@@ -61,9 +61,9 @@ export default defineTool({
     }
     try {
       const workspaceId = activeWorkspaceId();
-      const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+      const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
       const res = await judgeRedundancyGroup(
-        { workspaceId, harness: args.harness, hiveSlug, workItemId: args.id, intent: args.intent, projectContext: args.projectContext, rubric: args.rubric },
+        { workspaceId, harness: args.harness, potSlug, workItemId: args.id, intent: args.intent, projectContext: args.projectContext, rubric: args.rubric },
         { llmCall },
       );
       if (!res.ok) {

@@ -93,7 +93,7 @@ describe('resolveP2pGrantWorkspace (C3 / WI-1564: one resolver for writer+reader
 
 describe('grant-store refusal paths (loud, structured, SQL-free)', () => {
   const base = {
-    hiveSlug: 'papercup-hive',
+    potSlug: 'papercup-hive',
     grantorGithubUserId: 12345,
     granteeKind: 'fleet' as const,
     granteeRef: 'p2p-dist',
@@ -115,7 +115,7 @@ describe('grant-store refusal paths (loud, structured, SQL-free)', () => {
       [{ grantorGithubUserId: 0 }, 'invalid_grantor'],
       [{ grantorGithubUserId: 1.5 }, 'invalid_grantor'],
       [{ capabilities: ['chat', 'root'] }, 'invalid_capabilities'],
-      [{ hiveSlug: '' }, 'hive_required'],
+      [{ potSlug: '' }, 'hive_required'],
     ];
     for (const [override, code] of cases) {
       const r = await setPeerGrant(
@@ -129,7 +129,7 @@ describe('grant-store refusal paths (loud, structured, SQL-free)', () => {
 
   it('revokePeerGrant refuses an unresolvable workspace (a revocation MUST federate)', async () => {
     const r = await revokePeerGrant(
-      { workspaceId: 'default', hiveSlug: 'h', grantorGithubUserId: 1, granteeKind: 'fleet', granteeRef: 'f' },
+      { workspaceId: 'default', potSlug: 'h', grantorGithubUserId: 1, granteeKind: 'fleet', granteeRef: 'f' },
       throwingSql,
     );
     expect(r.ok).toBe(false);
@@ -140,7 +140,7 @@ describe('grant-store refusal paths (loud, structured, SQL-free)', () => {
     const r = await checkP2pCapability(
       {
         workspaceId: undefined,
-        hiveSlug: 'h',
+        potSlug: 'h',
         grantorGithubUserId: 1,
         granteeKind: 'fleet',
         granteeRef: 'f',

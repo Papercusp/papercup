@@ -74,7 +74,7 @@ export interface ClaimAgentConfig {
   machineLabel: string;
   workspaceId: string;
   harnessSlug: string;
-  hiveSlug: string;
+  potSlug: string;
   /** The shared backlog: work-item ids every Swarm contends to claim+complete. */
   backlog: string[];
   /** Every Swarm (including self) — the injected Hive presence + the RPC address book. */
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
       workspaceId: cfg.workspaceId,
       harnessSlug: cfg.harnessSlug,
       workItemId: item,
-      hiveSlug: cfg.hiveSlug,
+      potSlug: cfg.potSlug,
       owner: cfg.owner,
       ownerLabel: cfg.machineLabel,
       holderPubkey: cfg.devicePubkey,
@@ -234,7 +234,7 @@ async function main(): Promise<void> {
       intent: `claim-dispatch ${cfg.machineLabel}`,
     };
     const route = await routeToAuthorityForHive<AcquireResult>(
-      cfg.hiveSlug,
+      cfg.potSlug,
       {
         local: () => store.acquire(opts),
         remote: {

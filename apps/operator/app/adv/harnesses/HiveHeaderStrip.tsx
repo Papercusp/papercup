@@ -57,7 +57,7 @@ export type HiveDirectoryState = HiveShareVisibility | 'unpublished';
 
 export interface HiveHeaderStripProps {
   /** The hive root slug (the `?slug=` scope). */
-  hiveSlug: string;
+  potSlug: string;
   /** The hive root's kind, if any (`'hive'` ⇒ a formal Hive home). */
   hiveKind?: string | null;
   /** Whether the hive root is a shared harness (LEGACY shared.json signal —
@@ -72,7 +72,7 @@ export interface HiveHeaderStripProps {
    * Public/Invite/Private/unpublished badge. Tests inject; default GETs
    * /api/discovery/pot-meta. Only invoked for a formal Hive home.
    */
-  fetchShareMeta?: (hiveSlug: string) => Promise<HiveShareMeta | null>;
+  fetchShareMeta?: (potSlug: string) => Promise<HiveShareMeta | null>;
   /** P-004: the Share-Hive dialog's write seam (tests inject). */
   setHiveListing?: ShareHiveFormProps['setHiveListing'];
   /**
@@ -80,21 +80,21 @@ export interface HiveHeaderStripProps {
    * Tests inject; default GETs /api/discovery/beacon-consent. Only invoked for a
    * formal Hive home (kind 'hive').
    */
-  getBeaconConsent?: (hiveSlug: string) => Promise<boolean>;
+  getBeaconConsent?: (potSlug: string) => Promise<boolean>;
   /**
    * B-07 / C-2: set the hive's beacon-publish consent — the secondary surface for
    * the publish-flow consent question. Tests inject; default POSTs
    * /api/discovery/beacon-consent.
    */
   setBeaconConsent?: (
-    hiveSlug: string,
+    potSlug: string,
     consent: boolean,
   ) => Promise<{ ok: boolean; consent?: boolean; error?: string }>;
 }
 
-async function defaultGetBeaconConsent(hiveSlug: string): Promise<boolean> {
+async function defaultGetBeaconConsent(potSlug: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/discovery/beacon-consent?hiveId=${encodeURIComponent(hiveSlug)}`);
+    const res = await fetch(`/api/discovery/beacon-consent?potId=${encodeURIComponent(potSlug)}`);
     const body = (await res.json().catch(() => ({}))) as { consent?: boolean };
     return res.ok && body.consent === true;
   } catch {
@@ -103,14 +103,14 @@ async function defaultGetBeaconConsent(hiveSlug: string): Promise<boolean> {
 }
 
 async function defaultSetBeaconConsent(
-  hiveSlug: string,
+  potSlug: string,
   consent: boolean,
 ): Promise<{ ok: boolean; consent?: boolean; error?: string }> {
   try {
     const res = await fetch('/api/discovery/beacon-consent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hiveId: hiveSlug, consent }),
+      body: JSON.stringify({ potId: potSlug, consent }),
     });
     const body = (await res.json().catch(() => ({}))) as { consent?: boolean; error?: string };
     if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
@@ -135,7 +135,7 @@ const DIRECTORY_STATE_TITLE: Record<HiveDirectoryState, string> = {
 };
 
 export default function HiveHeaderStrip({
-  hiveSlug,
+  potSlug,
   hiveKind,
   isShared,
   members,
@@ -155,9 +155,9 @@ export default function HiveHeaderStrip({
   // mount (null while loading), updated locally after a dialog save.
   const [dirState, setDirState] = useState<HiveDirectoryState | null>(null);
   useEffect(() => {
-    if (!hiveSlug || !isHiveHome) return;
+    if (!potSlug || !isHiveHome) return;
     let alive = true;
-    void fetchShareMeta(hiveSlug)
+    void fetchShareMeta(potSlug)
       .then((meta) => {
         if (!alive) return;
         setDirState(meta?.found ? (meta.visibility ?? 'private') : 'unpublished');
@@ -166,7 +166,7 @@ export default function HiveHeaderStrip({
     return () => {
       alive = false;
     };
-  }, [hiveSlug, isHiveHome, fetchShareMeta]);
+  }, [potSlug, isHiveHome, fetchShareMeta]);
 
   // B-07 / C-2: beacon-publish consent — read on mount (absent = OFF), toggled
   // here as the secondary surface for the publish-flow consent question. Only a
@@ -177,9 +177,9 @@ export default function HiveHeaderStrip({
     busy: false,
   });
   useEffect(() => {
-    if (!hiveSlug || !isHiveHome) return;
+    if (!potSlug || !isHiveHome) return;
     let alive = true;
-    void getBeaconConsent(hiveSlug)
+    void getBeaconConsent(potSlug)
       .then((consent) => {
         if (alive) setBeacon((b) => ({ ...b, consent }));
       })
@@ -187,14 +187,14 @@ export default function HiveHeaderStrip({
     return () => {
       alive = false;
     };
-  }, [hiveSlug, isHiveHome, getBeaconConsent]);
+  }, [potSlug, isHiveHome, getBeaconConsent]);
 
-  if (!hiveSlug) return null;
+  if (!potSlug) return null;
 
   async function toggleBeacon(): Promise<void> {
     const next = !(beacon.consent === true);
     setBeacon((b) => ({ ...b, busy: true, error: undefined }));
-    const res = await setBeaconConsent(hiveSlug, next);
+    const res = await setBeaconConsent(potSlug, next);
     setBeacon(
       res.ok
         ? { consent: res.consent ?? next, busy: false }
@@ -211,8 +211,8 @@ export default function HiveHeaderStrip({
   return (
     <header className="pc-hive-header" data-testid="hive-header-strip" aria-label={`${hiveLabel} header`}>
       <div className="pc-hive-header__id">
-        <span className="pc-hive-header__name" title={hiveSlug}>
-          {hiveSlug}
+        <span className="pc-hive-header__name" title={potSlug}>
+          {potSlug}
         </span>
         {hiveKind === 'hive' ? (
           <span className="pc-hive-header__kind" title={`${hiveLabel} home`}>
@@ -269,7 +269,7 @@ export default function HiveHeaderStrip({
               <Share2 size={11} aria-hidden /> Share…
             </button></Tooltip>
             <ShareHiveDialog
-              hiveSlug={hiveSlug}
+              potSlug={potSlug}
               hiveLabel={hiveLabel.toLowerCase()}
               open={shareOpen}
               onOpenChange={(open) => void setShareOpen(open ? true : null)}

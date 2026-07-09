@@ -10,7 +10,7 @@
  *
  * These tests pin the resolution order and the sentinel key at the store's IO seams
  * (sqlOverride + a mocked fleet-membership-store — no PG), plus the tool's
- * exactly-one-of-{beeId,fleet} arg contract.
+ * exactly-one-of-{cupId,fleet} arg contract.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { ZodTypeAny } from 'zod';
@@ -67,7 +67,7 @@ describe('getClaimSpec fleet inheritance (P-002)', () => {
   it('a per-bee spec WINS — no membership lookup at all', async () => {
     const beeSpec = laneSpec('bee-own-lane');
     const { sql } = makeSqlStub([[{ spec: beeSpec }]]);
-    const got = await getClaimSpec({ beeId: 'su-abc', workspaceId: 'ws1' }, sql);
+    const got = await getClaimSpec({ cupId: 'su-abc', workspaceId: 'ws1' }, sql);
     expect(got.specId).toBe('bee-own-lane');
     expect(membershipMock).not.toHaveBeenCalled();
   });
@@ -76,7 +76,7 @@ describe('getClaimSpec fleet inheritance (P-002)', () => {
     membershipMock.mockResolvedValue({ fleetSlug: 'backlog-clearance', fleetRole: 'member' });
     const fleetSpec = laneSpec('bc-general');
     const { sql, calls } = makeSqlStub([[], [{ spec: fleetSpec }]]);
-    const got = await getClaimSpec({ beeId: 'su-new-member', workspaceId: 'ws1' }, sql);
+    const got = await getClaimSpec({ cupId: 'su-new-member', workspaceId: 'ws1' }, sql);
     expect(got.specId).toBe('bc-general');
     expect(membershipMock).toHaveBeenCalledWith('ws1', 'su-new-member');
     // The second query keyed the sentinel, same workspace partition.
@@ -86,36 +86,36 @@ describe('getClaimSpec fleet inheritance (P-002)', () => {
 
   it('no bee spec + NO membership ⇒ DEFAULT_CLAIM_SPEC', async () => {
     const { sql } = makeSqlStub([[]]);
-    const got = await getClaimSpec({ beeId: 'su-loner', workspaceId: 'ws1' }, sql);
+    const got = await getClaimSpec({ cupId: 'su-loner', workspaceId: 'ws1' }, sql);
     expect(got).toBe(DEFAULT_CLAIM_SPEC);
   });
 
   it('no bee spec + membership but NO fleet spec row ⇒ DEFAULT_CLAIM_SPEC', async () => {
     membershipMock.mockResolvedValue({ fleetSlug: 'ops-team', fleetRole: 'member' });
     const { sql } = makeSqlStub([[], []]);
-    const got = await getClaimSpec({ beeId: 'su-member', workspaceId: 'ws1' }, sql);
+    const got = await getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, sql);
     expect(got).toBe(DEFAULT_CLAIM_SPEC);
   });
 
   it('a membership-store failure degrades to DEFAULT (never wedges the bee)', async () => {
     membershipMock.mockRejectedValue(new Error('pg down'));
     const { sql } = makeSqlStub([[]]);
-    const got = await getClaimSpec({ beeId: 'su-member', workspaceId: 'ws1' }, sql);
+    const got = await getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, sql);
     expect(got).toBe(DEFAULT_CLAIM_SPEC);
   });
 });
 
-describe('scheduler:set_claim_spec args — exactly one of beeId | fleet', () => {
+describe('scheduler:set_claim_spec args — exactly one of cupId | fleet', () => {
   const args = (setClaimSpecTool as { args: ZodTypeAny }).args;
   const spec = laneSpec('lane');
 
-  it('accepts beeId-only and fleet-only', () => {
-    expect(args.safeParse({ beeId: 'su-abc', spec }).success).toBe(true);
+  it('accepts cupId-only and fleet-only', () => {
+    expect(args.safeParse({ cupId: 'su-abc', spec }).success).toBe(true);
     expect(args.safeParse({ fleet: 'backlog-clearance', spec }).success).toBe(true);
   });
 
   it('rejects neither and both', () => {
     expect(args.safeParse({ spec }).success).toBe(false);
-    expect(args.safeParse({ beeId: 'su-abc', fleet: 'backlog-clearance', spec }).success).toBe(false);
+    expect(args.safeParse({ cupId: 'su-abc', fleet: 'backlog-clearance', spec }).success).toBe(false);
   });
 });

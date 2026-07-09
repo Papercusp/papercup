@@ -44,6 +44,7 @@ export default function AgentInspectorModal({
   startedAtMs,
   streamUrl,
   focusTarget,
+  highlightTerm,
 }: {
   slug: string;
   phase: string;
@@ -62,8 +63,13 @@ export default function AgentInspectorModal({
    *  stored X11 `windowId`). Present ⇒ a "Focus window" button that raises the
    *  agent's terminal via `POST /api/adv/sessions/focus`; absent ⇒ no button. */
   focusTarget?: { advSessionId?: number | null; windowId?: string | null; pid?: number | null };
+  /** Search-hit deep-link (agents-pill-inactive-search-2026-07-09 P-005): the
+   *  term to highlight throughout the transcript. Pair with a streamUrl that
+   *  carries `find`/`anchorTs` — the stream's `anchor` event then names the
+   *  matched backfill entry and the pane auto-scrolls to it. */
+  highlightTerm?: string;
 }) {
-  const { events, status, thinking } = useAgentThinkingStream(slug, phase, runId, streamUrl);
+  const { events, status, thinking, anchor } = useAgentThinkingStream(slug, phase, runId, streamUrl);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Elapsed baseline: the run start when known, else when this inspector opened
   // (captured once). Feeds the stall escalation while the timeline is empty.
@@ -83,13 +89,32 @@ export default function AgentInspectorModal({
   const turns = useMemo(() => groupEntriesIntoTurns(events), [events]);
   const ordered = useMemo(() => [...turns].reverse(), [turns]);
 
+  // Search-hit anchor: the matched backfill entry (by identity — backfill
+  // entries keep their array positions as live `event` deltas append after).
+  const anchorEntry = anchor?.found && anchor.index != null ? events[anchor.index] ?? null : null;
+
   // Newest turn is at the TOP, so keep the scroll pinned to the top as new turns /
-  // entries stream in — unless the user scrolled DOWN to read history.
+  // entries stream in — unless the user scrolled DOWN to read history, or the
+  // pane is anchored to a search match (the match owns the scroll position).
   const atTopRef = useRef(true);
   useEffect(() => {
+    if (anchorEntry) return;
     const el = scrollRef.current;
     if (el && atTopRef.current) el.scrollTop = 0;
-  }, [events]);
+  }, [events, anchorEntry]);
+
+  // Scroll to the anchored (matched) entry ONCE per stream — after the backfill
+  // renders. The wrapper div carries data-anchor="true" (see TurnBlock).
+  const anchorScrolledRef = useRef(false);
+  useEffect(() => { anchorScrolledRef.current = false; }, [streamUrl, runId]);
+  useEffect(() => {
+    if (!anchorEntry || anchorScrolledRef.current) return;
+    const el = scrollRef.current?.querySelector('[data-anchor="true"]');
+    if (!el) return;
+    anchorScrolledRef.current = true;
+    atTopRef.current = false;
+    (el as HTMLElement).scrollIntoView({ block: 'center' });
+  }, [anchorEntry, events.length]);
 
   // "Focus window" — raise the agent's OS terminal via the existing wmctrl-backed
   // endpoint. Only wired when the caller passed a focusTarget (i.e. focus will work).
@@ -181,6 +206,16 @@ export default function AgentInspectorModal({
             )}
             <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
             <span style={{ color: 'var(--fg-mute)' }}>· {turns.length} turn{turns.length === 1 ? '' : 's'} · {events.length} event{events.length === 1 ? '' : 's'}</span>
+            {highlightTerm && anchor ? (
+              <span
+                data-testid="anchor-status"
+                style={{ color: anchor.found ? 'var(--accent-strong, #7dd3fc)' : '#d97757' }}
+              >
+                {anchor.found
+                  ? `· ⚓ jumped to match`
+                  : '· match not in transcript — showing latest'}
+              </span>
+            ) : null}
           </span>
         </span>
       </div>
@@ -205,7 +240,13 @@ export default function AgentInspectorModal({
           </div>
         ) : (
           ordered.map((turn, i) => (
-            <TurnBlock key={turn.seq} turn={turn} live={thinking && i === 0} />
+            <TurnBlock
+              key={turn.seq}
+              turn={turn}
+              live={thinking && i === 0}
+              highlightTerm={highlightTerm}
+              anchorEntry={anchorEntry}
+            />
           ))
         )}
       </div>
@@ -216,9 +257,22 @@ export default function AgentInspectorModal({
 /**
  * One turn rendered as a bordered block: a header (● Live turn while streaming,
  * else "Turn N" + its time) over the turn's prompt + activity. The live turn sits
- * at the TOP of the pane (newest-first) and is accented + pulsing.
+ * at the TOP of the pane (newest-first) and is accented + pulsing. When the pane
+ * is anchored to a search hit, the matched entry's wrapper carries
+ * data-anchor="true" (the auto-scroll target) + an accent outline, and every
+ * entry highlights `highlightTerm` occurrences.
  */
-function TurnBlock({ turn, live }: { turn: Turn; live: boolean }) {
+function TurnBlock({
+  turn,
+  live,
+  highlightTerm,
+  anchorEntry,
+}: {
+  turn: Turn;
+  live: boolean;
+  highlightTerm?: string;
+  anchorEntry?: import('./AgentThinkingStream').TimelineEntry | null;
+}) {
   const time = fmtEntryTime(turn.startTs);
   const accent = live ? 'var(--accent, #38bdf8)' : 'var(--border)';
   return (
@@ -251,7 +305,20 @@ function TurnBlock({ turn, live }: { turn: Turn; live: boolean }) {
             prompt is the oldest event of the turn, so it falls to the foot. */}
         {[...(turn.prompt ? [turn.prompt, ...turn.entries] : turn.entries)]
           .reverse()
-          .map((e, i) => <Entry key={i} entry={e} />)}
+          .map((e, i) => {
+            const anchored = Boolean(anchorEntry && e === anchorEntry);
+            return (
+              <div
+                key={i}
+                data-anchor={anchored ? 'true' : undefined}
+                style={anchored
+                  ? { outline: '2px solid var(--accent, #38bdf8)', outlineOffset: 2, borderRadius: 4 }
+                  : undefined}
+              >
+                <Entry entry={e} highlightTerm={highlightTerm} />
+              </div>
+            );
+          })}
       </div>
     </div>
   );

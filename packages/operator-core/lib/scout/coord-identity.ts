@@ -31,15 +31,15 @@
 export const SCOUT_COORD_PREFIX = 'blender:';
 
 /**
- * The stable coord owner id the Scout cycle for `hiveSlug` reads-as and the Queen
- * addresses for plan feedback: `scout:<hiveSlug>`. The slug is trimmed; an
+ * The stable coord owner id the Scout cycle for `potSlug` reads-as and the Queen
+ * addresses for plan feedback: `scout:<potSlug>`. The slug is trimmed; an
  * empty/blank slug throws (a Scout with no hive can't have a routable identity —
  * the caller should always have the routine's `installSlug`).
  */
-export function scoutCoordOwnerId(hiveSlug: string): string {
-  const slug = hiveSlug.trim();
+export function scoutCoordOwnerId(potSlug: string): string {
+  const slug = potSlug.trim();
   if (!slug) {
-    throw new Error('scoutCoordOwnerId: hiveSlug is required (a Scout role identity is per-hive)');
+    throw new Error('scoutCoordOwnerId: potSlug is required (a Scout role identity is per-hive)');
   }
   return `${SCOUT_COORD_PREFIX}${slug}`;
 }

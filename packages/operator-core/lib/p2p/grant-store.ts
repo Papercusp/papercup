@@ -47,7 +47,7 @@ import {
 
 export interface PeerGrant {
   workspaceId: string;
-  hiveSlug: string;
+  potSlug: string;
   grantorGithubUserId: number;
   grantorLogin: string | null;
   granteeKind: P2pGranteeKind;
@@ -99,7 +99,7 @@ interface GrantRow {
 function rowToGrant(r: GrantRow): PeerGrant {
   return {
     workspaceId: r.workspace_id,
-    hiveSlug: r.harness_slug,
+    potSlug: r.harness_slug,
     grantorGithubUserId: Number(r.grantor_github_user_id),
     grantorLogin: r.grantor_login,
     granteeKind: r.grantee_kind as P2pGranteeKind,
@@ -118,7 +118,7 @@ export interface SetPeerGrantArgs {
   /** The caller's RESOLVED identity workspace (C3 — run through resolveP2pGrantWorkspace). */
   workspaceId: string | null | undefined;
   /** The hive HOME slug the grant federates under. */
-  hiveSlug: string;
+  potSlug: string;
   /** The LOCAL user's numeric GitHub id (X9) — receivers re-verify via attestation. */
   grantorGithubUserId: number;
   grantorLogin?: string | null;
@@ -152,7 +152,7 @@ export async function setPeerGrant(
       },
     };
   }
-  const hive = args.hiveSlug?.trim();
+  const hive = args.potSlug?.trim();
   if (!hive) {
     return { ok: false, refusal: { code: 'hive_required', detail: 'P2P grants are hive-scoped; pass the hive HOME slug.' } };
   }
@@ -270,7 +270,7 @@ async function bumpGrantorEpochTx(
 export async function revokePeerGrant(
   args: {
     workspaceId: string | null | undefined;
-    hiveSlug: string;
+    potSlug: string;
     grantorGithubUserId: number;
     granteeKind: P2pGranteeKind;
     granteeRef: string;
@@ -289,19 +289,19 @@ export async function revokePeerGrant(
   }
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql.begin(async (tx) => {
-    const epoch = await bumpGrantorEpochTx(tx, ws, args.hiveSlug, args.grantorGithubUserId);
+    const epoch = await bumpGrantorEpochTx(tx, ws, args.potSlug, args.grantorGithubUserId);
     // Re-stamp the grantor's OTHER active grants at the new epoch (see fn doc).
     await tx`
       UPDATE harness_shared.p2p_peer_grants
          SET grantor_epoch = ${epoch}, updated_at = now()
-       WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+       WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
          AND grantor_github_user_id = ${args.grantorGithubUserId}
          AND status = 'active'
          AND NOT (grantee_kind = ${args.granteeKind} AND grantee_ref = ${args.granteeRef})`;
     return (await tx`
       UPDATE harness_shared.p2p_peer_grants
          SET status = 'revoked', grantor_epoch = ${epoch}, updated_at = now()
-       WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+       WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
          AND grantor_github_user_id = ${args.grantorGithubUserId}
          AND grantee_kind = ${args.granteeKind} AND grantee_ref = ${args.granteeRef}
        RETURNING *`) as unknown as GrantRow[];
@@ -315,7 +315,7 @@ export async function revokePeerGrant(
 export async function getPeerGrant(
   args: {
     workspaceId: string | null | undefined;
-    hiveSlug: string;
+    potSlug: string;
     grantorGithubUserId: number;
     granteeKind: P2pGranteeKind;
     granteeRef: string;
@@ -327,7 +327,7 @@ export async function getPeerGrant(
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
     SELECT * FROM harness_shared.p2p_peer_grants
-     WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+     WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
        AND grantor_github_user_id = ${args.grantorGithubUserId}
        AND grantee_kind = ${args.granteeKind} AND grantee_ref = ${args.granteeRef}
      LIMIT 1`) as unknown as GrantRow[];
@@ -335,7 +335,7 @@ export async function getPeerGrant(
 }
 
 export async function listPeerGrants(
-  args: { workspaceId: string | null | undefined; hiveSlug: string; includeRevoked?: boolean },
+  args: { workspaceId: string | null | undefined; potSlug: string; includeRevoked?: boolean },
   sqlOverride?: OrgSql,
 ): Promise<PeerGrant[]> {
   const ws = resolveP2pGrantWorkspace(args.workspaceId);
@@ -344,11 +344,11 @@ export async function listPeerGrants(
   const rows = (args.includeRevoked
     ? await sql`
         SELECT * FROM harness_shared.p2p_peer_grants
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug}
+         WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug}
          ORDER BY grantor_github_user_id, grantee_kind, grantee_ref`
     : await sql`
         SELECT * FROM harness_shared.p2p_peer_grants
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.hiveSlug} AND status = 'active'
+         WHERE workspace_id = ${ws} AND harness_slug = ${args.potSlug} AND status = 'active'
          ORDER BY grantor_github_user_id, grantee_kind, grantee_ref`) as unknown as GrantRow[];
   return rows.map(rowToGrant);
 }
@@ -391,7 +391,7 @@ export type P2pCapabilityCheck =
 export async function checkP2pCapability(
   args: {
     workspaceId: string | null | undefined;
-    hiveSlug: string;
+    potSlug: string;
     grantorGithubUserId: number;
     granteeKind: P2pGranteeKind;
     granteeRef: string;
@@ -417,7 +417,7 @@ export async function checkP2pCapability(
       LEFT JOIN harness_shared.p2p_grantor_epochs e
         ON e.workspace_id = g.workspace_id AND e.harness_slug = g.harness_slug
        AND e.grantor_github_user_id = g.grantor_github_user_id
-     WHERE g.workspace_id = ${ws} AND g.harness_slug = ${args.hiveSlug}
+     WHERE g.workspace_id = ${ws} AND g.harness_slug = ${args.potSlug}
        AND g.grantor_github_user_id = ${args.grantorGithubUserId}
        AND g.grantee_kind = ${args.granteeKind} AND g.grantee_ref = ${args.granteeRef}
      LIMIT 1`) as unknown as (GrantRow & { high_water: string | number })[];
@@ -425,7 +425,7 @@ export async function checkP2pCapability(
   if (!row) {
     return {
       ok: false,
-      refusal: { code: 'no_grant', missing: cap, detail: `no grant from ${args.grantorGithubUserId} to ${args.granteeKind}:${args.granteeRef} in hive '${args.hiveSlug}'.` },
+      refusal: { code: 'no_grant', missing: cap, detail: `no grant from ${args.grantorGithubUserId} to ${args.granteeKind}:${args.granteeRef} in hive '${args.potSlug}'.` },
     };
   }
   const grant = rowToGrant(row);
@@ -469,7 +469,7 @@ export async function checkP2pCapability(
  * projection (projections/p2p-peer-grants.ts) with the op's verified epoch.
  */
 export async function advanceGrantorHighWater(
-  args: { workspaceId: string; hiveSlug: string; grantorGithubUserId: number; epoch: number },
+  args: { workspaceId: string; potSlug: string; grantorGithubUserId: number; epoch: number },
   sqlOverride?: OrgSql,
 ): Promise<void> {
   if (!Number.isFinite(args.epoch) || args.epoch <= 0) return;
@@ -477,7 +477,7 @@ export async function advanceGrantorHighWater(
   await sql`
     INSERT INTO harness_shared.p2p_grantor_epochs
       (workspace_id, harness_slug, grantor_github_user_id, high_water_epoch, updated_at)
-    VALUES (${args.workspaceId}, ${args.hiveSlug}, ${args.grantorGithubUserId}, ${args.epoch}, now())
+    VALUES (${args.workspaceId}, ${args.potSlug}, ${args.grantorGithubUserId}, ${args.epoch}, now())
     ON CONFLICT (workspace_id, harness_slug, grantor_github_user_id)
     DO UPDATE SET high_water_epoch = GREATEST(harness_shared.p2p_grantor_epochs.high_water_epoch, EXCLUDED.high_water_epoch),
                   updated_at = now()`;

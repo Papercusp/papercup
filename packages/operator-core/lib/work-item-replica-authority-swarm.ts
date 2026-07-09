@@ -28,19 +28,19 @@ import { setWorkItemReplicaAuthority, type WorkItemReplicaAuthority } from './wo
 export class SwarmWorkItemReplicaAuthority implements WorkItemReplicaAuthority {
   constructor(private readonly deps: LockAuthorityDeps = {}) {}
 
-  async isSelf(hiveSlug: string): Promise<boolean> {
-    const res = await routeToAuthorityForHive<boolean>(hiveSlug, { local: async () => true }, this.deps);
+  async isSelf(potSlug: string): Promise<boolean> {
+    const res = await routeToAuthorityForHive<boolean>(potSlug, { local: async () => true }, this.deps);
     return res.via === 'local-authority';
   }
 
-  async route<T>(hiveSlug: string, op: AuthorityOp<T>): Promise<T> {
-    const res = await routeToAuthorityForHive<T>(hiveSlug, op, this.deps);
+  async route<T>(potSlug: string, op: AuthorityOp<T>): Promise<T> {
+    const res = await routeToAuthorityForHive<T>(potSlug, op, this.deps);
     if (res.warning) {
       // Fail-open (cross-machine, no transport / unreachable): the op ran locally
       // and the redundancy group may transiently split until the authority is
       // reachable again. Surface the warning (D-004). On a single box never fires.
        
-      console.warn(`[work-item-replica] authority fail-open for hive ${hiveSlug}: ${res.warning}`);
+      console.warn(`[work-item-replica] authority fail-open for hive ${potSlug}: ${res.warning}`);
     }
     return res.value;
   }

@@ -52,9 +52,9 @@ const SWEEP_PCM_RATE = 16000;
  * operator workspace-suggestions flow. `salient` is the voice-OFF importance gate:
  * true iff a CRITICAL anomaly or an URGENT signal is present.
  */
-export async function gatherFleetStatus(workspaceId: string, hiveSlug: string): Promise<SentinelFleetStatus> {
-  const scopeLabel = sentinelScopeLabel(workspaceId, hiveSlug || workspaceId, await isWorkspaceCoordinationOn());
-  const ctx = await gatherSentinelContext(buildSentinelContextDeps(workspaceId, hiveSlug), { hiveSlug: scopeLabel });
+export async function gatherFleetStatus(workspaceId: string, potSlug: string): Promise<SentinelFleetStatus> {
+  const scopeLabel = sentinelScopeLabel(workspaceId, potSlug || workspaceId, await isWorkspaceCoordinationOn());
+  const ctx = await gatherSentinelContext(buildSentinelContextDeps(workspaceId, potSlug), { potSlug: scopeLabel });
   const criticalAnomaly = (ctx.anomalies ?? []).find((a) => a.severity === 'critical') ?? null;
   const urgentSignal = (ctx.signals ?? []).find((s) => s.urgent || s.severity === 'blocker') ?? null;
   const salient = criticalAnomaly != null || urgentSignal != null;
@@ -179,7 +179,7 @@ export async function notifyHindsight(headline: string): Promise<void> {
  * broadcastOpVoice (the same sink the voice host fans EL audio through).
  */
 export function buildSentinelSweepDeps(broadcast: (frame: Uint8Array) => void): SentinelSweepDeps {
-  const hiveSlug = ''; // workspace-default scope; the digests are workspace-wide.
+  const potSlug = ''; // workspace-default scope; the digests are workspace-wide.
   return {
     flagEnabled: () => getFlag(FLAGS.SENTINEL_PROACTIVE, 'system'),
     isSilenced: async () => (await loadVoicePrefs().catch(() => null))?.silenceVoice ?? false,
@@ -189,7 +189,7 @@ export function buildSentinelSweepDeps(broadcast: (frame: Uint8Array) => void): 
       const b = await checkBudget().catch(() => null);
       return !!(b && b.state && b.exceeded);
     },
-    gatherFleetStatus: () => gatherFleetStatus(activeWorkspaceId(), hiveSlug),
+    gatherFleetStatus: () => gatherFleetStatus(activeWorkspaceId(), potSlug),
     runSentinelScan,
     speakIntoSession: (text) => speakIntoSession(text, broadcast),
     pushAttention,

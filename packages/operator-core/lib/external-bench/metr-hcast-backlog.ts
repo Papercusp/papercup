@@ -66,7 +66,7 @@ function toFleetTaskResult(r: MetrHcastTaskResult, placedAtMs: number, startedAt
         graderError: r.grade.graderError ?? null,
       },
     },
-    beeId: r.attempt.trajectoryRef || `metr-${r.attempt.instanceId}-${r.attempt.seed}`,
+    cupId: r.attempt.trajectoryRef || `metr-${r.attempt.instanceId}-${r.attempt.seed}`,
     placedAtMs,
     startedAtMs,
     finishedAtMs,

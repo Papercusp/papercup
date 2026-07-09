@@ -21,8 +21,8 @@
  * THE MECHANISM. Both arms run the vendored Python `papercup_mem` agent (src/tau2/agent/papercup_mem_agent.py).
  * The agent enables memory ONLY when `TAU2_PC_MEMORY_HIVE` is set, so the ARM selects capability purely via
  * env: '+memory' opens a {@link RunSandbox} (reusing {@link openRunSandbox} from capabilities/ — the per-run
- * ephemeral hive whose `hiveSlug` is the shared memory namespace) ONCE per (suite-run × arm) and passes
- * `TAU2_PC_MEMORY_HIVE=<sandbox.hiveSlug>` (+ operator base + superuser token) to every `tau2 run` for that
+ * ephemeral hive whose `potSlug` is the shared memory namespace) ONCE per (suite-run × arm) and passes
+ * `TAU2_PC_MEMORY_HIVE=<sandbox.potSlug>` (+ operator base + superuser token) to every `tau2 run` for that
  * arm; 'vanilla' passes no hive env, so the SAME agent degrades to a stock LLMAgent. The sandbox is disposed
  * at arm end (memory wiped — never leaks to production or between arms).
  *
@@ -98,7 +98,7 @@ export interface Tau2ConversationResult {
  */
 export interface Tau2MemoryContext {
   /** The ephemeral-hive slug the sandbox opened — TAU2_PC_MEMORY_HIVE for the Python agent. */
-  hiveSlug: string;
+  potSlug: string;
   /** The operator API base the Python MCP POST targets — TAU2_PC_OPERATOR_BASE. */
   operatorBase: string;
   /** The superuser bearer — TAU2_PC_OPERATOR_TOKEN (the Python agent also falls back to ~/.papercusp/superuser-token). */
@@ -179,7 +179,7 @@ function toFleetTaskResult(
   };
   return {
     attempt,
-    beeId: r.trajectoryRef || `tau2-${task.instanceId}-${seed}`,
+    cupId: r.trajectoryRef || `tau2-${task.instanceId}-${seed}`,
     placedAtMs,
     startedAtMs,
     finishedAtMs,
@@ -256,7 +256,7 @@ export function makeTau2BacklogDriver(deps: Tau2BacklogDeps): HiveBacklogDriver 
 /** Build the Python-agent memory context (env values) from an open sandbox. */
 function memoryContextFor(sandbox: RunSandbox): Tau2MemoryContext {
   return {
-    hiveSlug: sandbox.hiveSlug,
+    potSlug: sandbox.potSlug,
     operatorBase: operatorApiBase(),
     token: '', // resolved lazily in realRunTau2Conversation (falls back to ~/.papercusp/superuser-token)
   };
@@ -387,7 +387,7 @@ export function tau2TaskResultsFromFleet(result: HiveBacklogResult): Tau2SuiteRe
 
 /**
  * The REAL sandbox-open seam: for the `+memory` arm open a {@link RunSandbox} (a per-run ephemeral hive whose
- * `hiveSlug` is the shared memory namespace) via {@link openRunSandbox}, reusing the SAME `liveSandboxHiveOps`
+ * `potSlug` is the shared memory namespace) via {@link openRunSandbox}, reusing the SAME `liveSandboxHiveOps`
  * + `liveRunTool` the capabilities palette uses. Returns null for any non-memory arm. The driver disposes it
  * after the backlog drains, so the memory pool ACCUMULATES across all tasks within the run (D-007), then is
  * wiped (never leaks to production or between arms).
@@ -474,7 +474,7 @@ export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm, 
   // (vanilla passes nothing → the agent's memory_enabled() is false → stock LLMAgent). Token falls back to
   // ~/.papercusp/superuser-token inside the Python agent when not provided here.
   if (memory) {
-    env.TAU2_PC_MEMORY_HIVE = memory.hiveSlug;
+    env.TAU2_PC_MEMORY_HIVE = memory.potSlug;
     env.TAU2_PC_OPERATOR_BASE = memory.operatorBase;
     if (memory.token) env.TAU2_PC_OPERATOR_TOKEN = memory.token;
     // The ISOLATED benchmark workspace the Python agent writes its memories to — must MATCH the sandbox

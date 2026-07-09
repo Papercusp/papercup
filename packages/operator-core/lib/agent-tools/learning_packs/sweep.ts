@@ -31,7 +31,7 @@ export default defineTool({
   async handler(args) {
     if (!(await learningPacksEnabled())) return text(FLAG_OFF);
     const { sweepHiveConflicts } = await import('../../learning-packs/manage');
-    const result = await sweepHiveConflicts({ hiveSlug: args.pot });
+    const result = await sweepHiveConflicts({ potSlug: args.pot });
     return text({ ok: true, ...result });
   },
 });

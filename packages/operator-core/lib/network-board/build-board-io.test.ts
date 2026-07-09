@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const FOREIGN = {
-  hiveId: 'hid',
+  potId: 'hid',
   title: 'Peer Hive',
   description: '',
   ownerGithubLogin: 'x',
@@ -96,7 +96,7 @@ describe('buildNetworkBoard — directed grants (B-05 integration)', () => {
 //    coverage of the buckets + the per-peer aggregation + the throw fallback.
 function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
   // Two foreign peers so per-peer aggregation (not a global tally) is observable.
-  const foreign = (pubkey: string) => ({ ...FOREIGN, hiveId: `hid-${pubkey}`, hivePubkey: pubkey });
+  const foreign = (pubkey: string) => ({ ...FOREIGN, potId: `hid-${pubkey}`, hivePubkey: pubkey });
   vi.doMock('../agent-tools/hive/_resolve', () => ({
     listHives: vi.fn(async () => []),
     liveAgentCountByHarness: vi.fn(() => new Map()),

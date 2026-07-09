@@ -48,8 +48,8 @@ function sodium(): Promise<Sodium> {
   ));
 }
 
-function epochKeyId(hiveId: string, epoch: number): string {
-  return `${hiveId}:${epoch}`;
+function epochKeyId(potId: string, epoch: number): string {
+  return `${potId}:${epoch}`;
 }
 
 function asEpochKey(b: Uint8Array): EpochKey {
@@ -57,14 +57,14 @@ function asEpochKey(b: Uint8Array): EpochKey {
 }
 
 /**
- * Canonical associated-data bytes — LENGTH-PREFIXED so the (hiveId, epoch, opId)
+ * Canonical associated-data bytes — LENGTH-PREFIXED so the (potId, epoch, opId)
  * fields can't be re-split into a different but equal concatenation (e.g.
- * hiveId="a",opId="b" vs hiveId="a",opId... — a delimiter could be forged; a
+ * potId="a",opId="b" vs potId="a",opId... — a delimiter could be forged; a
  * 4-byte length prefix per field is unambiguous).
  */
 function encodeAAD(ad: OpAAD): Buffer {
   const parts = [
-    Buffer.from(ad.hiveId, 'utf8'),
+    Buffer.from(ad.potId, 'utf8'),
     Buffer.from(String(ad.epoch), 'utf8'),
     Buffer.from(ad.opId, 'utf8'),
   ];
@@ -100,8 +100,8 @@ export interface HiveEpochCryptoOpts {
  */
 export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpochCrypto {
   return {
-    async deriveEpochKey(hiveId: string, epoch: number): Promise<EpochKey> {
-      const id = epochKeyId(hiveId, epoch);
+    async deriveEpochKey(potId: string, epoch: number): Promise<EpochKey> {
+      const id = epochKeyId(potId, epoch);
       const loaded = await keychainLoad(id, EPOCH_KEY_SERVICE);
       if (loaded.kind === 'ok') {
         if (loaded.value.length !== EPOCH_KEY_BYTES) {
@@ -200,19 +200,19 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
  * skipping it would cut a seed missing a recoverable key (fail closed, matching
  * loadHiveKeyStatus's tri-state discipline).
  */
-export async function loadEpochKeyIfPresent(hiveId: string, epoch: number): Promise<EpochKey | null> {
-  const loaded = await keychainLoad(epochKeyId(hiveId, epoch), EPOCH_KEY_SERVICE);
+export async function loadEpochKeyIfPresent(potId: string, epoch: number): Promise<EpochKey | null> {
+  const loaded = await keychainLoad(epochKeyId(potId, epoch), EPOCH_KEY_SERVICE);
   if (loaded.kind === 'ok') {
     if (loaded.value.length !== EPOCH_KEY_BYTES) {
       throw new Error(
-        `stored epoch key for ${epochKeyId(hiveId, epoch)} is ${loaded.value.length}B, expected ${EPOCH_KEY_BYTES}`,
+        `stored epoch key for ${epochKeyId(potId, epoch)} is ${loaded.value.length}B, expected ${EPOCH_KEY_BYTES}`,
       );
     }
     return asEpochKey(Uint8Array.from(loaded.value));
   }
   if (loaded.error.kind === 'not_found') return null;
   throw new Error(
-    `keychain read FAILED for epoch key ${epochKeyId(hiveId, epoch)} (${loaded.error.kind}` +
+    `keychain read FAILED for epoch key ${epochKeyId(potId, epoch)} (${loaded.error.kind}` +
       `${'reason' in loaded.error ? `: ${loaded.error.reason}` : ''}) — cannot tell absent from unreadable, refusing to skip`,
   );
 }

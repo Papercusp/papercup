@@ -24,24 +24,24 @@ import type { HiveDirectoryMeta } from './hive-publish';
 // key loads must clearOwnedHiveKeyHealth. The signal's own behavior (dedup,
 // best-effort) is covered by hive-owner-key-health.test.ts.
 const KEYHEALTH = vi.hoisted(() => ({
-  missing: [] as Array<{ workspaceId: string; hiveSlug: string; context: string }>,
-  cleared: [] as Array<{ workspaceId: string; hiveSlug: string }>,
+  missing: [] as Array<{ workspaceId: string; potSlug: string; context: string }>,
+  cleared: [] as Array<{ workspaceId: string; potSlug: string }>,
 }));
 vi.mock('./hive-owner-key-health', () => ({
-  signalOwnedHiveKeyMissing: async (ref: { workspaceId: string; hiveSlug: string; context: string }) => {
+  signalOwnedHiveKeyMissing: async (ref: { workspaceId: string; potSlug: string; context: string }) => {
     KEYHEALTH.missing.push(ref);
     return true;
   },
-  clearOwnedHiveKeyHealth: (ref: { workspaceId: string; hiveSlug: string }) => {
+  clearOwnedHiveKeyHealth: (ref: { workspaceId: string; potSlug: string }) => {
     KEYHEALTH.cleared.push(ref);
   },
 }));
 
 const WS = 'ws-test';
 
-const meta = (hiveId: string, visibility: HiveDirectoryMeta['visibility']): HiveDirectoryMeta => ({
-  hiveId,
-  title: hiveId,
+const meta = (potId: string, visibility: HiveDirectoryMeta['visibility']): HiveDirectoryMeta => ({
+  potId,
+  title: potId,
   description: '',
   visibility,
   memberTopics: [],
@@ -94,9 +94,9 @@ function fixture(initial: HiveDirectoryMeta[]): Fixture {
   const opts: EnsureCrossHiveBoundariesOpts = {
     listHives: async () => metas,
     loadPubkey: async (_ws, slug) => (slug === 'no-key' ? null : `pk-${slug}`),
-    makeTransport: ({ hiveSlug, onPeerHello }) => {
+    makeTransport: ({ potSlug, onPeerHello }) => {
       const rec = { sends: [] as Array<{ to: string; id: string }>, closed: false, hello: onPeerHello };
-      transports.set(hiveSlug, rec);
+      transports.set(potSlug, rec);
       const t: CrossHiveTransport & { close(): Promise<void> } = {
         async send(to: string, env: CrossHiveWireEnvelope) {
           rec.sends.push({ to, id: env.id });
@@ -190,9 +190,9 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
     expect(getCrossHiveBoundary(WS, 'no-key')).toBeUndefined();
     // The OWNED-but-keyless hive raised the deduped owner-key-missing escalation
     // instead of a silent skip (D-024 / D-023 BUG A).
-    expect(KEYHEALTH.missing).toEqual([{ workspaceId: WS, hiveSlug: 'no-key', context: 'cross-hive-boot' }]);
+    expect(KEYHEALTH.missing).toEqual([{ workspaceId: WS, potSlug: 'no-key', context: 'cross-hive-boot' }]);
     // The hive whose key DID load cleared any stale alert (recovery re-arm).
-    expect(KEYHEALTH.cleared).toContainEqual({ workspaceId: WS, hiveSlug: 'ok' });
+    expect(KEYHEALTH.cleared).toContainEqual({ workspaceId: WS, potSlug: 'ok' });
   });
 
   it('a hive-listing failure leaves existing boundaries untouched', async () => {

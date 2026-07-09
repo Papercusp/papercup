@@ -621,7 +621,7 @@ async function routinesTickImpl(): Promise<void> {
         import('../hive/throughput'),
       ]);
       for (const { workspaceId, installSlug } of await listStartedWorkspaceLoops()) {
-        await recordHiveThroughputTick({ workspaceId, hiveSlug: installSlug }).catch(() => {});
+        await recordHiveThroughputTick({ workspaceId, potSlug: installSlug }).catch(() => {});
       }
     },
     { name: 'hive-throughput-tick' },

@@ -46,7 +46,7 @@ afterEach(() => {
 
 async function seed(extra: { active?: boolean } = {}) {
   const { seedHiveReleaseRoutines } = await import('./seed-hive-release-routines');
-  return seedHiveReleaseRoutines({ sql: fakeSql(), workspaceId: 'default', hiveSlug: 'oddsmith-hive', ...extra });
+  return seedHiveReleaseRoutines({ sql: fakeSql(), workspaceId: 'default', potSlug: 'oddsmith-hive', ...extra });
 }
 
 describe('seedHiveReleaseRoutines', () => {
@@ -80,7 +80,7 @@ describe('seedHiveReleaseRoutines', () => {
     expect(res.routines).toEqual(['green-checkpoint']);
     const inserts = sqlCalls.filter((c) => c.kind === 'insert');
     expect(inserts).toHaveLength(1);
-    // values: [id, hiveSlug, ws, name, cronJson, target, active]
+    // values: [id, potSlug, ws, name, cronJson, target, active]
     expect(inserts[0].values).toContain('oddsmith-hive');
     expect(inserts[0].values).toContain('green-checkpoint');
     expect(inserts[0].values).toContain('system:green-checkpoint');

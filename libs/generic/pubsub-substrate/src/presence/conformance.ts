@@ -231,20 +231,20 @@ export function describePresenceConformance(
       expect(inWs.map((r) => r.ownerId)).toEqual(expected);
     });
 
-    it('list filters by hiveSlug (P-004 hive-scoped read)', async () => {
+    it('list filters by potSlug (P-004 hive-scoped read)', async () => {
       if (skip) return;
       const store = makeStore();
       const ws = `${runPrefix}-hws`;
       const hiveA = `${runPrefix}-hiveA`;
       const inHive = ident(store, 'inhive', ws);
-      await store.write(inHive, { hiveSlug: hiveA });
+      await store.write(inHive, { potSlug: hiveA });
       const otherHive = ident(store, 'otherhive', ws);
-      await store.write(otherHive, { hiveSlug: `${runPrefix}-hiveB` });
+      await store.write(otherHive, { potSlug: `${runPrefix}-hiveB` });
       const noHive = ident(store, 'nohive', ws);
       await store.write(noHive, {}); // hive_slug null — excluded by a hive filter
 
       // hive filter → only the matching-hive row.
-      const inHiveRows = await store.list({ workspaceId: ws, hiveSlug: hiveA });
+      const inHiveRows = await store.list({ workspaceId: ws, potSlug: hiveA });
       expect(inHiveRows.map((r) => r.ownerId)).toEqual([inHive.ownerId]);
       // no hive filter → all three in the workspace (hive_slug ignored).
       const allRows = await store.list({ workspaceId: ws });

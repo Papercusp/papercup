@@ -2,8 +2,8 @@
  * /api/discovery/beacon-consent — the HTTP face of the per-Hive beacon-publish
  * consent (hive-network-surface-2026-06-11 P-005, brief B-07; contract C-2).
  *
- *   GET  ?hiveId=<slug>        → { ok, hiveId, consent }   (absent = false, D-002)
- *   POST { hiveId, consent }   → { ok, hiveId, consent }
+ *   GET  ?potId=<slug>        → { ok, potId, consent }   (absent = false, D-002)
+ *   POST { potId, consent }   → { ok, potId, consent }
  *
  * The desktop hive header strip's beacon toggle drives this — the secondary
  * surface for the publish-flow consent question. Writes route through the shared
@@ -19,14 +19,14 @@ const getBeaconConsent = defineTool({
   path: '/discovery/beacon-consent',
   auth: 'loopback',
   async handler(req) {
-    const hiveId = String(new URL(req.url).searchParams.get('hiveId') ?? '').trim();
-    if (!hiveId) {
-      return Response.json({ error: 'hiveId required', code: 'invalid_args' }, { status: 400 });
+    const potId = String(new URL(req.url).searchParams.get('potId') ?? '').trim();
+    if (!potId) {
+      return Response.json({ error: 'potId required', code: 'invalid_args' }, { status: 400 });
     }
     const { getBeaconPublishConsent } = await import('../../../beacon-consent');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
-    const consent = await getBeaconPublishConsent(activeWorkspaceId(), hiveId).catch(() => false);
-    return Response.json({ ok: true, hiveId, consent });
+    const consent = await getBeaconPublishConsent(activeWorkspaceId(), potId).catch(() => false);
+    return Response.json({ ok: true, potId, consent });
   },
 });
 
@@ -35,15 +35,15 @@ const setBeaconConsent = defineTool({
   path: '/discovery/beacon-consent',
   auth: 'loopback',
   async handler(req) {
-    let body: { hiveId?: string; consent?: unknown } = {};
+    let body: { potId?: string; consent?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
       /* empty body */
     }
-    const hiveId = String(body.hiveId ?? '').trim();
-    if (!hiveId) {
-      return Response.json({ error: 'hiveId required', code: 'invalid_args' }, { status: 400 });
+    const potId = String(body.potId ?? '').trim();
+    if (!potId) {
+      return Response.json({ error: 'potId required', code: 'invalid_args' }, { status: 400 });
     }
     if (typeof body.consent !== 'boolean') {
       return Response.json(
@@ -54,7 +54,7 @@ const setBeaconConsent = defineTool({
     const { setBeaconPublishConsent } = await import('../../../beacon-consent');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     try {
-      await setBeaconPublishConsent(activeWorkspaceId(), hiveId, body.consent);
+      await setBeaconPublishConsent(activeWorkspaceId(), potId, body.consent);
     } catch (e) {
       // setHiveSetting rejects when the hive doesn't exist (logical scope, no FK).
       const msg = e instanceof Error ? e.message : String(e);
@@ -64,7 +64,7 @@ const setBeaconConsent = defineTool({
         { status: notFound ? 404 : 502 },
       );
     }
-    return Response.json({ ok: true, hiveId, consent: body.consent });
+    return Response.json({ ok: true, potId, consent: body.consent });
   },
 });
 

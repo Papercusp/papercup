@@ -72,10 +72,10 @@ describe('fail-open → reconcile end-to-end (partitioned Hive authority)', () =
     // Authority unreachable ⇒ each Swarm's acquire fails OPEN to acquireClaimLocal on
     // its OWN store. Peer A acquires first (earlier acquired_ts), then peer B.
     const resA = await onPeer(peerA, () =>
-      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-001', hiveSlug: 'my-hive', owner: 'su-a', holderPubkey: 'pk-aaa' }),
+      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-001', potSlug: 'my-hive', owner: 'su-a', holderPubkey: 'pk-aaa' }),
     );
     const resB = await onPeer(peerB, () =>
-      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-001', hiveSlug: 'my-hive', owner: 'su-b', holderPubkey: 'pk-zzz' }),
+      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-001', potSlug: 'my-hive', owner: 'su-b', holderPubkey: 'pk-zzz' }),
     );
 
     // The tolerated double-claim: BOTH succeeded locally (the partition reality).
@@ -95,10 +95,10 @@ describe('fail-open → reconcile end-to-end (partitioned Hive authority)', () =
     // Force identical acquired_ts so the pubkey tiebreak decides (the authority would
     // have elected the same lowest-pubkey Swarm — keeps fail-open consistent with strong).
     const resA = await onPeer(peerA, () =>
-      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-002', hiveSlug: 'my-hive', owner: 'su-a', holderPubkey: 'pk-zzz' }),
+      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-002', potSlug: 'my-hive', owner: 'su-a', holderPubkey: 'pk-zzz' }),
     );
     const resB = await onPeer(peerB, () =>
-      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-002', hiveSlug: 'my-hive', owner: 'su-b', holderPubkey: 'pk-aaa' }),
+      acquireClaimLocal({ workspaceId: 'default', harnessSlug: 'h1', workItemId: 'F-002', potSlug: 'my-hive', owner: 'su-b', holderPubkey: 'pk-aaa' }),
     );
     if (!resA.ok || !resB.ok) return;
     const ts = '2026-06-08T12:00:00.000Z';

@@ -195,7 +195,7 @@ describe('loop:soak-report', () => {
       resolveHiveHomeSlug: vi.fn(() => 'papercusp'),
     }));
     vi.doMock('../../hive/soak-report', () => ({
-      readHiveSoakReport: vi.fn(async () => ({ hiveSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
+      readHiveSoakReport: vi.fn(async () => ({ potSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
       MIN_SOAK_WINDOW_HOURS: 12,
       MAX_SOAK_WINDOW_HOURS: 24,
     }));
@@ -203,7 +203,7 @@ describe('loop:soak-report', () => {
     const payload = parsePayload((await tool.handler({ windowHours: 24 }, MAKE_CTX())) as never);
     expect(payload).toEqual({
       ok: true,
-      report: { hiveSlug: 'papercusp', ready: false, reasons: ['gate red'] },
+      report: { potSlug: 'papercusp', ready: false, reasons: ['gate red'] },
     });
   });
 

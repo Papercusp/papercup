@@ -20,7 +20,7 @@ import type { CoordEvent } from '@papercusp/bench-metrics';
 /** One per-task row in an arm snapshot (the launcher-persisted shape; lenient — additive fields kept). */
 export interface ArmSnapshotPerTask {
   instanceId: string;
-  beeId?: string | null;
+  cupId?: string | null;
   disposition?: string | null;
   stopReason?: string | null;
   generationError?: string | null;

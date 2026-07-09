@@ -80,12 +80,12 @@ async function cutFixtureSeed(opts: { encryptGit?: Uint8Array } = {}): Promise<{
   const seedDir = tmpDir('rhs-seed-');
   await rm(seedDir, { recursive: true, force: true });
   await cutHiveSeed({
-    hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1, outDir: seedDir,
+    potId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1, outDir: seedDir,
     git: {
       sourceRepoDir: repo,
       originUrl: 'https://github.com/Papercusp/papercup',
       rev: '--all',
-      ...(opts.encryptGit ? { encryption: { key: opts.encryptGit, keyRef: { via: 'seed-key-op' as const, hiveId: 'papercusp' } } } : {}),
+      ...(opts.encryptGit ? { encryption: { key: opts.encryptGit, keyRef: { via: 'seed-key-op' as const, potId: 'papercusp' } } } : {}),
     },
     corestore: { sourceStore: store, coreKeys: [keyHex] },
   });

@@ -21,15 +21,15 @@ import type { HarnessRegistry } from './harness-registry';
 import type { HiveStatusBeacon } from './hive-beacon';
 
 export interface EnrichDescriptorDeps {
-  loadPubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
-  deriveMemberRepos?: (workspaceId: string, hiveId: string) => Promise<string[]>;
+  loadPubkey?: (workspaceId: string, potId: string) => Promise<string | null>;
+  deriveMemberRepos?: (workspaceId: string, potId: string) => Promise<string[]>;
   loadRegistry?: (workspaceId?: string) => Promise<HarnessRegistry>;
   /**
    * Build the consent-gated status beacon for this hive (P-005 / brief B-06).
    * Returns undefined when the owner has not consented (no beacon on the wire).
    * Default: hive-beacon-publish.maybeBuildHiveBeacon (consent-gated + memoized).
    */
-  buildBeacon?: (workspaceId: string, hiveId: string) => Promise<HiveStatusBeacon | undefined>;
+  buildBeacon?: (workspaceId: string, potId: string) => Promise<HiveStatusBeacon | undefined>;
 }
 
 export async function enrichLocalHiveDescriptor(
@@ -55,11 +55,11 @@ export async function enrichLocalHiveDescriptor(
       (async (w: string, id: string) =>
         (await import('./hive-beacon-publish')).maybeBuildHiveBeacon(w, id));
 
-    const pk = desc.hivePubkey ?? ((await loadPubkey(ws, desc.hiveId).catch(() => null)) || undefined);
-    const memberRepos = await deriveMemberRepos(ws, desc.hiveId).catch(() => [] as string[]);
+    const pk = desc.hivePubkey ?? ((await loadPubkey(ws, desc.potId).catch(() => null)) || undefined);
+    const memberRepos = await deriveMemberRepos(ws, desc.potId).catch(() => [] as string[]);
     // P-005 (brief B-06): the consent-gated status beacon — undefined when the
     // owner has not opted in, so no beacon rides the announce. Best-effort.
-    const beacon = await buildBeacon(ws, desc.hiveId).catch(() => undefined);
+    const beacon = await buildBeacon(ws, desc.potId).catch(() => undefined);
 
     // Fresh one-click member links over the HIVE federation topic — only when
     // the identity exists (a topic-less link is not joinable).
@@ -74,7 +74,7 @@ export async function enrichLocalHiveDescriptor(
       const topicHex = topicAsHex(deriveHiveFederationTopic(pk));
       const links: string[] = [];
       for (const m of reg.projects) {
-        if (m.slug !== desc.hiveId && m.hive_slug !== desc.hiveId) continue;
+        if (m.slug !== desc.potId && m.hive_slug !== desc.potId) continue;
         if (!m.github_remote || typeof m.github_repository_id !== 'number') continue;
         const parsed = parseGithubUrl(m.github_remote);
         if (!parsed) continue;

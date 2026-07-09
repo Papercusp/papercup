@@ -17,7 +17,7 @@ function pg(sql?: Sql): Sql {
 
 export interface BeaconSnapshot {
   id: string;
-  hiveId: string;
+  potId: string;
   hivePubkey: string | null;
   beacon: HiveStatusBeacon;
   capturedAt: string;
@@ -34,7 +34,7 @@ interface BeaconRow {
 function rowToSnapshot(r: BeaconRow): BeaconSnapshot {
   return {
     id: r.id,
-    hiveId: r.hive_id,
+    potId: r.hive_id,
     hivePubkey: r.hive_pubkey ?? null,
     beacon: r.beacon as HiveStatusBeacon,
     capturedAt: r.captured_at instanceof Date ? r.captured_at.toISOString() : new Date(r.captured_at).toISOString(),
@@ -48,7 +48,7 @@ function rowToSnapshot(r: BeaconRow): BeaconSnapshot {
  * the PG seam never statically depends on the SSE layer; a missing bus is a no-op).
  */
 export async function captureBeaconSnapshot(
-  hiveId: string,
+  potId: string,
   hivePubkey: string | null,
   beacon: HiveStatusBeacon,
   sql?: Sql,
@@ -65,7 +65,7 @@ export async function captureBeaconSnapshot(
   const sqlc = pg(sql);
   await sqlc`
     INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
-    VALUES (${hiveId}, ${hivePubkey ?? null}, ${JSON.stringify(beacon)}::text::jsonb)
+    VALUES (${potId}, ${hivePubkey ?? null}, ${JSON.stringify(beacon)}::text::jsonb)
   `;
   void import('../sync-sse')
     .then((m) => {
@@ -83,8 +83,8 @@ export async function captureBeaconSnapshot(
 
 /**
  * Read the most-recent beacon snapshots for a hive, newest-first. `hiveKey`
- * accepts either the DiscoveredHive.hiveId or its pubkey-b64 — i.e. the C-3
- * tier-4 row key (`pubkey || hiveId`), so the drill-in dossier can query with
+ * accepts either the DiscoveredHive.potId or its pubkey-b64 — i.e. the C-3
+ * tier-4 row key (`pubkey || potId`), so the drill-in dossier can query with
  * the only identity it holds. Returns [] on error (best-effort — the dossier
  * panel renders empty).
  */

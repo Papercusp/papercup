@@ -111,7 +111,7 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
 
     const aReplies: CrossHiveInboundReply[] = [];
     const aWiring = wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: A_SLUG, hivePubkey: A.pubkey,
+      workspaceId: WS, potSlug: A_SLUG, hivePubkey: A.pubkey,
       transport: mesh(A.pubkey), signer: A.signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],
@@ -124,7 +124,7 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
       onReply: (r) => aReplies.push(r),
     });
     const bWiring = wireCrossHiveBoundary({
-      workspaceId: WS, hiveSlug: B_SLUG, hivePubkey: B.pubkey,
+      workspaceId: WS, potSlug: B_SLUG, hivePubkey: B.pubkey,
       transport: mesh(B.pubkey), signer: B.signer,
       requestPorts: recordingPorts,
       loadGrants: () => loadCrossHiveGrants(WS, B_SLUG, db.sql), // REAL PG grants drive admission

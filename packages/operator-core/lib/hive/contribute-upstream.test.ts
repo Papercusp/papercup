@@ -11,7 +11,7 @@ import { PAPERCUSP_CANONICAL_REPO_URL } from './enable-platform-mode';
 
 const MEMBER_WITH_FORK: SelfHiveMember = {
   memberSlug: 'papercusp-platform',
-  hiveSlug: 'papercusp-platform-hive',
+  potSlug: 'papercusp-platform-hive',
   path: '/tmp/self-hive',
   upstreamRemote: 'https://github.com/Papercusp/papercup.git',
   defaultBranch: 'main',
@@ -20,7 +20,7 @@ const MEMBER_WITH_FORK: SelfHiveMember = {
 
 const MEMBER_NO_FORK: SelfHiveMember = {
   memberSlug: 'papercusp-platform',
-  hiveSlug: 'papercusp-platform-hive',
+  potSlug: 'papercusp-platform-hive',
   path: '/tmp/self-hive',
   upstreamRemote: 'https://github.com/Papercusp/papercup.git',
   defaultBranch: 'main',

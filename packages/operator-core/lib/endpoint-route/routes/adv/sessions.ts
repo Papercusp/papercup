@@ -347,6 +347,161 @@ const search = defineTool({
 });
 
 /**
+ * GET /api/adv/sessions/ended — the paged "inactive sessions" feed for the
+ * agents-running popover (agents-pill-inactive-search-2026-07-09 P-001).
+ * ended_at DESC with a keyset cursor: `?before=<iso>` returns rows that ended
+ * strictly before it; the response's `nextBefore` is the cursor for the next
+ * page (null ⇒ no more). `limit+1` probe ⇒ `hasMore` without a COUNT.
+ * Workspace-scoped via `?workspace=<id>`; omit or `all` for every workspace.
+ */
+const ended = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/ended',
+  // Consistent with the sibling /adv/* UI content routes: the operator binds
+  // loopback-only and the desktop webview has no principal/bearer path.
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const wsParam = url.searchParams.get('workspace');
+    const workspaceId = wsParam && wsParam !== 'all' ? wsParam : null;
+    const before = url.searchParams.get('before')?.trim() || null;
+    if (before && Number.isNaN(Date.parse(before))) {
+      return new Response(
+        JSON.stringify({ ok: false, error: 'invalid_before_cursor' }),
+        { status: 400, headers: JSON_HEADERS },
+      );
+    }
+    const limitRaw = Number(url.searchParams.get('limit') ?? 30);
+    const limit = Math.min(100, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 30));
+    const rows = await listEndedAdvSessions({ workspaceId, before, limit: limit + 1 });
+    const page = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    const nextBefore = hasMore && page.length > 0 ? page[page.length - 1].endedAt : null;
+    return new Response(
+      JSON.stringify({ ok: true, sessions: page, hasMore, nextBefore }),
+      { status: 200, headers: JSON_HEADERS },
+    );
+  },
+});
+
+/**
+ * GET /api/adv/sessions/search-transcripts — the agents-pill "search ANYTHING
+ * in the sessions" endpoint (agents-pill-inactive-search-2026-07-09 P-002).
+ *
+ * Runs the SHARED search engine — `runHybridSearch` over the `session_turn`
+ * source of the @papercusp/search SEARCH_SOURCES registry, the exact engine +
+ * corpus the `sessions:search` agent tool and /api/user/search use (BM25 +
+ * embeddings via the buildQueryEmbedder cascade; degrades to BM25-only when no
+ * embedder is available). Turn-level hits are rolled up per SESSION and
+ * classified against the live roster (active → the popover groups by fleet)
+ * and adv_sessions rows (inactive metadata + open handles); ts_headline
+ * `<mark>` highlights ride through for the UI.
+ *
+ * SECURITY (auth: 'loopback'): hits carry transcript excerpts — the same
+ * sensitivity as /adv/session/thinking (full agent reasoning can hold file
+ * contents + secrets), so the same loopback gate applies.
+ */
+const searchTranscripts = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/search-transcripts',
+  auth: 'loopback',
+  async handler(req) {
+    const url = new URL(req.url);
+    const q = (url.searchParams.get('q') ?? '').trim().slice(0, 500);
+    if (!q) {
+      return new Response(
+        JSON.stringify({ ok: true, query: '', sessions: [] }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    }
+    const limitRaw = Number(url.searchParams.get('limit') ?? 30);
+    const hitLimit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 30));
+
+    const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
+      await Promise.all([
+        import('@papercusp/search'),
+        import('../../../agent-tools/search/sources'),
+        import('../../../agent-tools/search/embedder'),
+        import('../../../agent-tools/sessions/_shared'),
+        import('../../../workspace-registry'),
+        import('@papercusp/db-org'),
+      ]);
+    const { groupHitsBySession, classifySessionGroups } = await import('../../../adv-session-search');
+    const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
+
+    const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
+    const embedder = await buildQueryEmbedder();
+    const { sql } = getOrgPg();
+    const { results } = await runHybridSearch(sources, {
+      sql,
+      query: q,
+      workspaceId: activeWorkspaceId(),
+      scopeFilter: null,
+      limit: hitLimit,
+      mode: 'hybrid',
+      embedder,
+    });
+
+    // Engine hits → turn refs (source_id = `<sourceKind>:<sessionId>:<turnIdx>`).
+    const turnHits: Array<{
+      sourceKind: string; sessionId: string; turnIdx: number;
+      excerpt: string; highlight: string; score: number;
+      ts?: string | null; speaker?: string | null; owner?: string | null;
+    }> = [];
+    for (const r of results) {
+      const ref = parseTurnRef(r.source_id);
+      if (!ref) continue;
+      turnHits.push({
+        sourceKind: ref.sourceKind,
+        sessionId: ref.sessionId,
+        turnIdx: ref.turnIdx,
+        excerpt: r.excerpt,
+        highlight: r.highlight,
+        score: r.score,
+      });
+    }
+
+    // Hydrate per-turn metadata (ts/speaker/owner) — ts anchors the deep-link
+    // into the transcript viewer; owner matches claude isolation transcripts to
+    // their roster agent. One batched unnest join, never per-hit queries.
+    if (turnHits.length > 0) {
+      try {
+        const kinds = turnHits.map((h) => h.sourceKind);
+        const sids = turnHits.map((h) => h.sessionId);
+        const idxs = turnHits.map((h) => h.turnIdx);
+        const metaRows = await sql<
+          Array<{ source_kind: string; session_id: string; turn_idx: number; ts: string | null; speaker: string | null; owner: string | null }>
+        >`
+          SELECT st.source_kind, st.session_id, st.turn_idx, st.ts::text AS ts, st.speaker, st.owner
+            FROM harness_shared.session_turns st
+            JOIN unnest(${kinds}::text[], ${sids}::text[], ${idxs}::int[]) AS t(k, s, i)
+              ON st.source_kind = t.k AND st.session_id = t.s AND st.turn_idx = t.i
+        `;
+        const metaByKey = new Map(metaRows.map((m) => [`${m.source_kind}:${m.session_id}:${m.turn_idx}`, m]));
+        for (const h of turnHits) {
+          const m = metaByKey.get(`${h.sourceKind}:${h.sessionId}:${h.turnIdx}`);
+          if (m) { h.ts = m.ts; h.speaker = m.speaker; h.owner = m.owner; }
+        }
+      } catch { /* metadata is a bonus — never fail the search */ }
+    }
+
+    const groups = groupHitsBySession(turnHits);
+    const [{ active }, sessionRows] = await Promise.all([
+      mergeRosterWithAssignments({ workspaceId: null }),
+      advSessionsByTranscriptHandles({
+        sessionIds: groups.filter((g) => g.sourceKind === 'claude').map((g) => g.sessionId),
+        ompThreadIds: groups.filter((g) => g.sourceKind === 'omp').map((g) => g.sessionId),
+      }),
+    ]);
+    const sessions = classifySessionGroups(groups, active, sessionRows);
+    return new Response(
+      JSON.stringify({ ok: true, query: q, totalHits: turnHits.length, sessions }),
+      { status: 200, headers: JSON_HEADERS },
+    );
+  },
+});
+
+/**
  * GET /api/adv/sessions/resumable — recent psu-tracked sessions (agent +
  * cwd present), cross-workspace, most-recent first. Feeds the
  * `psu --resume` picker, which `cd`s to each row's cwd and resumes the
@@ -515,4 +670,4 @@ const onDesktopWindows = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, resumable, roster, markLaunched, agentDetail, onDesktopWindows];
+export default [list, focus, alive, state, search, ended, searchTranscripts, resumable, roster, markLaunched, agentDetail, onDesktopWindows];

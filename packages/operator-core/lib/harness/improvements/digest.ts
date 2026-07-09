@@ -40,6 +40,13 @@ export interface ScoredItem {
   assignee?: string | null;
   /** When the assignee claimed it — the dispatch loop's in-flight signal. */
   assignedAt?: string | null;
+  /** Last lifecycle update (issue.updated_at) — bumped by ANY claim/release/state
+   *  change, including a cross-lane touch that clears assignee without ever
+   *  going through the auto-implement dispatch loop (EI-8385: the interactive
+   *  backlog-drain fleet claiming + releasing an item the auto-implement lane
+   *  has an open dispatch on). Used for the short post-touch cooldown below —
+   *  `assignedAt` alone goes stale the instant such a claim is released. */
+  updatedAt?: string | null;
   /** Auto-implement dispatch attempts so far (anti-re-dispatch counter). */
   attempts?: number;
   tier: Tier;
@@ -384,6 +391,7 @@ export function buildDigest(
       state: c.state,
       assignee: c.assignee ?? null,
       assignedAt: c.assignedAt ?? null,
+      updatedAt: c.updatedAt ?? null,
       attempts: c.attempts ?? 0,
       tier: decision.tier,
       score: scoreOf(c, decision.tier, ageDays),

@@ -308,7 +308,7 @@ export interface PgFleetDirectoryDeps {
   /** The caller's identity workspace (run through resolveP2pGrantWorkspace, C3). */
   workspaceId: string | null | undefined;
   /** The hive HOME slug the directory federates under. */
-  hiveSlug: string;
+  potSlug: string;
   sqlOverride?: Sql;
 }
 
@@ -347,7 +347,7 @@ export class PgFleetDirectory implements FleetDirectory {
   async scopeMembers(scope: ScopeId): Promise<number[] | null> {
     const ws = this.ws();
     if (!ws) return null;
-    const row = await getFleetRecord(ws, this.deps.hiveSlug, scope.ownerGithubUserId, scope.slug, this.deps.sqlOverride);
+    const row = await getFleetRecord(ws, this.deps.potSlug, scope.ownerGithubUserId, scope.slug, this.deps.sqlOverride);
     if (!row || row.archived || !row.record) return null;
     const pubs = row.record.publisherGithubUserIds;
     return pubs.includes(scope.ownerGithubUserId) ? [...pubs] : [scope.ownerGithubUserId, ...pubs];
@@ -370,9 +370,9 @@ export class PgFleetDirectory implements FleetDirectory {
     let members;
     let revoked: Set<string>;
     try {
-      row = await getFleetRecord(ws, this.deps.hiveSlug, owner, scope.slug, this.deps.sqlOverride);
-      members = await listHiveMembers(ws, this.deps.hiveSlug, this.deps.sqlOverride);
-      revoked = await loadRevokedHivePubkeys(ws, this.deps.hiveSlug, this.deps.sqlOverride);
+      row = await getFleetRecord(ws, this.deps.potSlug, owner, scope.slug, this.deps.sqlOverride);
+      members = await listHiveMembers(ws, this.deps.potSlug, this.deps.sqlOverride);
+      revoked = await loadRevokedHivePubkeys(ws, this.deps.potSlug, this.deps.sqlOverride);
     } catch {
       return refusedPublisherSet(owner); // PG edge failure ⇒ refuse, never guess
     }
@@ -398,7 +398,7 @@ export class PgFleetDirectory implements FleetDirectory {
         try {
           const bytes = fleetDirectorySignedBytes({
             workspaceId: ws,
-            hiveHomeSlug: this.deps.hiveSlug,
+            hiveHomeSlug: this.deps.potSlug,
             recordVersion: row.recordVersion,
             canonicalRecordJson: row.recordJson,
           });
@@ -425,7 +425,7 @@ export class PgFleetDirectory implements FleetDirectory {
   async listParticipatingScopes(selfGithubUserId: number): Promise<ScopeId[]> {
     const ws = this.ws();
     if (!ws) return [];
-    const rows = await listFleetRecords(ws, this.deps.hiveSlug, undefined, this.deps.sqlOverride);
+    const rows = await listFleetRecords(ws, this.deps.potSlug, undefined, this.deps.sqlOverride);
     const out: ScopeId[] = [];
     for (const r of rows) {
       if (!r.record) continue;

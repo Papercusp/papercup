@@ -80,7 +80,7 @@ describe('HiveDirectory.ingestAnnounce — verified-only render (D-001)', () => 
     expect(res.accepted).toBe(true);
     const listed = dir.listDiscoveredHives();
     expect(listed).toHaveLength(1);
-    expect(listed[0]).toMatchObject({ hiveId: 'hive-1', title: 'Hive One', attested: true });
+    expect(listed[0]).toMatchObject({ potId: 'hive-1', title: 'Hive One', attested: true });
   });
 
   it('DROPS an announce that fails attestation (channel-2 spam floor)', async () => {
@@ -149,7 +149,7 @@ describe('HiveDirectory — local mute (no global moderation, D-001)', () => {
 
 describe('HiveDirectory.announceLocalHive — routes by visibility (D-004)', () => {
   const localBase: Omit<LocalHiveDescriptor, 'visibility'> = {
-    hiveId: 'my-hive',
+    potId: 'my-hive',
     title: 'My Hive',
     description: 'mine',
     memberTopics: ['f'.repeat(64)],
@@ -205,8 +205,8 @@ describe('HiveDirectory.announceLocalHive — routes by visibility (D-004)', () 
     const kp = keypair();
     const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
     const dir = new HiveDirectory(deps);
-    dir.registerLocalHive({ ...localBase, hiveId: 'pub', visibility: 'public', ownerDevicePubkey: kp.pubkey });
-    dir.registerLocalHive({ ...localBase, hiveId: 'priv', visibility: 'private' });
+    dir.registerLocalHive({ ...localBase, potId: 'pub', visibility: 'public', ownerDevicePubkey: kp.pubkey });
+    dir.registerLocalHive({ ...localBase, potId: 'priv', visibility: 'private' });
     const n = await dir.reannounceAll();
     expect(n).toBe(1); // only the public one
     expect(deps.broadcasts).toHaveLength(1);
@@ -331,7 +331,7 @@ describe('HiveDirectory — withdrawal tombstones (hardening P-005 / D-005)', ()
     const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
     const dir = new HiveDirectory(deps);
     dir.registerLocalHive({
-      hiveId: 'mine',
+      potId: 'mine',
       title: 't',
       description: '',
       memberTopics: [],
@@ -348,7 +348,7 @@ describe('HiveDirectory — withdrawal tombstones (hardening P-005 / D-005)', ()
     expect(await dir.announceLocalHive('mine')).toBeNull(); // unregistered
 
     dir.registerLocalHive({
-      hiveId: 'priv',
+      potId: 'priv',
       title: 't',
       description: '',
       memberTopics: [],
@@ -369,7 +369,7 @@ describe('HiveDirectory — PG cache seam + TTL GC', () => {
   it('hydrates the in-memory set from the cache (offline listing)', async () => {
     const cached: DiscoveredHive[] = [
       {
-        hiveId: 'cached-1',
+        potId: 'cached-1',
         title: 'Cached',
         description: 'd',
         ownerGithubLogin: 'x',
@@ -386,7 +386,7 @@ describe('HiveDirectory — PG cache seam + TTL GC', () => {
     const dir = new HiveDirectory(makeDeps({ loadCache: async () => cached }));
     const n = await dir.hydrateFromCache();
     expect(n).toBe(1);
-    expect(dir.listDiscoveredHives()[0].hiveId).toBe('cached-1');
+    expect(dir.listDiscoveredHives()[0].potId).toBe('cached-1');
   });
 
   it('persists the discovered set on accept (saveCache called with the full set)', async () => {
@@ -431,7 +431,7 @@ describe('cross-Hive addressability — hive_pubkey flows announce→DiscoveredH
     const kp = keypair();
     const dir = new HiveDirectory(makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) }));
     const desc: LocalHiveDescriptor = {
-      hiveId: 'owned-1',
+      potId: 'owned-1',
       title: 'Owned',
       description: 'd',
       memberTopics: [],

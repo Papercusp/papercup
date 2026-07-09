@@ -37,9 +37,9 @@ import { egressCanonicalRefs } from './github-egress';
 import type { IntegrationRequestState } from './integration-requests';
 
 /** The deterministic fork branch for a ratified (device, sha) request. */
-export function forkEgressBranch(hiveSlug: string, devicePubkeyBase64: string, headSha: string): string {
+export function forkEgressBranch(potSlug: string, devicePubkeyBase64: string, headSha: string): string {
   const devHex8 = deviceNamespaceKey(devicePubkeyBase64).slice(0, 8);
-  return `hive/${hiveSlug}/${devHex8}-${headSha.slice(0, 8)}`;
+  return `hive/${potSlug}/${devHex8}-${headSha.slice(0, 8)}`;
 }
 
 export interface ForkEgressRequest {
@@ -53,7 +53,7 @@ export interface ForkEgressRequest {
 export interface ForkEgressInput {
   /** The hive-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
-  hiveSlug: string;
+  potSlug: string;
   /** The ratified integration request to egress. */
   request: ForkEgressRequest;
   /** Upstream (PR target) coords — "github.com/owner/repo" + owner/repo/base. */
@@ -101,7 +101,7 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
     return { ok: false, refused: 'sha_missing', error: `head ${req.headSha} not present in the hive-git store` };
   }
 
-  const branch = forkEgressBranch(input.hiveSlug, req.devicePubkey, req.headSha);
+  const branch = forkEgressBranch(input.potSlug, req.devicePubkey, req.headSha);
   const devHex8 = deviceNamespaceKey(req.devicePubkey).slice(0, 8);
   const forkPushUrl = input.forkPushUrl ?? ((full: string, token: string) => buildCloneUrl(full, token));
 
@@ -114,11 +114,11 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
     // The push source is the BARE STORE, not a local clone — our pushFn below
     // is the only thing that reads this, via egressCanonicalRefs.
     localRepoPath: input.repoPath,
-    title: input.title ?? `hive ${input.hiveSlug}: integrate ${req.headSha.slice(0, 8)} (device ${devHex8})`,
+    title: input.title ?? `hive ${input.potSlug}: integrate ${req.headSha.slice(0, 8)} (device ${devHex8})`,
     body:
       input.body ??
       `Ratified hive integration request (github-bridge fork egress).\n\n` +
-        `- hive: \`${input.hiveSlug}\`\n- device: \`${devHex8}\`\n- head: \`${req.headSha}\`\n` +
+        `- hive: \`${input.potSlug}\`\n- device: \`${devHex8}\`\n- head: \`${req.headSha}\`\n` +
         (req.authorGithubUserId ? `- author github id: ${req.authorGithubUserId}\n` : ''),
     token: input.token,
     ensureForkFn: input.ensureForkFn,

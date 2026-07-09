@@ -31,8 +31,8 @@ export type SeedSource =
  * actually admitted to the hive.
  */
 export type SeedKeyRef =
-  | { readonly via: 'epoch'; readonly hiveId: string; readonly epoch: number }
-  | { readonly via: 'seed-key-op'; readonly hiveId: string };
+  | { readonly via: 'epoch'; readonly potId: string; readonly epoch: number }
+  | { readonly via: 'seed-key-op'; readonly potId: string };
 
 /** Present on a store entry ⇒ the payload is ciphertext at rest. */
 export interface SeedEncryptionEnvelope {
@@ -59,7 +59,7 @@ export interface SeedStoreEntry {
 export interface SeedManifest {
   readonly seedFormatVersion: number;
   /** Which hive this seed reconstitutes. */
-  readonly hiveId: string;
+  readonly potId: string;
   /** Hive epoch at cut time — a member decrypts seeded content only if it holds
    *  this epoch's key (see the design memo, Q-4). */
   readonly cutAtEpoch: number;
@@ -90,10 +90,10 @@ function validateKeyRef(k: unknown, p: string, errors: string[]): void {
   }
   const kr = k as Record<string, unknown>;
   if (kr.via === 'epoch') {
-    if (typeof kr.hiveId !== 'string' || kr.hiveId.length === 0) errors.push(`${p}.hiveId must be a non-empty string`);
+    if (typeof kr.potId !== 'string' || kr.potId.length === 0) errors.push(`${p}.potId must be a non-empty string`);
     if (!Number.isInteger(kr.epoch) || (kr.epoch as number) < 0) errors.push(`${p}.epoch must be a non-negative integer`);
   } else if (kr.via === 'seed-key-op') {
-    if (typeof kr.hiveId !== 'string' || kr.hiveId.length === 0) errors.push(`${p}.hiveId must be a non-empty string`);
+    if (typeof kr.potId !== 'string' || kr.potId.length === 0) errors.push(`${p}.potId must be a non-empty string`);
   } else {
     errors.push(`${p}.via must be one of epoch|seed-key-op`);
   }
@@ -157,7 +157,7 @@ export function validateManifest(m: unknown): ManifestValidation {
   if (man.seedFormatVersion !== SEED_FORMAT_VERSION) {
     errors.push(`seedFormatVersion must be ${SEED_FORMAT_VERSION} (got ${JSON.stringify(man.seedFormatVersion)})`);
   }
-  if (typeof man.hiveId !== 'string' || man.hiveId.length === 0) errors.push('hiveId must be a non-empty string');
+  if (typeof man.potId !== 'string' || man.potId.length === 0) errors.push('potId must be a non-empty string');
   if (!Number.isInteger(man.cutAtEpoch) || (man.cutAtEpoch as number) < 0) errors.push('cutAtEpoch must be a non-negative integer');
   if (typeof man.cutHlc !== 'string' || man.cutHlc.length === 0) errors.push('cutHlc must be a non-empty string');
   if (typeof man.cutTs !== 'number' || !Number.isFinite(man.cutTs)) errors.push('cutTs must be a finite number');

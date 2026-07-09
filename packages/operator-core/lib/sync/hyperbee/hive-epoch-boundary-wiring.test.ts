@@ -57,8 +57,8 @@ describe('advanceEpochOnHiveBoundary', () => {
     expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 2 });
   });
 
-  it('passes hiveId = hiveHomeSlug to the core (mint ↔ encrypt/decrypt AAD agree per-peer)', async () => {
-    let ctxSeen: { hiveId?: string; hiveHomeSlug?: string } = {};
+  it('passes potId = hiveHomeSlug to the core (mint ↔ encrypt/decrypt AAD agree per-peer)', async () => {
+    let ctxSeen: { potId?: string; hiveHomeSlug?: string } = {};
     await advanceEpochOnHiveBoundary(
       { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true },
       {
@@ -73,7 +73,7 @@ describe('advanceEpochOnHiveBoundary', () => {
         persistWrappedKeys: async () => 0,
       },
     );
-    expect(ctxSeen.hiveId).toBe('hello-world-hive');
+    expect(ctxSeen.potId).toBe('hello-world-hive');
     expect(ctxSeen.hiveHomeSlug).toBe('hello-world-hive');
   });
 

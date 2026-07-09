@@ -43,7 +43,7 @@ function claim(workItemId: string, claimId: string, holderPubkey: string, acquir
     workspaceId: 'w',
     harnessSlug: 'h',
     workItemId,
-    hiveSlug: 'hive',
+    potSlug: 'hive',
     claimId,
     owner: 'o',
     ownerLabel: null,

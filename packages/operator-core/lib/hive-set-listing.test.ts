@@ -31,7 +31,7 @@ vi.mock('./hive-publish-from-repo', () => ({ republishHiveAfterMemberAdd: (...a:
 
 import { setHiveListing } from './hive-set-listing';
 
-const base = { hiveId: 'h', title: 'T' } as const;
+const base = { potId: 'h', title: 'T' } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -45,7 +45,7 @@ describe('setHiveListing — always persists first', () => {
     await setHiveListing({ ...base, visibility: 'public' }, 'ws');
     expect(saveOwnedHiveMeta).toHaveBeenCalledTimes(1);
     const [meta, ws] = saveOwnedHiveMeta.mock.calls[0];
-    expect(meta).toMatchObject({ hiveId: 'h', title: 'T', visibility: 'public', workspaceId: 'ws' });
+    expect(meta).toMatchObject({ potId: 'h', title: 'T', visibility: 'public', workspaceId: 'ws' });
     expect(ws).toBe('ws');
   });
 });
@@ -114,6 +114,6 @@ describe('setHiveListing — public/invite = publish (DISC-2)', () => {
     const res = await setHiveListing({ ...base, visibility: 'invite', inviteSecret: 'sekret' }, 'ws');
     expect(res).toMatchObject({ visibility: 'invite', announced: true });
     expect(saveOwnedHiveMeta.mock.calls[0][0]).toMatchObject({ inviteSecret: 'sekret' });
-    expect(republishHiveAfterMemberAdd).toHaveBeenCalledWith({ workspaceId: 'ws', hiveSlug: 'h' });
+    expect(republishHiveAfterMemberAdd).toHaveBeenCalledWith({ workspaceId: 'ws', potSlug: 'h' });
   });
 });

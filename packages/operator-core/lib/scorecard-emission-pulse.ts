@@ -140,7 +140,7 @@ async function recordPulseFire(workspaceId: string, installSlug: string, reason:
  *  unit-testable without PG / flags (same pattern as the turn-end backstop). */
 export interface ScorecardEmissionPulseDeps {
   enabled?: () => Promise<boolean>;
-  controlState?: (opts: { workspaceId?: string }) => Promise<{ hiveSlug: string | null }>;
+  controlState?: (opts: { workspaceId?: string }) => Promise<{ potSlug: string | null }>;
   freshness?: typeof checkScorecardFreshness;
   computeHealth?: (workspaceId?: string) => Promise<SystemHealth>;
   capture?: typeof captureImprovement;
@@ -177,7 +177,7 @@ export async function runScorecardEmissionPulse(
     if (!(await enabled())) return { outcome: 'skipped', reason: 'papercusp-overwatch flag off' };
 
     const cs = await controlState({ workspaceId });
-    const sourceHive = cs.hiveSlug;
+    const sourceHive = cs.potSlug;
     if (!sourceHive) return { outcome: 'skipped', reason: 'no hive configured for this workspace' };
 
     // ANY card in-window counts — agent, turn-end backstop floor, or a prior pulse

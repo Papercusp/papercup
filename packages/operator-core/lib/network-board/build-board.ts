@@ -134,8 +134,8 @@ export function assembleNetworkBoard(input: NetworkBoardInputs): NetworkBoardRow
     const pubkey = h.hivePubkey || '';
     const row: NetworkBoardRow = {
       tier,
-      key: pubkey || h.hiveId,
-      title: h.title || h.hiveId,
+      key: pubkey || h.potId,
+      title: h.title || h.potId,
       trust,
       lastSeen: new Date(h.lastSeenMs).toISOString(),
     };
@@ -194,11 +194,11 @@ export function watchOwnersByHarness(rows: FleetAssignmentRow[]): Map<string, st
  */
 async function readAsksByPeer(
   workspaceId: string,
-  hiveSlug: string,
+  potSlug: string,
 ): Promise<Map<string, NetworkAsks>> {
   const out = new Map<string, NetworkAsks>();
   try {
-    const rows = await new PgCrossHiveAsks(workspaceId, hiveSlug).list({ direction: 'out' });
+    const rows = await new PgCrossHiveAsks(workspaceId, potSlug).list({ direction: 'out' });
     for (const r of rows) {
       let summary = out.get(r.peerPubkey);
       if (!summary) {

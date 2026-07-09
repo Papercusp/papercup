@@ -34,17 +34,17 @@ export function chainEpochKeyProviders(
   if (chain.length === 1) return chain[0];
   if (chain.length === 0) {
     return {
-      async keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey> {
-        throw new EpochKeyUnavailableError(hiveId, epoch);
+      async keyForEpoch(potId: string, epoch: number): Promise<EpochKey> {
+        throw new EpochKeyUnavailableError(potId, epoch);
       },
     };
   }
   return {
-    async keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey> {
+    async keyForEpoch(potId: string, epoch: number): Promise<EpochKey> {
       let lastErr: unknown;
       for (const provider of chain) {
         try {
-          return await provider.keyForEpoch(hiveId, epoch);
+          return await provider.keyForEpoch(potId, epoch);
         } catch (e) {
           lastErr = e;
         }

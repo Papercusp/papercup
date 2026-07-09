@@ -39,7 +39,7 @@ export interface PresenceInput {
   agentRole?: string | null;
   /** The agent's home Hive slug, resolved host-side (null = standalone). Also
    *  preserved across writes that omit it. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
 }
 
 export interface PresenceRecord {
@@ -61,7 +61,7 @@ export interface PresenceRecord {
   /** Durable agent role (human/su/bee/principal/…). null when unresolved. */
   agentRole: string | null;
   /** The agent's home Hive slug (null = standalone / no hive). */
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** Per-session SOFT compaction limit in tokens (agent-managed-compaction).
    *  null/undefined ⇒ use the per-model default. Set via config:set-compaction-limit.
    *  Optional: only the PG store (live presence) carries it; roster/snapshot
@@ -102,8 +102,8 @@ export interface PresenceStore {
   clear(ownerId: string): Promise<void>;
   /** List presence in deterministic ownerId order (presence-v2 P-005 / D-006 —
    *  cache- and diff-stable), optionally scoped to a workspace and/or a Hive
-   *  (hiveSlug — the P-004 hive-scoped read; null/omitted = no hive filter). */
-  list(opts?: { workspaceId?: string | null; hiveSlug?: string | null }): Promise<PresenceRecord[]>;
+   *  (potSlug — the P-004 hive-scoped read; null/omitted = no hive filter). */
+  list(opts?: { workspaceId?: string | null; potSlug?: string | null }): Promise<PresenceRecord[]>;
   /** Read one presence record by owner id, or null. */
   get(ownerId: string): Promise<PresenceRecord | null>;
   /** Delete presence rows whose heartbeat is older than maxAgeMs — true dead

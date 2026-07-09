@@ -67,7 +67,7 @@ export type LoopScenario =
 export interface RunFullLoopOpts {
   launcher: LoopLauncher;
   scenario: LoopScenario;
-  hiveSlug?: string;
+  potSlug?: string;
   workspaceId?: string;
   harnessSlug?: string;
   backlogSize?: number;
@@ -179,7 +179,7 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
   const queenIndex = opts.queenIndex ?? 1;
   const scenario = opts.scenario;
 
-  const hiveSlug = opts.hiveSlug ?? 'full-loop-hive';
+  const potSlug = opts.potSlug ?? 'full-loop-hive';
   // Synthetic ≥3-Swarm full-loop E2E test-rig scope (siblings 'full-loop-hive' /
   // 'full-loop-h1') — a self-contained steer→contend→execute→converge scenario over loopback
   // / ephemeral Hetzner frames that never reads or writes real workspace data, a local default.
@@ -218,7 +218,7 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
       machineLabel: slot.label,
       workspaceId,
       harnessSlug,
-      hiveSlug,
+      potSlug,
       hivePubkey,
       root: slot.root,
       ...(opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),

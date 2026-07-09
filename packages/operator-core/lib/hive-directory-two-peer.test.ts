@@ -34,7 +34,7 @@ function peerA() {
   };
   const dir = new HiveDirectory(deps);
   const desc: LocalHiveDescriptor = {
-    hiveId: 'ash',
+    potId: 'ash',
     title: 'Ash Hive',
     description: 'the shop migration hive',
     memberTopics: ['a'.repeat(64)],
@@ -74,7 +74,7 @@ describe('two-peer directory flow (single-process proxy for the multi-peer gate)
     const listed = b.listDiscoveredHives();
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({
-      hiveId: 'ash',
+      potId: 'ash',
       title: 'Ash Hive',
       ownerGithubLogin: 'alice',
       ownerDevicePubkey: a.pubkey,

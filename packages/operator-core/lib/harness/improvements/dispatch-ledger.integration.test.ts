@@ -49,7 +49,7 @@ describe('improvement_dispatches write path (migration 238)', () => {
       itemId: 'EI-HIVE',
       attempt: 1,
       runnerHarness: 'runner-h',
-      hiveSlug: 'acme-hive',
+      potSlug: 'acme-hive',
     });
     expect(id).toBeTruthy();
     const [r] = await h.sql<{ pot_slug: string | null }[]>`

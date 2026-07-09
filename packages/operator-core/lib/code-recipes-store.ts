@@ -65,7 +65,7 @@ export interface RecordRecipeRunInput {
    *  recipe itself is global; this records which hive/workspace exercised it). */
   workspaceId: string;
   /** The hive that ran it — usage; null ⇒ workspace-level run. */
-  hiveSlug: string | null;
+  potSlug: string | null;
   /** The coord ownerId that ran it (distinct-agent signal). */
   agentOwner?: string | null;
   agentRole?: string | null;
@@ -187,7 +187,7 @@ export async function recordRecipeRun(
       INSERT INTO harness_shared.code_recipe_runs
         (recipe_id, workspace_id, pot_slug, agent_owner, agent_role, success, reused)
       VALUES (
-        ${input.recipeId}, ${input.workspaceId}, ${input.hiveSlug},
+        ${input.recipeId}, ${input.workspaceId}, ${input.potSlug},
         ${input.agentOwner ?? null}, ${input.agentRole ?? null},
         ${success}, ${input.reused ?? false}
       )`;

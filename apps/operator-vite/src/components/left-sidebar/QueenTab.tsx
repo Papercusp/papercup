@@ -474,10 +474,10 @@ export default function QueenTab({ active }: { active: boolean }) {
   };
   const treeToggleHive = (slug: string) =>
     applySteering(treeToggleHiveFn(liveSelection(), slug, planIndex.hivePlans, planIndex.planToHive));
-  const treeTogglePlan = (hiveSlug: string, planSlug: string) =>
-    applySteering(treeTogglePlanFn(liveSelection(), hiveSlug, planSlug, planIndex.hivePlans, planIndex.planToHive));
-  const treeSetHivePlans = (hiveSlug: string, on: boolean) =>
-    applySteering(treeSetHivePlansFn(liveSelection(), hiveSlug, on, planIndex.hivePlans, planIndex.planToHive));
+  const treeTogglePlan = (potSlug: string, planSlug: string) =>
+    applySteering(treeTogglePlanFn(liveSelection(), potSlug, planSlug, planIndex.hivePlans, planIndex.planToHive));
+  const treeSetHivePlans = (potSlug: string, on: boolean) =>
+    applySteering(treeSetHivePlansFn(liveSelection(), potSlug, on, planIndex.hivePlans, planIndex.planToHive));
   const treeSetAllHives = (on: boolean) =>
     applySteering(treeSetAllHivesFn(liveSelection(), on, steerableHiveOptions, planIndex.planToHive));
 

@@ -191,7 +191,7 @@ export async function isCanonicalHiveOwner(
     .then((m) =>
       m.signalHiveKeyDivergent({
         workspaceId,
-        hiveSlug: homeSlug,
+        potSlug: homeSlug,
         context: 'isCanonicalHiveOwner',
         heldPubkey: held,
         canonicalPubkey: canonicalPk,

@@ -73,7 +73,7 @@ const baseArgs = {
   originGithubUserId: 42,
   stampedGrantorEpoch: 7,
   workspaceId: 'ws-1',
-  hiveSlug: 'hive-h',
+  potSlug: 'hive-h',
   responderGithubUserId: 99,
   executorDevice: 'dev-host',
   sourceRepoPath: '/src/repo',

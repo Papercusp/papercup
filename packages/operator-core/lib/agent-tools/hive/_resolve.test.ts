@@ -33,14 +33,14 @@ describe('describeHive', () => {
     expect(d.wake).toBe(WAKE);
   });
 
-  it('defaults deployment to local and deployed=false / hiveId=undefined for a local hive', () => {
+  it('defaults deployment to local and deployed=false / potId=undefined for a local hive', () => {
     const d = describeHive({ slug: 'h', path: '/h', harness_kind: 'hive' }, WAKE);
     expect(d.deployment).toEqual({ target: 'local' });
     expect(d.deployed).toBe(false);
-    expect(d.hiveId).toBeUndefined();
+    expect(d.potId).toBeUndefined();
   });
 
-  it('surfaces hiveId from the deployment frame and passes the deployment through', () => {
+  it('surfaces potId from the deployment frame and passes the deployment through', () => {
     const p = {
       slug: 'h',
       path: '/h',
@@ -50,7 +50,7 @@ describe('describeHive', () => {
     } as unknown as ProjectEntry;
     const d = describeHive(p, WAKE);
     expect(d.deployed).toBe(true);
-    expect(d.hiveId).toBe('hive_abc');
+    expect(d.potId).toBe('hive_abc');
     expect(d.deployment).toEqual({ target: 'cloud-test' });
   });
 });

@@ -10,7 +10,7 @@ const URL_OK = 'https://github.com/acme/shop';
 
 function discovered(over: Partial<DiscoveredHive> = {}): DiscoveredHive {
   return {
-    hiveId: 'hive-1',
+    potId: 'hive-1',
     title: 'Acme Hive',
     description: '',
     ownerGithubLogin: 'alice',
@@ -66,7 +66,7 @@ describe('lookupHiveForRepo (P-005)', () => {
     expect(r.kind).toBe('hive');
     if (r.kind !== 'hive') return;
     expect(r.source).toBe('directory');
-    expect(r.hive.hiveId).toBe('hive-1');
+    expect(r.hive.potId).toBe('hive-1');
     expect(r.hive.memberLinks?.length).toBe(1);
     expect(r.bindingUnverified).toBe(false);
     expect(r.coords).toMatchObject({ owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true });

@@ -36,7 +36,7 @@ describe('runRecipeHygieneOnce (real PG)', () => {
       toolsUsed: ['plans:list'],
     });
     await recordRecipeRun(db.adminSql, {
-      recipeId: 'stale-oneoff-recipe', workspaceId: ws, hiveSlug: 'alpha', agentOwner: 'a', success: true,
+      recipeId: 'stale-oneoff-recipe', workspaceId: ws, potSlug: 'alpha', agentOwner: 'a', success: true,
     });
     await db.adminSql`UPDATE harness_shared.code_recipes SET last_run_at = now() - interval '40 days' WHERE id = 'stale-oneoff-recipe'`;
 
@@ -50,7 +50,7 @@ describe('runRecipeHygieneOnce (real PG)', () => {
     });
     for (const agent of ['a', 'b', 'c']) {
       await recordRecipeRun(db.adminSql, {
-        recipeId: 'hot-recipe', workspaceId: ws, hiveSlug: 'alpha', agentOwner: agent, success: true,
+        recipeId: 'hot-recipe', workspaceId: ws, potSlug: 'alpha', agentOwner: agent, success: true,
       });
     }
 

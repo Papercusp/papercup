@@ -25,7 +25,7 @@ import { resolveDeploymentDriver } from '@papercusp/deployment-driver';
 export type QueenPlacement = 'local' | 'dedicated' | 'colocated';
 
 export interface HiveDeploySpec {
-  hiveId: string;
+  potId: string;
   /** Harness slugs whose execution deploys to the Swarm. */
   members: string[];
   /** The cloud target for the execution frames. */
@@ -50,8 +50,8 @@ export interface HiveDeployDeps {
   deployHarness: (slug: string, workspaceId: string) => Promise<{ frame: Frame }>;
   teardownHarness: (slug: string, workspaceId: string) => Promise<{ destroyed: boolean }>;
   /** Deploy/teardown the dedicated Queen control frame (only used for `dedicated`). */
-  deployControlFrame?: (hiveId: string, workspaceId: string, deployment: DeploymentConfig) => Promise<Frame>;
-  teardownControlFrame?: (hiveId: string, workspaceId: string) => Promise<{ destroyed: boolean }>;
+  deployControlFrame?: (potId: string, workspaceId: string, deployment: DeploymentConfig) => Promise<Frame>;
+  teardownControlFrame?: (potId: string, workspaceId: string) => Promise<{ destroyed: boolean }>;
   log?: (level: LogLevel, msg: string) => void;
 }
 
@@ -61,7 +61,7 @@ export interface HiveMemberResult {
   error?: string;
 }
 export interface HiveDeployResult {
-  hiveId: string;
+  potId: string;
   members: HiveMemberResult[];
   controlFrame?: Frame;
   queenPlacement: QueenPlacement;
@@ -80,16 +80,16 @@ export async function deployHive(
   deps: HiveDeployDeps,
 ): Promise<HiveDeployResult> {
   const placement = placementOf(spec);
-  deps.log?.('info', `[hive] deploying ${spec.hiveId} (${spec.members.length} members → ${spec.swarm.target}; queen=${placement})`);
+  deps.log?.('info', `[hive] deploying ${spec.potId} (${spec.members.length} members → ${spec.swarm.target}; queen=${placement})`);
 
   let controlFrame: Frame | undefined;
   if (placement === 'dedicated') {
     if (!deps.deployControlFrame) throw new Error('deployHive: queen.placement=dedicated requires deps.deployControlFrame');
     const queenDeployment = spec.queen?.deployment ?? spec.swarm;
-    controlFrame = await deps.deployControlFrame(spec.hiveId, workspaceId, queenDeployment);
-    deps.log?.('info', `[hive] ${spec.hiveId} Queen on dedicated control frame ${controlFrame.id}`);
+    controlFrame = await deps.deployControlFrame(spec.potId, workspaceId, queenDeployment);
+    deps.log?.('info', `[hive] ${spec.potId} Queen on dedicated control frame ${controlFrame.id}`);
   } else {
-    deps.log?.('info', `[hive] ${spec.hiveId} Queen is ${placement === 'local' ? 'the local control peer' : 'co-located on an execution frame'} — no separate control frame`);
+    deps.log?.('info', `[hive] ${spec.potId} Queen is ${placement === 'local' ? 'the local control peer' : 'co-located on an execution frame'} — no separate control frame`);
   }
 
   const members: HiveMemberResult[] = [];
@@ -100,10 +100,10 @@ export async function deployHive(
       members.push({ slug, frame });
     } catch (e) {
       members.push({ slug, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
-      deps.log?.('error', `[hive] ${spec.hiveId} member ${slug} failed: ${members[members.length - 1].error}`);
+      deps.log?.('error', `[hive] ${spec.potId} member ${slug} failed: ${members[members.length - 1].error}`);
     }
   }
-  return { hiveId: spec.hiveId, members, controlFrame, queenPlacement: placement };
+  return { potId: spec.potId, members, controlFrame, queenPlacement: placement };
 }
 
 /**
@@ -114,7 +114,7 @@ export async function teardownHive(
   spec: HiveDeploySpec,
   workspaceId: string,
   deps: HiveDeployDeps,
-): Promise<{ hiveId: string; destroyed: string[]; failed: string[] }> {
+): Promise<{ potId: string; destroyed: string[]; failed: string[] }> {
   const destroyed: string[] = [];
   const failed: string[] = [];
   for (const slug of spec.members) {
@@ -127,14 +127,14 @@ export async function teardownHive(
   }
   if (placementOf(spec) === 'dedicated' && deps.teardownControlFrame) {
     try {
-      const r = await deps.teardownControlFrame(spec.hiveId, workspaceId);
-      if (r.destroyed) destroyed.push(`queen:${spec.hiveId}`);
+      const r = await deps.teardownControlFrame(spec.potId, workspaceId);
+      if (r.destroyed) destroyed.push(`queen:${spec.potId}`);
     } catch {
-      failed.push(`queen:${spec.hiveId}`);
+      failed.push(`queen:${spec.potId}`);
     }
   }
-  deps.log?.('info', `[hive] ${spec.hiveId} torn down: destroyed ${destroyed.length}, failed ${failed.length}`);
-  return { hiveId: spec.hiveId, destroyed, failed };
+  deps.log?.('info', `[hive] ${spec.potId} torn down: destroyed ${destroyed.length}, failed ${failed.length}`);
+  return { potId: spec.potId, destroyed, failed };
 }
 
 /**
@@ -149,17 +149,17 @@ export async function pauseHive(
   workspaceId: string,
   deps: HiveDeployDeps,
   opts: { includeQueen?: boolean } = {},
-): Promise<{ hiveId: string; paused: string[] }> {
+): Promise<{ potId: string; paused: string[] }> {
   const paused: string[] = [];
   for (const slug of spec.members) {
     const r = await deps.teardownHarness(slug, workspaceId).catch(() => ({ destroyed: false }));
     if (r.destroyed) paused.push(slug);
   }
   if (opts.includeQueen && placementOf(spec) === 'dedicated' && deps.teardownControlFrame) {
-    await deps.teardownControlFrame(spec.hiveId, workspaceId).catch(() => undefined);
+    await deps.teardownControlFrame(spec.potId, workspaceId).catch(() => undefined);
   }
-  deps.log?.('info', `[hive] ${spec.hiveId} paused (${paused.length} frames destroyed to stop billing)`);
-  return { hiveId: spec.hiveId, paused };
+  deps.log?.('info', `[hive] ${spec.potId} paused (${paused.length} frames destroyed to stop billing)`);
+  return { potId: spec.potId, paused };
 }
 
 /**
@@ -187,7 +187,7 @@ export async function scaleHive(
     const r = await deps.teardownHarness(slug, workspaceId).catch(() => ({ destroyed: false }));
     if (r.destroyed) removed.push(slug);
   }
-  deps.log?.('info', `[hive] ${spec.hiveId} scaled: +${added.length} / -${removed.length}`);
+  deps.log?.('info', `[hive] ${spec.potId} scaled: +${added.length} / -${removed.length}`);
   return { added, removed };
 }
 
@@ -234,7 +234,7 @@ export async function reapHiveFrames(
 ): Promise<{ slug: string; reason: 'budget' | 'idle' }[]> {
   const toReap = computeFramesToReap(spec, frames, nowMs);
   for (const { slug, reason } of toReap) {
-    deps.log?.('info', `[hive] ${spec.hiveId} reaping ${slug} (${reason}) — destroy-to-stop`);
+    deps.log?.('info', `[hive] ${spec.potId} reaping ${slug} (${reason}) — destroy-to-stop`);
     await deps.teardownHarness(slug, workspaceId).catch(() => undefined);
   }
   return toReap;
@@ -249,8 +249,8 @@ export async function reapHiveFrames(
  * across frames) and its handle persisted in operator_state so teardown finds it.
  */
 export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => void): HiveDeployDeps {
-  const ctxFor = (hiveId: string, ws: string): DeploymentContext => ({
-    harnessSlug: `hive-queen-${hiveId}`,
+  const ctxFor = (potId: string, ws: string): DeploymentContext => ({
+    harnessSlug: `hive-queen-${potId}`,
     workspaceId: ws,
     log,
   });
@@ -274,26 +274,26 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
       const { teardownHarness, defaultDeployDeps } = await import('./deploy');
       return teardownHarness(slug, workspaceId, defaultDeployDeps(log));
     },
-    async deployControlFrame(hiveId, workspaceId, deployment) {
+    async deployControlFrame(potId, workspaceId, deployment) {
       const { resolveCredential } = await import('./bootstrap-input');
       const driver = resolveDeploymentDriver(deployment);
       const ctx: DeploymentContext = {
-        ...ctxFor(hiveId, workspaceId),
+        ...ctxFor(potId, workspaceId),
         bootstrap: { controlNode: true, ...resolveCredential(deployment.credentialRef) },
       };
       const frame = await driver.provision(deployment, ctx);
-      await persistControlFrame(hiveId, workspaceId, frame);
+      await persistControlFrame(potId, workspaceId, frame);
       await driver.install(frame, deployment, ctx);
       await driver.join(frame, deployment, ctx);
       return frame;
     },
-    async teardownControlFrame(hiveId, workspaceId) {
-      const frame = await loadControlFrame(hiveId, workspaceId);
+    async teardownControlFrame(potId, workspaceId) {
+      const frame = await loadControlFrame(potId, workspaceId);
       if (!frame) return { destroyed: false };
       const config: DeploymentConfig = { target: frame.target };
       const driver = resolveDeploymentDriver(config);
-      await driver.teardown(frame, config, ctxFor(hiveId, workspaceId));
-      await clearControlFrame(hiveId, workspaceId);
+      await driver.teardown(frame, config, ctxFor(potId, workspaceId));
+      await clearControlFrame(potId, workspaceId);
       return { destroyed: true };
     },
   };
@@ -302,21 +302,21 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
 // Queen control-frame handles persist in the existing `harness_registry` blob
 // (workspace PG) under `hiveControlFrames` — no new table/migration, alongside the
 // per-harness `deploymentFrame` handles.
-async function loadControlFrame(hiveId: string, workspaceId: string): Promise<Frame | undefined> {
+async function loadControlFrame(potId: string, workspaceId: string): Promise<Frame | undefined> {
   const { loadHarnessRegistry } = await import('../harness-registry');
-  return (await loadHarnessRegistry(workspaceId)).hiveControlFrames?.[hiveId];
+  return (await loadHarnessRegistry(workspaceId)).hiveControlFrames?.[potId];
 }
-async function persistControlFrame(hiveId: string, workspaceId: string, frame: Frame): Promise<void> {
+async function persistControlFrame(potId: string, workspaceId: string, frame: Frame): Promise<void> {
   const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
   const reg = await loadHarnessRegistry(workspaceId);
-  reg.hiveControlFrames = { ...(reg.hiveControlFrames ?? {}), [hiveId]: frame };
+  reg.hiveControlFrames = { ...(reg.hiveControlFrames ?? {}), [potId]: frame };
   await saveHarnessRegistry(reg, workspaceId);
 }
-async function clearControlFrame(hiveId: string, workspaceId: string): Promise<void> {
+async function clearControlFrame(potId: string, workspaceId: string): Promise<void> {
   const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
   const reg = await loadHarnessRegistry(workspaceId);
   if (reg.hiveControlFrames) {
-    delete reg.hiveControlFrames[hiveId];
+    delete reg.hiveControlFrames[potId];
     await saveHarnessRegistry(reg, workspaceId);
   }
 }

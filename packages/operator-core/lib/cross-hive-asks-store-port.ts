@@ -23,21 +23,21 @@ export interface CrossHiveAsksStore {
   /** Record a fresh request in state `queued` (idempotent on correlation_id). */
   insertQueued(
     workspaceId: string,
-    hiveSlug: string,
+    potSlug: string,
     input: InsertCrossHiveAskInput,
     sql?: Sql,
   ): Promise<CrossHiveAsk>;
   /** queued → sent once the wire send delivered (keyed by correlation_id; idempotent). */
   markSentByCorrelationId(
     workspaceId: string,
-    hiveSlug: string,
+    potSlug: string,
     correlationId: string,
     sql?: Sql,
   ): Promise<void>;
   /** List rows (most-recent-first) for `pot:asks`. */
   list(
     workspaceId: string,
-    hiveSlug: string,
+    potSlug: string,
     filter: ListCrossHiveAsksFilter,
     sql?: Sql,
   ): Promise<CrossHiveAsk[]>;

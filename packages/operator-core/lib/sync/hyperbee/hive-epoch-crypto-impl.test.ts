@@ -38,7 +38,7 @@ async function makeDevice(keychainId: string): Promise<{ keychainId: string; pub
   return { keychainId, pubkeyBase64 };
 }
 
-const AD = (over: Partial<OpAAD> = {}): OpAAD => ({ hiveId: 'hive-1', epoch: 1, opId: 'features:F-1:alice', ...over });
+const AD = (over: Partial<OpAAD> = {}): OpAAD => ({ potId: 'hive-1', epoch: 1, opId: 'features:F-1:alice', ...over });
 
 beforeEach(() => {
   mem.clear();

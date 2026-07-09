@@ -63,15 +63,15 @@ export const WORK_ITEM_REPLICA_OP_KINDS = {
 
 /** The authority scope key for a replica op: the Hive home if present, else the
  *  harness slug — identical to the claim store's scopeOf (single box → harness). */
-function replicaScopeOf(opts: { hiveSlug?: string | null; harnessSlug?: string; harness?: string }): string {
-  if (opts.hiveSlug && opts.hiveSlug.length > 0) return opts.hiveSlug;
+function replicaScopeOf(opts: { potSlug?: string | null; harnessSlug?: string; harness?: string }): string {
+  if (opts.potSlug && opts.potSlug.length > 0) return opts.potSlug;
   const harness = (opts.harnessSlug ?? opts.harness ?? '').trim();
   if (!harness) {
     // No Hive and no harness → an empty authority scope key collapses every harness's
     // replicas into one consensus bucket (misrouted judging). Fail loud, never `?? ''`
     // (workspace-data-isolation-leaks P-003).
     throw new Error(
-      'replicaScopeOf: no hiveSlug and no harness — the replica authority scope key ' +
+      'replicaScopeOf: no potSlug and no harness — the replica authority scope key ' +
         'would be empty, collapsing distinct harnesses into one consensus bucket.',
     );
   }
@@ -218,7 +218,7 @@ export interface ClaimReplicaOpts {
   workspaceId?: string;
   harnessSlug: string;
   /** Hive home for authority routing (EI-266). Omit → routes by harness (single box). */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   workItemId: string;
   owner: string;
   ownerLabel?: string | null;
@@ -316,7 +316,7 @@ export interface ReplicaLeaseParams {
   workspaceId?: string;
   harnessSlug: string;
   /** Hive home for authority routing (EI-266). Omit → routes by harness. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   workItemId: string;
   replicaIndex: number;
   claimId: string;
@@ -386,7 +386,7 @@ export interface RecordReplicaResultOpts {
   workspaceId?: string;
   harnessSlug: string;
   /** Hive home for authority routing (EI-266). Omit → routes by harness. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   workItemId: string;
   replicaIndex: number;
   owner: string;
@@ -426,10 +426,10 @@ export async function recordReplicaResultLocal(opts: RecordReplicaResultOpts): P
  *  per-Hive replica authority (EI-266) so the judge reads the FULL group. */
 export async function listReplicas(
   workItemId: string,
-  opts: { harness: string; workspaceId?: string; hiveSlug?: string | null },
+  opts: { harness: string; workspaceId?: string; potSlug?: string | null },
 ): Promise<WorkItemReplica[]> {
   const resolved = { ...opts, workspaceId: opts.workspaceId ?? activeWorkspaceId() };
-  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, hiveSlug: resolved.hiveSlug }), {
+  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, potSlug: resolved.potSlug }), {
     local: () => listReplicasLocal(workItemId, resolved),
     remote: {
       kind: WORK_ITEM_REPLICA_OP_KINDS.list,
@@ -442,7 +442,7 @@ export async function listReplicas(
 /** LOCAL (un-routed) list — the authority-side execution. */
 export async function listReplicasLocal(
   workItemId: string,
-  opts: { harness: string; workspaceId?: string; hiveSlug?: string | null },
+  opts: { harness: string; workspaceId?: string; potSlug?: string | null },
 ): Promise<WorkItemReplica[]> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
@@ -492,7 +492,7 @@ export interface JudgeRedundancyOpts {
   workspaceId?: string;
   harness: string;
   /** Hive home for authority routing (EI-266). Omit → routes by harness. */
-  hiveSlug?: string | null;
+  potSlug?: string | null;
   workItemId: string;
   /** Default: the work-item's title + summary. */
   intent?: string;
@@ -535,7 +535,7 @@ export async function judgeRedundancyGroup(
   // replicas live (the authority). Route it; on a remote authority the caller's
   // injected `llmCall` cannot serialize, so the authority judges with its OWN
   // grader (the only grader of record) — the op handler supplies it.
-  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, hiveSlug: resolved.hiveSlug }), {
+  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, potSlug: resolved.potSlug }), {
     local: () => judgeRedundancyGroupLocal(resolved, deps),
     remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.judge, payload: resolved, decode: (raw) => raw as JudgeRedundancyResult },
   });

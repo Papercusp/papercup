@@ -11,9 +11,9 @@
  * live federation on the next admission re-verify. (The old branch-delete is a
  * no-op in the write-free model — admission is gated on the attestation gist.)
  *
- * Two scopes (exactly one of `harnessSlug` / `hiveSlug`):
+ * Two scopes (exactly one of `harnessSlug` / `potSlug`):
  *   - `harnessSlug` — revoke from ONE shared harness. Authority = repo-admin token.
- *   - `hiveSlug`    — revoke from the WHOLE Hive's federation at once (P-006).
+ *   - `potSlug`    — revoke from the WHOLE Hive's federation at once (P-006).
  *                     Authority = the Swarm that holds the Hive private key.
  *
  * Auth: `{ trust: ['verified', 'trusted'] }` — same gate as the sibling admin
@@ -45,10 +45,10 @@ import {
 
 export interface RevokeContributorEndpointInput {
   workspaceId: string;
-  /** Harness scope (provide exactly one of harnessSlug / hiveSlug). */
+  /** Harness scope (provide exactly one of harnessSlug / potSlug). */
   harnessSlug?: string;
   /** Hive scope — revoke from the whole Hive's federation (P-006). */
-  hiveSlug?: string;
+  potSlug?: string;
   githubUserId: number;
 }
 
@@ -78,11 +78,11 @@ function parseBody(body: unknown): RevokeContributorEndpointInput | { error: str
 
   const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
   const harnessSlug = typeof b.harnessSlug === 'string' ? b.harnessSlug.trim() : '';
-  const hiveSlug = typeof b.hiveSlug === 'string' ? b.hiveSlug.trim() : '';
+  const potSlug = typeof b.potSlug === 'string' ? b.potSlug.trim() : '';
 
   if (!workspaceId) return { error: 'workspaceId is required and must be a non-empty string' };
-  if (!!harnessSlug === !!hiveSlug) {
-    return { error: 'provide exactly one of harnessSlug (harness scope) or hiveSlug (Hive scope)' };
+  if (!!harnessSlug === !!potSlug) {
+    return { error: 'provide exactly one of harnessSlug (harness scope) or potSlug (Hive scope)' };
   }
 
   // githubUserId must be a positive integer.
@@ -94,8 +94,8 @@ function parseBody(body: unknown): RevokeContributorEndpointInput | { error: str
     };
   }
 
-  return hiveSlug
-    ? { workspaceId, hiveSlug, githubUserId: rawId }
+  return potSlug
+    ? { workspaceId, potSlug, githubUserId: rawId }
     : { workspaceId, harnessSlug, githubUserId: rawId };
 }
 
@@ -168,12 +168,12 @@ export async function handleRevokeContributor(
   deps: RevokeContributorEndpointDeps = realDeps,
 ): Promise<Response> {
   // ── Hive scope (P-006) ──
-  if (input.hiveSlug) {
+  if (input.potSlug) {
     const revokeHive = deps.revokeHive ?? realDeps.revokeHive!;
     return hiveResponse(
       await revokeHive({
         workspaceId: input.workspaceId,
-        hiveHomeSlug: input.hiveSlug,
+        hiveHomeSlug: input.potSlug,
         githubUserId: input.githubUserId,
       }),
     );

@@ -75,16 +75,16 @@ function fakeSandbox(): { open: OpenTau2Sandbox; opened: string[]; disposed: str
   const disposed: string[] = [];
   const open: OpenTau2Sandbox = async ({ arm, runId }) => {
     if (!tau2ArmHasMemory(arm)) return null;
-    const hiveSlug = `xbench-cap-tau2-mem-${runId}`;
-    opened.push(hiveSlug);
+    const potSlug = `xbench-cap-tau2-mem-${runId}`;
+    opened.push(potSlug);
     const sandbox: RunSandbox = {
       id: { suite: 'tau2-bench', arm: String(arm), runId },
-      hiveSlug,
-      memberSlug: `${hiveSlug}-m`,
+      potSlug,
+      memberSlug: `${potSlug}-m`,
       workspaceId: 'papercusp-workspace',
       runTool: async () => ({ ok: true, payload: {} }),
       dispose: async () => {
-        disposed.push(hiveSlug);
+        disposed.push(potSlug);
       },
     };
     return sandbox;
@@ -126,7 +126,7 @@ describe('makeTau2BacklogDriver', () => {
     expect(t0.attempt.costUsd).toBeCloseTo(0.75); // agent + user cost folded into the attempt
     expect(t0.attempt.stopReason).toBe('done');
     expect(t0.disposition).toBe('spawn');
-    expect(t0.beeId).toBe('traj-tau2-task-0'); // trajectoryRef → beeId
+    expect(t0.cupId).toBe('traj-tau2-task-0'); // trajectoryRef → cupId
 
     const t3 = res.taskResults.find((t) => t.attempt.instanceId === 'tau2-task-3')!;
     expect(t3.attempt.armMeta!.reward).toBe(0); // unsolved
@@ -143,11 +143,11 @@ describe('makeTau2BacklogDriver', () => {
     expect(opened).toHaveLength(1);
     expect(disposed).toEqual(opened);
     // every task saw the SAME hive context (the shared, accumulating namespace)
-    const hives = new Set([...sawMemory.values()].map((m) => m?.hiveSlug));
+    const hives = new Set([...sawMemory.values()].map((m) => m?.potSlug));
     expect(hives.size).toBe(1);
     expect([...hives][0]).toBe(opened[0]);
     for (const id of BACKLOG.map((t) => t.instanceId)) {
-      expect(sawMemory.get(id)?.hiveSlug).toBe(opened[0]);
+      expect(sawMemory.get(id)?.potSlug).toBe(opened[0]);
     }
   });
 

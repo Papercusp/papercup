@@ -81,7 +81,7 @@ export default defineTool({
     if (args.rubricRef === COORDINATION_RUBRIC_REF) {
       try {
         const liveness = await getOverwatchLiveness(
-          args.sourceHive ? { hiveSlug: args.sourceHive } : undefined,
+          args.sourceHive ? { potSlug: args.sourceHive } : undefined,
         );
         const overwatch = {
           flagEnabled: liveness.flagEnabled,

@@ -117,7 +117,7 @@ describe('wireCrossHiveBoundary send-path egress gate (the chokepoint, no PG)', 
     const { transport, sent } = capturingTransport();
     const wiring = wireCrossHiveBoundary({
       workspaceId: 'ws',
-      hiveSlug: 'me',
+      potSlug: 'me',
       hivePubkey: 'my-pubkey',
       transport,
       signer: async () => Buffer.from('sig'),

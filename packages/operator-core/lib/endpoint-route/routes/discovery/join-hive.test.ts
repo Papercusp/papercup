@@ -48,11 +48,11 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
 
   it.each([
     ['missing both', {}],
-    ['empty hiveId', { hiveId: '', memberLinks: [LINK] }],
-    ['no member links', { hiveId: 'acme', memberLinks: [] }],
-    ['memberLinks not an array', { hiveId: 'acme', memberLinks: LINK }],
-    ['member links all non-string', { hiveId: 'acme', memberLinks: [1, 2, null] }],
-    ['member links all empty strings', { hiveId: 'acme', memberLinks: ['', ''] }],
+    ['empty potId', { potId: '', memberLinks: [LINK] }],
+    ['no member links', { potId: 'acme', memberLinks: [] }],
+    ['memberLinks not an array', { potId: 'acme', memberLinks: LINK }],
+    ['member links all non-string', { potId: 'acme', memberLinks: [1, 2, null] }],
+    ['member links all empty strings', { potId: 'acme', memberLinks: ['', ''] }],
   ])('400s invalid_args (%s) WITHOUT touching joinHiveAsView', async (_l, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);
@@ -68,21 +68,21 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
   });
 
   it('400s when more than 64 member links are supplied (no clone storm)', async () => {
-    const { status, body } = await post({ hiveId: 'acme', memberLinks: Array(65).fill(LINK) });
+    const { status, body } = await post({ potId: 'acme', memberLinks: Array(65).fill(LINK) });
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'invalid_args' });
     expect(joinHiveAsView).not.toHaveBeenCalled();
   });
 
   it('filters non-string / empty member links before forwarding', async () => {
-    await post({ hiveId: 'acme', memberLinks: [LINK, '', 3, null, LINK] });
+    await post({ potId: 'acme', memberLinks: [LINK, '', 3, null, LINK] });
     expect(joinHiveAsView).toHaveBeenCalledTimes(1);
-    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hiveId: 'acme', memberLinks: [LINK, LINK] });
+    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ potId: 'acme', memberLinks: [LINK, LINK] });
   });
 
   it('400s invalid_member_links from the composition', async () => {
     joinHiveAsView.mockResolvedValue({ ok: false, members: [], error: 'invalid_member_links' });
-    const { status, body } = await post({ hiveId: 'acme', memberLinks: [LINK] });
+    const { status, body } = await post({ potId: 'acme', memberLinks: [LINK] });
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'invalid_member_links' });
     expect(bustProjectsLiteCache).not.toHaveBeenCalled();
@@ -92,45 +92,45 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
     'maps a non-invalid_member_links failure (%s) → 502',
     async (error) => {
       joinHiveAsView.mockResolvedValue({ ok: false, members: [], error });
-      const { status, body } = await post({ hiveId: 'acme', memberLinks: [LINK] });
+      const { status, body } = await post({ potId: 'acme', memberLinks: [LINK] });
       expect(status).toBe(502);
       expect(body).toMatchObject({ code: error });
     },
   );
 
   it('forwards an optional title and busts the lite cache on success', async () => {
-    const { status, body } = await post({ hiveId: 'acme', title: 'Acme Hive', memberLinks: [LINK] });
+    const { status, body } = await post({ potId: 'acme', title: 'Acme Hive', memberLinks: [LINK] });
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true });
-    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hiveId: 'acme', title: 'Acme Hive', workspaceId: 'ws-test' });
+    expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ potId: 'acme', title: 'Acme Hive', workspaceId: 'ws-test' });
     expect(bustProjectsLiteCache).toHaveBeenCalledTimes(1);
   });
 
   it('forwards an optional hivePubkey so stale discovery caches do not block re-keying', async () => {
-    await post({ hiveId: 'acme', hivePubkey: '  pubkey==  ', memberLinks: [LINK] });
+    await post({ potId: 'acme', hivePubkey: '  pubkey==  ', memberLinks: [LINK] });
     expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hivePubkey: 'pubkey==' });
   });
 
-  it('accepts the WI-931 offer shape — { hiveId, memberLinks, hivePubkey } a fresh hive now yields — and forwards it (no 400)', async () => {
+  it('accepts the WI-931 offer shape — { potId, memberLinks, hivePubkey } a fresh hive now yields — and forwards it (no 400)', async () => {
     // The memberLinks + hivePubkey the from-repo `created` response now surfaces
     // (hive-publish-from-repo PublishCreatedHiveOutcome) are exactly this route's
     // accepted body — proving a freshly-created hive's offer is directly joinable.
     const { status, body } = await post({
-      hiveId: 'shop-hive',
+      potId: 'shop-hive',
       memberLinks: [LINK],
       hivePubkey: 'HIVEPUB==',
     });
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true });
     expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({
-      hiveId: 'shop-hive',
+      potId: 'shop-hive',
       memberLinks: [LINK],
       hivePubkey: 'HIVEPUB==',
     });
   });
 
   it('omits a blank title (defaults downstream)', async () => {
-    await post({ hiveId: 'acme', title: '   ', memberLinks: [LINK] });
+    await post({ potId: 'acme', title: '   ', memberLinks: [LINK] });
     expect(joinHiveAsView.mock.calls[0][0]).not.toHaveProperty('title');
   });
 });

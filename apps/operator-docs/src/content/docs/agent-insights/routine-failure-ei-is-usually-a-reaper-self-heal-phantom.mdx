@@ -61,6 +61,20 @@ goes `active=false, next_fire_at=infinity` — a normal lifecycle, not a wedge.
 - `metadata.reaped_count` is high (≥3 consecutive reaps, never self-heals) → a genuinely wedged
   routine the reaper keeps cancelling; the `git-sync-stall-watchdog` alarms on this on purpose.
 
+  **Caveat (2026-07-09, WI-3519):** before the fast-orphan guard fix in
+  `reapDeadExecutorWorkflows`, a **healthy, busy** `routines-critical` queue could
+  drive `reaped_count` to triple digits (`oddsmith` 114, `quartermaster` 100) with
+  nothing actually wedged — `dbos.workflow_queue` holds zero rows in this DBOS
+  version, so the old fast-orphan `NOT EXISTS (... workflow_queue ...)` check was
+  vacuous and reaped every OTHER fire waiting behind two slow-but-progressing
+  ones. The reaper now also requires the **queue itself** to look dead (no
+  sibling `PENDING`/recently-terminal workflow on the same `queue_name`) before
+  it fast-orphan-reaps, so a high `reaped_count` should be reliable again going
+  forward — but a spike recorded **before** this fix landed is not evidence of a
+  genuine wedge on its own; cross-check whether the queue had other fires
+  actively progressing at the time (see
+  [the deploy-pipeline dead-executor-dedup doc](/internal/docs/agent-insights/deploy-pipeline-silent-stall-dead-executor-dedup)).
+
 ## The durable class fix is a STOP surface
 The collector is now **partially source-aware** (EI-6172 / WI-3098): reaper self-heal markers are
 suppressed when recovery is proven (loop, future `next_fire_at`, or `last_fired_at` within 30 min —

@@ -45,14 +45,14 @@ const install = defineTool({
     if (!loaded) return Response.json({ ok: false, error: 'pack_not_found' }, { status: 404 });
 
     const { classifyPackInstall, applyPackInstall } = await import('../../learning-packs/manage');
-    const review = await classifyPackInstall({ hiveSlug: hive, pack: loaded.pack });
+    const review = await classifyPackInstall({ potSlug: hive, pack: loaded.pack });
     const hasClashes = review.duplicates + review.conflicts > 0;
     if (hasClashes && !body.resolutions && body.acceptDefaults !== true) {
       return Response.json({ ok: false, reason: 'review_required', review });
     }
     const result = await applyPackInstall({
       workspaceId: activeWorkspaceId(),
-      hiveSlug: hive,
+      potSlug: hive,
       pack: loaded.pack,
       review,
       ...(body.resolutions ? { resolutions: body.resolutions } : {}),
@@ -81,7 +81,7 @@ const upgrade = defineTool({
     if (!loaded) return Response.json({ ok: false, error: 'pack_not_found' }, { status: 404 });
 
     const { planPackUpgrade, applyPackInstall } = await import('../../learning-packs/manage');
-    const plan = await planPackUpgrade({ hiveSlug: hive, pack: loaded.pack });
+    const plan = await planPackUpgrade({ potSlug: hive, pack: loaded.pack });
     if (plan.newItems.items.length === 0) {
       return Response.json({ ok: true, upToDate: true, ...plan });
     }
@@ -91,7 +91,7 @@ const upgrade = defineTool({
     }
     const result = await applyPackInstall({
       workspaceId: activeWorkspaceId(),
-      hiveSlug: hive,
+      potSlug: hive,
       pack: loaded.pack,
       review: plan.newItems,
       ...(body.resolutions ? { resolutions: body.resolutions } : {}),
@@ -118,7 +118,7 @@ const uninstall = defineTool({
     const { uninstallPack } = await import('../../learning-packs/manage');
     const loaded = await loadLearningPack(packId);
     const result = await uninstallPack({
-      hiveSlug: hive,
+      potSlug: hive,
       packId,
       pack: loaded?.pack ?? null,
       ...(body.keepEdited !== undefined ? { keepEdited: body.keepEdited === true } : {}),
@@ -144,7 +144,7 @@ const setEnabled = defineTool({
     const { setPackEnabled } = await import('../../learning-packs/manage');
     const result = await setPackEnabled({
       workspaceId: activeWorkspaceId(),
-      hiveSlug: hive,
+      potSlug: hive,
       packId,
       enabled: body.enabled,
     });

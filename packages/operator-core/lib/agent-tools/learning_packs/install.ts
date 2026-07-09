@@ -69,7 +69,7 @@ export default defineTool({
 
     const result = await applyPackInstall({
       workspaceId,
-      hiveSlug: args.pot,
+      potSlug: args.pot,
       pack: loaded.pack,
       review,
       ...(args.resolutions ? { resolutions: args.resolutions } : {}),

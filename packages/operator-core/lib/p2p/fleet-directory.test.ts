@@ -142,22 +142,22 @@ describe('putFleetRecord', () => {
 describe('PgFleetDirectory', () => {
   it('scopeMembers: null when absent or archived; owner ∪ publishers otherwise', async () => {
     const scope = { kind: 'fleet' as const, ownerGithubUserId: OWNER, slug: 'alpha' };
-    const absent = new PgFleetDirectory({ workspaceId: WS, hiveSlug: HIVE, sqlOverride: fakeSql({ select: () => [] }).sql });
+    const absent = new PgFleetDirectory({ workspaceId: WS, potSlug: HIVE, sqlOverride: fakeSql({ select: () => [] }).sql });
     expect(await absent.scopeMembers(scope)).toBeNull();
     const archived = new PgFleetDirectory({
-      workspaceId: WS, hiveSlug: HIVE,
+      workspaceId: WS, potSlug: HIVE,
       sqlOverride: fakeSql({ select: () => [dbRow({ archived: true })] }).sql,
     });
     expect(await archived.scopeMembers(scope)).toBeNull();
     const live = new PgFleetDirectory({
-      workspaceId: WS, hiveSlug: HIVE,
+      workspaceId: WS, potSlug: HIVE,
       sqlOverride: fakeSql({ select: () => [dbRow()] }).sql,
     });
     expect(await live.scopeMembers(scope)).toEqual([OWNER, PUB]);
   });
 
   it('resolvePublisherSet: fail-closed refusal on an absent record', async () => {
-    const dir = new PgFleetDirectory({ workspaceId: WS, hiveSlug: HIVE, sqlOverride: fakeSql({ select: () => [] }).sql });
+    const dir = new PgFleetDirectory({ workspaceId: WS, potSlug: HIVE, sqlOverride: fakeSql({ select: () => [] }).sql });
     const set = await dir.resolvePublisherSet({ kind: 'fleet', ownerGithubUserId: OWNER, slug: 'alpha' });
     expect(set).toEqual({
       ownerGithubUserId: OWNER, ownerAnchored: false,
@@ -176,7 +176,7 @@ describe('PgFleetDirectory', () => {
       { githubUserId: OWNER, deviceAttestations: [{ device_pubkey: devicePubkey }] },
     ]);
     const dir = new PgFleetDirectory({
-      workspaceId: WS, hiveSlug: HIVE,
+      workspaceId: WS, potSlug: HIVE,
       sqlOverride: fakeSql({ select: () => [dbRow({ signature: sig })] }).sql,
     });
     const set = await dir.resolvePublisherSet({ kind: 'fleet', ownerGithubUserId: OWNER, slug: 'alpha' });
@@ -201,7 +201,7 @@ describe('PgFleetDirectory', () => {
       })()),
     });
     const dir = new PgFleetDirectory({
-      workspaceId: WS, hiveSlug: HIVE,
+      workspaceId: WS, potSlug: HIVE,
       sqlOverride: fakeSql({ select: () => [dbRow(), other] }).sql,
     });
     expect(await dir.listParticipatingScopes(OWNER)).toEqual([{ kind: 'fleet', ownerGithubUserId: OWNER, slug: 'alpha' }]);
@@ -214,17 +214,17 @@ describe('GrantBackedScopeRoster + PgFleetDirectory (the P-101 widening)', () =>
   it('widens members to owner ∪ publisher-set; strangers stay out; owner always in', async () => {
     const scope = { kind: 'fleet' as const, ownerGithubUserId: OWNER, slug: 'alpha' };
     const directory = new PgFleetDirectory({
-      workspaceId: WS, hiveSlug: HIVE,
+      workspaceId: WS, potSlug: HIVE,
       sqlOverride: fakeSql({ select: () => [dbRow()] }).sql,
     });
-    const roster = new GrantBackedScopeRoster({ workspaceId: WS, hiveSlug: HIVE, directory });
+    const roster = new GrantBackedScopeRoster({ workspaceId: WS, potSlug: HIVE, directory });
     expect(await roster.members(scope)).toEqual([OWNER, PUB]);
     expect(await roster.isMember(scope, PUB)).toBe(true);
     expect(await roster.isMember(scope, 999)).toBe(false);
     expect(await roster.isMember(scope, OWNER)).toBe(true);
 
     // No directory ⇒ tier-1 owner-only (the pre-P-101 behavior, unchanged).
-    const bare = new GrantBackedScopeRoster({ workspaceId: WS, hiveSlug: HIVE });
+    const bare = new GrantBackedScopeRoster({ workspaceId: WS, potSlug: HIVE });
     expect(await bare.members(scope)).toEqual([OWNER]);
     expect(await bare.isMember(scope, PUB)).toBe(false);
   });

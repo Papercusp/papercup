@@ -3,7 +3,7 @@
  * presence + fleet membership (queen-fleet-authority-boundary-2026-07-02 P-003).
  *
  * The IO half of ./cue-authority (kept separate so the pure render/read helpers stay
- * import-free for coord-schema). Reads the sender's `agentRole` + `hiveSlug` from
+ * import-free for coord-schema). Reads the sender's `agentRole` + `potSlug` from
  * coord_presence and its fleet slug/role from the fleet-membership join, classifies
  * the pane-kind via the shared taxonomy, and maps to the stamp via the pure
  * resolveCueAuthority. Best-effort: any read hiccup degrades to null (an unstamped
@@ -31,7 +31,7 @@ export async function resolveSenderCueAuthority(
     const fleet = fleetMap.get(ownerId);
     return resolveCueAuthority({
       kind,
-      hiveSlug: pres?.hiveSlug ?? null,
+      potSlug: pres?.potSlug ?? null,
       fleetSlug: fleet?.fleetSlug ?? null,
       fleetRole: fleet?.fleetRole ?? null,
     });

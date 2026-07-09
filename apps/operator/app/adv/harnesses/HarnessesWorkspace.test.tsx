@@ -34,7 +34,7 @@ vi.mock('./HiveMemberRail', () => ({
     </div>
   ),
 }));
-vi.mock('./HiveHeaderStrip', () => ({ default: ({ hiveSlug }: { hiveSlug: string }) => <div data-testid="hive-header">{hiveSlug}</div> }));
+vi.mock('./HiveHeaderStrip', () => ({ default: ({ potSlug }: { potSlug: string }) => <div data-testid="hive-header">{potSlug}</div> }));
 vi.mock('./HiveWorkspaceCards', () => ({
   default: ({ onCreate }: { onCreate: () => void }) => (
     <div data-testid="workspace-cards">

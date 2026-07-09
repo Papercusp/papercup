@@ -29,7 +29,7 @@ export default defineTool({
   // workspace id — same rationale as trust:comms.
   crossWorkspace: true,
   description:
-    'Owner: the multi-owner integration-requests queue — below-steer-tier member heads the integrator queued instead of auto-merging (the code-plane twin of the coord quarantine). Actions: list {hiveSlug?, repoKey?, devicePubkey?, state?, limit?} (default state omitted = all) | ratify {hiveSlug, repoKey, devicePubkey, headSha} — the ONE call that marks a queued head ratified so the NEXT integrator pass merges it. Ratification is PER-SHA (a newer head from the same below-tier device queues again — you ratify the code you saw, not the author\'s future pushes). Local-only, never federated: this is the receiving owner\'s own trust judgment about the sender, not a peer-influenced decision.',
+    'Owner: the multi-owner integration-requests queue — below-steer-tier member heads the integrator queued instead of auto-merging (the code-plane twin of the coord quarantine). Actions: list {potSlug?, repoKey?, devicePubkey?, state?, limit?} (default state omitted = all) | ratify {potSlug, repoKey, devicePubkey, headSha} — the ONE call that marks a queued head ratified so the NEXT integrator pass merges it. Ratification is PER-SHA (a newer head from the same below-tier device queues again — you ratify the code you saw, not the author\'s future pushes). Local-only, never federated: this is the receiving owner\'s own trust judgment about the sender, not a peer-influenced decision.',
   capability: 'audit:write',
   guidance: {
     when:
@@ -88,7 +88,7 @@ export default defineTool({
     if (args.action === 'list') {
       const requests = await listIntegrationRequests({
         workspaceId: ws,
-        hiveSlug: args.potSlug,
+        potSlug: args.potSlug,
         repoKey: args.repoKey,
         devicePubkey: args.devicePubkey,
         state: args.state,
@@ -98,7 +98,7 @@ export default defineTool({
     } else {
       const ratified = await ratifyIntegrationRequest({
         workspaceId: ws,
-        hiveSlug: args.potSlug!,
+        potSlug: args.potSlug!,
         repoKey: args.repoKey!,
         devicePubkey: args.devicePubkey!,
         headSha: args.headSha!,

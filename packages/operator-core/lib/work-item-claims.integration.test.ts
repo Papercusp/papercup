@@ -55,7 +55,7 @@ const HIVE = 'hive-a';
 // stay VISIBLE in the return type — a `Record<string, unknown>` param would erase them and
 // make tsc think AcquireOpts/HeartbeatClaimParams's required fields are missing (su-d2b62).
 function base<T extends object>(over: T) {
-  return { workspaceId: WS, harnessSlug: HARNESS, hiveSlug: HIVE, ...over };
+  return { workspaceId: WS, harnessSlug: HARNESS, potSlug: HIVE, ...over };
 }
 
 let db: FreshPgDb;
@@ -80,7 +80,7 @@ describe('work-item claim lease store (real PG)', () => {
     const r = await acquireClaim(base({ workItemId: 'F-001', owner: 'su-a', holderPubkey: 'pk-a' }));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.claim).toMatchObject({ workItemId: 'F-001', owner: 'su-a', hiveSlug: HIVE, holderPubkey: 'pk-a', expired: false });
+    expect(r.claim).toMatchObject({ workItemId: 'F-001', owner: 'su-a', potSlug: HIVE, holderPubkey: 'pk-a', expired: false });
     expect(r.claim.claimId).toMatch(/^[0-9a-f-]{36}$/);
   });
 

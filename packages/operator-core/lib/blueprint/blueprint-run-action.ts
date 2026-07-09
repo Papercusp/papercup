@@ -387,7 +387,7 @@ export function programPayloadFromTemplate(payloadTemplate: Record<string, unkno
     kickoff: _kickoff,
     timeoutMs: _timeoutMs,
     launchInstallSlug: _launchInstallSlug,
-    hiveSlug: _hiveSlug,
+    potSlug: _hiveSlug,
     hiveInstallSlug: _hiveInstallSlug,
     targetInstallSlug: _targetInstallSlug,
     workItem: _workItem,
@@ -411,7 +411,7 @@ function launchInstallSlugFromPayload(
 ): string {
   return (
     payloadString(payloadTemplate, 'launchInstallSlug') ??
-    payloadString(payloadTemplate, 'hiveSlug') ??
+    payloadString(payloadTemplate, 'potSlug') ??
     payloadString(payloadTemplate, 'hiveInstallSlug') ??
     payloadString(payloadTemplate, 'targetInstallSlug') ??
     fallback

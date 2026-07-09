@@ -103,7 +103,7 @@ export interface LaunchDeps {
   /** Bind the backlog driver with the persister hooks (per-arm default: real-Queen / su-independent). */
   bindDriver?: BenchDriverBinder;
   /** Dissolve a spawned hive (default dissolveBenchHive). */
-  dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void>;
+  dissolve?: (potSlug: string, workspaceId: string) => Promise<void>;
   /** Load the task set → BenchTask[] (default loadBenchTaskSet). */
   loadBacklog?: (taskSetId: string, taskIds?: string[]) => Promise<BenchTask[]>;
   /** Gate check (default assertExternalBenchEnabled). */
@@ -246,7 +246,7 @@ async function executeDetached(
   active: ActiveRun,
   req: HiveBacklogRunRequest,
   run: (req: HiveBacklogRunRequest) => Promise<HiveBacklogResult>,
-  dissolve: (hiveSlug: string, workspaceId: string) => Promise<void>,
+  dissolve: (potSlug: string, workspaceId: string) => Promise<void>,
   scope: DbScope,
 ): Promise<void> {
   const { runId } = active;
@@ -300,7 +300,7 @@ async function executeDetached(
 /** Cancel an in-flight run: freeze status, dissolve its hive (stops spend). */
 export async function cancelBenchRun(
   runId: string,
-  deps: { scope?: DbScope; dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void> } = {},
+  deps: { scope?: DbScope; dissolve?: (potSlug: string, workspaceId: string) => Promise<void> } = {},
 ): Promise<{ cancelled: boolean }> {
   const scope = deps.scope ?? {};
   const { sql, ws } = resolveDb(scope);
@@ -343,7 +343,7 @@ export async function cancelBenchRun(
 export async function reapStaleBenchRuns(
   deps: {
     scope?: DbScope;
-    dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void>;
+    dissolve?: (potSlug: string, workspaceId: string) => Promise<void>;
     staleAfterSec?: number;
   } = {},
 ): Promise<{ reaped: string[] }> {

@@ -7,7 +7,7 @@
  *
  *  - getHandoff: returns null WITHOUT a featureId (no feature ⇒ no handoff), else
  *    delegates with the threaded args.
- *  - getRoster: maps harness→hiveSlug, fetches the snapshot, then renders it.
+ *  - getRoster: maps harness→potSlug, fetches the snapshot, then renders it.
  *  - getDossier: flag-gated on BEE_WAKE_DOSSIER (off ⇒ null, runner not called), and
  *    falls back to activeWorkspaceId() when no workspaceId is threaded.
  *
@@ -59,11 +59,11 @@ describe('getHandoff', () => {
 });
 
 describe('getRoster', () => {
-  it('maps harness→hiveSlug, fetches, then renders the snapshot', async () => {
+  it('maps harness→potSlug, fetches, then renders the snapshot', async () => {
     listRoster.mockResolvedValue([{ id: 'bee-1' }] as never);
     renderRoster.mockReturnValue('### Hive peers\n- bee-1' as never);
     const out = await deps().getRoster({ harness: 'hive-a', workspaceId: 'ws' } as never);
-    expect(listRoster).toHaveBeenCalledWith({ hiveSlug: 'hive-a', workspaceId: 'ws' });
+    expect(listRoster).toHaveBeenCalledWith({ potSlug: 'hive-a', workspaceId: 'ws' });
     expect(renderRoster).toHaveBeenCalledWith([{ id: 'bee-1' }]);
     expect(out).toContain('Hive peers');
   });
