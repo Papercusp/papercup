@@ -12,7 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { testOpenAiConnection } from './openai';
-import { testCartesiaConnection } from './cartesia';
+import { testCartesiaConnection, CARTESIA_API_VERSION } from './cartesia';
 import { testElevenLabsConnection } from './elevenlabs';
 
 /** Stub global fetch with a JSON response (or a thrown error). Returns the mock. */
@@ -63,7 +63,9 @@ describe('cartesia', () => {
     const { url, init } = firstCall(m);
     expect(url).toBe('https://api.cartesia.ai/voices');
     expect(headerOf(init, 'X-API-Key')).toBe('ct-key');
-    expect(headerOf(init, 'Cartesia-Version')).toBe('2024-06-10');
+    // WI-3557: version now hoisted to the shared CARTESIA_API_VERSION const
+    // (imported here so this test breaks if the two call sites ever re-diverge).
+    expect(headerOf(init, 'Cartesia-Version')).toBe(CARTESIA_API_VERSION);
   });
 
   it('testCartesiaConnection: non-array body → 0 voices', async () => {

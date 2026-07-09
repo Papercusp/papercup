@@ -182,7 +182,7 @@ export async function synthesize(
           method: 'POST',
           headers: {
             'X-API-Key': key,
-            'Cartesia-Version': '2024-11-13',
+            'Cartesia-Version': CARTESIA_API_VERSION,
             'content-type': 'application/json',
             accept: wantWav ? 'audio/wav' : 'audio/mpeg',
           },
