@@ -275,7 +275,7 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
   }
 }
 
-async function defaultSelfAdmitCanonical(
+export async function defaultSelfAdmitCanonical(
   invite: CanonicalHiveInvite,
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<SelfAdmitCanonicalResult> {
@@ -296,6 +296,14 @@ async function defaultSelfAdmitCanonical(
         path: targetRepoDir,
         harness_kind: 'hive',
         remote_hive: true,
+        // EI-8793: this entry's `path` IS the real seeded repo checkout (not a
+        // repo-less view dir), so mark it `self_repo` — the flag git-sync
+        // eligibility + the boot reconcile key on to seed the joiner-side
+        // (push:false) git-sync routine that auto-commits agent edits. Without
+        // it the release install's self-improvement loop is structurally dead:
+        // agents edit the clone but nothing ever commits (confirmed live on the
+        // 0.0.3 Mac install, 2026-07-09).
+        self_repo: true,
         hive_pubkey: invite.pubkeyBase64,
       };
       const projects = cur.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)
@@ -411,13 +419,84 @@ async function defaultRestoreDeferredGitSeed(
     memberProvider,
     createBundledEpochKeyProvider(resolved.seedDir),
   ]);
-  return triggerDeferredGitRestore({
+  const res = await triggerDeferredGitRestore({
     seedDir: resolved.seedDir,
     targetStoreDir,
     targetRepoDir,
     epochKeyProvider,
     log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
   });
+  // EI-8793: the moment the git seed actually lands, seed the joiner-side
+  // git-sync routine for the canonical clone — this activates the
+  // self-improvement loop's commit leg on the FIRST boot instead of waiting for
+  // the next restart's reconcile sweep. Placed HERE (not at the call sites) so
+  // every path that restores git — the offline self-admit attempt, the
+  // post-admission attempt, and each WI-3070 background retry — seeds through
+  // one seam.
+  if (res.restored.includes('git')) await seedCanonicalCloneGitSyncRoutine(record);
+  return res;
+}
+
+/** Test seam for {@link seedCanonicalCloneGitSyncRoutine} (default: the real spine, lazy). */
+export interface SeedCanonicalCloneGitSyncDeps {
+  seedMember?: typeof import('./git-sync/git-sync-routine').seedGitSyncRoutineForMember;
+}
+
+/**
+ * EI-8793: seed the joiner-side (push:false) `system:git-sync` routine for the
+ * canonical papercusp clone a release install self-admits. Without this routine
+ * the install's self-improvement loop is structurally dead: agents edit the
+ * seeded checkout but nothing ever commits (confirmed live on the 0.0.3 Mac
+ * install, 2026-07-09 — routines count 0, edits stranded uncommitted).
+ *
+ * Idempotent (the spine's routine_exists skip) + best-effort NEVER-throws: a
+ * failure never breaks the caller, and the boot reconcile
+ * (git-sync-reconcile.ts, which now walks `remote_hive && self_repo` entries)
+ * remains the authoritative backfill for existing installs.
+ */
+export async function seedCanonicalCloneGitSyncRoutine(
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+  deps: SeedCanonicalCloneGitSyncDeps = {},
+): Promise<void> {
+  try {
+    const seed =
+      deps.seedMember ??
+      (await import('./git-sync/git-sync-routine')).seedGitSyncRoutineForMember;
+    const { targetRepoDir } = seedTargetDirs();
+    const outcome = await seed({
+      workspaceId: PAPERCUSP_WORKSPACE_ID,
+      installSlug: PAPERCUSP_HIVE_SLUG,
+      // Synthesized snapshot of the entry defaultSelfAdmitCanonical registers
+      // (the registry write may land just after the restore on the offline
+      // path — the seeding spine only needs these fields).
+      entry: {
+        slug: PAPERCUSP_HIVE_SLUG,
+        path: targetRepoDir,
+        harness_kind: 'hive',
+        remote_hive: true,
+        self_repo: true,
+      },
+      joinerSide: true,
+      // Same member slug exists on every install of the shared hive — salt
+      // the cron jitter per box (D-004 multi-pusher).
+      cronKey: `${PAPERCUSP_HIVE_SLUG}:${PAPERCUSP_WORKSPACE_ID}`,
+    });
+    if (outcome.seeded) {
+      record?.('clone', 'running', {
+        detail: 'seed: git-sync routine seeded (self-improvement loop active)',
+      });
+    } else if (outcome.reason !== 'routine_exists') {
+      console.warn(
+        `[papercusp-hive] git-sync routine seed skipped (${outcome.reason}${
+          outcome.reason === 'ineligible' ? `:${outcome.ineligibleReason}` : ''
+        }) — boot reconcile will retry`,
+      );
+    }
+  } catch (e) {
+    console.warn(
+      `[papercusp-hive] git-sync routine seed failed (non-fatal; boot reconcile heals): ${(e as Error)?.message ?? e}`,
+    );
+  }
 }
 
 /** WI-3070: bounded backoff schedule (ms) for the post-admission deferred-git retry —

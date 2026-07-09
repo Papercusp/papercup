@@ -7,12 +7,16 @@
  * registered member clones but no routine row, so they never sync. This sweep
  * walks one workspace's registry and seeds the MISSING rows only:
  *
- *   - Scope: hive MEMBERS only (`projects.filter(p => p.hive_slug || p.joined_via_link)`).
- *     `papercup` itself carries neither flag — its hand-tuned row is never even
- *     visited. Hive HOMES and joiner-side `remote_hive` VIEWS carry no `hive_slug`
- *     either. Bare invite-LINK joins (EI-1623) carry no `hive_slug` but DO carry
- *     `joined_via_link` (no local hive home exists) — they are included here and
- *     seeded joiner-side, so a failed best-effort join-time seed is backfilled.
+ *   - Scope: hive MEMBERS only (`hive_slug || joined_via_link || (remote_hive &&
+ *     self_repo)`). `papercup` itself carries none of these — its hand-tuned row
+ *     is never even visited. Hive HOMES and repo-less joiner-side `remote_hive`
+ *     VIEWS carry no `hive_slug` either. Bare invite-LINK joins (EI-1623) carry
+ *     no `hive_slug` but DO carry `joined_via_link` (no local hive home exists)
+ *     — they are included here and seeded joiner-side, so a failed best-effort
+ *     join-time seed is backfilled. Release-install canonical clones (EI-8793)
+ *     are `remote_hive` + `self_repo` (the self-admitted entry whose path IS the
+ *     seeded checkout) — included and seeded joiner-side, so installs that
+ *     self-admitted before the join-time seeding hook existed heal at next boot.
  *     Member-shaped entries that are still not syncable (vanished path, cloud
  *     deployment, non-repo) are excluded by the spine's eligibility gate.
  *   - ADD-only: an existing routine row — human-edited `active`/config
@@ -104,16 +108,27 @@ export async function reconcileGitSyncRoutines(
 
   // Members = `hive_slug` entries (creator-side + joinHiveAsView joiners) PLUS
   // bare invite-LINK joins (EI-1623), which carry `joined_via_link` instead of a
-  // `hive_slug` (they have no local hive home). Both must be (re)seeded.
-  const members = projects.filter((p) => p.hive_slug || p.joined_via_link);
+  // `hive_slug` (they have no local hive home), PLUS release-install canonical
+  // clones (EI-8793): a self-admitted `remote_hive` entry whose path IS the real
+  // seeded checkout, marked `self_repo` (bootstrap-papercusp-hive
+  // defaultSelfAdmitCanonical). All three must be (re)seeded — the third is what
+  // backfills EXISTING release installs (self-admitted before the seeding hook
+  // existed) on their next boot; without it the install's self-improvement loop
+  // never commits (confirmed live on the 0.0.3 Mac install, 2026-07-09).
+  const isGitSyncMember = (p: ProjectEntry): boolean =>
+    Boolean(p.hive_slug || p.joined_via_link || (p.remote_hive && p.self_repo));
+  const members = projects.filter(isGitSyncMember);
   const seed = opts.seedMember ?? seedGitSyncRoutineForMember;
   for (const member of members) {
     const home = projects.find((p) => p.slug === member.hive_slug);
     // A link-join (`joined_via_link`) is ALWAYS joiner-side: it cloned someone
     // else's repo with no local home, so it must seed push:false (D-002/D-007 —
     // fork-PR is the contribution path), never creator-side. A `remote_hive` home
-    // marks the other (joinHiveAsView) joiner case.
-    const joinerSide = home?.remote_hive === true || member.joined_via_link === true;
+    // marks the other (joinHiveAsView) joiner case; a `remote_hive` entry that is
+    // ITSELF the member (the self_repo release-install clone) is likewise always
+    // joiner-side — this box is a peer, never the origin pusher.
+    const joinerSide =
+      home?.remote_hive === true || member.joined_via_link === true || member.remote_hive === true;
     const outcome = await seed(
       {
         workspaceId: opts.workspaceId,
@@ -164,7 +179,7 @@ export async function reconcileGitSyncRoutines(
   }
   if (detectSql != null || opts.getRoutine != null) {
     for (const p of projects) {
-      if (p.hive_slug || p.joined_via_link) continue; // members (incl. link-joins) are handled (+ seeded) above
+      if (isGitSyncMember(p)) continue; // members (incl. link-joins + self_repo remote-hive clones) are handled (+ seeded) above
       if (!eligibility(p).eligible) continue; // homes / views / non-repos / vanished paths
       try {
         const existing = await getRoutine(detectSql as Sql, p.slug);

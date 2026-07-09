@@ -256,6 +256,48 @@ describe('reconcileGitSyncRoutines — P-014 blind-spot detection', () => {
     expect(out.unseeded).toEqual([]);
   });
 
+  it('EI-8793: a release-install canonical clone (remote_hive + self_repo) is BACKFILLED joiner-side, not skipped as a view', async () => {
+    // The 0.0.3 Mac release install: defaultSelfAdmitCanonical registered the
+    // seeded checkout as { harness_kind:'hive', remote_hive:true } with NO
+    // hive_slug / joined_via_link — the sweep never visited it, eligibility
+    // called it a view, and agent edits stranded uncommitted forever. Now the
+    // entry carries `self_repo` and the sweep must backfill it joiner-side, so
+    // existing installs heal at their next boot.
+    const releaseClone: ProjectEntry = {
+      slug: 'papercusp',
+      path: '/clones/papercusp',
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
+    };
+    const { seed, calls } = fakeSeed(() => ({
+      seeded: true,
+      active: true,
+      push: false,
+      pushReason: 'joiner_side',
+      cron: '0 0 * * * *',
+    }));
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(papercup, joinerHome, releaseClone),
+      seedMember: seed,
+      sql: sqlFake,
+      eligibility: eligibleSet(['papercup', 'papercusp']),
+      getRoutine: routineFor(['papercup']),
+    });
+    // The member loop backfilled the release clone — and ONLY it (the repo-less
+    // remote_hive view `far-hive` stays untouched, no self_repo)…
+    expect(out.seeded).toEqual(['papercusp']);
+    expect(calls.map((c) => c.installSlug)).toEqual(['papercusp']);
+    // …seeded JOINER-side (this box is a peer, never the origin pusher), with
+    // the per-install salted cron (the same slug exists on every install)…
+    const call = calls.find((c) => c.installSlug === 'papercusp')!;
+    expect(call.joinerSide).toBe(true);
+    expect((call as { cronKey?: string }).cronKey).toBe('papercusp:ws');
+    // …and it is NOT flagged as an unseeded blind spot (it's a member now).
+    expect(out.unseeded).toEqual([]);
+  });
+
   it('a repo WITH a routine (papercup) is never flagged', async () => {
     const out = await reconcileGitSyncRoutines({
       workspaceId: 'ws',

@@ -71,6 +71,30 @@ describe('gitSyncEligibility — the verdict matrix (P-001)', () => {
     ).toEqual({ eligible: false, reason: 'remote_hive_view' });
   });
 
+  it('a self_repo remote-hive entry (release-install canonical clone, EI-8793) IS eligible', () => {
+    // bootstrap-papercusp-hive defaultSelfAdmitCanonical registers the seeded
+    // clone as { harness_kind:'hive', remote_hive:true, self_repo:true } — its
+    // path IS the real checkout, and it must be synced (joiner-side) or the
+    // release install's self-improvement loop never commits.
+    expect(
+      gitSyncEligibility(
+        entry({ harness_kind: 'hive', remote_hive: true, self_repo: true }),
+        allExist,
+      ),
+    ).toEqual({ eligible: true });
+  });
+
+  it('a self_repo remote-hive entry still fails the DISK checks like any member (not_a_git_repo)', () => {
+    // self_repo only lifts the flag-level view/home skips — a clone whose git
+    // seed has not landed yet (deferred restore) is still not_a_git_repo until
+    // the checkout materializes.
+    expect(
+      gitSyncEligibility(entry({ harness_kind: 'hive', remote_hive: true, self_repo: true }), {
+        pathExists: (p) => p === '/repos/member', // dir exists, .git does not
+      }),
+    ).toEqual({ eligible: false, reason: 'not_a_git_repo' });
+  });
+
   it('a non-local deployment is ineligible: non_local_deployment (seed-side P-008)', () => {
     expect(
       gitSyncEligibility(entry({ deployment: { target: 'latitude' } as never }), allExist),

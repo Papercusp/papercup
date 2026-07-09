@@ -5,7 +5,9 @@
  *
  * We seed one routine per hive MEMBER checkout — never hive HOMES (a
  * `kind:'hive'` entry is a NON-repo state dir), never joiner-side
- * `remote_hive` VIEWS (non-repo dirs under ~/.papercusp/remote-hives), never
+ * `remote_hive` VIEWS (non-repo dirs under ~/.papercusp/remote-hives —
+ * EXCEPT a `self_repo` remote-hive entry, the release-install canonical
+ * clone shape; see the reason table below), never
  * non-local deployments (a cloud-frame checkout is not on this box), and never
  * entries whose path is missing/vanished or carries no `.git`. The same
  * verdict gates both SEED time (B-01's three creator-side producers, B-03's
@@ -70,7 +72,14 @@ export interface GitSyncEligibilityDeps {
  *      and these must never get a git-sync routine (INCIDENT 2026-06-18 — the
  *      per-tick routine churn over torn-down instances saturated the event loop).
  *   2. `remote_hive_view` — joiner-side hive VIEW (`remote_hive` flag; these are
- *      also `kind:'hive'`, so the flag is checked first).
+ *      also `kind:'hive'`, so the flag is checked first). EXCEPT `self_repo`:
+ *      a release install self-admits the canonical hive with its `path` pointing
+ *      at the REAL seeded clone (~/.papercusp-workspaces/clones/<hive>) and marks
+ *      it `self_repo` (bootstrap-papercusp-hive defaultSelfAdmitCanonical) — that
+ *      checkout is the self-improvement loop's working tree and MUST be synced
+ *      joiner-side (push:false) or agent edits strand uncommitted forever
+ *      (EI-8793). A dev-box joinHiveAsView VIEW carries no `self_repo` and still
+ *      skips here. Flag-only (no IO — the 2026-06-18 invariant holds).
  *   3. `hive_home`        — `harness_kind === 'hive'` (non-repo state dir).
  *   4. `non_local_deployment` — `deployment.target` present and ≠ 'local'
  *      (seed-side half of P-008: the checkout lives on a cloud frame).
@@ -83,7 +92,7 @@ export function gitSyncEligibility(
 ): GitSyncEligibility {
   const pathExists = deps.pathExists ?? existsSync;
   if (EPHEMERAL_INSTANCE_SLUG_RE.test(p.slug)) return { eligible: false, reason: 'ephemeral_debris' };
-  if (p.remote_hive) return { eligible: false, reason: 'remote_hive_view' };
+  if (p.remote_hive && !p.self_repo) return { eligible: false, reason: 'remote_hive_view' };
   // A kind:'hive' entry is normally a repo-LESS state dir → skip. EXCEPT a hive that IS its
   // OWN repo (Option-B merge, papercup→papercusp 2026-06-20): marked `self_repo` on the merged
   // registry entry, it owns a checkout and MUST be git-synced (else origin freezes). Flag-based
