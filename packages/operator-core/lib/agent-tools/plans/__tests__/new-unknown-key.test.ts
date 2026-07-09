@@ -33,4 +33,8 @@ describe('plans:new unknown-key rejection (EI-8285)', () => {
       argsSchema.parse({ ...base, body: '## Now\n\nReady.\n', rationale: 'why', owner: 'a@b.com', force: true, status: 'active', harness: 'papercusp' }),
     ).not.toThrow();
   });
+
+  it('EI-8811: accepts `description` as a recognized alias for `body` (not stripped/rejected)', () => {
+    expect(() => argsSchema.parse({ ...base, description: '## Now\n\nReady.\n' })).not.toThrow();
+  });
 });

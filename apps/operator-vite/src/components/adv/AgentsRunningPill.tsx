@@ -648,6 +648,10 @@ function RosterStyles() {
         width: min(680px, calc(100vw - 24px));
         min-width: 420px;
         padding: 4px;
+        /* Flex column so fixed chrome (search box, hover detail strip, inactive
+           footer) never slides under the sticky footer — the roster LIST is the
+           part that shrinks/scrolls; popover overflow stays as a safety valve. */
+        display: flex; flex-direction: column;
         /* Solid, opaque surface (design tokens) — a header popover must be readable,
            never translucent. Matches the sibling Hives popover's weight. */
         background: var(--bg-1, #0b1525);
@@ -656,7 +660,8 @@ function RosterStyles() {
         border-radius: 10px;
         box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
       }
-      .pc-agents-roster { font-size: 12px; }
+      #pc-advshell-agents-pop { display: flex; flex-direction: column; min-height: 0; }
+      .pc-agents-roster { font-size: 12px; display: flex; flex-direction: column; min-height: 0; }
       .pc-agents-roster__tabs { display: flex; gap: 2px; padding: 4px 6px 0; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
       .pc-agents-roster__tab {
         font-size: 11px; padding: 3px 9px; border-radius: 6px 6px 0 0; cursor: pointer;
@@ -703,7 +708,7 @@ function RosterStyles() {
         font-family: ui-monospace, monospace; font-size: 10px; margin-right: 6px;
         color: var(--accent-strong, #7dd3fc);
       }
-      .pc-agents-roster__scroll { max-height: 380px; overflow-y: auto; }
+      .pc-agents-roster__scroll { max-height: 380px; overflow-y: auto; flex: 0 1 auto; min-height: 60px; }
       .pc-agents-roster__row { cursor: pointer; }
       .pc-agents-roster__row.is-pinned { background: color-mix(in oklab, var(--accent), transparent 82%); }
       .pc-agents-roster__detail { border-top: 1px solid var(--border); padding: 6px 8px; background: var(--bg-2); }

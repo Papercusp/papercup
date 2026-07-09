@@ -33,6 +33,7 @@ import {
   type LoopCarryNoteWithMeta,
   type WallEntry,
 } from './carry-note';
+import { harnessOfScope } from './work-item-scope';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -41,7 +42,8 @@ export interface CarryBriefHeldItem {
   title: string | null;
   /** The item's description body (uncapped here; renderers cap). */
   body: string | null;
-  harness: string;
+  /** null for an operator/harness-null item (EI-8813) — never a guessed slug. */
+  harness: string | null;
   /** In-flight state left by work_items:checkpoint — null when never written. */
   checkpoint: string | null;
 }
@@ -91,7 +93,7 @@ export interface ReadHeldWorkItemsOpts {
   sql?: Sql;
   limit?: number;
   getWorkItemCheckpointFn?: (ref: {
-    harness: string;
+    harness: string | null;
     workItemId: string;
     workspaceId?: string;
   }) => Promise<string | null>;
@@ -120,13 +122,19 @@ export async function readHeldWorkItems(
   `;
   const getCheckpoint =
     opts.getWorkItemCheckpointFn ??
-    (async (ref: { harness: string; workItemId: string; workspaceId?: string }) => {
+    (async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => {
       const { getWorkItemCheckpoint } = await import('./work-item-checkpoint');
       return getWorkItemCheckpoint(ref);
     });
   const out: CarryBriefHeldItem[] = [];
   for (const h of held) {
-    const harness = h.scope?.startsWith('harness:') ? h.scope.slice('harness:'.length) : 'papercup';
+    // EI-8813: reuse the SAME scope→harness resolution the write/read paths use
+    // (harnessOfScope — null for the explicit global `operator` scope), instead of
+    // an ad-hoc parse that defaulted a harness-null item to the literal string
+    // 'papercup' (misspelled, and not even the checkpoint store's wildcard sentinel).
+    // That mismatched harness silently orphaned the checkpoint from THIS read path
+    // only — work_items:checkpoint/get already canonicalize correctly (EI-8805).
+    const harness = harnessOfScope(h.scope ?? '');
     let checkpoint: string | null = null;
     try {
       checkpoint = await getCheckpoint({ harness, workItemId: h.issue_id, workspaceId });

@@ -164,11 +164,33 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   Vite HMR does NOT reach it. Docs-mirror clean rebuild green (stale
   dist/.prerender chunk; rm -rf dist .astro fixed). Verified after (g)+(h):
   _lints 21/21, tokens.test 15/15, test:affected exit 0.
-- **P-007** flat buttons (HR9): strip bevels globals.css L~9128 .operator-feed-
-  pills button.is-active, L~20760 .operator-mini-btn--ghost, L~21145
-  .operator-delegates__actions button, L~24624 .operator-feed-active-filters
-  button (L4667 .oracle-form dies with oracle CSS removal); sheen gradients on
-  button/pill rules: harness.css(25) globals.css(25) h-proposals.css(10).
+- **P-007** flat buttons (HR9) [DONE 2026-07-09 — litmus PASSED frost+black]:
+  codemod (paren-aware CSS transform) stripped 260 declarations across
+  globals.css(151)/harness.css(97)/h-proposals.css(12) in EVERY duplicated
+  block (so cascade order can't resurrect a sheen when P-010 deletes blocks):
+  (a) bevel inset shadow components `inset 0 ±1|2px 0 <white/black/dark-mix>`
+  (stack keeps remaining outer shadows, or `none` — declaration KEPT so the
+  override still wins); (b) top-anchored white gloss radials + white→transparent
+  gloss films (layer removed); (c) 2-stop 180deg sheens → flat
+  `linear-gradient(0deg, C, C)` of the top stop. 13 multi-stop sites hand-fixed
+  (3-stop primaries → middle stop; operator-panel__actions HUD btns also lost
+  white glint radial + 110deg wash + `inset 0 -12px 20px` vignette, kept
+  scanlines/tone tint/glows). KEPT by design: horizontal hue washes, outer
+  elevation/glow shadows, inset rings `0 0 0 1px`, ::before tone sweeps.
+  DELIBERATE SKIPS (the only 180deg button rules left in the built CSS):
+  .pc-voice-btn-icon (masked mic-glyph art) + .oracle-dock--maximal-hud block
+  (dead since P-003, deleted in P-010). Litmus (own :3370 shell, fixture strip
+  of 7 button classes): frost 7/7 flat + black 7/7 flat by computed-style
+  assert (no inset 0±1|2px, no differing-stop vertical gradients); static
+  check: zero [data-theme] button sheens in built CSS. Gates: _lints 21/21.
+  ⚠ for P-016/P-017: is-active/primary `!important` blocks carry hardcoded
+  teal literals `45, 212, 191` that stay teal under black — tokenize with the
+  accent fold. Gotcha: tauri dev shell REBUILDS+restarts when peers edit
+  src-tauri (cargo lock contention w/ peer builds) — bridge PID changes,
+  re-discover via /proc/<pid>/environ OPERATOR_DEV_PORT. En route: deleted
+  su-4dc3b's TEMPORARY potHomeSlugForHarness self-alias in hive-federation.ts
+  (lexicon rename swept it into a duplicate export → broke vite build; zero
+  old-name importers remained; su-4dc3b notified msg mre4liap).
 - **P-008** retire legacy harness dashboard (D2): keep-list above; retire
   page components, FeatureEditor, InsightsPanel, PiTerminalsDock, dock/*,
   AgentInspectorModal, TrustBadge, PrsTab, PiPanel + vite /harness/$slug route

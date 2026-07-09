@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCarryBrief,
+  readHeldWorkItems,
   renderCarryBriefFocus,
   renderCarryBriefColdExtras,
   renderCarryBriefText,
@@ -20,6 +21,11 @@ import {
   type CarryBrief,
   type BuildCarryBriefOpts,
 } from './carry-brief';
+
+/** Minimal tagged-template `sql` stub returning fixed `engineer_issues` rows. */
+function fakeIssuesSql(rows: Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>) {
+  return ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as never;
+}
 
 function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBriefOpts {
   return {
@@ -312,5 +318,36 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
       ),
     );
     expect(out).toContain('No carry-note written.');
+  });
+});
+
+describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)', () => {
+  it('resolves a harness-scoped item to its concrete slug', async () => {
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([
+        { issue_id: 'WI-1', title: 't', body: 'b', scope: 'harness:papercusp' },
+      ]),
+      getWorkItemCheckpointFn: async (ref) => `harness=${ref.harness}`,
+    });
+    expect(held).toEqual([{ id: 'WI-1', title: 't', body: 'b', harness: 'papercusp', checkpoint: 'harness=papercusp' }]);
+  });
+
+  it('resolves an operator-scope (harness-null) item to null — NEVER a guessed slug', async () => {
+    // Before the fix, a scope that didn't start with 'harness:' fell back to the
+    // literal string 'papercup' (misspelled, and not the checkpoint store's
+    // wildcard sentinel) — mismatching the key work_items:checkpoint actually
+    // wrote under and silently losing the checkpoint (EI-8813).
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([
+        { issue_id: 'EI-8810', title: 't', body: 'b', scope: 'operator' },
+      ]),
+      getWorkItemCheckpointFn: async (ref) => {
+        expect(ref.harness).toBeNull();
+        return 'the real checkpoint';
+      },
+    });
+    expect(held).toEqual([
+      { id: 'EI-8810', title: 't', body: 'b', harness: null, checkpoint: 'the real checkpoint' },
+    ]);
   });
 });

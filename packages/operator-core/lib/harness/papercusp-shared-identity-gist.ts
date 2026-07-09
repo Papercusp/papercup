@@ -1,6 +1,6 @@
 /**
  * papercusp-shared-identity-gist — the per-owner store for the SHARED `papercusp`
- * dogfood hive identity (Solution C / DOGFOOD_PAPERCUSP_HIVE_SHARE).
+ * dogfood hive identity (Solution C / DOGFOOD_PAPERCUSP_POT_SHARE).
  *
  * The owner's hive identity (Ed25519 keypair DER + the directory invite secret) is
  * stored in a PRIVATE GitHub gist tied to the owner's account, so EVERY one of the

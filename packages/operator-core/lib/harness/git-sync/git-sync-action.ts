@@ -1339,7 +1339,7 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
  * leg should adopt the same real dial (peer-dial-registry.ts's
  * `openHiveGitDuplexToDevice` already exists and is ready for that — WI-3583).
  */
-async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
+export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {

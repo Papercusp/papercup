@@ -195,12 +195,29 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
  *  at `socket.noiseStream`, not always the outer Hyperswarm socket (mirrors
  *  the identical resolution in swarm.ts / serve-wiring.ts) — AND register the
  *  lazy-accept `pair()` notifier once per muxer, closing the client-open race
- *  described above. */
+ *  described above.
+ *
+ *  ALSO caches the resolved mux onto `muxStream.userData` (mirrors
+ *  `openAnnounceChannel`'s identical fixup in swarm.ts). This is NOT
+ *  optional: `Protomux.from()`'s own caching only activates when
+ *  `stream.userData` was already strictly `null` before the FIRST call on
+ *  that stream (its constructor does `if (stream.userData === null)
+ *  stream.userData = this`) — a bare socket's `userData` starts as
+ *  `undefined`, not `null`, so that guard silently never fires, and every
+ *  independent `Protomux.from(sameSocket)` call (this module's, and
+ *  `wireHiveGitServe`'s/`openHiveGitFetchDuplex`'s own, in serve-wiring.ts)
+ *  would otherwise construct a SEPARATE Protomux instance competing to
+ *  parse/write the SAME underlying byte stream — corrupting BOTH channels'
+ *  framing. Whichever wiring function runs first on a socket "wins" the
+ *  cache; every later caller (any module) then retrieves the SAME instance
+ *  via `Protomux.from`'s own `stream.userData.isProtomux` fast path. */
 function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<unknown> } {
   const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
     opened?: Promise<unknown>;
+    userData?: unknown;
   };
   const mux = Protomux.from(muxStream as never);
+  if (!muxStream.userData) muxStream.userData = mux;
   if (!hiveGitDialPairedMuxers.has(mux as unknown as object)) {
     hiveGitDialPairedMuxers.add(mux as unknown as object);
     try {

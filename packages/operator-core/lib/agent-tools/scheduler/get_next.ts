@@ -19,6 +19,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { matchRoutingGateHint } from '../../routing-gate-hints';
 
 export default defineTool({
   name: 'scheduler:get_next',
@@ -93,13 +94,32 @@ export default defineTool({
       res && res.specSource === 'default'
         ? 'You have no per-bee or fleet claim spec — this claim used plain oldest-first DEFAULT_CLAIM_SPEC, which can hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {cupId: you} to scope your own pulls.'
         : undefined;
+    // EI-8809 (routing-gate hint at dispatch): most items are already stamped
+    // payload.routingHint at creation (work_items:create / plans:promote); this is
+    // the render-time FALLBACK for an item created before that wiring landed.
+    // Hint only — never blocks, never overrides a stamped value.
+    let routingHint: unknown;
+    if (res?.workItem) {
+      const wi = res.workItem as { title?: string; summary?: string; payload?: unknown };
+      const existing =
+        wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+          ? (wi.payload as Record<string, unknown>).routingHint
+          : undefined;
+      routingHint = existing ?? matchRoutingGateHint(wi.title, wi.summary) ?? undefined;
+    }
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify(
             res
-              ? { ok: true, workItem: res.workItem, claimedUnder: res.claimedUnder, ...(warning ? { warning } : {}) }
+              ? {
+                  ok: true,
+                  workItem: res.workItem,
+                  claimedUnder: res.claimedUnder,
+                  ...(warning ? { warning } : {}),
+                  ...(routingHint ? { routingHint } : {}),
+                }
               : { ok: false, error: 'no claimable work-item matched your spec within the floors' },
           ),
         },

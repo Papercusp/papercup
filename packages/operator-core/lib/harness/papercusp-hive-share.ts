@@ -1,7 +1,7 @@
 /**
  * papercusp-hive-share — Solution C orchestration: announce the dogfood `papercusp`
  * hive as a SHARED P2P hive under a PER-OWNER identity, gated by
- * DOGFOOD_PAPERCUSP_HIVE_SHARE (default ON, still reversible by flag).
+ * DOGFOOD_PAPERCUSP_POT_SHARE (default ON, still reversible by flag).
  *
  * Two hook points around the hive create in bootstrap-papercusp-hive:
  *
@@ -93,7 +93,7 @@ export interface HiveShareDeps {
 
 async function defaultIsEnabled(): Promise<boolean> {
   try {
-    return await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE_SHARE, 'system');
+    return await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT_SHARE, 'system');
   } catch {
     return false;
   }

@@ -57,6 +57,7 @@ import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolve
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
+import { matchRoutingGateHint } from '../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
 import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
@@ -895,6 +896,11 @@ export default defineTool({
       if (f.assigned_role) metadata.assigned_role = f.assigned_role;
       if (f.blocked_by && f.blocked_by.length > 0) metadata.blocked_by = f.blocked_by;
       if (f.order != null) metadata.order = f.order;
+      // EI-8809 (routing-gate hint at dispatch): stamp a matched papercusp-way row
+      // onto the promoted feature so the claimer sees the prescribed mechanism —
+      // hint only, never a promote-blocking check.
+      const routingHint = matchRoutingGateHint(f.title, f.body);
+      if (routingHint) metadata.routingHint = routingHint;
       // P-043: stamp generative provenance on resolver-produced children (the
       // completion-time replay-dedup key + audit trail).
       if (f.generated) metadata.generated_by = { plan: args.slug, wave: f.wave ?? waveId ?? null };

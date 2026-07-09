@@ -74,8 +74,19 @@ export const argsSchema = z
       .max(200_000)
       .optional()
       .describe(
-        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit body to get the empty starter template.',
+        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). When provided, plans:new writes valid frontmatter + this body in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/owner. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit body to get the empty starter template. (`description` is accepted as an alias for this field — EI-8811 — since every other verb in the system spells this `summary`/`description`; if both are passed, `body` wins.)',
       ),
+    // EI-8811: `body` is the field name, but `description` is the natural
+    // guess (matching work_items:create/complete's `summary`, the general
+    // convention elsewhere) and used to be REJECTED outright by `.strict()`
+    // below ("Unrecognized key: description") — a hard fail on a plausible
+    // synonym. Accept it as an alias (same pattern as `facts:assert`'s
+    // ref/scope_ref/scopeRef aliasing) instead of hard-rejecting.
+    description: z
+      .string()
+      .max(200_000)
+      .optional()
+      .describe('Alias for `body` (EI-8811). Prefer `body`; if both are passed, `body` wins.'),
     force: stringTolerantBool
       .optional()
       .describe(
@@ -93,6 +104,16 @@ export const argsSchema = z
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * EI-8811: resolve the effective plan body from `body` and its `description`
+ * alias. `body` wins when both are given. Pulled out as a pure fn (mirroring
+ * `ensureDatedSlug`/`dedupTokens` in this file) so the alias precedence is
+ * unit-testable without a handler/PG fixture.
+ */
+export function resolveNewPlanBody(args: { body?: string; description?: string }): string | undefined {
+  return args.body ?? args.description;
 }
 
 /**
@@ -298,6 +319,10 @@ export default defineTool({
     // §3.1: plan filenames carry a -YYYY-MM-DD suffix; ensureDatedSlug
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
+    // EI-8811: `description` is an accepted alias for `body`; `body` wins if
+    // both are given. Every downstream use reads this merged value, never
+    // `args.body` directly.
+    const body = resolveNewPlanBody(args);
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
@@ -359,16 +384,16 @@ export default defineTool({
           // Slug collision — leave existing untouched, signal via value.
           return { newBody: null, value: { ok: false, code: 'slug_exists' } };
         }
-        const body = buildTemplate({
+        const renderedBody = buildTemplate({
           slug,
           title: args.title,
           status,
           owner: args.owner ?? null,
           date,
-          ...(args.body != null ? { body: args.body } : {}),
+          ...(body != null ? { body } : {}),
         });
-        writtenBody = body;
-        return { newBody: body, value: { ok: true, slug } };
+        writtenBody = renderedBody;
+        return { newBody: renderedBody, value: { ok: true, slug } };
       },
     );
 
@@ -421,7 +446,7 @@ export default defineTool({
     // + a grammar hint routing to plans:set-content when list-like lines look
     // like items but did not parse (the silent 0-item trap this change closes).
     const parseSummary = summarizeItemParse(writtenBody ?? '', {
-      bodyProvided: args.body != null && args.body.trim().length > 0,
+      bodyProvided: body != null && body.trim().length > 0,
       // A fresh plan whose provided body yielded 0 items is almost always a
       // formatting miss — nudge. (set-content/-chunk pass false: a prose-only
       // rewrite legitimately has 0 items.)

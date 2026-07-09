@@ -174,6 +174,17 @@ export function fetchOverDuplex(
   opts: { timeoutMs?: number } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
+    // Never let a stream error crash the host — attached SYNCHRONOUSLY, before
+    // any await, so an already-destroyed/decoy duplex (the documented
+    // DIAL-REGISTRY GAP idiom several callers use — a pre-destroyed stub
+    // returned when there's no live dial path yet: hive-git-gc-action /
+    // git-sync-action's bootstrap+ref-announce legs, peer-dial-registry.ts's
+    // openHiveGitDuplexToDevice) can never emit an unhandled 'error' event.
+    // Below (in the real `server.on('connection', ...)` path) a SECOND
+    // `duplex.on('error', () => {})` is attached once a real connection
+    // exists — harmless double-attach, EventEmitter supports multiple
+    // listeners on the same event.
+    duplex.on('error', () => {});
     let stderr = '';
     let settled = false;
     let timedOut = false;

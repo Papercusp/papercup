@@ -24,6 +24,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { installFlagOverrideStore } from '../flag-override-store';
 import { startGatewayService, DEFAULT_GATEWAY_PORT } from './launch';
 
 /** Hard ceiling on the SIGTERM drain before we force-exit — DEFENSE-IN-DEPTH behind gateway.close()'s
@@ -68,6 +69,15 @@ export function gatewayLogLine(m: string): void {
  */
 export async function runGatewaySidecarMain(): Promise<void> {
   const HARD_STOP_MS = hardStopMs();
+  // Runtime flag overrides (codex-gateway-chatgpt-live-2026-07-09): `getFlag()` consults the
+  // PG override store ONLY in a process that installed it. That call used to live exclusively in
+  // flag-bus.ts, which this standalone process deliberately does NOT import (it drags in SSE +
+  // lexicon config). So the gateway silently ignored EVERY `flags:set` / `POST /api/flags/set`
+  // override and fell through to FLAG_DEFAULTS — a dark flag could never be turned on for the
+  // gateway by the documented mechanism, and the flip reported success while changing nothing.
+  // MUST run BEFORE startGatewayService(), which resolves its flags (e.g. CODEX_GATEWAY_OAUTH_PROXY)
+  // at boot. Fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
+  installFlagOverrideStore();
   const svc = await startGatewayService({
     port: Number(process.env.PAPERCUSP_GATEWAY_PORT) || DEFAULT_GATEWAY_PORT,
     workspace: process.env.PAPERCUSP_WORKSPACE || undefined,

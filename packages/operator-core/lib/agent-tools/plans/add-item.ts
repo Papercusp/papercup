@@ -33,20 +33,47 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText } from '../limits';
 
-const PHASE = z
-  .string()
-  .min(1)
-  .regex(
-    // Fully anchored (^...$, not just a leading ^Phase\b) so the JSON-Schema
-    // `pattern` Zod 4 emits is grammar-compilable by strict consumers (Ollama's
-    // tool-calling grammar generator 400s the WHOLE catalog on any non-`^...$`
-    // pattern: "Pattern must start with '^' and end with '$'" — see
-    // packages/agent-mcp/src/tool-schema-sanitize.ts). Semantically identical to
-    // the old /^Phase\b/i: only the prefix is constrained, anything may follow.
-    /^Phase\b[\s\S]*$/i,
-    'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
-  )
-  .describe('Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling".');
+/**
+ * EI-8811: normalize a caller-supplied phase heading to satisfy the parser's
+ * `/^Phase\b/i` grammar BEFORE the regex below validates it, instead of hard-
+ * rejecting a natural phase name (e.g. "Baseline") that doesn't already start
+ * with "Phase". Previously a mismatch failed the WHOLE add-item batch (all
+ * items share one `phase` arg) — often AFTER a preceding `plans:new` call had
+ * already written the plan, leaving it created but itemless. Auto-prefixing
+ * ("Baseline" → "Phase — Baseline") means the call succeeds with the caller's
+ * intended phase name instead. Exported for reuse by set-item-phase's PHASE
+ * (same grammar, same auto-fix) and for direct unit testing.
+ */
+export function normalizePhaseHeadingInput(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  const trimmed = v.trim();
+  // A blank/whitespace-only phase is a genuine validation failure, not a
+  // naming-convention mismatch — leave it as-is so the schema's `min(1)`
+  // still rejects it, instead of silently turning "" into the meaningless
+  // "Phase — ".
+  if (trimmed.length === 0) return trimmed;
+  return /^Phase\b/i.test(trimmed) ? trimmed : `Phase — ${trimmed}`;
+}
+
+export const PHASE = z.preprocess(
+  normalizePhaseHeadingInput,
+  z
+    .string()
+    .min(1)
+    .regex(
+      // Fully anchored (^...$, not just a leading ^Phase\b) so the JSON-Schema
+      // `pattern` Zod 4 emits is grammar-compilable by strict consumers (Ollama's
+      // tool-calling grammar generator 400s the WHOLE catalog on any non-`^...$`
+      // pattern: "Pattern must start with '^' and end with '$'" — see
+      // packages/agent-mcp/src/tool-schema-sanitize.ts). Semantically identical to
+      // the old /^Phase\b/i: only the prefix is constrained, anything may follow.
+      /^Phase\b[\s\S]*$/i,
+      'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
+    )
+    .describe(
+      'Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling". If it does not already start with "Phase" it is auto-prefixed (e.g. "Baseline" → "Phase — Baseline", EI-8811) so the call still succeeds using your intended name — the plan parser only recognizes /^Phase\\b/i headings as phase sections.',
+    ),
+);
 
 const IMPORTANCE = z
   .enum([...IMPORTANCE_LEVELS] as [string, ...string[]])

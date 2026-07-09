@@ -8,7 +8,7 @@
  * fumble where an agent had to create-template → get-version → set-content.
  */
 import { describe, it, expect } from 'vitest';
-import { buildTemplate } from '../new';
+import { buildTemplate, resolveNewPlanBody } from '../new';
 
 const base = {
   slug: 'x-plan-2026-07-05',
@@ -59,5 +59,25 @@ describe('plans:new buildTemplate — one-call body', () => {
   it('with owner: includes the owner frontmatter line', () => {
     const out = buildTemplate({ ...base, owner: 'a@b.com', body: '## Now\n\nx\n' });
     expect(out).toContain('owner: a@b.com');
+  });
+});
+
+describe('resolveNewPlanBody — EI-8811 `description` alias for `body`', () => {
+  it('uses `body` when only `body` is given', () => {
+    expect(resolveNewPlanBody({ body: '## Now\n\nfrom body\n' })).toBe('## Now\n\nfrom body\n');
+  });
+
+  it('falls back to `description` when `body` is absent', () => {
+    expect(resolveNewPlanBody({ description: '## Now\n\nfrom description\n' })).toBe(
+      '## Now\n\nfrom description\n',
+    );
+  });
+
+  it('`body` wins when both are given', () => {
+    expect(resolveNewPlanBody({ body: 'from body', description: 'from description' })).toBe('from body');
+  });
+
+  it('returns undefined when neither is given (falls back to the starter template downstream)', () => {
+    expect(resolveNewPlanBody({})).toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@
  * live server-side).
  */
 import { useSyncQuery } from '@papercusp/sync';
+import { Table, type TableColumn } from '../harness/Table';
 
 interface RubricRow {
   rubricId: string;
@@ -65,46 +66,40 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
     );
   }
 
+  const columns: TableColumn<RubricRow>[] = [
+    {
+      key: 'rubric',
+      header: 'Rubric',
+      render: (row) => (
+        <>
+          <div>{row.title}</div>
+          <div style={{ opacity: 0.65, fontSize: '0.85em' }}>{row.rubricId}</div>
+        </>
+      ),
+    },
+    { key: 'domain', header: 'Domain', render: (row) => row.characteristic },
+    { key: 'status', header: 'Status', render: (row) => row.status },
+    { key: 'criteria', header: 'Criteria', render: (row) => row.criteriaCount },
+    { key: 'scale', header: 'Scale', render: (row) => row.ratingScale.join(' / ') },
+    { key: 'scorecards', header: 'Scorecards', render: (row) => row.scorecardCount },
+    {
+      key: 'avgScore',
+      header: 'Avg /10',
+      render: (row) => row.avgScore10 ?? '—',
+      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+      cellTitle: () => 'Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded)',
+    },
+    { key: 'lastGraded', header: 'Last graded', render: (row) => formatWhen(row.latestScorecardAt) },
+  ];
+
   return (
-    <table className="pc-rubrics">
-      <caption>
-        {rows.length} rubric{rows.length === 1 ? '' : 's'}
-      </caption>
-      <thead>
-        <tr>
-          <th scope="col">Rubric</th>
-          <th scope="col">Domain</th>
-          <th scope="col">Status</th>
-          <th scope="col">Criteria</th>
-          <th scope="col">Scale</th>
-          <th scope="col">Scorecards</th>
-          <th scope="col">Avg /10</th>
-          <th scope="col">Last graded</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr
-            key={row.rubricId}
-            onClick={onSelect ? () => onSelect(row.rubricId) : undefined}
-            style={onSelect ? { cursor: 'pointer' } : undefined}
-          >
-            <td>
-              <div>{row.title}</div>
-              <div style={{ opacity: 0.65, fontSize: '0.85em' }}>{row.rubricId}</div>
-            </td>
-            <td>{row.characteristic}</td>
-            <td>{row.status}</td>
-            <td>{row.criteriaCount}</td>
-            <td>{row.ratingScale.join(' / ')}</td>
-            <td>{row.scorecardCount}</td>
-            <td style={{ fontVariantNumeric: 'tabular-nums' }} title="Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded)">
-              {row.avgScore10 ?? '—'}
-            </td>
-            <td>{formatWhen(row.latestScorecardAt)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <Table
+      className="pc-rubrics"
+      caption={`${rows.length} rubric${rows.length === 1 ? '' : 's'}`}
+      columns={columns}
+      rows={rows}
+      getRowKey={(row) => row.rubricId}
+      onRowClick={onSelect ? (row) => onSelect(row.rubricId) : undefined}
+    />
   );
 }

@@ -7,6 +7,7 @@
  * already carry the FULL ratings map, so no extra query is needed. Visual model:
  * the EI-8808 grading artifact (rating chips, evidence-forward layout).
  */
+import { Table, type TableColumn } from '../harness/Table';
 
 export interface RatingEntry {
   rating: string;
@@ -75,6 +76,27 @@ export default function ScorecardDetail({
   const entries = Object.entries(scorecard.ratings);
   const complete = scorecard.rubricResolved && scorecard.missingKeys.length === 0;
 
+  const ratingColumns: TableColumn<[string, RatingEntry]>[] = [
+    {
+      key: 'criterion',
+      header: 'Criterion',
+      render: ([key]) => key,
+      cellStyle: { whiteSpace: 'nowrap', verticalAlign: 'top' },
+    },
+    {
+      key: 'rating',
+      header: 'Rating',
+      render: ([, entry]) => <RatingChip rating={entry.rating} />,
+      cellStyle: { verticalAlign: 'top' },
+    },
+    {
+      key: 'evidence',
+      header: 'Evidence',
+      render: ([, entry]) => entry.evidence ?? '',
+      cellStyle: { maxWidth: '48rem' },
+    },
+  ];
+
   return (
     <div className="pc-scorecard-detail">
       {onBack && (
@@ -119,29 +141,13 @@ export default function ScorecardDetail({
       </dl>
 
       <div style={{ overflowX: 'auto' }}>
-        <table className="pc-scorecard-ratings">
-          <caption>
-            {entries.length} criterion rating{entries.length === 1 ? '' : 's'}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Criterion</th>
-              <th scope="col">Rating</th>
-              <th scope="col">Evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map(([key, entry]) => (
-              <tr key={key}>
-                <td style={{ whiteSpace: 'nowrap', verticalAlign: 'top' }}>{key}</td>
-                <td style={{ verticalAlign: 'top' }}>
-                  <RatingChip rating={entry.rating} />
-                </td>
-                <td style={{ maxWidth: '48rem' }}>{entry.evidence ?? ''}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table
+          className="pc-scorecard-ratings"
+          caption={`${entries.length} criterion rating${entries.length === 1 ? '' : 's'}`}
+          columns={ratingColumns}
+          rows={entries}
+          getRowKey={([key]) => key}
+        />
       </div>
     </div>
   );

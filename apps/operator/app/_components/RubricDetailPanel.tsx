@@ -10,6 +10,7 @@
  */
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { Table, type TableColumn } from '../harness/Table';
 import ScorecardDetail, { RatingChip, type ScorecardRow } from './ScorecardDetail';
 
 interface CriterionTrend {
@@ -69,6 +70,65 @@ export default function RubricDetailPanel({
   const rows = scorecards.data ?? [];
   const trendRow = trend.data?.[0];
 
+  const trendColumns: TableColumn<CriterionTrend>[] = trendRow
+    ? [
+        { key: 'criterion', header: 'Criterion', render: (c) => c.criterion, cellStyle: { whiteSpace: 'nowrap' } },
+        { key: 'latest', header: 'Latest', render: (c) => <RatingChip rating={c.latest.rating} /> },
+        {
+          key: 'trend',
+          header: 'Trend',
+          render: (c) => `${directionGlyph(c.direction)} ${c.direction}`,
+          cellTitle: (c) => c.direction,
+        },
+        {
+          key: 'mean',
+          header: 'Mean /10',
+          render: (c) => c.mean10 ?? '—',
+          cellStyle: { fontVariantNumeric: 'tabular-nums' },
+        },
+        { key: 'distribution', header: 'Distribution', render: (c) => formatDistribution(c.distribution) },
+        {
+          key: 'rated',
+          header: 'Rated',
+          render: (c) => c.count,
+          cellStyle: { fontVariantNumeric: 'tabular-nums' },
+        },
+      ]
+    : [];
+
+  const historyColumns: TableColumn<ScorecardRow>[] = [
+    { key: 'scorecard', header: 'Scorecard', render: (row) => row.issueId },
+    {
+      key: 'gradedAt',
+      header: 'Graded at',
+      render: (row) => new Date(row.createdAt).toLocaleString(),
+      cellStyle: { whiteSpace: 'nowrap' },
+    },
+    { key: 'gradedBy', header: 'Graded by', render: (row) => row.createdBy ?? 'unknown' },
+    {
+      key: 'score',
+      header: 'Score /10',
+      render: (row) => row.score10 ?? '—',
+      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+    },
+    {
+      key: 'criteriaRated',
+      header: 'Criteria rated',
+      render: (row) => row.nKeys,
+      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+    },
+    {
+      key: 'completeness',
+      header: 'Completeness',
+      render: (row) =>
+        row.rubricResolved
+          ? row.missingKeys.length === 0
+            ? 'complete'
+            : `${row.missingKeys.length} missing`
+          : 'rubric unresolved',
+    },
+  ];
+
   return (
     <div className="pc-rubric-detail">
       {onBack && (
@@ -87,39 +147,19 @@ export default function RubricDetailPanel({
         <div role="status">No graded criteria yet.</div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table className="pc-rubric-trend">
-            <caption>
-              {trendRow.scorecardCount} scorecard{trendRow.scorecardCount === 1 ? '' : 's'} in window{' '}
-              {trendRow.window.from ? `${new Date(trendRow.window.from).toLocaleDateString()} – ` : ''}
-              {trendRow.window.to ? new Date(trendRow.window.to).toLocaleDateString() : ''}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Criterion</th>
-                <th scope="col">Latest</th>
-                <th scope="col">Trend</th>
-                <th scope="col">Mean /10</th>
-                <th scope="col">Distribution</th>
-                <th scope="col">Rated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trendRow.criteria.map((c) => (
-                <tr key={c.criterion}>
-                  <td style={{ whiteSpace: 'nowrap' }}>{c.criterion}</td>
-                  <td>
-                    <RatingChip rating={c.latest.rating} />
-                  </td>
-                  <td title={c.direction}>
-                    {directionGlyph(c.direction)} {c.direction}
-                  </td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{c.mean10 ?? '—'}</td>
-                  <td>{formatDistribution(c.distribution)}</td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{c.count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table
+            className="pc-rubric-trend"
+            caption={
+              <>
+                {trendRow.scorecardCount} scorecard{trendRow.scorecardCount === 1 ? '' : 's'} in window{' '}
+                {trendRow.window.from ? `${new Date(trendRow.window.from).toLocaleDateString()} – ` : ''}
+                {trendRow.window.to ? new Date(trendRow.window.to).toLocaleDateString() : ''}
+              </>
+            }
+            columns={trendColumns}
+            rows={trendRow.criteria}
+            getRowKey={(c) => c.criterion}
+          />
         </div>
       )}
 
@@ -132,40 +172,19 @@ export default function RubricDetailPanel({
         <div role="status">No scorecards filed against this rubric yet.</div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table className="pc-rubric-history">
-            <caption>
-              {rows.length} scorecard{rows.length === 1 ? '' : 's'} (newest first) — click a row for
-              full ratings + evidence
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Scorecard</th>
-                <th scope="col">Graded at</th>
-                <th scope="col">Graded by</th>
-                <th scope="col">Score /10</th>
-                <th scope="col">Criteria rated</th>
-                <th scope="col">Completeness</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.issueId} onClick={() => setSelected(row)} style={{ cursor: 'pointer' }}>
-                  <td>{row.issueId}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{new Date(row.createdAt).toLocaleString()}</td>
-                  <td>{row.createdBy ?? 'unknown'}</td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{row.score10 ?? '—'}</td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{row.nKeys}</td>
-                  <td>
-                    {row.rubricResolved
-                      ? row.missingKeys.length === 0
-                        ? 'complete'
-                        : `${row.missingKeys.length} missing`
-                      : 'rubric unresolved'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table
+            className="pc-rubric-history"
+            caption={
+              <>
+                {rows.length} scorecard{rows.length === 1 ? '' : 's'} (newest first) — click a row for
+                full ratings + evidence
+              </>
+            }
+            columns={historyColumns}
+            rows={rows}
+            getRowKey={(row) => row.issueId}
+            onRowClick={(row) => setSelected(row)}
+          />
         </div>
       )}
     </div>

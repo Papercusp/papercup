@@ -26,6 +26,7 @@ import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
+import { matchRoutingGateHint } from '../../routing-gate-hints';
 
 /**
  * PIPELINE work-item kinds that belong to a HIVE's fleet queue (D-020): a fresh one
@@ -156,6 +157,16 @@ export async function createOneWorkItem(
       }
       harnessForItem = args.harness ?? hiveScope.slug;
     }
+    // EI-8809 (routing-gate hint at dispatch): a cheap, non-blocking keyword match
+    // against the papercusp-way trigger rows — the item's claimer sees the
+    // prescribed mechanism in payload.routingHint instead of having to re-derive it
+    // from a raw title mid-flow. Hint only, never a validation gate; a caller's
+    // OWN payload.routingHint (if ever explicitly set) is never clobbered.
+    const routingHint = matchRoutingGateHint(args.title, args.summary);
+    const payloadWithHint =
+      routingHint && !(args.payload && 'routingHint' in args.payload)
+        ? { ...(args.payload ?? {}), routingHint }
+        : args.payload;
     const workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -165,7 +176,7 @@ export async function createOneWorkItem(
       severity: args.severity,
       parent: args.parent,
       topics: args.topics,
-      payload: args.payload,
+      payload: payloadWithHint,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`

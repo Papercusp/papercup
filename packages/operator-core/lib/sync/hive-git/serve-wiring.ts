@@ -368,6 +368,17 @@ function handleEndToClient(state: ChannelState, v: EndFrame): void {
 /** Get-or-create the channel + its six message slots for (mux, topic).
  *  Idempotent per muxer (both `wireHiveGitServe` and `openHiveGitFetchDuplex`
  *  share the SAME channel via this). */
+let __hgDebugMuxCounter = 0;
+const __hgDebugMuxIds = new WeakMap<object, number>();
+function __hgDebugMuxId(mux: object): number {
+  let id = __hgDebugMuxIds.get(mux);
+  if (id === undefined) {
+    id = ++__hgDebugMuxCounter;
+    __hgDebugMuxIds.set(mux, id);
+  }
+  return id;
+}
+
 function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   const states = statesFor(mux as unknown as object);
   const topicHex = topic.toString('hex');
@@ -375,12 +386,12 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] ensureChannel: calling createChannel', { topicHex });
+  if (process.env.HGDEBUG) console.error('[HGDEBUG] ensureChannel: calling createChannel', { topicHex, muxId: __hgDebugMuxId(mux as unknown as object) });
   const channel = mux.createChannel({
     protocol: HIVE_GIT_PROTOCOL,
     id: topic,
     onopen: () => {
-      if (process.env.HGDEBUG) console.error('[HGDEBUG] onopen fired', { topicHex });
+      if (process.env.HGDEBUG) console.error('[HGDEBUG] onopen fired', { topicHex, muxId: __hgDebugMuxId(mux as unknown as object) });
       markOpened(state!);
     },
     onclose: () => {
@@ -415,8 +426,24 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
 function resolveMuxStream(socket: unknown, topic: Buffer): { mux: Protomux; opened?: Promise<unknown> } {
   const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
     opened?: Promise<unknown>;
+    userData?: unknown;
   };
   const mux = Protomux.from(muxStream as never);
+  // WI-3583 finding (peer-dial-registry.ts, su-7b21d): `Protomux.from()`'s own
+  // instance-caching only activates when `stream.userData` was already
+  // strictly `null` before the FIRST call on that stream (its constructor:
+  // `if (stream.userData === null) stream.userData = this`) — a bare
+  // socket's `userData` starts `undefined`, so that guard silently never
+  // fires. A SECOND independent wiring function calling
+  // `Protomux.from(sameSocket)` (e.g. peer-dial-registry.ts's
+  // `wireHiveGitDial`, wired onto the SAME connection as `wireHiveGitServe`)
+  // would otherwise construct a SEPARATE Protomux instance competing to
+  // parse/write the same byte stream — corrupting both channels' framing.
+  // Mirrors `openAnnounceChannel`'s identical fixup in swarm.ts — whichever
+  // wiring fn runs first on a socket "wins" the cache; everyone else then
+  // retrieves the SAME instance via the `stream.userData.isProtomux` fast
+  // path inside `Protomux.from`.
+  if (!muxStream.userData) muxStream.userData = mux;
   // Close a channel-open race: if the REMOTE's "open" control message arrives
   // before OUR OWN `ensureChannel()`/`createChannel()` call runs (e.g. while a
   // caller is still `await`ing `opened` below), Protomux queues it into that
@@ -435,12 +462,15 @@ function resolveMuxStream(socket: unknown, topic: Buffer): { mux: Protomux; open
   // pairs with) whichever topic the remote just opened.
   if (!hiveGitPairedMuxers.has(mux)) {
     hiveGitPairedMuxers.add(mux);
+    if (process.env.HGDEBUG) console.error('[HGDEBUG] registering mux.pair()', { alreadyUserData: !!(muxStream as { userData?: unknown }).userData, muxId: __hgDebugMuxId(mux as unknown as object) });
     try {
       mux.pair({ protocol: HIVE_GIT_PROTOCOL }, (id: Buffer | null) => {
+        if (process.env.HGDEBUG) console.error('[HGDEBUG] pair() notify fired', { hasId: !!id, muxId: __hgDebugMuxId(mux as unknown as object) });
         if (!id) return;
         ensureChannel(mux, id);
       });
-    } catch {
+    } catch (e) {
+      if (process.env.HGDEBUG) console.error('[HGDEBUG] mux.pair() threw', e);
       // pair() unsupported on this muxer build — connect-time channels still
       // pair the normal (non-lazy) way when both sides create first.
     }

@@ -68,7 +68,7 @@ export function buildEpochKeyResolver(deps: {
       // advancing to. `deriveEpochKey` is get-or-CREATE, correct ONLY for the epoch
       // ADVANCER; calling it to READ an already-existing epoch on a box that never minted
       // it — a fresh SEEDED install that adopts the shared hive identity
-      // (DOGFOOD_PAPERCUSP_HIVE_SHARE → isOwner=true) but boots with an EMPTY epoch
+      // (DOGFOOD_PAPERCUSP_POT_SHARE → isOwner=true) but boots with an EMPTY epoch
       // keychain — MINTS a fresh-random DIVERGENT key that cannot decrypt the seed's
       // existing epoch-ciphertext. That is the WI-1981 epoch-poison class and the seed
       // "57-drop": the seed's epoch-1 content decrypts ONLY under the bundled key, never a

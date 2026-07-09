@@ -50,36 +50,30 @@ const LEGACY_NATIVE_CHECKBOX_FILES = new Set([
 ]);
 
 const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
+  // Shared implementation of the design-system wrapper (WI-3561, 2026-07-09) — same
+  // pattern as Select.tsx / Checkbox.tsx above: the primitive itself legitimately owns
+  // the one native <table>/<thead>/<tbody> so every app UI can stop hand-rolling it.
+  'operator/app/harness/Table.tsx',
   // TEMPORARY (gate-unblock, su-2255d, EI-2699) — a dev-admin-rail internal-tooling
-  // panel; no shared table primitive exists yet. Allowlisted to keep an internal panel
-  // from redding the fleet's gate; migrate when a table primitive lands.
+  // panel. The shared table primitive (operator/app/harness/Table.tsx) lives in the
+  // apps/operator Next app and isn't yet available to the operator-vite app (same
+  // constraint as ToolUsagePanel's Select allowlisting above); migrate to a
+  // Vite-available table primitive as a follow-up.
   'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
   // TEMPORARY (gate-unblock 2026-06-23) — the ADV overview tab, un-migrated by the
   // in-flight design-primitives migration and holding the whole fleet's green gate red
-  // (~3h). No shared table primitive exists yet (see note above), so allowlisting is the
-  // only option here; migrate to the shared table primitive when it lands.
+  // (~3h). Shared table primitive now exists (operator/app/harness/Table.tsx, WI-3561)
+  // but isn't yet available to the operator-vite app; migrate to a Vite-available table
+  // primitive as a follow-up.
   'operator-vite/src/components/adv/AdvOverviewTab.tsx',
   // TEMPORARY (gate-unblock 2026-07-02, WI-1686) — the new /settings/p2p owner surface's
-  // Audit table (p2p-work-distribution-2026-07-02). No shared table primitive exists yet
-  // (see note above); allowlisted so a newly-landed page doesn't hold main's green gate red.
-  // Migrate to the shared table primitive when it lands.
+  // Audit table (p2p-work-distribution-2026-07-02). The shared table primitive now exists
+  // (operator/app/harness/Table.tsx, WI-3561) — migrate this page onto it as a follow-up.
   'operator/app/settings/p2p/page.tsx',
-  // TEMPORARY (gate-unblock 2026-07-09, agents-pill-inactive-search-2026-07-09) — FleetStatusPanel
-  // landed with a native table while no shared table primitive exists yet (see note above);
-  // allowlisted so the fleet's green gate isn't held red. Author (su-ba914) owns the migration
-  // to the shared table primitive when it lands.
+  // TEMPORARY (gate-unblock 2026-07-09, agents-pill-inactive-search-2026-07-09) — FleetStatusPanel.
+  // The shared table primitive now exists (operator/app/harness/Table.tsx, WI-3561, per
+  // su-ba914's WI-3537 pickup 2026-07-09) — author (su-ba914) migrating onto it.
   'operator/app/_components/FleetStatusPanel.tsx',
-  // TEMPORARY (gate-unblock 2026-07-09, rubrics-tab-scorecard-ui-2026-07-09 P-001) — RubricsPanel
-  // landed with a native table while no shared table primitive exists yet (see note above);
-  // allowlisted so the fleet's green gate isn't held red. The plan's author owns the migration
-  // to the shared table primitive when it lands (+ removal of this entry).
-  'operator/app/_components/RubricsPanel.tsx',
-  // TEMPORARY (gate-unblock 2026-07-09, rubrics-tab-scorecard-ui-2026-07-09) — the same plan's
-  // detail panels, same missing-table-primitive situation as RubricsPanel above; found red
-  // during design-simplification P-006 verify. That plan's author owns the migration
-  // (+ removal of these entries) when the shared table primitive lands.
-  'operator/app/_components/RubricDetailPanel.tsx',
-  'operator/app/_components/ScorecardDetail.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([

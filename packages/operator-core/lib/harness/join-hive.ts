@@ -408,8 +408,10 @@ export async function joinHiveAsView(
         keychainId: `remote:${opts.potId}`,
       });
     }
-  } catch {
+  } catch (e) {
     /* identity-view write is best-effort; never fail the join over it */
+    // eslint-disable-next-line no-console
+    console.error('[DEBUG-WI3578] upsertHiveIdentity failed:', e);
   }
 
   // 2c — EI-681: re-key the joined members onto the Hive-pubkey topic. The
