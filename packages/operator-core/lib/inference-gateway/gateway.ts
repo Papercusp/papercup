@@ -1343,6 +1343,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const serviceable = pool.healthyCount((id) => governorForAccount(SERVICEABLE_CLAMP_MODEL, id).state.pausedUntil <= now);
     return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
   };
+  // Apply the clamp ONCE, NOW that it has its real implementation. Previously the first application waited
+  // for the periodic tick (SERVICEABLE_CLAMP_TICK_MS) or an AIMD change, so a freshly-booted gateway spent up
+  // to a full tick admitting at the UNCLAMPED cap into a pool that may have zero serviceable accounts — the
+  // precise burst the clamp exists to prevent. Also seeds `clamp` on /stats so the state is legible from t=0.
+  applyAdmissionCap(lastAimdEff);
 
   // G1 (WI-649): FLEET-WIDE bare-burst detector. True when ≥half the pool is currently OUT OF ROTATION
   // (pool.exhaustedUntil — the short bare-429 paces / hard caps / transport circuits that other in-flight

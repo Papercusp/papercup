@@ -44,6 +44,13 @@ export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
  */
 export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-hive-git-staging-advance-v1';
 
+/** The hive-wide rendezvous key (P-009 rail, the ref-announce.ts idiom): the
+ *  integrator tick (integrator-tick.ts, P-203) fires
+ *  `events:emit { event: STAGING_ADVANCE_EVENT_KEY, scope: 'hive', payload: SignedStagingAdvance }`
+ *  after a successful integration pass; every member's worktree-bridge driver
+ *  (worktree-bridge.ts, P-204) holds an events:await on the same key. */
+export const STAGING_ADVANCE_EVENT_KEY = 'hive-git:staging-advance';
+
 /** A fencing pair: the authority lease epoch + the per-epoch advance sequence. */
 export interface EpochSeq {
   /** Monotonic lease epoch — bumps on every authority change (G-0 handoff). */

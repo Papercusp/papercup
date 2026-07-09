@@ -59,6 +59,7 @@ import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { statusToneColor } from '@/app/harness/theme';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { usePromptDialog } from '@/app/harness/usePromptDialog';
 import { hiveHomeLabel } from '@/lib/hive-label';
@@ -688,13 +689,6 @@ interface GymSnapshot {
   autoloops: GymAutoloop[];
 }
 
-const GYM_STATUS_COLOR: Record<string, string> = {
-  accepted: 'var(--good)',
-  pending: 'var(--warn)',
-  rejected: 'var(--bad)',
-  superseded: 'var(--fg-mute)',
-};
-
 function whenLabel(ms: number): string {
   if (!ms) return '';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -791,7 +785,7 @@ function GymView({ hive }: { hive: string }) {
 }
 
 function GymProposalRow({ p }: { p: GymProposal }) {
-  const statusColor = GYM_STATUS_COLOR[p.status] ?? '#94a3b8';
+  const statusColor = statusToneColor(p.status);
   const delta = deltaLabel(p.devAnchorDelta);
   return (
     <li className="pc-learning__row pc-learning__row--gym" title={p.rationale ?? undefined}>

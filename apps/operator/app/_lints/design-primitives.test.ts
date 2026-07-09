@@ -283,6 +283,31 @@ function unexpectedSkyPrimitiveReferences(): string[] {
   return offenders;
 }
 
+// Central home for status/severity/kind color tables — the ONE place a
+// STATUS_*/SEVERITY_*/KIND_* color/tone map may live (design-simplification
+// P-005). Components extend theme.ts (TONE + statusToneColor, or the
+// StatusMeta tables) instead of declaring a local map.
+const STATUS_MAP_CENTRAL_FILES = new Set<string>([
+  'operator/app/harness/theme.ts',
+]);
+
+function unexpectedLocalStatusColorMaps(): string[] {
+  const offenders: string[] = [];
+  const statusMapRe = /\bconst\s+[A-Z0-9_]*(?:STATUS|SEVERITY|KIND)_[A-Z0-9_]*(?:COLOR|TONE)S?\b/g;
+  for (const file of collectFiles()) {
+    const path = rel(file);
+    if (STATUS_MAP_CENTRAL_FILES.has(path)) continue;
+    const content = readFileSync(file, 'utf-8');
+    const matches = [...content.matchAll(statusMapRe)];
+    for (const match of matches) {
+      const before = content.slice(0, match.index);
+      const line = before.split('\n').length;
+      offenders.push(`${path}:${line}: ${match[0].trim()}`);
+    }
+  }
+  return offenders;
+}
+
 function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   const offenders: string[] = [];
   const cyanLiteralRe =
@@ -438,6 +463,21 @@ describe('design primitive lint', () => {
 
   it('keeps audited active surfaces free of direct cyan literals', () => {
     expectNoUnexpected('Direct cyan literals', unexpectedDirectCyanLiteralsInAuditedFiles());
+  });
+
+  it('keeps status/severity/kind color maps in the central theme tables (warn-first)', () => {
+    warnOrFail(
+      'Component-local status/kind color map',
+      unexpectedLocalStatusColorMaps(),
+      {
+        enforce: false,
+        hint:
+          'Status/severity/kind colors single-source from operator/app/harness/theme.ts ' +
+          '(TONE + statusToneColor for one-color lookups; STATUS/SEVERITY/ISSUE_STATUS/' +
+          'WORK_ITEM_KIND/AGENT_KIND for pill sets) — extend the central table instead of ' +
+          'declaring a local map. (design-simplification-2026-07-09 P-005)',
+      },
+    );
   });
 });
 
