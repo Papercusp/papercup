@@ -138,6 +138,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // notifySyncInvalidate in the 3 tools alone would miss.
     'plans.schedule',
     'plans.scheduledOccurrences',
+    // rubrics.list (rubrics-tab-scorecard-ui-2026-07-09 P-002): rubrics are
+    // plan-doc-backed (template = rubric, lib/rubrics.ts queryRubricPlans), so a
+    // rubric create/ratify/edit is a harness_plans write — refresh the Rubrics tab.
+    'rubrics.list',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
@@ -200,6 +204,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // taken_at / last_progress_at) off work_items via fleet_assignment — a claim/progress
     // flip refreshes the bee-run list (hybrid-bee-scheduler P-001).
     'scheduler.running',
+    // rubrics.* / scorecards.* (rubrics-tab-scorecard-ui-2026-07-09 P-002): a
+    // scorecard IS an engineer_issues row (compat view over work_items — THIS base
+    // table is the invalidation producer), so a newly filed grading refreshes the
+    // Rubrics-tab rollup, the per-rubric history, and the trend. Coarse by design:
+    // any work-item write busts them; rubric-graded reads are cheap + low-rate.
+    'rubrics.list',
+    'scorecards.list',
+    'rubrics.trend',
   ],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [

@@ -791,8 +791,13 @@ export interface GatewayStats {
   /** Serviceable-count clamp state (2026-07-09 advisory-clamp directive). `recommendation` is what the
    *  clamp WOULD cap live admission to (null = unbounded/not yet computed); `applied` is what admission
    *  actually is after `mode` is honored; `overridden` is true when a recommendation exists and was NOT
-   *  applied (`mode:'off'`). Makes an override impossible to mistake for a healthy pool. */
-  clamp: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
+   *  applied (`mode:'off'`). Makes an override impossible to mistake for a healthy pool.
+   *
+   *  OPTIONAL BY NECESSITY: `/admin/stats` is parsed off a REMOTE gateway process (observability
+   *  .fetchGatewayHeadroom), which under deploy skew may be an older binary that predates this field —
+   *  exactly the case on 2026-07-09, when the running gateway was older than the routes being shipped.
+   *  A consumer must treat its absence as "unknown", never as "not clamped". */
+  clamp?: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;

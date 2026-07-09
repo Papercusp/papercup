@@ -14,7 +14,14 @@
  *      own its stdin) → PARK + a one-time inbox nudge; the pump re-checks and
  *      converts to a resume when the pid dies. Never inject keystrokes into a
  *      terminal we don't own (focus/ownership rules).
- *   4. nothing live + nothing resumable → DROP, visibly (D-004 net #2).
+ *   4. nothing live + nothing resumable → DEGRADE to a coord inbox
+ *      notification (P-001, wake-delivery-degradation-fix-2026-07-09): per the
+ *      events:await registration contract a `notify`-policy subscriber always
+ *      has an inbox to fall back to, so losing liveness/resumability is not
+ *      the same as having no resolvable owner. Delivered with channel='inbox'
+ *      (`degradeToInboxOrDrop`). Only a genuinely undeliverable inbox write
+ *      (no resolvable owner / a durable write fault) still DROPS, visibly
+ *      (D-004 net #2).
  *
  * Identity survives the resume: PAPERCUSP_SID is re-exported so the woken
  * session keeps its coord identity, lock hooks, and (crucially) its OWN
