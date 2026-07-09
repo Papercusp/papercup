@@ -492,6 +492,58 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // rubrics.* / scorecards.* — Rubrics tab reads (rubrics-tab-scorecard-ui-2026-07-09
+  // P-001..P-003): the rubric list + per-rubric grading rollup, the raw scorecard
+  // history (ratings included — the click-into-detail view reads the SAME rows), and
+  // the per-criterion trend. Pure reads over the existing rubric/scorecard stores
+  // (lib/rubrics.ts / lib/scorecards.ts) — the same functions rubrics:list /
+  // scorecards:list / rubrics:trend serve agents; never a parallel query.
+  'rubrics.list': {
+    resolve: async () => {
+      const { listRubrics } = await import('../rubrics');
+      const { listScorecards } = await import('../scorecards');
+      const [rubrics, scorecards] = await Promise.all([listRubrics({}), listScorecards({ limit: 500 })]);
+      const byRubric = new Map<string, { count: number; latestAt: string | null }>();
+      for (const s of scorecards) {
+        const e = byRubric.get(s.rubricRef) ?? { count: 0, latestAt: null };
+        e.count += 1;
+        if (!e.latestAt || s.createdAt > e.latestAt) e.latestAt = s.createdAt;
+        byRubric.set(s.rubricRef, e);
+      }
+      return rubrics.map((r) => ({
+        rubricId: r.rubricId,
+        characteristic: r.characteristic,
+        title: r.title,
+        status: r.status,
+        criteriaCount: r.criteria.length,
+        ratingScale: r.ratingScale,
+        methodRef: r.methodRef,
+        updatedAt: r.updatedAt,
+        scorecardCount: byRubric.get(r.rubricId)?.count ?? 0,
+        latestScorecardAt: byRubric.get(r.rubricId)?.latestAt ?? null,
+      })) as unknown[];
+    },
+  },
+  'scorecards.list': {
+    argsSchema: z.object({
+      rubricRef: z.string().min(1),
+      limit: clampedLimit(500, 100),
+    }),
+    resolve: async (args) => {
+      const { listScorecards } = await import('../scorecards');
+      const { rubricRef, limit } = args as { rubricRef: string; limit: number };
+      return (await listScorecards({ rubricRef, limit })) as unknown[];
+    },
+  },
+  'rubrics.trend': {
+    argsSchema: z.object({ rubricRef: z.string().min(1) }),
+    resolve: async (args) => {
+      const { scorecardTrend } = await import('../scorecards');
+      const { rubricRef } = args as { rubricRef: string };
+      return [await scorecardTrend({ rubricRef })] as unknown[];
+    },
+  },
+
   // toastLog.recent — first migration. Mirrors the original ZQL:
   //   zql.toastLog.orderBy('createdAt', 'desc').limit(limit)
   // The flat-row return matches what useSyncQuery's SSEAdapter

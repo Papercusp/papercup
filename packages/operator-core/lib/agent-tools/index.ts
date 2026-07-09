@@ -256,6 +256,10 @@ import './accounts/session-override';
 // EI-7357 — restores accounts:test-egress (the clean-IP gate probe egress-probe.ts's own
 // doc comment references, but which was never actually registered as an MCP tool).
 import './accounts/test-egress';
+// gateway-clamp-advisory-capacity-probe-2026-07-09 P-001 — accounts:probe-capacity: ask upstream for the
+// REAL unified-5h/7d budget and record it. The only way a usage-walled account (routed no live traffic,
+// so its projection can never self-heal) gets a fresh reading short of waiting out its projected reset.
+import './accounts/probe-capacity';
 // gateway-live-control-and-egress-plan-2026-06-20 B-GWCTL — gateway:status / gateway:reload (hot-config).
 import './gateway/gateway';
 // local-concurrent-inference-2026-07-02 P-004 — gateway:local_backend_register/list/remove.
