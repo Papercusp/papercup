@@ -321,14 +321,24 @@ pace, not a monotonic climb), no dbos-reaper false-reap storm; recurrence-guarde
 3 tests in `claude-sessions-cache.test.ts`. WI-1415/WI-1416 (the git-sync symptom
 chain) independently resolved. No longer a release risk row.
 
-### 7. Data-completeness is table-grain-guarded, column-grain is the residual risk
-18 federated tables (`harness-state/table-registry.ts`) are structurally guarded
-at table grain (every peer-log table has a producer + a projection, two green CI
-tests). **Column-grain drift** is the residual class: value-mappers hand-pick
-columns, so a federated-table column added without updating its mapper silently
-drops on peers. A new guard (`federated-column-completeness.integration.test.ts`)
-closes the general case; a live candidate gap remains
-(`harness_features_consolidated` drops `design_spec_id`/`source_plan_slug`/etc.).
+### 7. Data-completeness is table-grain-guarded AND column-grain-guarded (RESOLVED 2026-07-09)
+26 federated (CDC-captured) tables are structurally guarded at table grain
+(every peer-log table has a producer + a projection, two green CI tests) AND at
+**column grain** via `federated-column-completeness.integration.test.ts`
+(introspects the REAL migrated `information_schema.columns` per table — not a
+hand-rolled subset — and asserts every real column is either carried by the
+mapper, PROVENANCE, PG-generated, or an explicitly-reasoned `NOT_FEDERATED`
+entry). The `harness_features_consolidated` gap this section used to name
+(`design_spec_id`/`source_plan_slug`/etc silently dropped) was fixed **2026-06-20**
+(WI-251, findings-B B-002, consensus su-328af/su-860d3): those 10 content/lineage
+columns are now carried by `toFeatureValue` (`feature-issue-op-keys.ts`) and the
+`harness-features.ts` projection INSERT/UPSERT, and the completeness test asserts
+they cross A→B. Re-verified 2026-07-09 (p2p-rest-lanes-2026-07-09 P-004): both
+guards green, 27/27 + 9/9 tests passing, all 26 tables covered, zero unresolved
+`NOT_FEDERATED` gaps on `harness_features_consolidated`. One small tracked
+residual elsewhere: `gym_qd_archive.source` (sender-local seed-origin tag) has no
+receive-side column yet (WI-2233, `REVIEW(findings-B)`-tagged, out of scope — a
+real but minor future gap, not silent data loss since it's explicitly documented).
 `trusted_authors` is local-only **by design** (federating the auto-run grant
 would be a security regression).
 

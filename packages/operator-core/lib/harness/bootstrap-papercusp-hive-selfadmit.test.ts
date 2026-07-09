@@ -136,13 +136,19 @@ describe('seedCanonicalCloneGitSyncRoutine — first-boot loop activation (EI-87
     });
   });
 
-  it('NEVER throws — a spine failure degrades to the boot reconcile backfill', async () => {
-    const seedMember = (async () => {
-      throw new Error('pg down');
-    }) as unknown as SeedFn;
-    await expect(
-      seedCanonicalCloneGitSyncRoutine(undefined, { seedMember }),
-    ).resolves.toBeUndefined();
+  it('NEVER throws — a spine failure degrades (with a warn) to the boot reconcile backfill', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const seedMember = (async () => {
+        throw new Error('pg down');
+      }) as unknown as SeedFn;
+      await expect(
+        seedCanonicalCloneGitSyncRoutine(undefined, { seedMember }),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('boot reconcile heals'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('routine_exists is a quiet no-op (idempotent across restore retries)', async () => {

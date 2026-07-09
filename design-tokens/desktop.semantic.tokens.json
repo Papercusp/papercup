@@ -19,6 +19,7 @@
   "accent":          { "$value": "{color.sky.400}",  "$type": "color" },
   "accent-rgb":      { "$value": "56, 189, 248", "$type": "color", "$description": "RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5)" },
   "accent-strong":   { "$value": "{color.sky.300}",  "$type": "color" },
+  "accent-strong-rgb": { "$value": "125, 211, 252", "$type": "color", "$description": "RGB triplet of --accent-strong (sky-300 #7dd3fc) for rgba() alpha composition, e.g. rgba(var(--accent-strong-rgb), 0.5)" },
   "accent-cool":     { "$value": "{color.sky-cool}", "$type": "color" },
   "accent-soft":     { "$value": "{color.sky.200}", "$type": "color", "$description": "Light accent tint — glows/highlights (frost: sky-200)" },
   "accent-deep":     { "$value": "{color.sky.500}", "$type": "color", "$description": "Deeper accent tint (frost: sky-500)" },

@@ -11884,8 +11884,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 /* Research-informed Operator border: Cybercore glow + augmented HUD brackets + Iron-Man-style white core.
    Pure CSS, border-only; no layout or interior control changes. */
 .operator-panel {
-  --operator-neon-cyan: 103, 232, 249;
-  --operator-neon-blue: 34, 211, 238;
+  --operator-neon-cyan: var(--accent-strong-rgb);
+  --operator-neon-blue: var(--accent-rgb);
   --operator-neon-amber: 255, 216, 97;
   --operator-neon-orange: 251, 146, 60;
   --operator-neon-white: 236, 254, 255;

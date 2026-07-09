@@ -30,6 +30,7 @@
   --border: rgba(125, 211, 252, 0.15); /** #7dd3fc @ 0.15 */
   --border-strong: rgba(125, 211, 252, 0.32); /** #7dd3fc @ 0.32 */
   --accent-rgb: 56, 189, 248; /** RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5) */
+  --accent-strong-rgb: 125, 211, 252; /** RGB triplet of --accent-strong (sky-300 #7dd3fc) for rgba() alpha composition, e.g. rgba(var(--accent-strong-rgb), 0.5) */
   --accent-ink: #051827; /** Text color on accent backgrounds */
   --warn-bg: rgba(251, 191, 36, 0.1); /** #fbbf24 @ 0.1 */
   --warn-border: rgba(251, 191, 36, 0.35); /** #fbbf24 @ 0.35 */

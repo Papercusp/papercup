@@ -52,6 +52,8 @@ import {
   type FreshContextDeps,
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
+import { sendMessage } from '../../agent-tools/coordination/messages';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
 import {
   decideColdWake,

@@ -23,6 +23,7 @@
   --accent: #38bdf8;
   --accent-rgb: 56, 189, 248; /** RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5) */
   --accent-strong: #7dd3fc;
+  --accent-strong-rgb: 125, 211, 252; /** RGB triplet of --accent-strong (sky-300 #7dd3fc) for rgba() alpha composition, e.g. rgba(var(--accent-strong-rgb), 0.5) */
   --accent-cool: #d7f3ff;
   --accent-soft: #bae6fd; /** Light accent tint — glows/highlights (frost: sky-200) */
   --accent-deep: #0ea5e9; /** Deeper accent tint (frost: sky-500) */
