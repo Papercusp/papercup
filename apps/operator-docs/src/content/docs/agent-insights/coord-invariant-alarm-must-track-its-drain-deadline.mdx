@@ -24,14 +24,29 @@ same shape has recurred at least three times:
   the 6h–24h window (a busy owner who hasn't cleared their pui wake board yet) is
   expected review backlog the sweep will reap at 24h — yet the alarm filed an EI
   every hour for it.
+- **EI-8786** — a variant one layer up: the operational-escalation check was
+  already tied to the right deadline (`OPERATIONAL_ESCALATION_TTL_MS` + the
+  EI-7087 grace), but the DRAIN it depended on ran on a **separate** hourly DBOS
+  tick (`attentionReconcile`, fired at :20) rather than *in the same pass as the
+  check* (the invariant monitor fires at :37). A missed/shed/stalled/lagged
+  reconcile tick left an operational escalation past the TTL at measure time —
+  observed live at 49.5h open while the separate tick had resolved nothing for
+  8h — firing the check on the OTHER routine's outage, not its own drain
+  failure. Fix: `drainOperationalEscalationsBeforeMeasure` now runs the same
+  reconcile sweep **in-pass, immediately before the check**, exactly like the
+  handoff and wake-queue remediations — making the check self-healing and
+  fully independent of the separate tick's cadence/health.
 
 ## Root cause (the class)
 
 Each of these invariants has a **remediation** that runs in the *same monitor pass,
-immediately before the check*: `autoAcceptStaleHandoffs`, the attention-reconcile
-sweep, `sweepDeadOwnerPendingWakes`, `sweepStalePendingWakes`. The alarm is supposed
-to detect that **the remediation is failing** — not that a human hasn't manually
-cleared a queue yet.
+immediately before the check*: `autoAcceptStaleHandoffs`, `sweepDeadOwnerPendingWakes`,
+`sweepStalePendingWakes`, and (as of EI-8786) `drainOperationalEscalationsBeforeMeasure`
+— which now calls the SAME `reconcileStaleEscalationsOnce` sweep the separate hourly
+`attentionReconcile` tick uses, but in-pass rather than relying on that other tick
+having already run. The alarm is supposed to detect that **the remediation is
+failing** — not that a human hasn't manually cleared a queue yet, and not that some
+OTHER routine's tick was late.
 
 When the ALARM threshold is set *lower* than the remediation's DEADLINE, everything
 in the gap between them is state the remediation deliberately keeps (a live owner's
@@ -61,3 +76,10 @@ threshold **is** that remediation's deadline (+ grace). A lower "warn early"
 threshold that files an EI is measuring the human's normal backlog — the anti-pattern
 this insight names. (Surfacing the backlog to a human is the job of the review
 surface — the pui wake board / attention queue — not a filed bug.)
+
+Corollary (EI-8786): the remediation must run **in the same pass, right before the
+check** — not on a separate schedule the check merely assumes has already fired. A
+check that depends on another routine's tick having run recently is exposed to that
+OTHER routine's cadence, shedding, or outages, which looks identical to "my own
+remediation is failing" from the check's point of view. Pull the remediation call
+in-pass so the check's only remaining failure mode is a genuine drain failure.

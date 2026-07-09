@@ -42,7 +42,7 @@ InstanceSpec, not by snapshots.
 (plan `comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the
 `share/finalize` + `binding/resolve` + harness `cupboard/publish` routes, and
 the storefront's per-harness Join are gone. Sharing now happens at the **Hive**
-level — `discovery:set_hive` publishes a hive to the P2P directory, the Comb
+level — `discovery:set_pot` publishes a hive to the P2P directory, the Comb
 indexes its member repos (`hive_pubkey` rows), and joiners join the hive
 (`shared-hive-federation-2026-06-08`, `hive-from-github-url-2026-06-11`).
 `kind='harness'` Cupboard rows remain as the repo→Hive lookup index only;

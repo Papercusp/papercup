@@ -1,7 +1,7 @@
 /**
  * POST /api/discovery/set-pot — the HTTP face of the hive listing
  * create/edit/visibility-flip (hive-from-github-url P-015). Mirrors the
- * `discovery:set_hive` MCP tool over the SAME `setHiveListing` composition:
+ * `discovery:set_pot` MCP tool over the SAME `setHiveListing` composition:
  * private = withdraw (stop re-announce + Cupboard unlist); public/invite =
  * the full publish set. This is what the hive header strip's flip control
  * drives.

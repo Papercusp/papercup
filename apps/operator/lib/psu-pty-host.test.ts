@@ -34,7 +34,10 @@ import {
   makeTurnCoalescer,
   ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
+  pidLooksLikePsuHost,
+  findLiveHostFor,
 } from '../scripts/psu-pty-host.mjs';
+import * as nodeFs from 'node:fs';
 import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
 import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
 
@@ -830,5 +833,62 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       expect(delivered).toContain('details for wake #9'); // newest wins
       expect(delivered).toContain('8 duplicate queued wakes were coalesced');
     });
+  });
+});
+
+describe('WI-3455 — pidLooksLikePsuHost (host-side identity check, mirrors psu-pty-discovery)', () => {
+  it('accepts a psu-launcher / psu-pty-host cmdline, rejects unrelated processes', () => {
+    expect(pidLooksLikePsuHost(123, () => 'node /x/scripts/psu-launcher.mjs --resume abc')).toBe(true);
+    expect(pidLooksLikePsuHost(123, () => 'node /x/scripts/psu-pty-host.mjs')).toBe(true);
+    expect(pidLooksLikePsuHost(123, () => 'nginx: worker process')).toBe(false);
+    expect(pidLooksLikePsuHost(0, () => 'node psu-launcher.mjs')).toBe(false);
+  });
+  it('an unreadable cmdline rejects on Linux (pid vanished/zombie), fails open only without /proc', () => {
+    const hasProc = nodeFs.existsSync('/proc');
+    expect(pidLooksLikePsuHost(123, () => null)).toBe(!hasProc);
+  });
+});
+
+describe('WI-3455 — findLiveHostFor (the launcher resume-of-live guard read)', () => {
+  const fs = nodeFs;
+  const mkOwner = () => `su-flhf-utest-${process.pid}-${Math.floor(performance.now() * 1000)}`;
+  const writeMetaFile = (ownerId: string, meta: Record<string, unknown>) => {
+    fs.mkdirSync(PSU_PTY_DIR, { recursive: true });
+    fs.writeFileSync(metaPathFor(ownerId), JSON.stringify(meta));
+  };
+  const cleanup = (ownerId: string) => {
+    for (const p of [metaPathFor(ownerId), socketPathFor(ownerId)]) {
+      try { fs.unlinkSync(p); } catch { /* absent is fine */ }
+    }
+  };
+
+  it('returns the meta for a live, identity-verified host whose sock exists', () => {
+    const ownerId = mkOwner();
+    try {
+      fs.writeFileSync(socketPathFor(ownerId), ''); // stand-in for the bound node
+      writeMetaFile(ownerId, { ownerId, pid: process.pid, sock: socketPathFor(ownerId) });
+      const hit = findLiveHostFor(ownerId, { verifyIdentity: () => true });
+      expect(hit?.pid).toBe(process.pid);
+    } finally { cleanup(ownerId); }
+  });
+
+  it('returns null on: missing file, recorded-owner mismatch, dead pid, failed identity, missing sock', () => {
+    const ownerId = mkOwner();
+    try {
+      expect(findLiveHostFor(ownerId)).toBeNull(); // no file
+
+      fs.writeFileSync(socketPathFor(ownerId), '');
+      writeMetaFile(ownerId, { ownerId: 'su-someone-else', pid: process.pid, sock: socketPathFor(ownerId) });
+      expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // EI-151 mismatch
+
+      writeMetaFile(ownerId, { ownerId, pid: 999_999_999, sock: socketPathFor(ownerId) });
+      expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // dead pid
+
+      writeMetaFile(ownerId, { ownerId, pid: process.pid, sock: socketPathFor(ownerId) });
+      expect(findLiveHostFor(ownerId, { verifyIdentity: () => false })).toBeNull(); // not a psu host
+
+      fs.unlinkSync(socketPathFor(ownerId));
+      expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // sock gone
+    } finally { cleanup(ownerId); }
   });
 });

@@ -1,5 +1,5 @@
 /**
- * set_hive.test.ts — the discovery:set_hive MCP tool (p2p-hive-directory P-004 /
+ * set_hive.test.ts — the discovery:set_pot MCP tool (p2p-hive-directory P-004 /
  * hive-from-github-url P-015).
  *
  * Two halves:
@@ -21,7 +21,7 @@ vi.mock('../../hive-set-listing', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
-import setHiveTool from './set_hive';
+import setHiveTool from './set_pot';
 
 const argsSchema = setHiveTool.args as {
   safeParse: (v: unknown) => { success: boolean };
@@ -43,7 +43,7 @@ beforeEach(() => {
   setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: true });
 });
 
-describe('discovery:set_hive args validation (DISC-1)', () => {
+describe('discovery:set_pot args validation (DISC-1)', () => {
   it('REJECTS invite visibility with no inviteSecret (mirrors the HTTP 400 + publish throw)', () => {
     expect(argsSchema.safeParse({ hiveId: 'h', title: 'T', visibility: 'invite' }).success).toBe(false);
   });
@@ -68,7 +68,7 @@ describe('discovery:set_hive args validation (DISC-1)', () => {
   });
 });
 
-describe('discovery:set_hive handler forwarding (P-015)', () => {
+describe('discovery:set_pot handler forwarding (P-015)', () => {
   it('forwards an invite listing carrying the inviteSecret + active workspace', async () => {
     setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'invite', saved: true, announced: true });
     await call({ hiveId: 'h', title: 'T', visibility: 'invite', inviteSecret: 'sekret' });

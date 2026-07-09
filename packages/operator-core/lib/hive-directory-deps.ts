@@ -4,7 +4,7 @@
  *
  * Mirrors change-feed-deps.ts: the core `hive-directory.ts` stays pure over
  * injected seams; this module binds those seams to the real subsystems and owns
- * the process singleton the operator endpoint (`discovery:hives`, P-005) reads:
+ * the process singleton the operator endpoint (`discovery:pots`, P-005) reads:
  *
  *   - `sign`             → `signWithDeviceKey(keychainId, …)` (the device key
  *                          that signs our own hive announces). Throws until the

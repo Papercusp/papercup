@@ -1,7 +1,7 @@
 /**
  * hive-set-listing — the one create/edit/visibility-flip composition for a
  * hive's directory listing (p2p-hive-directory P-004 + hive-from-github-url
- * P-015), shared by the `discovery:set_hive` MCP tool and the
+ * P-015), shared by the `discovery:set_pot` MCP tool and the
  * `POST /api/discovery/set-pot` HTTP route (the hive header strip's flip).
  *
  *   save meta → private: withdraw (stop re-announce + Cupboard unlist)

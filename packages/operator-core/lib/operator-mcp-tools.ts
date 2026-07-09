@@ -219,12 +219,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__pot:leave',
 
   // cross-hive-boundary-2026-06-08 P-002 — the owner's cross-Hive admission
-  // surface. discovery:hives finds a peer Hive's pubkey on the P2P directory;
+  // surface. discovery:pots finds a peer Hive's pubkey on the P2P directory;
   // pot:cross_grant sets/revokes/lists which peer Hives may send which kinds
   // (ask | work-request) INTO this Hive (default-deny allow-list, federates to
   // all of this Hive's Swarms). This is the conversational path for the owner to
   // say "let Hive X send us asks" — the sovereignty boundary between Hives.
-  'mcp__agentmcp__discovery:hives',
+  'mcp__agentmcp__discovery:pots',
   'mcp__agentmcp__pot:cross_grant',
 
   // hive-network-surface-2026-06-11 P-005 (B-07) — owner beacon-publish consent.
@@ -241,7 +241,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
 
   // hive-network-surface-2026-06-11 P-003 (B-04) — the INITIATING side of the
   // cross-Hive boundary: pot:ask / pot:request_work send a signed request to a
-  // peer Hive (by pubkey, from discovery:hives) and record it in this Hive's ask
+  // peer Hive (by pubkey, from discovery:pots) and record it in this Hive's ask
   // ledger; the peer's answer arrives async (events:await the answeredEvent key).
   // pot:asks reviews the ledger (pending / answered / declined). The owner and
   // Queen share these verbs to ask another Hive that owns a domain.

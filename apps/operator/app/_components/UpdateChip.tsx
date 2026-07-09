@@ -111,7 +111,7 @@ export default function UpdateChip() {
       if (msg.includes('no_compatible_assets') || msg.includes('compatible')) {
         toast.info('Auto-install isn’t available on this platform yet — opening releases page.');
         window.open(
-          'https://github.com/papercupai/papercusp-desktop/releases/latest',
+          'https://github.com/Papercusp/papercusp-desktop/releases/latest',
           '_blank',
           'noopener,noreferrer',
         );

@@ -51,6 +51,7 @@ import {
   existsSync,
   readFileSync,
   chmodSync,
+  renameSync,
 } from 'node:fs';
 import net from 'node:net';
 
@@ -249,6 +250,55 @@ export function pidAlive(pid) {
     // EPERM = exists but not ours (shouldn't happen same-UID); treat as alive.
     return e && e.code === 'EPERM';
   }
+}
+
+/** Read a pid's /proc cmdline (NULs → spaces); null when unreadable. Injectable
+ *  for tests. Mirrors operator-core psu-pty-discovery's defaultReadCmdline. */
+const readPidCmdline = (pid) => {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Process-IDENTITY check (WI-3455; mirrors operator-core psu-pty-discovery's
+ * pidIsPsuHost — keep the two in lockstep): is `pid` actually a psu session
+ * host, or an unrelated process that inherited a recycled pid? FAIL-OPEN where
+ * identity cannot be read (no /proc ⇒ non-Linux dev: trust pid-alive as
+ * before); on Linux an unreadable cmdline means the pid vanished / is a zombie
+ * ⇒ not a verifiable live host ⇒ reject.
+ */
+export function pidLooksLikePsuHost(pid, readCmdline = readPidCmdline) {
+  if (!pid) return false;
+  const cmdline = readCmdline(pid);
+  if (cmdline == null) return !existsSync('/proc');
+  return /psu-(launcher|pty-host)/.test(cmdline);
+}
+
+/** Parse an ownerId's discovery file, or null (missing / partial / corrupt). */
+export function readDiscoveryMeta(ownerId) {
+  try {
+    return JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The LIVE psu host currently registered for `ownerId`, or null (WI-3455).
+ * Self-validating like operator-core's findLiveHost: recorded ownerId must
+ * match, the pid must be alive AND actually be a psu host, and the socket must
+ * still exist on disk. Used by the launcher's resume-of-live guard — a non-fork
+ * resume of a session that is STILL RUNNING in another window would boot a
+ * second host on the same discovery key and strand the live one.
+ */
+export function findLiveHostFor(ownerId, { verifyIdentity = pidLooksLikePsuHost } = {}) {
+  const m = readDiscoveryMeta(ownerId);
+  if (!m || (m.ownerId && m.ownerId !== ownerId)) return null;
+  if (m.sock && existsSync(m.sock) && m.pid && pidAlive(m.pid) && verifyIdentity(m.pid)) return m;
+  return null;
 }
 
 function ensureDir() {
@@ -896,6 +946,9 @@ export function hostThroughPty(o) {
     // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
     // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
     parentPidFn = () => process.ppid,
+    // WI-3455: injectable activity/self-heal tick period so tests can exercise
+    // the discovery re-assert without waiting the real 15s cadence.
+    activityPersistMs = ACTIVITY_PERSIST_MS,
   } = o;
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
@@ -918,6 +971,27 @@ export function hostThroughPty(o) {
   const metaPath = metaPathFor(ownerId);
   // A stale socket from a crashed prior session of the SAME owner would block
   // bind; remove it (pruneDead already cleared dead ones, but be defensive).
+  // WI-3455: but never SILENTLY — if the prior key holder is STILL a live psu
+  // host (a resume of a live session, an env-inherited SID), taking the key
+  // strands that session's injection path (wake / turn:interrupt / /compact →
+  // no_live_pty_host, the 2026-07-08 su-a8f52 stranding). The launcher's
+  // resume-of-live guard refuses the common case up front; if we still get
+  // here, say so loudly — and the older host's self-heal tick reclaims the key
+  // once this host ends, so the takeover is convergent, not permanent.
+  const priorMeta = readDiscoveryMeta(ownerId);
+  if (
+    priorMeta &&
+    priorMeta.pid &&
+    priorMeta.pid !== process.pid &&
+    pidAlive(priorMeta.pid) &&
+    pidLooksLikePsuHost(priorMeta.pid)
+  ) {
+    process.stderr.write(
+      `psu: ⚠ another LIVE psu host already serves ${ownerId} (pid ${priorMeta.pid}) — ` +
+        `taking over its discovery key; that session keeps running but cannot receive ` +
+        `wakes//compact injection until this one ends (it self-heals afterwards).\n`,
+    );
+  }
   for (const p of [sock]) {
     try {
       if (existsSync(p)) unlinkSync(p);
@@ -982,7 +1056,16 @@ export function hostThroughPty(o) {
   };
   const writeMeta = () => {
     try {
-      writeFileSync(metaPath, JSON.stringify({ ...baseMeta, ...activity.snapshot() }));
+      // WI-3455: ATOMIC (tmp + rename). A plain in-place writeFileSync gives a
+      // reader a window on a truncated/partial document — and the operator-side
+      // janitor (pruneDeadDiscoveryFiles) DELETES a file it reads as corrupt,
+      // i.e. a lost race here used to cost a LIVE host its discovery key.
+      // rename(2) on the same fs is atomic, so readers only ever see a complete
+      // json. The tmp name is pid-scoped so two hosts racing the same key never
+      // corrupt each other's staging file.
+      const tmp = `${metaPath}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot() }));
+      renameSync(tmp, metaPath);
     } catch {
       /* best-effort — discovery degrades to the base contract */
     }
@@ -1003,13 +1086,59 @@ export function hostThroughPty(o) {
     }
   }
   let lastPersisted = 0;
+  // WI-3455 SELF-HEAL: the discovery key (json + sock) can be deleted out from
+  // under a LIVE host — a duplicate same-owner host's boot/exit, the operator
+  // janitor pruning a file it mis-read mid-write, a manual rm. Instead of
+  // guarding every possible deleter, each tick re-asserts the invariant "a live
+  // host is discoverable": if the json no longer records THIS pid (missing /
+  // corrupt / pointing at a DEAD or non-psu pid) rewrite it; if the sock path
+  // vanished from disk (we'd still be listening on the unlinked inode —
+  // unreachable) re-bind it. ONE exception prevents key flapping: when the json
+  // points at a DIFFERENT pid that is a genuinely LIVE psu host, that newer
+  // host owns the key — stand down (persist nothing) until it dies, then
+  // reclaim. Returns whether WE currently own the key, which also gates the
+  // ordinary activity persist below (pre-WI-3455 an old host's activity write
+  // would silently trample a live successor's registration).
+  let rebindControlSocket = () => {}; // assigned after the server exists below
+  let lastHealNoticeAt = 0;
+  const selfHealTick = () => {
+    const m = readDiscoveryMeta(ownerId);
+    if (m && m.pid && m.pid !== process.pid && pidAlive(m.pid) && pidLooksLikePsuHost(m.pid)) {
+      return false; // a newer LIVE host owns the key — stand down, don't fight
+    }
+    const metaMine = !!(m && m.pid === process.pid);
+    const sockOnDisk = existsSync(sock);
+    if (metaMine && sockOnDisk) return true;
+    writeMeta();
+    if (!sockOnDisk) rebindControlSocket();
+    const now = Date.now();
+    if (now - lastHealNoticeAt > 60_000) {
+      lastHealNoticeAt = now;
+      try {
+        process.stderr.write(
+          `psu-pty-host: discovery re-asserted for ${ownerId} ` +
+            `(json ${metaMine ? 'ok' : 'rewritten'}, sock ${sockOnDisk ? 'ok' : 'rebound'}) — ` +
+            `it was removed while this host was live\n`,
+        );
+      } catch {
+        /* never let a diagnostic write break the host */
+      }
+    }
+    return true;
+  };
   const activityTimer = setInterval(() => {
+    let ownKey = true;
+    try {
+      ownKey = selfHealTick();
+    } catch {
+      /* self-heal is best-effort — never break the activity persist */
+    }
     const snap = activity.snapshot();
-    if ((snap.lastActivityAt ?? 0) > lastPersisted) {
+    if (ownKey && (snap.lastActivityAt ?? 0) > lastPersisted) {
       lastPersisted = snap.lastActivityAt ?? 0;
       writeMeta();
     }
-  }, ACTIVITY_PERSIST_MS);
+  }, activityPersistMs);
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
 
   const idleGate = makeIdleGate();
@@ -1261,20 +1390,46 @@ export function hostThroughPty(o) {
   });
   server.on('error', (e) => process.stderr.write(`psu: control socket error: ${e.message}\n`));
   // Tight umask around bind so the node is never even briefly world-accessible,
-  // then pin 0600 (owner-only).
-  const prevUmask = process.umask(0o077);
-  server.listen(sock, () => {
+  // then pin 0600 (owner-only). Shared by the initial bind and the WI-3455
+  // self-heal re-bind (the sock path was unlinked while we were live).
+  const listenControlSocket = () => {
+    const prevUmask = process.umask(0o077);
+    server.listen(sock, () => {
+      try {
+        chmodSync(sock, 0o600);
+      } catch {
+        /* best-effort */
+      }
+      try {
+        process.umask(prevUmask);
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+  listenControlSocket();
+  // WI-3455: re-bind after the sock path was deleted out from under us. A unix
+  // socket keeps LISTENING on the unlinked inode (unreachable — connectors get
+  // ENOENT), so heal by closing the listener and re-listening on the same path.
+  // net.Server supports listen-after-close; the connection handler is reused.
+  rebindControlSocket = () => {
     try {
-      chmodSync(sock, 0o600);
+      server.close(() => {
+        try {
+          if (existsSync(sock)) unlinkSync(sock); // a dead successor's stray node would block bind
+        } catch {
+          /* ignore */
+        }
+        try {
+          listenControlSocket();
+        } catch (e) {
+          process.stderr.write(`psu: control socket re-bind failed: ${e.message}\n`);
+        }
+      });
     } catch {
-      /* best-effort */
+      /* close() throws only when already closed — nothing to heal then */
     }
-    try {
-      process.umask(prevUmask);
-    } catch {
-      /* ignore */
-    }
-  });
+  };
 
   // pty -> stdout (output bytes = the mid-turn signal, P-006). Re-attachable: a
   // RECYCLE (P-004b) spawns a fresh child and re-wires this bridge to it (node-pty
@@ -1356,16 +1511,40 @@ export function hostThroughPty(o) {
       } catch {
         /* ignore */
       }
-      try {
-        server.close();
-      } catch {
-        /* ignore */
-      }
-      for (const p of [sock, metaPath]) {
+      // WI-3455: only remove the discovery key when it is still OURS. A
+      // successor host that took over this ownerId re-registered the json with
+      // ITS pid and re-bound the sock — unlinking them here would strand that
+      // LIVE session (exactly the 2026-07-08 su-a8f52 stranding: a duplicate
+      // host's exit deleted the original's key → no_live_pty_host on a live,
+      // psu-hosted session). A missing/corrupt json means no registered
+      // successor, so the sock is ours to remove; a json recording a DEAD other
+      // pid is left for pruneDead/the janitor (their liveness test already
+      // reads it as prunable). NOTE: server.close() must ALSO be skipped when
+      // the key is owned by another host — libuv unlinks the server's bound
+      // PATH on graceful close, even when that path now points at the
+      // successor's re-bound socket node. unref() instead: the server stops
+      // holding the event loop open (so an embedding process — a test — can
+      // exit) and process exit reaps the fd WITHOUT unlinking the path.
+      const registered = readDiscoveryMeta(ownerId);
+      const ownedByOther = !!(registered && registered.pid && registered.pid !== process.pid);
+      if (ownedByOther) {
         try {
-          if (existsSync(p)) unlinkSync(p);
+          server.unref();
         } catch {
           /* ignore */
+        }
+      } else {
+        try {
+          server.close();
+        } catch {
+          /* ignore */
+        }
+        for (const p of [sock, metaPath]) {
+          try {
+            if (existsSync(p)) unlinkSync(p);
+          } catch {
+            /* ignore */
+          }
         }
       }
       resolve(code ?? 0);

@@ -16,7 +16,7 @@
  * best-effort in reverse on a later failure (clone dir, hive home, member
  * registration) — a failed create must not leave a half-hive in the registry.
  * The publish step itself is best-effort and NEVER fails the create (its
- * outcome is reported; a re-publish rides discovery:set_hive / the boot tick).
+ * outcome is reported; a re-publish rides discovery:set_pot / the boot tick).
  */
 
 import { rm } from 'node:fs/promises';

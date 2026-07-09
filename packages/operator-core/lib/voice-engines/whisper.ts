@@ -1,31 +1,12 @@
 /**
- * Voicemode Whisper STT adapter.
+ * Voicemode Whisper STT — one-shot transcription helper.
  *
- * Voicemode exposes an OpenAI-compatible /v1/audio/transcriptions
- * endpoint. The chrome's voice-mode.ts captures audio frames via the
- * Web Audio API and POSTs them here for transcription.
- *
- * Phase 1c ships the engine surface; the streaming implementation
- * (audio capture loop, VAD chunks) lives in voice-mode.ts and consumes
- * this engine via the `health()` probe + a transcribe helper.
+ * Voicemode exposes an OpenAI-compatible /v1/audio/transcriptions endpoint.
+ * The chrome's voice-mode.ts captures audio frames via the Web Audio API and
+ * POSTs each finalized chunk here for transcription. (The old `createVoicemodeWhisper`
+ * engine-adapter shell was part of the dead client `detectEngines` framework —
+ * removed 2026-07-09, WI-3448; this one-shot helper is the live surface.)
  */
-
-import type { SttEngine } from '../voice-engines';
-
-export function createVoicemodeWhisper(baseUrl: string): SttEngine {
-  return {
-    kind: 'voicemode',
-    async health(): Promise<boolean> {
-      try {
-        const r = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
-        return r.ok;
-      } catch { return false; }
-    },
-    // Streaming transcription: caller drives audio frames via voice-mode.ts.
-    // The actual capture loop lives there; this engine is the URL the
-    // POSTs target.
-  };
-}
 
 /** One-shot transcription helper. Called by voice-mode.ts on each finalized audio chunk. */
 export async function transcribeChunk(baseUrl: string, audio: Blob): Promise<string> {

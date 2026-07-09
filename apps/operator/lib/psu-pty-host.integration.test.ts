@@ -7,10 +7,11 @@
  * Spawns a real @lydell/node-pty subprocess, so it's an integration test.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
+import { spawn } from 'node:child_process';
 import {
   hostThroughPty,
   socketPathFor,
@@ -590,5 +591,171 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       expect(existsSync(meta)).toBe(false);
     },
     15_000,
+  );
+});
+
+describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 stranding class)', () => {
+  it(
+    'self-heals: recreates a deleted json + re-binds a deleted sock while the host is live',
+    async () => {
+      const ownerId = `su-selfheal-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      const childCode =
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        activityPersistMs: 150,
+        onExit: () => {},
+      });
+
+      await sleep(400);
+      expect(existsSync(sock)).toBe(true);
+      expect(existsSync(meta)).toBe(true);
+
+      // Simulate the trample: a duplicate host / janitor race deletes BOTH.
+      unlinkSync(meta);
+      unlinkSync(sock);
+      expect(existsSync(meta)).toBe(false);
+      expect(existsSync(sock)).toBe(false);
+
+      // Within a few ticks the live host re-asserts its key…
+      await sleep(800);
+      expect(existsSync(meta)).toBe(true);
+      expect(existsSync(sock)).toBe(true);
+      const healed = JSON.parse(readFileSync(meta, 'utf8'));
+      expect(healed.ownerId).toBe(ownerId);
+      expect(healed.pid).toBe(process.pid);
+
+      // …and the re-bound socket actually accepts injection again.
+      await rawInject(sock, 'post-heal\n');
+      await sleep(500);
+      expect(captured()).toContain('ECHO:post-heal');
+
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
+    "exit cleanup leaves a SUCCESSOR's registration alone (no unlink of a key that is no longer ours)",
+    async () => {
+      const ownerId = `su-successor-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { io } = fakeIo();
+
+      const childCode =
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      // Default (15s) persist tick: no self-heal fires within this short test,
+      // so the simulated successor registration below stays in place.
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: () => {},
+      });
+
+      await sleep(400);
+      const mine = JSON.parse(readFileSync(meta, 'utf8'));
+      expect(mine.pid).toBe(process.pid);
+
+      // A successor host took over the key: the json now records ITS pid.
+      writeFileSync(meta, JSON.stringify({ ...mine, pid: 999_999_999 }));
+
+      // Our host exits → pre-WI-3455 this unlinked json+sock unconditionally,
+      // stranding the successor. Now it must leave the key untouched.
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(existsSync(meta)).toBe(true);
+      expect(existsSync(sock)).toBe(true);
+      expect(JSON.parse(readFileSync(meta, 'utf8')).pid).toBe(999_999_999);
+
+      // hygiene
+      unlinkSync(meta);
+      unlinkSync(sock);
+    },
+    20_000,
+  );
+
+  it(
+    'stands down while a LIVE psu-marked process owns the key, then reclaims it after that process dies',
+    async () => {
+      const ownerId = `su-standdown-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { io } = fakeIo();
+
+      // A decoy whose cmdline carries the psu marker (argv is part of
+      // /proc/<pid>/cmdline), standing in for a genuinely live duplicate host.
+      const decoy = spawn(execPath, ['-e', 'setTimeout(()=>{},10000)', 'psu-launcher-decoy'], {
+        stdio: 'ignore',
+      });
+      await sleep(200);
+
+      const childCode =
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        activityPersistMs: 150,
+        onExit: () => {},
+      });
+
+      await sleep(400);
+      const mine = JSON.parse(readFileSync(meta, 'utf8'));
+
+      // The live decoy takes over the key → our host must STAND DOWN (no
+      // re-assert flap war), even across several ticks.
+      writeFileSync(meta, JSON.stringify({ ...mine, pid: decoy.pid }));
+      await sleep(700);
+      expect(JSON.parse(readFileSync(meta, 'utf8')).pid).toBe(decoy.pid);
+
+      // The decoy dies → the surviving host RECLAIMS the abandoned key.
+      decoy.kill('SIGKILL');
+      await sleep(900);
+      expect(JSON.parse(readFileSync(meta, 'utf8')).pid).toBe(process.pid);
+
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
   );
 });

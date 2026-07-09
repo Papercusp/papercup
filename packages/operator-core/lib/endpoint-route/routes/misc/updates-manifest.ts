@@ -2,19 +2,42 @@
  * GET /api/updates/manifest — channel-aware release manifest for the
  * Tauri updater (alpha/beta/stable; 204 = no update).
  *
- * Ported from app/api/updates/manifest/route.ts. `auth: 'public'` — the
- * Tauri updater polls this unauthenticated. NextRequest.nextUrl →
- * new URL(req.url); NextResponse(null,{status:204}) → Response.
+ * `auth: 'public'` — the Tauri updater polls this unauthenticated on
+ * loopback. The release repo is PRIVATE, so this route resolves a GitHub
+ * token server-side (gh CLI → credentials store → env; see
+ * updates-github.ts) and rewrites every artifact URL to the local
+ * `/api/updates/download` proxy, which streams the token-gated asset.
+ *
+ * Contract with tauri-plugin-updater (verified against 2.10.1 source,
+ * desktop-auto-update-operational-2026-07-09 P-001/P-002):
+ *   - `version` MUST parse as semver after trimming ONE leading "v" —
+ *     tags here are `desktop-vX.Y.Z[-chan[.N]]`, so we normalize.
+ *   - `signature` MUST be the minisign .sig CONTENT inline, not a URL.
+ *   - Both the GUI and Server products poll this route; assets are
+ *     product-named (`Papercusp GUI_…` / `Papercusp Server_…`, GitHub
+ *     dot-renames spaces), so the `product` query param scopes matching.
+ *   - Artifacts over GitHub's 2 GiB cap (Linux) are absent from the
+ *     release; their filenames + inline sigs come from the release's
+ *     `papercusp-latest-<tag>.json` and are served via the proxy's
+ *     PAPERCUSP_RELEASE_HOST fallback.
  */
 import { readOperatorState } from '../../../operator-state-pg';
 import { defineTool } from '@papercusp/agent-mcp';
-
-const GITHUB_REPO = process.env.GITHUB_DESKTOP_REPO ?? 'Papercusp/papercusp-desktop';
+import {
+  GITHUB_DESKTOP_REPO,
+  fetchAssetText,
+  githubApiHeaders,
+  releaseHostBase,
+  resolveGithubToken,
+} from './updates-github';
 
 type Channel = 'alpha' | 'beta' | 'stable';
 const CHANNELS = new Set<Channel>(['alpha', 'beta', 'stable']);
 
-interface GhAsset {
+type Product = 'gui' | 'server';
+
+export interface GhAsset {
+  id: number;
   name: string;
   browser_download_url: string;
 }
@@ -32,6 +55,22 @@ interface TauriManifest {
   notes: string;
   pub_date: string;
   platforms: Record<string, { signature: string; url: string }>;
+}
+/** Shape of the pipeline-generated `papercusp-latest-<tag>.json` asset. */
+interface LatestJson {
+  version?: string;
+  notes?: string;
+  pub_date?: string;
+  platforms?: Record<string, { signature: string; url: string }>;
+}
+
+/**
+ * `desktop-v0.0.4-alpha` → `0.0.4-alpha` (valid semver). The Tauri
+ * plugin only trims a single leading `v`, so serving the raw tag makes
+ * every check fail with a version-parse error.
+ */
+export function normalizeTagVersion(tag: string): string {
+  return tag.replace(/^desktop-v/i, '').replace(/^v/i, '');
 }
 
 function classifyChannel(release: GhRelease): Channel {
@@ -56,11 +95,32 @@ function platformKeyFor(target: string, arch: string): string | null {
   return `${t}-${a}`;
 }
 
-export function pickAssetUrl(release: GhRelease, target: string, arch: string): string | null {
+/**
+ * Which product an asset belongs to. Names look like
+ * `Papercusp GUI_0.0.3_x64-setup.exe` / `Papercusp.Server.app.tar.gz`
+ * (GitHub renames spaces to dots). Assets with neither token (the
+ * pre-split era, e.g. `Papercusp_universal.app.tar.gz`) match either
+ * product.
+ */
+function assetProduct(name: string): Product | 'any' {
+  const n = name.toLowerCase();
+  if (/(^|[\s._-])server([\s._-]|$)/.test(n)) return 'server';
+  if (/(^|[\s._-])gui([\s._-]|$)/.test(n)) return 'gui';
+  return 'any';
+}
+
+export function pickAsset(
+  release: GhRelease,
+  target: string,
+  arch: string,
+  product: Product = 'gui',
+): GhAsset | null {
   const platform = platformKeyFor(target, arch);
   if (!platform) return null;
   const candidates = release.assets.filter((a) => {
     const name = a.name.toLowerCase();
+    const p = assetProduct(a.name);
+    if (p !== 'any' && p !== product) return false;
     // Tauri v2's Windows updater artifact is the bare NSIS `-setup.exe`
     // (or `.msi`) — v1's `.msi.zip`/`.exe.tar.gz` wrappers no longer
     // exist. Without this the endpoint 404'd on every real Windows
@@ -96,19 +156,46 @@ export function pickAssetUrl(release: GhRelease, target: string, arch: string): 
       (arch === 'i686' && (name.includes('i686') || name.includes('x86')))
     );
   });
-  return candidates[0]?.browser_download_url ?? null;
+  return candidates[0] ?? null;
 }
 
-function findSignature(release: GhRelease, assetUrl: string): string {
-  const file = assetUrl.split('/').pop() ?? '';
-  return release.assets.find((a) => a.name === `${file}.sig`)?.browser_download_url ?? '';
+/** Back-compat helper (tests + older callers). */
+export function pickAssetUrl(
+  release: GhRelease,
+  target: string,
+  arch: string,
+  product: Product = 'gui',
+): string | null {
+  return pickAsset(release, target, arch, product)?.browser_download_url ?? null;
 }
 
-async function fetchReleases(): Promise<GhRelease[] | null> {
-  const url = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30`;
-  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
-  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  const res = await fetch(url, { headers, next: { revalidate: 60 } } as RequestInit);
+/**
+ * Asset-name equality across GitHub's space→dot rename
+ * ("Papercusp GUI.app.tar.gz" is stored as "Papercusp.GUI.app.tar.gz").
+ */
+function sameAssetName(a: string, b: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[ .]/g, '.');
+  return norm(a) === norm(b);
+}
+
+function findSigAsset(release: GhRelease, assetName: string): GhAsset | null {
+  return release.assets.find((a) => sameAssetName(a.name, `${assetName}.sig`)) ?? null;
+}
+
+function findLatestJsonAsset(release: GhRelease): GhAsset | null {
+  return (
+    release.assets.find((a) => /^papercusp-latest-.*\.json$/i.test(a.name)) ??
+    release.assets.find((a) => a.name.toLowerCase() === 'latest.json') ??
+    null
+  );
+}
+
+async function fetchReleases(token: string | null): Promise<GhRelease[] | null> {
+  const url = `https://api.github.com/repos/${GITHUB_DESKTOP_REPO}/releases?per_page=30`;
+  const res = await fetch(url, {
+    headers: githubApiHeaders(token),
+    next: { revalidate: 60 },
+  } as RequestInit);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`github releases: ${res.status}`);
   return (await res.json()) as GhRelease[];
@@ -126,27 +213,36 @@ export default defineTool({
   path: '/updates/manifest',
   auth: 'public',
   async handler(req) {
-    const params = new URL(req.url).searchParams;
+    const reqUrl = new URL(req.url);
+    const params = reqUrl.searchParams;
     const target = params.get('target') ?? 'linux';
     const arch = params.get('arch') ?? 'x86_64';
     const currentVersion = params.get('current_version') ?? '';
+    const product: Product = params.get('product') === 'server' ? 'server' : 'gui';
 
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
     const channel = resolveChannel(params, stored?.update_channel);
 
+    const token = await resolveGithubToken();
+    if (!token) {
+      // The repo is private: without a token the listing 404s and every
+      // asset is unreachable. Stay quiet toward the updater (204 = up to
+      // date) but keep the failure visible to ops.
+      console.warn(
+        '[updates/manifest] no GitHub token available (gh auth / github_pat / GITHUB_TOKEN) — serving 204 (no update offered)',
+      );
+      return new Response(null, { status: 204 });
+    }
+
     let releases: GhRelease[] | null;
     try {
-      releases = await fetchReleases();
+      releases = await fetchReleases(token);
     } catch (e: unknown) {
-      // A TRANSIENT inability to reach GitHub — rate-limit (403: unauthenticated
-      // polling hits the 60/hr per-IP cap once the operator runs without a
-      // GITHUB_TOKEN), 5xx, or a network error — is NOT a client error. Returning
-      // 502 here made the Tauri updater log `update endpoint did not respond with a
-      // successful status code` on every poll (and surfaced a hard error from the
-      // manual check_for_update command). Degrade to 204 exactly like the 404 /
-      // no-candidate cases below — the updater treats 204 as "up to date" and stays
-      // quiet — while warning server-side so a persistent failure (e.g. a missing
-      // GITHUB_TOKEN) stays visible to ops rather than being silently swallowed.
+      // A TRANSIENT inability to reach GitHub — rate-limit, 5xx, or a
+      // network error — is NOT a client error. Returning 502 here made the
+      // Tauri updater log a hard error on every poll. Degrade to 204 like
+      // the 404 / no-candidate cases — the updater treats 204 as "up to
+      // date" and stays quiet — while warning server-side.
       console.warn(
         `[updates/manifest] releases fetch failed — serving 204 (no update offered): ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -161,29 +257,76 @@ export default defineTool({
       .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
 
     if (!candidate) return new Response(null, { status: 204 });
-    if (currentVersion && candidate.tag_name.replace(/^v/, '') === currentVersion) {
+    const candidateVersion = normalizeTagVersion(candidate.tag_name);
+    if (currentVersion && candidateVersion === currentVersion) {
       return new Response(null, { status: 204 });
     }
 
-    const assetUrl = pickAssetUrl(candidate, target, arch);
-    if (!assetUrl) {
-      return Response.json(
-        { error: `no asset for ${target}/${arch} in ${candidate.tag_name}` },
-        { status: 404 },
-      );
+    const platformKey = platformKeyFor(target, arch);
+    if (!platformKey) {
+      return Response.json({ error: `unknown platform ${target}/${arch}` }, { status: 404 });
+    }
+    const proxyBase = `${reqUrl.origin}/api/updates/download`;
+
+    const asset = pickAsset(candidate, target, arch, product);
+    if (asset) {
+      const sigAsset = findSigAsset(candidate, asset.name);
+      const signature = sigAsset ? ((await fetchAssetText(sigAsset.id, token)) ?? '').trim() : '';
+      if (!signature) {
+        console.warn(
+          `[updates/manifest] no signature for ${asset.name} in ${candidate.tag_name} — install will fail verification`,
+        );
+      }
+      const manifest: TauriManifest = {
+        version: candidateVersion,
+        notes: candidate.body ?? '',
+        pub_date: candidate.published_at,
+        platforms: {
+          [platformKey]: {
+            signature,
+            url: `${proxyBase}?asset_id=${asset.id}&name=${encodeURIComponent(asset.name)}`,
+          },
+        },
+      };
+      return Response.json(manifest);
     }
 
-    const manifest: TauriManifest = {
-      version: candidate.tag_name.replace(/^v/, ''),
-      notes: candidate.body ?? '',
-      pub_date: candidate.published_at,
-      platforms: {
-        [platformKeyFor(target, arch) as string]: {
-          signature: findSignature(candidate, assetUrl),
-          url: assetUrl,
-        },
-      },
-    };
-    return Response.json(manifest);
+    // No GitHub asset for this platform/product — the artifact may be over
+    // GitHub's 2 GiB cap (Linux). The pipeline's latest.json still lists it
+    // (filename + INLINE minisign signature); serve it via the proxy's
+    // static release-host fallback when one is configured.
+    const latestAsset = findLatestJsonAsset(candidate);
+    if (latestAsset && releaseHostBase()) {
+      try {
+        const latest = JSON.parse(
+          (await fetchAssetText(latestAsset.id, token)) ?? 'null',
+        ) as LatestJson | null;
+        const entry = latest?.platforms?.[platformKey];
+        // latest.json is currently generated for the GUI product only.
+        if (entry?.signature && entry.url && product === 'gui') {
+          const file = entry.url.split('/').pop() ?? '';
+          return Response.json({
+            version: latest?.version ?? candidateVersion,
+            notes: latest?.notes ?? candidate.body ?? '',
+            pub_date: latest?.pub_date ?? candidate.published_at,
+            platforms: {
+              [platformKey]: {
+                signature: entry.signature,
+                url: `${proxyBase}?tag=${encodeURIComponent(candidate.tag_name)}&name=${encodeURIComponent(file)}`,
+              },
+            },
+          } satisfies TauriManifest);
+        }
+      } catch (e: unknown) {
+        console.warn(
+          `[updates/manifest] latest.json fallback failed for ${candidate.tag_name}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    return Response.json(
+      { error: `no asset for ${target}/${arch} (${product}) in ${candidate.tag_name}` },
+      { status: 404 },
+    );
   },
 });

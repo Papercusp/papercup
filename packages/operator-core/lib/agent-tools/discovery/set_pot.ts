@@ -1,5 +1,5 @@
 /**
- * discovery:set_hive — the hive create/edit surface (p2p-hive-directory P-004).
+ * discovery:set_pot — the hive create/edit surface (p2p-hive-directory P-004).
  *
  * Carries a hive's directory metadata (title + description + visibility +
  * member harness topics) and, on save, announces it per its visibility:
@@ -19,16 +19,16 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { hardText, LIMITS } from '../limits';
 
 export default defineTool({
-  name: 'discovery:set_hive',
+  name: 'discovery:set_pot',
   description:
     "Create or edit a hive's P2P directory listing — title, description, and visibility (public = announce to the global directory; invite = invite-scoped topic only; private = never announced). Saves the metadata to the workspace registry and announces it per visibility so peers can browse + join it.",
   capability: 'discovery:write',
   guidance: {
     when: 'You want to publish a hive to the P2P directory so other peers can discover + join it, or edit an existing listing (title/description/visibility).',
     notWhen:
-      'To deploy a pot’s execution frames use deploy:pot. To browse OTHERS’ hives use discovery:hives. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL).',
+      'To deploy a pot’s execution frames use deploy:pot. To browse OTHERS’ hives use discovery:pots. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL).',
     seeAlso: [
-      'discovery:hives (browse OTHERS\' hives)',
+      'discovery:pots (browse OTHERS\' hives)',
       'deploy:pot (deploy the pot\'s execution frames)',
       'pot:get (the pot whose listing you are editing)',
     ],

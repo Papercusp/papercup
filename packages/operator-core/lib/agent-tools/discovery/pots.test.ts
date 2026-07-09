@@ -1,5 +1,5 @@
 /**
- * hives.test.ts — the discovery:hives endpoint (p2p-hive-directory P-005).
+ * hives.test.ts — the discovery:pots endpoint (p2p-hive-directory P-005).
  *
  * Drives the tool handler over a test-configured HiveDirectory (fake seams),
  * asserting it projects the directory's verified list into browse rows and
@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import hivesTool from './hives';
+import hivesTool from './pots';
 import { configureHiveDirectoryForTest, __resetHiveDirectorySingleton } from '../../hive-directory-deps';
 import type { HiveDirectoryDeps } from '../../hive-directory';
 import { buildHiveAnnounce, type HiveAnnounceBody, type SignedHiveAnnounce } from '../../sync/hyperbee/hive-announce';
@@ -80,7 +80,7 @@ beforeEach(() => {
 
 afterEach(() => __resetHiveDirectorySingleton());
 
-describe('discovery:hives endpoint (P-005)', () => {
+describe('discovery:pots endpoint (P-005)', () => {
   it('returns an empty list when nothing has been discovered', async () => {
     configureHiveDirectoryForTest(fakeDeps());
     const out = await call({});

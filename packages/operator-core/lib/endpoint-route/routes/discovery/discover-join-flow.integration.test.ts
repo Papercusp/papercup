@@ -6,7 +6,7 @@
  * exercised across the REAL modules (vs the per-route unit tests, which mock each
  * seam): the visibility→announce contract (`publishHiveToDirectory` over a real
  * `HiveDirectory`), the cross-peer ingest into a JOINER directory, the
- * `discovery:hives` browse projection, and the two JOIN routes whose INPUT is
+ * `discovery:pots` browse projection, and the two JOIN routes whose INPUT is
  * sourced from the real discovery output.
  *
  * Covers (the release gate for the public-hive flow):
@@ -14,7 +14,7 @@
  *       public  → announces on the GLOBAL directory topic;
  *       invite  → announces on the SECRET-gated invite topic (NOT the global one);
  *       private → never announced (no frame ever reaches the wire).
- *   - discovery:hives lists a published public + invite hive…
+ *   - discovery:pots lists a published public + invite hive…
  *   - …and a PRIVATE hive is NOT discoverable — never announced (no broadcast),
  *     rejected at ingest (verifyHiveAnnounce drops `private`), and filtered at the
  *     projection. The triple guarantee.
@@ -64,7 +64,7 @@ vi.mock('../../../hive-directory-boot', () => ({
 // ── Real modules under test ──────────────────────────────────────────────────
 import joinHiveRoute from './join-hive';
 import joinInviteRoute from './join-invite';
-import hivesTool from '../../../agent-tools/discovery/hives';
+import hivesTool from '../../../agent-tools/discovery/pots';
 import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity } from '../../../hive-publish';
 import {
   HiveDirectory,
@@ -126,7 +126,7 @@ const ownerDeps: HiveDirectoryDeps = {
 };
 let ownerDir: HiveDirectory;
 
-// The JOINER's directory IS the process singleton (so the discovery:hives tool,
+// The JOINER's directory IS the process singleton (so the discovery:pots tool,
 // which reads getHiveDirectory(), projects it). verifyAttestation → true (the
 // channel-2 GitHub check is exercised elsewhere; here we test the flow).
 const joinerDeps: HiveDirectoryDeps = {
@@ -176,7 +176,7 @@ async function ingest(frames: Array<{ frame: SignedHiveAnnounce }>) {
   return out;
 }
 
-/** Call the discovery:hives browse tool over the joiner singleton. */
+/** Call the discovery:pots browse tool over the joiner singleton. */
 async function browse(args: Record<string, unknown> = {}) {
   const parsed = (hivesTool.args as { parse: (x: unknown) => unknown }).parse(args) as never;
   const res = (await hivesTool.handler(parsed, {} as never)) as { content: Array<{ text: string }> };
@@ -235,7 +235,7 @@ describe('discover→join flow: set-hive visibility → announce topic (T2)', ()
   });
 });
 
-describe('discover→join flow: discovery:hives lists published hives (T2)', () => {
+describe('discover→join flow: discovery:pots lists published hives (T2)', () => {
   it('lists a published PUBLIC hive with its member links + count', async () => {
     const { frames } = await publish(meta({ hiveId: 'acme', title: 'Acme Hive', visibility: 'public' }));
     expect((await ingest(frames))[0]).toMatchObject({ accepted: true });

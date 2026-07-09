@@ -120,10 +120,10 @@ import './curation/feed';
 import './curation/change-feed';
 // hive-creative-ideation-2026-06-08 P-003 (B1) — the "state of the Hive" corpus digest (Scout loop substrate):
 import './curation/state-of-pot';
-// p2p-hive-directory-2026-06-06 P-005 — browse the discovered P2P hive directory:
-import './discovery/hives';
-// p2p-hive-directory-2026-06-06 P-004 — create/edit a hive's directory listing:
-import './discovery/set_hive';
+// p2p-hive-directory-2026-06-06 P-005 — browse the discovered P2P pot directory:
+import './discovery/pots';
+// p2p-hive-directory-2026-06-06 P-004 — create/edit a pot's directory listing:
+import './discovery/set_pot';
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — the Pot operator's self-declared
 // wake surface (declare-wake / wake / status):
 import './hive/declare_wake';

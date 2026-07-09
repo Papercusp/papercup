@@ -2,7 +2,7 @@
  * pot:list — the workspace-local hives (kind:'hive' harnesses) at a glance
  * (hive-tool-namespace-2026-06-08 P-002, D-001).
  *
- * The local-lifecycle counterpart to `discovery:hives` (the P2P directory of
+ * The local-lifecycle counterpart to `discovery:pots` (the P2P directory of
  * joinable network hives). Returns each hive's `resolveHive` descriptor (slug +
  * deployment + wake) plus a single batched live-agent count — ONE fleet read for
  * all hives, never an N-per-hive fan-out. Rich per-hive detail (bees, frontier)
@@ -19,11 +19,11 @@ export default defineTool({
   name: 'pot:list',
   profile: 'engineer',
   description:
-    "The workspace-local pots (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-cup placement detail use fleet:assignments, for one pot in depth use pot:get.",
+    "The workspace-local pots (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:pots, for per-cup placement detail use fleet:assignments, for one pot in depth use pot:get.",
   guidance: {
     when: 'You want the workspace-local pots (the Pots) and their wake/load at a glance.',
     notWhen:
-      'Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One pot in depth — pot:get.',
+      'Browsing joinable hives across the P2P network — that is discovery:pots. The raw per-agent fleet view — fleet:assignments. One pot in depth — pot:get.',
     chaining: 'pot:get { slug } to drill into one; pot:create to add one; pot:dissolve to tear one down.',
     seeAlso: [
       'pot:get (drill into one pot in depth)',

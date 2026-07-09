@@ -333,7 +333,7 @@ let _lastWireAttemptMs = 0;
 
 /**
  * LAZY wire — for surfaces that need the directory live but may run before (or
- * instead of) the boot-all join: `discovery:set_hive` (announcing needs the
+ * instead of) the boot-all join: `discovery:set_pot` (announcing needs the
  * transport) and the discovery list reads. The boot join is once-only and
  * skips on a gh-unauthenticated box; without this, a box that authenticates
  * AFTER boot has a dead directory until restart. Returns the existing wiring

@@ -822,7 +822,7 @@ function buildSections(opts: {
           href: '/cupboard',
           label: `Browse the ${combLabel}`,
           description: `Browse published ${hivesLower} in the ${combLabel} and join one.`,
-          icon: '🍯',
+          icon: '🫖',
         },
         {
           key: 'hive-invite',
@@ -1035,11 +1035,11 @@ interface CreateHarnessPickerProps {
    * the add-into-hive create stamps the membership edge to this scope.
    */
   hiveScope?: string | null;
-  /** Lexicon label for a hive (D-006 — the parent passes the resolved term). Default "Hive". */
+  /** Lexicon label for a pot (D-006 — the parent passes the resolved term). Default "Pot". */
   hiveLabel?: string;
 }
 
-export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope = null, hiveLabel = 'Hive' }: CreateHarnessPickerProps) {
+export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope = null, hiveLabel = 'Pot' }: CreateHarnessPickerProps) {
   // ALL modal URL state lives in ONE useQueryStates so multi-key transitions
   // write ATOMICALLY (a single navigate). The custom nuqs adapter
   // (operator-vite/lib/nuqs-tanstack-router-adapter) re-derives EVERY watched key

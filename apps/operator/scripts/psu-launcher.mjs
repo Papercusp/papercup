@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { hostThroughPty, fleetOscFromEnv } from './psu-pty-host.mjs';
+import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
@@ -3049,6 +3049,26 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   if (fork && session.agent !== 'claude' && session.agent !== 'codex') {
     console.error(forkUnsupportedMessage(session.agent));
     process.exit(2);
+  }
+  // WI-3455: refuse to double-host a LIVE session. A non-fork resume reuses the
+  // original coord identity (PAPERCUSP_SID) + adv row, so resuming a session
+  // that is STILL RUNNING in another window boots a SECOND psu host on the same
+  // discovery key: the new boot tramples the live host's control socket, and
+  // its exit deletes the key + falsely stamps the shared adv row ended —
+  // stranding the original (wake / turn:interrupt / auto-/compact all report
+  // no_live_pty_host on a live session; the 2026-07-08 su-a8f52 incident). A
+  // FORK is the supported run-alongside path (fresh identity); PSU_FORCE_RESUME=1
+  // overrides for recovery of a wedged-but-technically-alive host.
+  if (!fork && session.coordOwnerId && process.env.PSU_FORCE_RESUME !== '1') {
+    const live = findLiveHostFor(session.coordOwnerId);
+    if (live) {
+      console.error(
+        `psu: this session (${session.coordOwnerId}) is STILL LIVE in another window (host pid ${live.pid}).\n` +
+          `psu: resuming it here would boot a second host on the same identity and strand the live one.\n` +
+          `psu: use that window, run alongside it with --fork, or set PSU_FORCE_RESUME=1 to take over anyway.`,
+      );
+      process.exit(2);
+    }
   }
   if (addDir.length && session.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');

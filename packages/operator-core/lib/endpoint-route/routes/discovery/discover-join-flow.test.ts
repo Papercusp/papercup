@@ -10,7 +10,7 @@
  *   set-hive visibility → which topic the announce lands on
  *     (public → the GLOBAL directory topic; invite → a SECRET-gated topic;
  *      private → never on the wire)
- *   → discovery:hives (GET /api/discovery/pots) lists a DISCOVERED public hive
+ *   → discovery:pots (GET /api/discovery/pots) lists a DISCOVERED public hive
  *   → join-hive forwards the DISCOVERED memberLinks into joinHiveAsView
  *   → join-invite (secret) surfaces an invite hive a global browser can't see
  *   → a PRIVATE hive is never discoverable (and a forged private frame is
@@ -246,7 +246,7 @@ describe('discover→join flow (shared-hive-release T2)', () => {
     });
   });
 
-  describe('discovery:hives (GET /api/discovery/pots)', () => {
+  describe('discovery:pots (GET /api/discovery/pots)', () => {
     it('lists a discovered public hive with its memberLinks', async () => {
       registerOwnedHive({ hiveId: 'acme', visibility: 'public' });
       await owner.announceLocalHive('acme');

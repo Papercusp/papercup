@@ -1,11 +1,11 @@
 /**
- * discovery:hives — the operator endpoint serving the discovered P2P hive list
+ * discovery:pots — the operator endpoint serving the discovered P2P hive list
  * (p2p-hive-directory-2026-06-06 P-005).
  *
  * The read projection of the hive directory: it returns the verified, un-muted
  * hives this peer has seen announced on the directory topic (HiveDirectory.
  * listDiscoveredHives) for the browse-and-join UIs — the pui Hives/Network board
- * (apps/tui hives.rs) and the desktop HiveDirectoryPanel (`discovery:hives`). Each
+ * (apps/tui hives.rs) and the desktop HiveDirectoryPanel (`discovery:pots`). Each
  * entry is a best-effort gossip listing (D-002): the join CTA runs the full
  * admission flow, the listing grants nothing.
  *
@@ -46,7 +46,7 @@ export interface DiscoveredHiveRow {
 }
 
 export default defineTool({
-  name: 'discovery:hives',
+  name: 'discovery:pots',
   description:
     'Browse the P2P hive directory — the verified hives this peer has seen announced on the well-known directory topic (title · description · owner · member harnesses). Best-effort gossip: joining a listed hive still runs the full admission/attestation flow. Feeds the pui Hives/Network board + the desktop HiveDirectoryPanel.',
   capability: 'discovery:read',
@@ -55,7 +55,7 @@ export default defineTool({
     notWhen:
       'To list the workspace-local deployed pot frames (hiveControlFrames) use the harness/pot surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic.',
     seeAlso: [
-      'discovery:set_hive (edit your own hive\'s public listing)',
+      'discovery:set_pot (edit your own hive\'s public listing)',
       'pot:ask (ask a peer Hive you discovered)',
       'pot:cross_grant (grant a discovered peer cross-hive access)',
     ],

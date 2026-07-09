@@ -54,7 +54,7 @@ export interface SendCrossHiveAskInput {
   workspaceId: string;
   /** THIS (asking) Hive's home slug — grants, signer and boundary are scoped to it. */
   hiveSlug: string;
-  /** The target peer Hive's pubkey (from `discovery:hives`). */
+  /** The target peer Hive's pubkey (from `discovery:pots`). */
   peerPubkey: string;
   kind: CrossHiveRequestKind;
   subject: string;

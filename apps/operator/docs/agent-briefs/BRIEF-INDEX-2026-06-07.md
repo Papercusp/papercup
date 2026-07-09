@@ -141,7 +141,7 @@ An agent is mid-rewrite of the merge engine at `packages/operator-core/lib/sync/
 - **p2p-hive-directory-2026-06-06 P-004** — Hive create/edit surface carries `title` + `description`; creating (or opting-in) a hive announces it. Opt-in flag per hive — private hives never announce.
 - **p2p-hive-directory-2026-06-06 P-005** — Operator endpoint (defineTool) serving the discovered-hive list to UI surfaces.
 - **p2p-hive-directory-2026-06-06 P-006** — Repoint the pui `apiary-pane` from the Cupboard tab to the hive directory list (title description owner peers + a Join CTA); joining runs the existing `join-shared-harness` orchestration per member harness.
-- **p2p-hive-directory-2026-06-06 P-007** — Desktop `HiveDirectoryPanel` (panel-registry, `discovery:hives`) over the same endpoint.
+- **p2p-hive-directory-2026-06-06 P-007** — Desktop `HiveDirectoryPanel` (panel-registry, `discovery:pots`) over the same endpoint.
 
 ---
 

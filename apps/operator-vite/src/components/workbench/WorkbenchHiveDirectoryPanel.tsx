@@ -192,6 +192,6 @@ export function registerWorkbenchHiveDirectoryPanel(): void {
   registered = true;
   panelRegistry.register('workbench:hive-directory', WorkbenchHiveDirectoryPanel, {
     keepAlive: true,
-    title: 'Hives',
+    title: 'Pots',
   });
 }

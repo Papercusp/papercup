@@ -597,7 +597,7 @@ async function effectiveFederationScope(
         message:
           resolved.kind === 'many'
             ? `scope:'hive' is ambiguous — this workspace has ${resolved.candidates.length} shared Hives; nothing was sent. There is no per-message hive picker yet: pick the right hive's home and re-send from a session scoped to it.`
-            : "scope:'hive' found no shared Hive in this workspace (a hive federates only when published public/invite or joined) — nothing was sent. Publish the hive (discovery:set_hive) or drop scope:'hive' to send machine-local.",
+            : "scope:'hive' found no shared Hive in this workspace (a hive federates only when published public/invite or joined) — nothing was sent. Publish the hive (discovery:set_pot) or drop scope:'hive' to send machine-local.",
         ...(resolved.kind === 'many' ? { candidates: resolved.candidates } : {}),
       },
     };

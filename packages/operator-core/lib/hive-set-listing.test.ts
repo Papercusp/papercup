@@ -1,6 +1,6 @@
 /**
  * hive-set-listing.test.ts — the save→(withdraw|publish) composition shared by
- * the `discovery:set_hive` MCP tool and the POST /api/discovery/set-pot route
+ * the `discovery:set_pot` MCP tool and the POST /api/discovery/set-pot route
  * (p2p-hive-directory P-004 / hive-from-github-url P-015). The sibling HTTP
  * route is tested for its validation/forwarding; this pins the COMPOSITION
  * itself (DISC-2): the private withdraw path (tombstone + Cupboard unlist, both

@@ -27,9 +27,9 @@ export default defineTool({
   guidance: {
     when: "Enabling, disabling, or checking this Hive's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published hive into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
     notWhen:
-      "Directory visibility (public/invite/private) — that's discovery:set_hive. Cross-Hive ask/work-request grants — pot:cross_grant. Within-Hive coordination — coord:* / topics.",
+      "Directory visibility (public/invite/private) — that's discovery:set_pot. Cross-Hive ask/work-request grants — pot:cross_grant. Within-Hive coordination — coord:* / topics.",
     chaining:
-      "discovery:set_hive { visibility:'public' } (make the hive discoverable) → pot:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon).",
+      "discovery:set_pot { visibility:'public' } (make the hive discoverable) → pot:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon).",
   },
   capability: 'harness:write',
   requirePrincipal: false,

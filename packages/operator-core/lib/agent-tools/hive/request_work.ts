@@ -28,15 +28,15 @@ export default defineTool({
   description:
     "Initiate a cross-Hive WORK-REQUEST to a peer Hive (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; it becomes a work_item in the peer's backlog that THEIR Mug prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
   guidance: {
-    when: 'The Mug/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:hives, then pot:request_work, then events:await the returned answeredEvent.',
+    when: 'The Mug/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:pots, then pot:request_work, then events:await the returned answeredEvent.',
     notWhen:
       'Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound pot:cross_grant).',
     chaining:
-      'discovery:hives (find the peer Hive pubkey) → pot:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks.',
+      'discovery:pots (find the peer Hive pubkey) → pot:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks.',
     seeAlso: [
       'pot:asks (review outstanding requests + replies)',
       'pot:ask (ask a QUESTION instead of requesting work)',
-      'discovery:hives (find the peer Hive to request from)',
+      'discovery:pots (find the peer Hive to request from)',
     ],
   },
   capability: 'work_items:write',
@@ -44,7 +44,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     hive: z.string().min(1).max(120).describe("THIS Hive's home slug — the requesting Hive (signer + boundary are scoped to it)."),
-    peerHivePubkey: z.string().min(1).max(400).describe('The peer Hive\'s pubkey (from discovery:hives) to address the work-request to.'),
+    peerHivePubkey: z.string().min(1).max(400).describe('The peer Hive\'s pubkey (from discovery:pots) to address the work-request to.'),
     subject: z.string().min(1).max(200).describe('A short title for the requested work.'),
     body: hardText(8000).describe('What is being requested (becomes the peer work_item\'s summary).'),
     workspace: z.string().max(120).optional(),

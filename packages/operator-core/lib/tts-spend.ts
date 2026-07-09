@@ -21,11 +21,7 @@
  * unit-testable without a filesystem or a database.
  */
 
-import {
-  readOperatorState,
-  writeOperatorState,
-  updateOperatorState,
-} from './operator-state-pg';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export interface TtsSpendDay {
   date: string;
@@ -129,28 +125,4 @@ export async function loadSpend(): Promise<TtsSpendState> {
 
 export async function saveSpend(state: TtsSpendState): Promise<void> {
   await writeOperatorState('operator_tts_spend', state);
-}
-
-/**
- * High-level recorder: atomic load+compute+save inside a single PG
- * transaction so multi-tab races no longer clobber each other's spend.
- * Returns the same side-effect signals as before.
- */
-export async function recordSpend(chars: number, now: number = Date.now()): Promise<SpendUpdate> {
-  let captured!: SpendUpdate;
-  await updateOperatorState<TtsSpendState>(
-    'operator_tts_spend',
-    DEFAULT_SPEND_STATE,
-    (cur) => {
-      // Defensively normalize legacy/partial shapes the same way loadSpend does.
-      const normalized: TtsSpendState = {
-        ...DEFAULT_SPEND_STATE,
-        ...cur,
-        spend: Array.isArray(cur.spend) ? cur.spend.slice(0, 7) : [],
-      };
-      captured = computeNextState(normalized, chars, now);
-      return captured.next;
-    },
-  );
-  return captured;
 }

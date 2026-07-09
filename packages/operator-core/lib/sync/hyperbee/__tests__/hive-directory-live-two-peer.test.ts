@@ -14,7 +14,7 @@
  *     (and B's reaches A: the pair-time getOwnAnnounces exchange) over a real
  *     socket, surviving the wire encoding + signature verify, with member_links
  *     intact for one-click join.
- *  2. EDIT convergence — A re-publishes with a new title (the discovery:set_hive
+ *  2. EDIT convergence — A re-publishes with a new title (the discovery:set_pot
  *     edit path → publishHiveToDirectory → announceLocalHive → the wiring's
  *     transport broadcast) and B's record converges by LWW.
  *  3. INVITE scoping — A also owns an invite hive: B's global-topic directory
@@ -221,7 +221,7 @@ describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (product
       expect(a.dir.listDiscoveredHives().find((h) => h.hiveId === 'hive-a')).toBeUndefined();
 
       // THE PROOF (edit convergence): A re-publishes hive-a with a new title —
-      // the discovery:set_hive edit path — and B's record converges by LWW over
+      // the discovery:set_pot edit path — and B's record converges by LWW over
       // the live broadcast transport.
       await new Promise((r) => setTimeout(r, 5)); // strictly-newer announce ts
       await publishHiveToDirectory(a.dir, { ...publicHive('hive-a', 'Alpha Hive (renamed)') }, a.owner);

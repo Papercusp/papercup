@@ -54,7 +54,7 @@ const SUFFIX_MUTATORS = [
   'messages:send', 'messages:dismiss',
   'memory:remember', 'memory:forget',
   'topics:create', 'agent_chats:create',
-  'backup:restore', 'storage:prune', 'autoloop:control', 'discovery:set_hive',
+  'backup:restore', 'storage:prune', 'autoloop:control', 'discovery:set_pot',
   'flags:set', 'trust:add',
   'autonomy:policy_set', 'autonomy:record_disposition',
   'locks:acquire', 'db:migrate',

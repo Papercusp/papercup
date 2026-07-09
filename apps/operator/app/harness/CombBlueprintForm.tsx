@@ -274,7 +274,7 @@ export function CombBlueprintForm({ onBack, onCreated, hiveLabel }: CombBlueprin
           New {hiveLower} from <span style={{ color: 'var(--accent)' }}>{selected.title}</span>
         </h2>
         <NoticeCard testId="comb-blueprint-selected">
-          <span style={{ marginRight: 6 }}>🍯</span>
+          <span style={{ marginRight: 6 }}>🫖</span>
           Installs <code>{selected.listing_ref || selected.slug}</code> from the {combLabel} and stands up a new {hiveLower}
           running it. The blueprint stays linked to its upstream — improvements published to it can be pulled later.
         </NoticeCard>

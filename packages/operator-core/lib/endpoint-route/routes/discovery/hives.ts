@@ -3,7 +3,7 @@
  *
  * The HTTP projection of the P2P hive directory for the desktop webview's
  * HiveDirectoryPanel (p2p-hive-directory-2026-06-06 P-007). Mirrors the
- * `discovery:hives` MCP tool (P-005) — same verified, un-muted discovered set —
+ * `discovery:pots` MCP tool (P-005) — same verified, un-muted discovered set —
  * but as a cookie-less loopback GET the panel can fetch directly.
  *
  * `auth: 'loopback'` (auth-tier Wave 1) with an in-handler loopback assertion, exactly like

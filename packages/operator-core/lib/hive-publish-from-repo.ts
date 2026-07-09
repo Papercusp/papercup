@@ -14,7 +14,7 @@
  *             external writes).
  *
  * Every leg is best-effort and individually reported — a publish failure NEVER
- * fails the create (re-publish rides discovery:set_hive / the boot tick).
+ * fails the create (re-publish rides discovery:set_pot / the boot tick).
  */
 
 import { randomBytes } from 'node:crypto';
