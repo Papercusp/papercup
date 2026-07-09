@@ -222,7 +222,7 @@ describe('makeScoutCycleAction', () => {
 
   // P-015 (D-005): the per-hive STRUCTURED scout delta (hive_settings.localBlueprint.scout)
   // is layered onto the tick payload's `scout` block so the editor in
-  // /settings/hive-customization actually reaches the scout cycle (run.ts reads
+  // /settings/pot-customization actually reaches the scout cycle (run.ts reads
   // payload.scout). install_slug is the hive home slug here (per provision-learning-loop).
   it('layers the hive_settings scout delta onto the tick payload (P-015)', async () => {
     mockGetHiveScoutCfg.mockResolvedValueOnce({ buckets: { maxMoonshots: 2 }, lenses: ['inversion'] });

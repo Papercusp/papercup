@@ -69,7 +69,7 @@ So utterances go to:
 
 Voice mode is **not** Web-Speech-only. STT, TTS, and the realtime full-agent shell each route through a selectable engine, chosen from `/settings/voice` and read from voice-prefs at init:
 
-* **STT** (`prefs.sttEngine`): `web-speech` (browser `SpeechRecognition`), `voicemode` (local Whisper server at `http://localhost:2022`), or `deepgram` (cloud streaming, BYO key). Each path falls back to wake-word Web-Speech listening if its engine is unavailable.
+* **STT** (`prefs.sttEngine`): `web-speech` (browser `SpeechRecognition`) or `voicemode` (local Whisper server at `http://localhost:2022`). Each path falls back to wake-word Web-Speech listening if its engine is unavailable. **`deepgram` is currently non-functional** (2026-07-09 voice-engine slim-down deleted `lib/voice-engines/deepgram.ts`, but the `deepgram` option is still offered in `/settings/voice` and still selectable as `prefs.sttEngine`): both the always-on and PTT capture paths in `voice-mode.ts` now detect `sttEngine === 'deepgram'` and silently degrade to the free wake-word/voicemode path instead of streaming — no error, no cloud call, just a console warning. Tracked as WI-3510 (remove the dead option from settings, or reintroduce the engine).
 * **TTS** (`prefs.ttsEngine`, via `fetchPreferredEngine()`, default `kokoro`): `kokoro` (local), `openai`, `elevenlabs`, `cartesia`, or `browser` (Web Speech `SpeechSynthesis`). The adapter route POSTs to `/api/agent-mcp/operator-tts-preview`; each engine has its own per-role voice pool (`voiceForEngineRole`).
 * **Full-agent realtime** (`prefs.fullAgentEngine`): `elevenlabs-conv` (ElevenLabs Conversational AI) or `openai-realtime`.
 
@@ -77,7 +77,7 @@ Because the local (Voicemode/Whisper + Kokoro) and cloud engines cover runtimes 
 
 ## Privacy
 
-* The processing path depends on the selected STT/TTS engine: Web Speech routes to the browser vendor's cloud (Chrome → Google, Safari → Apple, Edge → Microsoft); Voicemode/Kokoro/Whisper run on a local server; Deepgram, ElevenLabs, OpenAI, and Cartesia are cloud services reached via app routes.
+* The processing path depends on the selected STT/TTS engine: Web Speech routes to the browser vendor's cloud (Chrome → Google, Safari → Apple, Edge → Microsoft); Voicemode/Kokoro/Whisper run on a local server; ElevenLabs, OpenAI, and Cartesia (TTS) are cloud services reached via app routes. Deepgram (STT) is currently dead code — see the Engines section above.
 * The runtime does not record or persist raw audio.
 * See **Privacy modes** below for `wake-word-gated`, which keeps the mic on-device until a local wake-word engine fires.
 

@@ -945,8 +945,8 @@ function PlanActivityFeed({
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
               <span style={{
                 fontSize: '0.8em', padding: '1px 5px', borderRadius: 3,
-                background: rev.authorKind === 'agent' ? 'color-mix(in oklab, var(--accent), transparent 80%)' : 'color-mix(in oklab, var(--success), transparent 80%)',
-                color: rev.authorKind === 'agent' ? 'var(--accent)' : 'var(--success)',
+                background: rev.authorKind === 'agent' ? 'color-mix(in oklab, var(--accent), transparent 80%)' : 'color-mix(in oklab, var(--good), transparent 80%)',
+                color: rev.authorKind === 'agent' ? 'var(--accent)' : 'var(--good)',
               }}>
                 {rev.authorKind}
               </span>
@@ -1001,9 +1001,9 @@ function FeatureSlideOver({
   const error = timelineQuery.error ? String(timelineQuery.error) : null;
 
   const statusMeta: Record<string, { color: string }> = {
-    passed:     { color: 'var(--success)' },
-    failing:    { color: 'var(--error)' },
-    validating: { color: 'var(--warning)' },
+    passed:     { color: 'var(--good)' },
+    failing:    { color: 'var(--bad)' },
+    validating: { color: 'var(--warn)' },
     todo:       { color: 'var(--fg-mute)' },
   };
   const color = statusMeta[featureStatus ?? '']?.color ?? 'var(--fg-mute)';
@@ -1052,7 +1052,7 @@ function FeatureSlideOver({
         <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
           <h4 style={{ margin: '0 0 12px', fontSize: '0.8em', textTransform: 'uppercase', letterSpacing: '0', color: 'var(--fg-mute)' }}>Timeline</h4>
           {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.875em' }}>Loading…</p> : null}
-          {error ? <p style={{ color: 'var(--error)', fontSize: '0.875em' }}>{error}</p> : null}
+          {error ? <p style={{ color: 'var(--bad)', fontSize: '0.875em' }}>{error}</p> : null}
           {!loading && !error && events.length === 0 ? (
             <p style={{ color: 'var(--fg-mute)', fontSize: '0.875em' }}>No timeline events yet.</p>
           ) : null}

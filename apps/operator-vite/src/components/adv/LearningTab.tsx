@@ -2136,7 +2136,7 @@ function LearningsView({ hive }: { hive: string }) {
             <li key={r.id} className="pc-learning__row" style={{ alignItems: 'flex-start' }}>
               <span
                 className="pc-learning__sev"
-                style={{ background: r.packId ? 'var(--accent)' : 'var(--ok)', marginTop: 5 }}
+                style={{ background: r.packId ? 'var(--accent)' : 'var(--good)', marginTop: 5 }}
                 aria-hidden
               />
               <span style={{ flex: 1, minWidth: 0 }}>

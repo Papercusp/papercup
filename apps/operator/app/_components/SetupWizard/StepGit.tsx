@@ -227,7 +227,7 @@ export function StepGit() {
           <span
             className="pc-provider-card__badge"
             data-status="ok"
-            style={{ fontSize: 12, color: 'var(--pc-color-success, #2a8)' }}
+            style={{ fontSize: 12, color: 'var(--good, #2a8)' }}
           >
             ✓ Signed in
           </span>

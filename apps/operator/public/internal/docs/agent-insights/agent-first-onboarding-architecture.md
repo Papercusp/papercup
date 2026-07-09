@@ -120,16 +120,21 @@ them.
    e2e spec pins both directions — keep it green when touching routing.
 6. **`/onboarding` is deliberately un-gated** (no `requireFlag`): tutorial
    re-entry deep-links to it after first-run. Don't "fix" that.
-7. **Setup is the FIRST tab, not the tutorial (owner 2026-07-06).**
-   `defaultTab(args, { setupComplete })` in `tutorial-runner.mjs` opens the
-   unified shell on **Setup** whenever required setup (agent backend + sign-in +
-   mem0 key) is unfinished, OR the user ran `papercusp setup` (`--tab=setup`),
-   OR the user ran `papercusp tutorial` (`--tutorial`, which shows Setup first
-   even on a set-up box). Only the first-run concierge handoff (setup just
-   completed, no `--tutorial`) lands directly on the **Tutorial** tab.
-   `setupComplete` is computed off the same `setupChecklist` as `runSetupTab`;
-   on any fetch error it defaults to `false` (err toward showing Setup). Don't
-   "fix" `papercusp tutorial` back into opening the tour.
+7. **Setup is the FIRST tab, not the tutorial (owner 2026-07-06, extended
+   2026-07-07).** `defaultTab(args, { setupComplete })` in `tutorial-runner.mjs`
+   opens the unified shell on **Setup** whenever required setup (agent backend
+   * sign-in + mem0 key) is unfinished, OR `args.tab === 'setup'`, OR
+     `args.tutorial` is set (a `papercusp tutorial` re-entry shows Setup first
+     even on a set-up box — the tour is one Tab away). As of 2026-07-07 the
+     **first-run concierge handoff ALSO lands on Setup**, not Tutorial: the
+     concierge's `buildTutorialRunnerArgs` (`onboard-launcher.mjs`) now passes
+     `--tab=setup` on first-run handoff (only a `papercusp tutorial` re-entry
+     passes `--tutorial` instead), so `defaultTab`'s Tutorial-tab fall-through is
+     reached only by a bare `tutorial-runner.mjs` invocation with neither flag —
+     no production entry point does that anymore. `setupComplete` is computed off
+     the same `setupChecklist` as `runSetupTab`; on any fetch error it defaults to
+     `false` (err toward showing Setup). Don't "fix" `papercusp tutorial` (or the
+     first-run handoff) back into opening the tour directly.
 8. **The `finished_at` redirect loop (WI-3281).** The root route (`/`)
    hard-redirects to `/onboarding` whenever `setup-wizard-state.finished_at` is
    unset, so navigating home from the embedded onboarding pane WITHOUT stamping

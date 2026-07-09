@@ -29,11 +29,13 @@
   --border-muted: rgba(125, 211, 252, 0.08); /** #7dd3fc @ 0.08 — faintest step (table row dividers) */
   --border: rgba(125, 211, 252, 0.15); /** #7dd3fc @ 0.15 */
   --border-strong: rgba(125, 211, 252, 0.32); /** #7dd3fc @ 0.32 */
+  --accent-rgb: 56, 189, 248; /** RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5) */
   --accent-ink: #051827; /** Text color on accent backgrounds */
   --warn-bg: rgba(251, 191, 36, 0.1); /** #fbbf24 @ 0.1 */
   --warn-border: rgba(251, 191, 36, 0.35); /** #fbbf24 @ 0.35 */
+  --good-bg: rgba(52, 211, 153, 0.1); /** #34d399 @ 0.1 — success tint bg, symmetric with warn-bg */
+  --bad-bg: rgba(251, 113, 133, 0.1); /** #fb7185 @ 0.1 — danger tint bg, symmetric with warn-bg */
   --accent: var(--sky-400);
-  --accent-rgb: 56, 189, 248; /** RGB triplet of --accent (sky-400 #38bdf8) for rgba()/color-mix alpha composition, e.g. var(--accent-rgb) in rgb(var(--accent-rgb) / 0.5) */
   --accent-strong: var(--sky-300);
   --accent-cool: var(--sky-cool);
   --accent-soft: var(--sky-200); /** Light accent tint — glows/highlights (frost: sky-200) */

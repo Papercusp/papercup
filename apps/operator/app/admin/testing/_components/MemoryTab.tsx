@@ -266,8 +266,8 @@ function HealthStrip({ health }: { health: HealthPayload | null }) {
         gap: 6,
         padding: '4px 10px',
         borderRadius: 6,
-        background: typeof ok === 'string' ? 'var(--pc-color-surface-2, #222)' : ok ? 'var(--pc-color-success-bg, #173)' : 'var(--pc-color-danger-bg, #722)',
-        color: typeof ok === 'string' ? 'var(--pc-color-text, #ddd)' : ok ? 'var(--pc-color-success-text, #bfb)' : 'var(--pc-color-danger-text, #fbb)',
+        background: typeof ok === 'string' ? 'var(--pc-color-surface-2, #222)' : ok ? 'var(--good-bg, #173)' : 'var(--bad-bg, #722)',
+        color: typeof ok === 'string' ? 'var(--pc-color-text, #ddd)' : ok ? 'var(--good, #bfb)' : 'var(--bad, #fbb)',
         fontSize: 12,
       }}
     >
@@ -287,7 +287,7 @@ function HealthStrip({ health }: { health: HealthPayload | null }) {
         : null}
       {pill('feedback 24h', String(health.recent_feedback_24h))}
       {health.blocking_reason ? (
-        <span style={{ color: 'var(--pc-color-danger-text, #fbb)', fontSize: 12 }}>{health.blocking_reason}</span>
+        <span style={{ color: 'var(--bad, #fbb)', fontSize: 12 }}>{health.blocking_reason}</span>
       ) : null}
     </div>
   );
@@ -339,9 +339,9 @@ function CheckList({ catalog, results, progressId, selectedId, onSelect }: {
 
 function StatusBadge({ status }: { status: AdminTestCheckResult['status'] | 'pending' | 'running' }) {
   const map: Record<string, { label: string; color: string }> = {
-    pass: { label: '✓', color: 'var(--pc-color-success-text, #4d9)' },
-    warn: { label: '!', color: 'var(--pc-color-warning-text, #fc6)' },
-    fail: { label: '✗', color: 'var(--pc-color-danger-text, #f66)' },
+    pass: { label: '✓', color: 'var(--good, #4d9)' },
+    warn: { label: '!', color: 'var(--warn, #fc6)' },
+    fail: { label: '✗', color: 'var(--bad, #f66)' },
     skip: { label: '–', color: 'var(--pc-color-muted, #888)' },
     pending: { label: '·', color: 'var(--pc-color-muted, #555)' },
     running: { label: '…', color: 'var(--pc-color-primary, #58f)' },

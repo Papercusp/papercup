@@ -4,7 +4,7 @@
  *
  * The authoring authority is TWO things that coincide on the owner's Swarm:
  *   1. the GitHub CLAIM (claim_status='claimed' ∧ viewer ∈ claimed_by_github_user_ids)
- *      — checked by the API route (endpoint-route/routes/hive/policy-set.ts), NOT here.
+ *      — checked by the API route (endpoint-route/routes/pot/policy-set.ts), NOT here.
  *   2. holding the Hive PRIVATE KEY — only the owning Swarm can {@link signWithHiveKey};
  *      this module is where that signing capability is exercised. A claimed viewer on a
  *      Swarm that does NOT hold the key gets `not_owner_swarm` (sign throws) — correct:

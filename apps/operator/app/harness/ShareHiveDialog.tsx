@@ -371,7 +371,7 @@ export function ShareHiveForm({
         <div
           className="pc-share-hive__outcome"
           data-testid="share-hive-outcome"
-          style={{ color: outcome.ok ? 'var(--good, #34d399)' : 'var(--error, #e64646)' }}
+          style={{ color: outcome.ok ? 'var(--good, #34d399)' : 'var(--bad, #e64646)' }}
         >
           {outcome.ok
             ? outcome.withdrawn

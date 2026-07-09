@@ -7961,10 +7961,10 @@ body:has(.h-top-collapse-inline) main {
   transform: scaleY(1.08);
 }
 .h-log-scrubber-bar.has-errors {
-  background: color-mix(in oklab, var(--err), transparent 30%);
+  background: color-mix(in oklab, var(--bad), transparent 30%);
 }
 .h-log-scrubber-bar.has-errors:hover {
-  background: var(--err);
+  background: var(--bad);
 }
 .h-log-scrubber-bar:disabled {
   background: transparent;

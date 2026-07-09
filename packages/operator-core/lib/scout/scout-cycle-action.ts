@@ -82,7 +82,7 @@ export function makeScoutCycleAction(
     // P-015 (domain-generic-hive-architecture-2026-06-18 / D-005): layer the hive's
     // settings-resident STRUCTURED scout delta (hive_settings.localBlueprint.scout)
     // onto the routine payload's `scout` block, so the per-hive scout tuning the owner
-    // sets in /settings/hive-customization reaches the cycle — run.ts reads
+    // sets in /settings/pot-customization reaches the cycle — run.ts reads
     // payload.scout → parseScoutConfigBlock → resolveScoutConfig. The per-hive scout
     // routine ticks under the hive's HOME install_slug (provision-learning-loop.ts), so
     // ctx.installSlug IS the hive home slug (the hive_settings scope). Fail-soft: any

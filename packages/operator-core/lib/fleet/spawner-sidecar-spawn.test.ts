@@ -91,4 +91,33 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
   it('a no-op stop when nothing is running never throws', async () => {
     await expect(stopSpawnerSidecar()).resolves.toBeUndefined();
   });
+
+  it('EI-8810: never hands the child the parent HTTP port or the background-worker role', async () => {
+    // The 2026-07-09 incident: the child inherited the parent's
+    // PAPERCUSP_HONO_PORT=3270 (+ PORT, set by startRequestServers) and — when
+    // the re-exec'd entry missed the *_SIDECAR_MODE divert — booted a FULL
+    // hono-host on the parent's own port: EADDRINUSE → fatal exit → warm-up
+    // respawn, forever. The spawn env must force port 0 (ephemeral) and
+    // background-workers OFF regardless of what the parent env carries.
+    process.env.PAPERCUSP_HONO_PORT = '3270';
+    process.env.PORT = '3270';
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+    try {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+      expect(opts.env?.PAPERCUSP_HONO_PORT).toBe('0');
+      expect(opts.env?.PORT).toBe('0');
+      expect(opts.env?.PAPERCUSP_BACKGROUND_WORKERS).toBe('0');
+    } finally {
+      delete process.env.PAPERCUSP_HONO_PORT;
+      delete process.env.PORT;
+      delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    }
+  });
 });

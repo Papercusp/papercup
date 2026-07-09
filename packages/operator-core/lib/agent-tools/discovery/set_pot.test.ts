@@ -1,10 +1,10 @@
 /**
- * set_hive.test.ts — the discovery:set_pot MCP tool (p2p-hive-directory P-004 /
+ * set_pot.test.ts — the discovery:set_pot MCP tool (p2p-hive-directory P-004 /
  * hive-from-github-url P-015).
  *
  * Two halves:
  *  1. ARGS validation (DISC-1) — invite genuinely REQUIRES inviteSecret. The
- *     sibling HTTP route (set-hive.ts) 400s on `invite` with no secret and
+ *     sibling HTTP route (set-pot.ts) 400s on `invite` with no secret and
  *     `publishHiveToDirectory` throws without it; the MCP face must reject at
  *     the schema layer too (a `.refine`) rather than half-save then surface a
  *     generic announceError. So this pins: invite+no-secret rejects;

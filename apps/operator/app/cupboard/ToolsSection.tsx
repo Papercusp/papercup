@@ -322,7 +322,7 @@ export function ToolsSection({
                 {t.status === 'available' ? (
                   <span
                     data-testid="cupboard-tool-available"
-                    style={{ fontSize: 11, fontFamily: FONTS.ui, color: 'var(--success)', border: '1px solid color-mix(in srgb, var(--success), transparent 76%)', background: 'color-mix(in srgb, var(--success), transparent 88%)', borderRadius: 999, padding: '3px 8px' }}
+                    style={{ fontSize: 11, fontFamily: FONTS.ui, color: 'var(--good)', border: '1px solid color-mix(in srgb, var(--good), transparent 76%)', background: 'color-mix(in srgb, var(--good), transparent 88%)', borderRadius: 999, padding: '3px 8px' }}
                   >
                     {t.provider.kind === 'builtin' ? 'Available' : 'Installed'}
                   </span>

@@ -193,7 +193,7 @@ export function StepLocalModel() {
           </div>
 
           {entry && plan.blocked && (
-            <p style={{ marginTop: 8, color: 'var(--pc-color-danger, #d33)', fontSize: 13 }}>
+            <p style={{ marginTop: 8, color: 'var(--bad, #d33)', fontSize: 13 }}>
               Blocked: {plan.blocked}
               {plan.weights?.pullHint && (
                 <>
@@ -222,7 +222,7 @@ export function StepLocalModel() {
           )}
 
           {installError && (
-            <p style={{ marginTop: 8, color: 'var(--pc-color-danger, #d33)', fontSize: 13 }}>{installError}</p>
+            <p style={{ marginTop: 8, color: 'var(--bad, #d33)', fontSize: 13 }}>{installError}</p>
           )}
 
           {installResult?.ok && (

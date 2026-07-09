@@ -59,7 +59,7 @@ export function explainCapability(cap: string): CapabilityExplanation {
 }
 
 export function tierBadgeColor(tier: CapabilityTier): string {
-  if (tier === 'high') return 'var(--danger, #dc2626)';
-  if (tier === 'medium') return 'var(--warning, #d97706)';
+  if (tier === 'high') return 'var(--bad, #dc2626)';
+  if (tier === 'medium') return 'var(--warn, #d97706)';
   return 'var(--muted, #6b7280)';
 }

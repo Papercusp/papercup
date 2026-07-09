@@ -117,6 +117,26 @@ pkill** — see
 [mac-vm-qmp-recovery](/internal/docs/agent-insights/mac-vm-qmp-recovery). General
 VM inventory + disk discipline: [build-system/vms](/internal/docs/build-system/vms).
 
+If only the GUI process dies, `vmctl status` can show `app: stopped` while an
+**orphaned sidecar/operator survives** the VM boot — launching on top of it then
+creates a **second** operator (a stale boot set + incoherent federation, hours to
+diagnose before this was understood). `vmctl launch` now **auto-reaps** any
+surviving `papercusp-desktop` / `serve.mjs` / `code-server` /
+`embedded-postgres` processes before starting the app, so there is always exactly
+one operator per launch. `vmctl status` also reports `procs: desktop=N
+  serve.mjs=N` and flags `⚠ DUPLICATE desktop — split-brain` when `N>1`, so a
+lingering split-brain is visible without digging through `ps`.
+
+`vmctl status` / `vmctl verify` resolve the in-guest operator's DYNAMIC port from
+`~/.papercusp/operator.json` (`{port,pid,httpUrl,…}`, written on boot) first, and
+only fall back to grepping `papercusp-app.log` for a `listening on …` line. The
+packaged build routes `serve.mjs`'s stdout elsewhere, so on a real install the app
+log carries only the Tauri binary's libEGL warnings — the old log-grep-only method
+found nothing and reported a perfectly healthy install as "operator down." A
+pristine first boot can also take up to \~3 minutes (cold-seed corestore restore +
+migrations) before the operator answers — `vmctl verify` polls up to 300s for
+this, not a short fixed timeout.
+
 ## 5. The scheduled gate (`live-federation-gate.sh`)
 
 `papercusp-desktop/bin/live-federation-gate.sh`
@@ -177,6 +197,12 @@ green-rig/red-binary guard, WI-261/P-013). It:
   let a window through but every leg still SKIPPED (e.g. `SKIP_MATRIX=1
   SKIP_FROMREPO=1`), the gate now exits `GATE: SKIPPED (no legs ran)` rather
   than silently counting as a pass.
+* **Run-dir retention (WI-3087, 2026-07-05):** each run's `/tmp/live-fed-gate-*`
+  dir (the unpacked `dpkg-deb -R` tree + the repacked gate `.deb`) used to be left
+  behind forever — \~3.5GB per heavy run, 67 dirs / 111GB observed before the disk
+  filled. The gate now keeps only the newest `GATE_KEEP_RUNS` (default 5) run
+  dirs at the top of every invocation, and additionally removes its own `pkg/`
+  tree right after a successful repack.
 
 Restart / re-run it manually on a quiet box:
 
@@ -278,6 +304,12 @@ cd papercusp-desktop/scripts/linux-test-vm
 ./fed.sh a ssh  'gh auth status'       # raw ssh (used by §6's gh-auth restore)
 ./fed.sh b rediscover                  # force a fresh probe (after a restart)
 ```
+
+`sql` uses the guest's own `psql` if it's on `PATH`, else the app's bundled
+`sidecar/bin/psql`. Real client binaries have shipped with the app since
+2026-07-07 — an install built before that date shipped a broken `pg_wrapper`
+shim instead, so on an older install run a fresh `vmctl install` before
+relying on `fed.sh a sql`.
 
 Ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for
 `FED_PORT_TTL` (default 600s); `rediscover` (or deleting the cache) forces a fresh

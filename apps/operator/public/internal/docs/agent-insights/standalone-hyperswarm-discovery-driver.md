@@ -112,7 +112,7 @@ still refreshes unconditionally.
 * `papercusp-desktop/bin/two-instance-hive-directory-smoke.sh` — the
   **packaged full-app-stack proof** (PASSED 2026-06-09): two separately-packaged
   `.deb` instances, distinct real GitHub identities, isolated testnet DHT —
-  `discovery:set_hive` on A → listed (owner-verified, member-links intact) on
+  `discovery:set_pot` on A → listed (owner-verified, member-links intact) on
   B's `GET /api/discovery/hives`, bidirectional. Also exercises the
   `ensureHiveDirectoryWired` lazy wire (a fresh install boots zero harnesses, so
   the boot-join has nothing to ride; the first publish/browse self-heals it).

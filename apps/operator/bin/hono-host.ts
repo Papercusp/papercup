@@ -58,6 +58,36 @@ import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profil
 import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
 import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
+import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
+import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
+import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
+
+// ── EI-8810: sidecar re-exec divert ─────────────────────────────────────────
+// The three sidecar spawners (substrate / spawner / inference-gateway) re-exec
+// THEIR OWN bundle with a *_SIDECAR_MODE env var. On the packaged desktop that
+// bundle is serve.mjs, whose main() carries this divert — but on the systemd
+// bg-host deployment the bundle is THIS entry (dist-host/hono-host.mjs), which
+// ignored the mode vars: the re-exec'd child booted the FULL host with the
+// PARENT's inherited PAPERCUSP_HONO_PORT → EADDRINUSE → fatal exit → warm-up
+// respawn — the all-day :3270 crash-loop that destabilized the substrate
+// primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
+// sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | null =
+  process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
+    ? 'substrate'
+    : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
+      ? 'spawner'
+      : process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1'
+        ? 'gateway'
+        : null;
+if (sidecarMode === 'substrate') runSubstrateSidecarServer();
+if (sidecarMode === 'spawner') runSpawnerSidecarServer();
+if (sidecarMode === 'gateway') {
+  runGatewaySidecarMain().catch((e) => {
+    console.error('[inference-gateway] fatal:', e);
+    process.exit(1);
+  });
+}
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the
@@ -347,8 +377,10 @@ if (clusterWorkers > 1) {
 // to fall back to its OWN pid-keyed — nonexistent — socket path and the
 // dogfood-substrate-boot-history route always degraded to `source:'main-fallback'`
 // with an empty ring on every clustered host; found during P-059 / WI-1837).
-const substrateSocketWorkerEnv = pinSubstrateSocketForCluster(clusterWorkers);
-const clusterHandle = startCluster({
+const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster(clusterWorkers);
+// EI-8810: in sidecar mode the divert above already started the sidecar server
+// (which keeps the process alive) — the host boot below must not run at all.
+const clusterHandle = sidecarMode ? null : startCluster({
   workers: clusterWorkers,
   workerEnv: {
     PAPERCUSP_BACKGROUND_WORKERS: '0',
@@ -392,7 +424,7 @@ const clusterHandle = startCluster({
 //    drain, then exits so systemd restarts clean. Single-process is ALSO role 'primary'
 //    but serves HTTP, so it must NOT take this 2s-exit path (it would preempt the HTTP
 //    drain) — hence the `clusterWorkers > 1` guard.
-if (clusterHandle.role === 'primary' && clusterWorkers > 1) {
+if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   // Cluster-lag watchdog (EI-1598/1608): the primary SIGKILLs a worker that stops
   // heart-beating (a synchronous wedge the worker-side lag-self-restart can't catch);
   // the startCluster exit handler then respawns it (respawn-budget-aware). DEFAULT-OFF

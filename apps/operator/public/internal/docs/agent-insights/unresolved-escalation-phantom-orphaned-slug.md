@@ -106,3 +106,75 @@ stale row under any other phase, still re-fires and still needs the manual clear
    warning and clear the row manually. For any OTHER phase, a stale presence row still loops;
    the manual clear (step 3) is the remediation, and a per-phase durable clear on a protected
    surface is the real fix to file.
+
+## The `git-sync-watchdog` phase is different — it SELF-clears (verify, don't rush to manually clear)
+
+The `git-sync-watchdog` phase (written by `git-sync-stall-watchdog.ts`, **not** a green-checkpoint
+phase) is the recurring \*\*non-\*\*green-checkpoint flavor of this EI ("Unresolved escalation in
+harness papercusp", key `escalation:papercusp:git-sync-watchdog` — e.g. EI-8665). Unlike the
+green-checkpoint orphan, it is usually a **transient** git-sync stall (a DBOS executor-reaper fault
+streak — `"produced no DBOS operation output; … cancelled the stuck fire and requeued"`) that has
+**already recovered**. The git-sync-stall-watchdog has its OWN healthy-recovery branch
+(`git-sync-stall-watchdog.ts` L395-431) that idempotently nulls the escalation + resets
+`watchdog_alerted`/`wd_error_sweeps` on its next healthy sweep — so unlike the "any OTHER phase"
+rows above, step 3's **manual clear is often unnecessary**: the row self-clears within one \~15-min
+sweep. The improvement-watchdog simply filed the EI **inside that recovery window**, before the
+git-sync-stall-watchdog's own clear ran.
+
+Verify recovery, then resolve `fixed` (no manual clear needed if already null):
+
+1. `harness_shared.routines` (`install_slug=papercusp, name=git-sync,
+   workspace_id=papercusp-workspace`), `metadata`: `last_status='synced'`, `reaped_count < 3`
+   (`persistentReapMin`), `watchdog_alerted=false`, `wd_error_sweeps=0`. ⚠ `last_error` is
+   **NOISY** — git-sync nulls/sets it per tick; it is not a liveness signal, ignore it.
+2. `harness_shared.harness_escalations` `phase='git-sync-watchdog'` → `escalation IS NULL`
+   ⇒ the watchdog already cleared it and the condition is gone; resolve `fixed`. If it is
+   **still set** while the metadata above is healthy, the watchdog just hasn't swept yet — you
+   may clear it manually (step 3) to stop re-firing, but do **not** also reset `watchdog_alerted`
+   unless the watchdog is confirmed dead (it owns that flag; leaving it stuck `true` masks the
+   next real stall).
+3. **The durable root-cause class** (intermittent DBOS routine-fire reaps, \~1 commit/40min under
+   load) is a **protected surface** (DBOS executor + git-sync) tracked separately as **WI-1415**
+   (owner-escalated) — do NOT auto-fix it, and clearing the transient escalation does not mask it.
+   A separate idea to debounce the improvement-watchdog's redundant recovery-window dispatch is
+   filed as **EI-8671** (touches the self-improvement loop, so human-gated).
+
+### The persistentReap variant does NOT self-clear — it's the git-sync-watchdog orphan trap (EI-8614)
+
+The "self-clears within one sweep" story above assumes the stall **recovered**. It does **not** hold
+when the verdict stays `stalled` because of `persistentReap` (`reaped_count ≥ 3`) or a frozen HEAD on
+a **semi-dead / low-traffic hive** whose git-sync is permanently wedged by WI-1415 (e.g. `oddsmith`,
+2026-07-08: `reaped_count=44`, `wd_error_sweeps=74`, no successful sync in \~16h). Here
+`evaluateGitSyncStall` keeps returning `stalled=true`, so the git-sync-stall-watchdog's healthy branch
+(the self-clear) **never runs**, and its alarm is one-shot (`if (watchdogAlerted) continue`) — so the
+row sits `escalation<>'' , supervisor_notes=''` **forever** and `collectEscalationSignals` re-dispatches
+an auto-implement worker **every tick** (EI-8614 reached dispatch attempt 3). This is the exact
+orphan-loop the EI-8396 guard fixed for the two green-checkpoint phases — but **git-sync-watchdog has
+no such guard** (that gap is EI-8671, human-gated).
+
+Distinguishing it from the recovery-window phantom: check `metadata.reaped_count`/`wd_error_sweeps`
+and `last_synced_at`. If the metadata is genuinely **unhealthy** (not the "healthy, just hasn't swept"
+case in step 2), the row will not self-clear — do the **manual clear (step 3)** with a `supervisor_notes`
+that points at WI-1415, and resolve `fixed`. Leave `watchdog_alerted` alone so a genuine future
+transition re-alarms. This is a state-only cleanup on a protected root cause (WI-1415) that a worker
+cannot fix; clearing the ledger row does not mask it because WI-1415 is the authoritative tracker.
+⚠ The sanctioned write path is `POST /api/harness/:slug/escalation/resolve?phase=git-sync-watchdog`
+(`{ response, action:'clear' }`, `auth:'loopback'`) — it **appends** `supervisor_notes` and bumps
+`mtime_ms`, so probing it writes real rows (and a bumped mtime pulls the row into the escalation-spike
+6h window until you `clear` it). A non-project harness like `oddsmith` still resolves through this route.
+
+⚠⚠ **You MUST pass `?phase=<the row's phase>` or the clear silently no-ops the row the collector
+reads (EI-8788).** The resolve route (`supervisor-actions.ts`) appends `supervisor_notes` to the
+**disk** `supervisor-notes.md` + the un-phased PG text-artifact **unconditionally**, but its
+`UPDATE harness_shared.harness_escalations` is scoped to `phase = (requestedPhase ?? 'staging')`.
+So if you call `.../escalation/resolve` **without** `?phase=git-sync-watchdog` (or with a wrong
+phase), the disk notes ARE written — and `harness:escalation` (disk-backed) then shows your
+resolution — while the PG `harness_escalations` row the improvement-watchdog's
+`collectEscalationSignals` actually reads is **never touched**: `escalation` stays set,
+`supervisor_notes` stays `''`, and it re-fires next tick. This is exactly how EI-8787 "resolved"
+`shared-hive-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
+the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc,
+COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE
+harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
+`has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true,
+has_notes=false`, your resolve missed the phase.

@@ -2,16 +2,16 @@
  * discover-join-flow.test.ts — the END-TO-END discover→join FLOW integration test
  * (campaign shared-hive-public-release-2026-06-22, Lane T2).
  *
- * The per-route unit tests (set-hive / join-hive / join-invite / hives) each pin
+ * The per-route unit tests (set-pot / join-pot / join-invite / pots) each pin
  * one route's validation + forwarding against a MOCKED composition. This file
  * instead exercises the WHOLE flow over the REAL `HiveDirectory` so the seam
  * between the pieces is covered:
  *
- *   set-hive visibility → which topic the announce lands on
+ *   set-pot visibility → which topic the announce lands on
  *     (public → the GLOBAL directory topic; invite → a SECRET-gated topic;
  *      private → never on the wire)
  *   → discovery:pots (GET /api/discovery/pots) lists a DISCOVERED public hive
- *   → join-hive forwards the DISCOVERED memberLinks into joinHiveAsView
+ *   → join-pot forwards the DISCOVERED memberLinks into joinHiveAsView
  *   → join-invite (secret) surfaces an invite hive a global browser can't see
  *   → a PRIVATE hive is never discoverable (and a forged private frame is
  *     rejected by verifyHiveAnnounce — defense in depth).
@@ -34,7 +34,7 @@ const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
 const ensureHiveDirectoryWired = vi.fn();
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../../harness/join-hive', () => ({
+vi.mock('../../../harness/join-pot', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));
 vi.mock('../../../harness/projects-lite', () => ({
@@ -61,8 +61,8 @@ import {
 } from '../../../sync/hyperbee/derive-hive-topic';
 import { buildHiveAnnounce, type HiveAnnounceBody } from '../../../sync/hyperbee/hive-announce';
 import { formatHiveInviteLink } from '../../../harness/hive-invite-link';
-import hivesRoute from './hives';
-import joinHiveRoute from './join-hive';
+import hivesRoute from './pots';
+import joinHiveRoute from './join-pot';
 import joinInviteRoute from './join-invite';
 
 const NOW = 1_700_000_000_000;
@@ -185,7 +185,7 @@ afterEach(() => {
 });
 
 describe('discover→join flow (shared-hive-release T2)', () => {
-  describe('set-hive visibility → announce topic', () => {
+  describe('set-pot visibility → announce topic', () => {
     it('public → announced on the GLOBAL directory topic, discovered by a browsing peer', async () => {
       registerOwnedHive({ potId: 'acme', visibility: 'public' });
       const frame = await owner.announceLocalHive('acme');
@@ -273,7 +273,7 @@ describe('discover→join flow (shared-hive-release T2)', () => {
     });
   });
 
-  describe('join-hive handoff', () => {
+  describe('join-pot handoff', () => {
     it('forwards the DISCOVERED memberLinks into joinHiveAsView (discover→join)', async () => {
       registerOwnedHive({ potId: 'acme', visibility: 'public' });
       await owner.announceLocalHive('acme');

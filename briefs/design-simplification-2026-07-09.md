@@ -45,8 +45,33 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   operator-core; NOT yet root-caused (next session: identify the failing test,
   fix or confirm pre-existing/unrelated; don't leave the gate red).
 
+> NOW MIRRORED into the PG plan store (plans:new, slug design-simplification-2026-07-09,
+> harness papercusp) — the store is the live status surface; this file stays the
+> long-form recipe carrier. P-004 claimed as WI-3531 by su-85929.
+
 ## Remaining items (full recipes; execute in order)
-- **P-004** [ANALYSIS DONE 2026-07-09, edits pending] vocab migration.
+- **P-004** [DONE 2026-07-09 — executed WIDER than the recipe below] vocab migration.
+  What actually shipped: --good-bg/--bad-bg promoted into the DTCG source
+  (design-tokens/{desktop,hive,honeycomb}.semantic.tokens.json, symmetric with
+  --warn-bg; frost values byte-identical to the old globals.css aliases) instead
+  of the color-mix() replacement the recipe suggested (analysis predated noticing
+  --bad-bg was the dominant tint name); ALL status alias families folded, not
+  just the four (also --error/--err/--red/--fg-danger/--accent-error/--pc-danger/
+  --pc-color-danger*/--pc-color-success*/--bg-danger/--bad-bg dup/--warning/
+  --needs/--fg-warning/--pc-warn-*/--pc-color-warning-text/--bg-warning/
+  --amber-100/--border-warning); 74 consumer lines in 31 files migrated repo-wide
+  (incl. packages/operator-core/lib/capability-explain.ts + libs/testing-shell —
+  the consumer list below was scoped too narrow); whole alias block deleted from
+  globals.css :root except --bad-bg-solid (documented one-off); THEME_TOKENS
+  gained good-bg/bad-bg. ⚠ Fixed en route: --border-muted + --accent-rgb existed
+  ONLY in the generated _semantic.css (hand-edit drift trap) — now properly in
+  desktop.semantic.tokens.json ($type color so the frost parity block emits them).
+  Verified: zero-consumer grep clean, _lints 20/20, tokens.test.ts 15/15.
+  Left for P-017 (new item in the store plan): the accent/info/border alias
+  family (--info 44, --counter 13, --chip-tint 9, --pc-accent 7, --fg-accent 3,
+  --border-subtle 3, --pc-color-primary 2, --pc-accent-2 1; 0-consumer
+  --chip-accent/--stat-accent/--fg-link/--border-dim), globals.css :root ~L60-71.
+  Original recipe (superseded, kept for the record):
   REAL alias definitions are only FOUR (earlier "12 --danger" were CSS class
   names, not tokens): globals.css L74 `--success: var(--good)`, L75 `--ok:
   var(--good)`, L80 `--danger: var(--bad)`, L92 `--error-bg:

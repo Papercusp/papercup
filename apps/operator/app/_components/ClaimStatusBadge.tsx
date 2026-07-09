@@ -97,8 +97,8 @@ const STATUS_STYLES: Record<ClaimStatus, StatusStyle> = {
   },
   stale: {
     label: 'Stale claim',
-    background: 'var(--bg-warning, rgba(255, 152, 0, 0.12))',
-    color: 'var(--fg-warning, #FF9800)',
+    background: 'var(--warn-bg, rgba(255, 152, 0, 0.12))',
+    color: 'var(--warn, #FF9800)',
     tooltip: CLAIM_STATUS_COPY.stale,
   },
   superseded: {

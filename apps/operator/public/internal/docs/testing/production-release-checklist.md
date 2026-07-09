@@ -30,7 +30,12 @@ green/red. A v1 release requires:
    `gate.green: true`, `consecutiveReds` resetting to 0). Never force-deploy
    past a red gate for a real release (`op: 'force'` is the audited,
    owner-gated escape hatch for the rare no-users-window case only — see
-   the CLAUDE.md "gate is everyone's job" section).
+   the CLAUDE.md "gate is everyone's job" section). The moment a
+   previously-green gate first goes red, `green-checkpoint.ts` fires a LIVE
+   push (desktop-native + mobile, `notifyAttention`) in addition to the
+   durable Attention-panel escalation — best-effort, once per hold (2026-07-09,
+   `platform-ops-batch-2026-07-09` P-002); a still-red gate on later ticks
+   relies on the durable escalation's rising-urgency tiers, not a repeat push.
 2. **The green pin has advanced past the release commit** —
    `deploy.greenPinSha` includes the commit you intend to ship;
    `dev:pipeline_position` confirms `committed → staging → main (gate

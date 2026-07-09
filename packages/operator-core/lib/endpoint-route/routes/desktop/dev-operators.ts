@@ -21,7 +21,7 @@
  *
  * auth: GET {} (the cookie-less desktop-webview read posture, like setup-wizard-state).
  * POST 'loopback' + a cross-site CSRF guard (it mutates a preference) — mirrors
- * git-remote-main / bootstrap-hive-start.
+ * git-remote-main / bootstrap-pot-start.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveDevOperators } from '../../../harness/dev-operators';

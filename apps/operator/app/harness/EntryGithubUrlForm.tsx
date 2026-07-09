@@ -183,7 +183,7 @@ function ProgressStrip({ steps }: { steps: { id: StripStepId; status: StripStatu
       {steps.map((s) => (
         <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', opacity: s.status === 'pending' || s.status === 'skipped' ? 0.5 : 1 }}>
           <span style={{ width: 16, minWidth: 16, textAlign: 'center', fontSize: 13, lineHeight: 1 }}>
-            {s.status === 'done' && <span style={{ color: 'var(--success, #22c55e)', fontWeight: 700 }}>✓</span>}
+            {s.status === 'done' && <span style={{ color: 'var(--good, #22c55e)', fontWeight: 700 }}>✓</span>}
             {s.status === 'error' && <span style={{ color: 'var(--bad, #ef4444)', fontWeight: 700 }}>✕</span>}
             {s.status === 'skipped' && <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>}
             {s.status === 'pending' && <span style={{ color: 'var(--fg-dim, #888)' }}>○</span>}

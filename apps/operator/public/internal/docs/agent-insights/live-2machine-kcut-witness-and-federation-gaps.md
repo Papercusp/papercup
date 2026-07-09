@@ -126,7 +126,7 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 1. Restore gh auth on the OWNER VM with its **correct historical identity** (host
    `gh auth token` piped over ssh — runbook §6; reversible, no restart) so the home
    announces.
-2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_hive public` after).
+2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_pot public` after).
 3. Re-run the join/discovery path with the current driver. `joinHiveAsView` now
    records the remote hive identity and calls `rekeyHarness` for joined members in
    place; only restart the joiner if you need to recover from an already-wedged old

@@ -28,7 +28,7 @@ interface Assertion {
 }
 
 const STATUS_TONE: Record<string, string> = {
-  passed: 'var(--ok, #34d399)',
+  passed: 'var(--good, #34d399)',
   failed: 'var(--bad, #f87171)',
   validating: 'var(--accent, #38bdf8)',
   todo: 'var(--fg-mute, #7f9bb4)',

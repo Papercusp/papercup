@@ -74,8 +74,8 @@ const STATUS_STYLES: Record<BindingStatus, StatusStyle> = {
   unverified: {
     marker: '⚠',
     label: 'unverified',
-    background: 'var(--bg-warning, rgba(255, 152, 0, 0.12))',
-    color: 'var(--fg-warning, #FF9800)',
+    background: 'var(--warn-bg, rgba(255, 152, 0, 0.12))',
+    color: 'var(--warn, #FF9800)',
     tooltip: 'Two-channel binding could not be verified. Activity stats are not counted; claim actions are disabled.',
   },
 };

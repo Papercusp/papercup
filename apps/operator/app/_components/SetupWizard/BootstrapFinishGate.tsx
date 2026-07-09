@@ -66,7 +66,7 @@ function StepRow({
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0', opacity: dim ? 0.5 : 1 }}>
       <span style={{ width: 16, minWidth: 16, textAlign: 'center', fontSize: 13, lineHeight: 1 }}>
-        {status === 'done' && <span style={{ color: 'var(--success, #22c55e)', fontWeight: 700 }}>✓</span>}
+        {status === 'done' && <span style={{ color: 'var(--good, #22c55e)', fontWeight: 700 }}>✓</span>}
         {status === 'error' && <span style={{ color: 'var(--bad, #ef4444)', fontWeight: 700 }}>✕</span>}
         {status === 'skipped' && <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>}
         {status === 'pending' && <span style={{ color: 'var(--fg-dim, #888)' }}>○</span>}

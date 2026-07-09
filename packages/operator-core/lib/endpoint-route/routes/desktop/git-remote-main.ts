@@ -11,7 +11,7 @@
  * checkout, origin/main. Status: 200 ok · 404 unknown_project · 409 git_sync_busy · 500 git_failed.
  *
  * SECURITY (CSRF): this is a DESTRUCTIVE side effect and `auth: 'loopback'` is source-IP
- * based, so — like its sibling bootstrap-hive/start — it also REJECTS cross-site browser
+ * based, so — like its sibling bootstrap-pot/start — it also REJECTS cross-site browser
  * requests (Sec-Fetch-Site: cross-site) so a forged cross-origin POST cannot trigger it.
  */
 import { defineTool } from '@papercusp/agent-mcp';

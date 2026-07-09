@@ -329,7 +329,7 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
         )}
       </div>
       {error && (
-        <p style={{ marginTop: 6, color: 'var(--pc-color-danger, #d33)', fontSize: 12 }}>
+        <p style={{ marginTop: 6, color: 'var(--bad, #d33)', fontSize: 12 }}>
           {error}
         </p>
       )}

@@ -17,13 +17,13 @@ import type { RouteDefinition } from '../define-route';
 import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
-import discoveryHives from './discovery/hives';
+import discoveryPots from './discovery/pots';
 import discoveryFederationStatus from './discovery/federation-status';
-import discoveryHiveMeta from './discovery/hive-meta';
-import discoverySetHive from './discovery/set-hive';
+import discoveryPotMeta from './discovery/pot-meta';
+import discoverySetPot from './discovery/set-pot';
 import discoveryBeaconConsent from './discovery/beacon-consent';
 import discoveryJoinInvite from './discovery/join-invite';
-import discoveryJoinHive from './discovery/join-hive';
+import discoveryJoinPot from './discovery/join-pot';
 import githubSearchRepos from './github/search-repos';
 import deployVncSession from './deploy/vnc-session';
 import flagsWebhook from './flags/webhook';
@@ -69,8 +69,8 @@ import harnessJoinLink from './harness/join-link';
 // ShareWizard routes) were retired — comb-retire-per-harness-sharing-2026-06-11.
 import harnessBindingClaim from './harness/binding-claim';
 import harnessClaimStatus from './harness/claim-status';
-import hivePolicy from './hive/policy-set';
-import hiveRateState from './hive/rate-state';
+import potPolicy from './pot/policy-set';
+import potRateState from './pot/rate-state';
 import harnessContributors from './harness/contributors';
 import harnessContributorUsage from './harness/contributor-usage';
 import harnessActivity from './harness/activity';
@@ -260,7 +260,7 @@ import agentMcp_trustSet from './agent-mcp/trust-set';
 import agentMcp_p2pSettingsSet from './agent-mcp/p2p-settings-set';
 import agentMcp_p2pGrantSet from './agent-mcp/p2p-grant-set';
 import agentMcp_p2pAllotmentSet from './agent-mcp/p2p-allotment-set';
-import agentMcp_hiveOverrideSet from './agent-mcp/hive-override-set';
+import agentMcp_potOverrideSet from './agent-mcp/pot-override-set';
 import agentMcp_spawnPi from './agent-mcp/spawn-pi';
 import agentMcp_voiceDebug from './agent-mcp/voice-debug';
 import agentMcp_voiceUtteranceLog from './agent-mcp/voice-utterance-log';
@@ -322,7 +322,7 @@ import desktopVoiceConfig from './desktop/voice-config';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import desktopInstallPapercuspFiles from './desktop/install-papercusp-files';
 import desktopInstallOmpIntegration from './desktop/install-omp-integration';
-import desktopBootstrapHiveStart from './desktop/bootstrap-hive-start';
+import desktopBootstrapPotStart from './desktop/bootstrap-pot-start';
 import { desktopGithubUser } from './desktop/github-user';
 import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
@@ -436,7 +436,7 @@ import devTableRows from './dev/table-rows';
 import devDrizzleStudio from './dev/drizzle-studio';
 import desktopGitPipeline from './desktop/git-pipeline';
 import desktopGitRemoteMain from './desktop/git-remote-main';
-import desktopGitHiveGreenCmd from './desktop/git-hive-green-cmd';
+import desktopGitPotGreenCmd from './desktop/git-pot-green-cmd';
 // dogfood-silent-canonical-hive-join P-013/P-014 — the cross-platform env switcher's
 // operator-discovery feed (server-side reachability of the dev/prod/staging/local +
 // release envs).
@@ -461,13 +461,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopVersion as AnyRoute | AnyRoute[]),
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
-  ...flatten(discoveryHives as AnyRoute),
+  ...flatten(discoveryPots as AnyRoute),
   ...flatten(discoveryFederationStatus as AnyRoute),
-  ...flatten(discoveryHiveMeta as AnyRoute),
-  ...flatten(discoverySetHive as AnyRoute),
+  ...flatten(discoveryPotMeta as AnyRoute),
+  ...flatten(discoverySetPot as AnyRoute),
   ...flatten(discoveryBeaconConsent as AnyRoute[]),
   ...flatten(discoveryJoinInvite as AnyRoute),
-  ...flatten(discoveryJoinHive as AnyRoute),
+  ...flatten(discoveryJoinPot as AnyRoute),
   ...flatten(githubSearchRepos as AnyRoute),
   ...flatten(deployVncSession as AnyRoute),
   ...flatten(agentMcp_agents as AnyRoute),
@@ -532,7 +532,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_p2pSettingsSet as AnyRoute),
   ...flatten(agentMcp_p2pGrantSet as AnyRoute),
   ...flatten(agentMcp_p2pAllotmentSet as AnyRoute),
-  ...flatten(agentMcp_hiveOverrideSet as AnyRoute),
+  ...flatten(agentMcp_potOverrideSet as AnyRoute),
   ...flatten(agentMcp_spawnPi as AnyRoute),
   ...flatten(agentMcp_voiceDebug as AnyRoute[]),
   ...flatten(agentMcp_voiceUtteranceLog as AnyRoute),
@@ -579,8 +579,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessJoinLink as AnyRoute),
   ...flatten(harnessBindingClaim as AnyRoute[]),
   ...flatten(harnessClaimStatus as AnyRoute[]),
-  ...flatten(hivePolicy as AnyRoute[]),
-  ...flatten(hiveRateState as AnyRoute[]),
+  ...flatten(potPolicy as AnyRoute[]),
+  ...flatten(potRateState as AnyRoute[]),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessContributorUsage as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),
@@ -768,7 +768,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(desktopInstallPapercuspFiles as AnyRoute[]),
   ...flatten(desktopInstallOmpIntegration as AnyRoute[]),
-  ...flatten(desktopBootstrapHiveStart as AnyRoute[]),
+  ...flatten(desktopBootstrapPotStart as AnyRoute[]),
   desktopGithubUser,
   ...flatten(adminBackupOrphanCleanup as AnyRoute),
   ...flatten(adminCommands as AnyRoute),
@@ -880,7 +880,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(devDrizzleStudio as AnyRoute[]),
   ...flatten(desktopGitPipeline as AnyRoute[]),
   ...flatten(desktopGitRemoteMain as AnyRoute[]),
-  ...flatten(desktopGitHiveGreenCmd as AnyRoute[]),
+  ...flatten(desktopGitPotGreenCmd as AnyRoute[]),
   ...flatten(desktopDevOperators as AnyRoute[]),
   ...flatten(marketplaceCatalog as AnyRoute),
   ...flatten(marketplaceSpawnable as AnyRoute),

@@ -83,7 +83,7 @@ pointer, a hive has only its home and no members.
 Sharing happens at the **hive** level (per-harness sharing was retired). You
 publish a hive to the peer-to-peer **directory** so others can find and join it.
 
-* **Tool:** `discovery:set_hive` — args: `hiveId`, `title`, `description`,
+* **Tool:** `discovery:set_pot` — args: `hiveId`, `title`, `description`,
   `visibility` (default `public`), `inviteSecret` (required for `invite`),
   `memberLinks` (one-click join links — see step 4). It's an idempotent
   create-or-edit: call it again with the same `hiveId` to edit the title /
@@ -105,7 +105,7 @@ on a TTL. Only a *shared* (public/invite) hive actually syncs to other machines.
 
 A published hive can additionally broadcast a **live status beacon** (active
 agents, queue depth, focus) onto the directory gossip. It is **owner-consent,
-default-OFF**: `hive:beacon_consent { hive, consent: true }` to opt in (`false`
+default-OFF**: `pot:beacon_consent { pot, consent: true }` to opt in (`false`
 to stop; omit `consent` to read). It only rides a **published** (public/invite)
 hive — enabling it on a private hive does nothing until you publish.
 
@@ -113,7 +113,7 @@ hive — enabling it on a private hive does nothing until you publish.
 
 To find hives other people have shared:
 
-* **Tool:** `discovery:hives` — browse the directory of hives this peer has seen
+* **Tool:** `discovery:pots` — browse the directory of hives this peer has seen
   announced (title · description · owner · member harnesses). In the desktop app
   this is the **Hives / Network** board.
 * The directory is **best-effort gossip** — it's how you *find* a hive, not how
@@ -318,9 +318,9 @@ screening.
 | Create              | New hive                    | `hive:create`                                                   |
 | Create              | From a GitHub repo          | `hive:create_from_repo`                                         |
 | Create              | Add an existing harness     | `hive:add-member`                                               |
-| Share               | Publish / set visibility    | `discovery:set_hive`                                            |
+| Share               | Publish / set visibility    | `discovery:set_pot`                                             |
 | Share               | Live status beacon (opt-in) | `hive:beacon_consent`                                           |
-| Discover            | Browse shared hives         | `discovery:hives`                                               |
+| Discover            | Browse shared hives         | `discovery:pots`                                                |
 | Join                | Find a hive's status        | `hive:get` / `hive:list`                                        |
 | Join (owner)        | Review join queue           | `hive:membership_pending`                                       |
 | Join (owner)        | Approve / deny              | `hive:membership_decide`                                        |

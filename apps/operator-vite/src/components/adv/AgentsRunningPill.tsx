@@ -20,6 +20,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
+import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
 
 /** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
  *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend
@@ -306,11 +307,18 @@ export default function AgentsRunningPill() {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [open]);
-  const active = (data?.[0]?.active ?? []) as RosterAgent[];
+  // Search-anything box state — URL-backed like agentsRoster/agentsMachine.
+  const [searchQ, setSearchQ] = useQueryState('agentsQ', parseAsString.withDefault(''));
   // Shown = present (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps
   // working on a cadence even while parked between wakes, so it belongs here even if
-  // its presence heartbeat has gone stale.
-  const running = active.filter((a) => a.liveness !== 'stale' || a.loopArmed);
+  // its presence heartbeat has gone stale. Memoed on `data` so the identities stay
+  // stable across the 1s nowMs ticks while the popover is open.
+  const running = useMemo(
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter((a) => a.liveness !== 'stale' || a.loopArmed),
+    [data],
+  );
+  const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);
+  const q = searchQ.trim();
   if (running.length === 0) return null;
 
   const groups = groupByFleet(running);
@@ -364,7 +372,15 @@ export default function AgentsRunningPill() {
         contentClassName="pc-advshell__agents-pop"
       >
         <div id="pc-advshell-agents-pop" data-testid="agents-running-pop">
-          <AgentsRoster agents={running} nowMs={nowMs} />
+          <SessionsSearchInput value={searchQ} onChange={(v) => void setSearchQ(v || null)} />
+          {q.length >= 2 ? (
+            <SessionSearchResults query={q} nowMs={nowMs} />
+          ) : (
+            <>
+              <AgentsRoster agents={running} nowMs={nowMs} />
+              <InactiveSessionsSection activeOwnerIds={activeOwnerIds} nowMs={nowMs} />
+            </>
+          )}
         </div>
       </Popover>
       <RosterStyles />

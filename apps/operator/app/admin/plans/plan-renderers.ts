@@ -266,7 +266,7 @@ export function decoratePlanItemTestBadges(
 
     const { valsRequiringTest: req, valsCovered: covered, valsPassing: pass } = cov;
     const color =
-      pass === req ? 'var(--ok, #34d399)'
+      pass === req ? 'var(--good, #34d399)'
       : covered === 0 ? 'var(--fg-mute, #7f9bb4)'
       : pass === 0 ? 'var(--bad, #f87171)'
       : 'var(--warn, #fbbf24)';

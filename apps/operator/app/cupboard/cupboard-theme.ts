@@ -31,12 +31,12 @@ export const COLORS = {
   accent: 'var(--accent)',
   accentHover: 'var(--accent-strong)',
 
-  danger: 'var(--danger)',
-  dangerBg: 'var(--error-bg)',
-  dangerText: 'var(--danger)',
-  success: 'var(--success)',
-  successBg: 'color-mix(in srgb, var(--success), transparent 88%)',
-  successText: 'var(--success)',
+  danger: 'var(--bad)',
+  dangerBg: 'var(--bad-bg)',
+  dangerText: 'var(--bad)',
+  success: 'var(--good)',
+  successBg: 'color-mix(in srgb, var(--good), transparent 88%)',
+  successText: 'var(--good)',
 } as const;
 
 export const FONTS = {

@@ -97,13 +97,20 @@ cd <cwd> && export PATH=<scripts-dir>:$PATH \
          && export PAPERCUSP_HARNESS_SLUG=… \
          && export PAPERCUSP_WORKSPACE=default \
          && export PAPERCUSP_API_BASE=http://127.0.0.1:3070 \
-         && (papercup status) \
-         && exec "${SHELL:-/bin/bash}" -l
+         && (papercup status) ; \
+         __papercusp_greeting_rc=$?; \
+         if [ "$__papercusp_greeting_rc" -ne 0 ]; then \
+           printf '\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\n' "$__papercusp_greeting_rc"; \
+         fi ; \
+         exec "${SHELL:-/bin/bash}" -l
 ```
 
 The greeting prints workspace + harness + pending suggestion count +
-escalations. Then the user is in their normal shell (zsh/bash/fish/…)
-with everything inherited from their rc files.
+escalations. If the greeting exits with a non-zero status, a banner displays
+the exit code and leaves the terminal open for inspection (rather than
+immediately exec'ing the shell). This helps diagnose environment issues during
+launch. When the greeting succeeds, the user is in their normal shell
+(zsh/bash/fish/…) with everything inherited from their rc files.
 
 On the server-side path (Linux and macOS both, via `console-spawn.ts`)
 the launcher prepends an appearance prelude before the one-liner: OSC
@@ -258,8 +265,8 @@ are exposed via `?superuser=1`:
 * **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
 * **Spawn / supervise other agents** (the full `fleet:*` surface):
-  `bee:spawn`, `fleet:supervise`, `fleet:cancel`, `fleet:tree`,
-  `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
+  `cup:spawn` (formerly `bee:spawn`), `fleet:supervise`, `fleet:cancel`,
+  `fleet:tree`, `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
   `fleet:drain`, `fleet:governor`, `fleet:place_batch`,
   `fleet:sandbox_deps`, `fleet:selected_bee`. (The old
   `orchestrator.spawn` plugin was retired 2026-06-06 — superseded by

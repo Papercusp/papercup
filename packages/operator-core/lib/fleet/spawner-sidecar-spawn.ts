@@ -84,6 +84,15 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
       ...process.env,
       ...plan.env,
       [SPAWNER_SOCKET_ENV]: resolvedSocket,
+      // EI-8810 belt: the sidecar serves over the Unix socket ONLY — never hand
+      // the child the parent's HTTP port or the background-worker role. A
+      // mode-divert miss in the re-exec'd entry (the exact hono-host.mjs bug)
+      // otherwise boots a full host on the PARENT's own port (EADDRINUSE
+      // crash-respawn loop) and could double-run the single-writer background
+      // machinery (EI-126). Port 0 = ephemeral bind if some entry ever listens.
+      PAPERCUSP_HONO_PORT: '0',
+      PORT: '0',
+      PAPERCUSP_BACKGROUND_WORKERS: '0',
     };
 
     const cmd = plan.cmd;

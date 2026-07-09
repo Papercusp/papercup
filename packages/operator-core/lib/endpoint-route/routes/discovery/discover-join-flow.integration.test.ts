@@ -10,7 +10,7 @@
  * sourced from the real discovery output.
  *
  * Covers (the release gate for the public-hive flow):
- *   - set-hive each visibility:
+ *   - set-pot each visibility:
  *       public  → announces on the GLOBAL directory topic;
  *       invite  → announces on the SECRET-gated invite topic (NOT the global one);
  *       private → never announced (no frame ever reaches the wire).
@@ -18,13 +18,13 @@
  *   - …and a PRIVATE hive is NOT discoverable — never announced (no broadcast),
  *     rejected at ingest (verifyHiveAnnounce drops `private`), and filtered at the
  *     projection. The triple guarantee.
- *   - join-hive: the discovered hive's `memberLinks` flow into the route and
+ *   - join-pot: the discovered hive's `memberLinks` flow into the route and
  *     materialize the joiner-side `remote_hive` view (`potSlug`).
  *   - join-invite: joining via the SAME invite secret the hive was published with.
  *
- * Faithful-but-deterministic seam: the full HTTP set-hive composition
+ * Faithful-but-deterministic seam: the full HTTP set-pot composition
  * (`setHiveListing` → PG save → republish-from-repo) is unit-covered in
- * set-hive.test.ts; this drives the directory ANNOUNCE contract directly
+ * set-pot.test.ts; this drives the directory ANNOUNCE contract directly
  * (`publishHiveToDirectory` — the pure adapter the create/edit surface calls) so
  * the flow stays swarm-/PG-/keychain-free. The two JOIN routes do real I/O
  * (clones, topic subscribe), so their composition seams are mocked — but the
@@ -41,7 +41,7 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 //    mocks never perturb the real publish→ingest→browse flow. ──────────────────
 const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
-vi.mock('../../../harness/join-hive', () => ({
+vi.mock('../../../harness/join-pot', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));
 vi.mock('../../../harness/projects-lite', () => ({
@@ -62,7 +62,7 @@ vi.mock('../../../hive-directory-boot', () => ({
 }));
 
 // ── Real modules under test ──────────────────────────────────────────────────
-import joinHiveRoute from './join-hive';
+import joinHiveRoute from './join-pot';
 import joinInviteRoute from './join-invite';
 import hivesTool from '../../../agent-tools/discovery/pots';
 import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity } from '../../../hive-publish';
@@ -207,7 +207,7 @@ async function postJoinInvite(body: unknown) {
   return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, unknown> | null };
 }
 
-describe('discover→join flow: set-hive visibility → announce topic (T2)', () => {
+describe('discover→join flow: set-pot visibility → announce topic (T2)', () => {
   it('public → announces on the GLOBAL directory topic', async () => {
     const { res, frames } = await publish(meta({ potId: 'acme', visibility: 'public' }));
     expect(res).toMatchObject({ announced: true, visibility: 'public' });
@@ -311,7 +311,7 @@ describe('discover→join flow: a PRIVATE hive is NOT discoverable (T2)', () => 
 });
 
 describe('discover→join flow: JOIN the discovered hive (T2)', () => {
-  it('join-hive: the DISCOVERED hive’s member links materialize the remote_hive view', async () => {
+  it('join-pot: the DISCOVERED hive’s member links materialize the remote_hive view', async () => {
     await ingest(await publishFrames('acme', 'public'));
     const row = (await browse()).rows.find((r) => r.potId === 'acme')!;
     expect(row.memberLinks).toEqual([MEMBER_LINK]);

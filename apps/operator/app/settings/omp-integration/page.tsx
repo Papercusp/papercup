@@ -122,7 +122,7 @@ export default function OmpIntegrationSettingsPage() {
       </header>
 
       {loadError && (
-        <div role="alert" style={{ color: 'var(--danger, #c00)' }}>Failed to load state: {loadError}</div>
+        <div role="alert" style={{ color: 'var(--bad, #c00)' }}>Failed to load state: {loadError}</div>
       )}
 
       {state && (
@@ -134,16 +134,16 @@ export default function OmpIntegrationSettingsPage() {
             <strong>OMP agent dir:</strong>
             <span>
               <code>{state.ompAgentDir}</code>{' '}
-              {state.ompAgentDirExists ? <span style={{ color: 'var(--success, #060)' }}>✓ exists</span> : <em style={{ color: 'var(--muted)' }}>missing</em>}
+              {state.ompAgentDirExists ? <span style={{ color: 'var(--good, #060)' }}>✓ exists</span> : <em style={{ color: 'var(--muted)' }}>missing</em>}
             </span>
 
             <strong>MCP server in mcp.json:</strong>
-            <span>{state.mcpServerInstalled ? <span style={{ color: 'var(--success, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}</span>
+            <span>{state.mcpServerInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}</span>
 
             <strong>omp-su wrapper:</strong>
             <span>
               <code>{state.wrapperPath}</code>{' '}
-              {state.wrapperInstalled ? <span style={{ color: 'var(--success, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}
+              {state.wrapperInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}
             </span>
 
             <strong>Legacy CLAUDE.md block:</strong>
@@ -177,7 +177,7 @@ export default function OmpIntegrationSettingsPage() {
           </div>
 
           {actionResult && (
-            <div role="status" style={{ color: actionResult.kind === 'error' ? 'var(--danger, #c00)' : 'var(--text)' }}>
+            <div role="status" style={{ color: actionResult.kind === 'error' ? 'var(--bad, #c00)' : 'var(--text)' }}>
               <div>{actionResult.message}</div>
               {actionResult.actions && actionResult.actions.length > 0 && (
                 <ul style={{ marginTop: 4 }}>

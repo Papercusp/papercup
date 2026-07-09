@@ -64,6 +64,11 @@ const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
   // (see note above); allowlisted so a newly-landed page doesn't hold main's green gate red.
   // Migrate to the shared table primitive when it lands.
   'operator/app/settings/p2p/page.tsx',
+  // TEMPORARY (gate-unblock 2026-07-09, agents-pill-inactive-search-2026-07-09) — FleetStatusPanel
+  // landed with a native table while no shared table primitive exists yet (see note above);
+  // allowlisted so the fleet's green gate isn't held red. Author (su-ba914) owns the migration
+  // to the shared table primitive when it lands.
+  'operator/app/_components/FleetStatusPanel.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([

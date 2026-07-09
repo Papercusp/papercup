@@ -18,8 +18,8 @@
   flex: 0 0 auto;
   padding: 6px 10px;
   font-size: 12px;
-  background: var(--pc-warn-bg, #3a2c10);
-  color: var(--pc-warn-fg, #f3d27a);
+  background: var(--warn-bg, #3a2c10);
+  color: var(--warn, #f3d27a);
   border-bottom: 1px solid var(--pc-border, #2a2c33);
 }
 
@@ -155,6 +155,6 @@
   color: var(--pc-accent, #4f9dff);
 }
 .pc-video-grid__btn--leave {
-  border-color: var(--pc-danger, #d6584f);
-  color: var(--pc-danger, #d6584f);
+  border-color: var(--bad, #d6584f);
+  color: var(--bad, #d6584f);
 }

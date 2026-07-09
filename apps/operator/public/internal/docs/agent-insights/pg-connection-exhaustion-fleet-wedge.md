@@ -88,7 +88,15 @@ wedge spammed `Tool X returns a structural error` EIs across every PG-backed too
 (EI-1331/1332/1323/1337/1342/1344 + the coord-probe canary EI-1333), several of which the
 Queen then triaged to the auto-implement fix queue (which would "fix" working tools).
 Fixed in `packages/operator-core/lib/harness/improvements/watchdog.ts`:
-`classifyToolError` + the SQL `CASE` in `collectToolErrorSignals` now classify
-connection-exhaustion / DB-unavailable messages (`INFRA_TRANSIENT_ERROR_RE`) as **transient**
-(volume-gated at n≥15), so a brief wedge is ignored while a sustained infra problem still
-fires. So a future wedge won't recreate that false-positive EI cluster.
+`classifyToolError` + the SQL `CASE` in `collectToolErrorSignals` classify
+connection-exhaustion / DB-unavailable messages (`INFRA_TRANSIENT_MESSAGE_PATTERN`) as
+**transient** (volume-gated at n≥15 via `transientMinCount`, `toolErrorSignalsFromRows`), so a
+brief wedge is ignored while a sustained infra problem still fires. So a future wedge won't
+recreate that false-positive EI cluster.
+
+(As of `watchdog-and-exposed-systems-improvement-2026-06-18` P-011, the classifier itself —
+`classifyToolError`, `ToolErrorClass`, the message-pattern constants, and the SQL `CASE`
+generator — moved to a sibling module, `./tool-error-classifier.ts`, so the TS function and the
+SQL stay generated from one ordered rule table and can't drift apart; `watchdog.ts` re-exports
+`classifyToolError`/`ToolErrorClass` for existing import sites and still owns
+`collectToolErrorSignals`/`toolErrorSignalsFromRows`, which consume the classifier.)

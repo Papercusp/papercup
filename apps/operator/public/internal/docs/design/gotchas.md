@@ -47,35 +47,29 @@ The "no native title=" rule is a soft rule, not a hard one.
 
 A tell that you should use native `title=`: the value is dynamic and per-row (`title={row.title}`), not a static label. Static action-button hints almost always belong in `<Tooltip>`.
 
-## Native `<details>` is fine for content disclosure, NOT for interactive components
+## Content disclosure: use `LazyDetails` — native `<details>` has been fully migrated
 
-The HR6 "never `<details>`" rule is for *interactive* disclosure widgets — the kind that need shared focus styles, animation, and ARIA state with the rest of the harness. For **content disclosure** (prose, diagnostic dumps, debug help text — anything the user reads but doesn't act on), native `<details>` is the better primitive:
+*(Updated 2026-07-09 — the old "approved native `<details>` sites" list is gone; every listed site migrated.)*
 
-* It lazy-mounts its `<summary>` content until first open. Radix `<Collapsible>` mounts children eagerly, so wrapping a heavy renderer (Monaco, MarkdownPreview, JSON tree) in Collapsible pays the render cost on every page load even when collapsed.
-* Browser Ctrl+F finds text inside collapsed `<details>` on modern Chromium (`hidden-until-found`). Collapsible content is `display:none` and invisible to find-in-page.
-* Browsers auto-expand all `<details>` on print. Collapsible needs JS to expand before print.
+There are **zero native `<details>` blocks left in app UI**. The historical tension — HR6 says use `<Collapsible>`, but Radix Collapsible mounts heavy children eagerly even when collapsed — was resolved by **`app/_components/LazyDetails.tsx`**: a Radix Collapsible wrapper that defers mounting `children` until first open (and keeps them mounted afterward so internal state survives collapse/expand). It is the standard primitive for content disclosure (prose, diagnostic dumps, JSON dumps, debug help text) *and* satisfies HR6, so there is no perf reason to reach for native `<details>` anymore.
 
-Approved content-disclosure `<details>` sites:
+* Heavy renderer behind a collapsed section (Monaco, MarkdownPreview, JSON tree, long log dump) → `<LazyDetails summary={…}>…</LazyDetails>`.
+* Interactive disclosure that should start mounted (collapsible form sections, per-row expanders needing shared animation/focus) → plain `<Collapsible.Root>`.
+* Native `<details>` remains acceptable **only inside rendered markdown content** (content-author markup the React tree can't reach), same as the native-checkbox markdown carve-out in HR2.
 
-* `app/_components/WslOnboardingGate.tsx` — diagnostics dump on the setup overlay
-* `app/support/page.tsx` — help text
-* `app/settings/api-keys/page.tsx` — provider help text
-* `app/settings/user/memory/page.tsx` — embed-mode help
-* `app/settings/voice/page.tsx` — debug precedence matrix
-* `app/_components/LazyDetails.tsx` — explicit lazy-mount wrapper, by design
-* `app/harness/dock/PinnedIssuePanel.tsx` — JSON-notes dump + body sections
-* `app/harness/dock/PinnedFeaturePanel.tsx` — JSON-metadata + notes dumps
-* `app/dev/_components/SessionsTab.tsx` — transcript JSON dump
-* `app/dev/_components/TablesTab.tsx` — table-row JSON dumps
-* `app/_components/SetupWizard/StepAutoUpdate.tsx` — release-notes prose
-* `app/cupboard/[id]/page.tsx` — learning-pack content preview
-* `app/harness/dock/sample-panels.tsx` — sample/debug panel parameters
-
-A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
+Two native-`<details>` niceties are knowingly given up by LazyDetails: Chromium's find-in-page inside collapsed content (`hidden-until-found`) and auto-expand on print. If a surface genuinely needs those, raise it in review rather than silently reintroducing `<details>` — the direction is zero `<details>` in `.tsx`.
 
 ## Native checkbox / radio / range — `accent-color` is the carve-out, NOT the migration
 
-When a native `<input type="checkbox|radio|range">` legitimately can't be wrapped, `accent-color` recolors the OS-rendered control's tint to match the app accent without breaking semantics — a strict improvement, never a workaround. There's **no global baseline rule** for this: `accent-color` is applied only by narrowly-scoped rules at each carve-out site (e.g. `.pc-toggle input { accent-color: var(--accent) }` in `globals.css`, `.h-proposal-item input` in `h-proposals.css`, and `.pc-template-manifest-structured input[type="checkbox"]` which uses a literal hex). Don't assume native radio/range pick up the accent automatically — add a scoped rule when you reach for one.
+When a native `<input type="checkbox|radio|range">` legitimately can't be wrapped, `accent-color` recolors the OS-rendered control's tint to match the app accent without breaking semantics — a strict improvement, never a workaround. **There is now a global baseline rule** in `globals.css`:
+
+```css
+:where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--accent);
+}
+```
+
+so a bare native checkbox/radio/range picks up the app accent automatically — you no longer need to add a per-site scoped rule just to get the tint right. A handful of sites still layer an ADDITIONAL scoped rule on top of the baseline for extra styling (e.g. `.pc-toggle input { accent-color: var(--accent) }`, `.pc-template-manifest-structured input[type="checkbox"]` which also adds a `drop-shadow` glow) — those are refinements, not the thing that makes the color apply at all.
 
 **Do not read this as "native checkboxes are fine now."** HR2 is still absolute for harness UI: use `<Checkbox>`. The wrapper exposes `indeterminate` declaratively, gives us a stable `data-state` hook, and owns focus styling. None of that comes from `accent-color`.
 
@@ -83,9 +77,11 @@ The carve-out is narrow: native checkboxes that legitimately can't be wrapped (m
 
 ## Floating widgets that pin to a viewport corner are NOT centered Modals
 
-A few surfaces — the Deck (`OperatorPanel`, the fixed `.operator-panel` HUD whose wordmark reads "Deck"; not to be confused with `OperatorChatSidebar`, which renders the separate `.op-chat-sidebar` "Papercup chat" surface sitting in front of it) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, `motion` `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
+The canonical example is the Deck (`OperatorPanel`, the fixed `.operator-panel` HUD whose wordmark reads "Deck") — a floating, viewport-anchored panel with its own bespoke animations and HUD overlays. It's not a centered modal (Modal would yank it to screen-center and add a backdrop), not an anchored Popover (no trigger to align to), and not a side Drawer (it doesn't slide in from the edge).
 
-For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
+For this shape, the correct pattern is landmark/dialog semantics by hand — an `aria-label`ed container using `role="region"` (non-blocking, always-on-screen HUD) or `role="dialog"` (if it genuinely captures a task) — with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck as the canonical exception; if you add a new floating-corner-widget pattern, document it next to it.
+
+*(History: `OracleDock` and `OperatorChatSidebar` — the "Papercup chat" web sidebar — were the other two examples of this pattern. Both were retired 2026-07-09 (`_retired/legacy-web-chats/`): the only chat surface is the terminal-native pui chat pane in the zellij dock.)*
 
 ## Radix Select doesn't allow empty-string values
 
@@ -190,7 +186,7 @@ If any of those, stop and switch to `useDebouncedSave`. HR1/HR2/HR3/HR6 still ap
 
 ## CSS-token lint catches undefined `var(--X)` references
 
-Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist, which is the exact pair `--radix-select-trigger-width` and `--op-chat-w` (a literal set, **not** a `--radix-*` wildcard, so a new `--radix-...` token still has to be added to `RUNTIME_TOKENS`).
+Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist `RUNTIME_TOKENS` (in `app/_lints/css-tokens.test.ts`), a literal enumerated set of tokens a framework/component writes at runtime rather than defining in any CSS source — e.g. `--radix-select-trigger-width` (Radix Select), `--op-chat-w` (the chat sidebar's chrome offset), `--left-sidebar-w`/`--dev-rail-w`/`--pc-env-bar-h` (layout rails that measure themselves in JS), Sonner's per-toast `--toasts-before`/`--lift-amount`/`--front-toast-height`, `--mic-level` (voice input level), `--intro-index`/`--bee-index` (dev swarm identity artwork), and `--xy-handle-tx` (React Flow geometry). It's a literal set, **not** a `--radix-*` wildcard, so a new runtime-written token — Radix or otherwise — still has to be added to `RUNTIME_TOKENS` explicitly.
 
 The lint also satisfies **component-local** custom properties: a `--name:` that is both defined and used inside the same `.tsx` (e.g. inside a styled-jsx `<style>` block) counts as defined without any global definition — the global CSS-source scan can't see definitions that live in a `.tsx`, so the lint collects each file's own `--name:` definitions and treats self-references as resolved.
 

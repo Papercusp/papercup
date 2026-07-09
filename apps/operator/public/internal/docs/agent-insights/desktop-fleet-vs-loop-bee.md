@@ -1,22 +1,23 @@
 # Desktop fleet vs. loop bee — which spawn tool do you actually want?
 URL: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee
 
-The one decision that keeps getting made wrong — bee:spawn (background queen↔bee autonomous-loop workers) vs fleet:launch-on-plan (VISIBLE desktop su member terminals). A goal→tool→what-you-get table so "launch a fleet" stops spinning up invisible bees.
+The one decision that keeps getting made wrong — cup:spawn (background queen↔bee autonomous-loop workers, formerly bee:spawn) vs fleet:launch-on-plan (VISIBLE desktop su member terminals). A goal→tool→what-you-get table so "launch a fleet" stops spinning up invisible bees.
 
 ## The mistake this prevents
 
 "Launch a fleet on this plan" has TWO tools that sound alike and do completely
 different things. Reaching for the wrong one is a recurring, expensive error — the
-origin of WI-1764: a leader called **`bee:spawn`** (then named `fleet:spawn`)
-meaning to open visible desktop members, got three **background autonomous-loop
-bees** instead, and the fleet read `liveMemberCount: 0` while three bees quietly
-ran. Correct, but silent — so nobody noticed the substrate mismatch.
+origin of WI-1764: a leader called what was then `fleet:spawn` (renamed
+`bee:spawn`, and since renamed again to **`cup:spawn`**) meaning to open visible
+desktop members, got three **background autonomous-loop bees** instead, and the
+fleet read `liveMemberCount: 0` while three bees quietly ran. Correct, but silent
+— so nobody noticed the substrate mismatch.
 
 The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renamed
-`fleet:spawn` → `bee:spawn`):
+`fleet:spawn` → `bee:spawn`; later renamed again to `cup:spawn`):
 
 > **`fleet:*`** (launch-on-plan / create / take-leadership / status / cancel) =
-> VISIBLE desktop su members. **`bee:spawn`** = a background worker in the queen↔bee
+> VISIBLE desktop su members. **`cup:spawn`** = a background worker in the queen↔bee
 > autonomous loop.
 
 ## Decision table
@@ -25,13 +26,19 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
 | -------------------------------------------------------------------------- | -------------------------- | ---------------------------- | -------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------- |
 | Open N visible terminals on the owner's desktop to work a plan, now        | **`fleet:launch-on-plan`** | VISIBLE desktop windows      | psu su sessions (`capability:terminal`)      | full su collaborator (edit/tools/coord)           | you become the fleet **leader**; members auto-start on the plan |
 | Register a named fleet (no windows yet) so you can hand a plan to it later | **`fleet:create`**         | none (registry row only)     | durable `agent_fleets` row                   | —                                                 | leader = creator                                                |
-| Place ONE background worker on ranked work / a claim-spec, no window       | **`bee:spawn`**            | INVISIBLE (headless nursery) | queen↔bee autonomous loop (`spawned_agents`) | a bee: coord/issues/improvements, self-pulls work | the **Queen** places + supervises the loop                      |
+| Place ONE background worker on ranked work / a claim-spec, no window       | **`cup:spawn`**            | INVISIBLE (headless nursery) | queen↔bee autonomous loop (`spawned_agents`) | a bee: coord/issues/improvements, self-pulls work | the **Queen** places + supervises the loop                      |
 | Place MANY background bees in one shot                                     | **`fleet:place_batch`**    | INVISIBLE (headless nursery) | queen↔bee autonomous loop                    | bees                                              | the Queen                                                       |
 | Just a plain worker window (no fleet, no plan)                             | **`capability:terminal`**  | VISIBLE desktop window       | psu session                                  | su collaborator                                   | you                                                             |
 
+> **Naming note:** the tool used to be called `bee:spawn` (originally `fleet:spawn`);
+> it is now **`cup:spawn`**, but the underlying substrate (a background worker in the
+> queen↔bee/nursery autonomous loop) is unchanged, and the doc still calls the workers
+> "bees" — `beeCount`/`runningBees` are the field names `fleet:list`/`fleet:status`
+> actually return.
+
 ## Why the confusion is easy — and how to catch it
 
-* **A bee-spawn can create a fleet.** `bee:spawn { fleet: "X" }` auto-CREATES fleet X
+* **A bee-spawn can create a fleet.** `cup:spawn { fleet: "X" }` auto-CREATES fleet X
   if it's absent (bees can be color-grouped). So "I passed a fleet name" does NOT mean
   you got desktop members. A bee-spawn that materialises a new fleet now returns a loud
   `fleet_advisory` telling you so (WI-1764 #2).
@@ -50,7 +57,7 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
 ## The two-line heuristic
 
 > Want a human to SEE terminals working a plan? → **`fleet:launch-on-plan`**.
-> Want the autonomous queen↔bee loop to grind ranked work headlessly? → **`bee:spawn`**.
+> Want the autonomous queen↔bee loop to grind ranked work headlessly? → **`cup:spawn`**.
 
-If you catch yourself about to `bee:spawn` because you want "a fleet on a plan",
+If you catch yourself about to `cup:spawn` because you want "a fleet on a plan",
 stop — you almost certainly want `fleet:launch-on-plan`.

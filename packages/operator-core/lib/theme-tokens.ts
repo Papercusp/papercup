@@ -16,7 +16,7 @@ export const THEME_TOKENS = [
   'fg', 'fg-dim', 'fg-mute',
   'border', 'border-strong',
   'accent', 'accent-strong', 'accent-cool', 'accent-soft', 'accent-deep', 'accent-deeper', 'accent-ink',
-  'good', 'warn', 'bad', 'warn-bg', 'warn-border',
+  'good', 'warn', 'bad', 'good-bg', 'warn-bg', 'bad-bg', 'warn-border',
   'frost', 'card-shadow',
 ] as const;
 export type ThemeToken = (typeof THEME_TOKENS)[number];

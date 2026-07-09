@@ -408,7 +408,7 @@ async function resolveDesignTokens(args: { category?: string }): Promise<unknown
  * Resolve a shared hive's member-harness SLUGS for the cross-member browse reads
  * (WI-259 P-006, D-010). The member set is the hive home plus every locally-
  * registered harness whose `hive_slug` points at the home (joining a hive
- * registers each member harness with that stamp — discovery/join-hive). Mirrors
+ * registers each member harness with that stamp — discovery/join-pot). Mirrors
  * the `learning.improvements` hive-scope resolution; returns BARE slugs (strips the
  * `harness:` scope prefix `hiveMemberHarnessScopes` adds) for a `WHERE harness_slug
  * IN (...)` content read. Best-effort: a registry read failure degrades to just
@@ -1890,7 +1890,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //
   // Why this works with NO schema change: post-WI-259-P-002 the membership guard
   // lands each member's content locally under that member's own slug, and joining
-  // a hive (discovery/join-hive) registers each member harness with `hive_slug=H`.
+  // a hive (discovery/join-pot) registers each member harness with `hive_slug=H`.
   // So the member-slug SET is just the registry projects whose hive_slug points at
   // the home — resolved here exactly like `learning.improvements` (loadHarnessRegistry
   // + hiveMemberHarnessScopes). Best-effort: a registry read failure degrades to the
@@ -3618,7 +3618,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // overrides (`promptOverride.<role>` — D-007) AND the STRUCTURED config deltas
   // (`localBlueprint.<section>`, e.g. a ScoutConfigOverride — D-005). Returned as a flat
   // row array (the resolver contract): one row per SET override, `kind` distinguishing
-  // prompt vs config, so the /settings/hive-customization editors can reconstruct both
+  // prompt vs config, so the /settings/pot-customization editors can reconstruct both
   // maps. The loopback write routes (hive-prompt-override-set / hive-config-set)
   // invalidate this by name. Scoped to the hive's HOME slug (the hive_settings scope
   // column); an unknown/empty hive degrades to [] (never a 500 — the picker shows the

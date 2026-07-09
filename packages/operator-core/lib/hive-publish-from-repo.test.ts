@@ -190,7 +190,7 @@ describe('publishCreatedHive (P-007)', () => {
     // WITHOUT a second directory round-trip. Same set the announce broadcast.
     expect(out.memberLinks).toEqual(calls.published[0].memberLinks);
     expect(out.hivePubkey).toBe(HIVE_PUBKEY);
-    // …and those links pass discovery/join-hive's body validation (non-empty
+    // …and those links pass discovery/join-pot's body validation (non-empty
     // strings, ≤ 64 — the exact gate that 400s "potId and memberLinks[] required").
     const links = out.memberLinks!;
     expect(links.length).toBeGreaterThan(0);

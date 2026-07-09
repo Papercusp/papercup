@@ -95,12 +95,74 @@ PUT /api/agent-mcp/operator-voice-prefs
 Requires the local services running: kokoro TTS on `:8880`, whisper STT on `:2022`
 (managed under `.voicemode/services/`). No API keys, no per-char spend.
 
+## What the status codes mean
+
+`synthesize()` classifies the provider's response so the UI can tell a
+**user-fixable credential problem** from a **provider outage**. (Before
+2026-07-09 every upstream failure collapsed onto `502`, so a defunded ElevenLabs
+account looked exactly like ElevenLabs being down.)
+
+| status | meaning | who fixes it |
+| --- | --- | --- |
+| `200` | audio bytes | — |
+| `404` `no-key` | no key configured for that engine | add a key |
+| `401` | provider **rejected** the key — invalid, or out of credits | fix/fund the key |
+| `429` | rate-limited / quota exhausted | wait, or upgrade the plan |
+| `400` | bad request — unknown engine, bad voice id, bad model | fix the request |
+| `502` | provider 5xx, unreachable, or a timeout | infrastructure |
+
+`404` is produced **only** for "key not configured" — never passed through from a
+provider — so the `no-key` contract stays unambiguous.
+
 ## Verify a swap
 
 - Preview endpoint proves wiring without touching the live speak path:
-  `POST /api/agent-mcp/operator-tts-preview { "engine": "kokoro" }` → `200` + WAV;
-  `{ "engine": "elevenlabs" }` → `200` if a key is funded, else `404` (`no-key` —
-  which itself proves EL is wired and only the key is missing).
+  `POST /api/agent-mcp/operator-tts-preview { "engine": "kokoro" }` → `200` + WAV.
+  `{ "engine": "elevenlabs" }` → `200` with a funded key; `404 no-key` with no key
+  at all; `401` when a key is present but rejected (this still proves EL is fully
+  wired — only the money is missing).
 - Server-side edits have **no hot-reload**: restart the host
   (`systemctl --user restart papercup-staging-api.service` for :3170) before
   probing.
+
+## Automated tests
+
+Most voice tests stub `fetch` — they prove the wiring. Two suites hit the **real**
+local services and will catch a real API change:
+
+```bash
+# Unit layer: live kokoro + whisper, incl. a TTS→STT round trip.
+# Auto-skips when the services are down; PAPERCUSP_VOICE_LIVE=1 makes that a hard fail.
+cd packages/operator-core
+PAPERCUSP_VOICE_LIVE=1 npx vitest run lib/endpoint-route/routes/agent-mcp/voice-local-live.test.ts
+
+# Browser layer: Chrome plays a kokoro-synthesized WAV into getUserMedia via
+# --use-file-for-fake-audio-capture, records it with MediaRecorder, POSTs it to
+# /api/agent-mcp/operator-stt, and asserts whisper transcribes the sentence back.
+cd apps/operator
+OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
+  npx playwright test e2e/voice-live-e2e.spec.ts
+```
+
+## Troubleshooting
+
+**"Local TTS worked, then silently stopped and never came back."**
+kokoro's systemd unit sets `UVICORN_LIMIT_MAX_REQUESTS`, intended to recycle a
+uvicorn *worker* to mitigate an upstream memory leak (hexgrad/kokoro#152). But
+`start-gpu.sh` runs uvicorn with **no `--workers`**, so the limit terminates the
+whole server — with exit code **0**. A unit set to `Restart=on-failure` treats
+that as a clean shutdown and never restarts it, so TTS dies permanently after
+exactly N requests.
+
+Fixed 2026-07-09 in `~/.config/systemd/user/voicemode-kokoro.service`:
+`Restart=always` (exit-0 recycles now self-heal) and the limit raised `25 → 1000`
+(a recycle costs a ~2.5 min CUDA model reload, so it should be rare). Check with:
+
+```bash
+systemctl --user show voicemode-kokoro.service -p Restart -p NRestarts
+journalctl --user -u voicemode-kokoro.service | grep -i 'Maximum request limit'
+```
+
+**Preview returns `502`.** That now means a genuine outage — check
+`curl http://127.0.0.1:8880/health` (kokoro) and `:2022/health` (whisper). A
+credential problem reports `401`/`404`, not `502`.

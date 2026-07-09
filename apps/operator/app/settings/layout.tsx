@@ -14,7 +14,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
   '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
-  '/settings/hive-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
+  '/settings/pot-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
   '/settings/p2p':        FLAGS.P2P,
 };
 
@@ -51,7 +51,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'mug', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
-      { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
+      { href: '/settings/pot-customization', label: 'Pot customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },
       { href: '/settings/p2p', label: 'P2P work sharing', keywords: ['p2p', 'peers', 'work sharing', 'foreign work', 'grants', 'capability', 'opt-in', 'kill switch', 'kill-switch', 'attestation', 'device', 'fleet', 'budgets', 'allotment', 'delegate', 'observer', 'collaborator', 'operator grant'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
@@ -101,7 +101,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   // `keywords` array keeps 'hive' as a search alias, so the entry is still
   // discoverable under either lexicon.
   const labelFor = (link: SettingsLink): string =>
-    link.href === '/settings/hive-customization' ? `${t('pot')} customization` : link.label;
+    link.href === '/settings/pot-customization' ? `${t('pot')} customization` : link.label;
   const [wizardProgress, setWizardProgress] = useState<{
     finishedAt: string | null;
     completed: number;

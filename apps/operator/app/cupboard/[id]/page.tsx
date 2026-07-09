@@ -284,7 +284,7 @@ export default function CupboardDetailPage() {
           {error ? (
             <CupboardErrorState raw={error} what="this listing" onRetry={fetchListing} />
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--danger)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--bad)' }}>
               <AlertTriangle size={14} />
               Listing not found.
             </div>

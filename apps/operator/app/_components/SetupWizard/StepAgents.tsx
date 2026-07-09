@@ -256,7 +256,7 @@ export function StepAgents() {
       )}
 
       {startError && (
-        <p style={{ marginTop: 8, color: 'var(--pc-color-danger, #d33)', fontSize: 13 }}>
+        <p style={{ marginTop: 8, color: 'var(--bad, #d33)', fontSize: 13 }}>
           {startError}
         </p>
       )}

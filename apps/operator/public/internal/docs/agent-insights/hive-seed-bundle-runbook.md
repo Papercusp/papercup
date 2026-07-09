@@ -25,17 +25,19 @@ the feature flag off, takes the identical **cold** path.
 
 ## The pieces (as built)
 
-| Concern            | Module                                                        | Notes                                                                                                                                        |
-| ------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Generic core       | `libs/generic/seed-bundle`                                    | manifest types + validation, pack/unpack, hashing, the `SeedProvider` registry — behind a `configure*()` seam (generic-first, `BORROWABLE`). |
-| Corestore provider | `sync/hyperbee/seed-provider-corestore.ts`                    | cut = copy each author core at its current length; restore = drop-in before boot. Blocks stay **epoch-ciphertext**.                          |
-| Git provider       | `sync/hyperbee/seed-provider-git.ts`                          | cut = a `git bundle` set; restore = clone-from-bundle, re-point origin to GitHub, wire submodules; a later `fetch` = delta only.             |
-| Cut CLI            | `apps/operator/lib/release/cut-seed-cli.ts`                   | `pickGitEncryption()` selects the git-seal key (below). Run at release-build time **on the owner box**.                                      |
-| Restore entry      | `sync/hyperbee/restore-hive-seed.ts`                          | `resolveSeedDir()` (escape hatch / override / autodetect) + `onlyKinds` scoped restore.                                                      |
-| Deferred git       | `sync/hyperbee/deferred-git-restore.ts`                       | resolves the epoch key **post-admission** and re-restores the encrypted git store.                                                           |
-| Boot wiring        | `harness/bootstrap-papercusp-hive.ts`                         | `seedBundleEnabled()` gate → `defaultRestoreHiveSeed` (pre-join) → join → `defaultRestoreDeferredGitSeed` (post-admission).                  |
-| Cold-path guard    | `sync/hyperbee/cold-join-canary.ts` + `cold-join-executor.ts` | forces a periodic REAL cold join so the seeded path never lets the cold path bit-rot.                                                        |
-| E2E acceptance     | `sync/hyperbee/seed-e2e-measurement.ts`                       | pure cold-vs-seeded verdict (usable / join-exercised / delta-only / faster).                                                                 |
+| Concern               | Module                                                                        | Notes                                                                                                                                                                                   |
+| --------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Generic core          | `libs/generic/seed-bundle`                                                    | manifest types + validation, pack/unpack, hashing, the `SeedProvider` registry — behind a `configure*()` seam (generic-first, `BORROWABLE`).                                            |
+| Corestore provider    | `sync/hyperbee/seed-provider-corestore.ts`                                    | cut = copy each author core at its current length; restore = drop-in before boot. Blocks stay **epoch-ciphertext**.                                                                     |
+| Git provider          | `sync/hyperbee/seed-provider-git.ts`                                          | cut = a `git bundle` set; restore = clone-from-bundle, re-point origin to GitHub, wire submodules; a later `fetch` = delta only.                                                        |
+| Cut CLI               | `apps/operator/lib/release/cut-seed-cli.ts`                                   | `pickGitEncryption()` selects the git-seal key (below). Run at release-build time **on the owner box**.                                                                                 |
+| Restore entry         | `sync/hyperbee/restore-hive-seed.ts`                                          | `resolveSeedDir()` (escape hatch / override / autodetect) + `onlyKinds` scoped restore.                                                                                                 |
+| Deferred git          | `sync/hyperbee/deferred-git-restore.ts`                                       | resolves the epoch key **post-admission** and re-restores the encrypted git store.                                                                                                      |
+| Boot wiring           | `harness/bootstrap-papercusp-hive.ts`                                         | `seedBundleEnabled()` gate → `defaultRestoreHiveSeed` (pre-join) → join → `defaultRestoreDeferredGitSeed` (post-admission).                                                             |
+| Cold-path guard       | `sync/hyperbee/cold-join-canary.ts` + `cold-join-executor.ts`                 | forces a periodic REAL cold join so the seeded path never lets the cold path bit-rot.                                                                                                   |
+| E2E acceptance        | `sync/hyperbee/seed-e2e-measurement.ts`                                       | pure cold-vs-seeded verdict (usable / join-exercised / delta-only / faster).                                                                                                            |
+| Bundled epoch key     | `sync/hyperbee/bundled-epoch-key-provider.ts` + `epoch-key-provider-chain.ts` | WI-3232/3288 "offline pot": an `EpochKeyProvider` that reads the epoch key straight from the seed's `epoch-keys.json` (no admission needed), chained as the member provider's fallback. |
+| Offline log admission | `sync/hyperbee/seed-log-admission.ts`                                         | WI-3288: admits the seed manifest's `coreKeys` into the read-merge WITHOUT a swarm join, so a box that can never join still projects real content.                                      |
 
 ## Restore-before-join state machine
 
@@ -89,6 +91,59 @@ runtime `backfill_done` marker predates later local rows: without it, the seed c
 ship a large corestore that still materializes only a small subset of work-items on
 an offline install. The escape hatch is `--skip-corestore-refresh`, for diagnostic
 cuts only; release builds should leave the refresh on.
+
+### Sparse cut — `--sparse` (P-004, drops the history prefix)
+
+`--sparse` ships only the **head-snapshot span** `[snapshotIdx, len)` of each corestore
+instead of every block from 0 — the \~2GB full history collapses to a \~40MB seed. Before
+snapshotting, the pre-cut refresh appends a **fresh head `__snapshot__`** (via
+`produceLogSnapshot`) so the sparse start falls inside the shipped reader's tail scan
+window; without that fresh snapshot `computeSparseFrom` finds nothing to compact from and
+the cut silently ships FULL instead (a safe degrade, not a corruption).
+
+**OPT-IN and gated:** a sparse seed is only restorable once the shipped reader has
+`FLAGS.SUBSTRATE_LOG_SNAPSHOT` **ON** (P-005) — with it off the restore tries to fold from
+an absent block 0 and fails. That flag is currently dark (`KNOWN_DARK_FLAGS`,
+hardware-unverified for real cross-machine convergence), so release cuts stay on the
+**default full cut** until P-005 lands + is verified; `--sparse` is for testing the
+mechanism ahead of that. `--sparse` is incompatible with `--no-corestore` /
+`--reuse-corestore` (a reused corestore is grafted as-cut, already-sparse-or-not).
+
+## The offline "full pot" — a bundled epoch key + log admission with NO swarm join (WI-3232 / WI-3288)
+
+The state machine above assumes the box **eventually joins the swarm** — an encrypted git
+seed defers its key until post-admission (step 6), and every store's content becomes
+readable only once the join delivers real trust. A packaged install that can **never**
+join (a fresh offline box, `gh` unauthenticated → `swarm_join_failed` forever) used to
+restore the seed's bytes faithfully and then show a **"pot visible but empty"** hive:
+nothing ever admitted the seed's logs into the read-merge, and nothing ever decrypted the
+epoch-encrypted content.
+
+Two pieces close that gap, both **owner-authorised for alpha (no users yet)** — a
+deliberate v1 trust relaxation, distinct from the default "key stays encrypted until a
+real admission" path:
+
+* **`cut-seed-cli --emit-epoch-key`** additionally writes `epoch-keys.json`
+  (`{ "<hive>": { "<epoch>": "<base64 32-byte key>" } }`) into the seed dir — the hive
+  epoch key shipped **readable** inside the installer. `bundled-epoch-key-provider.ts`
+  reads it lazily (only on first `keyForEpoch`, cached) and `hive-epoch-boot-deps.ts`
+  chains it (`chainEpochKeyProviders`) as the **fallback** alongside the member
+  (PG-wrapped, post-admission) provider — so `buildHiveRekeyBootDeps` now resolves a key
+  even with **no local device identity at all**. Fail-closed by contract: a missing file /
+  unknown hive-epoch / wrong-length key throws the same `EpochKeyUnavailableError` the
+  member provider uses, so a caller with both providers wired just falls back — never a
+  hard boot failure.
+* **`seed-log-admission.ts` (WI-3288)** resolves the restored seed manifest's `coreKeys`
+  and admits them into boot's read-merge **without a swarm announce**, gated on
+  `manifest.hiveId` matching this boot's hive home (so a seed can never leak logs into an
+  unrelated harness). Fail-soft: any missing/unreadable/mismatched manifest resolves to
+  `[]` — a boot must never fail because a seed is absent, since that's the ordinary cold
+  path.
+
+Net effect: `--emit-epoch-key` + seed-log-admission together let a genuinely
+never-joining box still decrypt and project the hive's real content from the seed alone.
+A box that *does* join later is unaffected — the member provider (or the online cold
+clone) simply supersedes the bundled fallback once admission completes.
 
 ## The kill-switch — `FLAGS.HIVE_SEED_BUNDLE`
 
@@ -147,9 +202,11 @@ reference harness; no numbers are fabricated in-process).
 
 ## Quick reference — env + flags
 
-| Knob                                          | Effect                                               |
-| --------------------------------------------- | ---------------------------------------------------- |
-| `FLAGS.HIVE_SEED_BUNDLE` (default ON)         | master kill-switch; OFF ⇒ cold path                  |
-| `PAPERCUSP_NO_SEED=1`                         | per-launch escape hatch ⇒ cold path                  |
-| `PAPERCUSP_SEED_DIR=<dir>`                    | override the seed dir (must contain `manifest.json`) |
-| `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)      |
+| Knob                                          | Effect                                                                                                                                                                             |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLAGS.HIVE_SEED_BUNDLE` (default ON)         | master kill-switch; OFF ⇒ cold path                                                                                                                                                |
+| `PAPERCUSP_NO_SEED=1`                         | per-launch escape hatch ⇒ cold path                                                                                                                                                |
+| `PAPERCUSP_SEED_DIR=<dir>`                    | override the seed dir (must contain `manifest.json`)                                                                                                                               |
+| `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)                                                                                                                                    |
+| `cut-seed-cli --sparse`                       | P-004: ship only the head-snapshot suffix of each corestore (needs `FLAGS.SUBSTRATE_LOG_SNAPSHOT` ON to restore — dark until P-005 lands)                                          |
+| `cut-seed-cli --emit-epoch-key`               | WI-3232/3288: bundle the hive epoch key readable (`epoch-keys.json`) so an offline box that never joins can still decrypt + admit the seed's content (alpha-only trust relaxation) |

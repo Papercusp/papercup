@@ -69,37 +69,11 @@
   --fg-accent: var(--accent);
   --border-dim: var(--border);
   --border-subtle: var(--border);
-  --border-warning: var(--warn-border);
-  /* success / ok → green */
-  --success: var(--good);
-  --ok: var(--good);
-  --pc-color-success: var(--good);
-  --pc-color-success-text: var(--good);
-  --pc-color-success-bg: rgba(52, 211, 153, 0.1); /* emerald-400 @ 0.1 */
-  /* danger / error → red */
-  --danger: var(--bad);
-  --error: var(--bad);
-  --err: var(--bad);
-  --red: var(--bad);
-  --fg-danger: var(--bad);
-  --accent-error: var(--bad);
-  --pc-color-danger: var(--bad);
-  --pc-color-danger-text: var(--bad);
-  --pc-danger: var(--bad);
-  --bg-danger: rgba(251, 113, 133, 0.1); /* rose-400 @ 0.1 */
-  --bad-bg: rgba(251, 113, 133, 0.1);
+  /* Status vocabulary is ONLY --good/--warn/--bad (+ --good-bg/--warn-bg/--bad-bg from the
+     DTCG semantic tokens). The old alias names (--success/--ok/--danger/--error/--err/
+     --warning/--needs/--pc-color-* etc.) were folded into it in
+     design-simplification-2026-07-09 P-004 — do not reintroduce them. */
   --bad-bg-solid: #2a1618; /* opaque error-banner bg (solid counterpart of --bad-bg) — DogfoodBootstrapBanner */
-  --error-bg: rgba(251, 113, 133, 0.1);
-  --pc-color-danger-bg: rgba(251, 113, 133, 0.1);
-  /* warning → amber */
-  --warning: var(--warn);
-  --needs: var(--warn);
-  --fg-warning: var(--warn);
-  --pc-warn-fg: var(--warn);
-  --pc-warn-bg: var(--warn-bg);
-  --pc-color-warning-text: var(--warn);
-  --bg-warning: var(--warn-bg);
-  --amber-100: #fef3c7; /* light amber tint */
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --ease-in-out: var(--ease-mid);
@@ -21315,7 +21289,7 @@ body:has(.operator-panel) {
 }
 .operator-scan-history__error {
   margin: 0 0 10px;
-  color: var(--accent-error, #fca5a5);
+  color: var(--bad, #fca5a5);
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
@@ -26862,8 +26836,8 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   padding-left: 8px;
   border-left: 2px solid rgb(from var(--accent-strong) r g b / 0.28);
 }
-.report-block-plan[data-tone="good"]   { border-left-color: rgb(from var(--ok) r g b / 0.5); }
-.report-block-plan[data-tone="bad"]     { border-left-color: rgb(from var(--danger) r g b / 0.5); }
+.report-block-plan[data-tone="good"]   { border-left-color: rgb(from var(--good) r g b / 0.5); }
+.report-block-plan[data-tone="bad"]     { border-left-color: rgb(from var(--bad) r g b / 0.5); }
 .report-block-plan[data-tone="muted"]   { border-left-color: rgb(from var(--muted) r g b / 0.35); }
 .report-block-plan-head {
   display: flex;
@@ -26908,9 +26882,9 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   font-size: 11px;
   line-height: 1.2;
 }
-.report-block-glyph[data-tone="good"]   { color: var(--ok); }
+.report-block-glyph[data-tone="good"]   { color: var(--good); }
 .report-block-glyph[data-tone="accent"] { color: var(--accent-strong); }
-.report-block-glyph[data-tone="bad"]     { color: var(--danger); }
+.report-block-glyph[data-tone="bad"]     { color: var(--bad); }
 .report-block-glyph[data-tone="muted"]   { color: var(--muted); }
 .report-block-item-id {
   flex: 0 0 auto;

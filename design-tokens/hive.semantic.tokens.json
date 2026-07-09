@@ -30,6 +30,8 @@
     "warn":            { "$value": "#FFD166", "$type": "color" },
     "bad":             { "$value": "#F87171", "$type": "color" },
     "warn-bg":         { "$value": "rgba(255, 209, 102, 0.12)", "$type": "color" },
-    "warn-border":     { "$value": "rgba(255, 209, 102, 0.40)", "$type": "color" }
+    "warn-border":     { "$value": "rgba(255, 209, 102, 0.40)", "$type": "color" },
+    "good-bg":         { "$value": "rgba(74, 222, 128, 0.12)", "$type": "color" },
+    "bad-bg":          { "$value": "rgba(248, 113, 113, 0.12)", "$type": "color" }
   }
 }

@@ -137,7 +137,7 @@ export default function LearningPackCandidates() {
           )}
         </div>
       ))}
-      {adoptedNote ? <p style={{ margin: '6px 0 0', fontSize: 11.5, color: 'var(--ok, #34d399)' }}>{adoptedNote}</p> : null}
+      {adoptedNote ? <p style={{ margin: '6px 0 0', fontSize: 11.5, color: 'var(--good, #34d399)' }}>{adoptedNote}</p> : null}
       {error ? (
         <p className="pc-learning__empty" role="alert" style={{ margin: '6px 0 0' }}>
           Candidate action failed: {error}

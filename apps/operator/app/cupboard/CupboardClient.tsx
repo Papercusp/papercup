@@ -93,7 +93,7 @@ function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: numbe
 
 const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  blueprint: { fg: 'var(--success)', bg: 'color-mix(in srgb, var(--success), transparent 86%)', border: 'color-mix(in srgb, var(--success), transparent 74%)' },
+  blueprint: { fg: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 86%)', border: 'color-mix(in srgb, var(--good), transparent 74%)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
   'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
@@ -966,9 +966,9 @@ function PublisherSignal({ permission }: { permission?: string | null }) {
         alignSelf: 'flex-start',
         fontSize: 11,
         fontFamily: FONTS.ui,
-        color: isCollaborator ? 'var(--success)' : 'var(--warn)',
-        border: `1px solid ${isCollaborator ? 'color-mix(in srgb, var(--success), transparent 76%)' : 'var(--warn-border)'}`,
-        background: isCollaborator ? 'color-mix(in srgb, var(--success), transparent 88%)' : 'var(--warn-bg)',
+        color: isCollaborator ? 'var(--good)' : 'var(--warn)',
+        border: `1px solid ${isCollaborator ? 'color-mix(in srgb, var(--good), transparent 76%)' : 'var(--warn-border)'}`,
+        background: isCollaborator ? 'color-mix(in srgb, var(--good), transparent 88%)' : 'var(--warn-bg)',
         borderRadius: 999,
         padding: '3px 8px',
       }}
@@ -1017,9 +1017,9 @@ function ClaimRollupPill({ claimed, total }: { claimed: number; total: number })
           display: 'inline-flex',
           alignItems: 'center',
           gap: 4,
-          color: all ? 'var(--success)' : 'var(--fg-dim)',
-          background: all ? 'color-mix(in srgb, var(--success), transparent 88%)' : 'var(--bg-2)',
-          border: `1px solid ${all ? 'color-mix(in srgb, var(--success), transparent 76%)' : 'var(--border)'}`,
+          color: all ? 'var(--good)' : 'var(--fg-dim)',
+          background: all ? 'color-mix(in srgb, var(--good), transparent 88%)' : 'var(--bg-2)',
+          border: `1px solid ${all ? 'color-mix(in srgb, var(--good), transparent 76%)' : 'var(--border)'}`,
         }}
       >
         <ShieldCheck size={10} /> {claimed}/{total} claimed

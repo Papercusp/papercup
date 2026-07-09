@@ -42,9 +42,9 @@ import './plan-kanban.css';
 const KANBAN_COLS: Array<{ status: ItemStatus; label: string; accent: string }> = [
   { status: 'todo', label: 'To Do', accent: 'var(--fg-mute)' },
   { status: 'wip', label: 'In Progress', accent: 'var(--accent)' },
-  { status: 'blocked', label: 'Blocked', accent: 'var(--error, #f87171)' },
-  { status: 'needs-human', label: 'Needs Human', accent: 'var(--warning)' },
-  { status: 'done', label: 'Done', accent: 'var(--success)' },
+  { status: 'blocked', label: 'Blocked', accent: 'var(--bad, #f87171)' },
+  { status: 'needs-human', label: 'Needs Human', accent: 'var(--warn)' },
+  { status: 'done', label: 'Done', accent: 'var(--good)' },
   { status: 'dropped', label: 'Dropped', accent: 'color-mix(in oklab, var(--fg-mute), transparent 30%)' },
 ];
 const COL_STATUSES = KANBAN_COLS.map((c) => c.status);

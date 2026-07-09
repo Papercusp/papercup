@@ -1373,7 +1373,7 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__feature-chip {
           padding: 1px 6px;
           border-radius: 999px;
-          background: color-mix(in srgb, var(--ok, #34d399), transparent 86%);
+          background: color-mix(in srgb, var(--good, #34d399), transparent 86%);
           color: #6ee7b7;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;

@@ -8,7 +8,7 @@
  * without the wrapper and the nav link renders but the route is UNREACHABLE
  * (chrome only, no page content).
  *
- * This has bitten twice — /settings/p2p and /settings/hive-customization both
+ * This has bitten twice — /settings/p2p and /settings/pot-customization both
  * shipped nav-listed but wrapper-less. This test fails if any settings link in
  * SETTINGS_GROUPS (apps/operator/app/settings/layout.tsx) lacks a matching
  * operator-vite route file, so the whole class can't recur silently.
@@ -48,7 +48,7 @@ describe('settings nav → operator-vite route coverage', () => {
     const hrefs = settingsNavHrefs();
     expect(hrefs.length).toBeGreaterThan(5);
     expect(hrefs).toContain('/settings/p2p');
-    expect(hrefs).toContain('/settings/hive-customization');
+    expect(hrefs).toContain('/settings/pot-customization');
   });
 
   it('every settings nav link has an operator-vite route wrapper', () => {
