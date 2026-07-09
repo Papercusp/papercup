@@ -16,10 +16,16 @@
  * boot — no leader kickoff wake needed (the gap this pairs with).
  *
  * Plan AUTHORING + START stay their own well-factored tools (plans:apply-plan-block
- * / plans:new + plans:add-item, then plans:start) — chain them before this. A member
- * works plan items directly (plans:get → plans:set-status wip auto-claims), so the
- * plan need not be "started" for the fleet to make progress; start it when you also
- * want Queen/orchestrator visibility.
+ * / plans:new + plans:add-item, then plans:start) — chain them before this. plans:start
+ * is REQUIRED, not optional: fleet members self-pull via `scheduler:get_next`, which leases
+ * WORK-ITEMS (not raw plan items), and plan items become claimable work-items ONLY via the
+ * plans:start promotion path (promotePlanItems). Skip plans:start and the fleet launches
+ * onto an EMPTY backlog — every member's get_next returns nothing and they idle (the
+ * research-desk 2026-07-08 miss: plan authored + set active, never started → zero work-items).
+ * So the primary contract is "plans:start BEFORE this tool." As a FAILSAFE (not a substitute),
+ * this tool idempotently promotes the plan's open items to claimable work-items before opening
+ * any terminal, so a forgotten plans:start can never strand the fleet; it also sets a
+ * plan-scoped claim spec so members' get_next stays on THIS plan.
  *
  * Reuses the maintained machinery rather than forking: createFleetIfAbsent (the
  * fleet:create registry path) + buildConsoleEnvelope/spawnConsole (the
@@ -54,6 +60,9 @@ import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
+// type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
+// keeping the heavy promotion graph out of this module's load path — the type is erased.
+import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
 /** Opening more than this many desktop windows in one call is heavy + almost always
  *  a mistake — mirrors capability:terminal's MAX_TERMINALS. */
@@ -182,6 +191,10 @@ export interface FleetLaunchCapacityClamp {
   healthyAccounts: number | null;
   dispatchBudget: number | null;
   recommendedHeadroom: number | null;
+  /** ADVISORY (not a clamp): the weekly-token-BUDGET window is tight for this many members
+   *  (recommendedHeadroom < openCount). They still all launch; they may burn the remaining
+   *  weekly budget faster and hit the wall sooner. See clampFleetTopUpToCapacity. */
+  utilizationTight: boolean;
   reason: string;
 }
 
@@ -204,24 +217,33 @@ export function clampFleetTopUpToCapacity(
   const healthyAccounts = floorCap(report.healthyAccounts);
   const dispatchBudget = floorCap(report.dispatchBudget);
   const recommendedHeadroom = floorCap(report.recommendedHeadroom);
-  // `healthyAccounts` is NOT a per-member cap. ONE account paces MANY concurrent Claude
-  // sessions through the gateway — admission concurrency is the authority (gateway
-  // DEFAULT_CONCURRENCY 24, surfaced here as `dispatchBudget` = bee-tier spare slots),
-  // and it is INDEPENDENT of how many accounts back the pool. Putting account-count into
-  // this min() was the "1 account = 1 session" bug: a fleet top-up of N collapsed to 1
-  // whenever the pool had a single healthy account (the common single-default-account
-  // install), even with tens of free admission slots. Account-count only informs the
-  // sizing ADVISORY (buildFleetSizingAdvisory) — a rotation-thrash WARNING, never a hard
-  // cap. The real capacity caps are `dispatchBudget` (spare admission slots) and
-  // `recommendedHeadroom` (util/queue-clamped headroom). `healthyAccounts` gates only the
-  // ZERO case: no routable account ⇒ no valid credential ⇒ nothing could authenticate.
-  const caps = [dispatchBudget, recommendedHeadroom].filter((n): n is number => n != null);
+  // CONCURRENCY is the only HARD cap on how many desktop-fleet members open at once, and
+  // `dispatchBudget` (bee-tier spare admission slots = cap − inFlight − queued, gateway
+  // DEFAULT_CONCURRENCY 24) is that authority. It is INDEPENDENT of BOTH:
+  //  - account COUNT — ONE account paces MANY concurrent sessions through the gateway.
+  //    Putting account-count in this min() was the "1 account = 1 session" bug (a top-up of
+  //    N collapsed to 1 on a single-account install with tens of free slots). It informs the
+  //    sizing ADVISORY only (buildFleetSizingAdvisory), never a hard cap.
+  //  - weekly-token-BUDGET utilization — `recommendedHeadroom` folds in `capacityFactor`'s
+  //    budget leg, which throttles on `utilization` (the most-constraining budget WINDOW,
+  //    e.g. an account at 0.94 of its 7-DAY token cap → factor ~0.4 → recommendedHeadroom
+  //    floored to minHeadroom 2). That collapsed an owner's EXPLICIT 5-member fleet to 2 even
+  //    with ~20 free admission slots (fleet-launch-utilization-not-concurrency, 2026-07-08).
+  //    A near-weekly-cap account can still run many SIMULTANEOUS sessions right now — weekly
+  //    budget tightness is not a concurrency limit, so it is DEMOTED to an advisory
+  //    (utilizationTight): the members still all launch; they may just burn the remaining
+  //    weekly budget faster. Same treatment `healthyAccounts` already got.
+  // `healthyAccounts` still gates the ZERO case: no routable account ⇒ no valid credential ⇒
+  // nothing could authenticate, so suppress the top-up entirely.
+  const caps = [dispatchBudget].filter((n): n is number => n != null);
   if (healthyAccounts === 0) caps.push(0); // no routable account ⇒ suppress the top-up entirely
-  if (caps.length === 0) return null;
+  if (caps.length === 0) return null; // no concurrency signal ⇒ fail open (never strand on a missing signal)
   const capacityHeadroom = Math.min(...caps);
   const openCount = Math.min(requested, capacityHeadroom);
   const clamped = openCount < requested;
-  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'}, healthyAccounts=${healthyAccounts ?? 'n/a'} (accounts do NOT cap sessions)`;
+  // ADVISORY only — the weekly budget is tight for this many members, but never a clamp.
+  const utilizationTight = recommendedHeadroom != null && recommendedHeadroom < openCount;
+  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (accounts do NOT cap sessions)`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -230,9 +252,12 @@ export function clampFleetTopUpToCapacity(
     healthyAccounts,
     dispatchBudget,
     recommendedHeadroom,
+    utilizationTight,
     reason: clamped
       ? `capacity-clamped top-up ${requested}→${openCount} (${detail})`
-      : `capacity-ok top-up ${requested} (${detail})`,
+      : utilizationTight
+        ? `capacity-ok top-up ${requested}, but weekly-token-budget is tight for this many members (recommendedHeadroom=${recommendedHeadroom}) — they still all launch, may hit the wall sooner (${detail})`
+        : `capacity-ok top-up ${requested} (${detail})`,
   };
 }
 
@@ -452,6 +477,37 @@ export function buildFleetKindClaimSpec(
   };
 }
 
+/**
+ * fleet-launch-plan-scoped-claim-spec (2026-07-08): build the FLEET-level claim spec that keeps
+ * every member's scheduler:get_next self-pull on THIS plan's work-items — `plan = <planSlug>`
+ * (the `plan` spec field maps to the `source_plan_slug` column; promoted work-items always carry
+ * it, so the filter matches exactly), optionally AND `kind ∈ kinds`. get_next's harness+workspace
+ * FLOORS already scope pickup to the plan's harness, so this is defense-in-depth: it stops a member
+ * drifting onto UNRELATED work if the pot ever holds other work-items, AND closes the boot-race
+ * where members pull under the empty-filter DEFAULT_CLAIM_SPEC before the leader hand-sets a spec.
+ * Pure + exported for a unit test — the shape must satisfy validateClaimSpec (D-002: view.filter
+ * only narrows + reorders within the global floors, never widens). Rank/limits inherited unchanged.
+ */
+export function buildFleetPlanClaimSpec(
+  fleetSlug: string,
+  planSlug: string,
+  kinds?: readonly string[],
+): Record<string, unknown> {
+  const planLeaf = { field: 'plan', op: '=', value: planSlug };
+  const filter =
+    kinds && kinds.length
+      ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] }
+      : planLeaf;
+  return {
+    specVersion: '1.0',
+    specId: `fleet-launch-${fleetSlug}-plan`,
+    revision: 1,
+    view: { filter },
+    rank: DEFAULT_CLAIM_SPEC.rank,
+    limits: DEFAULT_CLAIM_SPEC.limits,
+  };
+}
+
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
@@ -465,7 +521,7 @@ export default defineTool({
     notWhen:
       'Not for background bees (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start (promotes the plan + sets a plan-scoped claim spec before opening terminals), but run plans:start yourself so the Queen/orchestrator also gets plan-started visibility. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -642,8 +698,13 @@ export default defineTool({
     }
 
     // Validate the plan exists before opening any windows (fail clean, not N dead members).
+    // Hoist the resolved harness/workspace so the promotion failsafe below reuses them.
+    let planHarnessSlug = harness;
+    let planWorkspaceId = workspaceId;
     try {
       const resolved = await resolveHarnessPlansDir(harness, { workspaceId });
+      planHarnessSlug = resolved.harnessSlug;
+      planWorkspaceId = resolved.workspaceId;
       const found = await readPlanBySlug(args.plan, {
         harnessSlug: resolved.harnessSlug,
         workspaceId: resolved.workspaceId,
@@ -655,6 +716,30 @@ export default defineTool({
       }
     } catch (e: any) {
       return err(`Could not resolve plan \`${args.plan}\` in harness \`${harness}\`: ${e?.message ?? e}`);
+    }
+
+    // #3 FAILSAFE (fleet-launch-promote-workitems-failsafe, 2026-07-08): members self-pull via
+    // scheduler:get_next, which leases WORK-ITEMS — and plan items become claimable work-items ONLY
+    // via the plans:start promotion path (promotePlanItems). The PRIMARY contract is that the leader
+    // ran plans:start before this tool; if they DIDN'T (the research-desk 2026-07-08 miss: plan
+    // authored + set active but never started), the fleet launches onto an EMPTY backlog and every
+    // member idles. So idempotently promote the plan's open items to claimable work-items HERE, before
+    // any terminal opens. Idempotent — promotePlanItems skips items already promoted, so a proper
+    // upstream plans:start makes this a no-op (promoted:0). Best-effort: a failure NEVER blocks the
+    // launch. This is a BACKSTOP, not a replacement for plans:start (which ALSO flips op_status=started
+    // for Queen/orchestrator visibility — the failsafe deliberately does not).
+    let promotionFailsafe: (PromotePlanResult & { ran: boolean }) | null = null;
+    try {
+      const { promotePlanItems } = await import('../../plan-workitem-promotion-run');
+      const res = await promotePlanItems({
+        workspaceId: planWorkspaceId,
+        harnessSlug: planHarnessSlug,
+        planSlug: args.plan,
+        createdBy: ownerId,
+      });
+      promotionFailsafe = { ...res, ran: true };
+    } catch {
+      promotionFailsafe = null; // never block the launch on the failsafe
     }
 
     // Ensure the fleet (idempotent) with the caller as owner + leader, then label the
@@ -682,25 +767,24 @@ export default defineTool({
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
 
-    // EI-7671: apply the fleet-level kind-filter claim spec (when requested) BEFORE any
-    // member terminal opens — closing the boot-race where members self-pull via
-    // scheduler:get_next under the empty-filter DEFAULT_CLAIM_SPEC (admits every kind,
-    // including feature/chunk) before the leader gets around to calling
-    // scheduler:set_claim_spec by hand after the fact. Best-effort: a spec-write failure
-    // never blocks the launch (members still start, just unsteered — no worse than today).
-    let claimKindsApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
-    if (args.claimKinds?.length) {
-      try {
-        claimKindsApplied = await setClaimSpec({
-          beeId: fleetSpecBeeKey(fleetSlug),
-          workspaceId: resolveClaimSpecWorkspace(workspaceId),
-          spec: buildFleetKindClaimSpec(fleetSlug, args.claimKinds),
-          updatedBy: ownerId,
-          hiveSlug: null,
-        });
-      } catch (e: any) {
-        claimKindsApplied = { ok: false, errors: [e?.message ?? String(e)] };
-      }
+    // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671: ALWAYS set the fleet-level
+    // claim spec BEFORE any member terminal opens — scoping every member's scheduler:get_next
+    // self-pull to THIS plan (`plan = <slug>`), AND to args.claimKinds when given. Applied here,
+    // pre-spawn, closing the boot-race where members self-pull under the empty-filter
+    // DEFAULT_CLAIM_SPEC (admits every kind + every plan in the harness) before the leader gets
+    // around to calling scheduler:set_claim_spec by hand. Best-effort: a spec-write failure never
+    // blocks the launch (members still start; get_next's harness floor still scopes them to this pot).
+    let claimSpecApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
+    try {
+      claimSpecApplied = await setClaimSpec({
+        beeId: fleetSpecBeeKey(fleetSlug),
+        workspaceId: resolveClaimSpecWorkspace(workspaceId),
+        spec: buildFleetPlanClaimSpec(fleetSlug, args.plan, args.claimKinds),
+        updatedBy: ownerId,
+        hiveSlug: null,
+      });
+    } catch (e: any) {
+      claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
     }
 
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
@@ -734,7 +818,7 @@ export default defineTool({
         liveMembers,
         sizingAdvisory: null,
         memberBaselineApplied: false,
-        claimKindsApplied,
+        claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -784,7 +868,7 @@ export default defineTool({
         capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: false,
-        claimKindsApplied,
+        claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -877,7 +961,7 @@ export default defineTool({
         requested: count,
         sizingAdvisory: null,
         memberBaselineApplied: false,
-        claimKindsApplied,
+        claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -1011,7 +1095,25 @@ export default defineTool({
 
     const lines: string[] = [];
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
-    if (capacityClamp?.clamped) lines.push(capacityClamp.reason);
+    // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
+    // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
+    if (capacityClamp && (capacityClamp.clamped || capacityClamp.utilizationTight)) lines.push(capacityClamp.reason);
+    // #3 failsafe report: tell the leader if the launch had to backstop a missing plans:start.
+    if (promotionFailsafe?.ran) {
+      if (promotionFailsafe.promoted > 0) {
+        lines.push(
+          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items, so the fleet is NOT launching onto an empty backlog. Run plans:start yourself BEFORE launching next time (it also gives the Queen/orchestrator plan-started visibility, which this failsafe does not).`,
+        );
+      } else if (promotionFailsafe.flagOff) {
+        lines.push(
+          `⚠ plan→work-item promotion is dark (flag off) so the launch failsafe promoted nothing. If plans:start was not run, members' scheduler:get_next will find nothing and idle — ensure claimable work-items exist for plan \`${args.plan}\`.`,
+        );
+      } else if (promotionFailsafe.skipped === 0) {
+        lines.push(
+          `⚠ plan \`${args.plan}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`,
+        );
+      }
+    }
     lines.push(
       opened.length
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
@@ -1090,7 +1192,8 @@ export default defineTool({
         capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: baselineApplied,
-        claimKindsApplied,
+        claimSpecApplied,
+        promotionFailsafe,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath,
         briefReadError,

@@ -16,7 +16,33 @@ documents:
   - papercusp-desktop/src-tauri/tauri.conf.json
   - apps/operator/bin/serve.ts
   - papercusp-desktop/bin/build-desktop-sidecar.sh
+  - papercusp-desktop/bin/mac-vm-build.sh
 ---
+
+## Naming note: the bundle is now `Papercusp GUI`, and there's a GUI/Server split
+
+`src-tauri/tauri.conf.json`'s `productName` is now **`Papercusp GUI`**
+(`identifier: com.papercusp.gui`, currently `version: 0.0.3`) — was plain
+`Papercusp`. Tauri derives every bundle filename and the installed `.app`/install
+directory from `productName`, so **every artifact below now carries a
+`Papercusp GUI_<version>_…` filename**, the macOS app is `Papercusp GUI.app`
+(mounted at `/Volumes/Papercusp GUI/`), and the Windows install dir/process is
+`Papercusp GUI`. The in-window title bar (`app.windows[0].title`) is untouched —
+it still reads plain **"Papercusp"**.
+
+There is now also a **two-bundle GUI/Server split** — one Rust binary, two
+Tauri roles baked via a distinct `identifier` (`src-tauri/src/app_role.rs` +
+`tauri.server.conf.json`): **`Papercusp GUI`** (`com.papercusp.gui`, the desktop
+app covered by this page) and **`Papercusp Server`** (`com.papercusp.server`, a
+headless-hosting variant — see `bin/mac-vm-build.sh`). This page verifies the
+**GUI** role only; don't confuse a `Papercusp Server_*` artifact for the one
+these steps exercise. The Windows target list also grew an `nsis` bundle
+(`.exe`) alongside `msi` — a Windows release now ships both.
+
+The `0.0.3` in the examples below is illustrative and WILL be stale by the time
+you read this — confirm the real value with
+`node -p "require('./papercusp-desktop/src-tauri/tauri.conf.json').version"`
+and substitute it (or just glob `Papercusp\ GUI_*_amd64.deb` etc.).
 
 ## Pre-flight check (any platform)
 
@@ -24,13 +50,19 @@ Re-run the auditor on every artifact:
 
 ```sh
 papercusp-desktop/bin/audit-bundle.sh \
-  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
-  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
-  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
-  /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+  "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64-setup.exe"
 ```
 
-Or click **Audit prod bundles for PostHog leaks** in `/admin`. (The `.dmg` is the `universal-apple-darwin` artifact — `Papercusp_0.0.1_universal.dmg`, not `x86_64`.) Should print `OK: 4/4`. If any FAIL, **stop** — the artifact must not ship.
+Or click **Audit prod bundles for PostHog leaks** in `/admin`. Should print
+`OK: 4/4`. If any FAIL, **stop** — the artifact must not ship. (The `.dmg` name
+now carries the build's arch, e.g. `_x64`/`_aarch64` — `mac-vm-build.sh` packs
+per-arch DMGs itself via a direct `hdiutil create` rather than relying on
+Tauri's `universal-apple-darwin` dmg bundler; if you build a genuine universal
+binary through Tauri directly instead, the artifact is still
+`Papercusp GUI_<version>_universal.dmg`.)
 
 ---
 
@@ -39,9 +71,16 @@ Or click **Audit prod bundles for PostHog leaks** in `/admin`. (The `.dmg` is th
 ### 1. Install + launch
 
 ```sh
-sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
-papercusp
+sudo dpkg -i "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb"
+papercusp-desktop
 ```
+
+⚠ **`papercusp` (bare) no longer launches the app** (WI-2902, 2026-07-05): the
+postinstall script now writes `/usr/bin/papercusp` as a **setup/tutorial CLI
+dispatcher** (`papercusp setup` / `papercusp tutorial` / `papercusp onboard` —
+else it prints usage and exits 2). The actual GUI binary the .deb installs is
+`papercusp-desktop` (the Cargo `[[bin]]` name) — launch that, or use the
+installed desktop-menu icon.
 
 Or click **Install + launch Linux .deb** in `/admin`.
 
@@ -124,9 +163,13 @@ Expected: `404`. The V1 contract requires `notFound()` to return real HTTP 404, 
 ### 8. Cleanup
 
 ```sh
-sudo dpkg -r papercusp
+sudo dpkg -r papercusp-gui
 sudo userdel -r papercusp-verify
 ```
+
+(Tauri kebab-cases `productName` for the deb package name — `Papercusp GUI` →
+`papercusp-gui`. The deb's `conflicts`/`replaces` also name `papercusp-server`,
+the Server-role package, so the two can't be installed side by side.)
 
 ---
 
@@ -142,23 +185,36 @@ In the Mac VM:
 
 ```sh
 scp -i ~/.ssh/papercup-vm-mac -P 2222 \
-  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
   aviweiss@127.0.0.1:~
 
-hdiutil attach ~/Papercusp_0.0.1_universal.dmg
-cp -R "/Volumes/Papercusp/Papercusp.app" /Applications/
-hdiutil detach "/Volumes/Papercusp"
-xattr -dr com.apple.quarantine /Applications/Papercusp.app
+hdiutil attach "~/Papercusp GUI_0.0.3_x64.dmg"
+cp -R "/Volumes/Papercusp GUI/Papercusp GUI.app" /Applications/
+hdiutil detach "/Volumes/Papercusp GUI"
+xattr -dr com.apple.quarantine "/Applications/Papercusp GUI.app"
 ```
 
-The Mac build target is `universal-apple-darwin` (see `papercusp-desktop/bin/mac-vm-build.sh`), so it produces a single universal `.dmg` — `Papercusp_0.0.1_universal.dmg`, **not** an `x86_64` one. The "Mac Prod Build" admin command copies back and audits `Papercusp_*_universal.dmg` accordingly. (Note: the "Install + launch Mac .dmg" admin command in `admin-commands.ts` still hard-codes `Papercusp_0.0.1_x86_64.dmg` — a stale name that the build doesn't emit; prefer the universal filename until that command is reconciled.)
+`bin/mac-vm-build.sh` builds the GUI and Server roles (`PAPERCUSP_BUILD_ROLES`,
+default `gui server`) and packs each role's DMG itself via a direct `hdiutil
+create -srcfolder` — **not** Tauri's own dmg bundler — because that fork's
+mount/detach step was hitting DiskArbitration timeouts under post-reboot
+Spotlight indexing. The GUI role's DMG is named
+`Papercusp GUI_<version>_<arch>.dmg` (arch = `x64`/`aarch64`, from
+`MAC_BUILD_TARGET`), volume-named `Papercusp GUI`, containing `Papercusp
+GUI.app` (+ a bundled tutorial app + an `/Applications` symlink). If you instead
+build a genuine universal binary straight through Tauri (`--target
+universal-apple-darwin`), the artifact is `Papercusp GUI_<version>_universal.dmg`
+— check which build path produced the artifact you're verifying before assuming
+the arch suffix.
 
-Or click **Install + launch Mac .dmg** in `/admin`.
+Or click **Install + launch Mac .dmg** in `/admin`. (If the admin command still
+names an old `Papercusp_*` / `x86_64`-suffixed file, that name is now stale —
+substitute the current `Papercusp GUI_<version>_<arch>.dmg` artifact.)
 
 ### 2. Verify no discovery files leaked
 
 ```sh
-find /Applications/Papercusp.app -name "posthog*.json" 2>&1
+find "/Applications/Papercusp GUI.app" -name "posthog*.json" 2>&1
 ```
 
 Expected: empty.
@@ -174,7 +230,7 @@ remote-viewer spice://127.0.0.1:5930 &
 In the Mac VM:
 
 ```sh
-open /Applications/Papercusp.app
+open "/Applications/Papercusp GUI.app"
 ```
 
 Same window-loads check as Linux.
@@ -194,31 +250,38 @@ Expected: file should NOT exist (running the app under the test user should not 
 ### 6. Cleanup
 
 ```sh
-rm -rf /Applications/Papercusp.app
+rm -rf "/Applications/Papercusp GUI.app"
 ```
 
 ---
 
-## Windows .msi verification
+## Windows .msi / .exe (nsis) verification
+
+`tauri.conf.json`'s Windows bundle targets are now **both `msi` and `nsis`** —
+a release ships an `.msi` (WiX) AND a `Papercusp GUI_<version>_x64-setup.exe`
+(NSIS) side by side. The steps below use the `.msi`; substitute the NSIS
+`.exe` and run it non-interactively (`/S`) if you're verifying that target
+instead.
 
 ### 1. Install
 
 ```sh
 scp -i ~/.ssh/papercup-vm-win -P 2223 \
-  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
   User@127.0.0.1:.
 
 ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
-  "msiexec /i C:\\Users\\User\\Papercusp_0.0.1_x64_en-US.msi /quiet"
+  "msiexec /i 'C:\\Users\\User\\Papercusp GUI_0.0.3_x64_en-US.msi' /quiet"
 ```
 
-Or click **Install + launch Windows .msi** in `/admin`. Wait ~30s. Installs to `C:\Program Files\Papercusp\`.
+Or click **Install + launch Windows .msi** in `/admin`. Wait ~30s. Installs to
+`C:\Program Files\Papercusp GUI\`.
 
 ### 2. Verify no discovery files leaked
 
 ```sh
 ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
-  'powershell "Get-ChildItem -Recurse -Path C:\\Program Files\\Papercusp -Filter posthog*.json"'
+  'powershell "Get-ChildItem -Recurse -Path \"C:\\Program Files\\Papercusp GUI\" -Filter posthog*.json"'
 ```
 
 Expected: empty.
@@ -227,10 +290,11 @@ Expected: empty.
 
 ```sh
 ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
-  'powershell "Start-Process \"C:\\Program Files\\Papercusp\\Papercusp.exe\""'
+  'powershell "Start-Process \"C:\\Program Files\\Papercusp GUI\\Papercusp GUI.exe\""'
 ```
 
-(No SPICE configured on the Windows VM by default; verify via `tasklist | findstr Papercusp` to confirm running.)
+(No SPICE configured on the Windows VM by default; verify via `tasklist |
+findstr Papercusp` to confirm running.)
 
 ### 4. Flag bootstrap test
 
@@ -249,10 +313,10 @@ Expected: `False`.
 
 ```sh
 ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
-  "wmic product where name='Papercusp' call uninstall /nointeractive"
+  "wmic product where name='Papercusp GUI' call uninstall /nointeractive"
 ```
 
-Or via Settings → Apps → Papercusp → Uninstall.
+Or via Settings → Apps → Papercusp GUI → Uninstall.
 
 ---
 
@@ -279,14 +343,14 @@ Copy this and run top to bottom:
 ```sh
 # 1. Auditor pass
 papercusp-desktop/bin/audit-bundle.sh \
-  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
-  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
-  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
-  /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+  "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64.dmg" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64_en-US.msi" \
+  "/home/marsh-office/Papercusp GUI_0.0.3_x64-setup.exe"
 
 # 2. Linux install + launch + smoke
-sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
-setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
+sudo dpkg -i "papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp GUI_0.0.3_amd64.deb"
+setsid /usr/bin/papercusp-desktop >/dev/null 2>&1 < /dev/null &
 sleep 15
 PORT=$(jq -r .port ~/.papercusp/operator.json)
 echo "operator port: $PORT"
@@ -295,8 +359,13 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${PORT}/design"  # �
 sudo ss -tnp | grep -E "flags.papercuspai|posthog" || echo "no posthog traffic ✓"
 
 # 3. Cleanup
-pkill -KILL papercusp
-sudo dpkg -r papercusp
+pkill -KILL papercusp-desktop
+sudo dpkg -r papercusp-gui
 ```
+
+(`/usr/bin/papercusp` is now a setup/tutorial CLI dispatcher, not the app
+launcher — see the callout above. The GUI binary + package name changed to
+`papercusp-desktop` / `papercusp-gui`; only the bundle/app-directory display
+name changed to `Papercusp GUI`.)
 
 When every line is green, the artifact is ship-ready for that platform.

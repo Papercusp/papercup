@@ -82,16 +82,28 @@ vi.mock('../../../scheduler/claim-spec-store', () => ({
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
 
+// #3 promotion FAILSAFE seam (fleet-launch-promote-workitems-failsafe): the handler idempotently
+// promotes the plan's items → claimable work-items before opening any terminal. Default: the healthy
+// case (items already promoted upstream by plans:start → skipped>0, promoted:0 → no warning line).
+// Individual tests override with mockResolvedValueOnce.
+const promotePlanItemsMock = vi.fn(async () => ({ promoted: 0, skipped: 3 }));
+vi.mock('../../../plan-workitem-promotion-run', () => ({
+  promotePlanItems: (...args: unknown[]) => promotePlanItemsMock(...args),
+}));
+
 import tool, {
   memberLaunchCommand,
   defaultMemberAccountRouting,
   composeMemberLaunchContext,
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
+  buildFleetPlanClaimSpec,
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
   LEADER_AUTO_MODE_DIRECTIVE,
 } from '../launch-on-plan';
+// The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
+import { validateClaimSpec } from '../../../scheduler/claim-spec';
 
 describe('memberLaunchCommand', () => {
   beforeEach(() => {
@@ -282,9 +294,10 @@ describe('memberLaunchCommand', () => {
 });
 
 describe('clampFleetTopUpToCapacity', () => {
-  it('clamps to the tightest REAL capacity signal (dispatchBudget/recommendedHeadroom), NOT account count', () => {
-    // healthyAccounts=2 must NOT be the binding cap: the real caps are the admission
-    // signals. min(dispatchBudget 3, recommendedHeadroom 4) = 3 — the 2-account count is ignored.
+  it('clamps to dispatchBudget (concurrency) — NOT account count, NOT weekly-budget utilization', () => {
+    // healthyAccounts=2 must NOT be the binding cap, and neither must recommendedHeadroom
+    // (weekly-token-budget utilization). dispatchBudget=3 (spare admission slots) is the ONLY hard
+    // cap: min(4, 3) = 3. recommendedHeadroom=4 ≥ openCount → not even a utilization advisory.
     expect(
       clampFleetTopUpToCapacity(4, {
         reachable: true,
@@ -299,7 +312,29 @@ describe('clampFleetTopUpToCapacity', () => {
       healthyAccounts: 2,
       dispatchBudget: 3,
       recommendedHeadroom: 4,
+      utilizationTight: false,
     });
+  });
+
+  it('does NOT clamp an explicit fleet on weekly-budget utilization when concurrency slots are free (the 5→2 incident)', () => {
+    // THE reported bug (research-desk, 2026-07-08): an owner asked for 5 members; the pool had ~24
+    // free admission slots but ONE bound account at ~0.94 of its 7-DAY token window drove
+    // recommendedHeadroom down to the minHeadroom floor (2). recommendedHeadroom is budget-WINDOW
+    // utilization, NOT concurrency — a near-weekly-cap account still runs many simultaneous sessions
+    // right now — so it must NOT clamp. All 5 open; the tightness is surfaced as an ADVISORY only.
+    const clamp = clampFleetTopUpToCapacity(5, {
+      reachable: true,
+      healthyAccounts: 1,
+      dispatchBudget: 24,
+      recommendedHeadroom: 2,
+    });
+    expect(clamp).toMatchObject({
+      requestedOpenCount: 5,
+      openCount: 5,
+      clamped: false,
+      utilizationTight: true,
+    });
+    expect(clamp?.reason).toMatch(/weekly-token-budget is tight/);
   });
 
   it('does NOT clamp a multi-member launch to a single healthy account (the 1-account=1-session bug)', () => {
@@ -351,6 +386,42 @@ describe('clampFleetTopUpToCapacity', () => {
         recommendedHeadroom: null,
       }),
     ).toBeNull();
+  });
+});
+
+// #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08): the pure builder that keeps every member's
+// get_next self-pull on THIS plan (`plan = <slug>`, optionally AND kind ∈ kinds). The shape must
+// satisfy the REAL validateClaimSpec, so it's exercised through it below.
+describe('buildFleetPlanClaimSpec (#4 — plan-scoped fleet claim spec)', () => {
+  it('bare plan leaf when no kinds are given', () => {
+    const spec = buildFleetPlanClaimSpec('atlas-fleet', 'build-x');
+    expect(spec).toMatchObject({
+      specVersion: '1.0',
+      revision: 1,
+      view: { filter: { field: 'plan', op: '=', value: 'build-x' } },
+    });
+    expect(spec.specId).toBe('fleet-launch-atlas-fleet-plan');
+  });
+
+  it('combines plan AND kind into an `all` node when kinds are given', () => {
+    const spec = buildFleetPlanClaimSpec('atlas-fleet', 'build-x', ['bug', 'change']);
+    expect((spec.view as { filter: unknown }).filter).toEqual({
+      all: [
+        { field: 'plan', op: '=', value: 'build-x' },
+        { field: 'kind', op: 'in', value: ['bug', 'change'] },
+      ],
+    });
+  });
+
+  it('names the fleet in specId so specs for different fleets never collide', () => {
+    expect(buildFleetPlanClaimSpec('a', 'p').specId).not.toBe(buildFleetPlanClaimSpec('b', 'p').specId);
+  });
+
+  it('produces a spec that PASSES the real validateClaimSpec (both bare + combined)', () => {
+    // Load-bearing: a malformed filter shape would validate here but silently filter out ALL
+    // items at runtime (members get nothing) — so exercise the actual validator, not just the shape.
+    expect(validateClaimSpec(buildFleetPlanClaimSpec('f', 'my-plan')).ok).toBe(true);
+    expect(validateClaimSpec(buildFleetPlanClaimSpec('f', 'my-plan', ['bug', 'task'])).ok).toBe(true);
   });
 });
 
@@ -790,7 +861,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
 // EI-7671: the handler must apply the fleet-level kind-filter claim spec BEFORE opening
 // any member terminal (closing the boot-race where members self-pull under the
 // unrestricted DEFAULT_CLAIM_SPEC before the leader manually steers them).
-describe('fleet:launch-on-plan handler — claimKinds wiring (EI-7671)', () => {
+describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + claimKinds EI-7671)', () => {
   beforeEach(() => {
     spawnConsoleMock.mockReset();
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
@@ -800,7 +871,7 @@ describe('fleet:launch-on-plan handler — claimKinds wiring (EI-7671)', () => {
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
   });
 
-  it('sets the fleet claim spec BEFORE any member terminal opens, when claimKinds is passed', async () => {
+  it('combines plan + kind filters when claimKinds is passed, BEFORE any member terminal opens', async () => {
     const callOrder: string[] = [];
     setClaimSpecMock.mockImplementation(async () => {
       callOrder.push('setClaimSpec');
@@ -819,24 +890,33 @@ describe('fleet:launch-on-plan handler — claimKinds wiring (EI-7671)', () => {
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as {
       beeId: string;
-      spec: { view: { filter: { field: string; op: string; value: string[] } } };
+      spec: { view: { filter: unknown } };
     };
     expect(call.beeId).toBe('fleet:drain-fleet');
-    expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
-    expect(payload.claimKindsApplied).toEqual({ ok: true, revision: 1 });
+    // Plan-scoped AND kind-filtered: an `all` node combining the plan leaf with the kind leaf.
+    expect(call.spec.view.filter).toEqual({
+      all: [
+        { field: 'plan', op: '=', value: 'my-plan' },
+        { field: 'kind', op: 'in', value: ['bug', 'change'] },
+      ],
+    });
+    expect(payload.claimSpecApplied).toEqual({ ok: true, revision: 1 });
     // Order matters: the spec must land before members can race a get_next pull.
     expect(callOrder.indexOf('setClaimSpec')).toBeLessThan(callOrder.indexOf('spawnConsole'));
   });
 
-  it('does NOT set a claim spec when claimKinds is omitted (unchanged default behavior)', async () => {
+  it('#4: ALWAYS sets a PLAN-scoped claim spec even when claimKinds is omitted', async () => {
     const res = await tool.handler(
       { name: 'No Kinds Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
-    expect(setClaimSpecMock).not.toHaveBeenCalled();
-    expect(payload.claimKindsApplied).toBeNull();
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    const call = setClaimSpecMock.mock.calls[0][0] as { spec: { view: { filter: unknown } } };
+    // Bare plan leaf (no kind narrowing) — keeps members on THIS plan's work-items.
+    expect(call.spec.view.filter).toEqual({ field: 'plan', op: '=', value: 'my-plan' });
+    expect(payload.claimSpecApplied).toEqual({ ok: true, revision: 1 });
   });
 
   it('best-effort: a claim-spec write failure never blocks the launch', async () => {
@@ -848,6 +928,77 @@ describe('fleet:launch-on-plan handler — claimKinds wiring (EI-7671)', () => {
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
-    expect(payload.claimKindsApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
+    expect(payload.claimSpecApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
+  });
+});
+
+// #3 promotion FAILSAFE (fleet-launch-promote-workitems-failsafe, 2026-07-08): the handler must
+// idempotently promote the plan's items → claimable work-items BEFORE opening any terminal, so a
+// forgotten plans:start can't strand the fleet on an empty backlog (the research-desk 2026-07-08 miss).
+describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (#3)', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+    promotePlanItemsMock.mockReset();
+    promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 3 });
+  });
+
+  it('promotes the plan BEFORE opening any member terminal', async () => {
+    const callOrder: string[] = [];
+    promotePlanItemsMock.mockImplementation(async () => {
+      callOrder.push('promote');
+      return { promoted: 4, skipped: 0 };
+    });
+    spawnConsoleMock.mockImplementation(() => {
+      callOrder.push('spawnConsole');
+      return { status: 'ok', terminal: 'term-1', pid: 123 };
+    });
+    const res = await tool.handler(
+      { name: 'Fresh Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expect(promotePlanItemsMock.mock.calls[0][0]).toMatchObject({ planSlug: 'my-plan', harnessSlug: 'papercusp' });
+    expect(callOrder.indexOf('promote')).toBeLessThan(callOrder.indexOf('spawnConsole'));
+    expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 4 });
+  });
+
+  it('warns in the message when it had to backstop a missing plans:start (promoted > 0)', async () => {
+    promotePlanItemsMock.mockResolvedValue({ promoted: 2, skipped: 0 });
+    const res = await tool.handler(
+      { name: 'Forgot Start', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).toMatch(/FAILSAFE auto-promoted 2 plan items/);
+  });
+
+  it('stays silent (no warning) when the plan was already promoted upstream (idempotent no-op)', async () => {
+    promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 5 });
+    const res = await tool.handler(
+      { name: 'Already Started', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).not.toMatch(/FAILSAFE auto-promoted/);
+    expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 0, skipped: 5 });
+  });
+
+  it('never blocks the launch when promotion throws (best-effort)', async () => {
+    promotePlanItemsMock.mockRejectedValue(new Error('promotion boom'));
+    const res = await tool.handler(
+      { name: 'Resilient Promote', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.promotionFailsafe).toBeNull();
   });
 });

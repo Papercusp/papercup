@@ -17,6 +17,7 @@ documents:
   - packages/operator-core/lib/harness/improvements/watchdog.ts
   - libs/papercusp/libs/db/sql/357-harness-features-last-progress-at.sql
   - libs/papercusp/libs/db/sql/358-work-items-stalled-activity-views.sql
+  - libs/papercusp/libs/db/sql/509-issue-family-progress-and-takenat.sql
   - libs/papercusp/packages/orchestrator/src/prompt-build.ts
 plans:
   - agent-activity-liveness-truth-2026-06-21
@@ -255,3 +256,37 @@ never heard of) survives well past the usual ~10-minute stale-claim grace — th
 is the federation guard working as intended, not a bug. If you need to confirm a
 claim is truly abandoned rather than live-on-another-node, check the hive's other
 member nodes (or wait out the 24h fallback) before assuming it's free.
+
+## The fifth corollary: `last_progress_at` was hardcoded null for issue-family, so every held bug/change/task claim read "stalled" (WI-2990/WI-3006, 2026-07-05)
+
+The progress signal from §1 (`last_progress_at`) shipped on migration 357 for
+**feature-family** work-items only. `issueToWorkItem()`
+(`work-items.ts`) — the DTO that projects an `engineer_issues` row onto the
+unified `WorkItem` shape `classifyItemActivity` reads — hardcoded
+`takenAt: null, lastProgressAt: null` for **every** issue-family (bug/change/task)
+row, on the stale pre-unification assumption that issue-family had no
+claim-time/progress columns. It does: the base `work_items` table has carried
+`taken_at`/`last_progress_at` for issue-family rows since migration 374, correctly
+populated on claim — the DTO just never surfaced them.
+
+The effect: `classifyItemActivity` returns `'stalled'` (age = `Infinity`) whenever
+`takenBy` is set but `takenAt`/`lastProgressAt` read null — so **every claimed
+issue-family item, however freshly and actively worked, classified as
+immediately reclaimable**. `fleet:assignments`' `reclaimable` field (and any
+leader census / Queen placement reading it) saw a just-claimed bug/change as
+free, risking a near-double-placement.
+
+**The fix** (migration 509 + `work-items.ts` / `issues-engineer.ts` /
+`checkpoint.ts`): `issueToWorkItem()` now projects the real
+`i.takenAt`/`i.lastProgressAt` columns, and a new `markIssueProgress()` (exported
+alongside `markFeatureProgress` from `work-items.ts`) bumps issue-family
+`last_progress_at` on a checkpoint — the issue-family analog of §1's feature-only
+bump. The base-table reaper (`reclaimStaleIssueClaims`,
+`work-items-stale-claims.ts`) was unaffected throughout (it always read
+`assigned_at` directly via SQL, never through this DTO) — this was purely a
+reporting-fidelity bug in what `classifyItemActivity` saw, not a reaper bug.
+
+**What this means for you:** the "actively worked ≡ `progressing`" rule from §2
+now holds uniformly across feature AND issue-family claims — checkpoint your
+issue-family work (`work_items:checkpoint`) the same way you would a feature, so
+its `last_progress_at` advances and it reads correctly as covered.
