@@ -174,7 +174,7 @@ export async function gatherLiveBees(workspaceId: string): Promise<PlacementBee[
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND status IN ('running', 'restarting')
-       AND child_role IN ('bee', 'cup')`;
+       AND child_role = 'cup'`;
   if (beeRows.length === 0) return [];
 
   // Presence (intent / files / plan / liveness), keyed by owner id.

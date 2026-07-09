@@ -2,8 +2,10 @@
  * Unit tests for work_items:checkpoint (bee-context-efficiency P-010·P-011·P-012),
  * now on the bulk keyed-array contract (bulk-endpoint-standardization-2026-06-21).
  * The store (setWorkItemCheckpoint) + getWorkItem are mocked — this exercises the
- * tool's contract: per-item harness resolution (arg → ctx.harnessSlug → work-item
- * lookup), write-vs-clear, the many form, and clean per-item error surfacing.
+ * tool's contract: per-item harness keying by the ITEM's own canonical harness
+ * (EI-8805 — arg/ctx are only a lookup hint; a harness-null item keys under its own
+ * null harness, never the session harness), write-vs-clear, the many form, and clean
+ * per-item error surfacing.
  *
  * The single { id } call is now n=1 of the bulk call: it returns the house envelope
  * { ok, results:[{ ok, id, … | error }], counts } — assertions read results[0], not
@@ -45,14 +47,20 @@ const one = async (x: unknown, ctx: unknown = baseCtx) => (await env(x, ctx)).re
 beforeEach(() => {
   setWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
+  // The write now ALWAYS keys by the item's canonical harness (EI-8805), so it looks
+  // the item up on every call. Default the lookup to a miss; tests that assert the
+  // canonical harness override it. A resolved-null default keeps the `.catch(...)`
+  // chain valid (an unmocked vi.fn returns undefined, which has no .catch).
+  getWorkItem.mockResolvedValue(null);
 });
 
 describe('work_items:checkpoint (bulk keyed-array)', () => {
-  it('writes a checkpoint with the harness from ctx (no lookup)', async () => {
+  it('keys the checkpoint by the ITEM\'s harness (looked up), disambiguated by the ctx hint', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
     const out = await env({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
     expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(getWorkItem).toHaveBeenCalledWith('WI-7', 'papercup');
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
       'did step 1; next: step 2',
@@ -62,6 +70,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   });
 
   it('clears the checkpoint when blank/omitted (cleared:true)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
     const r = await one({ id: 'WI-7' });
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
@@ -71,9 +80,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: true, length: 0 });
   });
 
-  it('falls back to an explicit harness arg over ctx', async () => {
+  it('uses an explicit harness arg as the lookup hint over ctx', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'other-harness' });
     setWorkItemCheckpoint.mockResolvedValue('x');
     await one({ id: 'WI-7', checkpoint: 'x', harness: 'other-harness' });
+    expect(getWorkItem).toHaveBeenCalledWith('WI-7', 'other-harness');
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'other-harness' }),
       'x',
@@ -84,7 +95,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     getWorkItem.mockResolvedValue({ id: 'WI-9', harness: 'looked-up' });
     setWorkItemCheckpoint.mockResolvedValue('y');
     const r = await one({ id: 'WI-9', checkpoint: 'y' }, noHarnessCtx);
-    expect(getWorkItem).toHaveBeenCalledWith('WI-9');
+    expect(getWorkItem).toHaveBeenCalledWith('WI-9', undefined);
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'looked-up' }),
       'y',
@@ -92,7 +103,36 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('errors cleanly when no harness can be resolved (fails only that item)', async () => {
+  it('EI-8805: keys a harness-null item by its OWN (null) harness, not the session harness', async () => {
+    // Repro: a harness-null EI (filed from an unscoped su session) checkpointed from a
+    // session that HAS a harness. The write must key under the item's null harness (the
+    // store canonicalizes it to the wildcard namespace work_items:get reads under) —
+    // previously it substituted the session harness ('papercup') and the read silently
+    // got null, losing the continuity state.
+    getWorkItem.mockResolvedValue({ id: 'EI-8797', harness: null });
+    setWorkItemCheckpoint.mockResolvedValue('continuity state');
+    const r = await one({ id: 'EI-8797', checkpoint: 'continuity state' }); // baseCtx harnessSlug 'papercup'
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      { harness: null, workItemId: 'EI-8797', workspaceId: 'default' },
+      'continuity state',
+    );
+    expect(r).toMatchObject({ ok: true, id: 'EI-8797', harness: null, cleared: false });
+  });
+
+  it('EI-8805: an unscoped session (harnessSlug "*") also keys a harness-null item by its null harness', async () => {
+    getWorkItem.mockResolvedValue({ id: 'EI-8797', harness: null });
+    setWorkItemCheckpoint.mockResolvedValue('state');
+    const unscoped = { ...noHarnessCtx, harnessSlug: '*' } as never;
+    await one({ id: 'EI-8797', checkpoint: 'state' }, unscoped);
+    // '*' is sanitized to no lookup hint, and the item's own null harness wins.
+    expect(getWorkItem).toHaveBeenCalledWith('EI-8797', undefined);
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      { harness: null, workItemId: 'EI-8797', workspaceId: 'default' },
+      'state',
+    );
+  });
+
+  it('errors cleanly when no harness can be resolved (unknown id, no item, no hint)', async () => {
     getWorkItem.mockResolvedValue(null);
     const r = await one({ id: 'WI-404', checkpoint: 'z' }, noHarnessCtx);
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();

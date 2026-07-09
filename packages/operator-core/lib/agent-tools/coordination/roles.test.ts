@@ -1,13 +1,13 @@
 /**
  * COORD_ROLES membership — pins the coord-role set and, in particular, that the
- * generic Hive worker `bee` is a member (bee-capability-expansion-2026-06-08 P-001).
+ * generic Hive worker `cup` is a member (bee-capability-expansion-2026-06-08 P-001).
  *
  * Why this matters: a tool gated `agentRoles: [...COORD_ROLES]` is callable by a
  * role-scoped (signed) caller ONLY if that caller's role is in this list. The bee
  * coordinates (coord:declare-intent/send/await-inbox), maintains its work-list
  * (work_items:*), and — the P-001 contract — creates + reads ideas and issues
  * (improvements:capture, work_items:create/list/get) which all gate on COORD_ROLES.
- * If `bee` silently dropped out of this constant, every one of those would start
+ * If `cup` silently dropped out of this constant, every one of those would start
  * failing `role_not_allowed` for a bee-role-scoped URL with no other signal. Pin it.
  */
 import { describe, test, expect } from 'vitest';
@@ -59,9 +59,9 @@ describe('COORD_ROLES', () => {
     // access (a tsc-invisible privilege escalation). Predicate-level so it stays a
     // fast unit test (the tool files carry the literal verbatim; grep keeps them in sync).
     const readMostlyExcluded = (r: string) =>
-      r !== 'bee' && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle';
+      r !== 'cup' && r !== 'papercup' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle';
     const admitted = COORD_ROLES.filter(readMostlyExcluded);
-    for (const excluded of ['bee', 'sentinel', 'overwatch', 'cup', 'papercup', 'kettle']) {
+    for (const excluded of ['cup', 'papercup', 'overwatch', 'cup', 'papercup', 'kettle']) {
       expect(admitted, `${excluded} must be excluded from Queen-only tools`).not.toContain(excluded);
     }
     // placement/judgement is the Queen's — she and her twin keep access.

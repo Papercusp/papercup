@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 import { TABLE_TO_QUERY_NAMES } from './table-to-query-names';
 
-function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1') {
+function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score10: number | null = 10) {
   return {
     issueId,
     createdAt,
@@ -20,6 +20,7 @@ function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1') {
     missingKeys: [],
     rubricResolved: true,
     synthesized: false,
+    score10,
   };
 }
 
@@ -63,10 +64,11 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     ]);
     const listScorecards = vi.fn(async () => [
       // newest-first, as the real store returns — grouping must keep the MAX
-      // createdAt regardless of order.
-      scorecard('su-agent-behavior', '2026-07-09T12:00:00Z', 'EI-2'),
-      scorecard('su-agent-behavior', '2026-07-09T15:00:00Z', 'EI-3'),
-      scorecard('su-agent-behavior', '2026-07-08T09:00:00Z', 'EI-1'),
+      // createdAt regardless of order. score10s: 4 / 10 / null → avg (4+10)/2 = 7,
+      // the null (all-unknown) scorecard EXCLUDED; latestScore10 rides EI-3 (max at).
+      scorecard('su-agent-behavior', '2026-07-09T12:00:00Z', 'EI-2', 4),
+      scorecard('su-agent-behavior', '2026-07-09T15:00:00Z', 'EI-3', 10),
+      scorecard('su-agent-behavior', '2026-07-08T09:00:00Z', 'EI-1', null),
       scorecard('some-other-rubric-not-listed', '2026-07-09T18:00:00Z', 'EI-4'),
     ]);
     vi.doMock('../rubrics', () => ({ listRubrics }));
@@ -79,9 +81,13 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     expect(graded.scorecardCount).toBe(3);
     expect(graded.latestScorecardAt).toBe('2026-07-09T15:00:00Z'); // max, not first
     expect(graded.criteriaCount).toBe(2);
+    expect(graded.avgScore10).toBe(7); // (4+10)/2 — the null-scored card excluded
+    expect(graded.latestScore10).toBe(10); // rides the newest-createdAt scorecard
     const ungraded = out.find((row) => row.rubricId === 'never-graded')!;
     expect(ungraded.scorecardCount).toBe(0);
     expect(ungraded.latestScorecardAt).toBeNull();
+    expect(ungraded.avgScore10).toBeNull();
+    expect(ungraded.latestScore10).toBeNull();
   });
 
   it('scorecards.list threads rubricRef + a clamped limit to the store read', async () => {

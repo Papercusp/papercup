@@ -286,9 +286,32 @@ joiner is still in its owner-binding-null admit-refusal window stall
 indefinitely (80+ min observed, survives a cold restart of the member) until
 the **next owner-side append** kicks the replication/fold, after which the
 entire backlog folds within minutes. No data loss; the log is intact. Filed as
-**WI-1534** (unbounded staleness on quiescent hives — fix directions: force a
-remote-length refresh/initial sync after late admit, or an anti-entropy
-`update()` tick in the merge pass). Remaining out-of-scope rung: **symmetric
+**WI-1534** (unbounded staleness on quiescent hives).
+
+**MITIGATION SHIPPED (2026-07-09):** root-caused to the WI-752/FED-2 self-heal
+re-peer loop (`joinHarnessSwarm`'s `discovery.refresh()` cadence) settling into
+its 60s SLOW keepalive once the post-join/post-peer-loss FAST window lapses —
+on a QUIESCENT hive (no connection churn to naturally re-arm the fast window)
+that is the only thing that ever retries a stalled/zombie/never-attached
+admitted remote's reconnect, so the peer sits at 0 live replicator peers for as
+long as it takes an UNRELATED event (the next owner append) to coincidentally
+land alongside a working DHT/holepunch retry. The merge pass itself was already
+correct (`core.update({wait:true})` + `changed` re-fold run unconditionally
+every 1s poll for every admitted remote — never the gap; corestore's
+`streamTracker.attachAll()` also already late-admit-attaches a newly-opened
+remote core to every live muxer, so late-admit-mesh is not the gap either). Fix:
+a new `hasStalledLogs()` predicate (boot.ts, fed from the `admitted` map's
+`peersCount()===0` check) wired into `joinHarnessSwarm`'s self-heal loop
+(`swarm.ts`) keeps it on the FAST cadence for as long as ANY admitted remote log
+shows zero live replicator peers, instead of dropping to the 60s slow keepalive
+regardless. Unit-pinned in `swarm-self-heal.test.ts` (fake-timer cadence
+assertions: stays fast while stalled, falls back to the dead-zone/slow-keepalive
+once the stall clears, a throwing predicate never breaks the loop). **Still
+open:** live verification on the 2-node containerized rig
+(`bin/local-matrix.sh`, P-006) and/or the tower+VM NAT rig (Brief 8's setup) —
+this is a real-network timing fix that a real restricted-cone-NAT rig run is
+needed to confirm actually shortens the 80+min stall; coordinate with whoever
+next runs that rig. Remaining out-of-scope rung: **symmetric
 NAT** (needs a real symmetric-NAT middlebox; port-dependent mapping defeats
 the restricted-cone emulation). Earlier rig work also proved that two VMs
 sharing one NAT egress IP **hairpin** and fail a public-DHT holepunch — a

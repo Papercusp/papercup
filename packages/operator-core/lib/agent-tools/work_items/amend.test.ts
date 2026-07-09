@@ -3,7 +3,7 @@
  * is covered separately in build-amendment.test.ts). This pins the parts only the
  * handler does: the flag gate, the not-found guard, and — the load-bearing bit —
  * how it derives buildAmendment's authority inputs from the live context:
- *   • authoritative = (role !== 'bee')   → disposed vs proposed
+ *   • authoritative = (role !== 'cup')   → disposed vs proposed
  *   • claimedByOther = wi.assignee set AND != caller → in-flight / compensation
  * plus that it writes the rendered amendment durably (commentWorkItem). A regression
  * that treats a Queen as a bee, or fails to flag NEEDS-COMPENSATION on a peer's

@@ -88,7 +88,7 @@ describe('operator-config write-role gate (EI-2204)', () => {
   // migrate-policy, set-watchdog-tunables, routines:set) advertise [...SU_ROLES] for INVOKE
   // but narrow their mutating op to operator-level authority. That gate MUST go through the
   // shared `isOperatorConfigWriteRole` predicate (which includes the operator-equivalent
-  // `queen`, local-hive D-001) — not a hand-rolled `ctx.role !== 'operator' && ctx.role !==
+  // `mug`, local-hive D-001) — not a hand-rolled `ctx.role !== 'operator' && ctx.role !==
   // 'architect'` literal, which silently excluded the Queen and blocked the clean path to
   // reset a jammed concurrency ceiling (EI-2204 / EI-2186).
   const agentToolsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'agent-tools');

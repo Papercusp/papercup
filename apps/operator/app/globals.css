@@ -13488,8 +13488,8 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   --operator-cut: 28px;
   --operator-frame: 12px;
   --operator-inner-cut: 12px;
-  --operator-hud-cyan: 99, 230, 255;
-  --operator-hud-blue: 16, 185, 235;
+  --operator-hud-cyan: var(--accent-strong-rgb, 125, 211, 252);
+  --operator-hud-blue: var(--accent-rgb, 56, 189, 248);
   --operator-hud-amber: 255, 184, 68;
   --operator-hud-white: 238, 254, 255;
   padding: var(--operator-frame);

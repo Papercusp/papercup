@@ -55,7 +55,7 @@ describe('scheduler:get_next default-spec warning (EI-8579)', () => {
   });
 
   it('does not warn when the claim came from a bee or inherited fleet spec', async () => {
-    for (const specSource of ['bee', 'fleet']) {
+    for (const specSource of ['cup', 'fleet']) {
       mocks.getNextForBee.mockResolvedValueOnce({
         workItem: { id: `WI-${specSource}`, state: 'todo' },
         claimedUnder: { specId: `${specSource}-spec`, revision: 1 },

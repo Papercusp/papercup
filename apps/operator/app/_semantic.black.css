@@ -17,7 +17,9 @@
   --border: rgba(255, 255, 255, 0.14); /** Neutral border (replaces the sky-tinted frost border) */
   --border-strong: rgba(255, 255, 255, 0.3); /** Neutral strong border */
   --accent: #e6e6e6; /** Light-grey accent so interactive chrome stays visible on black */
+  --accent-rgb: 230, 230, 230; /** RGB triplet of --accent for rgba() alpha composition — every theme that overrides accent must override this too, or the frost sky triplet leaks through :root */
   --accent-strong: #ffffff; /** White strong accent */
+  --accent-strong-rgb: 255, 255, 255; /** RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-cool: #b0b0b0; /** Cool grey accent */
   --accent-soft: #d8d8d8; /** Light grey — glows/highlights go monochrome on black (frost: sky-200) */
   --accent-deep: #707070; /** Mid grey — deeper accent tint on black (frost: sky-500) */

@@ -81,8 +81,8 @@ function agent(over: Partial<WorkingAgent> & { agentId: string }): WorkingAgent 
   };
 }
 const WORKING: WorkingAgent[] = [
-  agent({ agentId: 'a1', name: 'Ada', agentPaneKind: 'queen', doing: { id: 'WI-1', title: 'Fix bug', rank: null }, load: 2, alive: true }),
-  agent({ agentId: 'a2', name: 'Bob', agentPaneKind: 'bee', intent: 'scouting', alive: false }),
+  agent({ agentId: 'a1', name: 'Ada', agentPaneKind: 'mug', doing: { id: 'WI-1', title: 'Fix bug', rank: null }, load: 2, alive: true }),
+  agent({ agentId: 'a2', name: 'Bob', agentPaneKind: 'cup', intent: 'scouting', alive: false }),
 ];
 const RUNS = [
   { runId: 'r1', role: 'engineer', running: true, featureId: 'F-9', sizeBytes: 2048, lastEventTs: 1000, ts: 1000 },
@@ -150,7 +150,7 @@ describe('AdvAgentsPanel · WorkingView', () => {
     expect(screen.queryByTestId('row-a2')).toBeNull();
   });
   it('applies the kind filter (akind)', () => {
-    renderPanel('alpha', '?akind=bee');
+    renderPanel('alpha', '?akind=cup');
     expect(screen.getByTestId('row-a2')).toBeTruthy();
     expect(screen.queryByTestId('row-a1')).toBeNull();
   });

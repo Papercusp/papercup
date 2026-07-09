@@ -72,8 +72,8 @@ function agent(over: Partial<WorkingAgent> & Pick<WorkingAgent, 'agentId'>): Wor
 // github member (agentId `fed:<userKey>@<host>`) reviewing a PR.
 const ROSTER: WorkingAgent[] = [
   agent({ agentId: 'su-local-1', name: 'Worker A', load: 2, claims: [{ id: 'P-010', type: 'plan-item', detail: '' }], doing: { id: 'P-010', title: 'per-user dashboard', rank: null } }),
-  agent({ agentId: 'su-local-2', name: 'Worker B', alive: false, heartbeatAt: OLD, agentPaneKind: 'bee', doing: null, intent: '' }),
-  agent({ agentId: 'fed:279242982@laptop-x', label: 'gh:279242982 · laptop-x', name: 'Remote One', load: 1, agentPaneKind: 'queen', claims: [{ id: 'F-1', type: 'feature', detail: '' }], doing: { id: 'F-1', title: 'review the PR', rank: null } }),
+  agent({ agentId: 'su-local-2', name: 'Worker B', alive: false, heartbeatAt: OLD, agentPaneKind: 'cup', doing: null, intent: '' }),
+  agent({ agentId: 'fed:279242982@laptop-x', label: 'gh:279242982 · laptop-x', name: 'Remote One', load: 1, agentPaneKind: 'mug', claims: [{ id: 'F-1', type: 'feature', detail: '' }], doing: { id: 'F-1', title: 'review the PR', rank: null } }),
 ];
 
 const api = { setParams: vi.fn(), setTitle: vi.fn(), close: vi.fn() } as unknown as React.ComponentProps<typeof MemberWorkPanel>['api'];

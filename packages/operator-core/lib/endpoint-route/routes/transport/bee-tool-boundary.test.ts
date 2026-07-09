@@ -9,8 +9,8 @@
  *      that list (dispatch-stack.ts: `tool.agentRoles.includes(ctx.role)`), regardless of caps.
  *   2. capability — the caller's synthesized principal must hold `tool.capability`.
  * A bee is admitted iff BOTH pass (it carries no gateBypass — only superuser/power-user do).
- * The plan's Phase-1 cap grant (BLUEPRINT_ROLE_CAPS['bee']) is necessary but INERT until the
- * allowlist co-edit adds `bee` to each tool's agentRoles — so this test reproduces the exact
+ * The plan's Phase-1 cap grant (BLUEPRINT_ROLE_CAPS['cup']) is necessary but INERT until the
+ * allowlist co-edit adds `cup` to each tool's agentRoles — so this test reproduces the exact
  * two-gate predicate over the REAL tool exports and the REAL loaded caps, catching either gate
  * silently regressing.
  *

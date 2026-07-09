@@ -13,7 +13,7 @@
  *  - Cadence floor — min seconds between Queen wakes. Effective = MAX(system, this):
  *    a FLOOR, so the owner can only SLOW the loop, never drop below the system min.
  *  - Max bees — concurrency ceiling. Effective = MIN(system ceiling, this).
- *  - Cap bees at tier — pins the `bee` role's model tier ceiling (tierCeilings.bee,
+ *  - Cap cups at tier — pins the `cup` role's model tier ceiling (tierCeilings.cup,
  *    a per-role CEILING — clamps bees down to at most that tier). The fine-grained
  *    per-tier model editor stays in the Model tiers section above.
  *  - Idle activities — gym / Scout / curation. Each defaults ON; unchecking gates
@@ -46,7 +46,7 @@ export type IdleToggles = Partial<Record<IdleKind, boolean>>;
 const IDLE_LABEL: Record<IdleKind, string> = { gym: 'Gym', scout: 'Scout', curation: 'Curation' };
 
 /** The role the throttle UI pins via tierCeilings (the bulk fleet worker). */
-export const PIN_ROLE = 'bee';
+export const PIN_ROLE = 'cup';
 const CADENCE_PRESETS = [60, 120, 300, 600] as const;
 const DEFAULT_SYSTEM_CADENCE_SEC = 60;
 
@@ -244,7 +244,7 @@ export default function ThrottleSection({
             </span>
           </div>
 
-          {/* Model-tier pin (cap the bee role's tier ceiling — tierCeilings.bee) */}
+          {/* Model-tier pin (cap the cup role's tier ceiling — tierCeilings.cup) */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Cpu size={11} aria-hidden />

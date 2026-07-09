@@ -1,6 +1,6 @@
 /**
  * reorder.test.ts — the work_items:reorder HANDLER (reorderWorkItem mocked). Pins the
- * writer default ('bee' when omitted), the explicit-writer passthrough (the propose/
+ * writer default ('cup' when omitted), the explicit-writer passthrough (the propose/
  * dispose audit author), and the result branch: an 'error' result maps to { ok:false },
  * otherwise { ok:true, ...result }. A regression that defaults to the wrong writer or
  * reports a store error as success is what this catches.

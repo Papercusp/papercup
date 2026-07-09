@@ -22,6 +22,7 @@ import {
   gracefulStopChild,
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
 } from '../process-supervision/sidecar-spawn-shared';
+import { isBenignHostError } from '../host-benign-errors';
 
 // This package is ESM (type:module), where `__dirname` is undefined. Derive the
 // module dir from import.meta (the substrate EI-1612 fix) so the sidecar script
@@ -200,5 +201,11 @@ export function registerSpawnerSidecarShutdownHooks(): void {
   registerSharedSidecarShutdownHooks({
     label: 'spawner-sidecar-spawn',
     stop: () => stopSpawnerSidecar(),
+    // P-006: only tear down the sidecar for an uncaughtException that is
+    // ACTUALLY fatal to the host — one hono-host's own guard does NOT already
+    // swallow. Otherwise every benign client-disconnect `write EPIPE` kills a
+    // healthy sidecar and the next caller warm-respawns it (the observed
+    // ~6min "DHT bootstrap" churn).
+    isFatalException: (err) => !isBenignHostError(err),
   });
 }

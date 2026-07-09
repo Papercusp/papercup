@@ -181,8 +181,8 @@ describe('H1 (audit D-013) — remote session presence never shadows a LOCAL ide
   });
 
   it('a remote session CLAIMING a local ownerId stays resolvable to the LOCAL agent — never doubled/ambiguous', async () => {
-    // Local presence owns 'queen'; a hostile admitted member ALSO gossips a session
-    // claiming 'queen'. The local agent is authoritative: 'queen' resolves cleanly,
+    // Local presence owns 'mug'; a hostile admitted member ALSO gossips a session
+    // claiming 'mug'. The local agent is authoritative: 'mug' resolves cleanly,
     // the colliding remote claim never introduces a phantom/ambiguity.
     mockedList.mockResolvedValue(roster(['mug', 'su-local-xyz']));
     mockedRemote.mockResolvedValue(remoteSess(['mug']));

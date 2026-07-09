@@ -28,7 +28,7 @@
  *
  * ## Scope — retry-SAFE, deliberately narrower than the process-guard classifier
  *
- * `isTransientPgConnectionError` in `apps/operator/bin/host-benign-errors.ts` decides
+ * `isTransientPgConnectionError` in `packages/operator-core/lib/host-benign-errors.ts` decides
  * whether a process-level error is *non-fatal to the multi-tenant host* (keep serving,
  * don't crash-loop) — it is broad on purpose (CONNECT_TIMEOUT | CONNECTION_CLOSED |
  * the detached null-`write` TypeError). That is the WRONG predicate for a RETRY: on

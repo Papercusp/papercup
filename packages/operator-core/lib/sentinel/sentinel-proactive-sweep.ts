@@ -47,7 +47,7 @@ export interface SentinelSweepState {
    *  guard — only the lease holder runs the sweep so it never double-fires. */
   ownsVoiceLease: boolean;
   /** The live brain persona ('operator' default | 'sentinel'). */
-  humanFacingRole: 'operator' | 'sentinel' | 'papercup';
+  humanFacingRole: 'operator' | 'papercup';
 }
 
 /** The FLEET-STATUS the sweep surfaces (P-020) — the markdown the converse turn

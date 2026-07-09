@@ -796,7 +796,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // Replaces the retired Autobase. Local writes append here (incl. the
   // orchestrator's LWW advisory feature claim); the merge driver reads it
   // (+ admitted remote logs) into PG.
-  const ownLog = await openOwnLog(store);
+  const ownLog = await openOwnLog(store, {
+    workspaceId: opts.workspaceId,
+    harnessSlug: slug,
+  });
 
   // ── A-003 (shared-hive-release-testing Brief I): joiner hive-home projection
   // scope. ── When THIS harness is a member of a JOINED (remote_hive) Hive, its

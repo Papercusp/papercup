@@ -54,7 +54,7 @@ describe('TwoPaneShell', () => {
       useEffect(() => {
         mountCount += 1;
       }, []);
-      return <span data-testid="sentinel" />;
+      return <span data-testid="papercup" />;
     }
     function Harness({ view }: { view: 'plans' | 'queue' | 'sessions' }) {
       return (

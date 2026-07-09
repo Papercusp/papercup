@@ -229,10 +229,10 @@ describe('AdvFramesTab — enlarged panel', () => {
   it('shows the stills panel with the enlarged image and Watch live', async () => {
     nuqsState.frame = 'alpha:0';
     await renderLoaded();
-    fireSse('alpha', 'thumb', thumb('alpha', 0, { role: 'queen' }));
+    fireSse('alpha', 'thumb', thumb('alpha', 0, { role: 'mug' }));
     const panel = screen.getByRole('region', { name: 'Frame live view' });
     expect(panel.textContent).toContain('alpha');
-    expect(panel.textContent).toContain('queen');
+    expect(panel.textContent).toContain('mug');
     expect(screen.getByAltText('alpha display :0 (enlarged)')).toBeTruthy();
     expect(screen.getByText(/stills refresh every few seconds/)).toBeTruthy();
     fireEvent.click(screen.getByText('Watch live'));

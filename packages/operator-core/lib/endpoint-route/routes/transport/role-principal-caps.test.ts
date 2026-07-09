@@ -95,7 +95,7 @@ describe('loadRoleCapabilities', () => {
     // QUEEN places/executes. ──
     test("Herald CONVERSE contract is reachable: operator:converse cap AND the converse tool allowlists sentinel", async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'papercup');
-      // The brain runs with role='sentinel' (the operator-converse route resolves
+      // The brain runs with role='papercup' (the operator-converse route resolves
       // `${role}:converse`); the cap + the allowlist are the two gates.
       expect(caps.has('operator:converse')).toBe(true);
       const { default: converse } = await import('../../../agent-tools/operator/converse.js');
@@ -288,7 +288,7 @@ describe('loadRoleCapabilities', () => {
   });
 
   // bee-capability-expansion-2026-06-08 (P-002 / D-001 / D-005): the generic Hive
-  // worker `bee` carries the worker ENGINEERING surface. This is the CAPABILITY half
+  // worker `cup` carries the worker ENGINEERING surface. This is the CAPABILITY half
   // of the boundary (necessary, not sufficient — the agentRoles allowlist is the
   // independent co-gate, asserted empirically in the dispatch-stack boundary test).
   describe("bee — the worker engineering cap set", () => {

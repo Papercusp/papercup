@@ -193,6 +193,7 @@ export function attachOwnLogForkListener(
   harnessSlug: string,
   keyHex: string,
 ): void {
+  if (core == null) return; // defensive — never throws on a null/undefined core
   const c = core as Partial<ConflictEmittingCore>;
   if (typeof c.on !== 'function') return; // feature-detected — a test fake CoreLike no-ops here
   try {

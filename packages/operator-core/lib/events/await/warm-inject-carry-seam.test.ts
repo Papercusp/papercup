@@ -4,7 +4,7 @@
  * (bee-context-efficiency-2026-06-14 P-002 / WI-174).
  *
  * ## What this pins, and why
- * A long-lived "bee" runs each placed task as a headless `claude -p` turn that
+ * A long-lived "cup" runs each placed task as a headless `claude -p` turn that
  * EXITS on completion (line 387 PARKs a *live* session — only an exited one is
  * resumed). The Queen's next WARM-INJECT of a NEW task re-invokes the drained
  * bee through the wake-executor's resume seam:

@@ -1,0 +1,255 @@
+# hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill
+URL: /internal/docs/agent-insights/hive-git-p2p-ops-runbook-2026-07-09
+
+Operational playbook for the per-hive P2P git replication plane (lib/sync/hive-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode.
+
+## What this covers
+
+The P2P git replication plane (`packages/operator-core/lib/sync/hive-git/`, \~30
+modules — storage/namespaces, sigrefs, fetch-transport, the integrator, the
+GitHub bridge, worktree-bridge, gc, secrets-guard) plus its ONE production
+wiring seam, `lib/harness/git-sync/git-sync-action.ts`. This doc is the
+day-2 operator playbook: how to flip modes, how to roll back, what the
+integrator/epoch machinery actually guarantees **today** (vs. what it will once
+Phase 3 lands), how to triage a divergence escalation, the sigrefs rejection
+reasons you'll see in logs, how to re-run the drill, and why the stall watchdog
+does not need special-casing for commit-only members.
+
+Plan: `p2p-git-live-activation-2026-07-09` (P-501). Design doc:
+`docs/plans/p2p-git-research-2026-07-01.md`.
+
+### Where things actually stand (2026-07-09) — read this before assuming a leg is live
+
+Only **two legs are wired into production** (`git-sync-action.ts::handleGitSync`,
+gated on `gate.hiveGitMode !== undefined`, i.e. any non-`legacy` hive):
+
+* **github-bridge tick** (`runGithubBridgeLeg` → `runGithubBridgeTick`) — only
+  when `hiveGit.mode === 'bridged'` AND `FLAGS.GITHUB_BRIDGE` is on (default ON).
+* **integrator tick** (`runIntegratorLeg` → `runIntegratorTick`) — on **any**
+  non-`legacy` mode (`bridged` or `p2p-only`). This merges member namespace
+  heads into the integrator's own `staging` namespace-ref and announces the
+  advance (`STAGING_ADVANCE_EVENT_KEY`) fed-wide.
+
+**NOT wired into production yet** (code exists, tested in isolation, no caller
+from `git-sync-action.ts` or any routine/tick):
+
+* **serve plane** (`serve-wiring.ts` / `serveUploadPack`) — nothing hands it a
+  live hive-swarm Protomux connection today (P-201).
+* **announce→fetch driver** (`ref-announce-tick.ts`) — nobody calls it on a
+  schedule; ref announcements are not yet driving a peer fetch (P-202).
+* **worktree-bridge driver** (`worktree-bridge.ts` / `worktree-advance.ts`) —
+  the integrator's staging-advance event has no consumer that fast-forwards a
+  member's actual working tree yet (P-204).
+* **gc** (`gc.ts`) — no scheduled caller (G-9, P-205).
+* **secrets-guard on the P2P publish path** — `secrets-guard.ts` is already
+  used by `github-egress.ts` / `foreign-mirror-quarantine.ts` / the hyperbee
+  outbox, but not yet by the (still-unwired) P2P serve/announce publish path
+  (G-10, P-205).
+
+So today, flipping a hive's `hiveGit.mode` to `bridged` gets you: member
+git-sync goes commit-only, the bridge writer alone pushes GitHub, and the
+integrator computes a `staging` ref in its own namespace — but **nothing yet
+fetches that ref onto another machine's disk or fast-forwards a worktree from
+it**. `p2p-only` mode today is a **no-op beyond commit-only** (no bridge, no
+peer replication driver) — do not flip a hive to `p2p-only` expecting live
+cross-machine sync until P-201/P-202/P-204 land. Re-verify this section against
+`git log -p -- packages/operator-core/lib/harness/git-sync/git-sync-action.ts`
+before trusting it; wiring lands leg-by-leg (see the plan's `## Now`).
+
+## Mode flip + rollback
+
+The mode lives in the **federated `hive_settings` store**, key `hiveGit.mode`,
+one owner-side write reaches every member machine's next tick (no re-seed
+needed — `git-sync-action.ts` re-consults it every fire, per-tick, not just at
+routine-seed time).
+
+```ts
+import { setHiveGitMode, getHiveGitMode } from 'packages/operator-core/lib/harness/git-sync/hive-git-mode';
+
+await setHiveGitMode(workspaceId, hiveHomeSlug, 'bridged');   // flip on
+await setHiveGitMode(workspaceId, hiveHomeSlug, null);        // ROLLBACK: delete the row → reads as 'legacy' again
+```
+
+**Rollback is a single delete, and it is safe by construction:**
+`getHiveGitMode` is **fail-open** — an absent row, a malformed value, AND a
+settings-store read error all coerce to `'legacy'` (never throws). So:
+
+* `mode → null` (or any settings-store outage) instantly restores **today's
+  behavior byte-for-byte**: every member's git-sync pushes origin directly
+  again per `decideGitSyncPush`'s existing rules, no bridge, no integrator
+  pass. Legacy hives are provably unaffected by this whole plane (they never
+  read a truthy mode).
+* **Do not "fix" the fail-open by making it fail-closed.** A PG blip on a
+  BRIDGED hive briefly re-enabling member push is an *accepted risk*
+  (`hive-git-mode.ts` header comment) — both the member and the bridge writer
+  push FF-only + CAS, so at worst one push wins and the other is rejected
+  noisily (a divergence signal, see below), never silent corruption. Failing
+  closed would silence a healthy legacy hive's pushes on the same blip — a
+  strictly worse failure mode.
+
+**Verifying a flip took effect:** read
+`harness_shared.routines.metadata` for the hive's `system:git-sync` row —
+`metadata->'github_bridge'` (bridged mode) and `metadata->'integrator'`
+(`{epoch, seq, at}`, any non-legacy mode) only populate once a tick has
+actually run the corresponding leg. No leg activity within \~2 routine
+intervals after a flip means the routine hasn't fired yet, not that the flip
+failed — check `metadata->>'last_synced_at'` first.
+
+## Integrator lease + epoch semantics — what's real today, what's a known simplification
+
+The integrator (`lib/sync/hive-git/integrator.ts`, called by
+`runIntegratorLeg`/`runIntegratorTick`) is the mechanism that turns N member
+namespace heads into one `staging` ref:
+
+* **Who runs it:** intended to be the **lock-authority lease holder only**
+  (one machine at a time). `runIntegratorLeg` does not yet check lease
+  ownership itself — read the code before assuming a specific machine is
+  "the integrator" in a multi-machine run; today it runs the same on every
+  non-legacy member's tick (each computes its OWN integration in its own
+  namespace independently — see storage note below).
+* **Merge policy** (`integrateMemberHeads`, deterministic by device-hex sort):
+  a member head already an ancestor of staging → skip; staging behind the
+  head → fast-forward; heads diverged → bare-repo 3-way merge
+  (`git merge-tree --write-tree`, no worktree) → clean merge commit (2
+  parents) or, on conflict, **skip that head and report it** — a conflicting
+  member's own next publish must rebase onto the new staging. One bad/
+  conflicting head never blocks integrating the others.
+* **Epoch fencing (G-5d) IS wired**: every staging-advance announcement
+  carries `{epoch, seq}`, monotonically increasing, so a stale/duplicate
+  advance is fenced by strict `(epoch, seq)` order at the receiving end.
+* **Epoch GRANTING (the lease handoff itself) is NOT wired yet** — this is a
+  **known simplification** flagged directly in `runIntegratorLeg`'s doc
+  comment: today's `epoch` is persisted once per `(hive, repo)` for the life
+  of the routine's own metadata row and only `seq` advances within it. That is
+  correct and safe for a **single-authority dev-box run** (only one epoch is
+  ever in play), but a genuine multi-machine lock-authority HANDOFF (via the
+  G-0 handoff-token library) must be wired in **before** the Phase 3 live
+  2-machine drill (P-301+) — otherwise two machines can each believe they hold
+  epoch 1 and both integrate independently with no fence between them.
+  **Do not treat today's epoch as proof of single-writer safety across
+  machines** — it only fences a single machine's own re-announcements.
+* **Storage note:** the integrator publishes to
+  `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN
+  namespace, not a shared top-level ref. Multiple machines each running the
+  integrator leg independently (today's reality, no lease check) produce
+  MULTIPLE staging refs, one per machine, that other machines have no fetch
+  driver to even see yet (P-202/P-204 unwired). This is expected and
+  harmless pre-Phase-3: it becomes a real correctness question only once
+  fetch + worktree-bridge are wired and multiple integrators could be live
+  concurrently.
+
+## Divergence triage (github-bridge mode only)
+
+The bridge (`bridged` mode) writes ONE `harness_escalations` row per hive on
+phase `github-bridge`, kind `github-bridge-divergence`
+(`classifyDivergence` in `github-divergence.ts`). **GitHub is never treated as
+authority and the bridge never force-pushes** — every signal is
+reported-not-applied. Four signal kinds, each with its own resolution lever:
+
+| signal                | meaning                                                                                    | lever                                                                                                                                                                                         | needs owner? |
+| --------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `egress-non-ff`       | origin diverged from hive canonical (a human pushed / an old merge landed on GitHub)       | self-heals: next ingress brings the origin head into the synthetic github-origin namespace, the integrator merges it like any member head, egress FFs cleanly once canonical descends from it | no           |
+| `ingress-non-ff`      | origin REWROTE history (would rewind the synthetic namespace)                              | owner-authorized `allowNonFF` ingress — explicit, audited, **never automatic**                                                                                                                | **yes**      |
+| `admission-blocked`   | a revoked contributor's commits (or a fail-closed admission error) sit in the origin range | revocation review / re-run admission                                                                                                                                                          | **yes**      |
+| `egress-secret-block` | the secrets gate refused to publish a ref (nothing left the machine)                       | scrub the secret + re-egress                                                                                                                                                                  | no           |
+
+Triage steps:
+
+1. Read `metadata->'github_bridge'` on the hive's `system:git-sync` routine row
+   (`divergence`, `needs_owner`, `errors`) — written every bridged tick.
+2. `needs_owner: true` → surface to the owner; do not attempt an automatic
+   fix. `needs_owner: false` (`egress-non-ff` / `egress-secret-block` only) →
+   the next clean tick usually clears it on its own (a clean pass clears the
+   escalation, same idiom as git-sync's own conflict/error rows); a
+   `egress-secret-block` needs a scrub first.
+3. A clean bridge pass (`signals.length === 0`) writes `action: 'clear'` and
+   clears the escalation — do not manually clear an open row while a real
+   signal is still active.
+
+## sigrefs rejection reasons (`acceptFetchedSigrefs`)
+
+When a fetched device's sigrefs blob is checked, exactly 5 outcomes exist —
+all of them REFUSALS except `{ ok: true }`:
+
+* **`malformed`** — doesn't even parse as a `SignedSigrefs` shape.
+* **`wrong-device`** — the blob's `device_pubkey` doesn't match who you fetched
+  it from (a relay handed you someone else's signed blob under the wrong
+  namespace).
+* **`bad-signature`** — Ed25519 verify failed against the claimed device key
+  (tamper, or a stale/rotated key).
+* **`rollback`** — the blob's `version` does not strictly exceed the last
+  *accepted* version for that device (G-4b monotonic guard — replay/rollback
+  attack, or a relay serving a stale cached copy).
+* **`origin-claim-outside-scope`** — the blob carries a v2 origin-claim entry
+  but the caller didn't pass `allowOriginClaims: true` (the hive-wide
+  integrator always refuses these; only a scope-repo integrator accepts them,
+  D-017 n2 confinement).
+
+Separately, `reconcileFetchedHeads` cross-checks a fetched namespace's
+**actual post-fetch head shas** against what the verified sigrefs claimed —
+any mismatch (missing, wrong, or an unsigned extra ref) means don't trust that
+ref even though the signature itself verified; the integrator only trusts refs
+that reconcile cleanly. A relay lying about a peer's head shows up here, not
+as a signature failure (transport auth ≠ per-namespace content authenticity —
+this is exactly the gap sigrefs-lite closes, see the research doc §3.3).
+
+## Drill re-run instructions
+
+The repeatable acceptance drill lives at
+`papercusp-desktop/bin/hive-git-drill.sh` (P-301 scaffold, mirrors
+`bin/work-distribution-drill.sh`'s shape). Every leg is either a **live
+assert** (wiring has landed) or an explicit **SKIP-with-reason** (never a
+silent green) — the SKIP census IS the release evidence for what's still
+unproven. Run it locally against a throwaway test hive:
+
+```bash
+cd papercusp-desktop
+bin/hive-git-drill.sh                 # uses the newest built .deb by default
+KEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection after
+```
+
+As each owning lane's wiring lands (P-201 serve → P-202 announce/fetch → P-204
+worktree-bridge → P-205 gc/secrets), flip its corresponding SKIP to a live
+assert **in this same script** — it is designed to go leg-by-leg green with
+zero re-authoring. Do not hand-author a second drill script for a leg this one
+already scaffolds a SKIP for.
+
+## Watchdog interplay under commit-only mode — verified, no fix needed
+
+A `bridged`/`p2p-only` hive's members go **commit-only** (git-sync stops
+pushing origin; the bridge writer alone pushes). The natural worry: will the
+`git-sync-stall-watchdog` (`packages/operator-core/lib/release/git-sync-stall-watchdog.ts`)
+false-alarm on members that (correctly) never push?
+
+**No — verified by reading `evaluateGitSyncStall`.** Its primary signal,
+`commitStale`, is **HEAD-movement-based, not push-based**: it fires only when
+the tree's committed HEAD hasn't advanced for `headStaleMs` **while the last
+recorded status is NOT `'nothing'` and NOT `'skipped'`** (i.e. there was
+actually work to commit and it didn't land). A commit-only member still
+commits locally every tick exactly as before — only the *push* leg is
+disabled — so `commitStale` is entirely unaffected by commit-only mode. The
+other three fault classes (`fireStale`, `errorStall`, `persistentReap`) are
+about the routine firing/erroring at all, likewise orthogonal to
+push-vs-commit-only. **Conclusion: no watchdog code change is needed for
+commit-only mode; this is a documentation/verification item, not a bug.** If a
+false alarm is ever observed on a bridged hive, it is a NEW bug distinct from
+this analysis — re-open, don't assume this note covers it forever.
+
+## Kill-switch / rollback summary (one-line version)
+
+`setHiveGitMode(ws, hive, null)` → immediate, fail-open, byte-for-byte revert
+to legacy behavior on every member's next tick. No flag exists for the P2P
+drivers themselves (by design — same pattern as `FLAGS.GITHUB_BRIDGE`:
+activation is **structural**, gated by `hiveGit.mode`, not a separate
+default-off flag; see `libs/flags/src/types.ts` comment above
+`FEDERATED_SCOUT_LEARNING` for the precedent). `FLAGS.GITHUB_BRIDGE` (default
+ON) is a secondary instant off-switch for the bridge leg specifically, on top
+of the mode.
+
+## Refs
+
+Plan `p2p-git-live-activation-2026-07-09`; design doc
+`docs/plans/p2p-git-research-2026-07-01.md`; the drill
+`papercusp-desktop/bin/hive-git-drill.sh` (P-301); `hive-git-mode.ts`,
+`integrator.ts`, `integrator-tick.ts`, `sigrefs.ts`, `github-divergence.ts`,
+`git-sync-stall-watchdog.ts`.

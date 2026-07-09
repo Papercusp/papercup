@@ -815,7 +815,7 @@ export async function reconcileOneHive(
            extract(epoch from last_output_at) * 1000 AS last_output_ms
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
-       AND child_role IN ('bee', 'cup')
+       AND child_role = 'cup'
        AND parent_spawn_id = ANY(${queenOwners})`;
 
   // EI-865 / WI-233 — which bees made a governed model call within ACTIVE_RECLAIM_WINDOW_MS
@@ -1672,7 +1672,7 @@ export async function latestQueenWakeAt(workspaceId: string, potSlug: string): P
       SELECT max(started_at) AS t
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${workspaceId}
-         AND child_role IN ('queen', 'mug')
+         AND child_role = 'mug'
          AND harness_slug = ${potSlug}`;
     const t = rows[0]?.t;
     return t ? new Date(t).toISOString() : null;

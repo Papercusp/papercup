@@ -91,10 +91,10 @@ describe('bee_claim_specs store (mig 372)', () => {
 });
 
 describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_claim_spec)', () => {
-  it('returns source:"bee" + the full row metadata for a bee with an explicit spec', async () => {
+  it('returns source:"cup" + the full row metadata for a bee with an explicit spec', async () => {
     await setClaimSpec({ cupId: 'su-rec-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-x' }, db.sql);
     const rec = await getClaimSpecRecord({ cupId: 'su-rec-1' }, db.sql);
-    expect(rec.source).toBe('bee');
+    expect(rec.source).toBe('cup');
     expect(rec.spec.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
     expect(rec.revision).toBe(DEFAULT_CLAIM_SPEC.revision);
     expect(rec.updatedBy).toBe('leader-x');
@@ -121,7 +121,7 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
     const fleetKey = fleetSpecBeeKey('drain-fleet-x');
     await setClaimSpec({ cupId: fleetKey, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-z' }, db.sql);
     const rec = await getClaimSpecRecord({ cupId: fleetKey }, db.sql);
-    expect(rec.source).toBe('bee'); // the sentinel row itself IS the "bee" row for this key
+    expect(rec.source).toBe('cup'); // the sentinel row itself IS the "cup" row for this key
     expect(rec.updatedBy).toBe('leader-z');
   });
 });

@@ -71,7 +71,7 @@ describe('recipes:* registration (P-005, P-013)', () => {
       const tool = findTool(name);
       expect(tool).toBeDefined();
       expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
-      // bee is in the envelope (mirrors code:run's [...SU_ROLES,'bee'])
+      // bee is in the envelope (mirrors code:run's [...SU_ROLES,'cup'])
       expect(tool.agentRoles).toContain('cup');
     });
   }

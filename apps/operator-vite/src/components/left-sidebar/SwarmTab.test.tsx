@@ -206,16 +206,16 @@ describe('<SwarmTab> selection + expansion', () => {
     seed('dev.coordPresence', PRESENCE);
     seed('sidebar.fleetBees', BEES);
     seed('sidebar.beeMail', [
-      { owner: 'bee-1', inbox: [{ msg_id: 'm-in', from: 'queen', kind: 'task', summary: 'do X' }], outbox: [{ msg_id: 'm-out', to: ['queen'], kind: 'ack', summary: 'done Y' }] },
+      { owner: 'bee-1', inbox: [{ msg_id: 'm-in', from: 'mug', kind: 'task', summary: 'do X' }], outbox: [{ msg_id: 'm-out', to: ['mug'], kind: 'ack', summary: 'done Y' }] },
     ]);
     render(<SwarmTab active={true} />);
     const exp = screen.getByTestId('swarm-expand-bee-1');
     expect(exp.textContent).toContain('do X');
     expect(exp.textContent).toContain('done Y');
-    expect(screen.getByRole('link', { name: /open inbound message from queen/i }).getAttribute('href')).toBe(
+    expect(screen.getByRole('link', { name: /open inbound message from mug/i }).getAttribute('href')).toBe(
       '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-in',
     );
-    expect(screen.getByRole('link', { name: /open outbound message to queen/i }).getAttribute('href')).toBe(
+    expect(screen.getByRole('link', { name: /open outbound message to mug/i }).getAttribute('href')).toBe(
       '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-out',
     );
   });

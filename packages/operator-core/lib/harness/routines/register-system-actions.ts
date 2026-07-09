@@ -275,3 +275,9 @@ import './unclaimed-work-digest-action';
 // the seed routine ships INACTIVE (go-live activates it).
 import './autonomy-trust-scan-action';
 import './cargo-test-action';
+// p2p-git-live-activation-2026-07-09 P-205 (G-9): `system:hive-git-gc` — the
+// ephemeral (tier:'ephemeral') per-hive-home cadence bounding a hive-git bare
+// store's namespace-ref growth. Self-gates on `hiveGit.mode` (a no-op for
+// legacy hives); armed by upsertHiveGitGcRoutine at the mode-flip-off-legacy
+// call site (hive-git-gc-routine.ts) — no bespoke reconcile sweep needed.
+import './hive-git-gc-action';

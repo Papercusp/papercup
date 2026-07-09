@@ -363,13 +363,13 @@ export async function readHiveSoakReport(
     probeBgHostTicker(),
     readBgHostJournal(windowHours),
     sql<SpawnAggRow[]>`
-      SELECT CASE child_role WHEN 'bee' THEN 'cup' WHEN 'queen' THEN 'mug' WHEN 'overwatch' THEN 'kettle' ELSE child_role END AS child_role,
+      SELECT child_role,
              count(*) FILTER (WHERE status IN ('done', 'failed', 'cancelled', 'reaped'))::int AS total_terminal,
              count(*) FILTER (WHERE status = 'done')::int AS successful
         FROM harness_shared.spawned_agents
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ANY(${sql.array(surveySlugs)})
-         AND child_role IN ('bee', 'queen', 'overwatch', 'cup', 'mug', 'kettle')
+         AND child_role IN ('cup', 'mug', 'kettle')
          AND started_at >= now() - make_interval(hours => ${windowHours})
        GROUP BY 1
     `,

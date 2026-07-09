@@ -503,25 +503,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { listRubrics } = await import('../rubrics');
       const { listScorecards } = await import('../scorecards');
       const [rubrics, scorecards] = await Promise.all([listRubrics({}), listScorecards({ limit: 500 })]);
-      const byRubric = new Map<string, { count: number; latestAt: string | null }>();
+      const byRubric = new Map<
+        string,
+        { count: number; latestAt: string | null; latestScore10: number | null; scoreSum: number; scoreN: number }
+      >();
       for (const s of scorecards) {
-        const e = byRubric.get(s.rubricRef) ?? { count: 0, latestAt: null };
+        const e = byRubric.get(s.rubricRef) ?? {
+          count: 0,
+          latestAt: null,
+          latestScore10: null as number | null,
+          scoreSum: 0,
+          scoreN: 0,
+        };
         e.count += 1;
-        if (!e.latestAt || s.createdAt > e.latestAt) e.latestAt = s.createdAt;
+        if (!e.latestAt || s.createdAt > e.latestAt) {
+          e.latestAt = s.createdAt;
+          e.latestScore10 = s.score10;
+        }
+        // avgScore10 = mean of the P-004 read-time 0–10 projections; null-scored
+        // (all-unknown) scorecards are excluded, matching the per-scorecard rule.
+        if (s.score10 !== null) {
+          e.scoreSum += s.score10;
+          e.scoreN += 1;
+        }
         byRubric.set(s.rubricRef, e);
       }
-      return rubrics.map((r) => ({
-        rubricId: r.rubricId,
-        characteristic: r.characteristic,
-        title: r.title,
-        status: r.status,
-        criteriaCount: r.criteria.length,
-        ratingScale: r.ratingScale,
-        methodRef: r.methodRef,
-        updatedAt: r.updatedAt,
-        scorecardCount: byRubric.get(r.rubricId)?.count ?? 0,
-        latestScorecardAt: byRubric.get(r.rubricId)?.latestAt ?? null,
-      })) as unknown[];
+      return rubrics.map((r) => {
+        const g = byRubric.get(r.rubricId);
+        return {
+          rubricId: r.rubricId,
+          characteristic: r.characteristic,
+          title: r.title,
+          status: r.status,
+          criteriaCount: r.criteria.length,
+          ratingScale: r.ratingScale,
+          methodRef: r.methodRef,
+          updatedAt: r.updatedAt,
+          scorecardCount: g?.count ?? 0,
+          latestScorecardAt: g?.latestAt ?? null,
+          latestScore10: g?.latestScore10 ?? null,
+          avgScore10: g && g.scoreN > 0 ? Math.round((g.scoreSum / g.scoreN) * 10) / 10 : null,
+        };
+      }) as unknown[];
     },
   },
   'scorecards.list': {

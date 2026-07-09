@@ -171,6 +171,33 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(await getWorkItemCheckpoint({ harness: 'h2', workItemId: 'WI-1' })).toBe('other-harness');
   });
 
+  it('EI-8805: a harness-null item round-trips (write → read back the same continuity state)', async () => {
+    // A harness-null item — an issue-family EI filed from an unscoped su session — has
+    // no harness. Previously the write silently orphaned its checkpoint (keyed under the
+    // session harness while the read looked under the item's null harness); the store
+    // now canonicalizes a null harness to one namespace so the checkpoint survives.
+    expect(await setWorkItemCheckpoint({ harness: null, workItemId: 'EI-1' }, 'harness-null continuity')).toBe(
+      'harness-null continuity',
+    );
+    expect(await getWorkItemCheckpoint({ harness: null, workItemId: 'EI-1' })).toBe('harness-null continuity');
+  });
+
+  it('EI-8805: cross-key agreement — a write under the unscoped wildcard reads back under the item null harness', async () => {
+    // The unscoped su session resolves its harness to the '*' wildcard on write; the read
+    // side (work_items:get) keys by the item's OWN null harness. null and '*' must
+    // collapse onto ONE namespace or the write is invisible to the read — the exact
+    // EI-8805 defect. Assert both directions.
+    expect(await setWorkItemCheckpoint({ harness: '*', workItemId: 'EI-2' }, 'written under wildcard')).toBe(
+      'written under wildcard',
+    );
+    expect(await getWorkItemCheckpoint({ harness: null, workItemId: 'EI-2' })).toBe('written under wildcard');
+
+    expect(await setWorkItemCheckpoint({ harness: null, workItemId: 'EI-3' }, 'written under null')).toBe(
+      'written under null',
+    );
+    expect(await getWorkItemCheckpoint({ harness: '*', workItemId: 'EI-3' })).toBe('written under null');
+  });
+
   it('workspace-scoped: a checkpoint in another workspace is invisible here', async () => {
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1', workspaceId: 'other-ws' }, 'theirs');
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' })).toBeNull(); // default ws

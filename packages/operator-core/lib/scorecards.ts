@@ -89,6 +89,57 @@ export interface ScorecardRow {
    * agent doing its job.
    */
   synthesized: boolean;
+  /**
+   * READ-TIME 0–10 projection of this scorecard (rubrics-tab-scorecard-ui-2026-07-09
+   * P-004 / D-001): the mean of the per-criterion numeric projections
+   * ({@link ratingScore10}) over the criteria whose rating maps (unknown/custom
+   * ratings are excluded, never counted as 0). Null when NO rating maps. Grading
+   * stays CATEGORICAL at capture time — this number is derived on read, so past
+   * scorecards get it automatically (numeric "backfill" with no migration).
+   */
+  score10: number | null;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Numeric projection (P-004 / D-001) — capture stays categorical; 0–10 is a
+// READ-TIME projection so history is "backfilled" for free and the categorical
+// evidence trail stays the source of truth.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The default rating→score map, covering the shared rating vocabularies
+ * (pass/partial/fail and healthy/degraded/broken plus common synonyms).
+ * `unknown` and any unmapped custom rating project to null (EXCLUDED from
+ * means — an unassessed criterion must never drag a score toward 0).
+ * A rubric wanting different weights passes `overrides` (per-rubric map).
+ */
+export const DEFAULT_RATING_SCORE10: Record<string, number> = {
+  pass: 10, healthy: 10, good: 10, yes: 10, green: 10,
+  partial: 5, degraded: 5, mixed: 5, warn: 5,
+  fail: 0, broken: 0, bad: 0, no: 0, red: 0,
+};
+
+/** Project one categorical rating to 0–10 (null = unmapped/excluded). */
+export function ratingScore10(rating: string, overrides?: Record<string, number>): number | null {
+  const key = rating.toLowerCase();
+  const v = overrides?.[key] ?? DEFAULT_RATING_SCORE10[key];
+  return v === undefined ? null : v;
+}
+
+/**
+ * A whole scorecard's 0–10 score: the mean of its mappable criterion ratings,
+ * rounded to 1 decimal. Null when no rating maps (e.g. an all-unknown idle
+ * scorecard — "no signal", not "0/10").
+ */
+export function scorecardScore10(
+  ratings: Record<string, { rating: string }>,
+  overrides?: Record<string, number>,
+): number | null {
+  const nums = Object.values(ratings)
+    .map((r) => ratingScore10(r.rating, overrides))
+    .filter((n): n is number => n !== null);
+  if (nums.length === 0) return null;
+  return Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10;
 }
 
 export interface ListScorecardsFilter {
@@ -187,6 +238,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       missingKeys,
       rubricResolved,
       synthesized,
+      score10: scorecardScore10(ratings),
     });
   }
 
@@ -212,10 +264,15 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
  */
 export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'unknown';
 
-/** Default-scale ordinal severity (healthy < degraded < broken). `unknown` and any
- *  custom per-criterion rating are NOT ordered (returns null → excluded from the
- *  direction calc) — only the shared default vocabulary has a meaningful order. */
-const TREND_SEVERITY: Record<string, number> = { healthy: 0, degraded: 1, broken: 2 };
+/** Default-scale ordinal severity (healthy < degraded < broken; pass < partial < fail
+ *  — the pass vocabulary was MISSING until P-004, so every pass-scale rubric's
+ *  direction silently read 'unknown'). `unknown` and any custom per-criterion rating
+ *  are NOT ordered (returns null → excluded from the direction calc) — only the
+ *  shared default vocabularies have a meaningful order. */
+const TREND_SEVERITY: Record<string, number> = {
+  healthy: 0, degraded: 1, broken: 2,
+  pass: 0, partial: 1, fail: 2,
+};
 function trendSeverity(rating: string): number | null {
   const s = TREND_SEVERITY[rating.toLowerCase()];
   return s === undefined ? null : s;
@@ -290,6 +347,11 @@ export interface CriterionTrend {
   latest: { rating: string; at: string };
   /** Net first→latest trend (see {@link TrendDirection}). */
   direction: TrendDirection;
+  /**
+   * Mean 0–10 numeric projection over the window's mappable ratings
+   * (P-004 / D-001 read-time scale; unknown/custom excluded, null when none map).
+   */
+  mean10: number | null;
   /** The chronological series as RLE runs (oldest → newest). Only present when
    *  requested (`includeSeries`, WI-2943) — the summary fields above are the
    *  default payload. */
@@ -471,6 +533,9 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     .map(([criterion, series]) => {
       const distribution: Record<string, number> = {};
       for (const s of series) distribution[s.rating] = (distribution[s.rating] ?? 0) + 1;
+      const nums = series
+        .map((s) => ratingScore10(s.rating))
+        .filter((n): n is number => n !== null);
       return {
         criterion,
         count: series.length,
@@ -479,6 +544,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         first: { rating: series[0].rating, at: series[0].at },
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
         direction: computeTrendDirection(series),
+        mean10: nums.length ? Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10 : null,
         ...(filter.includeSeries ? { series: compressSeries(series) } : {}),
       };
     });

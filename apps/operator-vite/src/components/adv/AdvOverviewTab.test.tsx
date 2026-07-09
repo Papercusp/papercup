@@ -214,7 +214,7 @@ describe('AdvOverviewTab component', () => {
     // the tile must render them instead of an empty/"select a harness" state.
     nuqsState.slug = null;
     activityResult = {
-      data: [actionRow({ id: 'fleet1', actor: 'queen', kind: 'place', summary: 'placed WI-900' })],
+      data: [actionRow({ id: 'fleet1', actor: 'mug', kind: 'place', summary: 'placed WI-900' })],
       loading: false,
     };
     render(<AdvOverviewTab />);
@@ -304,12 +304,12 @@ describe('AdvOverviewTab component', () => {
   it('falls back to `kind` for an activity row with no summary', async () => {
     nuqsState.slug = 'pot-a';
     activityResult = {
-      data: [actionRow({ id: 'act2', actor: 'queen', kind: 'lifecycle', summary: null })],
+      data: [actionRow({ id: 'act2', actor: 'mug', kind: 'lifecycle', summary: null })],
       loading: false,
     };
     render(<AdvOverviewTab />);
     expect(await screen.findByText('lifecycle')).toBeTruthy();
-    expect(screen.getByText('queen')).toBeTruthy();
+    expect(screen.getByText('mug')).toBeTruthy();
   });
 
   it('shows the Agents loading state while dev.coordPresence is in flight', () => {

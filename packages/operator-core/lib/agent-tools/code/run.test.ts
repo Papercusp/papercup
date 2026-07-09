@@ -63,7 +63,7 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(tool).toBeDefined();
     expect(tool?.effect).toBe('write');
     expect((tool?.agentRoles?.length ?? 0)).toBeGreaterThan(0);
-    // All-roles widening: roles excluded under the old [...SU_ROLES,'bee'] gate now qualify.
+    // All-roles widening: roles excluded under the old [...SU_ROLES,'cup'] gate now qualify.
     for (const role of ['worker', 'cup', 'papercup', 'kettle', 'reviewer']) {
       expect(tool?.agentRoles).toContain(role);
     }

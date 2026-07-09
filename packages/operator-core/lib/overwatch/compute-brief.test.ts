@@ -568,7 +568,7 @@ function fakeHealth(
       overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive,
     },
     panels: {
-      queen: hp('queen', pick(p.queen, queenData())),
+      queen: hp('mug', pick(p.queen, queenData())),
       bees: hp('bees', pick(p.bees, beesData())),
       workItems: naPanel('workItems'),
       workFeed: hp('workFeed', pick(p.workFeed, workFeedData())),

@@ -82,7 +82,7 @@ async function insertStaleBee(spawnId: string, parentSpawnId: string | null, ses
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, child_role, run_id, parent_spawn_id, session_owner,
        status, started_at, heartbeat_at)
-    VALUES (${spawnId}, ${WS}, 'papercup', 'bee', ${'r-' + spawnId}, ${parentSpawnId ?? null},
+    VALUES (${spawnId}, ${WS}, 'papercup', 'cup', ${'r-' + spawnId}, ${parentSpawnId ?? null},
             ${sessionOwner ?? null}, 'running', now() - interval '10 minutes',
             now() - interval '10 minutes')`;
 }
@@ -163,7 +163,7 @@ describe('hive wake loop: reclaim → parent-wake', () => {
     await db.sql`
       INSERT INTO harness_shared.spawned_agents
         (spawn_id, workspace_id, harness_slug, child_role, run_id, parent_spawn_id, status, heartbeat_at)
-      VALUES ('live-bee', ${WS}, 'papercup', 'bee', 'r-live', 's-queen', 'running', now())`;
+      VALUES ('live-bee', ${WS}, 'papercup', 'cup', 'r-live', 's-queen', 'running', now())`;
 
     const r = await reclaimOrphanedSpawns(db.sql, STALE);
 

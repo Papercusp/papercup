@@ -49,19 +49,28 @@ services:
     volumes:
       - core-data:/var/lib/defguard
 
+  # Defguard v2 gateway. NO token env: v2 replaced the GATEWAY_TOKEN handshake
+  # with an ADOPTION flow — Core dials this container on :50066 (see the
+  # README's "Adopt the gateway" step) and they exchange a CSR/signed cert,
+  # which lands in the certs volume below. A `DEFGUARD_TOKEN` here is inert.
+  #
+  # host networking is required: the gateway creates the wg0 interface in the
+  # host netns and binds 51820/udp + 50066/tcp there directly. Adoption opens a
+  # 10-minute window on container start; `restart` reopens it.
   gateway:
     image: ghcr.io/defguard/gateway:latest
     restart: unless-stopped
     depends_on: [core]
+    network_mode: host
     cap_add: [NET_ADMIN]
-    environment:
-      DEFGUARD_GRPC_URL: http://core:50051
-      DEFGUARD_TOKEN: ${GATEWAY_TOKEN}
-      DEFGUARD_GATEWAY_NAME: papercusp-gateway
-    ports:
-      - "0.0.0.0:51820:51820/udp"
-    sysctls:
-      - net.ipv4.ip_forward=1
+    # Debian 13+ / AppArmor / SELinux hosts refuse the wg netlink calls otherwise.
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./.volumes/certs/gateway:/etc/defguard/certs
+    # NOTE: no `sysctls:` here — Docker rejects namespaced sysctls together with
+    # network_mode: host. Set forwarding on the HOST instead:
+    #   sysctl -w net.ipv4.ip_forward=1   (persist in /etc/sysctl.d/)
 
   caddy:
     image: caddy:2-alpine

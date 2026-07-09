@@ -167,4 +167,65 @@ describe('registerSidecarShutdownHooks', () => {
     process.removeAllListeners('SIGTERM');
     process.removeAllListeners('SIGINT');
   });
+
+  // P-006 (plan p2p-parity-parallel-lanes-2026-07-09): the ~6min sidecar
+  // die/respawn churn. Root cause — `uncaughtException` fires process-wide for
+  // EVERY exception, not just ones the sidecar cares about, so a healthy
+  // sidecar was torn down on a benign `write EPIPE` (a client disconnect) the
+  // host's OWN guard already swallowed. `isFatalException` closes that gap.
+  describe('uncaughtException gating (isFatalException — P-006)', () => {
+    const newestUncaughtExceptionListener = (): ((err: unknown) => unknown) => {
+      const listeners = process.listeners('uncaughtException');
+      return listeners[listeners.length - 1] as (err: unknown) => unknown;
+    };
+
+    it('no isFatalException supplied (default) → stop() runs for any exception (back-compat)', async () => {
+      let stopped = false;
+      registerSidecarShutdownHooks({
+        label: 'test-uncaught-default',
+        stop: async () => {
+          stopped = true;
+        },
+      });
+      await newestUncaughtExceptionListener()(new Error('anything'));
+      expect(stopped).toBe(true);
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+    });
+
+    it('isFatalException returns false (benign, e.g. write EPIPE) → stop() is NOT called', async () => {
+      let stopped = false;
+      registerSidecarShutdownHooks({
+        label: 'test-uncaught-benign',
+        stop: async () => {
+          stopped = true;
+        },
+        isFatalException: (err) => (err as { code?: string })?.code !== 'EPIPE',
+      });
+      await newestUncaughtExceptionListener()(
+        Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }),
+      );
+      expect(stopped).toBe(false);
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+    });
+
+    it('isFatalException returns true (a real bug) → stop() still runs', async () => {
+      let stopped = false;
+      registerSidecarShutdownHooks({
+        label: 'test-uncaught-fatal',
+        stop: async () => {
+          stopped = true;
+        },
+        isFatalException: (err) => (err as { code?: string })?.code !== 'EPIPE',
+      });
+      await newestUncaughtExceptionListener()(new TypeError('real bug — not EPIPE'));
+      expect(stopped).toBe(true);
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+    });
+  });
 });

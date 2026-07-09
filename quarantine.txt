@@ -27,7 +27,29 @@
 # p2p/shared-hive/federation. These stay in the suite output for visibility, but
 # do not hold the v1 green-checkpoint verdict; v2 de-quarantine follow-ups are
 # filed from WI-3210.
-@papercusp/operator-core::lib/**/*federation*.test.ts
+#
+# P-502 (p2p-git-live-activation-2026-07-09, 2026-07-09): the bare
+# `lib/**/*federation*.test.ts` keyword glob below ALSO silently caught
+# lib/harness/git-sync/code-plane-federation.test.ts — a healthy (8/8 green),
+# safety-critical git-sync test (the S0 no-direct-push joiner invariant) that
+# has nothing to do with the p2p/hyperbee substrate this quarantine targets;
+# hive-git/git-sync IS in v1 scope for p2p-git-live-activation. Every other
+# file the old glob matched is enumerated explicitly below (behavior-identical
+# for all of them — the hyperbee ones are also independently covered by the
+# bare `lib/sync/hyperbee/**` line further down) so ONLY that one file's gate
+# status changes. A hive-git-gate-quarantine-guard.test.ts recurrence guard
+# (apps/operator/lib/release/) now fails loudly if a future edit re-catches
+# any lib/sync/hive-git/** or lib/harness/git-sync/** test file here.
+@papercusp/operator-core::lib/agent-tools/coordination/federation-scope.test.ts
+@papercusp/operator-core::lib/endpoint-route/routes/discovery/federation-status.test.ts
+@papercusp/operator-core::lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts
+@papercusp/operator-core::lib/hive-federation.test.ts
+@papercusp/operator-core::lib/identity/p079-live-federation.live.test.ts
+@papercusp/operator-core::lib/plan-parts/federation.test.ts
+@papercusp/operator-core::lib/scout/federation-reputation.test.ts
+@papercusp/operator-core::lib/scout/federation-rollout.test.ts
+@papercusp/operator-core::lib/work-items-federation-detector-exclusion.integration.test.ts
+@papercusp/operator-core::lib/sync/hyperbee/**/*federation*.test.ts
 @papercusp/operator-core::lib/**/*p2p*.test.ts
 @papercusp/operator-core::lib/**/dogfood-substrate*.test.ts
 @papercusp/operator-core::lib/**/substrate*.test.ts

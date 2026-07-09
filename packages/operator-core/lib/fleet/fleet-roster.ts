@@ -330,8 +330,8 @@ async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, Fl
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
   const rows = await sql<{ fleet_slug: string; members: number; bees: number }[]>`
     SELECT fleet_slug,
-           count(*) FILTER (WHERE agent_role IS DISTINCT FROM 'bee' AND agent_role IS DISTINCT FROM 'cup')::int AS members,
-           count(*) FILTER (WHERE agent_role IN ('bee', 'cup'))::int AS bees
+           count(*) FILTER (WHERE agent_role IS DISTINCT FROM 'cup')::int AS members,
+           count(*) FILTER (WHERE agent_role = 'cup')::int AS bees
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug IS NOT NULL
@@ -356,7 +356,7 @@ export async function countRunningWorkspaceBees(workspaceId: string): Promise<nu
     SELECT count(*)::int AS n
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
-       AND child_role IN ('bee', 'cup')
+       AND child_role = 'cup'
        AND status IN ('running', 'restarting')
   `;
   return Number(rows[0]?.n ?? 0);
@@ -377,7 +377,7 @@ export async function countRunningFleetBees(fleetSlug: string, workspaceId: stri
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug = ${fleetSlug}
-       AND child_role IN ('bee', 'cup')
+       AND child_role = 'cup'
        AND status IN ('running', 'restarting')
   `;
   return Number(rows[0]?.n ?? 0);
@@ -396,7 +396,7 @@ export async function liveFleetBeeCountsFromNursery(workspaceId: string): Promis
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug IS NOT NULL
-       AND child_role IN ('bee', 'cup')
+       AND child_role = 'cup'
        AND status IN ('running', 'restarting')
      GROUP BY fleet_slug
   `;

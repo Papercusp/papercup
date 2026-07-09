@@ -17,6 +17,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -42,19 +43,27 @@ const runElSuite = has('--el-suite');
 const excludeArg = arg('--exclude', '');
 const excludes = new Set(excludeArg.split(',').filter(Boolean));
 
-// Read quarantine.txt: workspace-level entries get added to excludes (logged
-// as quarantined, not silently skipped). Per-file quarantine is informational
-// only — vitest doesn't have a per-file skip flag from outside.
+// Read quarantine.txt: BARE workspace-level entries (no `::`) get added to
+// the whole-workspace quarantine set (logged as quarantined, not silently
+// skipped). Per-file `ws::glob` entries are informational only here — vitest
+// doesn't have a per-file skip flag from outside, and the PRECISE per-file
+// quarantine match is green-checkpoint.ts's job (applyTestQuarantine), which
+// only runs on a genuinely red exit code.
+//
+// WI-3371 (2026-07-09): this used to do `const [ws] = line.split('::'); if
+// (ws) quarantined.add(ws)` — which added the WORKSPACE half of a per-file
+// `ws::glob` entry too, so any operator-core failure (the biggest, most
+// critical workspace, and the only one with per-file quarantine entries)
+// silently stopped gating `npm run test:affected` entirely, contradicting
+// this very comment. Fixed per explicit go-ahead from su-4d7a4628 (p2p lead)
+// 2026-07-09 — expect NEW gating failures in the previously-masked
+// hyperbee/p2p/substrate/federation suites; route fallout per area (hyperbee
+// + federation → su-4d7a4628, hive-git → su-63834d42, coord-parity →
+// su-4dc3b...), not "revert this fix".
 const quarantineFile = join(ROOT, 'quarantine.txt');
-const quarantined = new Set();
-if (existsSync(quarantineFile)) {
-  for (const raw of readFileSync(quarantineFile, 'utf8').split('\n')) {
-    const line = raw.replace(/#.*$/, '').trim();
-    if (!line) continue;
-    const [ws] = line.split('::');
-    if (ws) quarantined.add(ws);
-  }
-}
+const quarantined = existsSync(quarantineFile)
+  ? parseQuarantineWorkspaces(readFileSync(quarantineFile, 'utf8'))
+  : new Set();
 
 // WI-3094: Node's execSync defaults maxBuffer to 1MB — comfortably exceeded by
 // `git diff --name-only` output once `base` (origin/main) has drifted far enough

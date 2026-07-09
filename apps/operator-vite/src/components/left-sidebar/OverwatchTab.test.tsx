@@ -49,7 +49,7 @@ const brief = {
   observations: { laneCount: 7, recentByRole: { queen: 3, worker: 4 } },
   crossMonitor: { queenAlive: true, overwatchAlive: false },
   anomalies: [
-    { kind: 'queen-stalled', severity: 'critical', subject: 'queen', detail: 'Queen stalled past cadence.', suggestedAction: { type: 'nudge', target: 'queen', message: 'wake up' } },
+    { kind: 'queen-stalled', severity: 'critical', subject: 'mug', detail: 'Queen stalled past cadence.', suggestedAction: { type: 'nudge', target: 'mug', message: 'wake up' } },
     { kind: 'token-paused', severity: 'warning', subject: 'token buckets', detail: 'opus paused.', suggestedAction: { type: 'observe', message: 'watching' } },
   ],
 };
@@ -79,7 +79,7 @@ describe('OverwatchTab (sidebar)', () => {
     expect(screen.getByText('Running')).toBeTruthy();
     expect(screen.getByText('queen-stalled')).toBeTruthy();
     expect(screen.getByText('token-paused')).toBeTruthy();
-    expect(screen.getByText('NUDGE queen')).toBeTruthy();
+    expect(screen.getByText('NUDGE mug')).toBeTruthy();
     expect(screen.getByText('OBSERVE')).toBeTruthy();
   });
 

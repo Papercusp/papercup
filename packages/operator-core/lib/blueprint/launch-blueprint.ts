@@ -507,7 +507,7 @@ const defaultFire: LaunchFireFn = async ({
           SELECT spawn_id, harness_slug
             FROM harness_shared.spawned_agents
            WHERE workspace_id = ${workspaceId}
-             AND child_role IN ('queen', 'mug')
+             AND child_role = 'mug'
              AND status IN ('running', 'restarting')
              AND spawn_id <> ${spawnId}
            ORDER BY started_at DESC

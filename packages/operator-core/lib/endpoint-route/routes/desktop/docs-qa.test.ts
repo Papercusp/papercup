@@ -168,7 +168,7 @@ describe('composeAgenticDocsSystemPrompt (agentic path)', () => {
     expect(p).toMatch(/never narrate what you are about to do/);
   });
 
-  it('tells the agent to treat everyday-sounding words as Papercusp jargon first (owner-reported "bee" answered as an insect)', () => {
+  it('tells the agent to treat everyday-sounding words as Papercusp jargon first (owner-reported "cup" answered as an insect)', () => {
     const p = composeAgenticDocsSystemPrompt({});
     expect(p).toMatch(/bee, pot, mug, queen, hive, cup, swarm/);
     expect(p).toMatch(/ALWAYS assume the Papercusp meaning/);

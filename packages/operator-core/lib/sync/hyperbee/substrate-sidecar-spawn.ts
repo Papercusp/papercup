@@ -27,6 +27,7 @@ import {
   gracefulStopChild,
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
 } from '../../process-supervision/sidecar-spawn-shared';
+import { isBenignHostError } from '../../host-benign-errors';
 
 // EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
 // is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
@@ -439,5 +440,10 @@ export function registerSidecarShutdownHooks(): void {
   registerSharedSidecarShutdownHooks({
     label: 'substrate-sidecar-spawn',
     stop: () => stopSubstrateSidecar(),
+    // P-006: don't tear down a healthy substrate sidecar for an
+    // uncaughtException hono-host's own guard already classified benign +
+    // swallowed (e.g. a client-disconnect `write EPIPE`) — see the matching
+    // comment in fleet/spawner-sidecar-spawn.ts.
+    isFatalException: (err) => !isBenignHostError(err),
   });
 }

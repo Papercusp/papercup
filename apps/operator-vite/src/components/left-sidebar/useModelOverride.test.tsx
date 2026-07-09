@@ -56,14 +56,14 @@ function lastBody() {
 describe('useModelOverride', () => {
   it('reads the HOME hive row (first kind:hive project), not row[0]', () => {
     syncData['hive.steering'] = [
-      { slug: 'sub', modelOverrides: { sentinel: 'haiku' } },
-      { slug: 'home', modelOverrides: { sentinel: 'opus:high' } },
+      { slug: 'sub', modelOverrides: { papercup: 'haiku' } },
+      { slug: 'home', modelOverrides: { papercup: 'opus:high' } },
     ];
     syncData['harnessProjects.lite'] = [
       { slug: 'sub', harness_kind: 'project' },
       { slug: 'home', harness_kind: 'hive' },
     ];
-    const { getByTestId } = render(<Harness role="sentinel" write="opus" />);
+    const { getByTestId } = render(<Harness role="papercup" write="opus" />);
     expect(getByTestId('override').textContent).toBe('opus:high');
   });
 
@@ -80,11 +80,11 @@ describe('useModelOverride', () => {
   });
 
   it('merges so a peer role override survives', () => {
-    syncData['hive.steering'] = [{ slug: 'home', modelOverrides: { sentinel: 'opus:high' } }];
+    syncData['hive.steering'] = [{ slug: 'home', modelOverrides: { papercup: 'opus:high' } }];
     syncData['harnessProjects.lite'] = [{ slug: 'home', harness_kind: 'hive' }];
     const { getByText } = render(<Harness role="overwatch" write="sonnet" />);
     fireEvent.click(getByText('go'));
-    expect(lastBody().args.modelOverrides).toEqual({ sentinel: 'opus:high', overwatch: 'sonnet' });
+    expect(lastBody().args.modelOverrides).toEqual({ papercup: 'opus:high', overwatch: 'sonnet' });
   });
 
   it('does NOT write while the home hive is still loading (no hive: "" request)', () => {
@@ -97,9 +97,9 @@ describe('useModelOverride', () => {
   });
 
   it('clearing the last override sends modelOverrides: null', () => {
-    syncData['hive.steering'] = [{ slug: 'home', modelOverrides: { sentinel: 'opus:high' } }];
+    syncData['hive.steering'] = [{ slug: 'home', modelOverrides: { papercup: 'opus:high' } }];
     syncData['harnessProjects.lite'] = [{ slug: 'home', harness_kind: 'hive' }];
-    const { getByText } = render(<Harness role="sentinel" write={null} />);
+    const { getByText } = render(<Harness role="papercup" write={null} />);
     fireEvent.click(getByText('go'));
     expect(lastBody().args.modelOverrides).toBeNull();
   });

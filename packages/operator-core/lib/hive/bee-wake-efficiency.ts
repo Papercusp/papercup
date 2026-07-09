@@ -142,7 +142,7 @@ export function beeWakeSampleRows(
            cache_read_tokens, cache_creation_tokens, cost_usd, turn_count
       FROM harness_shared.agent_usage_samples
      WHERE workspace_id = ${input.workspaceId}
-       AND role IN ('bee', 'cup')
+       AND role = 'cup'
        AND session_id IS NOT NULL
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
      ORDER BY ts DESC

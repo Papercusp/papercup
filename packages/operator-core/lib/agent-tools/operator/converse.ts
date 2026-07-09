@@ -172,7 +172,7 @@ export default defineTool({
   // here too — paired with its operator:converse capability grant
   // (BLUEPRINT_ROLE_CAPS.sentinel). The papercup:converse tool alias registers
   // the same handler under the sentinel name; both resolve this allowlist.
-  agentRoles: ['operator', 'sentinel', 'papercup'],
+  agentRoles: ['operator', 'papercup'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a

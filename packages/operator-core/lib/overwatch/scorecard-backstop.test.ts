@@ -36,7 +36,7 @@ function mkHealth(over: Partial<Record<keyof typeof BASE, unknown>> = {}): Syste
     panels: {
       workFeed: panel(pick('workFeed')),
       bees: panel(pick('bees')),
-      queen: panel(pick('queen')),
+      queen: panel(pick('mug')),
       watchdog: panel(pick('watchdog')),
       scout: panel(pick('scout')),
       plans: panel(pick('plans')),

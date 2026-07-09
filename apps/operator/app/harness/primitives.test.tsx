@@ -202,7 +202,7 @@ describe('KindPill', () => {
 
 describe('AgentKindPill', () => {
   it('renders the cup glyph + pack-routed label for a known agent kind', () => {
-    render(<AgentKindPill kind="queen" />);
+    render(<AgentKindPill kind="mug" />);
     // classic/Pot pack: queen → brain → "Mug" (NOT the theme fallback "Queen")
     expect(screen.getByText('Mug')).toBeTruthy();
     expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy(); // 🍵
@@ -219,7 +219,7 @@ describe('AgentKindPill', () => {
   });
 
   it('hides the label when showLabel=false but still renders the glyph', () => {
-    render(<AgentKindPill kind="bee" showLabel={false} />);
+    render(<AgentKindPill kind="cup" showLabel={false} />);
     expect(screen.queryByText(AGENT_KIND.bee.label)).toBeNull();
     expect(screen.getByText(AGENT_KIND_GLYPH.bee)).toBeTruthy();
   });

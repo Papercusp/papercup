@@ -138,7 +138,7 @@ describe('readSelectionRows (spawned_agents ⋈ run_output ⋈ features)', () =>
     await sql`
       INSERT INTO harness_shared.spawned_agents
         (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id, feature_id, status, exit_code, duration_ms, started_at)
-      VALUES ('sp-1', ${WS}, 'papercup', 'queen', 'worker', 'sel-run-1', 'F-001', 'failed', 124, 120000, now() - interval '1 day')`;
+      VALUES ('sp-1', ${WS}, 'papercup', 'mug', 'worker', 'sel-run-1', 'F-001', 'failed', 124, 120000, now() - interval '1 day')`;
     await sql`
       INSERT INTO harness_shared.harness_run_output
         (workspace_id, harness_slug, run_id, role, jsonl_body, started_at, ended_at)
@@ -164,8 +164,8 @@ describe('readSelectionRows (spawned_agents ⋈ run_output ⋈ features)', () =>
     await sql`
       INSERT INTO harness_shared.spawned_agents
         (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id, status, started_at)
-      VALUES ('sp-old', ${WS}, 'papercup', 'queen', 'worker', 'sel-run-old', 'failed', now() - interval '30 days'),
-             ('sp-live', ${WS}, 'papercup', 'queen', 'worker', 'sel-run-live', 'running', now())`;
+      VALUES ('sp-old', ${WS}, 'papercup', 'mug', 'worker', 'sel-run-old', 'failed', now() - interval '30 days'),
+             ('sp-live', ${WS}, 'papercup', 'mug', 'worker', 'sel-run-live', 'running', now())`;
     const rows = await readSelectionRows(sql, WS, 7);
     const ids = rows.map((r) => r.runId);
     expect(ids).not.toContain('sel-run-old');

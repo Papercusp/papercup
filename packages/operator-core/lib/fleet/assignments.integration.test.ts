@@ -283,14 +283,14 @@ describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D
 
   it('reorder places items at a rank (insert-at-rank, peers shift) across both families', async () => {
     await seedBeeQueue();
-    // Bee self-sequences its initial list 0..3 (default writer 'bee').
+    // Bee self-sequences its initial list 0..3 (default writer 'cup').
     await reorderWorkItem('FA-TEST-F1', 0);
     await reorderWorkItem('FA-TEST-F2', 1);
     await reorderWorkItem('FA-TEST-F3', 2);
     const seeded = await reorderWorkItem('FA-TEST-B1', 3);
     expect('error' in seeded).toBe(false);
 
-    // Queen injects the bug to head-of-line (writer 'queen' — the propose/dispose audit).
+    // Queen injects the bug to head-of-line (writer 'mug' — the propose/dispose audit).
     const moved = await reorderWorkItem('FA-TEST-B1', 0, { writer: 'mug' });
     if ('error' in moved) throw new Error(moved.error);
     expect(moved.rank).toBe(0);

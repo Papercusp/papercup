@@ -177,7 +177,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
   const busy = (key: string) => busyKey === key;
 
   // Session-only MODEL override for the dock 🛡 Sentinel (model-override-sidebar-2026-06-23).
-  const sentinelModel = useModelOverride('sentinel', active);
+  const sentinelModel = useModelOverride('papercup', active);
 
   return (
     <TooltipPrimitive.Provider delayDuration={250}>

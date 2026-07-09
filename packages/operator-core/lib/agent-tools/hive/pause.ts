@@ -109,7 +109,7 @@ export default defineTool({
       const rows = await sql<Array<{ session_owner: string | null }>>`
         SELECT session_owner FROM harness_shared.spawned_agents
         WHERE workspace_id = ${workspaceId} AND status IN ('running', 'restarting')
-          AND child_role IN ('bee', 'cup') AND session_owner IS NOT NULL`;
+          AND child_role = 'cup' AND session_owner IS NOT NULL`;
       drained = [...new Set(rows.map((r) => r.session_owner).filter((s): s is string => Boolean(s)))];
       if (drained.length > 0) {
         await sendMessage(identity, {

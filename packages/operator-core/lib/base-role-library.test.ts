@@ -31,7 +31,7 @@ const CHAT_ROLES = new Set(['operator', 'oracle']);
 const PHASE_ONLY_ROLES = new Set(['tester', 'test-writer', 'monitor']);
 
 // Roles bundled in a SPECIFIC blueprint (not the shared base library) — Phase 3.
-// `bee` is the Hive's generic worker; its persona lives at
+// `cup` is the Hive's generic worker; its persona lives at
 // blueprints/coding/prompts/bee.md, resolved via the hive blueprint (or the global
 // backstop until the harness blueprintId is threaded in Phase 5).
 const BLUEPRINT_BUNDLED_ROLES = new Set(['cup']);

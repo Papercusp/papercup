@@ -3150,10 +3150,10 @@ test('[codex-cli] no bearer pool + no CLI accounts → the 503 is unchanged (pre
 
 test('effectivePriorityLabel prefers the explicit priority header', () => {
   assert.equal(
-    // Explicit labels pass through verbatim (trim+lowercase) — legacy 'queen'
+    // Explicit labels pass through verbatim (trim+lowercase) — legacy 'mug'
     // still lands in tier 1 via the DEFAULT_GATEWAY_PRIORITY_MAP dual keys.
     effectivePriorityLabel({ 'x-papercusp-priority': ' Queen ', 'x-papercusp-owner': 'su-abc' }),
-    'queen',
+    'mug',
   );
 });
 

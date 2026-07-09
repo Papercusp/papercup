@@ -119,7 +119,7 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   _lints 19/19 + css-tokens, DbosClient 10/10, LearningTab 37/37,
   StructuredStreamView 4/4, `npm run test:affected` exit 0 (2713 files green;
   su-ba914 confirmed the nuqs red fixed on their side).
-- **P-006** [EDITS DONE 2026-07-09; wip pending frost/black litmus] theme-contract
+- **P-006** [DONE 2026-07-09 — litmus PASSED; two extra leaks found+fixed en route] theme-contract
   sweep — executed WIDER than the recipe: (a) globals.css had 211 cyan-300
   literals (not ~28; .pc-voice-btn.is-wake-detected turned out amber, the cyan
   is .operator-panel + marketplace/route-transition/shell-heading families) —
@@ -140,10 +140,30 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   plugins-page added to audited list. En route: allowlisted RubricDetailPanel +
   ScorecardDetail native tables (peer plan rubrics-tab-scorecard-ui-2026-07-09
   landed mid-verify holding the gate red; their author owns migration).
-  Verified: _lints 21/21, tokens.test 15/15, test:affected exit 0. REMAINING to
-  flip done: frost/black visual litmus of .operator-panel neon border (tauri-
-  agent-tools) + docs-mirror rebuild (was failing on a stale .prerender chunk;
-  clean rebuild kicked off).
+  LITMUS (2026-07-09, isolated dock-suppressed shell on :3370 per agent-e2e §1.3;
+  OperatorPanel is UNMOUNTED/orphaned per design/operator-panel-visual-pass.mdx,
+  so a fixture div carrying the panel classes was injected): PASSED — frost
+  renders the sky-family bezel (near-identical to old cyan), black goes
+  monochrome white/grey + deliberate amber decoratives, zero blue leak;
+  WebKitGTK resolves `rgb(from var(--accent-strong) r g b / a)` exactly
+  (color(srgb .49 .827 .988 / a)). TWO EXTRA LEAKS found by the litmus + fixed:
+  (g) black/honeycomb/hive token sets lacked accent-rgb + accent-strong-rgb, so
+  frost's SKY triplets inherited through :root into every rgba(var(--*-rgb), a)
+  composition under those themes — triplets added to all three
+  *.semantic.tokens.json (black 230,230,230/255,255,255; honeycomb 198,142,36/
+  214,166,74; hive 246,183,47/255,209,102) + tokens rebuilt; rule recorded in
+  the token $descriptions: every theme overriding accent MUST override the
+  triplets. (h) the P-006 neon-var binding had landed on a SUPERSEDED
+  .operator-panel block (~L11887) — the LIVE winning block is the later
+  "augmented HUD bezel" (~L13487) whose --operator-hud-cyan/-blue were still
+  bespoke literals 99,230,255 / 16,185,235 → now var(--accent-strong-rgb) /
+  var(--accent-rgb) (computed-style proof: hud-cyan resolves 125,211,252 frost /
+  255,255,255 black). ⚠ Gotcha for future litmus work: the desktop dev shell
+  serves operator-vite as a BUILT bundle from hono-host (:3370/assets/index-*.css)
+  — a globals.css edit needs `cd apps/operator-vite && npm run build` + reload,
+  Vite HMR does NOT reach it. Docs-mirror clean rebuild green (stale
+  dist/.prerender chunk; rm -rf dist .astro fixed). Verified after (g)+(h):
+  _lints 21/21, tokens.test 15/15, test:affected exit 0.
 - **P-007** flat buttons (HR9): strip bevels globals.css L~9128 .operator-feed-
   pills button.is-active, L~20760 .operator-mini-btn--ghost, L~21145
   .operator-delegates__actions button, L~24624 .operator-feed-active-filters

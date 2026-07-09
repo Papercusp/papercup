@@ -1299,7 +1299,7 @@ function LiveFleetPanel({ live }: { live: BenchRunLive }) {
         <FleetStat
           arm="hive-realqueen"
           value={q.alive == null ? '—' : q.alive ? 'alive' : 'down'}
-          sub={q.ageSec == null ? 'queen' : `queen · ${q.ageSec}s · ${q.reclaims ?? 0} reclaim(s)`}
+          sub={q.ageSec == null ? 'mug' : `mug · ${q.ageSec}s · ${q.reclaims ?? 0} reclaim(s)`}
           hint="The Queen's survival — a reclaimed/dead Queen is not a real-Queen run."
         />
         <FleetStat arm="hive-realqueen" value={`${live.bees.working}`} sub={`working · ${live.bees.done} done · ${live.bees.placed} placed`} hint={`Bees: ${live.bees.evicted} evicted, ${live.bees.failed} failed of ${live.bees.total}.`} />

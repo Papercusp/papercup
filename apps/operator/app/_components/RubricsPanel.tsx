@@ -22,6 +22,8 @@ interface RubricRow {
   updatedAt: string;
   scorecardCount: number;
   latestScorecardAt: string | null;
+  latestScore10: number | null;
+  avgScore10: number | null;
 }
 
 function formatWhen(iso: string | null): string {
@@ -76,6 +78,7 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
           <th scope="col">Criteria</th>
           <th scope="col">Scale</th>
           <th scope="col">Scorecards</th>
+          <th scope="col">Avg /10</th>
           <th scope="col">Last graded</th>
         </tr>
       </thead>
@@ -95,6 +98,9 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
             <td>{row.criteriaCount}</td>
             <td>{row.ratingScale.join(' / ')}</td>
             <td>{row.scorecardCount}</td>
+            <td style={{ fontVariantNumeric: 'tabular-nums' }} title="Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded)">
+              {row.avgScore10 ?? '—'}
+            </td>
             <td>{formatWhen(row.latestScorecardAt)}</td>
           </tr>
         ))}

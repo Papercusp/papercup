@@ -129,13 +129,13 @@ function mailSearch(ownerId: string, mm: MailEntry): RowSearch {
 }
 
 /**
- * Classify a presence row: `fleet-spawn`/`signed-spawn` (or agentRole 'bee') is
+ * Classify a presence row: `fleet-spawn`/`signed-spawn` (or agentRole 'cup') is
  * a fleet Bee; everything else (omp-hook-session / static-client = SU, plus the
  * human power-user) sits in the SU/agents section.
  */
 function isBee(r: PresenceRecord): boolean {
   const s = r.source ?? '';
-  return r.agentRole === 'bee' || s === 'fleet-spawn' || s === 'signed-spawn';
+  return r.agentRole === 'cup' || s === 'fleet-spawn' || s === 'signed-spawn';
 }
 
 export default function SwarmTab({ active }: { active: boolean }) {

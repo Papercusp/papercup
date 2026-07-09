@@ -20,7 +20,9 @@
   --border: rgba(196, 143, 45, 0.16);
   --border-strong: rgba(214, 166, 74, 0.34);
   --accent: #c68e24; /** Muted honey primary accent */
+  --accent-rgb: 198, 142, 36; /** RGB triplet of --accent for rgba() alpha composition — every theme that overrides accent must override this too, or the frost sky triplet leaks through :root */
   --accent-strong: #d6a64a; /** Restrained honey hover/focus accent */
+  --accent-strong-rgb: 214, 166, 74; /** RGB triplet of --accent-strong for rgba() alpha composition (same leak rule as accent-rgb) */
   --accent-cool: #e8d9b5; /** Cream highlight for glows and linework */
   --accent-soft: #e0c071; /** Soft honey signal tint */
   --accent-deep: #8b5e16; /** Burnt honey active tint */

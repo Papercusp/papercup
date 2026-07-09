@@ -54,7 +54,7 @@ export interface ElSessionConfig {
    * Resolved from the `humanFacingRole` voice pref.
    * Optional + defaults to 'operator' so the existing live path is unchanged.
    */
-  humanFacingRole?: 'operator' | 'sentinel' | 'papercup';
+  humanFacingRole?: 'operator' | 'papercup';
 }
 
 export interface ElSocket {
@@ -257,7 +257,7 @@ export class OperatorVoiceSession {
   sweepState(): {
     sessionLive: boolean;
     ownsVoiceLease: boolean;
-    humanFacingRole: 'operator' | 'sentinel' | 'papercup';
+    humanFacingRole: 'operator' | 'papercup';
   } {
     return {
       sessionLive: this.status !== 'off',

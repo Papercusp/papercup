@@ -106,7 +106,7 @@ let savedXbenchDirective: string | undefined;
 beforeEach(() => {
   // Hermeticity (EI-1837): the external-bench launcher exports
   // PAPERCUSP_XBENCH_BEE_DIRECTIVE on the shared env both the launcher and the
-  // :3170 host read; when present, operator-spawn appends it to a `bee` brief
+  // :3170 host read; when present, operator-spawn appends it to a `cup` brief
   // (intentional, bench-scoped). These unit tests assert the PRODUCTION contract
   // (the brief passed through verbatim), so neutralize the var for the suite and
   // restore it after — otherwise the suite reddens whenever it runs under the bench.
@@ -709,8 +709,8 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(extras).toContain('CHUNK_ID=F-1.c2');
   });
 
-  it('accepts the generic `bee` role WITHOUT a chunk (no pipeline guard — local-hive P-011)', async () => {
-    // The flip-to-real-path criterion: cup:spawn { role:'bee' } must pass
+  it('accepts the generic `cup` role WITHOUT a chunk (no pipeline guard — local-hive P-011)', async () => {
+    // The flip-to-real-path criterion: cup:spawn { role:'cup' } must pass
     // admission with no chunkId (unlike `worker`, which is chunk-coupled).
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
     expect(res.ok).toBe(true);

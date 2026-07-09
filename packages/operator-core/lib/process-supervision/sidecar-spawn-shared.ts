@@ -154,6 +154,21 @@ export interface SidecarShutdownHooksOpts {
    * catch the "operator exited without a signal" case too).
    */
   mode?: 'async' | 'sync-with-exit';
+  /**
+   * 'async' mode ONLY: gate the `uncaughtException` reaction on whether this
+   * particular exception is genuinely fatal to the HOST process. Node fires
+   * `uncaughtException` listeners process-wide for EVERY uncaught exception,
+   * not just ones related to this sidecar — so without a filter, an error the
+   * host's OWN guard already classifies as benign and swallows (e.g. hono-host's
+   * `isBenignHostError` — a client-disconnect `write EPIPE`, a torn-down PG
+   * connection, …) ALSO reaches this listener and tears down a perfectly
+   * healthy sidecar, which then gets warm-respawned by the next caller (the
+   * P-006 "spawner-sidecar respawn churn" — a `[swarm] DHT bootstrap` line and
+   * a fresh child every few minutes on ordinary client-disconnect traffic,
+   * long after the EI-8810 EADDRINUSE divert was fixed). Default: always fatal
+   * (`() => true`) — preserves prior behavior for a caller that doesn't pass one.
+   */
+  isFatalException?: (err: unknown) => boolean;
 }
 
 const hooksRegisteredFor = new Set<string>();
@@ -183,7 +198,15 @@ export function registerSidecarShutdownHooks(opts: SidecarShutdownHooksOpts): vo
     console.log(`[${opts.label}] SIGINT received, shutting down sidecar`);
     await opts.stop();
   });
-  process.on('uncaughtException', async () => {
+  const isFatal = opts.isFatalException ?? (() => true);
+  process.on('uncaughtException', async (err) => {
+    if (!isFatal(err)) {
+      // The host's own guard already classified + swallowed this one (kept the
+      // host alive) — an exception the host survives is not a reason to tear
+      // down an otherwise-healthy sidecar. Silent: hono-host's guard already
+      // logs the benign classification for this same error.
+      return;
+    }
     console.log(`[${opts.label}] uncaught exception, shutting down sidecar`);
     await opts.stop();
   });

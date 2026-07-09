@@ -24,6 +24,8 @@ export interface ScorecardRow {
   missingKeys: string[];
   rubricResolved: boolean;
   synthesized?: boolean;
+  /** Read-time 0–10 projection (P-004/D-001; null = nothing mappable). */
+  score10: number | null;
 }
 
 /**
@@ -102,6 +104,10 @@ export default function ScorecardDetail({
             <dd>{scorecard.sourceHive}</dd>
           </>
         )}
+        <dt style={{ opacity: 0.65 }}>Score</dt>
+        <dd title="Read-time 0–10 projection (pass=10 / partial=5 / fail=0; unknown excluded) — grading stays categorical">
+          {scorecard.score10 !== null ? `${scorecard.score10} / 10` : '— (no mappable ratings)'}
+        </dd>
         <dt style={{ opacity: 0.65 }}>Completeness</dt>
         <dd>
           {complete

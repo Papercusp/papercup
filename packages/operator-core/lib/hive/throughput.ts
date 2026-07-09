@@ -332,7 +332,7 @@ export async function recordHiveThroughputTick(opts: {
       sql<SpawnRow[]>`
         SELECT status, started_at, finished_at, duration_ms, heartbeat_at
           FROM harness_shared.spawned_agents
-         WHERE workspace_id = ${ws} AND child_role IN ('bee', 'cup')
+         WHERE workspace_id = ${ws} AND child_role = 'cup'
            AND started_at > ${windowStart}`.catch(() => [] as SpawnRow[]),
       sql<Array<{ tick_at: string | Date }>>`
         SELECT tick_at FROM harness_shared.hive_throughput_ticks

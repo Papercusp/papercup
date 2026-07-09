@@ -170,7 +170,7 @@ describe('cup:spawn tool — bee work-item reservation', () => {
   // heuristic convenience, not a deliberate pin — a failed claim on it must never
   // wedge the whole spawn (the observed bug: the SAME brief text re-extracts the
   // SAME already-actively-held id on every retry, permanently rejecting a plain
-  // role="bee" spawn). It should degrade to a task-less, self-pulling bee instead.
+  // role="cup" spawn). It should degrade to a task-less, self-pulling bee instead.
   it('degrades to a task-less self-pulling bee when an INFERRED (not explicit) work item loses the claim race', async () => {
     h.claimWorkItem.mockResolvedValue(null);
     h.spawnAgentInHarness.mockImplementation(async (input: any) => ({
@@ -209,12 +209,12 @@ describe('cup:spawn tool — fail-loud on unknown args (EI-72)', () => {
   const args = (spawnTool as any).args as { safeParse: (v: unknown) => { success: boolean } };
 
   it('accepts the declared fields (incl. brief)', () => {
-    expect(args.safeParse({ role: 'bee', harness: 'papercup', brief: 'cross-bee context' }).success).toBe(true);
+    expect(args.safeParse({ role: 'cup', harness: 'papercup', brief: 'cross-bee context' }).success).toBe(true);
   });
 
   it('REJECTS an unknown top-level key instead of silently stripping it', () => {
     // Pre-fix: z.object strips `breif` (a typo'd brief) and validation succeeds —
     // the exact failure mode of the incident. Post-fix: strict → success === false.
-    expect(args.safeParse({ role: 'bee', harness: 'papercup', breif: 'typo' }).success).toBe(false);
+    expect(args.safeParse({ role: 'cup', harness: 'papercup', breif: 'typo' }).success).toBe(false);
   });
 });

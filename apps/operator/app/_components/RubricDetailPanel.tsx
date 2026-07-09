@@ -20,6 +20,7 @@ interface CriterionTrend {
   first: { rating: string; at: string };
   latest: { rating: string; at: string };
   direction: string;
+  mean10: number | null;
 }
 
 interface RubricTrend {
@@ -97,6 +98,7 @@ export default function RubricDetailPanel({
                 <th scope="col">Criterion</th>
                 <th scope="col">Latest</th>
                 <th scope="col">Trend</th>
+                <th scope="col">Mean /10</th>
                 <th scope="col">Distribution</th>
                 <th scope="col">Rated</th>
               </tr>
@@ -111,6 +113,7 @@ export default function RubricDetailPanel({
                   <td title={c.direction}>
                     {directionGlyph(c.direction)} {c.direction}
                   </td>
+                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{c.mean10 ?? '—'}</td>
                   <td>{formatDistribution(c.distribution)}</td>
                   <td style={{ fontVariantNumeric: 'tabular-nums' }}>{c.count}</td>
                 </tr>
@@ -139,6 +142,7 @@ export default function RubricDetailPanel({
                 <th scope="col">Scorecard</th>
                 <th scope="col">Graded at</th>
                 <th scope="col">Graded by</th>
+                <th scope="col">Score /10</th>
                 <th scope="col">Criteria rated</th>
                 <th scope="col">Completeness</th>
               </tr>
@@ -149,6 +153,7 @@ export default function RubricDetailPanel({
                   <td>{row.issueId}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{new Date(row.createdAt).toLocaleString()}</td>
                   <td>{row.createdBy ?? 'unknown'}</td>
+                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{row.score10 ?? '—'}</td>
                   <td style={{ fontVariantNumeric: 'tabular-nums' }}>{row.nKeys}</td>
                   <td>
                     {row.rubricResolved

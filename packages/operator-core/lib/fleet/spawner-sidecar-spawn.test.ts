@@ -14,9 +14,11 @@ import {
   _setSpawnerSidecarProcessForTests,
   getSpawnerSidecarProcess,
   isSpawnerSidecarRunning,
+  registerSpawnerSidecarShutdownHooks,
   spawnSpawnerSidecar,
   stopSpawnerSidecar,
 } from './spawner-sidecar-spawn';
+import { _resetSidecarShutdownHookRegistryForTests } from '../process-supervision/sidecar-spawn-shared';
 
 type FakeChild = EventEmitter & {
   pid: number;
@@ -119,5 +121,60 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
       delete process.env.PORT;
       delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
     }
+  });
+
+  // P-006 (plan p2p-parity-parallel-lanes-2026-07-09): the sidecar respawn
+  // churn. Root cause — the shared `uncaughtException` shutdown hook fired
+  // (and killed a HEALTHY sidecar) on every benign `write EPIPE` a client
+  // disconnect throws, which hono-host's own guard already classifies benign
+  // and swallows. `registerSpawnerSidecarShutdownHooks` must gate on that same
+  // classification so a benign process-wide exception no longer tears the
+  // sidecar down (and triggers a warm-respawn + a fresh `[swarm] DHT
+  // bootstrap` the next time a caller needs it).
+  describe('registerSpawnerSidecarShutdownHooks (P-006 — benign-exception gate)', () => {
+    beforeEach(() => {
+      _resetSidecarShutdownHookRegistryForTests();
+    });
+    afterEach(() => {
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+    });
+
+    const newestUncaughtExceptionListener = (): ((err: unknown) => unknown) => {
+      const listeners = process.listeners('uncaughtException');
+      return listeners[listeners.length - 1] as (err: unknown) => unknown;
+    };
+
+    it('a benign write EPIPE (client disconnect) does NOT stop a running sidecar', async () => {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      registerSpawnerSidecarShutdownHooks();
+      await newestUncaughtExceptionListener()(
+        Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }),
+      );
+
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(isSpawnerSidecarRunning()).toBe(true);
+    });
+
+    it('a genuinely fatal uncaught exception still stops the sidecar', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      registerSpawnerSidecarShutdownHooks();
+      await newestUncaughtExceptionListener()(new TypeError('a real bug, not EPIPE'));
+
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      warn.mockRestore();
+    });
   });
 });

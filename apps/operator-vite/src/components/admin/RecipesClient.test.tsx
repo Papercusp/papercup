@@ -39,7 +39,7 @@ const RECIPES = [
     successCount: 1,
     lastRunAt: new Date(Date.now() - 40 * 86400_000).toISOString(),
     status: 'retired',
-    authorRole: 'bee',
+    authorRole: 'cup',
     promotedTool: null,
   },
 ];

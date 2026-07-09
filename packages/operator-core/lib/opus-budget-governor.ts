@@ -119,9 +119,7 @@ export const CRITICAL_ROLES: ReadonlySet<string> = new Set([
   'operator',
   'su',
   'mug',
-  'mug', // pot-rename dual-accept (P1 MIGRATE): additive twin of `queen`
   'kettle',
-  'kettle', // pot-rename dual-accept (P1 MIGRATE): additive twin of `overwatch`
   'architect',
   'validator',
   'reviewer',
@@ -139,10 +137,8 @@ export const CRITICAL_ROLES: ReadonlySet<string> = new Set([
  */
 export const BACKGROUND_ROLES: ReadonlySet<string> = new Set([
   'scout',
-  'blender', // pot-rename dual-accept (P1 MIGRATE): additive twin of `scout`
   'gym',
   'papercup',
-  'papercup', // pot-rename dual-accept (P1 MIGRATE): additive twin of `sentinel`
   'ui-qa',
   'curator',
   'documenter',

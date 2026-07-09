@@ -477,7 +477,7 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
 // The plan-expansion CORE is unit-tested (plan-expansion.test.ts); this exercises the TOOL
 // against real PG: child harness inheritance when `harness` is omitted, expanding a SETTLED
 // parent, and re-expand idempotency through the durable `payload.expanded_from` stamp.
-// CTX has no role:'bee' → authoritative ⇒ DISPOSED (children are actually created).
+// CTX has no role:'cup' → authoritative ⇒ DISPOSED (children are actually created).
 // The tool is behind papercusp-deferred-expansion (default ON); we force it ON explicitly so the
 // test is robust to the production-default flipping.
 describe('C1 — work_items:expand (tool, real PG)', () => {

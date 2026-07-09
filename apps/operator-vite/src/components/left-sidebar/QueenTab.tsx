@@ -404,7 +404,7 @@ export default function QueenTab({ active }: { active: boolean }) {
     overlay({ maxBees: n });
     enqueue({ maxBees: n });
   };
-  /** Cap the `bee` role's tier ceiling (tierCeilings.bee), preserving other roles. */
+  /** Cap the `cup` role's tier ceiling (tierCeilings.cup), preserving other roles. */
   const setBeeTierCap = (tierName: string | null) => {
     const next = { ...(live().tierCeilings ?? {}) };
     if (tierName) next.bee = tierName;

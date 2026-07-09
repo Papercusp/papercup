@@ -244,7 +244,7 @@ export async function getNextForBee(args: {
 export interface ClaimSpecRecord {
   /** Which row answered: a per-bee spec always wins; 'fleet' when inherited via membership;
    *  'default' when neither a per-bee nor a fleet spec exists (DEFAULT_CLAIM_SPEC applies). */
-  source: 'bee' | 'fleet' | 'default';
+  source: 'cup' | 'fleet' | 'default';
   spec: ClaimSpec;
   revision: number | null;
   updatedBy: string | null;
@@ -281,7 +281,7 @@ export async function getClaimSpecRecord(
     const row = rows[0]!;
     const v = validateClaimSpec(row.spec);
     return {
-      source: 'bee',
+      source: 'cup',
       spec: v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC,
       revision: row.revision,
       updatedBy: row.updated_by,

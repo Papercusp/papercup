@@ -181,7 +181,7 @@ export async function wirePresenceAnnounceForHarness(
           .slice(0, 128)
           .map((r) => ({
             owner_id: r.ownerId,
-            kind: r.ownerId.startsWith('su-') ? 'su' : r.ownerId.startsWith('s-') ? 'bee' : 'agent',
+            kind: r.ownerId.startsWith('su-') ? 'su' : r.ownerId.startsWith('s-') ? 'cup' : 'agent',
             intent: r.intent ?? null,
             plan_slug: (r as { currentPlanSlug?: string | null }).currentPlanSlug ?? null,
             harness_slug: handle.harnessSlug,

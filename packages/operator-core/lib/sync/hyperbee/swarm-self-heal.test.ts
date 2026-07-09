@@ -212,4 +212,85 @@ describe('joinHarnessSwarm self-heal re-peer loop (WI-752 / FED-2)', () => {
     expect(DEFAULT_SUBSTRATE_REFRESH_MS).toBeGreaterThan(0);
     expect(DEFAULT_SUBSTRATE_REFRESH_MS).toBeLessThanOrEqual(5000);
   });
+
+  describe('WI-1534 anti-entropy: hasStalledLogs re-arms the FAST cadence', () => {
+    it('stays on the FAST cadence past the fast window when hasStalledLogs() is true', async () => {
+      vi.useFakeTimers();
+      const f = makeFakeSwarm();
+      const handle = await joinHarnessSwarm({
+        store: STORE,
+        topic: TOPIC,
+        swarm: f.swarm,
+        guard: ALLOW_GUARD,
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 100_000, // slow keepalive far away — isolate the stall trigger
+        hasStalledLogs: () => true,
+      });
+      handles.push(handle);
+
+      await vi.advanceTimersByTimeAsync(200); // burn the fast window
+      const afterFastWindow = f.refreshed.length;
+      expect(afterFastWindow).toBeGreaterThanOrEqual(3);
+
+      // Quiescent hive: no connection churn to naturally re-arm the fast
+      // window, and the slow keepalive is far off — WITHOUT hasStalledLogs
+      // this would now be a dead zone (see the sibling test above). A
+      // stalled admitted log keeps it on the fast cadence instead.
+      await vi.advanceTimersByTimeAsync(160);
+      expect(f.refreshed.length).toBeGreaterThanOrEqual(afterFastWindow + 3);
+    });
+
+    it('falls back to the dead-zone/slow-keepalive behavior once hasStalledLogs() clears', async () => {
+      vi.useFakeTimers();
+      const f = makeFakeSwarm();
+      let stalled = true;
+      const handle = await joinHarnessSwarm({
+        store: STORE,
+        topic: TOPIC,
+        swarm: f.swarm,
+        guard: ALLOW_GUARD,
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 100_000,
+        hasStalledLogs: () => stalled,
+      });
+      handles.push(handle);
+
+      await vi.advanceTimersByTimeAsync(200); // burn the fast window
+      // The remote log catches up (replication resumed) — stall clears.
+      stalled = false;
+      const afterClear = f.refreshed.length;
+      await vi.advanceTimersByTimeAsync(300); // dead zone: window lapsed, slow far off, no stall
+      expect(f.refreshed.length).toBe(afterClear);
+    });
+
+    it('a throwing hasStalledLogs() is treated as "not stalled" (never breaks the loop)', async () => {
+      vi.useFakeTimers();
+      const f = makeFakeSwarm();
+      const handle = await joinHarnessSwarm({
+        store: STORE,
+        topic: TOPIC,
+        swarm: f.swarm,
+        guard: ALLOW_GUARD,
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 1000,
+        hasStalledLogs: () => {
+          throw new Error('boom');
+        },
+      });
+      handles.push(handle);
+
+      await vi.advanceTimersByTimeAsync(200);
+      const afterFast = f.refreshed.length;
+      expect(afterFast).toBeGreaterThanOrEqual(3);
+      // Dead zone still applies (a throwing predicate never force-fast-tracks).
+      await vi.advanceTimersByTimeAsync(700);
+      expect(f.refreshed.length).toBe(afterFast);
+      // Slow keepalive still fires normally.
+      await vi.advanceTimersByTimeAsync(400);
+      expect(f.refreshed.length).toBe(afterFast + 1);
+    });
+  });
 });

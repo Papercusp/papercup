@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, ratingScore10, scorecardScore10 } from './scorecards';
 import type { CriterionTrend } from './scorecards';
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
@@ -203,5 +203,48 @@ describe('compressSeries (WI-2943)', () => {
     const series = ratings.map((rating, i) => ({ at: at(i), rating }));
     const runs = compressSeries(series);
     expect(runs.reduce((n, r) => n + r.n, 0)).toBe(ratings.length);
+  });
+});
+
+describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / D-001)', () => {
+  it('ratingScore10 maps both shared vocabularies; unknown/custom → null', () => {
+    expect(ratingScore10('pass')).toBe(10);
+    expect(ratingScore10('Partial')).toBe(5); // case-insensitive
+    expect(ratingScore10('fail')).toBe(0);
+    expect(ratingScore10('healthy')).toBe(10);
+    expect(ratingScore10('degraded')).toBe(5);
+    expect(ratingScore10('broken')).toBe(0);
+    expect(ratingScore10('unknown')).toBeNull();
+    expect(ratingScore10('some-custom-rating')).toBeNull();
+  });
+
+  it('ratingScore10 honors per-rubric overrides without mutating the default', () => {
+    expect(ratingScore10('partial', { partial: 7 })).toBe(7);
+    expect(ratingScore10('partial')).toBe(5); // default untouched
+    expect(ratingScore10('custom-tier', { 'custom-tier': 3 })).toBe(3);
+  });
+
+  it('scorecardScore10 is the mean over MAPPABLE ratings only (unknown excluded, never 0)', () => {
+    const score = scorecardScore10({
+      a: { rating: 'pass' }, // 10
+      b: { rating: 'partial' }, // 5
+      c: { rating: 'fail' }, // 0
+      d: { rating: 'unknown' }, // excluded
+    });
+    expect(score).toBe(5); // (10+5+0)/3, NOT /4
+  });
+
+  it('scorecardScore10 rounds to 1 decimal and is null for an all-unknown scorecard', () => {
+    expect(scorecardScore10({ a: { rating: 'pass' }, b: { rating: 'pass' }, c: { rating: 'partial' } })).toBe(8.3);
+    expect(scorecardScore10({ a: { rating: 'unknown' }, b: { rating: 'unknown' } })).toBeNull();
+    expect(scorecardScore10({})).toBeNull();
+  });
+
+  it('computeTrendDirection now orders the pass vocabulary (was silently unknown pre-P-004)', () => {
+    expect(computeTrendDirection(s('pass', 'fail'))).toBe('worsening');
+    expect(computeTrendDirection(s('fail', 'partial', 'pass'))).toBe('improving');
+    expect(computeTrendDirection(s('pass', 'pass'))).toBe('stable');
+    // mixed-vocabulary series still works (both are ordinal 0..2)
+    expect(computeTrendDirection(s('healthy', 'fail'))).toBe('worsening');
   });
 });

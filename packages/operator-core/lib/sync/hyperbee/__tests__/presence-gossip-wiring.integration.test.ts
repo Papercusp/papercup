@@ -255,6 +255,44 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     ).toHaveLength(0);
   });
 
+  it('H3: a put frame whose github_user_id ≠ the signer device\'s ATTESTED id is dropped (real membership gate, not just fail-closed-on-stranger)', async () => {
+    // member is a REAL admitted device (attested as gh 42 in listHiveMembers),
+    // unlike the stranger test above — this proves the wiring's identity check
+    // is per-DEVICE-ATTESTED-id, not merely "is this device_pubkey a member".
+    channel.inbound!(
+      await buildPresencePutFrame(
+        row({ github_user_id: 999, machine_label: 'imposter' }),
+        T0 + 50,
+        member.sign,
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='imposter'`,
+    ).toHaveLength(0);
+  });
+
+  it('H1: a sessions frame whose github_user_id ≠ the signer device\'s ATTESTED id is dropped (real membership gate, no foreign-user session announce)', async () => {
+    // Same admitted device (member, attested gh 42) now tries to announce a
+    // sessions batch UNDER a foreign gh 999 — incl. a spoofed victim owner_id.
+    // The real wiring must drop the whole frame, not just re-scope it.
+    channel.inbound!(
+      await buildSessionsFrame(
+        { devicePubkey: member.pubB64, githubUserId: 999, machineLabel: 'laptop', potSlug: HIVE },
+        [
+          { owner_id: 'mug', kind: 'su', intent: null, plan_slug: null, harness_slug: HIVE, last_active_ms: T0 },
+          { owner_id: 'su-victim-uuid', kind: 'su', intent: null, plan_slug: null, harness_slug: HIVE, last_active_ms: T0 },
+        ],
+        T0 + 500,
+        member.sign,
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      await db.sql`SELECT 1 FROM harness_shared.shared_session_presence WHERE workspace_id=${WS} AND owner_id IN ('mug', 'su-victim-uuid')`,
+    ).toHaveLength(0);
+  });
+
   it('a sessions frame lands with hive_slug PINNED to the receiver binding (sender hive ignored)', async () => {
     channel.inbound!(
       await buildSessionsFrame(

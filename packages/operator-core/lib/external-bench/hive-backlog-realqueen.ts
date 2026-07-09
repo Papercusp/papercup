@@ -724,7 +724,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
             SELECT count(*) FILTER (WHERE status IN ('running','restarting'))::text AS running,
                    count(*) FILTER (WHERE status IN ('done','failed','cancelled'))::text AS terminal
               FROM harness_shared.spawned_agents
-             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role IN ('bee', 'cup')`,
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role = 'cup'`,
         ]);
         const status = featRows[0]?.status ?? '';
         const featTerminal = DONE_FEATURE_STATUSES.has(status) || ESCALATE_FEATURE_STATUSES.has(status);
@@ -751,7 +751,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
         SELECT count(*)::text AS n
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ws} AND harness_slug = ${homePrefix}
-           AND child_role IN ('queen', 'mug') AND status IN ('running','restarting')`;
+           AND child_role = 'mug' AND status IN ('running','restarting')`;
       return Number(rows[0]?.n ?? 0) || 0;
     },
 

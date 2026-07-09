@@ -44,7 +44,9 @@ import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/hive-git/integrator-tick';
-import { STAGING_ADVANCE_EVENT_KEY } from '../../sync/hive-git/staging-advance';
+import { runWorktreeBridgeTick } from '../../sync/hive-git/worktree-bridge-tick';
+import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/hive-git/staging-advance';
+import { hiveGitRepoPath } from '../../sync/hive-git/storage';
 import { listHiveMembers } from '../../hive-membership-store';
 import { resolveUsageActor } from '../usage-actor';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
@@ -1195,6 +1197,17 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   if (gate.hiveGitMode) {
     await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
   }
+
+  // p2p-git-live-activation P-204: on ANY non-legacy hive (bridged OR
+  // p2p-only), one worktree-bridge-tick pass per git-sync tick — process any
+  // pending `hive-git:staging-advance` announcements this device hasn't
+  // consumed yet and ff-advance the local worktree (G-7c/G-7b). Every
+  // member's tick runs this (including the integrator's own — its worktree
+  // follows staging too). Own checkpoint so a resumed fire never re-processes
+  // past it.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
+  }
 }
 
 /** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
@@ -1333,7 +1346,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       const identity: AgentIdentity = {
         ownerId: 'git-sync-integrator',
         ownerLabel: 'git-sync-integrator',
-        source: 'system',
+        source: 'static-client',
         userId: null,
         workspaceId,
       };
@@ -1364,6 +1377,139 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: integrator-tick failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * p2p-git-live-activation P-204: the worktree-bridge-tick leg of one
+ * non-legacy hive's git-sync tick. Best-effort: never throws (the code plane
+ * must keep committing even when this pass fails); outcome + the
+ * `{epoch, seq, sha}` watermark + the fed-event cursor persist on the routine
+ * metadata (the `lastAdmitted` idiom above).
+ *
+ * FED-EVENT COLLECTION: `hive-git:staging-advance` announcements land in this
+ * machine's `harness_shared.coord_event_log` as a no-recipient, hive-scoped
+ * `fed_event` row — either written locally (this device IS the integrator
+ * and just emitted one, see `runIntegratorLeg`) or replicated from a peer's
+ * machine (P-009 rail). Collected here directly off that table since the
+ * last-processed row id (a persisted watermark) — the same "fed-event log
+ * since a watermark" collection `ref-announce-tick.ts`'s header describes as
+ * needed for P-202, scoped here to just the one `STAGING_ADVANCE_EVENT_KEY`.
+ *
+ * OPENDUPLEX GAP (known simplification, flagged like the integrator leg's
+ * EPOCH NOTE above): this leg omits `worktree-bridge-tick.ts`'s `openDuplex`
+ * seam — no live per-peer connection registry (device pubkey → swarm socket)
+ * exists yet, only the dial primitive itself (`openHiveGitFetchDuplex`,
+ * P-201). A pending announcement whose sha isn't already in the local mirror
+ * is REJECTED `unknown-sha` (never a throw, never a wedge, never blocks the
+ * rest of the tick) rather than fetched. Correct and safe on the integrator's
+ * own machine (objects are always local there) and on any machine whose
+ * mirror is already current via P-202's ref-announce fetch; a true cold
+ * fetch-on-demand needs the registry — tracked for Phase 3 (P-301 live
+ * drill). Because this leg never dials out, `fetch-failed` cannot occur
+ * here, so the fed-event cursor always advances past every row it reads.
+ */
+async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry) return;
+    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!hiveHomeSlug) return;
+
+    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const memberDevicePubkeysBase64 = [
+      ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
+    ];
+    if (memberDevicePubkeysBase64.length === 0) return; // no attested devices yet
+
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      {
+        worktree_bridge: { lastEventId: number; epochSeq: EpochSeq | null; stagingSha: string | null } | null;
+        integrator: { epoch: number } | null;
+      }[]
+    >`
+      SELECT metadata->'worktree_bridge' AS worktree_bridge, metadata->'integrator' AS integrator
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const priorState = rows[0]?.worktree_bridge ?? null;
+    const lastEventId = priorState?.lastEventId ?? 0;
+    const priorWatermark = { epochSeq: priorState?.epochSeq ?? null, stagingSha: priorState?.stagingSha ?? null };
+    const maxGrantedEpoch = rows[0]?.integrator?.epoch;
+
+    // Pending hive-git:staging-advance fed-events since the watermark.
+    const feRows = await sql<{ id: number; body: Record<string, unknown> }[]>`
+      SELECT id, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${hiveHomeSlug}
+         AND surface = 'messages'
+         AND id > ${lastEventId}
+         AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
+       ORDER BY id ASC
+       LIMIT 200
+    `;
+    if (feRows.length === 0) return; // fast no-op — nothing new to bridge
+
+    const pending: SignedStagingAdvance[] = [];
+    let maxRowId = lastEventId;
+    for (const row of feRows) {
+      maxRowId = Math.max(maxRowId, row.id);
+      const fe = row.body?.fed_event as { payload?: unknown } | undefined;
+      if (fe && isSignedStagingAdvance(fe.payload)) pending.push(fe.payload);
+    }
+    if (pending.length === 0) {
+      // Rows existed (e.g. a malformed payload) but nothing usable — still
+      // advance the cursor past them so a bad row can't loop forever.
+      await patchRoutineMetadata(slug, {
+        worktree_bridge: {
+          lastEventId: maxRowId,
+          epochSeq: priorWatermark.epochSeq,
+          stagingSha: priorWatermark.stagingSha,
+          at: Date.now(),
+        },
+      });
+      return;
+    }
+
+    const repoPath = hiveGitRepoPath(hiveHomeSlug, slug);
+    const { projectDirForSlug } = await import('../../operator-notes');
+    const worktreePath = await projectDirForSlug(slug);
+    if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
+
+    const outcome = await runWorktreeBridgeTick({
+      bareRepoPath: repoPath,
+      worktreePath,
+      pending,
+      prior: priorWatermark,
+      accept: {
+        allowedDevices: memberDevicePubkeysBase64,
+        ...(typeof maxGrantedEpoch === 'number' ? { maxGrantedEpoch } : {}),
+      },
+      // openDuplex intentionally omitted — see the module doc above.
+    });
+
+    await patchRoutineMetadata(slug, {
+      worktree_bridge: {
+        lastEventId: maxRowId,
+        epochSeq: outcome.watermark.epochSeq,
+        stagingSha: outcome.watermark.stagingSha,
+        at: Date.now(),
+      },
+    });
+
+    if (outcome.errors.length) {
+      console.warn(`[git-sync] ${slug}: worktree-bridge-tick reported errors: ${outcome.errors.join('; ')}`);
+    }
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: worktree-bridge-tick failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 
