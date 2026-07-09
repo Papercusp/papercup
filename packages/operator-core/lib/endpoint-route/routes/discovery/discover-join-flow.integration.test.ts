@@ -41,7 +41,7 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 //    mocks never perturb the real publish→ingest→browse flow. ──────────────────
 const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
-vi.mock('../../../harness/join-pot', () => ({
+vi.mock('../../../harness/join-hive', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));
 vi.mock('../../../harness/projects-lite', () => ({

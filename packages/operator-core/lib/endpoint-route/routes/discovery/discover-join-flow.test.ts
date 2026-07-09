@@ -34,7 +34,7 @@ const joinHiveAsView = vi.fn();
 const bustProjectsLiteCache = vi.fn();
 const ensureHiveDirectoryWired = vi.fn();
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../../harness/join-pot', () => ({
+vi.mock('../../../harness/join-hive', () => ({
   joinHiveAsView: (...a: unknown[]) => joinHiveAsView(...a),
 }));
 vi.mock('../../../harness/projects-lite', () => ({

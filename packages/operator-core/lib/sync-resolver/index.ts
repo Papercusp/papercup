@@ -473,7 +473,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       );
       const { activeWorkspaceId } = await import('../workspace-registry');
       const resolved = await resolvePresenceScope(
-        { workspaceId: activeWorkspaceId(), harnessSlug: null, isSuperuser: true },
+        { workspaceId: activeWorkspaceId(), harnessSlug: null },
         { scope: 'workspace' },
       );
       const snapshot = await assemblePresenceSnapshot(resolved, {});
