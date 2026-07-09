@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { statusToneColor } from '@/app/harness/theme';
 
 /**
  * <AcceptancePanel> — the harness Tests tab's "Acceptance" (Project) view.
@@ -26,13 +27,6 @@ interface Assertion {
   status: string;
   requires_test: boolean;
 }
-
-const STATUS_TONE: Record<string, string> = {
-  passed: 'var(--good, #34d399)',
-  failed: 'var(--bad, #f87171)',
-  validating: 'var(--accent, #38bdf8)',
-  todo: 'var(--fg-mute, #7f9bb4)',
-};
 
 const msg: React.CSSProperties = { padding: '16px 20px', color: 'var(--fg-mute, #7f9bb4)', fontSize: 13 };
 
@@ -101,7 +95,7 @@ export default function AcceptancePanel({ slug }: { slug: string }) {
       header: 'Status',
       width: 1,
       toCopyText: (a) => a.status,
-      render: ({ row }) => <span style={{ color: STATUS_TONE[row.status] ?? 'var(--fg-mute)', fontWeight: 700 }}>{row.status}</span>,
+      render: ({ row }) => <span style={{ color: statusToneColor(row.status), fontWeight: 700 }}>{row.status}</span>,
     },
     {
       key: 'requires',

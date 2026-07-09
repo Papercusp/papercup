@@ -306,6 +306,11 @@ const DEFAULT_AIMD_INCREASE_EVERY = Number(process.env.PAPERCUSP_GATEWAY_AIMD_IN
 // pool always keeps a probe path. SERVICEABLE_CLAMP_MODEL is the (most-constrained) model whose per-(model,account)
 // governor pause the serviceability check reads. OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ no clamp.
 const SERVICEABLE_CLAMP_ON = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP !== '0';
+/** How the serviceable-count clamp is honored. `auto` = apply the recommendation (the safe default, the
+ *  thundering-herd guard). `off` = compute + REPORT it, but admit at the AIMD effective — the agent
+ *  override. Flippable LIVE via `POST /admin/clamp-mode` (no restart), per the 2026-07-09 owner directive
+ *  that a gateway clamp be a recommendation rather than a hard cap. */
+export type ServiceableClampMode = 'auto' | 'off';
 const PER_ACCOUNT_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_PER_ACCOUNT_ADMISSION) || 4;
 const MIN_SERVICEABLE_ADMISSION = Number(process.env.PAPERCUSP_GATEWAY_MIN_ADMISSION) || 2;
 const SERVICEABLE_CLAMP_TICK_MS = Number(process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_TICK_MS) || 2000;
@@ -783,6 +788,11 @@ export interface GatewayStats {
   /** AIMD admission-concurrency state (B-GW-1): effective vs cap/floor + lifetime decrease/increase
    *  counts — the dashboard's adaptive-throttle signal (a climbing `decreases` = a sustained storm). */
   aimd: AimdSnapshot;
+  /** Serviceable-count clamp state (2026-07-09 advisory-clamp directive). `recommendation` is what the
+   *  clamp WOULD cap live admission to (null = unbounded/not yet computed); `applied` is what admission
+   *  actually is after `mode` is honored; `overridden` is true when a recommendation exists and was NOT
+   *  applied (`mode:'off'`). Makes an override impossible to mistake for a healthy pool. */
+  clamp: { mode: ServiceableClampMode; recommendation: number | null; applied: number; overridden: boolean };
   /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
   failovers: number;
   upstreamErrors: number;
@@ -1241,9 +1251,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ byte-identical to the old `setMaxConcurrent(eff)`.
   let serviceableAdmissionCapFn: () => number = () => Number.POSITIVE_INFINITY;
   let lastAimdEff = concurrency;
+  // ADVISORY CLAMP (owner directive, 2026-07-09 — plan gateway-clamp-advisory-capacity-probe): the
+  // serviceable-count clamp is a RECOMMENDATION, and an agent must be able to override it. It stays ON by
+  // default (`auto`) because it is a real thundering-herd guard; `off` makes it compute + REPORT the
+  // recommendation while admitting against the full AIMD effective.
+  //
+  // WHY THIS LEVER EXISTS. The clamp reads the pool's IN-MEMORY exhaustedUntil, which no store-side tool can
+  // clear (accounts:reset-rate is a different process; gateway:reload only drops ids absent from the new
+  // pool). So a STALE in-memory exhaustion pinned live admission at MIN_SERVICEABLE_ADMISSION (2) for the
+  // whole fleet with a concurrencyCap of 24, and there was NO runtime way out short of a full restart — the
+  // exact "the clamp should be a recommendation" complaint. `clampMode` is that way out: live, no restart.
+  //
+  // `off` does NOT disable the AIMD controller or the bounded queue's load-shed — those still bound the
+  // fleet. It only stops the SERVICEABLE-COUNT term from shrinking live concurrency.
+  let clampMode: ServiceableClampMode = SERVICEABLE_CLAMP_ON ? 'auto' : 'off';
+  /** The clamp's most recent RECOMMENDATION (what it would cap to), recorded even when overridden. */
+  let lastServiceableRecommendation = Number.POSITIVE_INFINITY;
+  /** Live admission after the mode is honored — surfaced on /stats so an override is never invisible. */
+  let lastAdmissionApplied = concurrency;
   const applyAdmissionCap = (eff: number): void => {
     lastAimdEff = eff;
-    const capped = Math.max(1, Math.min(eff, serviceableAdmissionCapFn()));
+    const recommendation = serviceableAdmissionCapFn();
+    lastServiceableRecommendation = recommendation;
+    // `auto` honors the recommendation; `off` reports it and admits at the AIMD effective.
+    const capped = clampMode === 'off' ? Math.max(1, eff) : Math.max(1, Math.min(eff, recommendation));
+    lastAdmissionApplied = capped;
     queue.setMaxConcurrent(capped);
     // TIER-AWARE SHEDDING (step 4): as live concurrency shrinks (AIMD storm OR few serviceable accounts), shed
     // the bottom tier caps (4→3→2, holding tier 1) by the SAME number of lost slots — so the protected
@@ -1908,6 +1940,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
+      clamp: {
+        mode: clampMode,
+        recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
+        applied: lastAdmissionApplied,
+        overridden: clampMode === 'off' && Number.isFinite(lastServiceableRecommendation) && lastServiceableRecommendation < lastAimdEff,
+      },
       maxQueued,
       concurrencyCap: concurrency,
       aimd: aimd.snapshot(),
@@ -4069,6 +4107,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const ids = account ? [account] : (pool.entries ? pool.entries() : []).map((e) => e.accountId);
       for (const id of ids) pool.readmit(id);
       sendJson(res, 200, { ok: true, readmitted: ids, healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1 });
+      return;
+    }
+    if (req.method === 'POST' && url.startsWith('/admin/clamp-mode')) {
+      // ADVISORY CLAMP OVERRIDE (owner directive 2026-07-09): "when the inference gateway clamps it should
+      // just be a recommendation, agents should be able to override". `?mode=off` admits at the AIMD
+      // effective while still COMPUTING + reporting the serviceable recommendation; `?mode=auto` restores
+      // the guard. LIVE — applied to the running queue immediately, no restart.
+      //
+      // This is the escape hatch for a STALE clamp: the serviceable count reads the in-memory
+      // exhaustedUntil map, which no store-side tool can clear, so a stale exhaustion otherwise pins live
+      // admission at MIN_SERVICEABLE_ADMISSION for the entire fleet until the process is restarted.
+      // NOT durable across a restart (boot default = PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP) — deliberately, so
+      // an override can never silently outlive the incident it was opened for.
+      req.resume(); // drain the body so the socket releases cleanly
+      const q = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
+      const raw = new URLSearchParams(q).get('mode')?.trim();
+      if (raw !== undefined && raw !== 'auto' && raw !== 'off') {
+        sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: `inference-gateway: mode must be 'auto' or 'off' (got '${raw}')` }, gateway: true });
+        return;
+      }
+      if (raw) {
+        const prev = clampMode;
+        clampMode = raw;
+        applyAdmissionCap(lastAimdEff); // re-apply NOW so the flip is visible on the very next admission
+        if (prev !== clampMode) {
+          log('warn', `inference-gateway: serviceable-admission clamp mode ${prev} → ${clampMode} (recommendation=${Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : 'n/a'}, live admission=${lastAdmissionApplied})`);
+        }
+      }
+      sendJson(res, 200, {
+        ok: true,
+        mode: clampMode,
+        recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
+        applied: lastAdmissionApplied,
+        aimdEffective: lastAimdEff,
+        concurrencyCap: concurrency,
+      });
       return;
     }
     if (req.method === 'POST' && url === '/admin/reload') {

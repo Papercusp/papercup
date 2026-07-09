@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { statusToneColor } from '@/app/harness/theme';
 
 type Workflow = {
   workflow_uuid: string;
@@ -26,12 +27,8 @@ export const fmt = (epochMs: string): string => {
   return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString() : '—';
 };
 
-/** Pure: workflow-status → swatch color. Exported for tests. */
-export const statusColor = (s: string): string =>
-  s === 'SUCCESS' ? 'var(--good)'
-    : s === 'ERROR' || s.includes('MAX_RECOVERY') ? 'var(--bad)'
-      : s === 'PENDING' || s === 'ENQUEUED' ? 'var(--warn)'
-        : 'var(--fg)';
+/** Pure: workflow-status → swatch color (central TONE table). Exported for tests. */
+export const statusColor = (s: string): string => statusToneColor(s, 'fg');
 
 const workflowColumns: ColumnDef<Workflow>[] = [
   {

@@ -9,6 +9,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { Select } from '@/app/harness/Select';
+import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
 
 interface BrokenAnchor {
@@ -38,23 +39,6 @@ interface MemoryRow {
   updated_at?: string | null;
   audit?: AuditFields;
 }
-
-// Styling hints only — never a filter source (the kind taxonomy is
-// backend-defined and has already changed once; chips are derived from
-// the data, memory-settings-page-refresh D-001). Unknown kinds get the
-// gray fallback.
-const KIND_COLORS: Record<string, string> = {
-  // Claude-file / hybrid taxonomy (the live store)
-  user:       '#a78bfa',
-  feedback:   '#34d399',
-  reference:  '#60a5fa',
-  project:    '#fbbf24',
-  // Legacy mem0 taxonomy (older rows)
-  identity:   '#a78bfa',
-  preference: '#34d399',
-  correction: '#f87171',
-  ephemeral:  '#9ca3af',
-};
 
 const STATE_BADGES: Record<string, { label: string; icon: string; color: string; bg: string }> = {
   active:        { label: 'verified',           icon: '✓', color: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 85%)' },
@@ -402,7 +386,7 @@ export default function MemoryPage() {
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const kind = row.kind ?? 'untagged';
-    const color = KIND_COLORS[kind] ?? '#6b7280';
+    const color = MEMORY_KIND_COLOR[kind] ?? MEMORY_KIND_FALLBACK;
     const state = row.audit?.state ?? 'active';
     const stateBadge = STATE_BADGES[state];
     const brokenAnchors = row.audit?.broken_anchors ?? [];

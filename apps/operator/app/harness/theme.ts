@@ -174,6 +174,55 @@ export const AGENT_KIND = new Proxy(_AGENT_KIND_TABLE as Record<string, StatusMe
 
 export type AgentKindKey = keyof typeof _AGENT_KIND_TABLE;
 
+// ─── One-color status tones (design-simplification P-005) ──────────
+//
+// SINGLE source for panels that color a status STRING with one color (text /
+// swatch / chip border) rather than the full StatusMeta pill set above. Keys
+// span the app's one-color status vocabularies — VAL assertions (Tests tab
+// AcceptancePanel), DBOS workflow states (/admin/dbos), gym proposal states
+// (/adv Learning tab). Extend THIS table for a new vocabulary; a
+// component-local STATUS_*/…_COLOR map is what the status-map lint
+// (design-primitives.test.ts) warns on.
+
+export const TONE = {
+  good: 'var(--good)',
+  warn: 'var(--warn)',
+  bad: 'var(--bad)',
+  accent: 'var(--accent)',
+  neutral: 'var(--fg-mute)',
+  fg: 'var(--fg)',
+} as const;
+export type ToneKey = keyof typeof TONE;
+
+const _STATUS_TONE_TABLE: Record<string, ToneKey> = {
+  // VAL assertions (harness Tests tab AcceptancePanel)
+  passed: 'good', failed: 'bad', validating: 'accent', todo: 'neutral',
+  // DBOS workflow states (/admin/dbos) — MAX_RECOVERY* variants match in statusToneColor()
+  SUCCESS: 'good', ERROR: 'bad', PENDING: 'warn', ENQUEUED: 'warn', CANCELLED: 'neutral',
+  // Gym proposal states (/adv Learning tab)
+  accepted: 'good', pending: 'warn', rejected: 'bad', superseded: 'neutral',
+};
+
+/** One-color status → CSS color. `fallback` names the tone for unknown statuses. */
+export function statusToneColor(status: string, fallback: ToneKey = 'neutral'): string {
+  const tone = _STATUS_TONE_TABLE[status];
+  if (tone) return TONE[tone];
+  if (status.includes('MAX_RECOVERY')) return TONE.bad; // DBOS retry-exhausted variants
+  return TONE[fallback];
+}
+
+// Memory-kind chip hues (settings/user/memory). Categorical, not status —
+// kinds are backend-defined and style-only (never a filter source; the
+// taxonomy changed once already, memory-settings-page-refresh D-001).
+// Unknown kinds get MEMORY_KIND_FALLBACK grey.
+export const MEMORY_KIND_COLOR: Record<string, string> = {
+  // Claude-file / hybrid taxonomy (the live store)
+  user: '#a78bfa', feedback: '#34d399', reference: '#60a5fa', project: '#fbbf24',
+  // Legacy mem0 taxonomy (older rows)
+  identity: '#a78bfa', preference: '#34d399', correction: '#f87171', ephemeral: '#9ca3af',
+};
+export const MEMORY_KIND_FALLBACK = '#6b7280';
+
 /**
  * Canonical role color/label overrides. Roles not listed here get a
  * stable color derived from their name (see getRoleStyle below) — adding
