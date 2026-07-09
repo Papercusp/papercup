@@ -46,11 +46,11 @@ describe('hive_members membership-teardown federation (G24 / G27 transport)', ()
       // ── Seed BOTH peers' OWN member row through the REAL store (fires the mig-189
       // capture trigger → outbox). Each peer is the sole writer of its own row. ──
       await upsertHiveMember(
-        { workspaceId: WORKSPACE_ID, hiveHomeSlug: HIVE_SLUG, githubUserId: idA.userId, githubUsername: 'alice', bindingStatus: 'verified' },
+        { workspaceId: WORKSPACE_ID, potHomeSlug: HIVE_SLUG, githubUserId: idA.userId, githubUsername: 'alice', bindingStatus: 'verified' },
         dbA.sql,
       );
       await upsertHiveMember(
-        { workspaceId: WORKSPACE_ID, hiveHomeSlug: HIVE_SLUG, githubUserId: idB.userId, githubUsername: 'bob', bindingStatus: 'verified' },
+        { workspaceId: WORKSPACE_ID, potHomeSlug: HIVE_SLUG, githubUserId: idB.userId, githubUsername: 'bob', bindingStatus: 'verified' },
         dbB.sql,
       );
 

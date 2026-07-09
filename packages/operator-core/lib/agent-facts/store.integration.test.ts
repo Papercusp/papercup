@@ -9,7 +9,7 @@
  * federation cols + 5-col identity, 462 fed_key) and pins:
  *   1. assertFact INSERTS against the live 461 identity index (the arbiter),
  *   2. a RE-assert takes the conflict-UPDATE path (same arbiter, refresh),
- *   3. the F1-1 federation identity: hiveHomeSlug lands in harness_slug and the
+ *   3. the F1-1 federation identity: potHomeSlug lands in harness_slug and the
  *      row's to_jsonb (the capture wire shape) passes isAgentFactWireRow,
  *   4. H6 local-partition discipline: retract + cap-eviction never touch a
  *      foreign (source_hive NOT NULL) partition of the same identity.
@@ -85,7 +85,7 @@ describe('assertFact against the REAL mig-461 identity index', () => {
     expect(rows[0].n).toBe(1); // updated, not duplicated
   });
 
-  it('F1-1: hiveHomeSlug stamps harness_slug and the wire shape validates on peers', async () => {
+  it('F1-1: potHomeSlug stamps harness_slug and the wire shape validates on peers', async () => {
     await assertFact(
       {
         scope: 'harness',
@@ -95,7 +95,7 @@ describe('assertFact against the REAL mig-461 identity index', () => {
         createdBy: 'su-int',
         workspaceId: WS,
         shareable: true,
-        hiveHomeSlug: 'the-hive-home',
+        potHomeSlug: 'the-hive-home',
       },
       db.sql,
     );
@@ -115,7 +115,7 @@ describe('assertFact against the REAL mig-461 identity index', () => {
       createdBy: 'su-int',
       workspaceId: WS,
     };
-    await assertFact({ ...base, body: 'v1', shareable: true, hiveHomeSlug: 'home' }, db.sql);
+    await assertFact({ ...base, body: 'v1', shareable: true, potHomeSlug: 'home' }, db.sql);
     await assertFact({ ...base, body: 'v2', shareable: true }, db.sql);
     const rows = await db.sql`SELECT harness_slug FROM harness_shared.agent_facts WHERE key = 'keep-slug'`;
     expect(rows[0].harness_slug).toBe('home');

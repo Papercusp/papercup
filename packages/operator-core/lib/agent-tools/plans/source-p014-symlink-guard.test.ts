@@ -53,7 +53,7 @@ vi.mock('../../harness/register-papercusp', async (orig) => {
 
 import { resolveHarnessPlansDir } from './source';
 
-const SAVED_HOME_ENV = process.env.PAPERCUSP_HIVE_HOME_SLUG;
+const SAVED_HOME_ENV = process.env.PAPERCUSP_POT_HOME_SLUG;
 const tmpDirs: string[] = [];
 
 function makeRepoRoot(prefix: string): string {
@@ -67,12 +67,12 @@ function makeRepoRoot(prefix: string): string {
 }
 
 beforeEach(() => {
-  process.env.PAPERCUSP_HIVE_HOME_SLUG = HOME;
+  process.env.PAPERCUSP_POT_HOME_SLUG = HOME;
 });
 
 afterEach(() => {
-  if (SAVED_HOME_ENV === undefined) delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
-  else process.env.PAPERCUSP_HIVE_HOME_SLUG = SAVED_HOME_ENV;
+  if (SAVED_HOME_ENV === undefined) delete process.env.PAPERCUSP_POT_HOME_SLUG;
+  else process.env.PAPERCUSP_POT_HOME_SLUG = SAVED_HOME_ENV;
   for (const d of tmpDirs.splice(0)) {
     rmSync(`${d}-link`, { recursive: true, force: true }); // any leftover symlink
     rmSync(d, { recursive: true, force: true });

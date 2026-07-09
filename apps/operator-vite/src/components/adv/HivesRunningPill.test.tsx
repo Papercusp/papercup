@@ -2,7 +2,7 @@
 /**
  * HivesRunningPill render + interaction coverage (hive-control-surface).
  *
- * The always-visible header pill: hidden when the HIVE_CONTROL flag is off or no
+ * The always-visible header pill: hidden when the POT_CONTROL flag is off or no
  * local hive is registered; otherwise a "N hives running" toggle whose `is-running`
  * class reflects the started count, and clicking it flips the nuqs ?hivesCtl param
  * to expand the inline LocalHivesControl popover. The flag client, the
@@ -59,7 +59,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('<HivesRunningPill>', () => {
-  it('renders nothing when the HIVE_CONTROL flag is off', () => {
+  it('renders nothing when the POT_CONTROL flag is off', () => {
     H.flagOn = false;
     const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');

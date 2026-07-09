@@ -66,7 +66,7 @@ function signedRow(
   if (!c.ok) throw new Error(c.error);
   const json = canonicalFleetRecordJson(c.record);
   const sig = signWithPrivateKeyDer(kp.privateKeyDer, fleetDirectorySignedBytes({
-    workspaceId: WS, hiveHomeSlug: HIVE,
+    workspaceId: WS, potHomeSlug: HIVE,
     recordVersion: c.record.recordVersion, canonicalRecordJson: json,
   })).toString('base64');
   return {

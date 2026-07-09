@@ -132,7 +132,7 @@ vi.mock('@papercusp/db-org', async () => {
 // rig's orgSqlHolder doesn't satisfy during bootPresencePeer (each peer's throwaway
 // DB has no harness_shared.hives table), throwing "undefined reading unsafe" and
 // ABORTING the boot. This suite proves presence/coord/authority FEDERATION, not
-// rekey, so force HIVE_REKEY OFF → buildHiveRekeyBootDeps early-returns null → no
+// rekey, so force POT_REKEY OFF → buildHiveRekeyBootDeps early-returns null → no
 // getHiveBySlug → boot succeeds. (Other boot flags keep their real resolution;
 // boot.ts reads them with .catch(()=>false), so delegation is safe.)
 vi.mock('@papercusp/flags/server', async () => {

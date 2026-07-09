@@ -23,7 +23,7 @@ import {
   clearHiveTimeWake,
   declareHiveTimeWake,
   hiveWakeFloorSec,
-  resolveHiveHomeSlug,
+  resolvePotHomeSlug,
   setHiveCarryNote,
   setHiveEventSubscriptions,
   type HiveEventSubscription,
@@ -71,7 +71,7 @@ export default defineTool({
       inSeconds: z.number().positive().max(60 * 60 * 24 * 30).optional().describe('Relative wake time in seconds from now.'),
       events: z.array(subscriptionSchema).max(20).optional().describe('Event-wake subscriptions (replaces the current set; omit to clear).'),
       mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual pot:wake."),
-      harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
       kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff text the woken operator reads (why this wake exists). Auto-truncated to 2000 chars if longer.'),
       remember: z
         .string()
@@ -92,7 +92,7 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
         content: [
@@ -101,7 +101,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the wake routine is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the wake routine is harness-scoped.',
             }),
           },
         ],
@@ -138,7 +138,7 @@ export default defineTool({
     // strand — unplaced todo work in the home harness, OR non-terminal placements
     // she must drive to completion. Runs BEFORE any mutation so a refused
     // declaration doesn't partially apply. Flag-gated; force overrides.
-    if (!wantsTime && !args.force && (await getFlag(FLAGS.HIVE_WAKE_FRONTIER_GUARD, 'system'))) {
+    if (!wantsTime && !args.force && (await getFlag(FLAGS.POT_WAKE_FRONTIER_GUARD, 'system'))) {
       // queen-steering-panel B-03: when the owner has PAUSED new work (owner-steering
       // C-1), the Queen is legitimately leaving the unplaced frontier alone — suppress
       // the frontier leg so she can declare an idle/event-only wake. The drive-to-

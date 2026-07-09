@@ -58,7 +58,7 @@ function bridgeInput(over: Partial<BridgeTickInput> = {}, seams: Partial<NonNull
   const recorded: DivergenceVerdict[] = [];
   const egressCalls: unknown[] = [];
   const input: BridgeTickInput = {
-    hiveHomeSlug: 'shop-hive',
+    potHomeSlug: 'shop-hive',
     workspaceId: 'ws',
     repoKey: 'shop',
     githubRemote: 'https://github.com/acme/shop.git',

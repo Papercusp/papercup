@@ -187,7 +187,7 @@ async function writeToPg(
       const { purgeRevokedForeignElites } = await import('./gym-qd-elites');
       await purgeRevokedForeignElites({
         workspaceId: opts.workspaceId,
-        hiveHomeSlug: opts.harnessSlug,
+        potHomeSlug: opts.harnessSlug,
         revokedPubkeys: row.revoked_pubkeys,
         resolveAuthorDevice: opts.resolveAuthorDevice,
         sql: opts.sql,
@@ -211,7 +211,7 @@ async function writeToPg(
     );
     await reconcileEpochKeysForCurrentMembers({
       workspaceId: opts.workspaceId,
-      hiveHomeSlug: opts.harnessSlug,
+      potHomeSlug: opts.harnessSlug,
       enabled: await isHiveRekeyEnabled(),
       sql: opts.sql,
     });

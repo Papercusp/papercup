@@ -13,7 +13,7 @@ import { DEFAULT_OWNER_STEERING, type OwnerSteering } from '../../owner-steering
 const setOwnerSteering = vi.fn<(ws: string, hive: string, patch: unknown) => Promise<OwnerSteering>>();
 const getOwnerSteering = vi.fn<(ws: string, hive: string) => Promise<OwnerSteering>>();
 const requestUrgentHiveWake = vi.fn(async () => ({ fired: true, coalesced: false }));
-const resolveHiveHomeSlug = vi.fn<(explicit?: string | null, ctx?: string | null) => string | null>();
+const resolvePotHomeSlug = vi.fn<(explicit?: string | null, ctx?: string | null) => string | null>();
 const notifySyncInvalidate = vi.fn(async () => {});
 
 vi.mock('../../owner-steering', async (orig) => ({
@@ -22,7 +22,7 @@ vi.mock('../../owner-steering', async (orig) => ({
   getOwnerSteering: (...a: [string, string]) => getOwnerSteering(...a),
 }));
 vi.mock('../../hive/urgent-wake', () => ({ requestUrgentHiveWake: (...a: unknown[]) => requestUrgentHiveWake(...(a as [])) }));
-vi.mock('../../hive/wake', () => ({ resolveHiveHomeSlug: (...a: [string?, string?]) => resolveHiveHomeSlug(...a) }));
+vi.mock('../../hive/wake', () => ({ resolvePotHomeSlug: (...a: [string?, string?]) => resolvePotHomeSlug(...a) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...a: unknown[]) => notifySyncInvalidate(...(a as [])) }));
 
@@ -37,7 +37,7 @@ const ctx = (): never => ({}) as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveHiveHomeSlug.mockImplementation((explicit) => explicit ?? null);
+  resolvePotHomeSlug.mockImplementation((explicit) => explicit ?? null);
   setOwnerSteering.mockResolvedValue(DEFAULT_OWNER_STEERING);
   getOwnerSteering.mockResolvedValue(DEFAULT_OWNER_STEERING);
   requestUrgentHiveWake.mockResolvedValue({ fired: true, coalesced: false });

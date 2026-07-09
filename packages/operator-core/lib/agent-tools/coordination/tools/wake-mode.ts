@@ -8,7 +8,7 @@
  *
  * Omit `mode` to read; omit `agent` to read/set the GLOBAL default. The behavior
  * itself (stage-vs-fire) is enforced in wakeRecipients (P-007), gated on
- * HIVE_AGENT_TABS — this tool only reads/writes the per-agent preference, which is
+ * POT_AGENT_TABS — this tool only reads/writes the per-agent preference, which is
  * inert until that gate is on, so it needs no separate flag check.
  */
 import { z } from 'zod';

@@ -16,7 +16,7 @@ function seams(over: Partial<RevokeHiveContributorSeams> = {}): RevokeHiveContri
   };
 }
 
-const input = { workspaceId: 'ws', hiveHomeSlug: 'alpha', githubUserId: 42 };
+const input = { workspaceId: 'ws', potHomeSlug: 'alpha', githubUserId: 42 };
 
 describe('revokeHiveContributor', () => {
   it('happy path: the owner revokes the target device pubkeys into their own row', async () => {

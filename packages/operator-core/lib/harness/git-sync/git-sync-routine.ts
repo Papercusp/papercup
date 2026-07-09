@@ -160,7 +160,7 @@ export interface SeedGitSyncRoutineDeps {
   decidePush?: (i: PushDecisionInput) => PushDecision;
   /** github-bridge P-003: per-hive mode resolver (default getHiveGitMode — reads
    *  the federated hive_settings; junk/absent/error all read as 'legacy'). */
-  resolveHiveGitMode?: (workspaceId: string, hiveHomeSlug: string) => Promise<HiveGitMode>;
+  resolveHiveGitMode?: (workspaceId: string, potHomeSlug: string) => Promise<HiveGitMode>;
   getRoutine?: typeof getGitSyncRoutine;
   upsert?: typeof upsertGitSyncRoutine;
 }
@@ -253,11 +253,11 @@ export async function seedGitSyncRoutineForMember(
     // force commit-only via the decider. Hive membership comes from `hive_slug`
     // (member checkouts) or the entry's own slug on a self_repo hive home (the
     // Option-B merged shape); a non-hive member is 'legacy' without a lookup.
-    const hiveHomeSlug = opts.entry.hive_slug ?? (opts.entry.self_repo ? opts.entry.slug : undefined);
+    const potHomeSlug = opts.entry.hive_slug ?? (opts.entry.self_repo ? opts.entry.slug : undefined);
     let hiveGitMode: HiveGitMode = 'legacy';
-    if (hiveHomeSlug) {
+    if (potHomeSlug) {
       const resolveMode = deps.resolveHiveGitMode ?? getHiveGitMode;
-      hiveGitMode = await resolveMode(opts.workspaceId, hiveHomeSlug);
+      hiveGitMode = await resolveMode(opts.workspaceId, potHomeSlug);
     }
 
     // Probe only when the answer can matter: rules 1-3 of the decider win

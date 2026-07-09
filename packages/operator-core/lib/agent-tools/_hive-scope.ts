@@ -6,7 +6,7 @@
  * `resolveHarnessScope` answers "which harness", this answers "which HIVE". Under
  * D-009 (hive ↔ harness 1:1: a hive IS its `kind:'hive'` home harness), a hive is
  * identified by its home-harness slug, and a MEMBER harness resolves to its hive's
- * home slug via `hiveHomeSlugForHarness` (the resolver collapses member → home, so
+ * home slug via `potHomeSlugForHarness` (the resolver collapses member → home, so
  * callers never enumerate members — Q1 ruling).
  *
  * The scope model is AUTO-RESOLVE-THEN-REQUIRE (P-024), deliberately gentler than
@@ -28,7 +28,7 @@
 
 import { z } from 'zod';
 import { isAllHarnessSentinel } from './_harness-scope';
-import { hiveHomeSlugForHarness } from '../hive-federation';
+import { potHomeSlugForHarness } from '../hive-federation';
 
 /**
  * Reusable optional `hive` arg for hive-scoped create-side tools. Omitting it is
@@ -59,12 +59,12 @@ export type HiveHomeResolver = (workspaceId: string, harnessSlug: string) => Pro
  *
  * An `all`/`'*'` sentinel in the arg is NOT a hive (hives are concrete) — it falls
  * through to auto-resolve from the harness, then `none`. Injected `resolveHomeSlug`
- * defaults to the production `hiveHomeSlugForHarness`.
+ * defaults to the production `potHomeSlugForHarness`.
  */
 export async function resolveHiveScope(
   argHive: string | null | undefined,
   ctx: { workspaceId?: string | null; harnessSlug?: string | null } | null | undefined,
-  resolveHomeSlug: HiveHomeResolver = hiveHomeSlugForHarness,
+  resolveHomeSlug: HiveHomeResolver = potHomeSlugForHarness,
 ): Promise<HiveScope> {
   const arg = argHive?.trim();
   if (arg && !isAllHarnessSentinel(arg)) return { kind: 'hive', slug: arg };

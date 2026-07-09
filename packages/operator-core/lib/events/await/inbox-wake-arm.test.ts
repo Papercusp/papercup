@@ -103,9 +103,10 @@ describe('armInboxWake', () => {
     expect(captureWakeHandleForOwner).toHaveBeenCalledWith('su-bee', { planRunId: 42 });
   });
 
-  it('note + workspaceId flow into the upsert; default note when omitted', async () => {
+  it('note flows into the upsert; default note when omitted; workspaceId is accepted but ignored (WI-3575, dead since events:await is single-workspace by design)', async () => {
     await armInboxWake({ ownerId: 'su-bee', note: 'idle now', workspaceId: 'ws-7' });
-    expect(upsertInboxWakeAwait).toHaveBeenCalledWith(expect.objectContaining({ note: 'idle now', workspaceId: 'ws-7' }));
+    expect(upsertInboxWakeAwait).toHaveBeenCalledWith(expect.objectContaining({ note: 'idle now' }));
+    expect(vi.mocked(upsertInboxWakeAwait).mock.calls[0][0]).not.toHaveProperty('workspaceId');
     vi.clearAllMocks();
     await armInboxWake({ ownerId: 'su-bee' });
     const call = vi.mocked(upsertInboxWakeAwait).mock.calls[0][0];
@@ -114,9 +115,9 @@ describe('armInboxWake', () => {
 });
 
 describe('cancelInboxWake', () => {
-  it('delegates to cancelInboxWakeAwaits(owner, workspaceId) and returns the rows cancelled', async () => {
+  it('delegates to cancelInboxWakeAwaits(owner) and returns the rows cancelled; a passed workspaceId is accepted but ignored (WI-3575)', async () => {
     const n = await cancelInboxWake('su-bee', 'ws-7');
-    expect(cancelInboxWakeAwaits).toHaveBeenCalledWith('su-bee', 'ws-7');
+    expect(cancelInboxWakeAwaits).toHaveBeenCalledWith('su-bee');
     expect(n).toBe(2);
   });
 });

@@ -57,7 +57,7 @@ export type JoinAdmissionOutcome =
 
 export interface MembershipAdmissionDeps {
   /** Read the current owner-VERIFIED policy. Default: getHivePolicy → .policy. */
-  getPolicy?: (workspaceId: string, hiveHomeSlug: string) => Promise<HivePolicy | null>;
+  getPolicy?: (workspaceId: string, potHomeSlug: string) => Promise<HivePolicy | null>;
   recordPendingJoin?: typeof realRecordPendingJoin;
   getPendingJoin?: typeof realGetPendingJoin;
   setPendingJoinDecision?: typeof realSetPendingJoinDecision;
@@ -76,7 +76,7 @@ export interface MembershipAdmissionDeps {
    */
   refederateMemberEpochKeys?: (args: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     memberDevicePubkeys: readonly string[];
   }) => Promise<void>;
   /** Per-file test schema threaded into the stores. */
@@ -92,7 +92,7 @@ export interface MembershipAdmissionDeps {
  * admission ↔ boundary-wiring module cycle (same pattern as upsertHiveMember's grant).
  */
 async function defaultRefederateMemberEpochKeys(
-  args: { workspaceId: string; hiveHomeSlug: string; memberDevicePubkeys: readonly string[] },
+  args: { workspaceId: string; potHomeSlug: string; memberDevicePubkeys: readonly string[] },
   sql?: Sql,
 ): Promise<void> {
   const devices = args.memberDevicePubkeys.filter(
@@ -104,7 +104,7 @@ async function defaultRefederateMemberEpochKeys(
   );
   await reconcileEpochKeysForCurrentMembers({
     workspaceId: args.workspaceId,
-    hiveHomeSlug: args.hiveHomeSlug,
+    potHomeSlug: args.potHomeSlug,
     enabled: await isHiveRekeyEnabled(),
     refederate: true,
     onlyDevices: devices,
@@ -114,10 +114,10 @@ async function defaultRefederateMemberEpochKeys(
 
 async function defaultGetPolicy(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<HivePolicy | null> {
-  const resolved = await getHivePolicy(workspaceId, hiveHomeSlug, sql);
+  const resolved = await getHivePolicy(workspaceId, potHomeSlug, sql);
   return resolved?.policy ?? null;
 }
 
@@ -132,14 +132,14 @@ async function defaultGetPolicy(
  * side effect. `null` policy ⇒ admit (existing hives unaffected).
  */
 export async function evaluateJoinAdmission(
-  input: { workspaceId: string; hiveHomeSlug: string; joiner: JoinerInfo },
+  input: { workspaceId: string; potHomeSlug: string; joiner: JoinerInfo },
   deps: MembershipAdmissionDeps = {},
 ): Promise<JoinAdmissionOutcome> {
-  const { workspaceId, hiveHomeSlug, joiner } = input;
+  const { workspaceId, potHomeSlug, joiner } = input;
   const getPolicy = deps.getPolicy ?? ((ws, home) => defaultGetPolicy(ws, home, deps.sql));
   const recordPending = deps.recordPendingJoin ?? realRecordPendingJoin;
 
-  const policy = await getPolicy(workspaceId, hiveHomeSlug);
+  const policy = await getPolicy(workspaceId, potHomeSlug);
   const decision = evaluateMembershipAdmission(policy, {
     githubUserId: joiner.githubUserId,
     githubUsername: joiner.githubUsername,
@@ -152,7 +152,7 @@ export async function evaluateJoinAdmission(
   const pending = await recordPending(
     {
       workspaceId,
-      hiveHomeSlug,
+      potHomeSlug,
       githubUserId: joiner.githubUserId,
       githubUsername: joiner.githubUsername,
       displayName: joiner.displayName ?? null,
@@ -178,20 +178,20 @@ export type DecidePendingResult =
  * Authority (claimed-owner) is the CALLER's responsibility.
  */
 export async function approvePendingJoin(
-  input: { workspaceId: string; hiveHomeSlug: string; githubUserId: number; decidedByGithubUserId: number },
+  input: { workspaceId: string; potHomeSlug: string; githubUserId: number; decidedByGithubUserId: number },
   deps: MembershipAdmissionDeps = {},
 ): Promise<DecidePendingResult> {
   const getPending = deps.getPendingJoin ?? realGetPendingJoin;
   const upsertMember = deps.upsertHiveMember ?? realUpsertHiveMember;
   const setDecision = deps.setPendingJoinDecision ?? realSetPendingJoinDecision;
 
-  const pending = await getPending(input.workspaceId, input.hiveHomeSlug, input.githubUserId, deps.sql);
+  const pending = await getPending(input.workspaceId, input.potHomeSlug, input.githubUserId, deps.sql);
   if (!pending) return { ok: false, code: 'no_pending' };
 
   const member = await upsertMember(
     {
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       githubUserId: pending.githubUserId,
       githubUsername: pending.githubUsername,
       displayName: pending.displayName,
@@ -204,7 +204,7 @@ export async function approvePendingJoin(
 
   const decided = await setDecision(
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     input.githubUserId,
     'approved',
     input.decidedByGithubUserId,
@@ -218,7 +218,7 @@ export async function approvePendingJoin(
 export async function denyPendingJoin(
   input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     githubUserId: number;
     decidedByGithubUserId: number;
     reason?: string | null;
@@ -228,7 +228,7 @@ export async function denyPendingJoin(
   const setDecision = deps.setPendingJoinDecision ?? realSetPendingJoinDecision;
   const decided = await setDecision(
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     input.githubUserId,
     'denied',
     input.decidedByGithubUserId,
@@ -277,10 +277,10 @@ export type OwnerAdmitOutcome =
   | { action: 'refuse'; reason: 'banned' | 'not_allowlisted' };
 
 export async function ownerAdmitOrPend(
-  input: { workspaceId: string; hiveHomeSlug: string; joiner: JoinerInfo },
+  input: { workspaceId: string; potHomeSlug: string; joiner: JoinerInfo },
   deps: MembershipAdmissionDeps = {},
 ): Promise<OwnerAdmitOutcome> {
-  const { workspaceId, hiveHomeSlug, joiner } = input;
+  const { workspaceId, potHomeSlug, joiner } = input;
   const getMember = deps.getHiveMember ?? realGetHiveMember;
   const upsertMember = deps.upsertHiveMember ?? realUpsertHiveMember;
 
@@ -288,7 +288,7 @@ export async function ownerAdmitOrPend(
     upsertMember(
       {
         workspaceId,
-        hiveHomeSlug,
+        potHomeSlug,
         githubUserId: joiner.githubUserId,
         githubUsername: joiner.githubUsername,
         displayName: joiner.displayName ?? null,
@@ -301,7 +301,7 @@ export async function ownerAdmitOrPend(
 
   // 1 — already a member: refresh (idempotent epoch re-grant on reconnect). Never
   //     re-route an established member through the policy gate.
-  const existing = await getMember(workspaceId, hiveHomeSlug, joiner.githubUserId, deps.sql);
+  const existing = await getMember(workspaceId, potHomeSlug, joiner.githubUserId, deps.sql);
   if (existing) {
     const member = await upsert();
     // BUG B self-heal (D-028, layer 3): upsert's own grant is ON CONFLICT DO NOTHING, so a
@@ -317,7 +317,7 @@ export async function ownerAdmitOrPend(
         deps.refederateMemberEpochKeys ?? ((a) => defaultRefederateMemberEpochKeys(a, deps.sql));
       await refederate({
         workspaceId,
-        hiveHomeSlug,
+        potHomeSlug,
         memberDevicePubkeys: (joiner.deviceAttestations ?? [])
           .map((d) => d.device_pubkey)
           .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0),
@@ -330,7 +330,7 @@ export async function ownerAdmitOrPend(
 
   // 2 — not yet a member: the owner-signed policy decides. evaluateJoinAdmission
   //     RECORDS the pending request under approval mode (federates to the joiner).
-  const outcome = await evaluateJoinAdmission({ workspaceId, hiveHomeSlug, joiner }, deps);
+  const outcome = await evaluateJoinAdmission({ workspaceId, potHomeSlug, joiner }, deps);
   if (outcome.outcome === 'admit') {
     return { action: 'admitted', member: await upsert(), reason: 'policy_admit' };
   }
@@ -344,17 +344,17 @@ export async function ownerAdmitOrPend(
  *  testable extraction of boot.ts drainAdmissionQueue's membership step, WI-639). */
 export type OwnerAnnounceAdmitResult =
   | { action: 'skip'; reason: 'no_hive_home' | 'not_owner' }
-  | { action: 'admitted'; hiveHomeSlug: string; reason: 'already_member' | 'policy_admit' }
-  | { action: 'pending'; hiveHomeSlug: string }
-  | { action: 'refuse'; hiveHomeSlug: string; reason: 'banned' | 'not_allowlisted' };
+  | { action: 'admitted'; potHomeSlug: string; reason: 'already_member' | 'policy_admit' }
+  | { action: 'pending'; potHomeSlug: string }
+  | { action: 'refuse'; potHomeSlug: string; reason: 'banned' | 'not_allowlisted' };
 
 export interface AdmitAnnouncedPeerDeps extends MembershipAdmissionDeps {
   /** Resolve a harness slug → its Hive home slug. Default: hive-federation
-   *  hiveHomeSlugForHarness (a fresh registry read). */
-  hiveHomeSlugForHarness?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
+   *  potHomeSlugForHarness (a fresh registry read). */
+  potHomeSlugForHarness?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /** Truthy iff THIS Swarm holds the Hive private key (the owner box). Default:
    *  identity/hive-keypair loadHivePubkey. */
-  loadHivePubkey?: (workspaceId: string, hiveHomeSlug: string) => Promise<unknown>;
+  loadHivePubkey?: (workspaceId: string, potHomeSlug: string) => Promise<unknown>;
   /** The admit-or-pend decision. Default: ownerAdmitOrPend. */
   admit?: typeof ownerAdmitOrPend;
 }
@@ -367,13 +367,13 @@ export interface AdmitAnnouncedPeerDeps extends MembershipAdmissionDeps {
  *
  * WI-280: hive_members is keyed by the HIVE-HOME slug, but a peer joins via the
  * MEMBER topic, so the booted `harnessSlug` is the MEMBER slug. We resolve the home
- * via `hiveHomeSlugForHarness` (a fresh registry read: member → its hive_slug;
+ * via `potHomeSlugForHarness` (a fresh registry read: member → its hive_slug;
  * hive-home → itself) — NOT a boot-time projection slug, which is undefined on the
  * owner's MEMBER boot and silently skipped registration before. `skip` outcomes:
  * `no_hive_home` (not part of a hive) / `not_owner` (no Hive key on this box — the
  * local upsert is the owner's; federation projects it to the others).
  *
- * Returns the outcome (+ the resolved hiveHomeSlug) so the caller can record the
+ * Returns the outcome (+ the resolved potHomeSlug) so the caller can record the
  * matching boot-event; it performs no boot-history I/O itself.
  */
 export async function admitAnnouncedPeerAsOwner(
@@ -385,21 +385,21 @@ export async function admitAnnouncedPeerAsOwner(
   deps: AdmitAnnouncedPeerDeps = {},
 ): Promise<OwnerAnnounceAdmitResult> {
   const resolveHome =
-    deps.hiveHomeSlugForHarness ??
-    (async (ws: string, slug: string) => (await import('./hive-federation')).hiveHomeSlugForHarness(ws, slug));
+    deps.potHomeSlugForHarness ??
+    (async (ws: string, slug: string) => (await import('./hive-federation')).potHomeSlugForHarness(ws, slug));
   const loadPubkey =
     deps.loadHivePubkey ??
     (async (ws: string, home: string) => (await import('./identity/hive-keypair')).loadHivePubkey(ws, home));
   const admit = deps.admit ?? ownerAdmitOrPend;
 
-  const hiveHomeSlug = await resolveHome(input.workspaceId, input.harnessSlug);
-  if (!hiveHomeSlug) return { action: 'skip', reason: 'no_hive_home' };
-  if (!(await loadPubkey(input.workspaceId, hiveHomeSlug))) return { action: 'skip', reason: 'not_owner' };
+  const potHomeSlug = await resolveHome(input.workspaceId, input.harnessSlug);
+  if (!potHomeSlug) return { action: 'skip', reason: 'no_hive_home' };
+  if (!(await loadPubkey(input.workspaceId, potHomeSlug))) return { action: 'skip', reason: 'not_owner' };
 
   const outcome = await admit(
     {
       workspaceId: input.workspaceId,
-      hiveHomeSlug,
+      potHomeSlug,
       joiner: {
         githubUserId: input.peer.githubUserId,
         githubUsername: input.peer.githubLogin,
@@ -417,7 +417,7 @@ export async function admitAnnouncedPeerAsOwner(
     },
     deps,
   );
-  if (outcome.action === 'admitted') return { action: 'admitted', hiveHomeSlug, reason: outcome.reason };
-  if (outcome.action === 'pending') return { action: 'pending', hiveHomeSlug };
-  return { action: 'refuse', hiveHomeSlug, reason: outcome.reason };
+  if (outcome.action === 'admitted') return { action: 'admitted', potHomeSlug, reason: outcome.reason };
+  if (outcome.action === 'pending') return { action: 'pending', potHomeSlug };
+  return { action: 'refuse', potHomeSlug, reason: outcome.reason };
 }

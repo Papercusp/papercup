@@ -209,7 +209,7 @@ export async function listStartedOverwatches(): Promise<Array<{ workspaceId: str
  * - OFF (the dark default) ⇒ the raw per-(ws,install) set, BYTE-IDENTICAL to
  *   `listStartedOverwatches()` — every existing supervisor seam is unchanged.
  * - ON ⇒ collapse to ONE entry per started workspace, seated at the workspace's
- *   home hive (`resolveHiveHomeSlug`, = `PAPERCUSP_HIVE_HOME_SLUG`), so the single
+ *   home hive (`resolvePotHomeSlug`, = `PAPERCUSP_POT_HOME_SLUG`), so the single
  *   workspace supervisor's liveness/wake keys resolve against the same install the
  *   overwatch-wake routine (./liveness) is keyed to. The seat-home falls back to
  *   the row's own install slug when no env home is set (multi-home pre-flip stays
@@ -222,10 +222,10 @@ export async function listStartedWorkspaceOverwatches(): Promise<
   const rows = await readStartedRows();
   if (!(await isWorkspaceCoordinationOn())) return rows;
   // ON: one supervisor per workspace, seated at the workspace home hive. Lazy
-  // import of resolveHiveHomeSlug keeps this module free of hive/wake.ts's
+  // import of resolvePotHomeSlug keeps this module free of hive/wake.ts's
   // import-time side effects (the same lazy-import discipline hive/started.ts
   // uses for its own listStartedWorkspaceLoops).
-  const { resolveHiveHomeSlug } = await import('../hive/wake');
+  const { resolvePotHomeSlug } = await import('../hive/wake');
   const seen = new Set<string>();
   const out: Array<{ workspaceId: string; installSlug: string }> = [];
   for (const r of rows) {
@@ -233,7 +233,7 @@ export async function listStartedWorkspaceOverwatches(): Promise<
     seen.add(r.workspaceId);
     // The env home is workspace-agnostic today (single live workspace); fall back
     // to this row's install when unset so a never-env'd box still resolves a seat.
-    const seatHome = resolveHiveHomeSlug(undefined, undefined) ?? r.installSlug;
+    const seatHome = resolvePotHomeSlug(undefined, undefined) ?? r.installSlug;
     out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;

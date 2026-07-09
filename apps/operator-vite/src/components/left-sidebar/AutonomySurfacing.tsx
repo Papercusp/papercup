@@ -86,7 +86,7 @@ export default function AutonomySurfacing({
 }) {
   const [open, setOpen] = useQueryState('qAutonomy', parseAsBoolean.withDefault(true));
   const policyQ = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy', args: {}, staleTime: 30_000 });
-  const armed = useFlag(FLAGS.QUEEN_AUTONOMY_ARMED);
+  const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
 
   const rows = policyRows(policyQ.data);
   const { total, active, locked } = summarizePolicy(rows);

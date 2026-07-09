@@ -38,7 +38,7 @@
  * SERVER side ({@link wireHiveGitServe}): on `req`, re-checks `hiveGit.mode`
  * (S-5: NEVER cached, so a mode flip needs no re-seed — mirrors
  * git-sync-action's per-tick re-consult of the same setting) and resolves the
- * repo path for `(hiveHomeSlug, repoKey)`. A legacy-mode hive always REFUSEs —
+ * repo path for `(potHomeSlug, repoKey)`. A legacy-mode hive always REFUSEs —
  * no bytes are ever served, so legacy hives are byte-for-byte unchanged. Scope
  * (`scopes/`) repos also refuse for now: authorizeScopeRepoServe needs a
  * roster-VERIFIED peer identity (scope-serve-gate.ts's contract), and no
@@ -71,8 +71,8 @@ export { HIVE_GIT_PROTOCOL };
 /** Config registered by {@link wireHiveGitServe} — what this connection may serve. */
 export interface HiveGitServeConfig {
   /** The hive this connection's swarm topic belongs to (repos are resolved
-   *  under it — `hiveGitRepoPath(hiveHomeSlug, repoKey)`). */
-  hiveHomeSlug: string;
+   *  under it — `hiveGitRepoPath(potHomeSlug, repoKey)`). */
+  potHomeSlug: string;
   workspaceId: string;
   /** Per-fetch wall-clock ceiling forwarded to `serveUploadPack` (default
    *  DEFAULT_FETCH_TIMEOUT_MS — see fetch-transport.ts). */
@@ -251,6 +251,11 @@ function statesFor(mux: object): Map<string, ChannelState> {
   return m;
 }
 
+/** Muxers on which the lazy-accept `pair()` notifier (below) is already
+ *  registered — pair() is idempotent to call twice, but this avoids
+ *  redundant re-registration on every `resolveMuxStream` call. */
+const hiveGitPairedMuxers = new WeakSet<object>();
+
 function newState(): ChannelState {
   return {
     channel: null,
@@ -300,14 +305,14 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     if (!cfg) return refuse('not-serving');
     let mode: HiveGitMode;
     try {
-      mode = await getHiveGitMode(cfg.workspaceId, cfg.hiveHomeSlug);
+      mode = await getHiveGitMode(cfg.workspaceId, cfg.potHomeSlug);
     } catch {
       mode = 'legacy';
     }
     if (mode === 'legacy') return refuse('mode-legacy');
     let repoPath: string;
     try {
-      repoPath = hiveGitRepoPath(cfg.hiveHomeSlug, v.repoKey);
+      repoPath = hiveGitRepoPath(cfg.potHomeSlug, v.repoKey);
     } catch {
       return refuse('bad-repo-key');
     }
@@ -407,11 +412,40 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
 /** Resolve the shared Protomux for a connection socket — corestore attaches it
  *  at `socket.noiseStream`, not always the outer Hyperswarm socket (mirrors
  *  `openAnnounceChannel`'s identical resolution in swarm.ts). */
-function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<unknown> } {
+function resolveMuxStream(socket: unknown, topic: Buffer): { mux: Protomux; opened?: Promise<unknown> } {
   const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
     opened?: Promise<unknown>;
   };
-  return { mux: Protomux.from(muxStream as never), opened: muxStream.opened };
+  const mux = Protomux.from(muxStream as never);
+  // Close a channel-open race: if the REMOTE's "open" control message arrives
+  // before OUR OWN `ensureChannel()`/`createChannel()` call runs (e.g. while a
+  // caller is still `await`ing `opened` below), Protomux queues it into that
+  // channel-info's `incoming` list and — with no `pair()` registered —
+  // asynchronously REJECTS it (see protomux's `_requestSession`) before we
+  // ever get a chance to pair. When that happens our own `onopen` never fires
+  // and `waitOpened` hangs forever (the client never reaches its `req` send,
+  // so the server's `handleReq` never fires either).
+  //
+  // Register the lazy-accept notifier at PROTOCOL scope (no `id`) — NOT
+  // `{ protocol, id: topic }`. Swarm.ts's announce channel already learned
+  // this the hard way (see its own `mux.pair` comment): an id-scoped pair()
+  // leaves a late remote open for that id unaccepted in practice, so dispatch
+  // by the `id` protomux hands the notify callback instead. `ensureChannel` is
+  // keyed per-topic and idempotent, so this safely materializes (and thus
+  // pairs with) whichever topic the remote just opened.
+  if (!hiveGitPairedMuxers.has(mux)) {
+    hiveGitPairedMuxers.add(mux);
+    try {
+      mux.pair({ protocol: HIVE_GIT_PROTOCOL }, (id: Buffer | null) => {
+        if (!id) return;
+        ensureChannel(mux, id);
+      });
+    } catch {
+      // pair() unsupported on this muxer build — connect-time channels still
+      // pair the normal (non-lazy) way when both sides create first.
+    }
+  }
+  return { mux, opened: muxStream.opened };
 }
 
 // ─── public API ──────────────────────────────────────────────────────────
@@ -426,7 +460,7 @@ function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<un
 export function wireHiveGitServe(socket: unknown, topic: Buffer, config: HiveGitServeConfig): void {
   try {
     if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe called');
-    const { mux, opened } = resolveMuxStream(socket);
+    const { mux, opened } = resolveMuxStream(socket, topic);
     if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe resolved mux', { hasOpened: !!opened });
     const register = (): void => {
       try {
@@ -461,7 +495,7 @@ export async function openHiveGitFetchDuplex(
   req: { repoKey: string; peerGithubUserId?: number },
 ): Promise<Duplex> {
   if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex called');
-  const { mux, opened } = resolveMuxStream(socket);
+  const { mux, opened } = resolveMuxStream(socket, topic);
   if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex resolved mux', { hasOpened: !!opened });
   if (opened && typeof opened.then === 'function') await opened.catch(() => {});
   const state = ensureChannel(mux, topic);

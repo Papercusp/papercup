@@ -87,7 +87,7 @@ export interface PresenceIdentity {
  * Build the SharedPresenceRow value for an announce.
  *
  * `potSlug` (shared-hive-federation P-008/P-009) is the harness's home Hive slug
- * — the publisher resolves it once via hiveHomeSlugForHarness and threads it here
+ * — the publisher resolves it once via potHomeSlugForHarness and threads it here
  * so each federated presence row carries it for the per-Hive lock authority.
  * Defaults null (a non-Hive harness, or a caller that hasn't wired Hive scope yet)
  * — additive + back-compat.
@@ -206,7 +206,7 @@ export interface PresenceAnnounceLoopDeps {
   /** Append the announce op to the booted substrate handle's own log. */
   append: (op: LocalWriteOp) => Promise<void>;
   /** The harness's home Hive slug (P-008/P-009) — resolved ONCE by the publisher
-   *  (hiveHomeSlugForHarness) and stamped on every announce. Null = non-Hive. */
+   *  (potHomeSlugForHarness) and stamped on every announce. Null = non-Hive. */
   potSlug?: string | null;
   /** Tick rate (the decision cadence is shouldAnnounce's; the loop just polls). */
   intervalMs: number;

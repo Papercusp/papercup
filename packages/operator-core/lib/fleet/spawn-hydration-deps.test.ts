@@ -8,7 +8,7 @@
  *  - getHandoff: returns null WITHOUT a featureId (no feature ⇒ no handoff), else
  *    delegates with the threaded args.
  *  - getRoster: maps harness→potSlug, fetches the snapshot, then renders it.
- *  - getDossier: flag-gated on BEE_WAKE_DOSSIER (off ⇒ null, runner not called), and
+ *  - getDossier: flag-gated on CUP_WAKE_DOSSIER (off ⇒ null, runner not called), and
  *    falls back to activeWorkspaceId() when no workspaceId is threaded.
  *
  * Every source fn is mocked. Node env. In-tree (operator-core, tab-visible).
@@ -79,7 +79,7 @@ describe('getCheckpoint', () => {
 });
 
 describe('getDossier', () => {
-  it('returns null when BEE_WAKE_DOSSIER is off, without computing the dossier', async () => {
+  it('returns null when CUP_WAKE_DOSSIER is off, without computing the dossier', async () => {
     flag.mockResolvedValue(false);
     const out = await deps().getDossier({ harness: 'h', workItemId: 'WI-1', workspaceId: 'ws' } as never);
     expect(out).toBeNull();

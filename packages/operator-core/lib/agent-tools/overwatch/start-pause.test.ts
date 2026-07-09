@@ -25,7 +25,7 @@ vi.mock('../../overwatch/wake-bridge', () => ({
 }));
 
 vi.mock('../../hive/wake', () => ({
-  resolveHiveHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
+  resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,
 }));
 

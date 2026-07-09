@@ -23,10 +23,10 @@ const sk = (ws: string, slug: string, key: string) => `${ws}::${slug}::${key}`;
 vi.mock('../../hive-settings-store', () => ({
   getHiveSetting: async (ws: string, slug: string, key: string) =>
     settings.has(sk(ws, slug, key))
-      ? { workspaceId: ws, hiveHomeSlug: slug, settingKey: key, value: settings.get(sk(ws, slug, key)), createdAt: 0, updatedAt: 0 }
+      ? { workspaceId: ws, potHomeSlug: slug, settingKey: key, value: settings.get(sk(ws, slug, key)), createdAt: 0, updatedAt: 0 }
       : null,
-  setHiveSetting: async (i: { workspaceId: string; hiveHomeSlug: string; settingKey: string; value: unknown }) => {
-    settings.set(sk(i.workspaceId, i.hiveHomeSlug, i.settingKey), i.value);
+  setHiveSetting: async (i: { workspaceId: string; potHomeSlug: string; settingKey: string; value: unknown }) => {
+    settings.set(sk(i.workspaceId, i.potHomeSlug, i.settingKey), i.value);
     return { ...i, createdAt: 0, updatedAt: 0 };
   },
 }));
@@ -46,7 +46,7 @@ async function makeDevice(keychainId: string): Promise<{ keychainId: string; pub
   return { keychainId, pubkeyBase64 };
 }
 
-const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', potId: 'hive-1' };
+const CTX = { workspaceId: 'default', potHomeSlug: 'hello-world-hive', potId: 'hive-1' };
 const enc = (s: string) => new TextEncoder().encode(s);
 
 beforeEach(() => { mem.clear(); settings.clear(); });

@@ -37,7 +37,7 @@ export interface SharedPresenceRow {
    *  (lockAuthorityForHive's `WHERE hive_slug=?`, mig 187) without a registry join
    *  on the hot path. Optional on DECODE so pre-P-008 peer-log rows (which lack
    *  it) still validate; the presence publisher stamps it (resolved via
-   *  hiveHomeSlugForHarness) at announce time. */
+   *  potHomeSlugForHarness) at announce time. */
   hive_slug?: string | null;
 }
 

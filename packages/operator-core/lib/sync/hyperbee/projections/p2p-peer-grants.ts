@@ -71,7 +71,7 @@ export interface P2pPeerGrantsProjectionOpts {
   sql?: postgres.Sql;
   /** The hive-home slug when this projection is HIVE-BOUND — remote ops are
    *  identity-gated only when set (a non-hive topology has no foreign authors). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** Test seam: resolve an op's VERIFIED source-log device pubkey from the
    *  provenance authorPubkey (sourceLogKeyHex). Prod wires resolveAuthorDevice. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
@@ -128,7 +128,7 @@ async function writeToPg(
   // (or a forged revocation-suppressing re-grant) from an unverifiable device
   // never applies.
   let sourceLogDevice: string | null = null;
-  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
     sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -142,7 +142,7 @@ async function writeToPg(
         if (!device) return { githubUserId: null };
         const r = await resolveAuthorCommsTier({
           workspaceId: opts.workspaceId,
-          hiveHomeSlug: opts.hiveHomeSlug!,
+          potHomeSlug: opts.potHomeSlug!,
           devicePubkey: device,
         });
         return { githubUserId: r.githubUserId };
@@ -224,7 +224,7 @@ async function writeToPg(
   // receives the federated row (revoke on machine A → reap on executor
   // machine B). Only remote-origin ops trigger it — a local op never reaches
   // writeToPg (skipOwnOps), so this only fires for genuinely inbound rows,
-  // and only when hiveHomeSlug gated the RECEIVER-ENFORCED identity check
+  // and only when potHomeSlug gated the RECEIVER-ENFORCED identity check
   // above, so row.grantor_github_user_id is already verified-authentic.
   // Pool grants have no p2p_foreign_workspaces rows (grantee_kind === 'fleet'
   // gate mirrors p2p-grant-set.ts). Best-effort: a reap failure/throw must
@@ -235,7 +235,7 @@ async function writeToPg(
     row.status === 'revoked' &&
     row.grantee_kind === 'fleet' &&
     provenance?.origin === 'remote' &&
-    opts.hiveHomeSlug
+    opts.potHomeSlug
   ) {
     try {
       const r = await reapForeignSessionsForRevocation(

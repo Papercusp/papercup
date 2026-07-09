@@ -31,7 +31,7 @@ export type PendingJoinStatus = 'pending' | 'approved' | 'denied';
 export interface PendingJoinRecord {
   workspaceId: string;
   /** The Hive's home_slug (the federation demux scope). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   githubUserId: number;
   githubUsername: string;
   displayName: string | null;
@@ -48,7 +48,7 @@ export interface PendingJoinRecord {
 
 export interface RecordPendingJoinInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   githubUserId: number;
   githubUsername: string;
   displayName?: string | null;
@@ -93,7 +93,7 @@ function numOrNull(v: string | number | null): number | null {
 function rowToRecord(r: PendingJoinPgRow): PendingJoinRecord {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.harness_slug,
+    potHomeSlug: r.harness_slug,
     githubUserId: Number(r.github_user_id),
     githubUsername: r.github_username,
     displayName: r.display_name,
@@ -142,7 +142,7 @@ export async function recordPendingJoin(
      RETURNING ${COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       input.githubUserId,
       input.githubUsername,
       input.displayName ?? null,
@@ -156,14 +156,14 @@ export async function recordPendingJoin(
 /** Get one pending-join row. */
 export async function getPendingJoin(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<PendingJoinRecord | null> {
   const rows = (await pg(sql).unsafe(
     `SELECT ${COLS} FROM harness_shared.hive_pending_joins
       WHERE workspace_id = $1 AND harness_slug = $2 AND github_user_id = $3 LIMIT 1`,
-    [workspaceId, hiveHomeSlug, githubUserId],
+    [workspaceId, potHomeSlug, githubUserId],
   )) as unknown as PendingJoinPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -174,7 +174,7 @@ export async function getPendingJoin(
  */
 export async function listPendingJoins(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   opts: { status?: PendingJoinStatus | null } = {},
   sql?: Sql,
 ): Promise<PendingJoinRecord[]> {
@@ -187,7 +187,7 @@ export async function listPendingJoins(
       : `SELECT ${COLS} FROM harness_shared.hive_pending_joins
            WHERE workspace_id = $1 AND harness_slug = $2 AND status = $3
            ORDER BY requested_at ASC`,
-    status == null ? [workspaceId, hiveHomeSlug] : [workspaceId, hiveHomeSlug, status],
+    status == null ? [workspaceId, potHomeSlug] : [workspaceId, potHomeSlug, status],
   )) as unknown as PendingJoinPgRow[];
   return rows.map(rowToRecord);
 }
@@ -200,7 +200,7 @@ export async function listPendingJoins(
  */
 export async function setPendingJoinDecision(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   githubUserId: number,
   status: Exclude<PendingJoinStatus, 'pending'>,
   decidedByGithubUserId: number,
@@ -216,7 +216,7 @@ export async function setPendingJoinDecision(
             updated_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint
       WHERE workspace_id = $1 AND harness_slug = $2 AND github_user_id = $3
       RETURNING ${COLS}`,
-    [workspaceId, hiveHomeSlug, githubUserId, status, decidedByGithubUserId, reason ?? null],
+    [workspaceId, potHomeSlug, githubUserId, status, decidedByGithubUserId, reason ?? null],
   )) as unknown as PendingJoinPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }

@@ -92,19 +92,19 @@ describe('comms_trust_list (real PG, mig 435)', () => {
   it('resolution: override wins → policy default → fallback', async () => {
     await setCommsTrust(WS, { githubUserId: 7, tier: 'steer', actor: 'su-t', nowMs: T0 }, db.sql);
     expect(
-      await effectiveCommsTier({ workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 7, nowMs: T0 + 1 }, noPolicy, db.sql),
+      await effectiveCommsTier({ workspaceId: WS, potHomeSlug: 'h', githubUserId: 7, nowMs: T0 + 1 }, noPolicy, db.sql),
     ).toEqual({ tier: 'steer', source: 'override' });
 
     expect(
       await effectiveCommsTier(
-        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 999, nowMs: T0 },
+        { workspaceId: WS, potHomeSlug: 'h', githubUserId: 999, nowMs: T0 },
         { loadPolicyDefaultTier: async () => 'wake' },
         db.sql,
       ),
     ).toEqual({ tier: 'wake', source: 'policy' });
 
     expect(
-      await effectiveCommsTier({ workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 999, nowMs: T0 }, noPolicy, db.sql),
+      await effectiveCommsTier({ workspaceId: WS, potHomeSlug: 'h', githubUserId: 999, nowMs: T0 }, noPolicy, db.sql),
     ).toEqual({ tier: FALLBACK_COMMS_TIER, source: 'fallback' });
   });
 
@@ -116,12 +116,12 @@ describe('comms_trust_list (real PG, mig 435)', () => {
     );
     // fresh: override holds
     expect(
-      (await effectiveCommsTier({ workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 500 }, noPolicy, db.sql)).source,
+      (await effectiveCommsTier({ workspaceId: WS, potHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 500 }, noPolicy, db.sql)).source,
     ).toBe('override');
     // expired: falls to policy
     expect(
       await effectiveCommsTier(
-        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 2000 },
+        { workspaceId: WS, potHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 2000 },
         { loadPolicyDefaultTier: async () => 'message' },
         db.sql,
       ),
@@ -129,7 +129,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
     // garbage policy value → fallback, not a crash
     expect(
       await effectiveCommsTier(
-        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 2000 },
+        { workspaceId: WS, potHomeSlug: 'h', githubUserId: 8, nowMs: T0 + 2000 },
         { loadPolicyDefaultTier: async () => 'root-access-please' },
         db.sql,
       ),
@@ -139,7 +139,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
   it('fail-soft: a throwing policy leg resolves to fallback, never throws', async () => {
     expect(
       await effectiveCommsTier(
-        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 999, nowMs: T0 },
+        { workspaceId: WS, potHomeSlug: 'h', githubUserId: 999, nowMs: T0 },
         {
           loadPolicyDefaultTier: async () => {
             throw new Error('policy store down');
@@ -157,7 +157,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
     // default, not an override (the mig-443 separability property).
     expect(
       await effectiveCommsTier(
-        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 101, nowMs: T0 + 1 },
+        { workspaceId: WS, potHomeSlug: 'h', githubUserId: 101, nowMs: T0 + 1 },
         { loadPolicyDefaultTier: async () => 'wake' },
         db.sql,
       ),
@@ -174,7 +174,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
     await setGateTrust(WS, { githubUserId: 102, granted: true, actor: 'su-t', nowMs: T0 + 10 }, db.sql);
     expect(await hasGateGrant(WS, 102, T0 + 11, db.sql)).toBe(true);
     expect(
-      (await effectiveCommsTier({ workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 102, nowMs: T0 + 11 }, noPolicy, db.sql)).tier,
+      (await effectiveCommsTier({ workspaceId: WS, potHomeSlug: 'h', githubUserId: 102, nowMs: T0 + 11 }, noPolicy, db.sql)).tier,
     ).toBe('steer');
     // a tier re-set PRESERVES the gate bit
     await setCommsTrust(WS, { githubUserId: 102, tier: 'wake', actor: 'su-t', nowMs: T0 + 20 }, db.sql);
@@ -202,7 +202,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
   it('workspace isolation (D-004): a grant in WS never leaks to WS2', async () => {
     await setCommsTrust(WS, { githubUserId: 55, tier: 'steer', actor: 'su-t', nowMs: T0 }, db.sql);
     expect(
-      await effectiveCommsTier({ workspaceId: 'ws_other', hiveHomeSlug: 'h', githubUserId: 55, nowMs: T0 + 1 }, noPolicy, db.sql),
+      await effectiveCommsTier({ workspaceId: 'ws_other', potHomeSlug: 'h', githubUserId: 55, nowMs: T0 + 1 }, noPolicy, db.sql),
     ).toEqual({ tier: FALLBACK_COMMS_TIER, source: 'fallback' });
     expect(await listCommsTrust('ws_other', db.sql)).toHaveLength(0);
   });

@@ -73,7 +73,7 @@ describe('chat:ask_choice — B-17 autonomy wiring', () => {
     _resetCardCorrelatorForTests();
     _resetStateChannelForTests();
     vi.mocked(getFlag).mockReset();
-    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.QUEEN_CARD_INTERCEPTION);
+    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.MUG_CARD_INTERCEPTION);
   });
   afterEach(() => {
     resetCoordLog();

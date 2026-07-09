@@ -71,7 +71,7 @@ async function seedHive(pubkeyBase64 = ownerKp.pubkeyBase64) {
 /** Build a SIGNED wire row as the owner would author it (owner_pubkey = the hive key). */
 function signedRow(policy: HivePolicy, policyVersion: number, kp = ownerKp): HivePolicyRow {
   const policy_json = canonicalizeHivePolicy(policy);
-  const bytes = hivePolicySignedBytes({ workspaceId: WS, hiveHomeSlug: HOME, policyVersion, canonicalPolicyJson: policy_json });
+  const bytes = hivePolicySignedBytes({ workspaceId: WS, potHomeSlug: HOME, policyVersion, canonicalPolicyJson: policy_json });
   const signature = signWithPrivateKeyDer(kp.privateKeyDer, bytes).toString('base64');
   return { harness_slug: HOME, policy_json, owner_pubkey: kp.pubkeyBase64, signature, policy_version: policyVersion };
 }

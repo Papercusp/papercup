@@ -76,7 +76,7 @@ export interface ImplementRunInput {
   postTouchCooldownMs?: number;
   policy?: RiskTierPolicy;
   /**
-   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`, Phase 2). When true the
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.MUG_FULL_AUTONOMY`, Phase 2). When true the
    * tier split lifts the protected-path/keyword TCB bars, so a kind=bug touching the
    * deploy gate / flags / capability dispatch / migrations / the loop's own code becomes
    * dispatchable. Read at the action boundary; default off. Still gated by `flagEnabled`

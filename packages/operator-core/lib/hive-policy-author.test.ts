@@ -20,7 +20,7 @@ function writeCapture() {
   const write: AuthorHivePolicySeams['write'] = async (input) => {
     writes.push(input);
     const resolved: ResolvedHivePolicy = {
-      workspaceId: input.workspaceId, hiveHomeSlug: input.hiveHomeSlug,
+      workspaceId: input.workspaceId, potHomeSlug: input.potHomeSlug,
       policy: JSON.parse(input.policyJson), policyVersion: input.policyVersion,
       ownerPubkey: input.ownerPubkey, signature: input.signature, policyJson: input.policyJson,
       fedHlc: 'h', updatedAt: 1,
@@ -36,7 +36,7 @@ describe('authorHivePolicy', () => {
     const { writes, write } = writeCapture();
     const policy: HivePolicy = { membership: 'allowlist', allowlist: ['octocat'], rate: { opsPerMin: 5 } };
 
-    const res = await authorHivePolicy({ workspaceId: WS, hiveHomeSlug: HOME, policy }, {
+    const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy }, {
       readCurrent: async () => ({ policyVersion: 5 } as ResolvedHivePolicy), // current v5 → author writes v6
       loadOwnerPubkey: async () => kp.pubkeyBase64,
       sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),
@@ -50,7 +50,7 @@ describe('authorHivePolicy', () => {
 
     // The produced signature verifies over the SAME bytes a member's projection recomputes.
     const expectedBytes = hivePolicySignedBytes({
-      workspaceId: WS, hiveHomeSlug: HOME, policyVersion: 6,
+      workspaceId: WS, potHomeSlug: HOME, policyVersion: 6,
       canonicalPolicyJson: canonicalizeHivePolicy(policy),
     });
     expect(writes[0].policyJson).toBe(canonicalizeHivePolicy(policy));
@@ -60,7 +60,7 @@ describe('authorHivePolicy', () => {
   it('first author (no current policy) starts at version 1', async () => {
     const kp = generateEd25519KeypairDer();
     const { writes, write } = writeCapture();
-    await authorHivePolicy({ workspaceId: WS, hiveHomeSlug: HOME, policy: {} }, {
+    await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
       readCurrent: async () => null,
       loadOwnerPubkey: async () => kp.pubkeyBase64,
       sign: async (_ws, _slug, bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),
@@ -71,7 +71,7 @@ describe('authorHivePolicy', () => {
 
   it('a Swarm without the Hive key is refused (not_owner_swarm) — never writes', async () => {
     const write = vi.fn();
-    const res = await authorHivePolicy({ workspaceId: WS, hiveHomeSlug: HOME, policy: {} }, {
+    const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
       loadOwnerPubkey: async () => null, // not the owner Swarm
       write: write as never,
     });
@@ -81,7 +81,7 @@ describe('authorHivePolicy', () => {
   });
 
   it('sign throwing (key not held) maps to not_owner_swarm', async () => {
-    const res = await authorHivePolicy({ workspaceId: WS, hiveHomeSlug: HOME, policy: {} }, {
+    const res = await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {} }, {
       loadOwnerPubkey: async () => 'pk',
       readCurrent: async () => null,
       sign: async () => { throw new Error('hive private key not held'); },
@@ -96,13 +96,13 @@ describe('mutateHivePolicy (EN-3 ban/takedown write accessor)', () => {
     const kp = generateEd25519KeypairDer();
     const { writes, write } = writeCapture();
     const current: ResolvedHivePolicy = {
-      workspaceId: WS, hiveHomeSlug: HOME,
+      workspaceId: WS, potHomeSlug: HOME,
       policy: { membership: 'approval', moderation: { bannedGithubIds: ['1'] }, futureKnob: 'keep' },
       policyVersion: 2, ownerPubkey: kp.pubkeyBase64, signature: 's', policyJson: '{}', fedHlc: 'h', updatedAt: 1,
     };
 
     const res = await mutateHivePolicy({
-      workspaceId: WS, hiveHomeSlug: HOME,
+      workspaceId: WS, potHomeSlug: HOME,
       mutate: (p) => ({ ...p, moderation: { ...p.moderation, bannedGithubIds: [...(p.moderation?.bannedGithubIds ?? []), '2'] } }),
     }, {
       readCurrent: async () => current,

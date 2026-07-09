@@ -58,11 +58,11 @@ export function coerceHiveGitMode(v: unknown): HiveGitMode {
  */
 export async function getHiveGitMode(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<HiveGitMode> {
   try {
-    const rec = await getHiveSetting(workspaceId, hiveHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
+    const rec = await getHiveSetting(workspaceId, potHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
     return coerceHiveGitMode(rec?.value);
   } catch {
     return 'legacy';
@@ -77,16 +77,16 @@ export async function getHiveGitMode(
  */
 export async function setHiveGitMode(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   mode: HiveGitMode | null,
   sql?: Sql,
 ): Promise<void> {
   if (mode === null) {
-    await deleteHiveSetting(workspaceId, hiveHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
+    await deleteHiveSetting(workspaceId, potHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
     return;
   }
   if (!HIVE_GIT_MODES.includes(mode)) {
     throw new Error(`setHiveGitMode: unknown mode '${String(mode)}' (expected ${HIVE_GIT_MODES.join(' | ')})`);
   }
-  await setHiveSetting({ workspaceId, hiveHomeSlug, settingKey: HIVE_GIT_MODE_SETTING_KEY, value: mode }, sql);
+  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: HIVE_GIT_MODE_SETTING_KEY, value: mode }, sql);
 }

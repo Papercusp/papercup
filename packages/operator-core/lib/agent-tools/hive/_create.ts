@@ -66,7 +66,7 @@ export interface CreateHiveOpts {
   /**
    * Provision the per-HIVE learning loop (gym + scout) at create
    * (per-hive-learning-loops P-020, D-003/D-008). `false` ⇒ skip; omit ⇒
-   * provision when the PER_HIVE_LEARNING_LOOPS flag is on. Flag-gated +
+   * provision when the PER_POT_LEARNING_LOOPS flag is on. Flag-gated +
    * best-effort — a provision failure warns and reports, never fails the create.
    */
   provisionLearningLoop?: boolean;
@@ -426,7 +426,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           import('@papercusp/flags/server'),
           import('@papercusp/flags'),
         ]);
-        if (await getFlag(FLAGS.PER_HIVE_LEARNING_LOOPS, 'system')) {
+        if (await getFlag(FLAGS.PER_POT_LEARNING_LOOPS, 'system')) {
           const { provisionHiveLearningLoop } = await import('../../hive/provision-learning-loop');
           const { sql } = getOrgPg();
           const res = await provisionHiveLearningLoop({ sql, workspaceId: ws, potSlug: opts.slug });
@@ -510,7 +510,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           if (gh.kind === 'ok') {
             await upsertHiveMember({
               workspaceId: ws,
-              hiveHomeSlug: opts.slug,
+              potHomeSlug: opts.slug,
               githubUserId: self.githubUserId,
               githubUsername: gh.githubLogin,
               deviceAttestations: [
@@ -630,7 +630,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     // 6f. Seed the per-hive pipeline routines for a self_repo hive home
     //     (per-hive-git-and-release-gate-2026-06-29 P-009): git-sync (so the home's
     //     `staging` accumulates + pushes commits — a self_repo home IS git-sync-eligible)
-    //     AND the staging→main green-checkpoint (flag-gated PER_HIVE_RELEASE_GATE,
+    //     AND the staging→main green-checkpoint (flag-gated PER_POT_RELEASE_GATE,
     //     default-OFF → a no-op until the owner opts a hive in; D-008). Both best-effort —
     //     a failure NEVER fails the create. The release-routine undo joins the rollback
     //     stack. Runs for any self_repo home (fresh OR linked); skipped for a repo-less

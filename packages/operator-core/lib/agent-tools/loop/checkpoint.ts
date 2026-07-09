@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import {
   getLoopCarryNote,
   normalizeWallEntries,
@@ -137,11 +137,11 @@ export default defineTool({
     // armed yet (e.g. a checkpoint written before the first loop:arm — an edge case, since
     // loop:checkpoint's whole purpose assumes an armed loop already exists).
     const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
-    // EI-7734: the pre-armed-routine fallback is routed through resolveHiveHomeSlug
+    // EI-7734: the pre-armed-routine fallback is routed through resolvePotHomeSlug
     // (not a raw `??` chain) so its '*'-skip logic runs — every superuser/operator
     // session sets ctx.harnessSlug='*' (the wildcard sentinel), which would otherwise
     // win this chain outright and scope the carry-note under the literal '*' namespace.
-    const harness = armedRoutine?.harnessSlug ?? resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const harness = armedRoutine?.harnessSlug ?? resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [

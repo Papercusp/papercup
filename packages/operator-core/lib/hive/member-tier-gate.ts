@@ -17,7 +17,7 @@
  *
  * FRESHNESS (owner-directed): owner-actions re-derive LIVE; routine
  * (collaborator) reads use the persisted cache (hive_members.repo_permission,
- * refreshed by the daily recheck). Gated behind FLAGS.HIVE_ROLE_TIERS
+ * refreshed by the daily recheck). Gated behind FLAGS.POT_ROLE_TIERS
  * (DEFAULT-ON; OFF = today's behavior — existing root-only/source gates only).
  */
 import { getOrgPg } from '@papercusp/db-org';
@@ -45,14 +45,14 @@ export interface HiveBindingRepo {
  */
 export async function resolveHiveRepo(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
 ): Promise<HiveBindingRepo | null> {
   const { sql } = getOrgPg();
   const rows = await sql<{ github_full_name: string }[]>`
     SELECT github_full_name
       FROM harness_shared.shared_repo_binding_cache
      WHERE workspace_id = ${workspaceId}
-       AND harness_slug = ${hiveHomeSlug}
+       AND harness_slug = ${potHomeSlug}
        AND claim_status <> 'superseded'
      LIMIT 1`;
   const full = rows[0]?.github_full_name;
@@ -159,7 +159,7 @@ export async function requireHiveTier(args: {
   minTier: HiveMemberTier;
   resolveIdentity?: () => Promise<LocalGithubIdentity>;
 }): Promise<HiveTierGateResult> {
-  if (!(await getFlag(FLAGS.HIVE_ROLE_TIERS, 'system'))) {
+  if (!(await getFlag(FLAGS.POT_ROLE_TIERS, 'system'))) {
     return { ok: true, reason: 'flag-off' };
   }
 

@@ -65,7 +65,7 @@ export interface CoordThreadProjectionOpts {
   /** WI-259 parity (shared-hive comms federation): hive-home slug when this harness is a hive
    *  MEMBER — a cross-member coord op is membership-gated only when set; undefined for a
    *  non-hive / owned-home harness. Threaded via RegisterAllOpts (same as the content projections). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
    *  sourceLogKeyHex (boot's admittedIdentities). */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;

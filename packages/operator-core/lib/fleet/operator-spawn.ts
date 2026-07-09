@@ -85,16 +85,16 @@ export function spawnConcurrencyCeiling(): number {
  * Read at BOTH the headroom read (so the brain sees the reduced budget) and the
  * atomic admission cap (so it is HARD-enforced — spawns past it queue). Fail-soft:
  * any owner-steering read failure leaves the system ceiling in effect. Resolves the
- * home hive the same way the model-tier session override does (resolveHiveHomeSlug).
+ * home hive the same way the model-tier session override does (resolvePotHomeSlug).
  */
 async function ownerMaxBeesCeiling(workspaceId: string): Promise<number | null> {
   const base = spawnConcurrencyCeiling();
   try {
-    const [{ getOwnerSteering, effectiveMaxBees }, { resolveHiveHomeSlug }] = await Promise.all([
+    const [{ getOwnerSteering, effectiveMaxBees }, { resolvePotHomeSlug }] = await Promise.all([
       import('../owner-steering'),
       import('../hive/wake'),
     ]);
-    const home = resolveHiveHomeSlug();
+    const home = resolvePotHomeSlug();
     if (!home) return null;
     const s = await getOwnerSteering(workspaceId, home);
     const effective = effectiveMaxBees(s, base);
@@ -636,11 +636,11 @@ async function readEffectiveSpawnTierConfig(workspaceId: string): Promise<{
   // when the Queen/recovery path did not pass an explicit per-item tier.
   let session: import('../owner-steering').OwnerSteering | null = null;
   try {
-    const [{ getOwnerSteering }, { resolveHiveHomeSlug }] = await Promise.all([
+    const [{ getOwnerSteering }, { resolvePotHomeSlug }] = await Promise.all([
       import('../owner-steering'),
       import('../hive/wake'),
     ]);
-    const home = resolveHiveHomeSlug();
+    const home = resolvePotHomeSlug();
     if (home) session = await getOwnerSteering(workspaceId, home);
   } catch {
     /* fail-soft → the workspace default tiers */
@@ -842,7 +842,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     // or the legacy "papercusp-su") as a spawn target instead of the project.
     // Remap a KNOWN -su MCP slug to its project — strip the "-su" suffix, aliasing
     // the legacy "papercusp-su" to the operator-home project (operatorHomeHarnessSlug() —
-    // PAPERCUSP_HIVE_HOME_SLUG when set, else the legacy "papercup"). Deterministic
+    // PAPERCUSP_POT_HOME_SLUG when set, else the legacy "papercup"). Deterministic
     // remap of the known MCP slugs ONLY, never a silent normalize of arbitrary slugs.
     const suBase = slug === 'papercusp-su' ? operatorHomeHarnessSlug() : /^(.+)-su$/.exec(slug)?.[1];
     if (suBase && suBase !== slug) {

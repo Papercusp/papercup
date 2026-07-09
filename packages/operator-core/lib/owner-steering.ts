@@ -273,10 +273,10 @@ function asFederatedPriming(v: unknown): Partial<FederatedPrimingConfig> | null 
  */
 export async function getOwnerSteering(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<OwnerSteering> {
-  const rows = await listHiveSettings(workspaceId, hiveHomeSlug, sql);
+  const rows = await listHiveSettings(workspaceId, potHomeSlug, sql);
   const byKey = new Map(rows.map((r) => [r.settingKey, r.value]));
   const directiveVal = byKey.get(OWNER_STEERING_KEYS.directive);
   return {
@@ -340,13 +340,13 @@ export interface OwnerSteeringPatch {
  */
 export async function setOwnerSteering(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   patch: OwnerSteeringPatch,
   sql?: Sql,
 ): Promise<OwnerSteering> {
   if (patch.clear) {
     for (const key of Object.values(OWNER_STEERING_KEYS)) {
-      await deleteHiveSetting(workspaceId, hiveHomeSlug, key, sql);
+      await deleteHiveSetting(workspaceId, potHomeSlug, key, sql);
     }
     return DEFAULT_OWNER_STEERING;
   }
@@ -401,7 +401,7 @@ export async function setOwnerSteering(
     patch.pauseNewWork === true ||
     (patch.pausedUntil !== undefined && asFiniteNumber(patch.pausedUntil) != null);
   if (enablingPause && patch.directive === undefined) {
-    const current = await getOwnerSteering(workspaceId, hiveHomeSlug, sql);
+    const current = await getOwnerSteering(workspaceId, potHomeSlug, sql);
     if (directiveSuggestsResume(current.directive)) {
       writes.push([OWNER_STEERING_KEYS.directive, null]);
     }
@@ -413,9 +413,9 @@ export async function setOwnerSteering(
     writes.push([OWNER_STEERING_KEYS.pausedUntil, asFiniteNumber(patch.pausedUntil)]);
   }
   for (const [settingKey, value] of writes) {
-    await setHiveSetting({ workspaceId, hiveHomeSlug, settingKey, value }, sql);
+    await setHiveSetting({ workspaceId, potHomeSlug, settingKey, value }, sql);
   }
-  return getOwnerSteering(workspaceId, hiveHomeSlug, sql);
+  return getOwnerSteering(workspaceId, potHomeSlug, sql);
 }
 
 /**
@@ -495,20 +495,20 @@ export function isAutoScaleOutEnabled(s: OwnerSteering): boolean {
  * workspace's home hive — the single gate the idle-activity seams call (P-006, D-005).
  * Resolves the home hive (the slug the owner steers on the 👑 tab) unless one is
  * passed, then checks the toggle. Fail-soft / un-steered / no home hive ⇒ ON
- * (today's behaviour). Async + a dynamic import of resolveHiveHomeSlug so this leaf
+ * (today's behaviour). Async + a dynamic import of resolvePotHomeSlug so this leaf
  * module keeps no static edge to the hive layer.
  */
 export async function idleActivityAllowed(
   workspaceId: string,
   kind: IdleActivityKind,
-  hiveHomeSlug?: string,
+  potHomeSlug?: string,
   sql?: Sql,
 ): Promise<boolean> {
   try {
-    let home = hiveHomeSlug?.trim() || null;
+    let home = potHomeSlug?.trim() || null;
     if (!home) {
-      const { resolveHiveHomeSlug } = await import('./hive/wake');
-      home = resolveHiveHomeSlug();
+      const { resolvePotHomeSlug } = await import('./hive/wake');
+      home = resolvePotHomeSlug();
     }
     if (!home) return true;
     const s = await getOwnerSteering(workspaceId, home, sql);

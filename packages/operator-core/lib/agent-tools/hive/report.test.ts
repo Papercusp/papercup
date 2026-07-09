@@ -75,7 +75,7 @@ describe('pot:report handler (member-filed moderation reports)', () => {
     expect(h.fileReport).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'default',
-        hiveHomeSlug: 'sheets',
+        potHomeSlug: 'sheets',
         targetKind: 'content',
         targetRef: 'F-42',
         reporterGithubUserId: 123,

@@ -38,7 +38,7 @@ import { HIVE_KIND } from './_resolve';
 export interface AddHiveMemberOpts {
   workspaceId: string;
   /** The Hive's home_slug — a `kind:'hive'` harness that owns the Hive identity. */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The member harness slug to add to the Hive. */
   memberHarnessSlug: string;
 }
@@ -52,7 +52,7 @@ export interface AddHiveMemberResult {
     | 'self'
     | 'already_member_elsewhere';
   message?: string;
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   memberHarnessSlug?: string;
   /** True when the membership was newly set; false when it already held (idempotent). */
   changed?: boolean;
@@ -78,15 +78,15 @@ export async function addHarnessToHive(
   const saveRegistry = seams.saveRegistry ?? realSave;
   const ws = opts.workspaceId;
 
-  if (opts.memberHarnessSlug === opts.hiveHomeSlug) {
+  if (opts.memberHarnessSlug === opts.potHomeSlug) {
     return { ok: false, error: 'self', message: 'a Pot home cannot be a member of itself' };
   }
 
   const reg = await loadRegistry(ws);
 
-  const hive = reg.projects.find((p) => p.slug === opts.hiveHomeSlug && p.harness_kind === HIVE_KIND);
+  const hive = reg.projects.find((p) => p.slug === opts.potHomeSlug && p.harness_kind === HIVE_KIND);
   if (!hive) {
-    return { ok: false, error: 'hive_not_found', message: `no pot '${opts.hiveHomeSlug}' in this workspace` };
+    return { ok: false, error: 'hive_not_found', message: `no pot '${opts.potHomeSlug}' in this workspace` };
   }
 
   const member = reg.projects.find((p) => p.slug === opts.memberHarnessSlug);
@@ -100,7 +100,7 @@ export async function addHarnessToHive(
       message: `'${opts.memberHarnessSlug}' is itself a Pot home — a Pot cannot be nested as another Pot's member`,
     };
   }
-  if (member.hive_slug && member.hive_slug !== opts.hiveHomeSlug) {
+  if (member.hive_slug && member.hive_slug !== opts.potHomeSlug) {
     return {
       ok: false,
       error: 'already_member_elsewhere',
@@ -122,22 +122,22 @@ export async function addHarnessToHive(
     }
   };
 
-  if (member.hive_slug === opts.hiveHomeSlug) {
+  if (member.hive_slug === opts.potHomeSlug) {
     // Already a member — idempotent success (still consult the seeder: heal-only).
     return {
       ok: true,
-      hiveHomeSlug: opts.hiveHomeSlug,
+      potHomeSlug: opts.potHomeSlug,
       memberHarnessSlug: opts.memberHarnessSlug,
       changed: false,
       gitSync: await seedGitSync(member),
     };
   }
 
-  member.hive_slug = opts.hiveHomeSlug;
+  member.hive_slug = opts.potHomeSlug;
   await saveRegistry(reg, ws);
   return {
     ok: true,
-    hiveHomeSlug: opts.hiveHomeSlug,
+    potHomeSlug: opts.potHomeSlug,
     memberHarnessSlug: opts.memberHarnessSlug,
     changed: true,
     gitSync: await seedGitSync(member),

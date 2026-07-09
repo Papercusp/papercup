@@ -12,7 +12,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/oracle':     FLAGS.TESTING,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
-  '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
+  '/settings/autonomy':   FLAGS.MUG_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
   '/settings/pot-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
   '/settings/p2p':        FLAGS.P2P,
@@ -138,7 +138,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const testingEnabled = useFlag(FLAGS.TESTING);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
-  const autonomySettingsEnabled = useFlag(FLAGS.QUEEN_AUTONOMY_SETTINGS);
+  const autonomySettingsEnabled = useFlag(FLAGS.MUG_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
   const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
   const p2pEnabled = useFlag(FLAGS.P2P);
@@ -150,7 +150,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
-    [FLAGS.QUEEN_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
+    [FLAGS.MUG_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
     [FLAGS.P2P]: p2pEnabled,

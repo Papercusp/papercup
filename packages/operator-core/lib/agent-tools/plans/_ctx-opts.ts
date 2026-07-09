@@ -7,7 +7,7 @@
  * derives the right opts from ctx.harnessSlug:
  *
  *   - No ctx.harnessSlug, ctx.harnessSlug === the operator-home slug
- *     (operatorHomeHarnessSlug() — PAPERCUSP_HIVE_HOME_SLUG when set,
+ *     (operatorHomeHarnessSlug() — PAPERCUSP_POT_HOME_SLUG when set,
  *     else the legacy 'papercup'), OR ctx.harnessSlug === '*' (SU
  *     wildcard from http-projection when no ?harness= is in the URL) →
  *     return `{}`. source.ts's legacy sync cwd-walk handles the
@@ -82,7 +82,7 @@ export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts>
   // which always operates on the operator's own plans — keeps working.
   // Under PG-canonical storage the readers resolve (workspace, harness)
   // themselves (source.ts resolvePlanScope), so this just threads the slug.
-  // The operator-home slug (operatorHomeHarnessSlug() — PAPERCUSP_HIVE_HOME_SLUG
+  // The operator-home slug (operatorHomeHarnessSlug() — PAPERCUSP_POT_HOME_SLUG
   // when set, else the legacy default) is resolved here, never a hardcoded literal,
   // so this site auto-follows the home cutover (papercup→papercusp merge).
   const home = operatorHomeHarnessSlug();

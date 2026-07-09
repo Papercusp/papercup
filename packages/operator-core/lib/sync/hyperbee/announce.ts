@@ -66,7 +66,7 @@ export interface AnnounceBody {
    *  projections, an inbound announce broadcast to all on-topic handlers would
    *  let one harness admit + apply another harness's log (cross-merge
    *  pollution). The receive-side filter (boot.ts onAnnounce) admits a frame iff
-   *  `harness_slug === own slug` OR `=== joinerHiveHomeSlug(self)` — so it must
+   *  `harness_slug === own slug` OR `=== joinerPotHomeSlug(self)` — so it must
    *  ride the SIGNED frame (cannot be spoofed to mis-route a log). OPTIONAL +
    *  backward-compatible: absent → omitted from the signing bytes (identical to
    *  a pre-(a′) frame), and the receive filter treats absent as the legacy

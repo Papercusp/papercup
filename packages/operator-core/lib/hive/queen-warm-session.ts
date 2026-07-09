@@ -1,7 +1,7 @@
 /**
  * queen-warm-session — L2 of queen-memory-hybrid-2026-07-02 (owner-approved hybrid).
  *
- * Under FLAGS.QUEEN_WARM_SESSION the queen's wakes prefer the wake-executor
+ * Under FLAGS.MUG_WARM_SESSION the queen's wakes prefer the wake-executor
  * liveness ladder (inject-if-live / `claude --resume`-if-exited — the proven
  * B-LOOP-3 machinery that keeps su engine-loop sessions warm) over a cold
  * invoke-once spawn: continuity + prompt-cache warmth by default. This module is
@@ -70,7 +70,7 @@ export async function queenWarmWakeAttempt(args: {
     if (args.role !== 'mug' && args.role !== 'brain') return { delivered: false };
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
-    if (!(await getFlag(FLAGS.QUEEN_WARM_SESSION, 'system'))) return { delivered: false };
+    if (!(await getFlag(FLAGS.MUG_WARM_SESSION, 'system'))) return { delivered: false };
 
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();

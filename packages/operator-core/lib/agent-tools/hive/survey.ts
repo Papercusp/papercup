@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import { surveyHive, surveyWorkspace } from '../../hive/survey';
 import { placementRankerSpec } from '../../hive/placement-ranker';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
@@ -67,7 +67,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Pot home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     frontierLimit: z
       .number()
       .int()
@@ -92,13 +92,13 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
         data: {
           ok: false,
           error: 'no_home_harness',
-          message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the survey is Pot-scoped.',
+          message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the survey is Pot-scoped.',
         },
       };
     }

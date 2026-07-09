@@ -36,6 +36,7 @@ import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
 import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
+import TerminalDivider from '@/app/_components/TerminalDivider';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
@@ -277,6 +278,13 @@ function RootComponent() {
                   fleet:launch-on-plan on a WSL2-hosted operator) to the Tauri
                   console_launch command. No-op outside the Tauri webview. */}
               <DesktopConsoleLaunchBridge />
+              {/* WI-3388: the native terminal dock's draggable divider +
+                  collapse-to-rail control. Lives entirely on the webview side
+                  of the seam (the terminal itself is a native surface outside
+                  this webview) — mounted at the router root so it's present
+                  on every route. No-op outside Tauri / when no docked native
+                  terminal backend is running / behind FLAGS.TERMINAL_DIVIDER. */}
+              <TerminalDivider />
               <PerfObserverProvider />
               <RecorderHost />
               {/* Dev admin rail — collapsible right cockpit (flags / run /

@@ -29,14 +29,14 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    meter: z.boolean().optional().describe('Include the workspace-wide wake meter (per-agent counts by status/channel, 24h).'),
+    meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const [awaits, recent, meter] = await Promise.all([
-      listActiveAwaits(identity.ownerId, identity.workspaceId ?? undefined),
+      listActiveAwaits(identity.ownerId),
       listRecentDeliveries(identity.ownerId, 10),
-      args.meter ? wakeMeter({ workspaceId: identity.workspaceId ?? undefined }) : Promise.resolve(null),
+      args.meter ? wakeMeter() : Promise.resolve(null),
     ]);
     return {
       content: [

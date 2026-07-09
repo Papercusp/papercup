@@ -43,7 +43,7 @@ export type OfferRecordSigner = FleetRecordSigner;
 export interface StoredWorkOffer {
   workspaceId: string;
   /** The Hive's home_slug (= the `harness_slug` scope column). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   publisherGithubUserId: number;
   offerId: string;
   /** The typed record (parsed from the canonical `record_json`); null only for
@@ -94,7 +94,7 @@ interface WorkOfferDbRow {
 function rowToStored(r: WorkOfferDbRow): StoredWorkOffer {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.harness_slug,
+    potHomeSlug: r.harness_slug,
     publisherGithubUserId: Number(r.publisher_github_user_id),
     offerId: r.offer_id,
     record: parseWorkOfferRecordJson(r.record_json),
@@ -114,7 +114,7 @@ function rowToStored(r: WorkOfferDbRow): StoredWorkOffer {
 /** Get one offer record (null = no record). */
 export async function getWorkOffer(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   publisherGithubUserId: number,
   offerId: string,
   sql?: Sql,
@@ -123,7 +123,7 @@ export async function getWorkOffer(
     `SELECT ${READ_COLS} FROM harness_shared.p2p_work_offers
       WHERE workspace_id = $1 AND harness_slug = $2
         AND publisher_github_user_id = $3 AND offer_id = $4 LIMIT 1`,
-    [workspaceId, hiveHomeSlug, publisherGithubUserId, offerId],
+    [workspaceId, potHomeSlug, publisherGithubUserId, offerId],
   )) as unknown as WorkOfferDbRow[];
   return rows[0] ? rowToStored(rows[0]) : null;
 }
@@ -141,12 +141,12 @@ export interface ListWorkOffersFilter {
 /** List offers in a Hive, filtered server-side (the fleet board / puller scan). */
 export async function listWorkOffers(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   filter?: ListWorkOffersFilter,
   sql?: Sql,
 ): Promise<StoredWorkOffer[]> {
   const conds = ['workspace_id = $1', 'harness_slug = $2'];
-  const params: (string | number)[] = [workspaceId, hiveHomeSlug];
+  const params: (string | number)[] = [workspaceId, potHomeSlug];
   if (filter?.fleetSlug) {
     params.push(filter.fleetSlug);
     conds.push(`fleet_slug = $${params.length}`);
@@ -177,7 +177,7 @@ export async function listWorkOffers(
 
 export interface PutWorkOfferInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The authoring user's PROVEN numeric gh user id (X9) — the caller resolves
    *  it from the session identity, never from the record body. */
   selfGithubUserId: number;
@@ -220,7 +220,7 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
 
   const existing = await getWorkOffer(
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     record.publisherGithubUserId,
     record.offerId,
     input.sql,
@@ -235,7 +235,7 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
   const recordJson = canonicalWorkOfferRecordJson(record);
   const bytes = workOfferStoreSignedBytes({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     recordVersion: record.recordVersion,
     canonicalRecordJson: recordJson,
   });
@@ -260,7 +260,7 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       record.publisherGithubUserId,
       record.offerId,
       recordJson,
@@ -292,7 +292,7 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
  */
 export async function setLocalOfferDispositionForOffer(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   publisherGithubUserId: number,
   offerId: string,
   disposition: string,
@@ -308,8 +308,8 @@ export async function setLocalOfferDispositionForOffer(
         AND ${expect === null ? "status = 'open' AND local_disposition IS NULL" : 'local_disposition = $7'}
       RETURNING offer_id`,
     expect === null
-      ? [workspaceId, hiveHomeSlug, publisherGithubUserId, offerId, disposition, Date.now()]
-      : [workspaceId, hiveHomeSlug, publisherGithubUserId, offerId, disposition, Date.now(), expect],
+      ? [workspaceId, potHomeSlug, publisherGithubUserId, offerId, disposition, Date.now()]
+      : [workspaceId, potHomeSlug, publisherGithubUserId, offerId, disposition, Date.now(), expect],
   )) as unknown as Array<{ offer_id: string }>;
   return rows.length > 0;
 }
@@ -331,7 +331,7 @@ export type LocalDispositionPredicate =
  */
 export async function setLocalOfferDisposition(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   predicate: LocalDispositionPredicate,
   disposition: string,
   sql?: Sql,
@@ -346,7 +346,7 @@ export async function setLocalOfferDisposition(
       RETURNING offer_id`,
     [
       workspaceId,
-      hiveHomeSlug,
+      potHomeSlug,
       byFleet ? predicate.fleetSlug : predicate.publisherGithubUserId,
       disposition,
       Date.now(),

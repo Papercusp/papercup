@@ -24,7 +24,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Default harness the background agent spawns into when the caller gave none:
  *  the operator HOME harness (where the sentinel itself lives) via the canonical
- *  resolver — env PAPERCUSP_HIVE_HOME_SLUG when set, else the standing default.
+ *  resolver — env PAPERCUSP_POT_HOME_SLUG when set, else the standing default.
  *  Raw-env-only resolution left the staging process (no env) unable to mint the
  *  deep-delegation task at all ("no harness resolved", live 2026-07-01). */
 function defaultSpawnHarness(): string | null {

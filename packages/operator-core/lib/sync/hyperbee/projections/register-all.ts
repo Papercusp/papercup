@@ -100,29 +100,29 @@ export interface RegisterAllOpts {
    * owner's own rows as `origin='remote'`). Undefined ⇒ today's behavior
    * (member-slug binding for all projections).
    */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /**
    * WI-2105 REV (no-hiveHome fix): the hive-home the MEMBER-CONTENT GUARD resolves
-   * its member set from — DECOUPLED from `hiveHomeSlug` (the projection-rebind home
+   * its member set from — DECOUPLED from `potHomeSlug` (the projection-rebind home
    * above). The guard needs a home for ANY hive-peered harness that folds cross-member
    * content, INCLUDING an OWNED hive's MEMBER harness (the owner running a canary member
    * of its own hive: `hive_slug` resolves the home but home !== own slug, and the hive is
-   * owned-not-remote, so `hiveHomeSlug` stayed undefined and `decideMemberContentOp` dropped
+   * owned-not-remote, so `potHomeSlug` stayed undefined and `decideMemberContentOp` dropped
    * EVERY cross-member op with 'no-hiveHome'; PG-proven tower-VM REV break). It overrides
-   * ONLY the content projections' guard hiveHomeSlug (via `guardScoped`) — it does NOT
+   * ONLY the content projections' guard potHomeSlug (via `guardScoped`) — it does NOT
    * touch `hiveScoped`, so the owned-hive member never rebinds the hive-home projections
-   * (no double-apply). Undefined falls back to `hiveHomeSlug` (today's behavior).
+   * (no double-apply). Undefined falls back to `potHomeSlug` (today's behavior).
    */
   memberContentHiveHome?: string;
   /**
-   * shared-hive-rekey-2026-06-19 (drain hook): fired `(hiveHomeSlug, epoch)` when a
+   * shared-hive-rekey-2026-06-19 (drain hook): fired `(potHomeSlug, epoch)` when a
    * `hive_epoch_keys` row applies, so the apply loop can drain J's PendingEpochContent for
    * that `(hive, epoch)` + re-apply the deferred content (now decryptable). Boot wires this
    * when the re-key is active; undefined otherwise (no drain — the buffer just isn't fed).
    * Flows to `buildHiveEpochKeysProjection` via the `hiveScoped` spread (the other
    * projections ignore the extra field).
    */
-  onEpochKeyApplied?: (hiveHomeSlug: string, epoch: number) => void;
+  onEpochKeyApplied?: (potHomeSlug: string, epoch: number) => void;
   /**
    * WI-259 P-002 (membership-aware cross-member content apply): maps an op's
    * `sourceLogKeyHex` (the immutable, receiver-stamped source-log core key) → the
@@ -246,18 +246,18 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
   // (the home harness itself, or today's non-rebind default). Every OTHER
   // projection always stays on `harnessSlug` — the rebind is surgical to these two.
   const hiveScoped: RegisterAllOpts =
-    opts.hiveHomeSlug && opts.hiveHomeSlug !== opts.harnessSlug
-      ? { ...opts, harnessSlug: opts.hiveHomeSlug }
+    opts.potHomeSlug && opts.potHomeSlug !== opts.harnessSlug
+      ? { ...opts, harnessSlug: opts.potHomeSlug }
       : opts;
   // WI-2105 REV (no-hiveHome fix): the member-content GUARD's hive-home is resolved for
   // a BROADER set than the projection rebind — any hive-peered harness incl. an OWNED
-  // hive's member harness (`memberContentHiveHome`). Override ONLY `hiveHomeSlug` (which
+  // hive's member harness (`memberContentHiveHome`). Override ONLY `potHomeSlug` (which
   // the content projections read for the guard's member-set lookup); `harnessSlug` stays
   // the member slug (writes still land under it) and `hiveScoped` is untouched (the
   // owned-hive member never rebinds the hive-home projections → no double-apply).
   const guardScoped: RegisterAllOpts =
-    opts.memberContentHiveHome && opts.memberContentHiveHome !== opts.hiveHomeSlug
-      ? { ...opts, hiveHomeSlug: opts.memberContentHiveHome }
+    opts.memberContentHiveHome && opts.memberContentHiveHome !== opts.potHomeSlug
+      ? { ...opts, potHomeSlug: opts.memberContentHiveHome }
       : opts;
   return [
     buildContributorsProjection(opts),

@@ -49,7 +49,7 @@ export default [
         );
       }
       try {
-        if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE, 'system'))) {
+        if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT, 'system'))) {
           return new Response(
             JSON.stringify({ ok: true, started: false, reason: 'flag_off', progressId: BOOTSTRAP_PROGRESS_ID }),
             { status: 200, headers: JSON_HEADERS },

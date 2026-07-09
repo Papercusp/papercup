@@ -38,7 +38,7 @@ const CORE_KEY_HEX = /^[0-9a-f]{64}$/i;
 
 export interface ResolveSeedLogKeysOpts {
   /** The hive home this boot is peered on; admission requires manifest.potId to match. */
-  readonly hiveHomeSlug: string;
+  readonly potHomeSlug: string;
   /** Injected for tests; defaults to the real filesystem read. */
   readonly readFileImpl?: (path: string) => Promise<string>;
   /** Injected for tests; defaults to the real env-based seed-dir resolution. */
@@ -58,7 +58,7 @@ export async function resolveSeedLogKeys(opts: ResolveSeedLogKeysOpts): Promise<
     const readFileImpl = opts.readFileImpl ?? ((p: string) => readFile(p, 'utf8'));
     const raw = await readFileImpl(join(resolved.seedDir, SEED_MANIFEST_FILE));
     const manifest = decodeManifest(raw); // throws on structural invalidity → catch → []
-    if (manifest.potId !== opts.hiveHomeSlug) return [];
+    if (manifest.potId !== opts.potHomeSlug) return [];
     const entry = manifest.stores.find((s) => s.kind === 'corestore');
     const keys = (entry?.meta as { coreKeys?: unknown } | undefined)?.coreKeys;
     if (!Array.isArray(keys)) return [];

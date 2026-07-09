@@ -65,7 +65,7 @@ import {
 export interface HiveSteeringRow {
   slug: string;
   /** Server-stamped: this row IS the workspace's HOME queen (the same
-   *  resolveHiveHomeSlug → operator-home chain the loops fire on). The tab
+   *  resolvePotHomeSlug → operator-home chain the loops fire on). The tab
    *  steers this row; the old client-side "first kind:'hive' project" guess
    *  picked a test hive (sb-devboard-hive) and showed a dead queen (2026-07-01). */
   isHome?: boolean;
@@ -180,7 +180,7 @@ export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string
 }
 
 /** The HOME Queen's hive. Prefer the SERVER-stamped home row (`isHome`, the same
- *  resolveHiveHomeSlug → operator-home chain the loops fire on) — the old
+ *  resolvePotHomeSlug → operator-home chain the loops fire on) — the old
  *  client-side guess ("first project with kind:'hive'", else the first steering
  *  row) picked whichever TEST hive listed first (sb-devboard-hive: paused,
  *  woke-never) and the 👑-tab showed a dead queen while the real home queen ran
@@ -287,7 +287,7 @@ export default function QueenTab({ active }: { active: boolean }) {
   const tierLabel = view.modelTiers?.length ? `${countLabel(view.modelTiers.length, 'tier')} override` : 'Workspace tiers';
 
   // ── Nested hive→plan picker (steering-nested-hive-plan-tree-2026-06-17, P-002) ──
-  const steeringTreeOn = useFlag(FLAGS.STEERING_HIVE_TREE);
+  const steeringTreeOn = useFlag(FLAGS.STEERING_POT_TREE);
   // Candidates carry `.harness`; eligible slugs NOT in the candidate list are
   // stale → synthetic unassigned rows (harness '') so they stay visible.
   const treePlans: TreePlanInput[] = useMemo(() => {

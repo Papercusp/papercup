@@ -56,12 +56,12 @@ export default defineTool({
       ctx.principal?.workspaceId,
     );
     if (args.unban) {
-      const result = await unbanMember({ workspaceId, hiveHomeSlug: args.pot, githubUserId: args.githubUserId });
+      const result = await unbanMember({ workspaceId, potHomeSlug: args.pot, githubUserId: args.githubUserId });
       return text({ action: 'unban', githubUserId: args.githubUserId, ...result });
     }
     const result = await banMember({
       workspaceId,
-      hiveHomeSlug: args.pot,
+      potHomeSlug: args.pot,
       githubUserId: args.githubUserId,
       revoke: args.revoke,
     });

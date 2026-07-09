@@ -111,7 +111,7 @@ async function realVerifyWorkOffer(
     }
     const bytes = workOfferStoreSignedBytes({
       workspaceId: opts.workspaceId,
-      hiveHomeSlug: opts.harnessSlug,
+      potHomeSlug: opts.harnessSlug,
       recordVersion: row.record_version,
       canonicalRecordJson: row.record_json,
     });
@@ -216,7 +216,7 @@ async function writeToPg(
       const { honorSpawnRequestFromProjection } = await import('../../../p2p/delegated-spawn-honor');
       const res = await honorSpawnRequestFromProjection({
         workspaceId: opts.workspaceId,
-        hiveHomeSlug: opts.harnessSlug,
+        potHomeSlug: opts.harnessSlug,
         row,
         sql,
       });

@@ -60,7 +60,7 @@ export interface RevokeContributorEndpointDeps {
   /** Hive-scope revoke (P-006). Defaults to the real `revokeHiveContributor`. */
   revokeHive?: (input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     githubUserId: number;
   }) => ReturnType<typeof revokeHiveContributor>;
 }
@@ -173,7 +173,7 @@ export async function handleRevokeContributor(
     return hiveResponse(
       await revokeHive({
         workspaceId: input.workspaceId,
-        hiveHomeSlug: input.potSlug,
+        potHomeSlug: input.potSlug,
         githubUserId: input.githubUserId,
       }),
     );

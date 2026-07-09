@@ -131,7 +131,7 @@ describe('getOwnerSteering — decode + defaults', () => {
     listHiveSettings.mockResolvedValue([]);
     await setOwnerSteering('ws', 'hive', { modelTiers: [{ name: 'fast', spec: 'opus:xhigh' }] });
     expect(setHiveSetting).toHaveBeenCalledWith(
-      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.modelTiers, value: [{ name: 'fast', spec: 'opus:xhigh' }] },
+      { workspaceId: 'ws', potHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.modelTiers, value: [{ name: 'fast', spec: 'opus:xhigh' }] },
       undefined,
     );
   });
@@ -165,7 +165,7 @@ describe('setOwnerSteering — write fan-out', () => {
     await setOwnerSteering('ws', 'hive', { pauseNewWork: true });
     expect(setHiveSetting).toHaveBeenCalledTimes(1);
     expect(setHiveSetting).toHaveBeenCalledWith(
-      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.pauseNewWork, value: true },
+      { workspaceId: 'ws', potHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.pauseNewWork, value: true },
       undefined,
     );
     expect(deleteHiveSetting).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe('setOwnerSteering — write fan-out', () => {
     listHiveSettings.mockResolvedValue([]);
     await setOwnerSteering('ws', 'hive', { eligibleHives: ['hive-a', 'hive-b'] });
     expect(setHiveSetting).toHaveBeenCalledWith(
-      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.eligibleHives, value: ['hive-a', 'hive-b'] },
+      { workspaceId: 'ws', potHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.eligibleHives, value: ['hive-a', 'hive-b'] },
       undefined,
     );
   });

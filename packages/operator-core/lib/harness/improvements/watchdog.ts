@@ -1665,12 +1665,19 @@ export function stalledFeatureSignalsFromRows(
   }));
 }
 /**
- * stalled-feature: a feature the dispatcher SHOULD be running — NEEDS_WORK
- * status, kind=feature, plan-gate satisfied — untouched for N hours with no
- * live (PENDING/ENQUEUED) pipeline owning it. The loop's liveness oracle
- * ("a queued feature reaches a terminal state") as a standing monitor.
- * The dbos-schema guard mirrors durableOwnedFeatureIdsPg: schema absent → no
- * live-pipeline carve-out (every stalled row reports).
+ * stalled-feature: an UNCLAIMED feature the dispatcher SHOULD be running —
+ * NEEDS_WORK status, kind=feature, plan-gate satisfied, no assignee — untouched
+ * for N hours with no live (PENDING/ENQUEUED) pipeline owning it. The loop's
+ * liveness oracle ("an unclaimed queued feature reaches a terminal state") as a
+ * standing monitor. The dbos-schema guard mirrors durableOwnedFeatureIdsPg:
+ * schema absent → no live-pipeline carve-out (every stalled row reports).
+ *
+ * EI-8781: a feature with a live `taken_by` assignee is EXCLUDED here — a
+ * claimed-but-non-progressing feature is the separate stalled-claim collector's
+ * domain (below); without this exclusion an owner-directed claim (e.g. a human
+ * session working a feature directly) double-counted as "the autonomous loop
+ * isn't reaching this harness", which is false — the loop deliberately does not
+ * auto-dispatch a claimed feature.
  */
 export async function collectStalledFeatureSignals(
   sql: Sql,
@@ -1687,6 +1694,7 @@ export async function collectStalledFeatureSignals(
        AND w.item_kind = 'feature'
        AND w.status IN ('todo', 'failing', 'pending', 'failed')
        AND w.updated_ts < (extract(epoch from now()) * 1000 - ${staleHours} * 3600000)
+       AND w.taken_by IS NULL
        AND (
          (w.metadata->>'source_plan') IS NULL
          OR (w.metadata->>'source_plan') IN (

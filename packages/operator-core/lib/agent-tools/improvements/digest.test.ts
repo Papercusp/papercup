@@ -40,7 +40,7 @@ describe('improvements:digest tool envelope', () => {
     mockRead.mockResolvedValue(ITEMS);
     mockBuild.mockReturnValue(BUILT);
     mockRank.mockResolvedValue(RANKED);
-    // QUEEN_FULL_AUTONOMY graduated to default-ON (flip-dark-flags-default-on-2026-06-23). This
+    // MUG_FULL_AUTONOMY graduated to default-ON (flip-dark-flags-default-on-2026-06-23). This
     // compose-order test asserts ownerFullAutonomy:false, so pin the flag OFF via the env override
     // (readOwnerFullAutonomyGrant uses the real getFlag, which honors PAPERCUSP_FLAG_*).
     process.env.PAPERCUSP_FLAG_PAPERCUSP_QUEEN_FULL_AUTONOMY = '0';

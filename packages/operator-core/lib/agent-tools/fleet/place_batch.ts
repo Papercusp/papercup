@@ -32,7 +32,7 @@ import { admitConflictFree } from '../../fleet/admit-conflict-free';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
+import { potHomeSlugForHarness } from '../../hive-federation';
 import { listPresence } from '../coordination/presence';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
@@ -172,7 +172,7 @@ export default defineTool({
     const { getSpawnHeadroom } = await import('../../fleet/operator-spawn');
     const { headroom: rawHeadroom } = await getSpawnHeadroom(workspaceId);
 
-    // QUEEN_CAPACITY_DISPATCH (capacity-aware dispatch — gateway-priority-tiers Phase 4): clamp the FRESH-spawn
+    // MUG_CAPACITY_DISPATCH (capacity-aware dispatch — gateway-priority-tiers Phase 4): clamp the FRESH-spawn
     // headroom to what the inference pool can SUSTAIN. When the gateway is saturated/paused (all accounts
     // throttled), placing more bees just floods it with requests that park/fail. The frontier is importance-
     // ranked, so clamping the headroom naturally DEFERS the lowest-priority tasks first; a minHeadroom floor
@@ -274,7 +274,7 @@ async function gatherLivePresenceCurrentFiles(workspaceId: string): Promise<stri
  * P-003 (workspace-scoped-coordination / D-002): tally the batch's target HIVES.
  * Each task already routes by `task.harness` (spawn/affinity land it on that
  * harness's bees); this resolves the harness → its home hive (the P-001
- * source/target-hive tag, via `hiveHomeSlugForHarness`) so the central dispatcher
+ * source/target-hive tag, via `potHomeSlugForHarness`) so the central dispatcher
  * can SEE the cross-hive fan-out of one batch. Called ONLY when
  * WORKSPACE_COORDINATION is ON (so it never adds reads to the dark-default path).
  * A harness with no resolvable hive (operator-scope / un-tagged) buckets under
@@ -292,7 +292,7 @@ export async function routeByHive(
       if (!harness) {
         hive = '(no-harness)';
       } else {
-        hive = (await hiveHomeSlugForHarness(workspaceId, harness).catch(() => null)) ?? harness;
+        hive = (await potHomeSlugForHarness(workspaceId, harness).catch(() => null)) ?? harness;
       }
       byHive[hive] = (byHive[hive] ?? 0) + 1;
     }),
@@ -379,7 +379,7 @@ export async function executeBatch(opts: {
   // marker so the wake-executor re-routes it to a FRESH spawn (fresh session + dossier
   // + checkpoint) instead of `--resume`-ing the grown transcript (D-018/D-021). Read
   // once per batch; flag-off ⇒ no marker, the wake is byte-identical to today.
-  const freshContextOn = await getFlag(FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'system').catch(() => false);
+  const freshContextOn = await getFlag(FLAGS.CUP_FRESH_CONTEXT_WARM_INJECT, 'system').catch(() => false);
   let extraSpawnBudget = Math.max(0, headroom - plan.spawnCount);
   let awaitEvent: string | null = null;
   const placements: PlacementResult[] = [];

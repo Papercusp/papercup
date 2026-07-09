@@ -91,7 +91,7 @@ describe('substrate:revoke_contributor tool', () => {
     const res = (await tool.handler(VALID_HIVE, {} as never)) as { content: { text: string }[] };
     expect(hiveRevoke).toHaveBeenCalledWith({
       workspaceId: 'ws1',
-      hiveHomeSlug: 'acme-hive',
+      potHomeSlug: 'acme-hive',
       githubUserId: 12345,
     });
     expect(harnessRevoke).not.toHaveBeenCalled();

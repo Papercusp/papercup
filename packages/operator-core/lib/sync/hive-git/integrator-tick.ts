@@ -11,7 +11,7 @@
  * existing `system:git-sync` tick, mode-gated to `hiveGit.mode != legacy`).
  *
  * ONE TICK:
- *   1. isIntegrator gate (default: `lockAuthorityForHive(hiveHomeSlug).isSelf`,
+ *   1. isIntegrator gate (default: `lockAuthorityForHive(potHomeSlug).isSelf`,
  *      D-002) — only the lock-authority lease holder computes + publishes
  *      staging; every other member's tick no-ops here (their worktree-bridge
  *      driver, P-204, follows the announcement instead — never both writing).
@@ -46,7 +46,7 @@ import { gateMemberHeadsForIntegration, type GateableHead } from './integration-
 import { signStagingAdvance, type SignedStagingAdvance } from './staging-advance';
 
 export interface IntegratorTickInput {
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   workspaceId: string;
   /** The (hive, managed repo) key under the hive-git root — matches
    *  `hiveGitRepoPath` / `BridgeTickInput.repoKey`'s convention. */
@@ -114,14 +114,14 @@ async function collectGateableHeads(
 export async function runIntegratorTick(input: IntegratorTickInput): Promise<IntegratorTickOutcome> {
   const errors: string[] = [];
   const runGit = input.deps?.runGit ?? defaultRunGit;
-  const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.hiveHomeSlug, input.repoKey);
+  const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.potHomeSlug, input.repoKey);
   const nowMs = input.nowMs ?? Date.now();
   const empty: IntegratorTickOutcome = { ran: false, integration: null, gated: null, announcement: null, errors };
 
   // 1. Lease gate — only the current authority integrates + publishes.
   const isIntegrator =
     input.deps?.isIntegrator ??
-    (async () => (await lockAuthorityForHive(input.hiveHomeSlug, input.deps?.lockAuthorityDeps)).isSelf);
+    (async () => (await lockAuthorityForHive(input.potHomeSlug, input.deps?.lockAuthorityDeps)).isSelf);
   let iAmIntegrator: boolean;
   try {
     iAmIntegrator = await isIntegrator();
@@ -147,7 +147,7 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
   // 3. G-5c trust gate: partition into integrate-now vs queued-for-ratification.
   const gated = await gateMemberHeadsForIntegration({
     workspaceId: input.workspaceId,
-    potSlug: input.hiveHomeSlug,
+    potSlug: input.potHomeSlug,
     repoKey: input.repoKey,
     heads,
     resolveTier: input.resolveTier,

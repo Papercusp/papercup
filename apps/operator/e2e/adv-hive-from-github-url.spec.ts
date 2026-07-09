@@ -13,7 +13,7 @@
  * These specs drive that path. (Not yet live-run under Tauri — that's P-013.)
  *
  * Covers:
- *   P-018a  the picker (HIVE_FROM_GITHUB_URL on — the default) shows the
+ *   P-018a  the picker (POT_FROM_GITHUB_URL on — the default) shows the
  *           hive-native Create / Join layout: the "Search GitHub" entry with
  *           its create-or-join explainer, and the Join cards (Browse the Comb,
  *           hive invite, harness link).
@@ -31,7 +31,7 @@
  *           Create-anyway, which re-submits with force:true and renders the
  *           duplicate-flagged summary.
  *
- * Hermetic: stubs `/api/flags/bootstrap` (pins HIVE_FROM_GITHUB_URL +
+ * Hermetic: stubs `/api/flags/bootstrap` (pins POT_FROM_GITHUB_URL +
  * THE_HIVE so copy is deterministic), `/api/harness/projects/lite` + the
  * benign dock fetches, and MOCKS POST /api/harness/pots/from-repo — the spec
  * never clones a repository or writes anything. The projects/join-link POSTs
@@ -73,7 +73,7 @@ interface FromRepoCapture {
 }
 
 /**
- * Pin the flags this spec depends on (HIVE_FROM_GITHUB_URL — the live entry;
+ * Pin the flags this spec depends on (POT_FROM_GITHUB_URL — the live entry;
  * THE_HIVE — "Hive" lexicon so copy assertions are deterministic), stub
  * projects/lite + the benign dock fetches, and fail-loud-stub the OTHER write
  * endpoints so a mis-routed create can never touch the real backend.

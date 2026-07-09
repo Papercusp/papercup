@@ -31,7 +31,7 @@
  *     and B→A.
  *
  * Direction A (TEST 1) = OWNER→JOINER (owner authors under the hive home; the JOINER boots a
- * member harness whose hive home is a remote_hive VIEW → boot's real joinerHiveHomeSlug rebind +
+ * member harness whose hive home is a remote_hive VIEW → boot's real joinerPotHomeSlug rebind +
  * membership chain are on the path). Direction B (TEST 2) = JOINER→OWNER (a member authors under
  * its member slug; the OWNER's RECEIVING harness IS the hive home → the owner-home content-guard
  * fallback, WI-559/FED-1, engages). Each direction's rows cross SLUGS (author slug ≠ receiver

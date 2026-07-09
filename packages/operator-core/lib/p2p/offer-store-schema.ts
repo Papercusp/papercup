@@ -351,7 +351,7 @@ export function canonicalWorkOfferRecordJson(record: WorkOfferStoreRecord): stri
  */
 export function workOfferStoreSignedBytes(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   recordVersion: number;
   /** The canonical record JSON string (the value stored in `record_json`). */
   canonicalRecordJson: string;
@@ -359,7 +359,7 @@ export function workOfferStoreSignedBytes(input: {
   const msg = [
     WORK_OFFER_STORE_SIG_DOMAIN,
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     String(input.recordVersion),
     input.canonicalRecordJson,
   ].join('\n');

@@ -1,6 +1,6 @@
 /**
  * bee-transcript-cap (P-013, D-007) — the pure decision + the flag-gated sweep.
- * getFlag is mocked so the double-gate (FLAGS.BEE_TRANSCRIPT_CAP) is exercised both ways.
+ * getFlag is mocked so the double-gate (FLAGS.CUP_TRANSCRIPT_CAP) is exercised both ways.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

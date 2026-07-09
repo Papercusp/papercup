@@ -91,7 +91,7 @@ beforeEach(() => {
   h.upserts.length = 0;
   h.bulkUpdates.length = 0;
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
-  delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
 
 describe('setOverwatchStarted — K1 workspace-sentinel write key (P-004)', () => {
@@ -230,7 +230,7 @@ describe('listStartedWorkspaceOverwatches — de-duped supervisor set (P-004)', 
 
   it('flag ON → ONE supervisor per workspace, seated at the env home hive', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = HIVE;
+    process.env.PAPERCUSP_POT_HOME_SLUG = HIVE;
     // Two hives started in the same workspace (sentinel + a stray legacy row).
     h.kv.set(`overwatch_started:${WS}:${WS}`, 'true');
     h.kv.set(`overwatch_started:${WS}:hive-b`, 'true');
@@ -245,7 +245,7 @@ describe('listStartedWorkspaceOverwatches — de-duped supervisor set (P-004)', 
 
   it('flag ON → distinct workspaces each get exactly one supervisor', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = HIVE;
+    process.env.PAPERCUSP_POT_HOME_SLUG = HIVE;
     h.kv.set(`overwatch_started:${WS}:${WS}`, 'true');
     h.kv.set(`overwatch_started:other-ws:other-ws`, 'true');
     const loops = await listStartedWorkspaceOverwatches();

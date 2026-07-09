@@ -131,7 +131,7 @@ import { TELEMETRY_KINDS, type TelemetryKind } from '../../telemetry-kinds';
 // EN-2 rate (inner) wrapped by EN-4 ban/allowlist/takedown/content (outer). Default-off
 // (no policy ⇒ passthrough). Composition is proven by policy-admission.apply.test.ts.
 import type { HivePolicy } from '../../hive-policy-schema';
-import { getHivePolicy } from '../../hive-policy-store';
+import { getHivePolicyCached } from '../../hive-policy-store';
 import { isContentTakenDown } from '../../hive-moderation';
 import { MemberRateLimiter } from './rate-limiter';
 import { EliteNicheRateLimiter } from './elite-niche-rate-limiter';
@@ -347,18 +347,18 @@ export interface BootHarnessOpts {
   /**
    * Test seam (A-003) — override how the joiner's hive-home projection slug is
    * resolved. Production leaves this undefined and `resolveHiveHomeProjectionSlug`
-   * imports the real `joinerHiveHomeSlug` (reads the remote_hive registry). Tests
+   * imports the real `joinerPotHomeSlug` (reads the remote_hive registry). Tests
    * inject a resolver (e.g. one that returns `null` at boot then the hive-home slug
    * on the `rekey` call) to exercise the buffer→replay-on-rebind path WITHOUT the
    * registry or a live swarm. Called only when `swarmBinding.kind === 'hive'`.
    */
-  joinerHiveHomeSlugOverride?: (
+  joinerPotHomeSlugOverride?: (
     workspaceId: string,
     harnessSlug: string,
   ) => Promise<string | null | undefined>;
   /**
    * Test seam (WI-559 / WI-2105) — override how the OWNER's hive-home slug is
-   * resolved (the real `hiveHomeSlugForHarness`, which reads the harness_registry
+   * resolved (the real `potHomeSlugForHarness`, which reads the harness_registry
    * for `hive`-kind / `hive_slug` / PG-identity fallback). Production leaves this
    * undefined and boot imports the real resolver. Tests inject one to exercise the
    * content-guard-home resolution WITHOUT the registry — e.g. an OWNED-hive member
@@ -367,7 +367,7 @@ export interface BootHarnessOpts {
    * (not a no-hiveHome drop) while the hive-home projection rebind stays OFF (no
    * double-apply). Gated on `bindingResolvesHiveHomeProjection` like the real path.
    */
-  hiveHomeSlugForHarnessOverride?: (
+  potHomeSlugForHarnessOverride?: (
     workspaceId: string,
     harnessSlug: string,
   ) => Promise<string | null | undefined>;
@@ -437,12 +437,12 @@ export interface BootHarnessOpts {
   loadRevokedOverride?: () => Promise<Set<string>>;
   /**
    * Test seam (WI-559 + D-002) — override the same-hive membership lookup. Production
-   * leaves this undefined and the real `resolveHiveMemberDeviceSet(workspaceId, hiveHomeSlug)`
+   * leaves this undefined and the real `resolveHiveMemberDeviceSet(workspaceId, potHomeSlug)`
    * (reads all member device pubkeys from the federated `hive_members` PG table) is used. Tests
    * inject a pure async loader returning ALL member device pubkeys for the hive — no
    * github_user_id needed (D-002: admit by AUTHOR IDENTITY / device_pubkey ∈ hive_members).
    */
-  loadHiveMembersOverride?: (hiveHomeSlug: string) => Promise<string[]>;
+  loadHiveMembersOverride?: (potHomeSlug: string) => Promise<string[]>;
   /**
    * Test seam (WI-787 / WI-780) — resolve the OWNER device pubkey the SIGNED, gh-verified
    * hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`, captured at join
@@ -807,7 +807,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the member slug — else the home-grained ops this member's merge reads off the
   // shared Hive topic are dropped (the member list/settings never reach the joiner,
   // and `loadRevokedHivePubkeys(<home>)` stays empty so a revoked member is never
-  // refused). `joinerHiveHomeSlug` returns the home slug ONLY for a true joiner
+  // refused). `joinerPotHomeSlug` returns the home slug ONLY for a true joiner
   // (the home is a remote_hive view) — null for an OWNED hive's member (whose home
   // harness owns the write side) or a non-hive harness. Gated on a `hive` swarm
   // binding so non-hive boots (every rig + most tests) skip the registry/identity
@@ -828,24 +828,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // scope → buffered → grace-expired → rejected → no federation, even though the
     // peer is connected on the right topic (live-witnessed on the 2-machine rig). See
     // bindingResolvesHiveHomeProjection for the full rationale. Slug resolution stays
-    // SELF-GATED by joinerHiveHomeSlug (remote_hive view only → else null → fail-open),
+    // SELF-GATED by joinerPotHomeSlug (remote_hive view only → else null → fail-open),
     // so a non-hive 'topic' harness is unaffected, and the joiner rebind no longer
     // depends on prior DHT directory discovery.
     if (!bindingResolvesHiveHomeProjection(binding)) return undefined;
     try {
-      // A-003 test seam: a test may inject `joinerHiveHomeSlugOverride` to control
+      // A-003 test seam: a test may inject `joinerPotHomeSlugOverride` to control
       // home resolution (null at boot, then the hive-home slug on rekey) without the
       // registry. Production leaves it undefined → the real registry-backed resolver.
       let resolved: string | undefined;
-      if (opts.joinerHiveHomeSlugOverride) {
-        resolved = (await opts.joinerHiveHomeSlugOverride(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      if (opts.joinerPotHomeSlugOverride) {
+        resolved = (await opts.joinerPotHomeSlugOverride(opts.workspaceId, opts.harnessSlug)) ?? undefined;
       } else {
-        const { joinerHiveHomeSlug } = await import('../../hive-federation');
+        const { joinerPotHomeSlug } = await import('../../hive-federation');
         // WI-1378 (federation roster-empty, no-restart path): read the registry FRESH
         // (bypass the 2s operator-state cache). This resolve runs on the in-place rekey
         // inside the substrate SIDECAR process (SUBSTRATE_SIDECAR) — a DIFFERENT process
         // from the join-hive registry write, so the writer's same-process cache
-        // invalidation never reached here. A warm-stale cache made joinerHiveHomeSlug
+        // invalidation never reached here. A warm-stale cache made joinerPotHomeSlug
         // return null at rekey → next===prev(null) → the rebind block below skipped →
         // forceReFold never fired → the member-slug projection binding latched → the
         // owner's hive_members rows dropped forever (roster empty until a restart
@@ -854,18 +854,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // forceReFold re-fold engage on the no-restart path. Rare path — the hot
         // loadHarnessRegistry callers keep the cache; only this resolve reads fresh.
         resolved =
-          (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
+          (await joinerPotHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
          
-        console.error(`[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug=${resolved ?? '<null>'}`);
+        console.error(`[A-003] resolve ${opts.harnessSlug}: joinerPotHomeSlug=${resolved ?? '<null>'}`);
       }
       return resolved;
     } catch (e) {
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
          
         console.error(
-          `[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
+          `[A-003] resolve ${opts.harnessSlug}: joinerPotHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
       return undefined; // fail-open: fall back to member-slug binding (today's behavior)
@@ -929,17 +929,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // The 6 content projections DEFER into it when the P-002 membership guard would drop a cross-member
   // op only because the author's hive_members row hasn't federated to this peer yet; the hive_members
   // projection DRAINS + re-applies on a member apply (the onMemberApplied hook). Inert (stays empty)
-  // for a non-hive harness — the guard returns 'drop' (never 'defer') without a hiveHomeSlug. Threaded
+  // for a non-hive harness — the guard returns 'drop' (never 'defer') without a potHomeSlug. Threaded
   // into BOTH scopedApply (the real merge path) AND the global registry below.
   const pendingMemberContent = new PendingMembershipContent();
 
   // WI-559 / FED-1 (fed-b→fed-a "discovers 0"): the OWNER's hive-home harness must resolve the
-  // WI-259 content-guard hiveHomeSlug too. `resolveHiveHomeProjectionSlug` (above) resolves only the
-  // JOINER rebind via `joinerHiveHomeSlug` (remote_hive view → null for an owner), so an owner's home
-  // harness ran the 6 content projections with hiveHomeSlug=undefined → `decideMemberContentOp` hit
+  // WI-259 content-guard potHomeSlug too. `resolveHiveHomeProjectionSlug` (above) resolves only the
+  // JOINER rebind via `joinerPotHomeSlug` (remote_hive view → null for an owner), so an owner's home
+  // harness ran the 6 content projections with potHomeSlug=undefined → `decideMemberContentOp` hit
   // its no-hiveHome 'drop' branch for EVERY cross-member op → a member's content never materialized on
   // the owner. This closes the admit/apply ASYMMETRY: STEP-1 admission (`resolveSameHiveMember`)
-  // already resolves the home as `hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, slug)`, but
+  // already resolves the home as `hiveHomeProjectionSlug ?? potHomeSlugForHarness(ws, slug)`, but
   // STEP-2 apply only used `hiveHomeProjectionSlug`. We resolve the OWNER's own hive-home here and
   // thread it as the content-guard FALLBACK below (scoped to home === own slug, so a joiner keeps its
   // rebound `hiveHomeProjectionSlug` and the `??` is a no-op; a non-hive/non-owner harness → undefined).
@@ -948,13 +948,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // pays ZERO extra getOrgPg cost and is byte-identical to today; only a harness actually peered on a
   // hive topic (where it can receive cross-member content) does the one-shot owner-home lookup.
   // WI-2105 REV (no-hiveHome fix): resolve the hive-home ONCE for BOTH the projection-rebind
-  // fallback (ownHiveHomeSlug) AND the broader content-guard home (contentGuardHiveHome).
-  const resolvedHiveHomeSlug = await (async (): Promise<string | undefined> => {
+  // fallback (ownPotHomeSlug) AND the broader content-guard home (contentGuardHiveHome).
+  const resolvedPotHomeSlug = await (async (): Promise<string | undefined> => {
     if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
     try {
       const resolve =
-        opts.hiveHomeSlugForHarnessOverride ??
-        (await import('../../hive-federation')).hiveHomeSlugForHarness;
+        opts.potHomeSlugForHarnessOverride ??
+        (await import('../../hive-federation')).potHomeSlugForHarness;
       return (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
     } catch {
       return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
@@ -963,15 +963,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // WI-559/FED-1 projection-REBIND fallback: only the owner booting the HOME harness itself
   // (home === own slug) may rebind the hive-home projections (hiveScoped) — a member harness
   // must NOT (it would double-apply the owner's own rows as origin='remote'). IDENTICAL value
-  // to the prior IIFE, so every existing ownHiveHomeSlug ref is preserved.
-  const ownHiveHomeSlug = resolvedHiveHomeSlug === opts.harnessSlug ? resolvedHiveHomeSlug : undefined;
+  // to the prior IIFE, so every existing ownPotHomeSlug ref is preserved.
+  const ownPotHomeSlug = resolvedPotHomeSlug === opts.harnessSlug ? resolvedPotHomeSlug : undefined;
   // WI-2105 REV content-GUARD home: the member-content guard's member-set lookup needs the
   // hive-home for ANY hive-peered harness — INCLUDING an owned hive's member harness
-  // (home ≠ own slug, hive owned-not-remote, e.g. hive-canary→papercusp) where ownHiveHomeSlug
+  // (home ≠ own slug, hive owned-not-remote, e.g. hive-canary→papercusp) where ownPotHomeSlug
   // is undefined. Threaded as `memberContentHiveHome` (guard-only; does NOT drive the rebind).
-  const contentGuardHiveHome = resolvedHiveHomeSlug;
+  const contentGuardHiveHome = resolvedPotHomeSlug;
 
-  const buildScopedApply = (hiveHomeSlug: string | undefined) =>
+  const buildScopedApply = (potHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
@@ -979,11 +979,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // WI-559/FED-1: fall back to the OWNER's own hive-home when the joiner rebind
       // (hiveHomeProjectionSlug) is null, so an owner's home harness engages the WI-259
       // membership guard instead of dropping every cross-member op (no-hiveHome). For a joiner
-      // `hiveHomeSlug` is its rebound home (≠ null) so `?? ownHiveHomeSlug` is a no-op.
-      hiveHomeSlug: hiveHomeSlug ?? ownHiveHomeSlug,
+      // `potHomeSlug` is its rebound home (≠ null) so `?? ownPotHomeSlug` is a no-op.
+      potHomeSlug: potHomeSlug ?? ownPotHomeSlug,
       // WI-2105 REV: DECOUPLED content-guard home (member-set lookup) — broader than the
       // rebind fallback (covers an owned-hive member harness) and never drives hiveScoped.
-      memberContentHiveHome: hiveHomeSlug ?? contentGuardHiveHome,
+      memberContentHiveHome: potHomeSlug ?? contentGuardHiveHome,
       resolveAuthorDevice,
       pendingMemberContent,
     });
@@ -1006,7 +1006,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     );
   }
   // WI-2105 REV diag (DURABLE, not env-gated): the effective member-content-guard
-  // hiveHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? contentGuardHiveHome
+  // potHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? contentGuardHiveHome
   // (the DECOUPLED guard home — broader than the rebind fallback, so it now resolves for an
   // owned-hive member harness like hive-canary→papercusp). When it STILL resolves undefined for
   // a HIVE-PEERED HARNESS, decideMemberContentOp drops EVERY cross-member op with 'no-hiveHome'.
@@ -1048,8 +1048,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // content. Empty + unused when the re-key is off. Shared boot-scope buffer — BOTH the
   // boot-time registration and the rekey() re-registration feed it via `recordEpochDrain`.
   const epochDrainQueue: DrainedEpoch[] = [];
-  const recordEpochDrain = (hiveHomeSlug: string, epoch: number): void => {
-    epochDrainQueue.push({ hiveHomeSlug, epoch });
+  const recordEpochDrain = (potHomeSlug: string, epoch: number): void => {
+    epochDrainQueue.push({ potHomeSlug, epoch });
   };
 
   // Wire the per-table PG projection writers into the GLOBAL registry too —
@@ -1059,9 +1059,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   registerAllHarnessProjections({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
-    // WI-559/FED-1: owner-home fallback (see ownHiveHomeSlug) so the global-registry content
+    // WI-559/FED-1: owner-home fallback (see ownPotHomeSlug) so the global-registry content
     // projections also engage the WI-259 membership guard on an owner's home harness.
-    hiveHomeSlug: hiveHomeProjectionSlug ?? ownHiveHomeSlug,
+    potHomeSlug: hiveHomeProjectionSlug ?? ownPotHomeSlug,
     // WI-2105 REV: DECOUPLED content-guard home for the global-registry apply path too.
     memberContentHiveHome: hiveHomeProjectionSlug ?? contentGuardHiveHome,
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
@@ -1126,9 +1126,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // takes the member-guard own-slug fast path, so no announce identity is
   // required. Best-effort: any throw degrades to today's swarm-only admission.
   try {
-    const seedHiveHome = hiveHomeProjectionSlug ?? resolvedHiveHomeSlug;
+    const seedHiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
     if (seedHiveHome) {
-      const seedLogKeys = await resolveSeedLogKeys({ hiveHomeSlug: seedHiveHome });
+      const seedLogKeys = await resolveSeedLogKeys({ potHomeSlug: seedHiveHome });
       for (const keyHex of seedLogKeys) {
         if (keyHex === ownLog.keyHex || admitted.has(keyHex)) continue;
         const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
@@ -1214,8 +1214,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // The read-admission decider is unchanged. Best-effort / fail-open: a hive
       // lookup failure leaves the harness-scope set intact.
       try {
-        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-        const hiveHome = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+        const { potHomeSlugForHarness } = await import('../../hive-federation');
+        const hiveHome = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
         if (hiveHome) {
           const { loadRevokedHivePubkeys } = await import('../../hive-membership-store');
           for (const pk of await loadRevokedHivePubkeys(opts.workspaceId, hiveHome)) {
@@ -1711,7 +1711,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                   // reads can be unconfigured and threw per announce (WI-1460: the
                   // cross-peer suite died on the console.error; live, the admit
                   // silently skipped). Deterministic + free.
-                  hiveHomeSlugForHarness: async () => hiveHomeProjectionSlug ?? ownHiveHomeSlug ?? null,
+                  potHomeSlugForHarness: async () => hiveHomeProjectionSlug ?? ownPotHomeSlug ?? null,
                 },
               );
               if (res.action === 'pending') {
@@ -1719,14 +1719,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                   opts.workspaceId,
                   opts.harnessSlug,
                   'announce_pending',
-                  `${peerLabel(frame.log_core_key)} awaiting owner approval (hive ${res.hiveHomeSlug})`,
+                  `${peerLabel(frame.log_core_key)} awaiting owner approval (hive ${res.potHomeSlug})`,
                 );
               } else if (res.action === 'refuse') {
                 recordBootEvent(
                   opts.workspaceId,
                   opts.harnessSlug,
                   'announce_rejected',
-                  `${peerLabel(frame.log_core_key)} membership refused:${res.reason} (hive ${res.hiveHomeSlug})`,
+                  `${peerLabel(frame.log_core_key)} membership refused:${res.reason} (hive ${res.potHomeSlug})`,
                 );
               }
             } catch (e) {
@@ -2050,12 +2050,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // ── Owner-enforcement seam (plan shared-hive-owner-enforcement-2026-06-19) ──
       // Read the owner-SIGNED Hive policy ONCE per merge pass. This runs only past the
       // !changed guard above (a pass with new content to merge) — an idle / un-policed
-      // harness pays NOTHING. The policy is scoped to the Hive home (hiveHomeProjectionSlug
-      // rebinds on the joiner re-key; the owner's home harness is its own slug). null ⇒
-      // no policy ⇒ no enforcement.
+      // harness pays NOTHING extra PG-connection overhead (EI-8685: a pass WITH new
+      // content still previously paid a full uncached PG round-trip on every single
+      // tick, which is exactly the added-per-pass cost the p2p-perf merge.delta-tick
+      // regression measured — a policy changes rarely and already tolerates seconds of
+      // federation lag, so a short-TTL cache is the right tradeoff here; see
+      // getHivePolicyCached's doc comment). The policy is scoped to the Hive home
+      // (hiveHomeProjectionSlug rebinds on the joiner re-key; the owner's home harness is
+      // its own slug). null ⇒ no policy ⇒ no enforcement.
       const ownerPolicy: HivePolicy | null =
         (
-          await getHivePolicy(
+          await getHivePolicyCached(
             opts.workspaceId,
             hiveHomeProjectionSlug ?? opts.harnessSlug,
           ).catch(() => null)
@@ -2319,11 +2324,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // D-002 P-001: the same-hive membership lookup (test seam or real resolveHiveMemberDeviceSet).
   // Returns ALL device pubkeys for the hive — no github_user_id (D-002: admit by AUTHOR IDENTITY).
   // Never throws (fail-closed to empty set → not-a-member → buffer).
-  const loadHiveMembers: (hiveHomeSlug: string) => Promise<string[]> =
+  const loadHiveMembers: (potHomeSlug: string) => Promise<string[]> =
     opts.loadHiveMembersOverride ??
-    (async (hiveHomeSlug) => {
+    (async (potHomeSlug) => {
       const { resolveHiveMemberDeviceSet } = await import('./hive-member-identity-set');
-      const set = await resolveHiveMemberDeviceSet(opts.workspaceId, hiveHomeSlug).catch(
+      const set = await resolveHiveMemberDeviceSet(opts.workspaceId, potHomeSlug).catch(
         () => new Set<string>(),
       );
       return [...set];
@@ -2436,10 +2441,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function resolveSameHiveMember(frame: SignedAnnounce): Promise<AdmissionResult | null> {
     const originSlug = frame.harness_slug ?? null;
     if (!(originSlug != null && originSlug !== slug)) return null;
-    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await import('../../hive-federation');
     const myHiveHome =
       hiveHomeProjectionSlug ??
-      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return null;
     // WI-787 / WI-780 — owner-log BOOTSTRAP admission (the keystone). A fresh joiner's
     // hive_members is EMPTY, so the OWNER's own announce 'miss'es below and buffers
@@ -2558,10 +2563,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (ownerDevice && frame.device_pubkey === ownerDevice) return true;
     // Member admission (below) needs the resolved hive-home slug — resolve it AFTER the
     // binding-only owner-bootstrap above, so a home=<none> joiner still bootstrap-admits the owner.
-    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await import('../../hive-federation');
     const myHiveHome =
       hiveHomeProjectionSlug ??
-      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return false;
     const memberDevices = await loadHiveMembers(myHiveHome);
     return trustedHiveMemberDeviceAdmission({
@@ -2689,7 +2694,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // carries a SIGNED `harness_slug`; admit a remote log ONLY into the harness
     // scope that should hold it: this harness's OWN slug, OR — for a JOINER's
     // member harness — the hive-home slug it rebinds (`hiveHomeProjectionSlug` =
-    // joinerHiveHomeSlug(self), the receive-side rebind; live across rekey). ABSENT
+    // joinerPotHomeSlug(self), the receive-side rebind; live across rekey). ABSENT
     // (legacy / single-harness peer) → admit (backward-compatible: the field
     // post-dates single-harness federation + the two-hive integration test).
     const originSlug = frame.harness_slug ?? null;
@@ -3066,13 +3071,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     binding: SwarmBinding,
   ): Promise<LocalAnnounceIdentity | null> {
     if (binding.kind !== 'hive') return null;
-    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-    const hiveHomeSlug =
+    const { potHomeSlugForHarness } = await import('../../hive-federation');
+    const potHomeSlug =
       hiveHomeProjectionSlug ??
-      (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
-    if (!hiveHomeSlug) return null;
+      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+    if (!potHomeSlug) return null;
     const { listHiveMembers } = await import('../../hive-membership-store');
-    const members = await listHiveMembers(opts.workspaceId, hiveHomeSlug).catch(() => []);
+    const members = await listHiveMembers(opts.workspaceId, potHomeSlug).catch(() => []);
     return resolveLocalAnnounceIdentityFromHiveMembers({ members });
   }
 
@@ -3260,13 +3265,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         refreshMs: opts.swarmRefreshMs,
         fastWindowMs: opts.swarmFastWindowMs,
         slowRefreshMs: opts.swarmSlowRefreshMs,
+        // WI-1534 anti-entropy: keep the self-heal loop in its FAST cadence
+        // whenever an admitted remote log has zero live replicator peers —
+        // on a quiescent hive (no connection churn) this is the ONLY thing
+        // that re-arms it; otherwise it settles into the 60s slow keepalive
+        // and a genuinely stalled/zombie peer can go unresynced for as long
+        // as it takes an UNRELATED event to coincidentally trigger a working
+        // reconnect (the observed 80+min stall). Best-effort (peersCount()
+        // undefined on a fake/mock log in tests → skip that log, never
+        // throws) and cheap (Map scan, no I/O).
+        hasStalledLogs: () => {
+          for (const [keyHex, log] of admitted) {
+            if (keyHex === ownLog.keyHex) continue;
+            const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
+            if (typeof maybePeers.peersCount !== 'function') continue;
+            try {
+              if (maybePeers.peersCount() === 0) return true;
+            } catch {
+              // treat a throwing probe as "not stalled" for this log
+            }
+          }
+          return false;
+        },
         // P-201 (p2p-git-live-activation-2026-07-09): register the hive-git
         // serve plane only for a harness actually bound to a hive home — a
         // non-hive harness (hiveHomeProjectionSlug null) never wires it, so it
         // stays byte-for-byte unchanged. Per-request mode gating (legacy vs
         // bridged/p2p-only) happens live inside the wiring itself.
         ...(hiveHomeProjectionSlug
-          ? { hiveGitServe: { hiveHomeSlug: hiveHomeProjectionSlug, workspaceId: opts.workspaceId } }
+          ? { hiveGitServe: { potHomeSlug: hiveHomeProjectionSlug, workspaceId: opts.workspaceId } }
           : {}),
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
@@ -3534,7 +3561,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           registerAllHarnessProjections({
             workspaceId: opts.workspaceId,
             harnessSlug: opts.harnessSlug,
-            hiveHomeSlug: next,
+            potHomeSlug: next,
             // Re-wire the drain hook onto the re-registered hive_epoch_keys projection (shared
             // boot-scope epochDrainQueue via recordEpochDrain) when the re-key is now active.
             ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),

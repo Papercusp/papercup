@@ -54,7 +54,7 @@ describe('takedownContent — appends to the signed takedownList (idempotent)', 
   it('appends the ref; preserves unknown keys', async () => {
     const mutate = fakeMutate({ membership: 'open', moderation: { reportable: true }, futureKey: 1 } as HivePolicy);
     const res = await takedownContent(
-      { workspaceId: 'w', hiveHomeSlug: 'h', contentRef: 'F-9' },
+      { workspaceId: 'w', potHomeSlug: 'h', contentRef: 'F-9' },
       { mutateHivePolicy: mutate as never },
     );
     const next = (res as { policy: { policy: HivePolicy } }).policy.policy;
@@ -65,7 +65,7 @@ describe('takedownContent — appends to the signed takedownList (idempotent)', 
 
   it('does NOT duplicate an already-taken-down ref', async () => {
     const mutate = fakeMutate({ moderation: { takedownList: ['F-9'] } });
-    await takedownContent({ workspaceId: 'w', hiveHomeSlug: 'h', contentRef: 'F-9' }, {
+    await takedownContent({ workspaceId: 'w', potHomeSlug: 'h', contentRef: 'F-9' }, {
       mutateHivePolicy: mutate as never,
     });
     const next = (await (mutate.mock.results[0].value as Promise<{ policy: { policy: HivePolicy } }>)).policy.policy;
@@ -77,7 +77,7 @@ describe('restoreContent — removes a ref from the takedown list', () => {
   it('removes the ref', async () => {
     const mutate = fakeMutate({ moderation: { takedownList: ['F-1', 'F-2'] } });
     const res = await restoreContent(
-      { workspaceId: 'w', hiveHomeSlug: 'h', contentRef: 'F-1' },
+      { workspaceId: 'w', potHomeSlug: 'h', contentRef: 'F-1' },
       { mutateHivePolicy: mutate as never },
     );
     const next = (res as { policy: { policy: HivePolicy } }).policy.policy;
@@ -90,12 +90,12 @@ describe('banMember — appends ban + calls revoke (the teeth)', () => {
     const mutate = fakeMutate({ moderation: {} });
     const revoke = vi.fn(async () => ({ ok: true as const, revokedPubkeys: ['k1'], live: false }));
     const res = await banMember(
-      { workspaceId: 'w', hiveHomeSlug: 'h', githubUserId: 6666 },
+      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 6666 },
       { mutateHivePolicy: mutate as never, revokeHiveContributor: revoke as never },
     );
     const next = (res.policy as { policy: { policy: HivePolicy } }).policy.policy;
     expect(next.moderation?.bannedGithubIds).toEqual(['6666']);
-    expect(revoke).toHaveBeenCalledWith({ workspaceId: 'w', hiveHomeSlug: 'h', githubUserId: 6666 });
+    expect(revoke).toHaveBeenCalledWith({ workspaceId: 'w', potHomeSlug: 'h', githubUserId: 6666 });
     expect(res.revoke).toMatchObject({ ok: true, live: false }); // re-key not wired yet → live:false
   });
 
@@ -103,7 +103,7 @@ describe('banMember — appends ban + calls revoke (the teeth)', () => {
     const mutate = fakeMutate({ moderation: {} });
     const revoke = vi.fn();
     const res = await banMember(
-      { workspaceId: 'w', hiveHomeSlug: 'h', githubUserId: 6666, revoke: false },
+      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 6666, revoke: false },
       { mutateHivePolicy: mutate as never, revokeHiveContributor: revoke as never },
     );
     expect(res.revoke).toEqual({ skipped: true });
@@ -114,7 +114,7 @@ describe('banMember — appends ban + calls revoke (the teeth)', () => {
     const mutate = vi.fn(async () => ({ ok: false as const, code: 'not_owner_swarm' as const }));
     const revoke = vi.fn();
     const res = await banMember(
-      { workspaceId: 'w', hiveHomeSlug: 'h', githubUserId: 6666 },
+      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 6666 },
       { mutateHivePolicy: mutate as never, revokeHiveContributor: revoke as never },
     );
     expect(res.policy.ok).toBe(false);
@@ -127,7 +127,7 @@ describe('unbanMember — removes from the ban list', () => {
   it('removes the github id', async () => {
     const mutate = fakeMutate({ moderation: { bannedGithubIds: ['6666', '7777'] } });
     const res = await unbanMember(
-      { workspaceId: 'w', hiveHomeSlug: 'h', githubUserId: 6666 },
+      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 6666 },
       { mutateHivePolicy: mutate as never },
     );
     const next = (res as { policy: { policy: HivePolicy } }).policy.policy;

@@ -64,7 +64,7 @@ export interface AdmissionInput {
   head: string;
   /** Revocation scope (contribution-admission coords). */
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   runGit?: RunGit;
   /** Injected revocation predicate (default: isHiveContributorRevoked). */
   isRevoked?: (githubUserId: number) => Promise<boolean>;
@@ -100,7 +100,7 @@ export async function admitGithubOriginHead(input: AdmissionInput): Promise<Admi
     ((githubUserId: number) =>
       isHiveContributorRevoked({
         workspaceId: input.workspaceId,
-        hiveHomeSlug: input.hiveHomeSlug,
+        potHomeSlug: input.potHomeSlug,
         githubUserId,
       }));
 

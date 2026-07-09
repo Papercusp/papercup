@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import { queenWakeEfficiency } from '../../hive/queen-wake-efficiency';
 
 export default defineTool({
@@ -34,12 +34,12 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Home harness slug to scope to (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG; omit + none ⇒ all Mug wakes in the workspace).'),
+      .describe('Home harness slug to scope to (default: ctx harness or PAPERCUSP_POT_HOME_SLUG; omit + none ⇒ all Mug wakes in the workspace).'),
     limit: z.number().int().min(1).max(500).optional().describe('Most-recent wakes to aggregate (default 50).'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, undefined);
     const eff = await queenWakeEfficiency(workspaceId, {
       harnessSlug: installSlug ?? undefined,
       limit: args.limit ?? 50,

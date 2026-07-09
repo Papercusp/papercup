@@ -14,7 +14,7 @@
  * GATED: only a SHARED harness (swarmBinding present + a joined swarm) announces —
  * a private/local harness has no peers. Best-effort: a wiring/tick failure never
  * blocks boot (mirrors wire-outbox). The harness's home Hive slug is resolved ONCE
- * (hiveHomeSlugForHarness) and stamped on every announce so the federated row
+ * (potHomeSlugForHarness) and stamped on every announce so the federated row
  * carries hive_slug for the authority's `WHERE hive_slug` (mig 187).
  */
 import type { LocalWriteOp } from './boot';
@@ -29,7 +29,7 @@ import {
 import { resolveLocalAnnounceIdentity } from './local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
+import { potHomeSlugForHarness } from '../../hive-federation';
 import type { SharedPresenceRow } from './projections/presence';
 import {
   registerPresenceGossipTopic,
@@ -85,7 +85,7 @@ export async function wirePresenceAnnounceForHarness(
 
   // Resolve the harness's home Hive ONCE (stable for the boot session). Best-effort:
   // a failure → announce harness-scoped (hive_slug null), never blocks the loop.
-  const resolveHive = opts.resolveHiveSlug ?? hiveHomeSlugForHarness;
+  const resolveHive = opts.resolveHiveSlug ?? potHomeSlugForHarness;
   let potSlug: string | null = null;
   try {
     potSlug = await resolveHive(handle.workspaceId, handle.harnessSlug);
@@ -120,7 +120,7 @@ export async function wirePresenceAnnounceForHarness(
     await registerPresenceGossipTopic({
       topicHex: gossipTopicHex,
       workspaceId: handle.workspaceId,
-      hiveHomeSlug: potSlug,
+      potHomeSlug: potSlug,
       ...(writer ? { writer } : {}),
     });
   }

@@ -2,7 +2,7 @@
 /**
  * HivesTab render coverage (left-sidebar-tauri-2026-06-07) — the p2p swarm
  * roster. The pure `groupHives` reducer has its own unit test (group-hives.test);
- * this pins the COMPONENT branches: the HIVE_CONTROL-gated LocalHivesControl, the
+ * this pins the COMPONENT branches: the POT_CONTROL-gated LocalHivesControl, the
  * joined/live count line, the error + honest-empty states, and the per-device row
  * (live vs stale dot, stale pill, gh-users + harness suffixes). The `sidebar.hives`
  * sync query and the flag client are mocked; the child control is stubbed.
@@ -64,7 +64,7 @@ describe('<HivesTab>', () => {
     expect(screen.queryByTestId('local-hives-control')).toBeNull();
   });
 
-  it('mounts LocalHivesControl only when the HIVE_CONTROL flag is on', () => {
+  it('mounts LocalHivesControl only when the POT_CONTROL flag is on', () => {
     H.flagOn = true;
     render(<HivesTab active={true} />);
     expect(screen.getByTestId('local-hives-control')).toBeTruthy();

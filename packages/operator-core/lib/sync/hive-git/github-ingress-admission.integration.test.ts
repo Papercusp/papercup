@@ -38,7 +38,7 @@ describe('github-ingress-admission (P-005: revocation gate between ingress and i
   let work: string;
   let base: string; // the last-admitted head
   let cleanHead: string;
-  const scope = { workspaceId: 'ws-1', hiveHomeSlug: 'hive-bridge' };
+  const scope = { workspaceId: 'ws-1', potHomeSlug: 'hive-bridge' };
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'hg-adm-'));

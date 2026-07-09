@@ -29,7 +29,7 @@ vi.mock('../../hive/wake', () => ({
   HIVE_BLUEPRINT_ID: 'hive-blueprint',
   hiveWakeFloorSec: () => 60,
   effectiveHiveWakeFloorSec: async () => 60,
-  resolveHiveHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
+  resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,
   declareHiveTimeWake: (...a: unknown[]) => declareHiveTimeWake(...a),
   clearHiveTimeWake: (...a: unknown[]) => clearHiveTimeWake(...a),

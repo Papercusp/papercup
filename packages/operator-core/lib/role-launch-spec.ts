@@ -218,8 +218,8 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     // is the per-instance layer on top of the blueprint→ancestors→base file chain
     // (the reusable blueprint persona stays a file + generic). Best-effort.
     try {
-      const { hiveHomeSlugForHarness } = await import('./hive-federation');
-      const potSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      const { potHomeSlugForHarness } = await import('./hive-federation');
+      const potSlug = await potHomeSlugForHarness(input.workspaceId, harnessSlug);
       if (potSlug) {
         const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
         const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, input.role);
@@ -574,9 +574,9 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   let suPersonaText = rendered.text;
   if (suBaseSource && harnessSlug) {
     try {
-      const { hiveHomeSlugForHarness } = await import('./hive-federation');
+      const { potHomeSlugForHarness } = await import('./hive-federation');
       const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
-      const potSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      const potSlug = await potHomeSlugForHarness(input.workspaceId, harnessSlug);
       if (potSlug) {
         const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, 'su');
         if (inst) suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${inst}`;

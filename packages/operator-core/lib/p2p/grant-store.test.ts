@@ -142,6 +142,24 @@ describe('grant-store refusal paths (loud, structured, SQL-free)', () => {
     if (!r.ok) expect(r.refusal.code).toBe('workspace_unresolved');
   });
 
+  it('currentGrantorEpoch (H9 production seam, WI-1937) refuses an unresolvable workspace / missing hive WITHOUT touching SQL — a silent 0 here would let a stale claim slip the epoch fence', async () => {
+    await expect(currentGrantorEpoch('default', 'h', 1, throwingSql)).rejects.toThrow(/unresolvable workspace/);
+    await expect(currentGrantorEpoch(null, 'h', 1, throwingSql)).rejects.toThrow(/unresolvable workspace/);
+    await expect(currentGrantorEpoch('ws-1', '  ', 1, throwingSql)).rejects.toThrow(/potSlug/);
+  });
+
+  it('currentGrantorEpoch reads the high_water_epoch row (mirrors currentGrantorEpochTx exactly): 0 when never bumped, else the stored value', async () => {
+    const neverBumped = (async () => []) as unknown as OrgSql;
+    expect(await currentGrantorEpoch('ws-1', 'hive', 42, neverBumped)).toBe(0);
+
+    const bumped = (async () => [{ high_water_epoch: 5 }]) as unknown as OrgSql;
+    expect(await currentGrantorEpoch('ws-1', 'hive', 42, bumped)).toBe(5);
+
+    // string-typed pg numeric (postgres.js returns bigints/numerics as strings) is coerced.
+    const stringy = (async () => [{ high_water_epoch: '7' }]) as unknown as OrgSql;
+    expect(await currentGrantorEpoch('ws-1', 'hive', 42, stringy)).toBe(7);
+  });
+
   it('checkP2pCapability fails CLOSED on an unresolvable workspace, naming the missing capability (P-004 receipt content)', async () => {
     const r = await checkP2pCapability(
       {

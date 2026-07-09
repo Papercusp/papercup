@@ -122,7 +122,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   const ws = opts.workspaceId ?? activeWorkspaceId();
 
   // 1. One-shot fire the awaits on this key (atomic — D-002).
-  const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event', workspaceId: ws });
+  const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event' });
   const wakes = fired.filter((a) => a.policy === 'wake');
   const notifyAwaits = fired.filter((a) => a.policy === 'notify');
 
@@ -136,7 +136,6 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       // P0a: persist the emit attribution on the delivery so a later turn-death is
       // attributable to its source (e.g. a loop fire's `loop:<routineId>`).
       source: opts.source ?? null,
-      workspaceId: ws,
     });
     setImmediate(() => {
       void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
@@ -229,7 +228,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
   if (pumpsInFlight.has(ws)) return stats;
   pumpsInFlight.add(ws);
   try {
-    const claimed = await claimDueDeliveries({ limit: 25, workspaceId: ws });
+    const claimed = await claimDueDeliveries({ limit: 25 });
     stats.claimed = claimed.length;
     if (claimed.length === 0) return stats;
 
@@ -245,7 +244,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     // declares a floor — the common one-shot-grant case (min_sleep=0) needs no extra read.
     const needFloor = claimed.some((d) => (d.minSleepSec ?? 0) > 0);
     const lastWoken = needFloor
-      ? await lastWokenAtForSubscribers([...bySubscriber.keys()], ws)
+      ? await lastWokenAtForSubscribers([...bySubscriber.keys()])
       : new Map<string, number>();
 
     const now = Date.now();
@@ -469,10 +468,10 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
     }
   }
 
-  const recovered = await recoverStuckDeliveries({ olderThanMs: STUCK_DELIVERING_MS, workspaceId: ws });
+  const recovered = await recoverStuckDeliveries({ olderThanMs: STUCK_DELIVERING_MS });
   if (recovered > 0) log(`recovered ${recovered} stuck deliveries`);
 
-  const timedOut = await fireTimedOutAwaits(ws);
+  const timedOut = await fireTimedOutAwaits();
   if (timedOut.length > 0) {
     const wakes: AwaitRow[] = timedOut.filter((a) => a.policy === 'wake');
     if (wakes.length > 0) {
@@ -482,7 +481,6 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
         // re-orient/re-arm guidance so the woken agent reconciles instead of re-hanging.
         payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE },
         summary: TIMEOUT_WAKE_SUMMARY,
-        workspaceId: ws,
       });
     }
     // P-003 detector: group this sweep's timeout-fires by key family and accumulate
@@ -503,7 +501,7 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
     }
   }
 
-  const lapsed = await expireLapsedAwaits(ws);
+  const lapsed = await expireLapsedAwaits();
   if (lapsed > 0) log(`expired ${lapsed} lapsed awaits (timeout_behavior=expire)`);
 
   await pumpWakeDeliveries(ws);

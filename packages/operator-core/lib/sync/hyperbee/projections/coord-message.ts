@@ -78,14 +78,14 @@ export interface CoordMessageProjectionOpts {
   sql?: postgres.Sql;
   /** WI-259 parity (shared-hive comms federation): hive-home slug when this harness is a hive
    *  MEMBER — a cross-member coord op is membership-gated only when set. */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from sourceLogKeyHex. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
   /** WI-259 P-004 parity: content-before-membership defer buffer. */
   pendingMemberContent?: PendingMembershipContent;
   /** P-013 test seam: resolve the author DEVICE's effective comms tier.
    *  Default binds comms-tier-gate (hive_members attestations → comms-trust).
-   *  Only consulted when hiveHomeSlug is set (hive-bound projections). */
+   *  Only consulted when potHomeSlug is set (hive-bound projections). */
   resolveCommsTier?: (
     devicePubkey: string | null,
   ) => Promise<{ tier: CommsTier; githubUserId: number | null }>;
@@ -119,14 +119,14 @@ async function writeToPg(
   // or the op is local — today's behavior, byte-identical.
   let authorTier: CommsTier = 'steer';
   let authorUserId: number | null = null;
-  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
     const resolveTier =
       opts.resolveCommsTier ??
       (async (device: string | null) =>
         device
           ? resolveAuthorCommsTier({
               workspaceId: opts.workspaceId,
-              hiveHomeSlug: opts.hiveHomeSlug!,
+              potHomeSlug: opts.potHomeSlug!,
               devicePubkey: device,
             })
           : { tier: FALLBACK_COMMS_TIER, githubUserId: null });
@@ -164,7 +164,7 @@ async function writeToPg(
             device
               ? tryConsumeMemberMessageRate({
                   workspaceId: opts.workspaceId,
-                  hiveHomeSlug: opts.hiveHomeSlug!,
+                  potHomeSlug: opts.potHomeSlug!,
                   devicePubkey: device,
                 })
               : true);

@@ -13,7 +13,7 @@
  *
  * Slug is `papercusp` (NOT the legacy `papercup-hive`, retired 2026-06-19 with the
  * papercup→papercusp rebrand). This is the workspace's HOME hive — name it
- * explicitly via PAPERCUSP_HIVE_HOME_SLUG so resolveHomeHiveSlug() resolves it
+ * explicitly via PAPERCUSP_POT_HOME_SLUG so resolveHomeHiveSlug() resolves it
  * deterministically rather than via incidental registry order (the home-hive
  * decoupling, 2026-06-19).
  *

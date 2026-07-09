@@ -98,14 +98,14 @@ describe('flag override store', () => {
     // The "Full testing" / per-flag toggles pin flags on as stored overrides;
     // leaving testing mode must clear them so flags return to bundled defaults
     // (flag-testing-toggle-clears-overrides 2026-06-18).
-    const { store, map } = makeFakeStore({ [KEY]: true, [FLAGS.HIVE_CONTROL]: true });
+    const { store, map } = makeFakeStore({ [KEY]: true, [FLAGS.POT_CONTROL]: true });
     initFlagOverrideStore(store);
     expect(await getFlag(KEY, 'u')).toBe(true); // override active (shadows default)
 
     const cleared = await clearAllFlagOverrides();
-    expect([...cleared].sort()).toEqual([FLAGS.HIVE_CONTROL, KEY].sort());
+    expect([...cleared].sort()).toEqual([FLAGS.POT_CONTROL, KEY].sort());
     expect(map[KEY]).toBeUndefined();
-    expect(map[FLAGS.HIVE_CONTROL]).toBeUndefined();
+    expect(map[FLAGS.POT_CONTROL]).toBeUndefined();
     expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]); // back to default
   });
 

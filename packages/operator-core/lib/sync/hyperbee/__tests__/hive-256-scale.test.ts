@@ -38,7 +38,7 @@ describe('P-009 — 256-peer scale (synthetic data-plane soak)', () => {
     const derive = vi.fn(async () => 'K' as never);
     const persist = vi.fn(async () => 1);
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         loadMembers: async () => members,
         getCurrentEpoch: async () => 50, // E = 50 epochs; un-gated this would wrap 50 × 256 keys
@@ -59,7 +59,7 @@ describe('P-009 — 256-peer scale (synthetic data-plane soak)', () => {
     const haveAllButOne = Array.from({ length: M - 1 }, (_, i) => pk(i)); // pk(0255) is missing
     const wrap = vi.fn(async () => new Uint8Array([1]));
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         loadMembers: async () => members,
         getCurrentEpoch: async () => 0,

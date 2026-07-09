@@ -352,7 +352,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
   const WORKSPACE_ID = 'ws-wi789';
   const JOINER_MEMBER_SLUG = 'joined-owner-repo';
   const OWNER_MEMBER_SLUG = 'owner-repo';
-  const HIVE_HOME_SLUG = 'owner-repo-home';
+  const POT_HOME_SLUG = 'owner-repo-home';
   const HIVE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
 
   it('repro: gh-attested out-of-scope owner/member announce buffers when the joiner roster is empty', async () => {
@@ -374,7 +374,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: verifyBinding,
       loadHiveMembersOverride: loadHiveMembers,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -395,7 +395,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       ownerUserId,
       'gist-owner',
     );
-    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG);
+    expect(loadHiveMembers).toHaveBeenCalledWith(POT_HOME_SLUG);
     expect(decision).toEqual({ admit: false, reason: 'pending' });
     expect(handle.admitted.has(frame.log_core_key)).toBe(false);
   });
@@ -421,7 +421,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: loadHiveMembers,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -437,7 +437,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
 
     const decision = await handle.onAnnounce(frame);
 
-    expect(loadHiveMembers).toHaveBeenCalledWith(HIVE_HOME_SLUG);
+    expect(loadHiveMembers).toHaveBeenCalledWith(POT_HOME_SLUG);
     expect(decision).toEqual({ admit: true });
     expect(handle.admitted.has(frame.log_core_key)).toBe(true);
   });
@@ -466,7 +466,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'verified',
       loadHiveMembersOverride: async () => [], // roster still empty — the WI-780 condition
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -519,7 +519,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: verifyBinding,
       loadHiveMembersOverride: async () => [], // empty roster — the WI-780/797 condition
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -565,7 +565,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: async () => [],
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -615,7 +615,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // gist gate REJECTS — only the bootstrap can admit
       loadHiveMembersOverride: async () => [], // EMPTY roster (fresh join)
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -668,7 +668,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // gist gate conclusively rejects (rig: unattested device)
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => null, // directory descriptor NOT yet arrived (the race)
-      joinerHiveHomeSlugOverride: async () => null, // hive-home UNRESOLVED — the pre-rekey window
+      joinerPotHomeSlugOverride: async () => null, // hive-home UNRESOLVED — the pre-rekey window
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -726,7 +726,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // gist gate keeps failing (rig: device never attested)
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -780,7 +780,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // gist gate keeps failing (rig: device never attested)
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -865,7 +865,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // owner bootstrap is the admitting gate
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => ownerDevice,
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       announceIdentityOverride: joiner.override,
       openRemoteLogOverride,
     });
@@ -939,7 +939,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => ownerDevice,
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       announceIdentityOverride: joiner.override,
       openRemoteLogOverride,
     });
@@ -996,7 +996,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail', // only the bootstrap can admit
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1048,7 +1048,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: async () => [],
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1096,7 +1096,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'verified',
       loadHiveMembersOverride: async () => [], // empty roster
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1140,7 +1140,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'verified',
       loadHiveMembersOverride: async () => [],
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1193,7 +1193,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'verified',
       loadHiveMembersOverride: async () => [], // empty roster on hive Y
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1246,7 +1246,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       verifyBindingOverride: async () => 'verified',
       loadHiveMembersOverride: async () => [],
       ownerDeviceForHiveOverride: ownerDeviceForHive,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1869,7 +1869,7 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
   const WORKSPACE_ID = 'ws-p006';
   const JOINER_MEMBER_SLUG = 'p006-joiner-repo';
   const OWNER_MEMBER_SLUG = 'p006-owner-repo';
-  const HIVE_HOME_SLUG = 'p006-owner-repo-home';
+  const POT_HOME_SLUG = 'p006-owner-repo-home';
   const HIVE_PUBKEY = Buffer.alloc(32, 9).toString('base64');
 
   async function bootP006(root: string, opts: {
@@ -1891,7 +1891,7 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: opts.verifyBinding ?? (async () => 'fail' as const),
       loadHiveMembersOverride: opts.loadHiveMembers,
-      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1973,17 +1973,17 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
 // tower's `hive-canary` folding the `papercusp` hive it LOCALLY OWNS) — must resolve
 // the member-content-guard home so cross-member REV content APPLIES instead of
 // dropping with 'no-hiveHome'. Pre-fix the guard home was `hiveHomeProjectionSlug ??
-// ownHiveHomeSlug`, and for an owned-hive member BOTH are null/undefined (the joiner
-// rebind is null because the hive is owned-not-remote; ownHiveHomeSlug is undefined
+// ownPotHomeSlug`, and for an owned-hive member BOTH are null/undefined (the joiner
+// rebind is null because the hive is owned-not-remote; ownPotHomeSlug is undefined
 // because home ≠ own slug) → the boot-time `hiveHome-resolve NONE→drop-all-cross-member`
 // diagnostic fires and EVERY cross-member op drops (this is the WI-559/FED-1 gap — its
-// ownHiveHomeSlug fix only covered home===own-slug). The DECOUPLED fix threads
-// `contentGuardHiveHome` (= hiveHomeSlugForHarness, independent of the home===own-slug
+// ownPotHomeSlug fix only covered home===own-slug). The DECOUPLED fix threads
+// `contentGuardHiveHome` (= potHomeSlugForHarness, independent of the home===own-slug
 // rebind gate) as the guard home, so the diagnostic no longer fires — while the
-// projection REBIND (hiveScoped) still keys off ownHiveHomeSlug, so an owned-hive member
+// projection REBIND (hiveScoped) still keys off ownPotHomeSlug, so an owned-hive member
 // does NOT double-apply the owner's own rows as origin='remote'. Observed through the
 // durable boot-history diagnostic (`kind:'merge_error'`), the same seam a live restart
-// surfaces via getBootHistory. `hiveHomeSlugForHarnessOverride` is the new test seam
+// surfaces via getBootHistory. `potHomeSlugForHarnessOverride` is the new test seam
 // (closes the pre-existing WI-559 untestable owner-home path — a dynamic import, no seam).
 describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home', () => {
   function tmpWorkspaceRoot(): string {
@@ -1994,7 +1994,7 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
 
   // Mirrors the live tower: a member harness whose hive-home is a DIFFERENT, LOCALLY-OWNED hive.
   const MEMBER_HARNESS_SLUG = 'hive-canary';
-  const OWNED_HIVE_HOME_SLUG = 'papercusp';
+  const OWNED_POT_HOME_SLUG = 'papercusp';
   const HIVE_PUBKEY = Buffer.alloc(32, 11).toString('base64');
 
   function dropAllDiag(workspaceId: string) {
@@ -2022,10 +2022,10 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: async () => [],
       // The hive is OWNED, not remote-joined → the joiner rebind resolves NULL (as in prod).
-      joinerHiveHomeSlugOverride: async () => null,
-      // The owned hive's home slug ≠ this member harness's own slug → ownHiveHomeSlug is
+      joinerPotHomeSlugOverride: async () => null,
+      // The owned hive's home slug ≠ this member harness's own slug → ownPotHomeSlug is
       // undefined, but the DECOUPLED content-guard home resolves it (the WI-2105 fix).
-      hiveHomeSlugForHarnessOverride: async () => OWNED_HIVE_HOME_SLUG,
+      potHomeSlugForHarnessOverride: async () => OWNED_POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -2050,10 +2050,10 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => 'fail',
       loadHiveMembersOverride: async () => [],
-      joinerHiveHomeSlugOverride: async () => null,
+      joinerPotHomeSlugOverride: async () => null,
       // BOTH homes unresolvable → contentGuardHiveHome undefined → the diagnostic MUST fire,
       // proving the resolution (not a dead diagnostic) is what silences the positive case.
-      hiveHomeSlugForHarnessOverride: async () => null,
+      potHomeSlugForHarnessOverride: async () => null,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -2145,8 +2145,8 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
       mergePollMs: 0,
       pendingRetryMs: 0,
       loadRevokedOverride: async () => new Set<string>(),
-      joinerHiveHomeSlugOverride: async () => null,
-      hiveHomeSlugForHarnessOverride: async () => HIVE_HOME,
+      joinerPotHomeSlugOverride: async () => null,
+      potHomeSlugForHarnessOverride: async () => HIVE_HOME,
       openRemoteLogOverride: async (_store: unknown, logKeyHex: string) => fakeRemoteLog(logKeyHex),
     };
   }

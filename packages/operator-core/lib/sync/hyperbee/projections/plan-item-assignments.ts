@@ -61,7 +61,7 @@ export interface PlanItemAssignmentsProjectionOpts {
   sql?: postgres.Sql;
   /** WI-259 parity (shared-hive member-content federation): hive-home slug when this harness is a
    *  hive MEMBER — a cross-member assignment op is membership-gated only when set. */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from sourceLogKeyHex. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
   /** WI-259 P-004 parity: content-before-membership defer buffer. */

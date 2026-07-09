@@ -112,7 +112,7 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
  *  the Queen now (`pot:wake`, floor-debounced) instead of waiting for her
  *  next armed wake. Replaces the retired `/harness/:slug/launch` legacy
  *  run-loop kick (the orchestrator bin was archived 2026-06-06). No `harness`
- *  arg: the hive home slug is resolved server-side (PAPERCUSP_HIVE_HOME_SLUG)
+ *  arg: the hive home slug is resolved server-side (PAPERCUSP_POT_HOME_SLUG)
  *  — the attention item's harness may be a managed harness, not the hive
  *  home. Unresolvable → harmless no-op; the always-armed-wake invariant
  *  (start-hive-wake-orchestration D-002) still guarantees pickup. */

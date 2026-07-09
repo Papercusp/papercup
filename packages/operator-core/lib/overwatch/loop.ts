@@ -61,7 +61,7 @@ import { computeOverwatchBrief } from "./compute-brief";
 import { renderOverwatchBrief } from "./brief-types";
 import { registerOverwatchWaker } from "./wake-bridge";
 import { agentProducedTurn } from "../fleet/invoke-outcome";
-import { resolveHiveHomeSlug } from "../hive/wake";
+import { resolvePotHomeSlug } from "../hive/wake";
 import { operatorHomeHarnessSlug } from "../harness/operator-home-harness";
 
 const operatorBase = operatorApiBase;
@@ -134,8 +134,8 @@ function stringPayloadField(
  * the invoke route's `resolveProject` can't find → HTTP 404 "unknown project" →
  * the meta-monitor gates itself dark after 3 errors. Two paths produced a bad
  * target: (1) a sentinel row (installSlug === workspaceId) fell to
- * `resolveHiveHomeSlug(null, null)`, which returns NULL when
- * `PAPERCUSP_HIVE_HOME_SLUG` is unset (unlike `operatorHomeHarnessSlug`, it lacks
+ * `resolvePotHomeSlug(null, null)`, which returns NULL when
+ * `PAPERCUSP_POT_HOME_SLUG` is unset (unlike `operatorHomeHarnessSlug`, it lacks
  * the legacy default), so the final `?? ctx.installSlug` re-produced the workspace
  * id; (2) a `*` wildcard row skipped the sentinel branch entirely and fell to
  * `ctx.installSlug === '*'`. Both are caught here by resolving any sentinel /
@@ -152,7 +152,7 @@ function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
   // A sentinel (installSlug === workspaceId), a `*` cross-workspace wildcard, or a
   // missing install slug carries no concrete hive: falling through to
   // ctx.installSlug would POST the invoke route against a non-harness slug → 404.
-  // Resolve the operator-home hive instead. `resolveHiveHomeSlug(null, null)`
+  // Resolve the operator-home hive instead. `resolvePotHomeSlug(null, null)`
   // canonicalizes the env pointer (retired-slug self-heal) but can be null;
   // `operatorHomeHarnessSlug()` backstops that with the legacy default so the
   // target is never null, never the workspace id, never `*`.
@@ -161,7 +161,7 @@ function resolveOverwatchLaunchInstallSlug(ctx: SystemActionCtx): string {
     ctx.installSlug === ctx.workspaceId ||
     ctx.installSlug === "*";
   if (isSentinel) {
-    return resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+    return resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
   }
   return ctx.installSlug;
 }

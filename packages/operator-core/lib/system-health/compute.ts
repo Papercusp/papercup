@@ -217,7 +217,7 @@ function untilMin(ms: number | null, now: number): string {
 // ── collectors ───────────────────────────────────────────────────────────────
 
 async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
-  return panelSafe<QueenHealth>('mug', async () => {
+  return panelSafe<QueenHealth>('queen', async () => {
     const { ws, now, potSlug, started } = ctx;
     if (!potSlug) {
       const data: QueenHealth = {

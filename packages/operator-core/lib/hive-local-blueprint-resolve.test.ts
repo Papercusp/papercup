@@ -11,15 +11,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { hiveHomeSlugForHarness, listHiveInstancePromptOverrides, materializeHiveLocalBlueprint } =
+const { potHomeSlugForHarness, listHiveInstancePromptOverrides, materializeHiveLocalBlueprint } =
   vi.hoisted(() => ({
-    hiveHomeSlugForHarness: vi.fn(),
+    potHomeSlugForHarness: vi.fn(),
     listHiveInstancePromptOverrides: vi.fn(),
     materializeHiveLocalBlueprint: vi.fn(),
   }));
 
 vi.mock('./hive-federation', () => ({
-  hiveHomeSlugForHarness: (...a: unknown[]) => hiveHomeSlugForHarness(...a),
+  potHomeSlugForHarness: (...a: unknown[]) => potHomeSlugForHarness(...a),
 }));
 vi.mock('./hive-settings-store', () => ({
   listHiveInstancePromptOverrides: (...a: unknown[]) => listHiveInstancePromptOverrides(...a),
@@ -46,7 +46,7 @@ const INPUT = {
 };
 
 beforeEach(() => {
-  hiveHomeSlugForHarness.mockReset();
+  potHomeSlugForHarness.mockReset();
   listHiveInstancePromptOverrides.mockReset();
   materializeHiveLocalBlueprint.mockReset();
 });
@@ -65,15 +65,15 @@ describe('blueprintLocalRootExtra', () => {
 
 describe('resolveHiveLocalBlueprintRoot', () => {
   it('returns null when the harness is not in a Hive (and never reads overrides)', async () => {
-    hiveHomeSlugForHarness.mockResolvedValue(null);
+    potHomeSlugForHarness.mockResolvedValue(null);
 
     expect(await resolveHiveLocalBlueprintRoot(INPUT)).toBeNull();
-    expect(hiveHomeSlugForHarness).toHaveBeenCalledWith('ws-1', 'papercup');
+    expect(potHomeSlugForHarness).toHaveBeenCalledWith('ws-1', 'papercup');
     expect(listHiveInstancePromptOverrides).not.toHaveBeenCalled();
   });
 
   it('returns null when the Hive has no prompt overrides (and never materializes)', async () => {
-    hiveHomeSlugForHarness.mockResolvedValue('papercup-hive');
+    potHomeSlugForHarness.mockResolvedValue('papercup-hive');
     listHiveInstancePromptOverrides.mockResolvedValue({});
 
     expect(await resolveHiveLocalBlueprintRoot(INPUT)).toBeNull();
@@ -82,7 +82,7 @@ describe('resolveHiveLocalBlueprintRoot', () => {
   });
 
   it('returns the materialized localRoot on success, passing the caller blueprint id + hiveDir', async () => {
-    hiveHomeSlugForHarness.mockResolvedValue('papercup-hive');
+    potHomeSlugForHarness.mockResolvedValue('papercup-hive');
     listHiveInstancePromptOverrides.mockResolvedValue({ queen: 'HIVE QUEEN DELTA' });
     materializeHiveLocalBlueprint.mockResolvedValue({
       localRoot: '/proj/.materialized/papercup-local',
@@ -99,7 +99,7 @@ describe('resolveHiveLocalBlueprintRoot', () => {
   });
 
   it("defaults the blueprint id to 'base' when the caller passes an empty id", async () => {
-    hiveHomeSlugForHarness.mockResolvedValue('h');
+    potHomeSlugForHarness.mockResolvedValue('h');
     listHiveInstancePromptOverrides.mockResolvedValue({ bee: 'B' });
     materializeHiveLocalBlueprint.mockResolvedValue({ localRoot: '/r' });
 
@@ -111,7 +111,7 @@ describe('resolveHiveLocalBlueprintRoot', () => {
   });
 
   it('returns null when materialization yields nothing (no roles materialized)', async () => {
-    hiveHomeSlugForHarness.mockResolvedValue('h');
+    potHomeSlugForHarness.mockResolvedValue('h');
     listHiveInstancePromptOverrides.mockResolvedValue({ queen: 'q' });
     materializeHiveLocalBlueprint.mockResolvedValue(null);
 
@@ -120,11 +120,11 @@ describe('resolveHiveLocalBlueprintRoot', () => {
 
   it('is STRICTLY best-effort: a rejected dependency yields null, never a throw', async () => {
     // PG miss on the very first dependency.
-    hiveHomeSlugForHarness.mockRejectedValue(new Error('pg down'));
+    potHomeSlugForHarness.mockRejectedValue(new Error('pg down'));
     await expect(resolveHiveLocalBlueprintRoot(INPUT)).resolves.toBeNull();
 
     // …and when the materializer itself throws mid-way (fs error on the hot spawn path).
-    hiveHomeSlugForHarness.mockResolvedValue('h');
+    potHomeSlugForHarness.mockResolvedValue('h');
     listHiveInstancePromptOverrides.mockResolvedValue({ queen: 'q' });
     materializeHiveLocalBlueprint.mockRejectedValue(new Error('fs error'));
     await expect(resolveHiveLocalBlueprintRoot(INPUT)).resolves.toBeNull();

@@ -69,9 +69,9 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
   // (HarnessesDock rebinds it on slug-switch), so read it FIRST — same convention
   // as MemberWorkPanel. In scope=all that slug is the HIVE HOME; in single-harness
   // scope it's the current harness (whose hive peers the resolver enumerates via
-  // the registry). `slug`/`hiveHomeSlug` are explicit-open fallbacks.
-  const hiveHomeSlug =
-    (params.harnessSlug as string) || (params.slug as string) || (params.hiveHomeSlug as string) || '';
+  // the registry). `slug`/`potHomeSlug` are explicit-open fallbacks.
+  const potHomeSlug =
+    (params.harnessSlug as string) || (params.slug as string) || (params.potHomeSlug as string) || '';
 
   const [tab, setTab] = useQueryState('hct', parseAsStringEnum<Tab>(['features', 'plans']).withDefault('features'));
   const [search, setSearch] = useQueryState('hcq', parseAsString.withDefault(''));
@@ -81,13 +81,13 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
 
   const featuresQ = useSyncQuery<HiveFeatureRow>({
     queryName: 'featuresConsolidated.byHive',
-    args: { hiveHomeSlug },
-    enabled: Boolean(hiveHomeSlug),
+    args: { potHomeSlug },
+    enabled: Boolean(potHomeSlug),
   });
   const plansQ = useSyncQuery<HivePlanRow>({
     queryName: 'plans.byHive',
-    args: { hiveHomeSlug },
-    enabled: Boolean(hiveHomeSlug),
+    args: { potHomeSlug },
+    enabled: Boolean(potHomeSlug),
   });
 
   const features = useMemo(() => featuresQ.data ?? [], [featuresQ.data]);
@@ -111,10 +111,10 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
   }, [features, plans]);
 
   useEffect(() => {
-    if (!hiveHomeSlug) return;
+    if (!potHomeSlug) return;
     const n = tab === 'features' ? visibleFeatures.length : visiblePlans.length;
-    api.setTitle(`${t('pot')} content · ${hiveHomeSlug} (${n})`);
-  }, [hiveHomeSlug, tab, visibleFeatures.length, visiblePlans.length, api, t]);
+    api.setTitle(`${t('pot')} content · ${potHomeSlug} (${n})`);
+  }, [potHomeSlug, tab, visibleFeatures.length, visiblePlans.length, api, t]);
 
   function drillToMember(memberSlug: string, selId?: string): void {
     // Browse → drill: focus that member harness; the Detail pane opens `selId`.
@@ -122,7 +122,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
     void setSel(selId ?? '');
   }
 
-  if (!hiveHomeSlug) {
+  if (!potHomeSlug) {
     return (
       <div className="pc-advpanel__empty">
         Cross-member browse shows every {t('pot', { lower: true })} member&rsquo;s features + plans. Select a {t('pot', { lower: true })} (all-mode) to see its rollup.
@@ -179,7 +179,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
       </div>
 
       {loading ? (
-        <div className="pc-advpanel__empty">Loading {hiveHomeSlug}…</div>
+        <div className="pc-advpanel__empty">Loading {potHomeSlug}…</div>
       ) : tab === 'features' ? (
         visibleFeatures.length === 0 ? (
           <div className="pc-advpanel__empty">

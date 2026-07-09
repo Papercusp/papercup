@@ -861,7 +861,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // bee-context-efficiency P-005 (D-018/D-021): fresh-context warm-inject. We only
     // reach here for an EXITED process (a live session PARKs above, D-005 — within-task
     // is never forked). If this wake is a Queen warm-inject of a NEW work-item AND the
-    // BEE_FRESH_CONTEXT_WARM_INJECT flag is on, the legacy `--resume` below would reload
+    // CUP_FRESH_CONTEXT_WARM_INJECT flag is on, the legacy `--resume` below would reload
     // the bee's grown transcript (~138K/turn dead-weight carry, D-011). Instead route to
     // a FRESH spawn for that work-item (fresh session + full preamble + the hydration
     // tail: dossier P-008 + the work-item CHECKPOINT P-011 = the continuity, D-002). The

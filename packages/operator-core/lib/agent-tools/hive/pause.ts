@@ -20,7 +20,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { clearHiveTimeWake, resolveHiveHomeSlug } from '../../hive/wake';
+import { clearHiveTimeWake, resolvePotHomeSlug } from '../../hive/wake';
 import { setHiveStarted, setHivePlacementStarted, anyHivePlacementStarted } from '../../hive/started';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 
@@ -49,7 +49,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Pot home-harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     drainBees: z
       .boolean()
@@ -58,7 +58,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
         content: [
@@ -67,7 +67,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the started state is per-pot.',
+              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the started state is per-pot.',
             }),
           },
         ],

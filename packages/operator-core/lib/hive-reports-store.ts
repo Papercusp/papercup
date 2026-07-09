@@ -22,7 +22,7 @@ export type ReportStatus = 'open' | 'actioned' | 'dismissed';
 
 export interface ReportRecord {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   reportId: string;
   reporterGithubUserId: number;
   reporterGithubUsername: string | null;
@@ -37,7 +37,7 @@ export interface ReportRecord {
 
 export interface FileReportInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** Optional caller-minted id (for idempotency); a uuid is generated when absent. */
   reportId?: string;
   reporterGithubUserId: number;
@@ -68,7 +68,7 @@ function num(v: string | number): number {
 function rowToRecord(r: ReportPgRow): ReportRecord {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.harness_slug,
+    potHomeSlug: r.harness_slug,
     reportId: r.report_id,
     reporterGithubUserId: num(r.reporter_github_user_id),
     reporterGithubUsername: r.reporter_github_username,
@@ -103,7 +103,7 @@ export async function fileReport(input: FileReportInput, sql?: Sql): Promise<Rep
      RETURNING ${COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       reportId,
       input.reporterGithubUserId,
       input.reporterGithubUsername ?? null,
@@ -118,14 +118,14 @@ export async function fileReport(input: FileReportInput, sql?: Sql): Promise<Rep
 /** Get one report. */
 export async function getReport(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   reportId: string,
   sql?: Sql,
 ): Promise<ReportRecord | null> {
   const rows = (await pg(sql).unsafe(
     `SELECT ${COLS} FROM harness_shared.hive_reports
       WHERE workspace_id = $1 AND harness_slug = $2 AND report_id = $3 LIMIT 1`,
-    [workspaceId, hiveHomeSlug, reportId],
+    [workspaceId, potHomeSlug, reportId],
   )) as unknown as ReportPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -136,7 +136,7 @@ export async function getReport(
  */
 export async function listReports(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   opts: { status?: ReportStatus | null } = {},
   sql?: Sql,
 ): Promise<ReportRecord[]> {
@@ -149,7 +149,7 @@ export async function listReports(
       : `SELECT ${COLS} FROM harness_shared.hive_reports
            WHERE workspace_id = $1 AND harness_slug = $2 AND status = $3
            ORDER BY created_at DESC`,
-    status == null ? [workspaceId, hiveHomeSlug] : [workspaceId, hiveHomeSlug, status],
+    status == null ? [workspaceId, potHomeSlug] : [workspaceId, potHomeSlug, status],
   )) as unknown as ReportPgRow[];
   return rows.map(rowToRecord);
 }
@@ -162,7 +162,7 @@ export async function listReports(
  */
 export async function countReportsSince(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   reporterGithubUserId: number,
   sinceMs: number,
   sql?: Sql,
@@ -171,7 +171,7 @@ export async function countReportsSince(
     `SELECT count(*)::int AS n FROM harness_shared.hive_reports
       WHERE workspace_id = $1 AND harness_slug = $2 AND reporter_github_user_id = $3
         AND created_at >= $4`,
-    [workspaceId, hiveHomeSlug, reporterGithubUserId, sinceMs],
+    [workspaceId, potHomeSlug, reporterGithubUserId, sinceMs],
   )) as unknown as Array<{ n: number }>;
   return rows[0]?.n ?? 0;
 }
@@ -179,7 +179,7 @@ export async function countReportsSince(
 /** Owner resolves a report ('actioned' | 'dismissed'). Federates back. */
 export async function setReportStatus(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   reportId: string,
   status: Exclude<ReportStatus, 'open'>,
   sql?: Sql,
@@ -189,7 +189,7 @@ export async function setReportStatus(
         SET status = $4, updated_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint
       WHERE workspace_id = $1 AND harness_slug = $2 AND report_id = $3
       RETURNING ${COLS}`,
-    [workspaceId, hiveHomeSlug, reportId, status],
+    [workspaceId, potHomeSlug, reportId, status],
   )) as unknown as ReportPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }

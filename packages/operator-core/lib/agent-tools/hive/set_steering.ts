@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import { requestUrgentHiveWake } from '../../hive/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
 import { LIMITS } from '../limits';
@@ -48,7 +48,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Pot home-harness slug (default: ctx harness / PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.'),
+      .describe('Pot home-harness slug (default: ctx harness / PAPERCUSP_POT_HOME_SLUG) — steering is per-pot.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     directive: z
       .string()
@@ -148,12 +148,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
+    const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {
       return json({
         ok: false,
         error: 'no_home_harness',
-        message: 'Pass `pot` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
+        message: 'Pass `pot` (or set PAPERCUSP_POT_HOME_SLUG) — steering is per-pot.',
       });
     }
     const patch: OwnerSteeringPatch = {};

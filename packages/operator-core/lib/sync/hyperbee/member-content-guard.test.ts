@@ -15,7 +15,7 @@ import type { listHiveMembers } from '../../hive-membership-store';
 const HIVE_OPTS: MemberContentGuardOpts = {
   workspaceId: 'ws',
   harnessSlug: 'member-b',
-  hiveHomeSlug: 'hive-home',
+  potHomeSlug: 'hive-home',
 };
 
 // loadMembers stub: members A + B are in the hive, each with one device pubkey.
@@ -43,7 +43,7 @@ describe('WI-259 P-002 — membership-aware content guard', () => {
     expect(await shouldApplyMemberContentOp('member-x', HIVE_OPTS, 'X_DEV', deps())).toBe(false);
   });
 
-  it('cross-slug op on a NON-hive harness (no hiveHomeSlug) → drops', async () => {
+  it('cross-slug op on a NON-hive harness (no potHomeSlug) → drops', async () => {
     const nonHive: MemberContentGuardOpts = { workspaceId: 'ws', harnessSlug: 'member-b' };
     expect(await shouldApplyMemberContentOp('member-a', nonHive, 'A_DEV', deps())).toBe(false);
   });

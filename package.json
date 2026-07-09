@@ -138,6 +138,7 @@
     "lint:no-sql-comment-backtick": "node scripts/check-sql-comment-backtick.mjs",
     "lint:no-control-bytes": "node scripts/check-no-control-bytes.mjs",
     "lint:no-conflict-markers": "node scripts/check-conflict-markers.mjs",
+    "lint:rubric-method-ref-parity": "node scripts/check-rubric-method-ref-parity.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
     "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",

@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
+import { getCachedRemoteBootedHandles } from '../../sync/hyperbee/cluster-booted-handles-sync';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
 import { getOrgPg } from '@papercusp/db-org';
 
@@ -36,6 +37,10 @@ export default defineTool({
     const status = await Promise.resolve(
       getInProcessSubstrateStatus({
         resolveClaimStats: () => ({ total: 0, won: 0, lost: 0, error: 0 }),
+        // EI-8816: on a request-only cluster worker, listBootedHandles() is always
+        // empty (the substrate boots only on the primary) — fall back to the
+        // primary's cached broadcast rather than silently reporting bootedCount:0.
+        resolveRemoteBootedHandles: getCachedRemoteBootedHandles,
       }),
     );
     // Second pass: for any booted harness, refresh the stats with the
@@ -67,6 +72,7 @@ export default defineTool({
             lost: 0,
             error: 0,
           },
+        resolveRemoteBootedHandles: getCachedRemoteBootedHandles,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(refreshed) }],

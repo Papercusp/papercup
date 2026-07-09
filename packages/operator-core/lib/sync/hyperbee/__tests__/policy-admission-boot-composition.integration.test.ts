@@ -94,14 +94,14 @@ beforeEach(async () => {
  * or pass through unchanged when there is no policy. (Mirror of boot.ts mergeOpts.)
  */
 async function bootEnforcedApply(
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   onWrite: (op: OpEnvelope) => void,
 ): Promise<(op: OpEnvelope) => Promise<boolean>> {
   const capture = async (op: OpEnvelope): Promise<boolean> => {
     onWrite(op);
     return true;
   };
-  const ownerPolicy = (await getHivePolicy(WS, hiveHomeSlug, sql).catch(() => null))?.policy ?? null;
+  const ownerPolicy = (await getHivePolicy(WS, potHomeSlug, sql).catch(() => null))?.policy ?? null;
   const rateLimiter = new MemberRateLimiter();
   return ownerPolicy
     ? makePolicyEnforcedApply({

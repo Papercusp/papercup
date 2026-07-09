@@ -248,13 +248,13 @@ export interface EffectiveCommsTier {
 export interface EffectiveCommsTierDeps {
   /** The owner-signed hive-policy default (P-012: hive_policy.comms.defaultTier).
    *  Injected; production binds getHivePolicy. Null/invalid → policy leg skipped. */
-  loadPolicyDefaultTier: (workspaceId: string, hiveHomeSlug: string) => Promise<unknown>;
+  loadPolicyDefaultTier: (workspaceId: string, potHomeSlug: string) => Promise<unknown>;
 }
 
 const defaultDeps: EffectiveCommsTierDeps = {
-  loadPolicyDefaultTier: async (workspaceId, hiveHomeSlug) => {
+  loadPolicyDefaultTier: async (workspaceId, potHomeSlug) => {
     const { getHivePolicy } = await import('../hive-policy-store');
-    const policy = await getHivePolicy(workspaceId, hiveHomeSlug);
+    const policy = await getHivePolicy(workspaceId, potHomeSlug);
     return (policy?.policy as { comms?: { defaultTier?: unknown } } | null | undefined)?.comms
       ?.defaultTier;
   },
@@ -269,7 +269,7 @@ const defaultDeps: EffectiveCommsTierDeps = {
 export async function effectiveCommsTier(
   input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     githubUserId: number;
     nowMs?: number;
   },
@@ -297,7 +297,7 @@ export async function effectiveCommsTier(
     /* fall through to policy/fallback */
   }
   try {
-    const policyTier = await deps.loadPolicyDefaultTier(input.workspaceId, input.hiveHomeSlug);
+    const policyTier = await deps.loadPolicyDefaultTier(input.workspaceId, input.potHomeSlug);
     if (isCommsTier(policyTier)) return { tier: policyTier, source: 'policy' };
   } catch {
     /* fall through */

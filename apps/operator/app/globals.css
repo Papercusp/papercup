@@ -4642,7 +4642,7 @@ body.h-harness-top-collapsed .pc-header {
   min-width: 64px;
   min-height: 42px;
   border-radius: 12px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow: none;
 }
 
 .oracle-form .pc-button:disabled {
@@ -5412,7 +5412,7 @@ body.h-harness-top-collapsed .pc-header {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.15);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  box-shadow: none;
 }
 
 .operator-panel__metrics strong,
@@ -5453,13 +5453,9 @@ body.h-harness-top-collapsed .pc-header {
   text-decoration: none;
   border-radius: 0;
   clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
-  background:
-    linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 18% 76%, rgba(var(--operator-arc), 0.11)),
-    linear-gradient(180deg, rgba(42, 51, 62, 0.82), rgba(var(--operator-armor-dark), 0.70) 58%, color-mix(in srgb, var(--bg-deep), transparent 4%));
-  box-shadow:
-    inset 0 1px 0 rgba(248,253,255,0.12),
-    inset 0 -1px 0 rgba(var(--operator-arc), 0.17),
-    0 0 12px rgba(var(--operator-arc), 0.045);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 18% 76%, rgba(var(--operator-arc), 0.11)),
+    linear-gradient(0deg, rgba(var(--operator-armor-dark), 0.70), rgba(var(--operator-armor-dark), 0.70));
+  box-shadow: 0 0 12px rgba(var(--operator-arc), 0.045);
 }
 
 .operator-btn:hover,
@@ -5470,7 +5466,8 @@ body.h-harness-top-collapsed .pc-header {
 .operator-budget-option:focus-visible {
   border-color: rgba(var(--operator-arc), 0.48);
   background: rgba(var(--operator-arc), 0.092);
-  box-shadow: 0 0 0 1px rgba(var(--operator-gold), 0.12), 0 0 20px rgba(var(--operator-arc), 0.12), inset 0 1px 0 rgba(255,255,255,0.10);
+  box-shadow: 0 0 0 1px rgba(var(--operator-gold), 0.12),
+    0 0 20px rgba(var(--operator-arc), 0.12);
   outline: none;
 }
 
@@ -5546,16 +5543,15 @@ body.h-harness-top-collapsed .pc-header {
 .operator-mini-btn--primary {
   color: var(--bg-deep);
   border-color: rgba(var(--operator-gold), 0.58);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.75), transparent 58%),
-    linear-gradient(90deg, rgba(var(--operator-gold), 0.46), transparent 20% 80%, rgba(var(--operator-gold), 0.32)),
-    linear-gradient(180deg, rgba(236, 253, 255, 0.96), rgba(var(--operator-arc), 0.86) 48%, rgba(17, 164, 224, 0.90));
-  box-shadow: 0 0 24px rgba(var(--operator-arc), 0.26), 0 0 10px rgba(var(--operator-gold), 0.16), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 68%);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.46), transparent 20% 80%, rgba(var(--operator-gold), 0.32)),
+    linear-gradient(0deg, rgba(var(--operator-arc), 0.86), rgba(var(--operator-arc), 0.86));
+  box-shadow: 0 0 24px rgba(var(--operator-arc), 0.26),
+    0 0 10px rgba(var(--operator-gold), 0.16);
 }
 
 .operator-btn--ghost {
   color: color-mix(in oklab, var(--fg-dim), white 22%);
-  background: linear-gradient(180deg, rgba(var(--operator-armor), 0.055), rgba(255, 255, 255, 0.010));
+  background: linear-gradient(0deg, rgba(var(--operator-armor), 0.055), rgba(var(--operator-armor), 0.055));
 }
 
 .operator-btn--close {
@@ -6295,7 +6291,7 @@ body.h-harness-top-collapsed .pc-header {
   border: 1px solid rgba(var(--operator-arc), 0.17);
   border-radius: 999px;
   background: linear-gradient(90deg, rgba(var(--operator-gold), 0.040), rgba(255, 255, 255, 0.035), rgba(var(--operator-arc), 0.040));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.046);
+  box-shadow: none;
   cursor: pointer;
 }
 
@@ -6627,7 +6623,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-entry__buttons .operator-mini-btn--danger {
-  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.14), inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.14);
 }
 
 .operator-panel__body.has-empty-activity {
@@ -6664,15 +6660,12 @@ body.h-harness-top-collapsed .pc-header {
   color: #effbff;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.34);
   border-radius: 999px;
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
+  background: radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
     linear-gradient(110deg, rgba(255,255,255,0.035), transparent 24% 76%, rgba(255,255,255,0.02)),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-deeper), transparent 1%));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-popover), transparent 1%));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 11px 24px rgba(0, 0, 0, 0.34),
-    0 0 14px rgb(from var(--accent) r g b / 0.12),
-    inset 0 1px 0 rgba(255,255,255,0.09);
+    0 0 14px rgb(from var(--accent) r g b / 0.12);
   cursor: pointer;
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease, opacity 140ms ease;
 }
@@ -6680,11 +6673,9 @@ body.h-harness-top-collapsed .pc-header {
 .pc-voice-btn:hover,
 .pc-voice-btn:focus-visible {
   border-color: color-mix(in srgb, var(--accent-soft), transparent 28%);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 14px 28px rgba(0, 0, 0, 0.42),
-    0 0 20px rgb(from var(--accent) r g b / 0.20),
-    inset 0 1px 0 rgba(255,255,255,0.13);
+    0 0 20px rgb(from var(--accent) r g b / 0.20);
   transform: translateY(-1px);
   outline: none;
 }
@@ -6696,11 +6687,9 @@ body.h-harness-top-collapsed .pc-header {
 
 .pc-voice-btn.is-held {
   transform: translateY(0);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 9px 16px rgba(0, 0, 0, 0.34),
-    0 0 18px rgba(248, 113, 113, 0.20),
-    inset 0 1px 0 rgba(255,255,255,0.10);
+    0 0 18px rgba(248, 113, 113, 0.20);
 }
 
 .pc-voice-btn.is-unsupported {
@@ -6719,10 +6708,8 @@ body.h-harness-top-collapsed .pc-header {
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 44%);
   background:
     radial-gradient(circle at 50% 42%, color-mix(in oklab, var(--pc-voice-icon-fill), white 8%) 0 34%, color-mix(in oklab, var(--pc-voice-icon-fill), black 62%) 58%, color-mix(in srgb, var(--bg-deepest), transparent 2%) 100%);
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 24%),
-    0 0 12px color-mix(in oklab, var(--pc-voice-icon-fill), transparent 72%),
-    inset 0 1px 0 rgba(255,255,255,0.12);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 24%),
+    0 0 12px color-mix(in oklab, var(--pc-voice-icon-fill), transparent 72%);
   position: relative;
   overflow: visible;
 }
@@ -7022,28 +7009,23 @@ body.h-harness-top-collapsed .pc-header {
 .pc-voice-btn--mode-always-on {
   --pc-voice-icon-fill: #2dd4bf;
   border-color: rgba(45, 212, 191, 0.46);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 11px 24px rgba(0, 0, 0, 0.35),
-    0 0 18px rgba(45, 212, 191, 0.18),
-    inset 0 1px 0 rgba(255,255,255,0.10);
+    0 0 18px rgba(45, 212, 191, 0.18);
 }
 
 .pc-voice-btn--status-listening {
   --pc-voice-icon-fill: #f87171;
   border-color: rgba(248, 113, 113, 0.62);
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
+  background: radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
     linear-gradient(110deg, rgba(255,255,255,0.03), transparent 24% 76%, rgba(255,255,255,0.02)),
-    linear-gradient(180deg, rgba(48, 18, 26, 0.99), rgba(21, 7, 13, 0.99));
+    linear-gradient(0deg, rgba(48, 18, 26, 0.99), rgba(48, 18, 26, 0.99));
 }
 
 .pc-voice-btn--status-listening .pc-voice-btn-orb {
   border-color: rgba(254, 202, 202, 0.66);
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
-    0 0 16px rgba(248, 113, 113, 0.42),
-    inset 0 1px 0 rgba(255,255,255,0.30);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
+    0 0 16px rgba(248, 113, 113, 0.42);
   background:
     radial-gradient(circle at 50% 42%, color-mix(in oklab, var(--pc-voice-icon-fill), white 10%) 0 36%, rgba(42, 14, 20, 0.96) 62%, color-mix(in srgb, var(--bg-deepest), transparent 0%) 100%);
 }
@@ -7059,10 +7041,8 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .pc-voice-btn--status-speaking .pc-voice-btn-orb {
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
-    0 0 16px rgba(96, 165, 250, 0.42),
-    inset 0 1px 0 rgba(255,255,255,0.32);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
+    0 0 16px rgba(96, 165, 250, 0.42);
 }
 
 .pc-voice-btn--status-paused {
@@ -7449,23 +7429,18 @@ body.h-harness-top-collapsed .pc-header {
 
 .pc-voice-btn--mode-push-to-talk {
   border-color: rgba(96, 165, 250, 0.62);
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.07), transparent 22%),
+  background: radial-gradient(circle at 18% 18%, rgba(255,255,255,0.07), transparent 22%),
     linear-gradient(110deg, rgba(255,255,255,0.03), transparent 24% 76%, rgba(255,255,255,0.02)),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-deeper), transparent 1%));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-popover), transparent 1%));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 11px 24px rgba(0, 0, 0, 0.35),
-    0 0 18px rgba(96, 165, 250, 0.16),
-    inset 0 1px 0 rgba(255,255,255,0.10);
+    0 0 18px rgba(96, 165, 250, 0.16);
 }
 
 .pc-voice-btn--mode-push-to-talk .pc-voice-btn-orb {
   border-color: rgba(191, 219, 254, 0.66);
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
-    0 0 15px rgba(96, 165, 250, 0.34),
-    inset 0 1px 0 rgba(255,255,255,0.36);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-deepest), transparent 28%),
+    0 0 15px rgba(96, 165, 250, 0.34);
   background:
     radial-gradient(circle at 50% 42%, color-mix(in oklab, var(--pc-voice-icon-fill), white 10%) 0 36%, color-mix(in srgb, var(--bg-popover), transparent 4%) 62%, color-mix(in srgb, var(--bg-deepest), transparent 0%) 100%);
 }
@@ -7804,23 +7779,15 @@ body.h-harness-top-collapsed .pc-header {
 .operator-btn,
 .operator-mini-btn,
 .operator-budget-option {
-  box-shadow:
-    inset 0 1px 0 rgba(var(--operator-white-hot), 0.10),
-    inset 0 -1px 0 rgba(var(--operator-arc), 0.14),
-    0 0 0 1px rgba(var(--operator-gold), 0.030);
+  box-shadow: 0 0 0 1px rgba(var(--operator-gold), 0.030);
 }
 
 .operator-btn--primary,
 .operator-mini-btn--primary {
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.88), transparent 58%),
-    linear-gradient(90deg, rgba(var(--operator-gold), 0.58), transparent 20% 80%, rgba(var(--operator-gold), 0.38)),
-    linear-gradient(180deg, rgba(244, 255, 255, 0.98), rgba(var(--operator-arc), 0.92) 46%, rgba(18, 172, 228, 0.94));
-  box-shadow:
-    0 0 28px rgba(var(--operator-arc), 0.32),
-    0 0 14px rgba(var(--operator-gold), 0.22),
-    inset 0 1px 0 rgba(255,255,255,0.72),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 66%);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.58), transparent 20% 80%, rgba(var(--operator-gold), 0.38)),
+    linear-gradient(0deg, rgba(var(--operator-arc), 0.92), rgba(var(--operator-arc), 0.92));
+  box-shadow: 0 0 28px rgba(var(--operator-arc), 0.32),
+    0 0 14px rgba(var(--operator-gold), 0.22);
 }
 
 .operator-feed-pills button {
@@ -7832,10 +7799,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-feed-pills button.is-active {
   border-color: rgba(var(--operator-gold), 0.54);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.10), transparent 70%),
-    linear-gradient(90deg, rgba(var(--operator-gold), 0.18), rgba(var(--operator-arc), 0.16));
-  box-shadow: 0 0 18px rgba(var(--operator-arc), 0.10), inset 0 1px 0 rgba(var(--operator-white-hot), 0.080);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.18), rgba(var(--operator-arc), 0.16));
+  box-shadow: 0 0 18px rgba(var(--operator-arc), 0.10);
 }
 
 .operator-entry {
@@ -8773,9 +8738,7 @@ body.h-harness-top-collapsed .pc-header {
   background:
     linear-gradient(90deg, rgba(var(--operator-gold), 0.035), rgba(255, 255, 255, 0.030), rgba(var(--operator-arc), 0.046)),
     color-mix(in srgb, var(--bg-deeper), transparent 46%);
-  box-shadow:
-    inset 0 1px 0 rgba(var(--operator-white-hot), 0.055),
-    0 0 10px rgba(var(--operator-arc), 0.035);
+  box-shadow: 0 0 10px rgba(var(--operator-arc), 0.035);
 }
 
 .operator-btn--primary,
@@ -9070,10 +9033,9 @@ body.h-harness-top-collapsed .pc-header {
   clip-path: none;
   border-radius: 999px;
   border-color: rgb(from var(--accent-strong) r g b / 0.16);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.055), rgba(255,255,255,0.055)),
     color-mix(in srgb, var(--bg-1), transparent 38%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+  box-shadow: none;
 }
 
 .operator-panel__metrics span {
@@ -9090,21 +9052,15 @@ body.h-harness-top-collapsed .pc-header {
 .operator-btn--primary,
 .operator-mini-btn--primary {
   color: var(--accent-ink);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.96) 48%, rgb(from var(--accent) r g b / 0.88));
-  box-shadow:
-    0 16px 32px color-mix(in srgb, var(--accent-deep), transparent 78%),
-    inset 0 1px 0 rgba(255,255,255,0.66),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.96), rgb(from var(--accent-strong) r g b / 0.96));
+  box-shadow: 0 16px 32px color-mix(in srgb, var(--accent-deep), transparent 78%);
 }
 
 .operator-feed-pills button.is-active {
   border-color: rgb(from var(--accent-strong) r g b / 0.30);
-  background:
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.14), rgb(from var(--accent) r g b / 0.070)),
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.14), rgb(from var(--accent-strong) r g b / 0.14)),
     color-mix(in srgb, var(--bg-1), transparent 30%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 90%);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 90%);
 }
 
 .operator-tier--high,
@@ -9959,12 +9915,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   clip-path: none;
   border-radius: 999px;
   border-color: rgb(from var(--accent-strong) r g b / 0.18);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.020)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.060), rgba(255,255,255,0.060)),
     color-mix(in srgb, var(--bg-1), transparent 34%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.050),
-    0 10px 24px rgba(0,0,0,0.16);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.16);
 }
 
 .operator-panel .operator-btn:hover,
@@ -9978,24 +9931,16 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-budget-option:hover,
 .operator-panel .operator-budget-option:focus-visible {
   border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  background:
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.115), rgba(255,255,255,0.030)),
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.115), rgb(from var(--accent-strong) r g b / 0.115)),
     color-mix(in srgb, var(--bg-1), transparent 28%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.065),
-    0 12px 28px color-mix(in srgb, var(--accent-deep), transparent 88%);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent-deep), transparent 88%);
 }
 
 .operator-panel .operator-btn--primary,
 .operator-panel .operator-mini-btn--primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
-  box-shadow:
-    0 15px 30px color-mix(in srgb, var(--accent-deep), transparent 78%),
-    inset 0 1px 0 rgba(255,255,255,0.66),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
+  box-shadow: 0 15px 30px color-mix(in srgb, var(--accent-deep), transparent 78%);
 }
 
 .operator-panel .operator-btn--close {
@@ -10010,8 +9955,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-feed-pills button.is-active,
 .operator-panel .operator-feed-pills button[aria-pressed="true"] {
   border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  background:
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.16), rgb(from var(--accent) r g b / 0.075)),
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.16), rgb(from var(--accent-strong) r g b / 0.16)),
     color-mix(in srgb, var(--bg-1), transparent 26%);
 }
 
@@ -10118,10 +10062,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-entry__link,
 .operator-panel .operator-budget-option {
   border-color: rgb(from var(--accent-strong) r g b / 0.16);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.018)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.060), rgba(255,255,255,0.060)),
     color-mix(in srgb, var(--bg-1), transparent 30%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+  box-shadow: none;
 }
 
 .operator-panel .operator-btn:hover,
@@ -10130,10 +10073,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-entry__link:hover,
 .operator-panel .operator-budget-option:hover {
   border-color: rgb(from var(--accent-strong) r g b / 0.30);
-  background:
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.100), rgba(255,255,255,0.026)),
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.100), rgb(from var(--accent-strong) r g b / 0.100)),
     color-mix(in srgb, var(--bg-1), transparent 26%);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 91%), inset 0 1px 0 rgba(255,255,255,0.055);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 91%);
 }
 
 .operator-panel .operator-btn:focus-visible,
@@ -10143,18 +10085,14 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-budget-option:focus-visible {
   outline: none;
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
-  box-shadow:
-    0 0 0 3px rgb(from var(--accent-strong) r g b / 0.18),
-    0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 90%),
-    inset 0 1px 0 rgba(255,255,255,0.060);
+  box-shadow: 0 0 0 3px rgb(from var(--accent-strong) r g b / 0.18),
+    0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 90%);
 }
 
 .operator-panel .operator-btn--primary,
 .operator-panel .operator-mini-btn--primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  box-shadow:
-    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 82%),
-    inset 0 1px 0 rgba(255,255,255,0.62);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 82%);
 }
 
 .operator-feed-pills button.is-active,
@@ -10196,13 +10134,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary {
   color: var(--accent-ink);
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
-  box-shadow:
-    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%),
-    inset 0 1px 0 rgba(255,255,255,0.62),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%);
 }
 
 .operator-panel .operator-btn--primary:hover,
@@ -10211,13 +10144,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary:focus-visible {
   color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
-    linear-gradient(180deg, rgba(231, 247, 255, 1), rgb(from var(--accent-strong) r g b / 0.98) 52%, rgb(from var(--accent) r g b / 0.92));
-  box-shadow:
-    0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%),
-    inset 0 1px 0 rgba(255,255,255,0.68),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 76%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.98), rgb(from var(--accent-strong) r g b / 0.98));
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%);
 }
 
 /* Operator usability polish: reduce decoration, improve scanability, keep action clarity. */
@@ -10359,8 +10287,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-entry__link,
 .operator-panel .operator-budget-option {
   border-color: rgb(from var(--accent-strong) r g b / 0.145);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.016)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.052), rgba(255,255,255,0.052)),
     color-mix(in srgb, var(--bg-1), transparent 28%);
 }
 
@@ -10374,13 +10301,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary {
   color: var(--accent-ink);
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
-  box-shadow:
-    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%),
-    inset 0 1px 0 rgba(255,255,255,0.62),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%);
 }
 
 .operator-panel .operator-btn--primary:hover,
@@ -10389,13 +10311,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary:focus-visible {
   color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
-    linear-gradient(180deg, rgba(231, 247, 255, 1), rgb(from var(--accent-strong) r g b / 0.98) 52%, rgb(from var(--accent) r g b / 0.92));
-  box-shadow:
-    0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%),
-    inset 0 1px 0 rgba(255,255,255,0.68),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 76%);
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.98), rgb(from var(--accent-strong) r g b / 0.98));
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%);
 }
 
 .pc-route-loading-shell {
@@ -10891,13 +10808,10 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-activity-item,
 .operator-budget-option {
   border-color: rgba(var(--operator-arc), 0.22) !important;
-  background:
-    linear-gradient(135deg, rgba(var(--operator-gold), 0.055), transparent 22% 78%, rgba(var(--operator-cyan), 0.060)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.060), rgba(255, 255, 255, 0.014)),
+  background: linear-gradient(135deg, rgba(var(--operator-gold), 0.055), transparent 22% 78%, rgba(var(--operator-cyan), 0.060)),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.060), rgba(255, 255, 255, 0.060)),
     color-mix(in srgb, var(--bg), transparent 18%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.070),
-    0 10px 24px rgba(0,0,0,0.16),
+  box-shadow: 0 10px 24px rgba(0,0,0,0.16),
     0 0 0 1px rgba(var(--operator-cyan), 0.026) !important;
 }
 
@@ -10927,13 +10841,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-mini-btn,
 .operator-budget-option {
   border-color: rgba(var(--operator-arc), 0.25) !important;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.072), rgba(255,255,255,0.014)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.072), rgba(255,255,255,0.072)),
     color-mix(in srgb, var(--bg-1), transparent 26%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.080),
-    inset 0 -1px 0 rgba(var(--operator-arc), 0.13),
-    0 8px 18px rgba(0,0,0,0.14) !important;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.14) !important;
 }
 
 .operator-btn:hover,
@@ -10946,13 +10856,10 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-feed-pills button:focus-visible,
 .operator-entry:focus-visible {
   border-color: rgba(var(--operator-arc), 0.54) !important;
-  background:
-    linear-gradient(180deg, rgba(var(--operator-cyan), 0.16), rgba(255,255,255,0.020)),
+  background: linear-gradient(0deg, rgba(var(--operator-cyan), 0.16), rgba(var(--operator-cyan), 0.16)),
     color-mix(in srgb, var(--bg-popover), transparent 16%) !important;
-  box-shadow:
-    0 0 0 1px rgba(var(--operator-cyan), 0.10),
-    0 0 24px rgba(var(--operator-cyan), 0.15),
-    inset 0 1px 0 rgba(255,255,255,0.10) !important;
+  box-shadow: 0 0 0 1px rgba(var(--operator-cyan), 0.10),
+    0 0 24px rgba(var(--operator-cyan), 0.15) !important;
 }
 
 .operator-btn--primary,
@@ -10960,21 +10867,16 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-feed-pills button.is-active {
   color: #eaffff !important;
   border-color: rgba(45, 212, 191, 0.52) !important;
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.28), transparent 60%),
-    linear-gradient(180deg, rgba(45, 212, 191, 0.32), rgba(20, 184, 166, 0.11)),
+  background: linear-gradient(0deg, rgba(45, 212, 191, 0.32), rgba(45, 212, 191, 0.32)),
     color-mix(in srgb, var(--bg), transparent 12%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.16),
-    0 0 26px rgba(45, 212, 191, 0.18) !important;
+  box-shadow: 0 0 26px rgba(45, 212, 191, 0.18) !important;
 }
 
 .operator-btn--close:hover,
 .operator-mini-btn--danger,
 .operator-entry--tier-high {
   border-color: rgb(from var(--rose-400) r g b / 0.58) !important;
-  background:
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.20), rgba(255,255,255,0.014)),
+  background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.20), rgb(from var(--rose-400) r g b / 0.20)),
     rgba(30, 13, 24, 0.88) !important;
 }
 
@@ -11136,12 +11038,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   --operator-action-fill: rgb(from var(--accent-strong) r g b / 0.095);
   --operator-action-glow: rgb(from var(--accent-strong) r g b / 0.13);
   border-color: color-mix(in oklab, var(--operator-action-accent), transparent 28%) !important;
-  background:
-    linear-gradient(180deg, var(--operator-action-fill), rgba(255,255,255,0.014)),
+  background: linear-gradient(0deg, var(--operator-action-fill), var(--operator-action-fill)),
     color-mix(in srgb, var(--bg-1), transparent 16%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.090),
-    0 0 16px var(--operator-action-glow) !important;
+  box-shadow: 0 0 16px var(--operator-action-glow) !important;
 }
 
 .operator-panel__actions .operator-btn--primary {
@@ -11171,10 +11070,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel__actions .operator-btn:hover,
 .operator-panel__actions .operator-btn:focus-visible {
   border-color: color-mix(in oklab, var(--operator-action-accent), white 12%) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--operator-action-accent), transparent 74%),
-    0 0 24px var(--operator-action-glow),
-    inset 0 1px 0 rgba(255,255,255,0.12) !important;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--operator-action-accent), transparent 74%),
+    0 0 24px var(--operator-action-glow) !important;
 }
 
 .operator-feed-pills button {
@@ -11281,8 +11178,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   --operator-mini-accent: rgba(148, 163, 184, 0.48);
   --operator-mini-fill: rgba(148, 163, 184, 0.070);
   border-color: color-mix(in oklab, var(--operator-mini-accent), transparent 42%) !important;
-  background:
-    linear-gradient(180deg, var(--operator-mini-fill), rgba(255,255,255,0.012)),
+  background: linear-gradient(0deg, var(--operator-mini-fill), var(--operator-mini-fill)),
     color-mix(in srgb, var(--bg), transparent 18%) !important;
 }
 
@@ -11800,16 +11696,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: color-mix(in oklab, var(--operator-action-tone), transparent 36%) !important;
   border-radius: 999px !important;
   clip-path: none !important;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--operator-action-tone), transparent 78%),
-      color-mix(in srgb, var(--bg), transparent 8%)
-    ) !important;
-  box-shadow:
-    0 8px 18px rgba(0,0,0,0.20),
-    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 84%),
-    inset 0 1px 0 rgba(255,255,255,0.065) !important;
+  background: linear-gradient(0deg, color-mix(in oklab, var(--operator-action-tone), transparent 78%), color-mix(in oklab, var(--operator-action-tone), transparent 78%)) !important;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.20),
+    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 84%) !important;
 }
 
 .operator-panel__actions .operator-btn--primary {
@@ -11836,16 +11725,9 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel__actions .operator-btn:focus-visible {
   color: color-mix(in oklab, var(--operator-action-tone), white 44%) !important;
   border-color: color-mix(in oklab, var(--operator-action-tone), transparent 20%) !important;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--operator-action-tone), transparent 70%),
-      color-mix(in oklab, color-mix(in srgb, var(--bg), transparent 8%), white 4%)
-    ) !important;
-  box-shadow:
-    0 10px 24px rgba(0,0,0,0.26),
-    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 66%),
-    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  background: linear-gradient(0deg, color-mix(in oklab, var(--operator-action-tone), transparent 70%), color-mix(in oklab, var(--operator-action-tone), transparent 70%)) !important;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.26),
+    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 66%) !important;
   transform: translateY(-0.5px);
 }
 
@@ -12765,7 +12647,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 }
 .pc-support-shell .pc-support-actions .pc-button,
 .pc-support-shell .pc-support-resources {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 16px 34px rgba(0,0,0,0.16);
+  box-shadow: 0 16px 34px rgba(0,0,0,0.16);
 }
 .pc-support-shell .pc-support-faq {
   position: relative;
@@ -13749,12 +13631,9 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   isolation: isolate;
   padding: 3px;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.11);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.01)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.028), rgba(255,255,255,0.028)),
     color-mix(in srgb, var(--bg), transparent 28%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 10px 22px rgba(0,0,0,0.16);
+  box-shadow: 0 10px 22px rgba(0,0,0,0.16);
 }
 
 .operator-entry__buttons::before {
@@ -13770,25 +13649,19 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 
 .operator-entry__buttons:has(.operator-mini-btn--primary) {
   border-color: rgba(45, 212, 191, 0.18);
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.08),
-    0 12px 24px rgba(0,0,0,0.18),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.08),
+    0 12px 24px rgba(0,0,0,0.18);
 }
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) {
   border-color: rgb(from var(--rose-400) r g b / 0.22);
-  box-shadow:
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.08),
-    0 12px 24px rgba(0,0,0,0.18),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.08),
+    0 12px 24px rgba(0,0,0,0.18);
 }
 
 .operator-entry--pending .operator-entry__buttons .operator-mini-btn--primary {
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.14),
-    0 0 22px rgba(45, 212, 191, 0.12),
-    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.14),
+    0 0 22px rgba(45, 212, 191, 0.12) !important;
 }
 
 .operator-confirm-strip {
@@ -13922,14 +13795,10 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
 }
 
 .operator-entry__buttons .operator-mini-btn--danger {
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.16), transparent 68%),
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.25), rgb(from var(--rose-400) r g b / 0.070)),
+  background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.25), rgb(from var(--rose-400) r g b / 0.25)),
     color-mix(in srgb, var(--bg-deep), transparent 12%) !important;
-  box-shadow:
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.13),
-    0 0 22px rgb(from var(--rose-400) r g b / 0.13),
-    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.13),
+    0 0 22px rgb(from var(--rose-400) r g b / 0.13) !important;
 }
 
 .operator-stream--error {
@@ -13979,9 +13848,7 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
   opacity: 0.74;
   border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.018) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 6px 14px rgba(0,0,0,0.12) !important;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.12) !important;
 }
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:hover,
@@ -15630,10 +15497,8 @@ div[class*="grid-area:toc"]::before {
 .operator-panel:has(.operator-panel__metric-card[aria-pressed="true"]) .operator-feed-pills button:first-child {
   position: relative;
   border-color: rgba(45, 212, 191, 0.38) !important;
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.08),
-    0 0 18px rgba(45, 212, 191, 0.10),
-    inset 0 1px 0 rgba(255,255,255,0.06) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.08),
+    0 0 18px rgba(45, 212, 191, 0.10) !important;
 }
 
 .operator-panel:has(.operator-panel__metric-card[aria-pressed="true"]) .operator-feed-pills button:first-child::after {
@@ -15959,9 +15824,7 @@ div[class*="grid-area:toc"]::before {
 .pc-login-shell .pc-button {
   position: relative;
   overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.10),
-    0 0 24px rgb(from var(--accent) r g b / 0.12);
+  box-shadow: 0 0 24px rgb(from var(--accent) r g b / 0.12);
 }
 
 .pc-login-shell .pc-button::after {
@@ -16110,9 +15973,7 @@ body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc
   position: relative;
   overflow: hidden;
   border-color: rgb(from var(--accent-strong) r g b / 0.24) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.08),
-    0 0 20px rgb(from var(--accent) r g b / 0.08);
+  box-shadow: 0 0 20px rgb(from var(--accent) r g b / 0.08);
 }
 
 body:has(.pc-settings-nav-link[href="/settings/voice"][aria-current="page"]) .pc-settings-shell button::after {
@@ -16196,7 +16057,7 @@ body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .p
 body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .pc-settings-content button {
   padding: 8px 12px !important;
   border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  box-shadow: none;
 }
 
 body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .pc-settings-content ul {
@@ -17237,9 +17098,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .pc-installed-snapshot-delete {
   position: relative;
   overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgb(from var(--accent) r g b / 0.06);
+  box-shadow: 0 0 18px rgb(from var(--accent) r g b / 0.06);
 }
 
 .pc-installed-template-link::after,
@@ -17256,16 +17115,12 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 .pc-installed-template-button--publish {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.16),
-    0 0 24px rgba(59, 130, 246, 0.18) !important;
+  box-shadow: 0 0 24px rgba(59, 130, 246, 0.18) !important;
 }
 
 .pc-installed-template-button--delete,
 .pc-installed-snapshot-delete {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    0 0 20px rgba(248, 113, 113, 0.10) !important;
+  box-shadow: 0 0 20px rgba(248, 113, 113, 0.10) !important;
 }
 
 .pc-installed-template-publishes,
@@ -17940,24 +17795,18 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .pc-marketplace-card-actions .pc-button,
 .pc-marketplace-hero-search-v2 .pc-button.primary {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.16),
-    inset 0 -1px 0 rgba(0,0,0,0.28),
-    0 18px 34px color-mix(in srgb, var(--bg-raised-high), transparent 82%);
+  box-shadow: 0 18px 34px color-mix(in srgb, var(--bg-raised-high), transparent 82%);
 }
 
 .pc-marketplace-card-actions .pc-button.ghost {
-  background: linear-gradient(180deg, rgba(255,255,255,0.05), color-mix(in srgb, var(--bg-deep), transparent 28%));
+  background: linear-gradient(0deg, rgba(255,255,255,0.05), rgba(255,255,255,0.05));
   border-color: rgba(148, 196, 228, 0.20);
 }
 
 .pc-marketplace-card-actions .pc-button.danger {
-  background: linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.14), rgba(34, 9, 16, 0.92));
+  background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.14), rgb(from var(--rose-400) r g b / 0.14));
   border-color: rgb(from var(--rose-400) r g b / 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.08),
-    inset 0 -1px 0 rgba(0,0,0,0.28),
-    0 18px 34px rgba(94, 24, 37, 0.16);
+  box-shadow: 0 18px 34px rgba(94, 24, 37, 0.16);
 }
 
 .pc-marketplace-empty,
@@ -18199,9 +18048,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   position: relative;
   overflow: hidden;
   border-color: rgb(from var(--accent-strong) r g b / 0.22) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
+  box-shadow: 0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
 }
 
 .pc-installed-harness-open::after,
@@ -18414,21 +18261,16 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   border-radius: 12px;
   border-color: rgb(from var(--accent-strong) r g b / 0.34) !important;
   color: #e8fbff !important;
-  background:
-    radial-gradient(circle at 24% 12%, rgba(255,255,255,0.18), transparent 34%),
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.22), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.18),
-    inset 0 -1px 0 rgba(0,0,0,0.32),
-    0 12px 28px rgba(8, 145, 178, 0.16) !important;
+  background: radial-gradient(circle at 24% 12%, rgba(255,255,255,0.18), transparent 34%),
+    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.22), rgb(from var(--accent-strong) r g b / 0.22)) !important;
+  box-shadow: 0 12px 28px rgba(8, 145, 178, 0.16) !important;
   text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.20);
 }
 
 .pc-marketplace-hero-search-v2 .pc-button.primary:hover,
 .pc-marketplace-card-actions .pc-button.primary:hover {
-  background:
-    radial-gradient(circle at 24% 12%, rgba(255,255,255,0.22), transparent 34%),
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.30), color-mix(in srgb, var(--bg-popover), transparent 4%)) !important;
+  background: radial-gradient(circle at 24% 12%, rgba(255,255,255,0.22), transparent 34%),
+    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.30), rgb(from var(--accent-strong) r g b / 0.30)) !important;
 }
 
 .pc-marketplace-card-actions .pc-button,
@@ -18436,16 +18278,14 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   min-height: 34px;
   padding: 7px 12px;
   border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.054), rgba(255,255,255,0.010)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.054), rgba(255,255,255,0.054)),
     color-mix(in srgb, var(--bg-deep), transparent 18%);
 }
 
 .pc-marketplace-card-actions .pc-button:hover,
 .pc-marketplace-dialog-actions .pc-button:hover {
   border-color: rgb(from var(--accent-strong) r g b / 0.30);
-  background:
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.10), rgba(255,255,255,0.012)),
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.10), rgb(from var(--accent-strong) r g b / 0.10)),
     color-mix(in srgb, var(--bg), transparent 10%);
 }
 
@@ -18753,9 +18593,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .pc-fork-provision-skip-running {
   position: relative;
   overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.07),
-    0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
+  box-shadow: 0 0 18px rgb(from var(--accent) r g b / 0.07) !important;
 }
 
 .pc-snapshot-refresh.h-btn::after,
@@ -19426,20 +19264,13 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   min-width: 112px;
   border-color: rgb(from var(--accent-strong) r g b / 0.36) !important;
   color: #e8fbff !important;
-  background:
-    radial-gradient(circle at 20% 0%, rgba(255,255,255,0.17), transparent 38%),
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.20), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.16),
-    inset 0 -1px 0 rgba(0,0,0,0.32),
-    0 12px 26px rgba(8, 145, 178, 0.14) !important;
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.20), rgb(from var(--accent-strong) r g b / 0.20)) !important;
+  box-shadow: 0 12px 26px rgba(8, 145, 178, 0.14) !important;
 }
 
 .pc-marketplace-card-actions .pc-button:not(.ghost):not(.danger):hover {
   border-color: rgb(from var(--accent-strong) r g b / 0.52) !important;
-  background:
-    radial-gradient(circle at 20% 0%, rgba(255,255,255,0.20), transparent 38%),
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.28), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
+  background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.28), rgb(from var(--accent-strong) r g b / 0.28)) !important;
 }
 
 .pc-marketplace-card-actions .pc-button.ghost {
@@ -19616,28 +19447,19 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 .pc-marketplace-card-actions:has(.pc-button.primary) {
-  background:
-    linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.075), transparent 46%),
-    linear-gradient(180deg, rgba(255,255,255,0.028), transparent 70%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.060),
-    inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12);
+  background: linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.075), transparent 46%);
+  box-shadow: inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12);
 }
 
 .pc-marketplace-card-actions:has(.pc-button.danger):not(:has(.pc-button.primary)) {
-  background:
-    linear-gradient(90deg, rgb(from var(--rose-400) r g b / 0.035), transparent 48%),
-    linear-gradient(180deg, rgba(255,255,255,0.024), transparent 70%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    inset 0 0 0 1px rgb(from var(--rose-400) r g b / 0.080);
+  background: linear-gradient(90deg, rgb(from var(--rose-400) r g b / 0.035), transparent 48%);
+  box-shadow: inset 0 0 0 1px rgb(from var(--rose-400) r g b / 0.080);
 }
 
 .pc-marketplace-card-actions .pc-button.ghost:hover {
   color: #f3fbff;
   border-color: rgba(148, 196, 228, 0.30);
-  background:
-    linear-gradient(180deg, rgba(148, 196, 228, 0.09), rgba(255,255,255,0.010)),
+  background: linear-gradient(0deg, rgba(148, 196, 228, 0.09), rgba(148, 196, 228, 0.09)),
     color-mix(in srgb, var(--bg), transparent 12%);
 }
 
@@ -19946,17 +19768,13 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   overflow: hidden;
   border-color: rgba(148, 196, 228, 0.24) !important;
   color: rgba(232, 251, 255, 0.94) !important;
-  background:
-    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.20), transparent 34%),
+  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.20), transparent 34%),
     linear-gradient(110deg, rgba(255, 255, 255, 0.09), transparent 22% 72%, rgba(255, 255, 255, 0.045)),
     repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 5px),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 8%) 0%, color-mix(in srgb, var(--bg-popover), transparent 4%) 44%, color-mix(in srgb, var(--bg-deeper), transparent 2%) 100%) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 22%),
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 22%),
     0 10px 24px rgba(0, 0, 0, 0.32),
     0 0 18px rgba(8, 145, 178, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.20),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.78),
     inset 0 -10px 20px rgba(0, 0, 0, 0.24) !important;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72), 0 0 10px rgb(from var(--accent-strong) r g b / 0.18);
 }
@@ -19971,9 +19789,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent 0 14%, rgb(from var(--accent-strong) r g b / 0.20) 44%, transparent 70%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 48%);
+  background: linear-gradient(90deg, transparent 0 14%, rgb(from var(--accent-strong) r g b / 0.20) 44%, transparent 70%);
   opacity: 0.46;
   transform: translateX(-30%);
 }
@@ -19994,15 +19810,11 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 .oracle-dock--maximal-hud .oracle-picker-menu-option:hover,
 .oracle-dock--maximal-hud .oracle-picker-menu-option:focus-visible {
   border-color: rgb(from var(--accent-strong) r g b / 0.42) !important;
-  background:
-    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.24), transparent 36%),
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.16), color-mix(in srgb, var(--bg-1), transparent 2%)) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
+  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.24), transparent 36%),
+    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.16), rgb(from var(--accent-strong) r g b / 0.16)) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
     0 12px 28px rgba(0, 0, 0, 0.38),
-    0 0 24px rgb(from var(--accent) r g b / 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.80) !important;
+    0 0 24px rgb(from var(--accent) r g b / 0.22) !important;
 }
 
 .oracle-dock--maximal-hud .oracle-send-button {
@@ -20019,14 +19831,11 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 .oracle-dock--maximal-hud .oracle-tab-close:hover {
   border-color: rgb(from var(--rose-400) r g b / 0.38) !important;
   color: #ffd6dc !important;
-  background:
-    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.18), rgba(34, 9, 16, 0.96)) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 16%),
+  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.18), rgb(from var(--rose-400) r g b / 0.18)) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 16%),
     0 10px 24px rgba(0, 0, 0, 0.36),
-    0 0 22px rgb(from var(--rose-400) r g b / 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.20) !important;
+    0 0 22px rgb(from var(--rose-400) r g b / 0.18) !important;
 }
 
 /* Operator pane scrollbar stability: decorative HUD motion should never make
@@ -20184,23 +19993,12 @@ body:has(.operator-panel) {
   text-shadow:
     0 1px 0 rgba(0, 0, 0, 0.76),
     0 0 10px color-mix(in oklab, var(--operator-action-tone), transparent 78%);
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.24), transparent 34%),
-    linear-gradient(110deg, rgba(255, 255, 255, 0.10), transparent 20% 72%, rgba(255, 255, 255, 0.045)),
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 5px),
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--operator-action-tone), transparent 84%) 0%,
-      color-mix(in srgb, var(--bg-raised), transparent 4%) 42%,
-      color-mix(in srgb, var(--bg-deeper), transparent 1%) 100%
-    ) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
+  background: repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 5px),
+    linear-gradient(0deg, color-mix(in oklab, var(--operator-action-tone), transparent 84%), color-mix(in oklab, var(--operator-action-tone), transparent 84%)),
+    color-mix(in srgb, var(--bg-raised), transparent 4%) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 12px 28px rgba(0, 0, 0, 0.34),
-    0 0 22px color-mix(in oklab, var(--operator-action-tone), transparent 86%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.88),
-    inset 0 -12px 20px rgba(0, 0, 0, 0.24) !important;
+    0 0 22px color-mix(in oklab, var(--operator-action-tone), transparent 86%) !important;
 }
 
 .operator-panel__actions .operator-btn::before {
@@ -20209,9 +20007,7 @@ body:has(.operator-panel) {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent 0 14%, color-mix(in oklab, var(--operator-action-tone), transparent 72%) 44%, transparent 70%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 48%);
+  background: linear-gradient(90deg, transparent 0 14%, color-mix(in oklab, var(--operator-action-tone), transparent 72%) 44%, transparent 70%);
   opacity: 0.5;
   transform: translateX(-28%);
 }
@@ -20223,23 +20019,12 @@ body:has(.operator-panel) {
 
 .operator-panel__actions .operator-btn:hover,
 .operator-panel__actions .operator-btn:focus-visible {
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(110deg, rgba(255, 255, 255, 0.12), transparent 20% 72%, rgba(255, 255, 255, 0.055)),
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 5px),
-    linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--operator-action-tone), transparent 76%) 0%,
-      color-mix(in oklab, color-mix(in srgb, var(--bg-raised), transparent 4%), white 5%) 46%,
-      color-mix(in srgb, var(--bg-deep), transparent 1%) 100%
-    ) !important;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 12%),
+  background: repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 5px),
+    linear-gradient(0deg, color-mix(in oklab, var(--operator-action-tone), transparent 76%), color-mix(in oklab, var(--operator-action-tone), transparent 76%)),
+    color-mix(in oklab, color-mix(in srgb, var(--bg-raised), transparent 4%), white 5%) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 12%),
     0 14px 30px rgba(0, 0, 0, 0.38),
-    0 0 26px color-mix(in oklab, var(--operator-action-tone), transparent 80%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.26),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.90),
-    inset 0 -12px 20px rgba(0, 0, 0, 0.22) !important;
+    0 0 26px color-mix(in oklab, var(--operator-action-tone), transparent 80%) !important;
 }
 
 /* Operator card section contrast: make the internal lanes read as distinct
@@ -20492,8 +20277,7 @@ body:has(.operator-panel) {
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) {
   --operator-card-action-tone: rgb(from var(--rose-400) r g b / 0.84);
-  background:
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.09), color-mix(in srgb, var(--bg-deep), transparent 38%)),
+  background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.09), rgb(from var(--rose-400) r g b / 0.09)),
     color-mix(in srgb, var(--bg), transparent 30%);
 }
 
@@ -20515,10 +20299,8 @@ body:has(.operator-panel) {
 }
 
 .operator-entry__buttons .operator-mini-btn--danger {
-  box-shadow:
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
-    0 0 22px rgb(from var(--rose-400) r g b / 0.18),
-    inset 0 1px 0 rgba(255,255,255,0.10) !important;
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
+    0 0 22px rgb(from var(--rose-400) r g b / 0.18) !important;
 }
 
 .operator-entry__buttons .operator-mini-btn--ghost {
@@ -20719,22 +20501,20 @@ body:has(.operator-panel) {
 
 .operator-entry__buttons .operator-mini-btn--danger {
   border-color: rgb(from var(--rose-400) r g b / 0.58) !important;
-  background:
-    radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.34), rgba(78, 17, 29, 0.84)) !important;
+  background: radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
+    linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.34), rgb(from var(--rose-400) r g b / 0.34)) !important;
 }
 
 .operator-entry__buttons .operator-mini-btn--primary {
   border-color: rgba(45, 212, 191, 0.52) !important;
-  background:
-    radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
-    linear-gradient(180deg, rgba(45, 212, 191, 0.34), rgba(8, 42, 42, 0.84)) !important;
+  background: radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
+    linear-gradient(0deg, rgba(45, 212, 191, 0.34), rgba(45, 212, 191, 0.34)) !important;
 }
 
 .operator-entry__buttons .operator-mini-btn--ghost {
   border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.014) !important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035) !important;
+  box-shadow: none !important;
 }
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost {
@@ -20835,17 +20615,13 @@ body:has(.operator-panel) {
 }
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.14),
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.14),
     0 14px 24px rgba(0,0,0,0.24),
     0 0 26px rgb(from var(--rose-400) r g b / 0.12) !important;
 }
 
 .operator-entry__buttons:has(.operator-mini-btn--primary) {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 0 0 1px rgba(45, 212, 191, 0.14),
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.14),
     0 14px 24px rgba(0,0,0,0.22),
     0 0 24px rgba(45, 212, 191, 0.10) !important;
 }
@@ -20985,9 +20761,7 @@ body:has(.operator-panel) {
 
 .operator-main-tabs button.is-active,
 .operator-main-tabs button[aria-selected="true"] {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.080),
-    0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
+  box-shadow: 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
     0 8px 16px color-mix(in srgb, var(--accent-deep), transparent 90%);
 }
 
@@ -21118,22 +20892,18 @@ body:has(.operator-panel) {
 
 .operator-delegates__actions button {
   border-color: rgb(from var(--accent-strong) r g b / 0.18) !important;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.012)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.052), rgba(255,255,255,0.052)),
     color-mix(in srgb, var(--bg-deep), transparent 38%) !important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.050);
+  box-shadow: none;
 }
 
 .operator-delegates__actions button:not(.operator-delegates__archive):not(:disabled) {
   color: color-mix(in oklab, var(--good), white 18%);
   border-color: rgba(45, 212, 191, 0.38) !important;
-  background:
-    radial-gradient(circle at 24% 14%, rgba(255,255,255,0.16), transparent 34%),
-    linear-gradient(180deg, rgba(45, 212, 191, 0.24), rgba(8, 42, 42, 0.68)) !important;
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.10),
-    0 0 18px rgba(45, 212, 191, 0.12),
-    inset 0 1px 0 rgba(255,255,255,0.070);
+  background: radial-gradient(circle at 24% 14%, rgba(255,255,255,0.16), transparent 34%),
+    linear-gradient(0deg, rgba(45, 212, 191, 0.24), rgba(45, 212, 191, 0.24)) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.10),
+    0 0 18px rgba(45, 212, 191, 0.12);
 }
 
 .operator-delegates__archive {
@@ -21413,9 +21183,8 @@ body:has(.operator-panel) {
   align-items: stretch;
   min-height: 38px;
   border-color: color-mix(in oklab, var(--operator-card-action-tone), transparent 64%) !important;
-  background:
-    radial-gradient(circle at 100% 50%, color-mix(in oklab, var(--operator-card-action-tone), transparent 88%), transparent 42%),
-    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.010)),
+  background: radial-gradient(circle at 100% 50%, color-mix(in oklab, var(--operator-card-action-tone), transparent 88%), transparent 42%),
+    linear-gradient(0deg, rgba(255,255,255,0.034), rgba(255,255,255,0.034)),
     color-mix(in srgb, var(--bg-deep), transparent 22%) !important;
 }
 
@@ -21428,10 +21197,8 @@ body:has(.operator-panel) {
 
 .operator-entry__buttons .operator-mini-btn--primary,
 .operator-entry__buttons .operator-mini-btn--danger {
-  box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--operator-mini-accent), transparent 70%),
-    0 0 22px color-mix(in oklab, var(--operator-mini-accent), transparent 78%),
-    inset 0 1px 0 rgba(255,255,255,0.12) !important;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--operator-mini-accent), transparent 70%),
+    0 0 22px color-mix(in oklab, var(--operator-mini-accent), transparent 78%) !important;
 }
 
 @media (max-width: 760px) {
@@ -21617,10 +21384,7 @@ body:has(.operator-panel) {
 
 .operator-feed-pills button[aria-pressed="true"],
 .operator-feed-pills button.is-active {
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.085),
-    inset 0 -2px 0 rgba(var(--operator-surface-teal), 0.46),
-    0 12px 24px rgba(0,0,0,0.22),
+  box-shadow: 0 12px 24px rgba(0,0,0,0.22),
     0 0 22px rgba(var(--operator-surface-teal), 0.10) !important;
 }
 
@@ -21760,9 +21524,7 @@ body:has(.operator-panel) {
   border-color: rgba(var(--operator-surface-teal), 0.30) !important;
   background:
     linear-gradient(90deg, rgba(var(--operator-surface-teal), 0.12), rgba(255,255,255,0.018)) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(var(--operator-surface-teal), 0.38),
-    inset 0 1px 0 rgba(255,255,255,0.052);
+  box-shadow: inset 3px 0 0 rgba(var(--operator-surface-teal), 0.38);
 }
 
 .operator-activity-list {
@@ -22179,10 +21941,8 @@ body:has(.operator-panel) {
 .operator-feed-pills button[aria-pressed="true"],
 .operator-main-tabs button[aria-pressed="true"] {
   border-color: rgba(45, 212, 191, 0.48) !important;
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.10),
-    0 10px 22px rgba(45, 212, 191, 0.10),
-    inset 0 1px 0 rgba(255,255,255,0.075) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.10),
+    0 10px 22px rgba(45, 212, 191, 0.10) !important;
 }
 
 .operator-feed-search {
@@ -23367,8 +23127,7 @@ body:has(.operator-panel) {
 .operator-entry.operator-entry--suggestion .operator-entry__buttons {
   gap: 4px !important;
   border-color: color-mix(in oklab, var(--operator-card-tone), transparent 80%) !important;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.008)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.032), rgba(255,255,255,0.032)),
     color-mix(in srgb, var(--bg-deeper), transparent 42%) !important;
 }
 
@@ -23380,24 +23139,18 @@ body:has(.operator-panel) {
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--primary {
   border-color: rgba(45, 212, 191, 0.42) !important;
-  background:
-    radial-gradient(circle at 20% 16%, rgba(255,255,255,0.18), transparent 32%),
-    linear-gradient(180deg, rgba(45, 212, 191, 0.26), color-mix(in srgb, var(--bg-deep), transparent 26%)) !important;
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.10),
-    0 0 22px rgba(45, 212, 191, 0.13),
-    inset 0 1px 0 rgba(255,255,255,0.10) !important;
+  background: radial-gradient(circle at 20% 16%, rgba(255,255,255,0.18), transparent 32%),
+    linear-gradient(0deg, rgba(45, 212, 191, 0.26), rgba(45, 212, 191, 0.26)) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.10),
+    0 0 22px rgba(45, 212, 191, 0.13) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--danger {
   border-color: rgb(from var(--rose-400) r g b / 0.44) !important;
-  background:
-    radial-gradient(circle at 20% 16%, rgba(255,255,255,0.16), transparent 32%),
-    linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.22), color-mix(in srgb, var(--bg-deep), transparent 24%)) !important;
-  box-shadow:
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.11),
-    0 0 22px rgb(from var(--rose-400) r g b / 0.12),
-    inset 0 1px 0 rgba(255,255,255,0.09) !important;
+  background: radial-gradient(circle at 20% 16%, rgba(255,255,255,0.16), transparent 32%),
+    linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.22), rgb(from var(--rose-400) r g b / 0.22)) !important;
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.11),
+    0 0 22px rgb(from var(--rose-400) r g b / 0.12) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--ghost {
@@ -23825,9 +23578,7 @@ body:has(.operator-panel) {
 .operator-entry.operator-entry--suggestion .operator-entry__buttons {
   min-height: 34px;
   border: 1px solid color-mix(in oklab, var(--operator-card-tone), transparent 82%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 8px 18px rgba(0,0,0,0.14) !important;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.14) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn {
@@ -24027,18 +23778,14 @@ body:has(.operator-panel) {
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--primary:hover,
 .operator-entry.operator-entry--suggestion .operator-mini-btn--primary:focus-visible {
-  box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.22),
-    0 0 26px rgba(45, 212, 191, 0.22),
-    inset 0 1px 0 rgba(255,255,255,0.14) !important;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.22),
+    0 0 26px rgba(45, 212, 191, 0.22) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-mini-btn--danger:hover,
 .operator-entry.operator-entry--suggestion .operator-mini-btn--danger:focus-visible {
-  box-shadow:
-    0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
-    0 0 26px rgb(from var(--rose-400) r g b / 0.18),
-    inset 0 1px 0 rgba(255,255,255,0.13) !important;
+  box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
+    0 0 26px rgb(from var(--rose-400) r g b / 0.18) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-entry__details summary {
@@ -24203,8 +23950,7 @@ body:has(.operator-panel) {
 
 .operator-entry.operator-entry--suggestion .operator-entry__buttons {
   padding: 3px !important;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.008)),
+  background: linear-gradient(0deg, rgba(255,255,255,0.034), rgba(255,255,255,0.034)),
     color-mix(in srgb, var(--bg-deepest), transparent 32%) !important;
 }
 
@@ -24599,7 +24345,7 @@ body:has(.operator-panel) {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-deep), transparent 38%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  box-shadow: none;
 }
 
 .operator-feed-active-filters span {
@@ -24701,13 +24447,10 @@ body:has(.operator-panel) {
   color: #effbff;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.34);
   border-radius: 999px;
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-deeper), transparent 1%));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
-    0 11px 24px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255,255,255,0.09);
+  background: radial-gradient(circle at 18% 18%, rgba(255,255,255,0.08), transparent 22%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg-popover), transparent 1%));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
+    0 11px 24px rgba(0, 0, 0, 0.34);
   cursor: pointer;
   transition: transform 140ms ease, border-color 140ms ease,
               box-shadow 140ms ease, background 140ms ease, opacity 140ms ease;
@@ -24716,11 +24459,9 @@ body:has(.operator-panel) {
 .pc-console-btn:hover,
 .pc-console-btn:focus-visible {
   border-color: color-mix(in srgb, var(--accent-soft), transparent 28%);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 14%),
     0 14px 28px rgba(0, 0, 0, 0.42),
-    0 0 20px rgb(from var(--accent) r g b / 0.20),
-    inset 0 1px 0 rgba(255,255,255,0.13);
+    0 0 20px rgb(from var(--accent) r g b / 0.20);
   transform: translateY(-1px);
   outline: none;
 }

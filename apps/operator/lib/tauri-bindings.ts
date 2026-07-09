@@ -100,6 +100,20 @@ export const commands = {
 	// Show/hide the native sibling terminal. Returns the new running state.
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
 	/**
+	 *  WI-3388 — the terminal's current user layout (divider width fraction +
+	 *  collapsed/rail state). Read on mount by the web UI's `<TerminalDivider>`
+	 *  so it renders the persisted position instead of flashing a default.
+	 */
+	terminalGetLayout: () => __TAURI_INVOKE<TerminalLayout>("terminal_get_layout"),
+	/**
+	 *  WI-3388 — set the terminal's layout (either field optional — pass just
+	 *  `collapsed` for the rail toggle, or just `fraction` for a divider drag),
+	 *  persist it, and apply it LIVE to whichever backend is running. A no-op
+	 *  apply (persisted only) for NewWindow/Disabled — there's no native surface
+	 *  to resize.
+	 */
+	terminalSetLayout: (fraction: number | null, collapsed: boolean | null) => typedError<TerminalLayout, string>(__TAURI_INVOKE("terminal_set_layout", { fraction, collapsed })),
+	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
 	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
 	 */
@@ -154,6 +168,17 @@ export type NativeTerminalStatus = {
 	// One of glued-ghostty-x11 / new-window / embedded-* / disabled.
 	strategy: string,
 	running: boolean,
+};
+
+/**
+ *  WI-3388 — the terminal's user-controlled layout. `fraction` is resolution-
+ *  independent (a fraction of the GUI window's docking-axis size); `collapsed`
+ *  fully hides the terminal's native surface (the webview's own rail control
+ *  then owns the flush edge). Persisted across relaunch.
+ */
+export type TerminalLayout = {
+	fraction: number,
+	collapsed: boolean,
 };
 
 export type PtySpawnOpts = {

@@ -54,8 +54,8 @@ export async function resolveHiveLocalBlueprintRoot(
   input: ResolveHiveLocalRootInput,
 ): Promise<string | null> {
   try {
-    const { hiveHomeSlugForHarness } = await import('./hive-federation');
-    const potSlug = await hiveHomeSlugForHarness(input.workspaceId, input.harnessSlug);
+    const { potHomeSlugForHarness } = await import('./hive-federation');
+    const potSlug = await potHomeSlugForHarness(input.workspaceId, input.harnessSlug);
     if (!potSlug) return null; // not part of a Hive → no per-hive override
 
     const { listHiveInstancePromptOverrides } = await import('./hive-settings-store');

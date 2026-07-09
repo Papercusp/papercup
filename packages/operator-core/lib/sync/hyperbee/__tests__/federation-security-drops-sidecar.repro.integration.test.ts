@@ -523,9 +523,9 @@ async function runReceiverWithAttacker(opts: {
   );
 
   // Sanity: the receiver's boot reads resolve as the repro relies on.
-  const { joinerHiveHomeSlug } = await import('../../../hive-federation');
+  const { joinerPotHomeSlug } = await import('../../../hive-federation');
   const { loadHiveOwnerDevicePubkey } = await import('../../../hive-membership-store');
-  expect(await joinerHiveHomeSlug(wsId, recvSlug)).toBe(hiveHome);
+  expect(await joinerPotHomeSlug(wsId, recvSlug)).toBe(hiveHome);
   expect(await loadHiveOwnerDevicePubkey(wsId, hivePubkeyB64)).toBe(owner.devicePubkey);
   _clearHiveMemberDeviceSetCacheForTest();
 
@@ -775,7 +775,7 @@ describe('SIDECAR shared-hive SECURITY DROPS — a malicious / unauthorised fram
       // The guard, driven with real inputs (sql omitted → the SAME getOrgPg seam admission
       // uses). opts.harnessSlug is the receiver's own slug; rowHarnessSlug is the author's
       // (cross-member). A member's op applies; the outsider's is refused (not 'apply').
-      const guardOpts = { workspaceId: wsId, harnessSlug: 'sdg-recv', hiveHomeSlug: hiveHome };
+      const guardOpts = { workspaceId: wsId, harnessSlug: 'sdg-recv', potHomeSlug: hiveHome };
       const memberDecision: MemberContentDecision = await decideMemberContentOp(
         'sdg-member', // a cross-member author slug
         guardOpts,
@@ -859,7 +859,7 @@ describe('SIDECAR shared-hive SECURITY DROPS — a malicious / unauthorised fram
       await seedRosterRow(orgDb.adminSql, hiveHome, wsId, member);
       _clearHiveMemberDeviceSetCacheForTest();
 
-      const guardOpts = { workspaceId: wsId, harnessSlug: 'sdban-recv', hiveHomeSlug: hiveHome };
+      const guardOpts = { workspaceId: wsId, harnessSlug: 'sdban-recv', potHomeSlug: hiveHome };
 
       // BEFORE the ban: the member's cross-member content applies.
       expect(

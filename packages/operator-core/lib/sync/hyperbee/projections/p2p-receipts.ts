@@ -61,7 +61,7 @@ export interface P2pReceiptsProjectionOpts {
   harnessSlug: string;
   sql?: postgres.Sql;
   /** Identity-gate remote ops only when hive-bound (mirrors p2p-peer-grants). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
   resolveAuthorIdentity?: (devicePubkey: string | null) => Promise<{ githubUserId: number | null }>;
   onRefusedApply?: (reason: 'no_author_device' | 'identity_unresolved' | 'responder_mismatch', row: P2pReceiptWireRow) => void;
@@ -101,7 +101,7 @@ async function writeToPg(
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 
-  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
     const sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -115,7 +115,7 @@ async function writeToPg(
         if (!device) return { githubUserId: null };
         const r = await resolveAuthorCommsTier({
           workspaceId: opts.workspaceId,
-          hiveHomeSlug: opts.hiveHomeSlug!,
+          potHomeSlug: opts.potHomeSlug!,
           devicePubkey: device,
         });
         return { githubUserId: r.githubUserId };

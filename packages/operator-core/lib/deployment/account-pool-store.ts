@@ -485,11 +485,11 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
     deps.autoScaleOutAllowed ??
     (async (ws: string): Promise<boolean> => {
       try {
-        const [{ getOwnerSteering, isAutoScaleOutEnabled }, { resolveHiveHomeSlug }] = await Promise.all([
+        const [{ getOwnerSteering, isAutoScaleOutEnabled }, { resolvePotHomeSlug }] = await Promise.all([
           import('../owner-steering'),
           import('../hive/wake'),
         ]);
-        const home = resolveHiveHomeSlug();
+        const home = resolvePotHomeSlug();
         return home ? isAutoScaleOutEnabled(await getOwnerSteering(ws, home)) : true;
       } catch {
         return true;

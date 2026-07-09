@@ -46,7 +46,7 @@ function seatOfferStored(over: Partial<StoredWorkOffer> = {}): StoredWorkOffer {
   };
   return {
     workspaceId: WS,
-    hiveHomeSlug: HOME,
+    potHomeSlug: HOME,
     publisherGithubUserId: UID_B,
     offerId: 'seat-abc123',
     record,

@@ -13,7 +13,7 @@ const H = vi.hoisted(() => ({
   listRecipes: vi.fn(),
   countRecipes: vi.fn(),
   recipeCandidates: vi.fn(),
-  hiveHomeSlugForHarness: vi.fn(),
+  potHomeSlugForHarness: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-1'),
   buildQueryEmbedder: vi.fn(async () => null),
   buildRecipeCooccurrenceDep: vi.fn(async () => null),
@@ -26,7 +26,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../code-recipes-store', () => ({ listRecipes: H.listRecipes, countRecipes: H.countRecipes }));
 vi.mock('../code-recipes-candidates', () => ({ recipeCandidates: H.recipeCandidates }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: H.activeWorkspaceId }));
-vi.mock('../hive-federation', () => ({ hiveHomeSlugForHarness: H.hiveHomeSlugForHarness }));
+vi.mock('../hive-federation', () => ({ potHomeSlugForHarness: H.potHomeSlugForHarness }));
 vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedder: H.buildQueryEmbedder }));
 vi.mock('../recipe-cooccurrence-leg', () => ({ buildRecipeCooccurrenceDep: H.buildRecipeCooccurrenceDep }));
 
@@ -58,7 +58,7 @@ describe('codeRecipes resolver', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     H.activeWorkspaceId.mockReturnValue('ws-1');
-    H.hiveHomeSlugForHarness.mockResolvedValue('papercusp');
+    H.potHomeSlugForHarness.mockResolvedValue('papercusp');
     H.listRecipes.mockResolvedValue([RECIPE]);
     H.countRecipes.mockResolvedValue(1);
   });
@@ -84,7 +84,7 @@ describe('codeRecipes resolver', () => {
   it('honors an explicit limit arg (recipes are global — no hive narrowing)', async () => {
     await resolveNamedQueryV2('codeRecipes', { limit: 25 });
     expect(H.listRecipes).toHaveBeenCalledWith({}, { limit: 25, includeTrivial: true });
-    expect(H.hiveHomeSlugForHarness).not.toHaveBeenCalled();
+    expect(H.potHomeSlugForHarness).not.toHaveBeenCalled();
   });
 });
 
@@ -92,7 +92,7 @@ describe('recipeCandidates resolver', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     H.activeWorkspaceId.mockReturnValue('ws-1');
-    H.hiveHomeSlugForHarness.mockResolvedValue('papercusp');
+    H.potHomeSlugForHarness.mockResolvedValue('papercusp');
     H.recipeCandidates.mockResolvedValue({
       promoteCandidates: [
         {

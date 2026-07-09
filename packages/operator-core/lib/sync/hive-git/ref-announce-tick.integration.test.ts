@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
@@ -17,6 +18,23 @@ import { serveUploadPack } from './fetch-transport';
 import { buildRefAnnouncement, type SignedRefAnnouncement } from './ref-announce';
 import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from './ref-announce-tick';
 
+/** git with STDIN — RunGit (defaultRunGit) is (args, cwd) only; `hash-object
+ *  --stdin` / `mktree` need piped input. Mirrors publish-guard.ts's own
+ *  runGitStdin test-plumbing helper. */
+function gitStdin(args: string[], cwd: string, stdin: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += String(d)));
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
 function mkDevice(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> } {
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
   return { pubkeyBase64, sign: async (bytes: Buffer) => signWithPrivateKeyDer(privateKeyDer, bytes) };
@@ -24,6 +42,22 @@ function mkDevice(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Bu
 
 async function mintCommit(repoPath: string, msg: string): Promise<string> {
   const tree = await defaultRunGit(['hash-object', '-w', '-t', 'tree', '/dev/null'], repoPath);
+  expect(tree.code, tree.stderr).toBe(0);
+  const c = await defaultRunGit(
+    ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree.stdout.trim(), '-m', msg],
+    repoPath,
+  );
+  expect(c.code, c.stderr).toBe(0);
+  return c.stdout.trim();
+}
+
+/** A commit introducing ONE new file with real blob content — for exercising
+ *  the G-10 publish guard (`mintCommit` above always points at the empty
+ *  tree, so it never has a blob to judge). */
+async function mintCommitWithFile(repoPath: string, path: string, content: string, msg: string): Promise<string> {
+  const blob = await gitStdin(['hash-object', '-w', '--stdin'], repoPath, content);
+  expect(blob.code, blob.stderr).toBe(0);
+  const tree = await gitStdin(['mktree'], repoPath, `100644 blob ${blob.stdout.trim()}\t${path}\n`);
   expect(tree.code, tree.stderr).toBe(0);
   const c = await defaultRunGit(
     ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree.stdout.trim(), '-m', msg],
@@ -123,6 +157,51 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       });
       expect(out.changed).toBe(true);
       expect(out.announcement?.version).toBe(2);
+    });
+
+    it('G-10: refuses a publish whose new blob contains a secret — no version bump, no announcement, and a repeat attempt refuses again (never wedges, never silently admits)', async () => {
+      const devE = mkDevice();
+      const sha1 = await mintCommit(repoB, 'E work 1');
+      await writeNamespaceRef(repoB, devE.pubkeyBase64, 'refs/heads/work', sha1);
+      const t1 = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devE.pubkeyBase64,
+        sign: devE.sign,
+        nowMs: 7_000,
+      });
+      expect(t1.changed).toBe(true);
+      expect(t1.announcement?.version).toBe(1);
+
+      // Built via concatenation (never a contiguous literal in source) so the
+      // repo's own commit-time secrets guard doesn't flag THIS TEST FILE —
+      // the fixture only needs to match secrets-guard.ts's AWS-key-id SHAPE
+      // (AKIA + 16 uppercase/digits); it is not a real credential.
+      const fakeAwsKeyId = ['AK', 'IA', 'ABCD', 'EFGH', 'IJKL', 'MNOP'].join('');
+      const shaSecret = await mintCommitWithFile(repoB, 'creds.txt', `${fakeAwsKeyId}\n`, 'E work 2 (secret)');
+      await writeNamespaceRef(repoB, devE.pubkeyBase64, 'refs/heads/work', shaSecret);
+      const t2 = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devE.pubkeyBase64,
+        sign: devE.sign,
+        nowMs: 8_000,
+      });
+      expect(t2.changed).toBe(false);
+      expect(t2.announcement).toBeNull();
+      expect(t2.refused?.refusalCode).toBe('secrets');
+      expect(t2.errors.some((e) => e.includes('publish guard refused'))).toBe(true);
+      // The refused advance was never signed — the mirror's sigrefs version stays at 1.
+      expect((await readSigrefs(repoB, devE.pubkeyBase64))?.version).toBe(1);
+
+      // A retry (content still un-fixed) refuses again — deterministic, never
+      // wedges the tick and never silently admits the offending content.
+      const t3 = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devE.pubkeyBase64,
+        sign: devE.sign,
+        nowMs: 9_000,
+      });
+      expect(t3.changed).toBe(false);
+      expect(t3.refused?.refusalCode).toBe('secrets');
     });
   });
 

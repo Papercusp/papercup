@@ -50,7 +50,7 @@ describe('github-bridge round trip (P-007: legacy ⇄ P2P convergence + fork-PR 
   let memberWork: string;  // the P2P member's worktree
   const integrator = devicePubkey();
   const member = devicePubkey();
-  const scope = { workspaceId: 'ws-rt', hiveHomeSlug: 'hive-rt' };
+  const scope = { workspaceId: 'ws-rt', potHomeSlug: 'hive-rt' };
 
   let l1: string;          // legacy base commit
   let l2: string;          // legacy commit racing the P2P work

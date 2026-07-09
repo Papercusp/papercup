@@ -344,7 +344,7 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
   });
 
   it('bee + flag ON: spec gets the bounded timeout AND a routable agent-question escalation is written', async () => {
-    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.QUEEN_CARD_INTERCEPTION);
+    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.MUG_CARD_INTERCEPTION);
     const askUser = capturingAskUser('corr-bee-1');
 
     await (askChoiceTool as any).handler(
@@ -366,7 +366,7 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
   });
 
   it('interactive superuser + flag ON: NOT intercepted (no timeout, no escalation — a human is watching)', async () => {
-    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.QUEEN_CARD_INTERCEPTION);
+    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.MUG_CARD_INTERCEPTION);
     const askUser = capturingAskUser('corr-su');
 
     await (askChoiceTool as any).handler(

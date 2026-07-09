@@ -13,11 +13,11 @@ vi.mock('../../hive-settings-store', () => ({
   getHiveSetting: async (ws: string, slug: string, key: string) => {
     const id = k(ws, slug, key);
     return store.has(id)
-      ? { workspaceId: ws, hiveHomeSlug: slug, settingKey: key, value: store.get(id), createdAt: 0, updatedAt: 0 }
+      ? { workspaceId: ws, potHomeSlug: slug, settingKey: key, value: store.get(id), createdAt: 0, updatedAt: 0 }
       : null;
   },
-  setHiveSetting: async (input: { workspaceId: string; hiveHomeSlug: string; settingKey: string; value: unknown }) => {
-    store.set(k(input.workspaceId, input.hiveHomeSlug, input.settingKey), input.value);
+  setHiveSetting: async (input: { workspaceId: string; potHomeSlug: string; settingKey: string; value: unknown }) => {
+    store.set(k(input.workspaceId, input.potHomeSlug, input.settingKey), input.value);
     return { ...input, createdAt: 0, updatedAt: 0 };
   },
 }));

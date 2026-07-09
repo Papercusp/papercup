@@ -96,7 +96,7 @@ export async function reconcileLockTicket(
  */
 export async function reconcileLockGrantAwaits(workspaceId: string, deps: BridgeDeps = {}): Promise<void> {
   const listAwaits = deps.listAwaits ?? listActiveAwaitsByKeyPrefix;
-  const awaits = await listAwaits(LOCK_GRANT_KEY_PREFIX, workspaceId);
+  const awaits = await listAwaits(LOCK_GRANT_KEY_PREFIX);
   for (const a of awaits) {
     const ticket = ticketFromLockGrantKey(a.eventKey);
     if (!ticket) continue;
@@ -126,7 +126,7 @@ export async function ensureGrantListener(coordinationDomain: string, workspaceI
       // Payload = the granted ticket. Only reconcile if someone awaits it —
       // blocking waiters (locks:acquire{wait}) handle their own NOTIFYs.
       void (async () => {
-        const awaits = await listActiveAwaitsByKeyPrefix(lockGrantKey(ticketId), workspaceId);
+        const awaits = await listActiveAwaitsByKeyPrefix(lockGrantKey(ticketId));
         if (awaits.length > 0) await reconcileLockTicket(ticketId, workspaceId);
       })().catch(() => {
         /* the sweep backstop covers it */

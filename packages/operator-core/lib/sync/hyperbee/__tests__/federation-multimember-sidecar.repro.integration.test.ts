@@ -472,9 +472,9 @@ describe('SIDECAR multi-member (>2 peers) federation — owner + 2 members on ON
     );
 
     // Sanity: the receiver's boot reads resolve as the repro relies on.
-    const { joinerHiveHomeSlug } = await import('../../../hive-federation');
+    const { joinerPotHomeSlug } = await import('../../../hive-federation');
     const { loadHiveOwnerDevicePubkey } = await import('../../../hive-membership-store');
-    expect(await joinerHiveHomeSlug(wsId, recvSlug)).toBe(hiveHome);
+    expect(await joinerPotHomeSlug(wsId, recvSlug)).toBe(hiveHome);
     expect(await loadHiveOwnerDevicePubkey(wsId, hivePubkeyB64)).toBe(owner.devicePubkey);
     _clearHiveMemberDeviceSetCacheForTest();
 
@@ -701,9 +701,9 @@ describe('SIDECAR multi-member (>2 peers) federation — owner + 2 members on ON
         wsId,
       );
 
-      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(wsId, hiveHome)).toBe(hiveHome);
+      expect(await potHomeSlugForHarness(wsId, hiveHome)).toBe(hiveHome);
       const set = await resolveHiveMemberDeviceSet(wsId, hiveHome);
       expect(set.has(m1.devicePubkey)).toBe(true);
       expect(set.has(m2.devicePubkey)).toBe(true);

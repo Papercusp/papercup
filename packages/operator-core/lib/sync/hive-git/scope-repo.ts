@@ -18,7 +18,7 @@
  * owns BOTH encodings (the one place the mapping lives, mirroring
  * `deviceNamespaceKey` discipline):
  *
- *   - PATH:  <hiveGitRoot>/<hiveHomeSlug>/scopes/fleet-<uid>/<slug>.git
+ *   - PATH:  <hiveGitRoot>/<potHomeSlug>/scopes/fleet-<uid>/<slug>.git
  *   - REF:   a single segment `fleet-<uid>--<slug>` for the foreign-marked
  *            tracking family `refs/foreign/<segment>/…` — preserving the landed
  *            `isForeignMarkedRef` contract (foreign-merge-admission.ts), whose
@@ -113,14 +113,14 @@ function assertSafeComponent(v: string, what: string): void {
  * so the fetch-transport serve backstop covers it:
  * `<root>/<hive>/scopes/fleet-<uid>/<slug>.git`.
  */
-export function scopeRepoPath(hiveHomeSlug: string, scope: ScopeId): string {
-  assertSafeComponent(hiveHomeSlug, 'hiveHomeSlug');
+export function scopeRepoPath(potHomeSlug: string, scope: ScopeId): string {
+  assertSafeComponent(potHomeSlug, 'potHomeSlug');
   // Components are structurally safe by the ScopeId parse, but re-assert —
   // defense in depth against a hand-built ScopeId.
   const owner = `fleet-${scope.ownerGithubUserId}`;
   assertSafeComponent(owner, 'scope owner');
   assertSafeComponent(scope.slug, 'scope slug');
-  return join(hiveGitRoot(), hiveHomeSlug, 'scopes', owner, `${scope.slug}.git`);
+  return join(hiveGitRoot(), potHomeSlug, 'scopes', owner, `${scope.slug}.git`);
 }
 
 /** `repoPath` relative to `hiveGitRoot()` as clean components, or null when the
@@ -155,11 +155,11 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
  */
 export function parseScopeRepoPath(
   repoPath: string,
-): { hiveHomeSlug: string; scope: ScopeId } | null {
+): { potHomeSlug: string; scope: ScopeId } | null {
   const parts = rootRelativeComponents(repoPath);
   if (!parts || parts.length !== 4 || parts[1] !== 'scopes') return null;
-  const [hiveHomeSlug, , ownerDir, repoFile] = parts;
-  if (!hiveHomeSlug || hiveHomeSlug.includes('..') || hiveHomeSlug.includes('\0')) return null;
+  const [potHomeSlug, , ownerDir, repoFile] = parts;
+  if (!potHomeSlug || potHomeSlug.includes('..') || potHomeSlug.includes('\0')) return null;
   const m = OWNER_DIR_RE.exec(ownerDir);
   if (!m) return null;
   const uid = Number(m[1]);
@@ -167,7 +167,7 @@ export function parseScopeRepoPath(
   if (!repoFile.endsWith('.git')) return null;
   const slug = repoFile.slice(0, -'.git'.length);
   if (!slug || slug.length > SLUG_MAX || !SLUG_RE.test(slug)) return null;
-  return { hiveHomeSlug, scope: { kind: 'fleet', ownerGithubUserId: uid, slug } };
+  return { potHomeSlug, scope: { kind: 'fleet', ownerGithubUserId: uid, slug } };
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -185,11 +185,11 @@ async function pathExists(p: string): Promise<boolean> {
  * genuine init failure (disk/permissions).
  */
 export async function ensureScopeRepo(
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   scope: ScopeId,
   runGit: RunGit = defaultRunGit,
 ): Promise<string> {
-  const repoPath = scopeRepoPath(hiveHomeSlug, scope);
+  const repoPath = scopeRepoPath(potHomeSlug, scope);
   if (await pathExists(join(repoPath, 'HEAD'))) return repoPath;
   await mkdir(repoPath, { recursive: true });
   const r = await runGit(['init', '--bare', '-q', repoPath], hiveGitRoot());

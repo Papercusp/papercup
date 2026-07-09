@@ -36,7 +36,7 @@ vi.mock('../../hive/urgent-wake', () => ({
 const clearHiveTimeWake = vi.fn();
 vi.mock('../../hive/wake', () => ({
   clearHiveTimeWake: (...a: unknown[]) => clearHiveTimeWake(...a),
-  resolveHiveHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
+  resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,
 }));
 

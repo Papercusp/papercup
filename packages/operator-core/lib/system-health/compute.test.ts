@@ -135,13 +135,15 @@ describe('tallyPlans — queen-plan-selection signal (hive-loop-supervision 2026
 
 describe('panelSafe — per-panel fail-soft', () => {
   it('passes a healthy collector through, injecting key + label', async () => {
-    const panel = await panelSafe('mug', async () => ({
+    const panel = await panelSafe('queen', async () => ({
       status: 'ok' as const,
       summary: 'looping',
       metrics: [{ label: 'last wake', value: '2m ago' }],
       data: { hi: true },
     }));
-    expect(panel.key).toBe('mug');
+    // 'queen' stays the stable PanelKey (PANEL_ORDER/UI consumers key on it);
+    // the pot-rename shows through the LABEL ('Mug'), not the key.
+    expect(panel.key).toBe('queen');
     expect(panel.label).toBe(PANEL_LABELS.queen);
     expect(panel.status).toBe('ok');
     expect(panel.error).toBeUndefined();

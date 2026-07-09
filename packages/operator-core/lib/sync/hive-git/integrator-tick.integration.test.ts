@@ -87,7 +87,7 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
 
   it('no-ops (skipped: not-integrator) when we do not hold the lease', async () => {
     const out = await runIntegratorTick({
-      hiveHomeSlug: 'hive-i',
+      potHomeSlug: 'hive-i',
       workspaceId: 'ws-1',
       repoKey: 'repo-1',
       memberDevicePubkeysBase64: [devA.pubBase64],
@@ -108,7 +108,7 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
     await writeNamespaceRef(repo, devA.pubBase64, WORK_REF, base);
 
     const out = await runIntegratorTick({
-      hiveHomeSlug: 'hive-i',
+      potHomeSlug: 'hive-i',
       workspaceId: 'ws-1',
       repoKey: 'repo-1',
       memberDevicePubkeysBase64: [devA.pubBase64],
@@ -137,7 +137,7 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
 
   it('re-running with no new work is a no-op and produces no announcement', async () => {
     const out = await runIntegratorTick({
-      hiveHomeSlug: 'hive-i',
+      potHomeSlug: 'hive-i',
       workspaceId: 'ws-1',
       repoKey: 'repo-1',
       memberDevicePubkeysBase64: [devA.pubBase64],
@@ -158,7 +158,7 @@ describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)',
     await writeNamespaceRef(repo, devB.pubBase64, WORK_REF, head);
 
     const out = await runIntegratorTick({
-      hiveHomeSlug: 'hive-i',
+      potHomeSlug: 'hive-i',
       workspaceId: 'ws-1',
       repoKey: 'repo-1',
       memberDevicePubkeysBase64: [devA.pubBase64, devB.pubBase64],

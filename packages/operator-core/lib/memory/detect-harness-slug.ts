@@ -10,7 +10,7 @@
  *      root that vendors `libs/papercusp`; package name
  *      papercup|papercusp[-monorepo], npm-scope-tolerant — the "I'm
  *      working on Papercusp itself" case). The slug is the configured
- *      operator-home pointer (`PAPERCUSP_HIVE_HOME_SLUG`), NOT a baked
+ *      operator-home pointer (`PAPERCUSP_POT_HOME_SLUG`), NOT a baked
  *      literal, so a papercup→papercusp switch is an env change, not a
  *      code edit here.
  *   4. Otherwise return null — memory injection falls back to user
@@ -154,7 +154,7 @@ export function detectHarnessSlugSync(opts: {
   }
 
   // 3. Walk for the Papercusp meta-repo. The slug is the configured
-  //    operator-home pointer (PAPERCUSP_HIVE_HOME_SLUG, read from the same
+  //    operator-home pointer (PAPERCUSP_POT_HOME_SLUG, read from the same
   //    `env` resolved above), NOT a baked literal — papercup→papercusp is
   //    an env switch, not a code change. Falls back to the legacy default
   //    only when the pointer is unset (pre-pointer installs).

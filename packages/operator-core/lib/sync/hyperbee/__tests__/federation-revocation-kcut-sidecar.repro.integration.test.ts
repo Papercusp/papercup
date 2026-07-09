@@ -415,7 +415,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           workspaceId: WORKSPACE_ID,
           harnessSlug: HIVE_HOME,
           sql: orgDb.adminSql,
-          onEpochKeyApplied: (h, e) => bDrainQueue.push({ hiveHomeSlug: h, epoch: e }),
+          onEpochKeyApplied: (h, e) => bDrainQueue.push({ potHomeSlug: h, epoch: e }),
         });
         const scoped = new Map<string, TableProjection<unknown>>([
           [plansProj.tableTag, plansProj as TableProjection<unknown>],
@@ -489,7 +489,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const grant0 = await grantEpochKeysToMembers(
         {
           workspaceId: WORKSPACE_ID,
-          hiveHomeSlug: HIVE_HOME,
+          potHomeSlug: HIVE_HOME,
           enabled: true,
           newMemberPubkeys: [idOwner.devicePubkey, idB.devicePubkey],
           sql: dbOwner.adminSql,
@@ -554,7 +554,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const boundary = await advanceEpochOnHiveBoundary(
         {
           workspaceId: WORKSPACE_ID,
-          hiveHomeSlug: HIVE_HOME,
+          potHomeSlug: HIVE_HOME,
           enabled: true,
           cutOffPubkeys: [idB.devicePubkey],
           sql: dbOwner.adminSql,

@@ -31,30 +31,30 @@ export type CreateHiveMembershipResult =
   | { ok: false; error: CreateHiveMembershipError; message: string };
 
 /**
- * Resolve the `hive_slug` to set on a harness being created into `hiveHomeSlug`.
+ * Resolve the `hive_slug` to set on a harness being created into `potHomeSlug`.
  * Fails when the target is not a registered Hive home (`harness_kind:'hive'`).
  *
  * @param reg          the workspace harness registry (loaded by the caller).
- * @param hiveHomeSlug the requested Hive home slug (the `hive` create arg).
+ * @param potHomeSlug the requested Hive home slug (the `hive` create arg).
  */
 export function resolveCreateHiveMembership(
   reg: HarnessRegistry,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
 ): CreateHiveMembershipResult {
-  const target = reg.projects.find((p) => p.slug === hiveHomeSlug);
+  const target = reg.projects.find((p) => p.slug === potHomeSlug);
   if (!target) {
     return {
       ok: false,
       error: 'hive_not_found',
-      message: `no pot '${hiveHomeSlug}' in this workspace`,
+      message: `no pot '${potHomeSlug}' in this workspace`,
     };
   }
   if (!isHiveProject(target)) {
     return {
       ok: false,
       error: 'not_a_hive',
-      message: `'${hiveHomeSlug}' is not a pot (harness_kind:'hive') — only a pot can own members`,
+      message: `'${potHomeSlug}' is not a pot (harness_kind:'hive') — only a pot can own members`,
     };
   }
-  return { ok: true, hive_slug: hiveHomeSlug };
+  return { ok: true, hive_slug: potHomeSlug };
 }

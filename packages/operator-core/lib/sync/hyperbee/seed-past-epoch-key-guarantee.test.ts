@@ -32,7 +32,7 @@ describe('seed-bundle Q-4 guarantee — new members get ALL past-epoch keys', ()
     const persistedEpochs: number[] = [];
     const wrappedFor: string[] = [];
     const r = await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'papercusp', enabled: true, newMemberPubkeys },
+      { workspaceId: 'w', potHomeSlug: 'papercusp', enabled: true, newMemberPubkeys },
       {
         resolveCrypto: async () =>
           ({

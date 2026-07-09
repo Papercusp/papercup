@@ -28,7 +28,7 @@
  * apply guard is the bare hive-home demux (`row.harness_slug !== opts.harnessSlug`) — NOT the
  * WI-259 `decideMemberContentOp` member guard. So the right topology to prove them is the SAME
  * faithful 2-boot harness the matrices use, with the REAL boot scoped apply on the receiver
- * (NO applyOverride) so boot's real joiner `hiveHomeSlug` rebind (register-all `hiveScoped`,
+ * (NO applyOverride) so boot's real joiner `potHomeSlug` rebind (register-all `hiveScoped`,
  * boot.ts:803/855) is on the path — this is the FIRST test to drive these projections through
  * the real boot rebind (the _hive-substrate-rig drives hive_members/settings via applyOverride
  * on BOTH peers, never the boot rebind).
@@ -308,7 +308,7 @@ async function authorPolicy(
   const canonicalPolicyJson = canonicalizeHivePolicy(opts.policy);
   const bytes = hivePolicySignedBytes({
     workspaceId: WORKSPACE_ID,
-    hiveHomeSlug: opts.slug,
+    potHomeSlug: opts.slug,
     policyVersion: opts.version,
     canonicalPolicyJson,
   });

@@ -10,6 +10,7 @@
  * Used by monitoring scripts + the admin diagnostic page. Public read.
  */
 
+import nodeCluster from 'node:cluster';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
@@ -21,6 +22,8 @@ import {
   type SubstrateHealthVerdict,
 } from '../../../sync/hyperbee/health';
 import { summariseWorkspaceSubstrate } from '../../../sync/hyperbee/summary';
+import { resolveEffectiveBootedHandles } from '../../../sync/hyperbee/in-process-status';
+import { getCachedRemoteBootedHandles } from '../../../sync/hyperbee/cluster-booted-handles-sync';
 
 interface HarnessHealthRow {
   workspaceId: string;
@@ -33,11 +36,23 @@ const get = defineTool({
   method: 'GET',
   path: '/admin/dogfood-substrate-health',
   // Admin-only substrate health (verified admin insights UI); gated per D3 (was 'public').
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the packaged Mac/Windows
+  // desktop app hits this route as a diagnostic from localhost with no session cookie to
+  // present, so it only ever resolves to 'unverified-loopback' trust, never 'verified'/
+  // 'trusted'. Without this the route 403s for exactly the audience (packaged-desktop
+  // diagnosability) it exists to serve (EI-8816) — mirrors the same fix already applied to
+  // deploy-accounts-link-* and other loopback-only admin routes for the identical reason.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler() {
     // Stage 4d: the substrate always boots (the opt-in gate was removed).
     const flagEnabled = true;
-    const booted = listBootedHandles();
+    // EI-8816: on a request-only cluster worker, listBootedHandles() is always empty
+    // (the substrate boots only on the primary) — fall back to the primary's cached
+    // broadcast rather than silently reporting an empty `harnesses: []`.
+    const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
+      isSubstrateOwnerProcess: nodeCluster.isPrimary,
+      resolveRemote: getCachedRemoteBootedHandles,
+    });
     const progress = listBootstrapProgress();
     const progressByKey = new Map<
       string,
@@ -95,6 +110,10 @@ const get = defineTool({
       flagEnabled,
       summary,
       harnesses: rows,
+      // EI-8816: explicit blind-spot marker — false means this read did NOT reach the
+      // substrate-owning process's real state (a cluster worker with no/stale cached
+      // broadcast), so an empty `harnesses` here is NOT the same as "nothing booted".
+      reachedSubstrateOwner,
     });
   },
 });

@@ -193,7 +193,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     });
 
     expect(
-      await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, hiveHomeSlug: HIVE }),
+      await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, potHomeSlug: HIVE }),
     ).toBe(true);
     // A peer connects; the gossip opens + pairs the topic channel.
     const socket: { userData?: FakeMux } = {};
@@ -222,7 +222,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   it('L9: a put frame\'s hive_slug is PINNED to the receiver binding (spoofed sender hive ignored)', async () => {
     // The put path previously trusted the sender-declared row.hive_slug; an admitted
     // member could plant a presence row under a FOREIGN hive scope (which the per-hive
-    // lock authority scopes by). applyPut now pins hive_slug to binding.hiveHomeSlug,
+    // lock authority scopes by). applyPut now pins hive_slug to binding.potHomeSlug,
     // exactly as the sessions path already does.
     // gh 42 = the member's ATTESTED id (H3 requires it); a distinct machine_label
     // so this is its own row. The spoofed hive_slug must still be pinned to HIVE.
@@ -363,7 +363,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
       await registerPresenceGossipTopic({
         topicHex: TOPIC_HEX,
         workspaceId: WS,
-        hiveHomeSlug: HIVE,
+        potHomeSlug: HIVE,
         writer: {
           devicePubkey: member.pubB64,
           sign: member.sign,

@@ -26,7 +26,7 @@ import { getOrgPg } from "@papercusp/db-org";
 import { FLAGS } from "@papercusp/flags";
 import { getFlag } from "@papercusp/flags/server";
 import { activeWorkspaceId } from "../workspace-registry";
-import { resolveHiveHomeSlug } from "../hive/wake";
+import { resolvePotHomeSlug } from "../hive/wake";
 import { lastSystemHealth, runSystemHealthTick } from "../system-health";
 import { mapSystemHealthToBrief, withAnomalies } from "./compute-brief";
 import {
@@ -82,7 +82,7 @@ export async function getOverwatchSnapshot(opts?: {
   const potSlug =
     opts?.potSlug ??
     health?.panels.queen.data?.potSlug ??
-    resolveHiveHomeSlug() ??
+    resolvePotHomeSlug() ??
     ws;
   if (!health) return emptyOverwatchBrief(potSlug);
   return withAnomalies(mapSystemHealthToBrief(health, potSlug));
@@ -94,7 +94,7 @@ async function resolveOverwatchInstallSlug(
   ws: string,
   explicit?: string,
 ): Promise<string | null> {
-  const direct = explicit ?? resolveHiveHomeSlug();
+  const direct = explicit ?? resolvePotHomeSlug();
   if (direct) return direct;
   const started = await listStartedOverwatches().catch(() => []);
   return (

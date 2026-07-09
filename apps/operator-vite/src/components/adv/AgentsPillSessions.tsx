@@ -430,7 +430,8 @@ export function InactiveSessionsSection({
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
       >
-        {expanded ? '▾' : '▸'} View inactive sessions
+        <span aria-hidden>{expanded ? '▾' : '▸'}</span> View inactive sessions
+        <span className="pc-agents-sessions__toggle-hint">every past session, newest first</span>
       </button>
       {expanded && (
         <div className="pc-agents-sessions__scroll pc-agents-sessions__inactive-list" ref={scrollRef} data-testid="inactive-sessions-list">
@@ -496,7 +497,12 @@ export function InactiveSessionsSection({
 function SessionsStyles() {
   return (
     <style>{`
-      .pc-agents-sessions__searchwrap { padding: 6px 8px 4px; border-bottom: 1px solid var(--border); }
+      /* Sticky header: the search box stays visible while the roster scrolls
+         (the popover itself is the scrollport; -4px rides over its padding). */
+      .pc-agents-sessions__searchwrap {
+        padding: 6px 8px 4px; border-bottom: 1px solid var(--border);
+        position: sticky; top: -4px; z-index: 2; background: var(--bg-1, #0b1525);
+      }
       .pc-agents-sessions__search {
         width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 8px;
         background: var(--bg-2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
@@ -522,12 +528,20 @@ function SessionsStyles() {
         background: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
         color: inherit; border-radius: 2px; padding: 0 1px;
       }
-      .pc-agents-sessions__inactive { border-top: 1px solid var(--border); margin-top: 4px; }
-      .pc-agents-sessions__toggle {
-        width: 100%; text-align: left; font-size: 11.5px; padding: 6px 10px; cursor: pointer;
-        background: transparent; color: var(--fg-mute); border: none;
+      /* Sticky footer: pinned to the popover bottom so the hover detail strip
+         appearing/disappearing above it never displaces it (it was "fighting"
+         that strip for the same spot), and it stays visible without scrolling. */
+      .pc-agents-sessions__inactive {
+        border-top: 1px solid var(--border-strong, var(--border)); margin-top: 4px;
+        position: sticky; bottom: -4px; z-index: 2; background: var(--bg-1, #0b1525);
       }
-      .pc-agents-sessions__toggle:hover { color: var(--fg); background: var(--bg-2); }
+      .pc-agents-sessions__toggle {
+        width: 100%; text-align: left; font-size: 12px; font-weight: 600;
+        padding: 8px 10px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+        background: transparent; color: var(--accent, #38bdf8); border: none; border-radius: 4px;
+      }
+      .pc-agents-sessions__toggle:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%); }
+      .pc-agents-sessions__toggle-hint { margin-left: auto; font-weight: 400; font-size: 10.5px; color: var(--fg-mute); }
       .pc-agents-sessions__inactive-list { max-height: 260px; }
     `}</style>
   );

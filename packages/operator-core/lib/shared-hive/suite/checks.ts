@@ -513,7 +513,7 @@ async function checkAdmissionUnionPg(runId: string, sql: Sql): Promise<CheckResu
       { workspaceId: ws, homeSlug: hive, pubkeyBase64: generateEd25519KeypairDer().pubkeyBase64, keychainId: hiveKeychainId(ws, hive) },
       sql,
     );
-    await upsertHiveMember({ workspaceId: ws, hiveHomeSlug: hive, githubUserId: 1, githubUsername: 'owner', bindingStatus: 'verified' }, sql);
+    await upsertHiveMember({ workspaceId: ws, potHomeSlug: hive, githubUserId: 1, githubUsername: 'owner', bindingStatus: 'verified' }, sql);
 
     // Empty union before any revoke.
     const before = await loadRevokedHivePubkeys(ws, hive, sql);

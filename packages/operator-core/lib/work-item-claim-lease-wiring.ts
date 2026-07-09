@@ -25,7 +25,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
-import { hiveHomeSlugForHarness } from './hive-federation';
+import { potHomeSlugForHarness } from './hive-federation';
 import { acquireClaim, releaseClaimForItem, releaseClaimForItemByOwnerLocal, gcOrphanIssueClaimsLocal } from './work-item-claims';
 import { getBootedHarness } from './sync/hyperbee/boot-all';
 import { resolveMyPubkey } from './orchestrator/distributed-claim';
@@ -70,7 +70,7 @@ export async function leaseClaimedWorkItem(opts: {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   let potSlug: string | null = null;
   try {
-    potSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
+    potSlug = await potHomeSlugForHarness(workspaceId, opts.harness);
   } catch {
     potSlug = null; // not part of a Hive / resolution failed → harness-scoped fallback
   }
@@ -105,7 +105,7 @@ export async function releaseWorkItemLease(opts: { harness: string; workItemId: 
     // no-op (authority = self either way); cross-Swarm it matters.
     let potSlug: string | null = null;
     try {
-      potSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
+      potSlug = await potHomeSlugForHarness(workspaceId, opts.harness);
     } catch {
       potSlug = null;
     }
@@ -215,7 +215,7 @@ export async function leaseFeatureForExecutor(opts: {
     const owner = (booted ? resolveMyPubkey(booted) : null) ?? `swarm-local:${opts.harness}`;
     let potSlug: string | null = null;
     try {
-      potSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harness);
+      potSlug = await potHomeSlugForHarness(opts.workspaceId, opts.harness);
     } catch {
       potSlug = null;
     }

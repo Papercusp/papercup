@@ -45,6 +45,10 @@ import {
   startClusterLagWatchdog,
   clusterLagWatchdogArmed,
 } from '@papercusp/operator-core/lib/system-health/cluster-lag-watchdog';
+import {
+  startBootedHandlesBroadcaster,
+  startWorkerBootedHandlesCache,
+} from '@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync';
 import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
@@ -398,6 +402,12 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
     // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
     if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
+    // EI-8816: cache the primary's periodic booted-handles broadcast so this
+    // request-only worker's substrate-status reads aren't a silent blind spot
+    // (the substrate boots only on the primary; this worker's own listBootedHandles()
+    // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
+    // opt-in perf feature (unlike the lag watchdog above).
+    if (clusterWorkers > 1) startWorkerBootedHandlesCache();
   },
   // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
   // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build
@@ -436,6 +446,13 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
           workerById: clusterHandle.workerById,
         })
       : undefined;
+  // EI-8816: broadcast this primary's booted-handles snapshot to every worker so their
+  // substrate-status reads aren't a silent blind spot. ALWAYS-ON (not gated behind an
+  // arm flag like the lag watchdog above) — this closes a correctness bug, not an
+  // opt-in perf feature.
+  const bootedHandlesBroadcaster = clusterHandle.broadcast
+    ? startBootedHandlesBroadcaster({ broadcast: clusterHandle.broadcast })
+    : undefined;
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
     // dispatch loop (it owns the background machinery). It serves no HTTP, so it
@@ -444,6 +461,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     markShuttingDown();
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
+    bootedHandlesBroadcaster?.stop();
     clusterHandle.drain?.(sig);
     setTimeout(() => process.exit(0), 2000).unref?.();
   };

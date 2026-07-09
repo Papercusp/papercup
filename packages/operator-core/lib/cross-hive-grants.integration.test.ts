@@ -167,7 +167,7 @@ describe('back-compat — a legacy flat value reads as inbound-only', () => {
   it('loads a pre-B-05 flat grant map as INBOUND grants with no outbound', async () => {
     // Simulate a value written before directions existed: the flat { peer: kinds[] } shape.
     await setHiveSetting(
-      { workspaceId: WS, hiveHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask', 'work-request'] } },
+      { workspaceId: WS, potHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask', 'work-request'] } },
       db.sql,
     );
     expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([
@@ -178,7 +178,7 @@ describe('back-compat — a legacy flat value reads as inbound-only', () => {
 
   it('the first directed write migrates the stored value to { in, out } without losing the legacy inbound grants', async () => {
     await setHiveSetting(
-      { workspaceId: WS, hiveHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask'] } },
+      { workspaceId: WS, potHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask'] } },
       db.sql,
     );
     // Add an outbound grant for a different peer — must preserve the legacy inbound grant.

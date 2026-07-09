@@ -19,7 +19,7 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.WAKE_BRAIN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Every 30 minutes — a conservative default: ~48 Queen turns/day at most,
- *  and only while HIVE_AGENT_TABS is on AND a brain session is live. */
+ *  and only while POT_AGENT_TABS is on AND a brain session is live. */
 const CRON = '0 */30 * * * *';
 
 async function main(): Promise<void> {
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-wake-brain-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `the autonomous-Queen cadence (every 30 min; the wake fires only under HIVE_AGENT_TABS ` +
+      `the autonomous-Queen cadence (every 30 min; the wake fires only under POT_AGENT_TABS ` +
       `with a live pinned brain). ` +
       (active ? 'Cron LIVE (flag still gates the action).' : 'Inactive — enable via the routines admin.'),
   );

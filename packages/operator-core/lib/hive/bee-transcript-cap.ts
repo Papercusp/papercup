@@ -15,7 +15,7 @@
  * is its live working state — never touched. The sweep also LOGS the over-cap cohort
  * regardless of the flag (visibility), and recycles only when armed.
  *
- * DOUBLE-GATED (like idle-session-reaper): FLAGS.BEE_TRANSCRIPT_CAP default-OFF AND the
+ * DOUBLE-GATED (like idle-session-reaper): FLAGS.CUP_TRANSCRIPT_CAP default-OFF AND the
  * routine is seeded INACTIVE; a `dry_run` knob previews the cohort without recycling.
  * Pure decision + injectable IO ⇒ unit-tests with no DB / no flag store.
  */
@@ -88,7 +88,7 @@ export interface BeeTranscriptCapDeps {
 }
 
 export interface BeeTranscriptCapReport {
-  /** FLAGS.BEE_TRANSCRIPT_CAP resolved — false ⇒ a no-op (cohort logged, nothing recycled). */
+  /** FLAGS.CUP_TRANSCRIPT_CAP resolved — false ⇒ a no-op (cohort logged, nothing recycled). */
   enabled: boolean;
   dryRun: boolean;
   scanned: number;
@@ -111,7 +111,7 @@ export async function runBeeTranscriptCapSweep(opts: {
   log?: (m: string) => void;
 }): Promise<BeeTranscriptCapReport> {
   const log = opts.log ?? (() => {});
-  const enabled = await getFlag(FLAGS.BEE_TRANSCRIPT_CAP, 'system').catch(() => false);
+  const enabled = await getFlag(FLAGS.CUP_TRANSCRIPT_CAP, 'system').catch(() => false);
   const caps = { ...DEFAULT_BEE_TRANSCRIPT_CAPS, ...opts.caps };
   const dryRun = opts.dryRun === true;
 

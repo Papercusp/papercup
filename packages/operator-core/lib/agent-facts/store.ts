@@ -69,7 +69,7 @@ export interface AssertFactInput {
    * shareable assert without it is captured-then-dropped. Resolve via
    * {@link resolveFactFederationSlug} (member harness → its hive home).
    */
-  hiveHomeSlug?: string | null;
+  potHomeSlug?: string | null;
 }
 
 /** Validate scope/ref pairing per D-001. Returns an error string or null. */
@@ -191,7 +191,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable)
     VALUES
-      (${ws}, ${input.hiveHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
+      (${ws}, ${input.potHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true})
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))

@@ -110,7 +110,7 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
 
     // A standing wake delivery for A (handle-less inbox-wake — the EI-152 shape).
     await armInboxWake({ ownerId: a, workspaceId: h.ws });
-    const fired = await store.fireAwaitsForKey({ eventKey: inboxWakeKey(a), workspaceId: h.ws });
+    const fired = await store.fireAwaitsForKey({ eventKey: inboxWakeKey(a) });
     expect(fired.map((x) => x.subscriberId)).toEqual([a]);
     await store.insertDeliveries({ awaits: fired });
 

@@ -46,8 +46,8 @@ export default defineTool({
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const result = args.restore
-      ? await restoreContent({ workspaceId, hiveHomeSlug: args.pot, contentRef: args.contentRef })
-      : await takedownContent({ workspaceId, hiveHomeSlug: args.pot, contentRef: args.contentRef });
+      ? await restoreContent({ workspaceId, potHomeSlug: args.pot, contentRef: args.contentRef })
+      : await takedownContent({ workspaceId, potHomeSlug: args.pot, contentRef: args.contentRef });
     return text({ action: args.restore ? 'restore' : 'takedown', contentRef: args.contentRef, ...result });
   },
 });

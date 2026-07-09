@@ -32,7 +32,7 @@ describe('timing repro', () => {
       srvConnRef = srvConn;
       srvConn.on('error', () => {});
       srvConn.on('data', (c) => console.log('[RAW] server received', c.length, 'bytes:', c.toString('hex')));
-      wireHiveGitServe(srvConn, TOPIC, { hiveHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      wireHiveGitServe(srvConn, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
     const clientSocket: Socket = await new Promise((resolve, reject) => {

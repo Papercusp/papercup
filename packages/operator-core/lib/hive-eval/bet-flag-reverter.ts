@@ -63,7 +63,7 @@ export function registerBetFlagReverter(registry: Map<string, Reverter>): void {
  * IMMEDIATE auto-revert (P-015): right after a bake-off, if the bet REGRESSED, set its flag off.
  * This is the FITTING mechanism for a bake-off (a MEASUREMENT). The queen-autonomy tripwire route
  * (armTripwireForDecision) does NOT fit: it requires an AutonomyDecision + posture=='auto' +
- * QUEEN_AUTONOMY_ARMED (the tripwire subsystem is dark by default) and is a DEFERRED sweep, not an
+ * MUG_AUTONOMY_ARMED (the tripwire subsystem is dark by default) and is a DEFERRED sweep, not an
  * immediate revert. `setFlagOff` is injected (testable). Off-only — never enables a flag.
  */
 export async function autoRevertOnRegression(

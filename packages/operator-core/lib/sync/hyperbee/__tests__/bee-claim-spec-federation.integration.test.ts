@@ -125,7 +125,7 @@ describe('bee_claim_specs federation (real PG)', () => {
   it('hive-bound projection: a LOCAL-origin write applies without consulting the tier resolver', async () => {
     const resolver = vi.fn(async () => ({ tier: 'observe' as const, githubUserId: 1 }));
     const proj = buildBeeClaimSpecProjection({
-      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, hiveHomeSlug: HIVE, resolveCommsTier: resolver,
+      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE, resolveCommsTier: resolver,
     });
     await proj.writeToPg(row({ bee_id: 'su-bee-local' }), { authorPubkey: 'ownDevice', origin: 'local' });
     expect(await fetchRow('su-bee-local')).not.toBeNull();
@@ -134,7 +134,7 @@ describe('bee_claim_specs federation (real PG)', () => {
 
   it("hive-bound + REMOTE at 'steer': the redirect applies", async () => {
     const proj = buildBeeClaimSpecProjection({
-      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, hiveHomeSlug: HIVE,
+      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE,
       resolveCommsTier: async () => ({ tier: 'steer' as const, githubUserId: 42 }),
     });
     await proj.writeToPg(row({ bee_id: 'su-bee-steer', revision: 9 }), { authorPubkey: 'peerSteer', origin: 'remote' });
@@ -146,7 +146,7 @@ describe('bee_claim_specs federation (real PG)', () => {
     "hive-bound + REMOTE at '%s' (below steer): dropped silently — the bee keeps its prior spec (no quarantine rail for specs)",
     async (tier) => {
       const proj = buildBeeClaimSpecProjection({
-        workspaceId: WS, harnessSlug: HIVE, sql: db.sql, hiveHomeSlug: HIVE,
+        workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE,
         resolveCommsTier: async () => ({ tier, githubUserId: 42 }),
       });
       const beeId = `su-bee-drop-${tier}`;
@@ -157,7 +157,7 @@ describe('bee_claim_specs federation (real PG)', () => {
 
   it('an unresolvable author device (no admitted match) falls back to message tier — below steer, dropped', async () => {
     const proj = buildBeeClaimSpecProjection({
-      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, hiveHomeSlug: HIVE,
+      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE,
       resolveAuthorDevice: () => null,
     });
     await proj.writeToPg(row({ bee_id: 'su-bee-noauthor' }), { authorPubkey: 'unmatchedSourceLog', origin: 'remote' });
@@ -166,7 +166,7 @@ describe('bee_claim_specs federation (real PG)', () => {
 
   it('a tier-resolve error fails CLOSED (fallback tier, below steer) — never applies a REMOTE hive-bound spec on ambiguity', async () => {
     const proj = buildBeeClaimSpecProjection({
-      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, hiveHomeSlug: HIVE,
+      workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE,
       resolveCommsTier: async () => {
         throw new Error('tier store down');
       },

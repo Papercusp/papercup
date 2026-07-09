@@ -129,7 +129,7 @@ export async function cleanupPlans(
  * ALSO registers the harness as its OWN Hive home (an identity row in
  * `harness_shared.hives`): `resolvePlanScope` is Hive-scoped (WI-1992 — plans are
  * keyed at Hive-home grain), so a concrete slug must resolve through
- * `hiveHomeSlugForHarness()` or the tool THROWS. The registry read answers
+ * `potHomeSlugForHarness()` or the tool THROWS. The registry read answers
  * nothing for a throwaway slug, so the resolver falls to its `getHiveBySlug`
  * fallback — this row — exactly the shape `pot:create` writes in production.
  * Synthetic identity: a random 32-byte pubkey (UNIQUE constraint; pgcrypto is a

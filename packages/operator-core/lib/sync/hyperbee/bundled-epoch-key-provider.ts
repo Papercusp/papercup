@@ -3,7 +3,7 @@
  * {@link EpochKeyProvider} that resolves the hive epoch key OFFLINE from the seed's
  * bundled `epoch-keys.json` (emitted by `cut-seed-cli --emit-epoch-key`), so a FRESH
  * packaged install can decrypt the seed — the encrypted git bundles AND the
- * epoch-encrypted corestore content (HIVE_REKEY is default-ON) — with NO federation
+ * epoch-encrypted corestore content (POT_REKEY is default-ON) — with NO federation
  * join / admission. This is the v1 local-self-admit key source; federation (the
  * PG-wrapped member provider, hive-epoch-key-provider.ts) layers onto the SAME seam
  * for v2, so both paths are interchangeable.

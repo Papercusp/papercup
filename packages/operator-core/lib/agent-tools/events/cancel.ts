@@ -77,7 +77,6 @@ export default defineTool({
           const cancelled = await cancelAwait({
             awaitId: item.await_id,
             subscriberId: identity.ownerId,
-            workspaceId: identity.workspaceId ?? undefined,
           });
           out.await_id = item.await_id;
           out.cancelled = cancelled;

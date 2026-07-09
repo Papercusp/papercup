@@ -504,7 +504,7 @@ import './coordination/tools/roster';
 import './coordination/tools/declare-intent';
 // Per-agent wake mode + staged-wake review — the pause/edit gate's control surface
 // (hive-agent-tabs-psu-tui-2026-06-09 P-008/P-009 / D-005). The stage-vs-fire
-// behavior is in wakeRecipients (P-007, gated on HIVE_AGENT_TABS); these expose it.
+// behavior is in wakeRecipients (P-007, gated on POT_AGENT_TABS); these expose it.
 import './coordination/tools/wake-mode';
 import './coordination/tools/wake-queue';
 // One cheap combined fleet glance (wake gate + staged wakes + bees + governor +
@@ -837,7 +837,7 @@ import './fleet/place_batch';
 // fleet:capacity — the Queen's SOURCE-side read of the shared inference-capacity oracle
 // (queen-capacity-aware-dispatch-2026-06-22 P-003): bee-tier dispatchBudget + per-tier caps +
 // pool saturation, so placement is sized to what the pool can sustain (the read that mirrors
-// what place_batch's QUEEN_CAPACITY_DISPATCH clamp DOES).
+// what place_batch's MUG_CAPACITY_DISPATCH clamp DOES).
 import './fleet/capacity';
 // fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
 // Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.

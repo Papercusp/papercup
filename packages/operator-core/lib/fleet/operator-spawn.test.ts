@@ -45,7 +45,7 @@ vi.mock('../owner-steering', () => ({
   }),
   effectiveMaxBees: vi.fn((_steering: unknown, base: number) => base),
 }));
-vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'papercusp') }));
+vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnceWithFallback: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
@@ -649,7 +649,7 @@ describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
 
   it('aliases the legacy "papercusp-su" slug to the operator-home project', async () => {
     // The legacy "papercusp-su" MCP slug remaps to the operator-home project —
-    // operatorHomeHarnessSlug() (PAPERCUSP_HIVE_HOME_SLUG, else the migrated
+    // operatorHomeHarnessSlug() (PAPERCUSP_POT_HOME_SLUG, else the migrated
     // legacy default, post papercup→papercusp migration). Derive `home` from the
     // SAME source of truth the production remap uses, so this stays hermetic under
     // the gate's PAPERCUSP_*-stripped env (and under any host-configured pointer).

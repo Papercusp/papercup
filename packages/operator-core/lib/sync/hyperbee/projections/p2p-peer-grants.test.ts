@@ -100,7 +100,7 @@ describe('receiver-enforced identity gate (M6/L9, fail-closed)', () => {
   ): P2pPeerGrantsProjectionOpts => ({
     workspaceId: 'ws-1',
     harnessSlug: 'papercup-hive',
-    hiveHomeSlug: 'papercup-hive',
+    potHomeSlug: 'papercup-hive',
     sql: throwingSql,
     resolveAuthorDevice: () => device,
     resolveAuthorIdentity: async () => {
@@ -208,7 +208,7 @@ describe('WI-1940 — federated reap hook (revocation-reaper deferred #3)', () =
   const remoteOpts = (sql: postgres.Sql): P2pPeerGrantsProjectionOpts => ({
     workspaceId: 'ws-1',
     harnessSlug: 'papercup-hive',
-    hiveHomeSlug: 'papercup-hive',
+    potHomeSlug: 'papercup-hive',
     sql,
     resolveAuthorDevice: () => 'device-A',
     resolveAuthorIdentity: async () => ({ githubUserId: 12345 }),
@@ -265,7 +265,7 @@ describe('WI-1940 — federated reap hook (revocation-reaper deferred #3)', () =
 
   it('does NOT reap a LOCAL-origin apply (the p2p-grant-set route already reaps synchronously)', async () => {
     await _testing.writeToPg(
-      { ...remoteOpts(fakeSql(true)), hiveHomeSlug: undefined },
+      { ...remoteOpts(fakeSql(true)), potHomeSlug: undefined },
       wireRow({ status: 'revoked', grantee_kind: 'fleet' }),
       { origin: 'local' as const, authorPubkey: '', ts: 1, fedHlc: undefined },
     );

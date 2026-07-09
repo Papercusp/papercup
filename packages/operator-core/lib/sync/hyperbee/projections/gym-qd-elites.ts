@@ -268,7 +268,7 @@ async function deleteFromPg(
  */
 export async function purgeRevokedForeignElites(opts: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   revokedPubkeys: readonly string[];
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
   sql?: postgres.Sql;
@@ -280,7 +280,7 @@ export async function purgeRevokedForeignElites(opts: {
   const direct = (await sql`
     DELETE FROM harness_shared.gym_qd_foreign_elites
      WHERE workspace_id = ${opts.workspaceId}
-       AND harness_slug = ${opts.hiveHomeSlug}
+       AND harness_slug = ${opts.potHomeSlug}
        AND (source_hive = ANY(${revoked}) OR author_pubkey = ANY(${revoked}))
      RETURNING niche_key`) as unknown as unknown[];
   purged += Array.isArray(direct) ? direct.length : 0;
@@ -288,7 +288,7 @@ export async function purgeRevokedForeignElites(opts: {
     const sources = (await sql`
       SELECT DISTINCT source_hive FROM harness_shared.gym_qd_foreign_elites
        WHERE workspace_id = ${opts.workspaceId}
-         AND harness_slug = ${opts.hiveHomeSlug}`) as unknown as Array<{ source_hive: string }>;
+         AND harness_slug = ${opts.potHomeSlug}`) as unknown as Array<{ source_hive: string }>;
     const revokedSet = new Set(revoked);
     const doomed = sources
       .map((s) => s.source_hive)
@@ -300,7 +300,7 @@ export async function purgeRevokedForeignElites(opts: {
       const byDevice = (await sql`
         DELETE FROM harness_shared.gym_qd_foreign_elites
          WHERE workspace_id = ${opts.workspaceId}
-           AND harness_slug = ${opts.hiveHomeSlug}
+           AND harness_slug = ${opts.potHomeSlug}
            AND source_hive = ANY(${doomed})
          RETURNING niche_key`) as unknown as unknown[];
       purged += Array.isArray(byDevice) ? byDevice.length : 0;

@@ -50,8 +50,10 @@ describe('events:await wrapper defaults', () => {
       timeoutBehavior: 'wake',
       timeoutSec: AWAIT_DEFAULT_TIMEOUT_SEC,
       note: null,
-      workspaceId: 'ws-x',
     });
+    // WI-3575: registerAwait no longer takes workspaceId (events:await is
+    // single-workspace by design — see store.ts).
+    expect(arg).not.toHaveProperty('workspaceId');
   });
 
   it('captures the wake handle NOW and stamps it onto the registration', async () => {

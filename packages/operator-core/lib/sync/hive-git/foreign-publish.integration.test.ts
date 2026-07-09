@@ -91,7 +91,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
     await originCommit(clone, 'feature.ts', 'export const x = 1;\n', 'foreign feature');
 
     const pub = await publishForeignResult({
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       scope: SCOPE,
       foreignClonePath: clone,
       sourceBranch: 'staging',
@@ -179,7 +179,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
 
     // The PUBLISH admission already refuses (identity outside the chain)…
     const pub = await publishForeignResult({
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       scope: SCOPE,
       foreignClonePath: clone,
       sourceBranch: 'staging',
@@ -242,7 +242,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
     );
 
     const pub = await publishForeignResult({
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       scope: SCOPE,
       foreignClonePath: clone,
       sourceBranch: 'staging',

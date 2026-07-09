@@ -85,10 +85,10 @@ function assertSafeComponent(v: string, what: string): void {
 /** The bare repo path for a (hive home slug, managed-repo key). D-011 G-1b: one
  *  bare repo per (hive, managed repo) — a hive binds N repos, so the repo key
  *  (e.g. the github repo id or the member slug) is part of the path. */
-export function hiveGitRepoPath(hiveHomeSlug: string, repoKey: string): string {
-  assertSafeComponent(hiveHomeSlug, 'hiveHomeSlug');
+export function hiveGitRepoPath(potHomeSlug: string, repoKey: string): string {
+  assertSafeComponent(potHomeSlug, 'potHomeSlug');
   assertSafeComponent(repoKey, 'repoKey');
-  return join(hiveGitRoot(), hiveHomeSlug, `${repoKey}.git`);
+  return join(hiveGitRoot(), potHomeSlug, `${repoKey}.git`);
 }
 
 /**
@@ -128,11 +128,11 @@ async function pathExists(p: string): Promise<boolean> {
  * bare repo is a no-op git handles cleanly.
  */
 export async function ensureHiveGitRepo(
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   repoKey: string,
   runGit: RunGit = defaultRunGit,
 ): Promise<string> {
-  const repoPath = hiveGitRepoPath(hiveHomeSlug, repoKey);
+  const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
   if (await pathExists(join(repoPath, 'HEAD'))) return repoPath; // already a bare repo
   await mkdir(repoPath, { recursive: true });
   const r = await runGit(['init', '--bare', '-q', repoPath], hiveGitRoot());

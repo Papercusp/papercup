@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-// The gate is GRADUATED off the HIVE_AGENT_TABS flag (start-hive-wake P-007 /
+// The gate is GRADUATED off the POT_AGENT_TABS flag (start-hive-wake P-007 /
 // OQ-2): it is the hive's PAUSE primitive, so it holds unconditionally — the
 // resolved wake-mode alone decides fire-vs-stage. Default (everything `auto`)
 // remains the shipped fire-immediately behavior.

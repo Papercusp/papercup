@@ -66,7 +66,7 @@ describe('resolveAutonomyDecision — end-to-end against the real autonomy_polic
       { action: 'memory:remember', riskTier: 'trivial', reversibility: 'reversible' },
       // Force armed AND pin the owner full-autonomy grant OFF so the SUBSTANTIVE gate is
       // exercised on the REAL ceiling — not short-circuited by the unarmed flag, nor lifted
-      // wholesale by the grant (QUEEN_FULL_AUTONOMY). We deliberately don't lean on either
+      // wholesale by the grant (MUG_FULL_AUTONOMY). We deliberately don't lean on either
       // flag's ambient default here; the grant's own gate-lifting behaviour is covered in
       // decider.test.ts (both directions). Proves never-auto from the live store still gates.
       { ...defaultDeciderDeps(db.adminSql, 'default'), isArmed: async () => true, isFullAutonomy: async () => false },
@@ -126,7 +126,7 @@ describe('resolveAutonomyDecision — end-to-end against the real autonomy_polic
     );
     // Pin the UNARMED state explicitly (and the grant OFF) to exercise the arming-gate-holds
     // invariant deterministically — mirrors the sibling tests that force `isArmed: true`. We no
-    // longer lean on the QUEEN_AUTONOMY_ARMED ambient default (it now defaults ON per the alpha
+    // longer lean on the MUG_AUTONOMY_ARMED ambient default (it now defaults ON per the alpha
     // flags-default-on flip; with all-never-auto ceilings that stays behavior-neutral, but a
     // gating test must not depend on it). With autonomy NOT armed, even a lowered+unlocked ceiling
     // must still gate. That the live arming/grant flag wiring resolves is covered above.

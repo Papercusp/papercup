@@ -40,7 +40,7 @@ const store = new PgPresenceStore({
  * Upsert the caller's presence row — "set my presence to exactly this".
  * Always bumps heartbeat_at AND last_active_at (a declared write is genuine
  * activity, D-003). Resolves the populate-once scalars agentRole (D-004, from
- * the identity) + potSlug (from `harnessSlug` via hiveHomeSlugForHarness) when
+ * the identity) + potSlug (from `harnessSlug` via potHomeSlugForHarness) when
  * the caller hasn't already set them. Omitted optional fields reset to defaults.
  */
 export async function writePresence(
@@ -52,8 +52,8 @@ export async function writePresence(
   let potSlug = input.potSlug ?? null;
   if (potSlug == null && harnessSlug) {
     try {
-      const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-      potSlug = await hiveHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+      const { potHomeSlugForHarness } = await import('../../hive-federation');
+      potSlug = await potHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
     } catch {
       potSlug = null; // best-effort: presence must write even if hive lookup fails
     }

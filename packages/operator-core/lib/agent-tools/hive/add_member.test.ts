@@ -3,7 +3,7 @@
  *
  * The producer addHarnessToHive is exhaustively tested in _add-member.test.ts;
  * here we pin the THIN TOOL contract: it resolves the workspace from args/ctx,
- * maps {hive, member} → the producer's {hiveHomeSlug, memberHarnessSlug}, and
+ * maps {hive, member} → the producer's {potHomeSlug, memberHarnessSlug}, and
  * passes the producer result straight through (incl. error envelopes), without
  * a confirm gate or a root-only block (the Queen must be able to self-heal).
  */
@@ -35,7 +35,7 @@ describe('pot:add-member (EI-1582)', () => {
   it('maps {hive, member} → producer args and passes the success result through', async () => {
     addHarnessToHive.mockResolvedValue({
       ok: true,
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       memberHarnessSlug: 'papercup',
       changed: true,
       gitSync: { seeded: true },
@@ -43,7 +43,7 @@ describe('pot:add-member (EI-1582)', () => {
     const out = await call(addMember as never, { pot: 'papercusp', member: 'papercup' }, { workspaceId: 'ws-1' });
     expect(addHarnessToHive).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       memberHarnessSlug: 'papercup',
     });
     expect(out.ok).toBe(true);
@@ -65,7 +65,7 @@ describe('pot:add-member (EI-1582)', () => {
   it('is idempotent: a no-op re-add reports changed:false', async () => {
     addHarnessToHive.mockResolvedValue({
       ok: true,
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       memberHarnessSlug: 'papercup',
       changed: false,
     });

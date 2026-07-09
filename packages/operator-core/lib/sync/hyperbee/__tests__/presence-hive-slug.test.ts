@@ -3,7 +3,7 @@
  * P-008/P-009): the presence row + the announce builders carry the harness's
  * home Hive slug so the per-Hive lock authority can scope by Hive
  * (lockAuthorityForHive's `WHERE hive_slug=?`, mig 187). The PUBLISHER wiring
- * (resolving hiveHomeSlugForHarness at the announce loop) is separate; this
+ * (resolving potHomeSlugForHarness at the announce loop) is separate; this
  * covers the additive, back-compat data-model carry only.
  */
 import { describe, expect, it } from 'vitest';

@@ -292,7 +292,7 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
       workspaceId: 'default',
       harnessSlug: HIVE, // hive-home-grained binding (== the federation slug)
       sql: db.sql,
-      hiveHomeSlug: HIVE, // ⇒ enforcement active
+      potHomeSlug: HIVE, // ⇒ enforcement active
       resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
     });
   const applied = async (cupId: string) =>
@@ -321,7 +321,7 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
   });
 
   it('a NON-hive-bound projection stays full-passthrough (no gate — today\'s behavior)', async () => {
-    const plain = buildBeeClaimSpecProjection({ workspaceId: 'default', harnessSlug: HIVE, sql: db.sql }); // no hiveHomeSlug
+    const plain = buildBeeClaimSpecProjection({ workspaceId: 'default', harnessSlug: HIVE, sql: db.sql }); // no potHomeSlug
     await plain.writeToPg(specRow('m6-plain'), { authorPubkey: 'devA', origin: 'remote' });
     expect(await applied('m6-plain')).toBe(true);
   });
@@ -331,7 +331,7 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
       workspaceId: 'default',
       harnessSlug: HIVE,
       sql: db.sql,
-      hiveHomeSlug: HIVE,
+      potHomeSlug: HIVE,
       resolveCommsTier: async () => {
         throw new Error('tier store down');
       },

@@ -139,10 +139,10 @@ describe('resolveHiveSwarmBinding — JOINED (remote) Hive (EI-681)', () => {
 // projections to the HIVE-HOME slug — true (the home slug) ONLY in the joiner
 // topology (the home is a `remote_hive` VIEW), null for an owner's own hive (whose
 // home harness owns the write side) or a non-hive harness.
-describe('joinerHiveHomeSlug — the member-projection rebind gate', () => {
+describe('joinerPotHomeSlug — the member-projection rebind gate', () => {
   async function joinerHome(slug: string) {
-    const { joinerHiveHomeSlug } = await import('./hive-federation');
-    return joinerHiveHomeSlug('ws', slug);
+    const { joinerPotHomeSlug } = await import('./hive-federation');
+    return joinerPotHomeSlug('ws', slug);
   }
 
   it('a member of a JOINED (remote_hive) hive → the HIVE-HOME slug (rebind)', async () => {

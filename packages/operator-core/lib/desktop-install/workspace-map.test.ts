@@ -9,6 +9,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWorkspaceMapSection, resolveWorkspaceMapConfig } from './workspace-map';
 
+// EI-8794: the fallback-detection tests below stub `execFileSync` itself (rather
+// than relying on the real `git` binary), so the "detection failed" path is
+// deterministic regardless of what git checkout the test happens to run inside.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+import { execFileSync } from 'node:child_process';
+
 const CFG = {
   integrationRoot: '/work/papercup',
   releaseRoot: '/work/papercup-release',
@@ -44,6 +53,23 @@ describe('renderWorkspaceMapSection', () => {
     expect(s).toContain('branch `firehose`');
     expect(s).toContain('`golden` is automation-only');
     expect(s).not.toContain('branch `staging`');
+  });
+
+  it('EI-8794: does NOT claim the canonical-tree ✅ when gitDetected is false', () => {
+    const s = renderWorkspaceMapSection({ ...CFG, gitDetected: false });
+    expect(s).not.toContain('✅');
+    expect(s).not.toContain('ALL repo work happens here');
+    expect(s).toContain('⚠️');
+    expect(s).toContain('NOT a git checkout');
+    expect(s).toContain('/work/papercup');
+    // The other trees' warnings are unaffected.
+    expect(s).toContain('🚫 `/work/papercup-release`');
+    expect(s).toContain('🚫 `/work/papercup-checkpoint`');
+  });
+
+  it('renders the canonical ✅ claim when gitDetected is omitted or true (unaffected by the EI-8794 guard)', () => {
+    expect(renderWorkspaceMapSection(CFG)).toContain('✅ `/work/papercup`');
+    expect(renderWorkspaceMapSection({ ...CFG, gitDetected: true })).toContain('✅ `/work/papercup`');
   });
 });
 
@@ -81,5 +107,38 @@ describe('resolveWorkspaceMapConfig', () => {
     const cfg = resolveWorkspaceMapConfig();
     expect(cfg.releaseRoot).toBe('/srv/papercup-release');
     expect(cfg.checkpointRoot).toBe('/srv/papercusp-checkpoint');
+  });
+
+  it('EI-8794: suppresses git stderr (stdio-suppressed) via the execFileSync call', () => {
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '');
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce(
+      '/repo/toplevel\n',
+    );
+    resolveWorkspaceMapConfig();
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+    );
+  });
+
+  it('EI-8794: falls back to cwd + gitDetected:false when git rev-parse fails (not a git checkout)', () => {
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '');
+    vi.mocked(execFileSync).mockImplementationOnce(() => {
+      throw new Error('fatal: not a git repository (or any of the parent directories): .git');
+    });
+    const cfg = resolveWorkspaceMapConfig();
+    expect(cfg.integrationRoot).toBe(process.cwd());
+    expect(cfg.gitDetected).toBe(false);
+  });
+
+  it('EI-8794: gitDetected is omitted (not false) when git rev-parse succeeds', () => {
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '');
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce(
+      '/repo/toplevel\n',
+    );
+    const cfg = resolveWorkspaceMapConfig();
+    expect(cfg.integrationRoot).toBe('/repo/toplevel');
+    expect(cfg.gitDetected).not.toBe(false);
   });
 });

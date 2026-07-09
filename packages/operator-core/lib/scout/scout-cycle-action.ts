@@ -103,11 +103,11 @@ export function makeScoutCycleAction(
       // like the primary read.
       if (delta == null) {
         try {
-          const [{ resolveHiveHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+          const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
             import('../hive/wake'),
             import('../harness/operator-home-harness'),
           ]);
-          const home = resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+          const home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
           if (home && home !== ctx.installSlug) {
             delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, home, 'scout');
           }

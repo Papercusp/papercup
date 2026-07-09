@@ -68,14 +68,14 @@ async function seedHive(slug = HIVE, ws = WS): Promise<void> {
 describe('hive-membership-store (P-006 per-Hive admission)', () => {
   it('requires a parent Hive (FK) — a member with no hives row is rejected', async () => {
     await expect(
-      upsertHiveMember({ workspaceId: WS, hiveHomeSlug: 'ghost', githubUserId: 1, githubUsername: 'a' }, db.sql),
+      upsertHiveMember({ workspaceId: WS, potHomeSlug: 'ghost', githubUserId: 1, githubUsername: 'a' }, db.sql),
     ).rejects.toThrow();
   });
 
   it('upsert → get round-trips a member with bound devices', async () => {
     await seedHive();
     const rec = await upsertHiveMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo', deviceAttestations: [dev('pk-a')], bindingStatus: 'verified' },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo', deviceAttestations: [dev('pk-a')], bindingStatus: 'verified' },
       db.sql,
     );
     expect(rec.githubUserId).toBe(7);
@@ -87,8 +87,8 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
 
   it('upsert is idempotent on (ws, hive, user) — updates in place, never duplicates', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo' }, db.sql);
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo-renamed' }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo' }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo-renamed' }, db.sql);
     const members = await listHiveMembers(WS, HIVE, db.sql);
     expect(members).toHaveLength(1);
     expect(members[0].githubUsername).toBe('octo-renamed');
@@ -98,14 +98,14 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     it('REGRESSION: a SECOND DEVICE of the same GitHub user keeps BOTH attested (the announce path passes only the announcing device)', async () => {
       await seedHive();
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-tower')], bindingStatus: 'verified' },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-tower')], bindingStatus: 'verified' },
         db.sql,
       );
       // The iMac announces: ownerAdmitOrPend upserts with ONLY the iMac device.
       // Old REPLACE semantics clobbered dev-tower here (and the tower's next
       // attestation clobbered dev-imac back) — content federation dead.
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-imac')], bindingStatus: 'verified' },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-imac')], bindingStatus: 'verified' },
         db.sql,
       );
       const read = await getHiveMember(WS, HIVE, 7, db.sql);
@@ -115,11 +115,11 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     it('re-attesting the SAME device replaces just that entry (supplied wins), no duplicates', async () => {
       await seedHive();
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-b')] },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-b')] },
         db.sql,
       );
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [{ ...dev('dev-a'), created_at: 999, device_label: 'fresh' }] },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [{ ...dev('dev-a'), created_at: 999, device_label: 'fresh' }] },
         db.sql,
       );
       const read = await getHiveMember(WS, HIVE, 7, db.sql);
@@ -133,14 +133,14 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     it('revocation is STICKY: an announce-driven upsert (revokedPubkeys defaulting to []) cannot wipe it, and a revoked device cannot re-enter via merge', async () => {
       await seedHive();
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-evil')] },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-evil')] },
         db.sql,
       );
       await addRevokedHivePubkeys(WS, HIVE, 7, ['dev-evil'], db.sql);
       // A later plain announce upsert (defaults: no revokedPubkeys) used to
       // REPLACE revoked_pubkeys with [] — resurrecting the revoked device.
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-evil')] },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-evil')] },
         db.sql,
       );
       const read = await getHiveMember(WS, HIVE, 7, db.sql);
@@ -153,8 +153,8 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
 
   it('loadRevokedHivePubkeys UNIONS + dedupes revoked_pubkeys across all members (the blocklist)', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x', 'y'] }, db.sql);
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 2, githubUsername: 'b', revokedPubkeys: ['y', 'z'] }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x', 'y'] }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 2, githubUsername: 'b', revokedPubkeys: ['y', 'z'] }, db.sql);
     const revoked = await loadRevokedHivePubkeys(WS, HIVE, db.sql);
     expect([...revoked].sort()).toEqual(['x', 'y', 'z']);
   });
@@ -162,7 +162,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
   it('addRevokedHivePubkeys unions into the owner row (idempotent); null when the owner has no row', async () => {
     await seedHive();
     expect(await addRevokedHivePubkeys(WS, HIVE, 99, ['pk'], db.sql)).toBeNull();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 99, githubUsername: 'owner' }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 99, githubUsername: 'owner' }, db.sql);
     const r1 = await addRevokedHivePubkeys(WS, HIVE, 99, ['pk-1', 'pk-2'], db.sql);
     expect(r1?.revokedPubkeys.slice().sort()).toEqual(['pk-1', 'pk-2']);
     const r2 = await addRevokedHivePubkeys(WS, HIVE, 99, ['pk-2', 'pk-3'], db.sql); // pk-2 deduped
@@ -171,21 +171,21 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
 
   it('loadHiveMemberDevicePubkeys returns a member device pubkeys (revoke targeting)', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 5, githubUsername: 'c', deviceAttestations: [dev('d1'), dev('d2')] }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 5, githubUsername: 'c', deviceAttestations: [dev('d1'), dev('d2')] }, db.sql);
     expect((await loadHiveMemberDevicePubkeys(WS, HIVE, 5, db.sql)).slice().sort()).toEqual(['d1', 'd2']);
     expect(await loadHiveMemberDevicePubkeys(WS, HIVE, 404, db.sql)).toEqual([]);
   });
 
   it('is workspace-scoped: a member in one workspace is invisible to another', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x'] }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x'] }, db.sql);
     expect([...(await loadRevokedHivePubkeys('ws-other', HIVE, db.sql))]).toEqual([]);
     expect(await listHiveMembers('ws-other', HIVE, db.sql)).toHaveLength(0);
   });
 
   it('FK cascade: deleting the Hive removes its members', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a' }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a' }, db.sql);
     await deleteHive(WS, HIVE, db.sql);
     expect(await listHiveMembers(WS, HIVE, db.sql)).toHaveLength(0);
   });
@@ -195,11 +195,11 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
       await seedHive();
       // Two admitted members under the SAME concrete workspace — the hello-world-hive shape.
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'owner', deviceAttestations: [dev('pk-o')], bindingStatus: 'verified' },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'owner', deviceAttestations: [dev('pk-o')], bindingStatus: 'verified' },
         db.sql,
       );
       await upsertHiveMember(
-        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 2, githubUsername: 'joiner', deviceAttestations: [dev('pk-j')], bindingStatus: 'verified' },
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 2, githubUsername: 'joiner', deviceAttestations: [dev('pk-j')], bindingStatus: 'verified' },
         db.sql,
       );
       // The operator's authoritative read…
@@ -217,10 +217,10 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     it('upsertHiveMember REFUSES the "*" sentinel and empty/blank — loudly, with the EI-3409 reason', async () => {
       await seedHive();
       await expect(
-        upsertHiveMember({ workspaceId: '*', hiveHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
+        upsertHiveMember({ workspaceId: '*', potHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
       ).rejects.toThrow(/EI-3409|read sentinel/);
       await expect(
-        upsertHiveMember({ workspaceId: '', hiveHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
+        upsertHiveMember({ workspaceId: '', potHomeSlug: HIVE, githubUserId: 9, githubUsername: 'x' }, db.sql),
       ).rejects.toThrow(/read sentinel/);
       // and nothing leaked into the table
       const leaked = (await db.sql.unsafe(
@@ -244,7 +244,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
 
   it('the REUSED read-admission decider denies a Hive-revoked pubkey (P-006 admission semantics)', async () => {
     await seedHive();
-    await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['bad-pk'] }, db.sql);
+    await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['bad-pk'] }, db.sql);
 
     // The Hive-scoped revoked union feeds the SAME decider used for per-harness admission.
     const revoked = await loadRevokedHivePubkeys(WS, HIVE, db.sql);

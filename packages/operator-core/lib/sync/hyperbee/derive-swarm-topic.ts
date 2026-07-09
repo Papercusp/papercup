@@ -61,11 +61,11 @@ export type SwarmBinding =
  *               directory discovery) cannot form a 'hive' binding (see the union
  *               above) and boots on a 'topic' binding instead.
  * A 'topic'-bound joiner that is a remote_hive member must STILL resolve its hive-home
- * projection (via joinerHiveHomeSlug) so the OWNER's hive-home log announce (origin =
+ * projection (via joinerPotHomeSlug) so the OWNER's hive-home log announce (origin =
  * the owner's hive-home slug) is in-scope; otherwise onAnnounce buffers it as
  * scope_unresolved → grace-expires → rejects → federation never starts, even though
  * the peer is connected on the right topic (live-witnessed on the 2-machine rig). The
- * actual slug resolution stays self-gated by joinerHiveHomeSlug (remote_hive view
+ * actual slug resolution stays self-gated by joinerPotHomeSlug (remote_hive view
  * only → else null → fail-open to today's member-slug binding), so a non-hive
  * 'topic'/'gh'/'local' harness is unaffected.
  */

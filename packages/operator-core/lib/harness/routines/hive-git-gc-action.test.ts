@@ -6,22 +6,27 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const gcMock = vi.fn(async (..._args: unknown[]) => ({
-  archivedNamespaces: [] as string[],
-  deletedRefs: ['a', 'b'],
-  errors: [] as string[],
-  keptRefs: ['c'],
+// vi.mock factories are hoisted above these declarations; vi.hoisted() lifts the
+// backing vi.fn()s along with them so the factory below can safely close over them
+// (a bare top-level const here throws "Cannot access '<name>' before initialization").
+const { gcMock, hiveGitRepoPathMock, getHiveGitModeMock } = vi.hoisted(() => ({
+  gcMock: vi.fn(async (..._args: unknown[]) => ({
+    archivedNamespaces: [] as string[],
+    deletedRefs: ['a', 'b'],
+    errors: [] as string[],
+    keptRefs: ['c'],
+  })),
+  hiveGitRepoPathMock: vi.fn((potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
+  getHiveGitModeMock: vi.fn(async (_ws: string, _hive: string) => 'legacy' as 'legacy' | 'bridged' | 'p2p-only'),
 }));
 vi.mock('../../sync/hive-git/gc', () => ({
   gcHiveGitRepo: gcMock,
 }));
 
-const hiveGitRepoPathMock = vi.fn((hiveHomeSlug: string, repoKey: string) => `/repos/${hiveHomeSlug}/${repoKey}`);
 vi.mock('../../sync/hive-git/storage', () => ({
   hiveGitRepoPath: hiveGitRepoPathMock,
 }));
 
-const getHiveGitModeMock = vi.fn(async (_ws: string, _hive: string) => 'legacy' as 'legacy' | 'bridged' | 'p2p-only');
 vi.mock('../git-sync/hive-git-mode', () => ({
   getHiveGitMode: getHiveGitModeMock,
 }));

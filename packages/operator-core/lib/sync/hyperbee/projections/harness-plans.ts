@@ -135,7 +135,7 @@ export interface HarnessPlansProjectionOpts {
   isFlagOn?: () => Promise<boolean>;
   /** WI-259 P-002: hive-home slug when this harness is a hive MEMBER (cross-member content is
    *  membership-gated only when set); undefined for a non-hive / owned-home harness. */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
    *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
@@ -145,7 +145,7 @@ export interface HarnessPlansProjectionOpts {
    *  lost. Undefined ⇒ today's drop (no buffer wired). Threaded via RegisterAllOpts. */
   pendingMemberContent?: PendingMembershipContent;
   /** P-018 / D-012 — resolve the content write-authority mode for this hive. Default: read the
-   *  owner-signed policy for opts.hiveHomeSlug (resolveContentWriteMode) — so a trusted/allowlist
+   *  owner-signed policy for opts.potHomeSlug (resolveContentWriteMode) — so a trusted/allowlist
    *  hive stays 'member' (today's behavior, inert) and an `open`/author-scoped hive enforces
    *  per-row ownership. Injectable for tests. Called ONLY on cross-member REMOTE ops (the only
    *  path author-scoping gates), so own-slug/local applies pay nothing. */
@@ -156,12 +156,12 @@ export interface HarnessPlansProjectionOpts {
 }
 
 /** Default write-mode resolver: the owner-signed hive policy for this member harness's hive-home.
- *  Absent hiveHomeSlug (non-hive harness) or no policy ⇒ 'member' (today's behavior). */
+ *  Absent potHomeSlug (non-hive harness) or no policy ⇒ 'member' (today's behavior). */
 async function defaultResolveWriteMode(opts: HarnessPlansProjectionOpts): Promise<ContentWriteMode> {
-  if (!opts.hiveHomeSlug) return 'member';
+  if (!opts.potHomeSlug) return 'member';
   try {
     const { getHivePolicy } = await import('../../../hive-policy-store');
-    const resolved = await getHivePolicy(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+    const resolved = await getHivePolicy(opts.workspaceId, opts.potHomeSlug, opts.sql);
     return resolveContentWriteMode(resolved?.policy ?? null);
   } catch {
     // Fail-safe to today's behavior on any read error — never break federation over a policy read.

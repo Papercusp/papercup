@@ -99,7 +99,7 @@ export async function setHiveListing(
     try {
       await advanceEpochOnHiveBoundary({
         workspaceId,
-        hiveHomeSlug: meta.potId,
+        potHomeSlug: meta.potId,
         enabled: await isHiveRekeyEnabled(),
       });
     } catch {

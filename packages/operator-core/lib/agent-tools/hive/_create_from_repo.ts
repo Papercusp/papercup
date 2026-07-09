@@ -46,6 +46,11 @@ import {
   republishHiveAfterMemberAdd,
   type PublishCreatedHiveOutcome,
 } from '../../hive-publish-from-repo';
+import { formatHarnessLink } from '../../harness/url-scheme';
+import {
+  deriveHiveFederationTopic,
+  topicAsHex,
+} from '../../sync/hyperbee/derive-swarm-topic';
 
 // ── Options / results ─────────────────────────────────────────────────────────
 
@@ -160,7 +165,7 @@ export interface CreateHiveFromRepoDeps {
   /** B-07 / C-2: record the owner's beacon-publish consent. Default: the shared
    *  `beacon-consent` accessor (writes the federated `beacon-publish-consent`
    *  hive setting). Best-effort — a consent write never fails the create. */
-  setBeaconConsent?: (workspaceId: string, hiveHomeSlug: string, consent: boolean) => Promise<void>;
+  setBeaconConsent?: (workspaceId: string, potHomeSlug: string, consent: boolean) => Promise<void>;
   /** git-sync-any-hive B-01: seed the new member's `system:git-sync` routine.
    *  Default: seedGitSyncRoutineForMember (lazy-imported). Best-effort — a
    *  seeding failure NEVER fails the create (mirrors the publish discipline). */
@@ -315,9 +320,9 @@ export async function createHiveFromRepo(
   const publish = deps.publish ?? publishCreatedHive;
   const setBeaconConsent =
     deps.setBeaconConsent ??
-    (async (workspaceId: string, hiveHomeSlug: string, consent: boolean) => {
+    (async (workspaceId: string, potHomeSlug: string, consent: boolean) => {
       const { setBeaconPublishConsent } = await import('../../beacon-consent');
-      await setBeaconPublishConsent(workspaceId, hiveHomeSlug, consent);
+      await setBeaconPublishConsent(workspaceId, potHomeSlug, consent);
     });
   const seedGitSync =
     deps.seedGitSync ??
@@ -600,6 +605,39 @@ export async function createHiveFromRepo(
       cupboard: { attempted: false as const },
       error: e instanceof Error ? e.message : String(e),
     }));
+  }
+
+  // WI-3577: a registry re-read inside publishListingForMeta (members filtered
+  // by hive_slug === potSlug) can come back empty even though THIS request just
+  // registered the member (observed on a duplicateOf/cupboard-hit force:true
+  // create against a heavily-reused fixture repo, e.g. octocat/Hello-World hit
+  // by many concurrent fleet rig runs — a same-process registry-read race, not
+  // reproducible in isolation/unit tests). memberLinks then comes back absent,
+  // and rig_owner_publish_hive (bin/lib/deb-hetzner-rig.sh) has nothing to
+  // resolve a join link from. This request already knows everything needed to
+  // build ITS OWN member's join link without re-reading the registry at all —
+  // synthesize a self-link fallback whenever publish succeeded with a
+  // hivePubkey but came back with no memberLinks, so a from-repo create is
+  // NEVER joinable-blind for its own just-created member.
+  if (
+    'hivePubkey' in publishOutcome &&
+    publishOutcome.hivePubkey &&
+    !publishOutcome.memberLinks?.length &&
+    repoId !== undefined
+  ) {
+    try {
+      const topicHex = topicAsHex(deriveHiveFederationTopic(publishOutcome.hivePubkey));
+      const selfLink = formatHarnessLink({
+        topic: topicHex,
+        github: `${parsed.owner}/${parsed.repo}`,
+        repoOwner: parsed.owner,
+        repoName: parsed.repo,
+        repoId,
+      });
+      publishOutcome = { ...publishOutcome, memberLinks: [selfLink] };
+    } catch {
+      /* fallback is best-effort — never fail the create over it */
+    }
   }
 
   mark(

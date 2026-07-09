@@ -20,13 +20,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hiveMocks = vi.hoisted(() => ({
-  hiveHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
+  potHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
     async (_workspaceId, harnessSlug) => harnessSlug,
   ),
 }));
 
 vi.mock('../../../hive-federation', () => ({
-  hiveHomeSlugForHarness: hiveMocks.hiveHomeSlugForHarness,
+  potHomeSlugForHarness: hiveMocks.potHomeSlugForHarness,
 }));
 
 import {
@@ -43,8 +43,8 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
 const HOME = operatorHomeHarnessSlug();
 
 beforeEach(() => {
-  hiveMocks.hiveHomeSlugForHarness.mockReset();
-  hiveMocks.hiveHomeSlugForHarness.mockImplementation(
+  hiveMocks.potHomeSlugForHarness.mockReset();
+  hiveMocks.potHomeSlugForHarness.mockImplementation(
     async (_workspaceId: string, harnessSlug: string) => harnessSlug,
   );
 });
@@ -115,7 +115,7 @@ describe('resolvePlanScope — explicit workspaceId short-circuit (concrete slug
     expect(r).toEqual({ workspaceId: 'ws-7', harnessSlug: 'my-harness' });
     // The explicit workspace pins the scope — no projects lookup.
     expect(calls).toEqual([]);
-    expect(hiveMocks.hiveHomeSlugForHarness).toHaveBeenCalledWith('ws-7', 'my-harness');
+    expect(hiveMocks.potHomeSlugForHarness).toHaveBeenCalledWith('ws-7', 'my-harness');
   });
 });
 
@@ -125,11 +125,11 @@ describe('resolvePlanScope — concrete slug, workspace from the projects table'
     const r = await resolvePlanScope({ harnessSlug: 'my-harness', lookup });
     expect(r).toEqual({ workspaceId: 'ws-from-projects', harnessSlug: 'my-harness' });
     expect(calls).toEqual(['my-harness']);
-    expect(hiveMocks.hiveHomeSlugForHarness).toHaveBeenCalledWith('ws-from-projects', 'my-harness');
+    expect(hiveMocks.potHomeSlugForHarness).toHaveBeenCalledWith('ws-from-projects', 'my-harness');
   });
 
   it('canonicalizes a member harness to its hive-home slug before using the plan key', async () => {
-    hiveMocks.hiveHomeSlugForHarness.mockImplementation(async (_workspaceId, harnessSlug) =>
+    hiveMocks.potHomeSlugForHarness.mockImplementation(async (_workspaceId, harnessSlug) =>
       harnessSlug === 'oddsmith' ? 'oddsmith-hive' : harnessSlug,
     );
     const { lookup } = lookupReturning('papercusp-workspace');
@@ -155,7 +155,7 @@ describe('resolvePlanScope — fail-loud (NO silent default)', () => {
   });
 
   it('a registered slug with no hive home THROWS — plans cannot be scoped to a standalone harness', async () => {
-    hiveMocks.hiveHomeSlugForHarness.mockResolvedValue(null);
+    hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
     const { lookup } = lookupReturning('ws-standalone');
     await expect(resolvePlanScope({ harnessSlug: 'standalone', lookup })).rejects.toThrow(
       /plans are Hive-scoped/,

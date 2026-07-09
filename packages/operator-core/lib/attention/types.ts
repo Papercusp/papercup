@@ -93,7 +93,7 @@ export type Authorizer = 'you' | 'queen-eligible' | null;
  *   - `owner-only`    — a non-protected category but an owner-authority disposition
  *                       (e.g. ratify a `needs-human` plan item). Owner's by right.
  *   - `unarmed`       — a Queen-eligible disposition gated only because the autonomy
- *                       loop isn't armed (`QUEEN_AUTONOMY_ARMED` off).
+ *                       loop isn't armed (`MUG_AUTONOMY_ARMED` off).
  *   - `above-ceiling` — a Queen-eligible disposition the Queen isn't taking under
  *                       the current per-category ceiling/graduation. Widen it to
  *                       delegate these.
@@ -134,7 +134,7 @@ export interface AttentionAuthorization {
 /**
  * Derive WHO must authorize an item's disposition and WHY it's gated — the A1
  * authorizer-split the Queue UI groups on (P-002 / D-001). PURE: the reader reads
- * the live `QUEEN_AUTONOMY_ARMED` flag ONCE and passes it in.
+ * the live `MUG_AUTONOMY_ARMED` flag ONCE and passes it in.
  *
  * Only `needsHuman` (Decision-tier) items get a non-null result — those are the
  * dispositions a working agent escalated for sign-off. Everything else (alerts,

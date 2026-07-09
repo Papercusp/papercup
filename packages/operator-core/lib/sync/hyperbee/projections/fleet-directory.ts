@@ -105,7 +105,7 @@ async function realVerifyFleetDirectory(
     }
     const bytes = fleetDirectorySignedBytes({
       workspaceId: opts.workspaceId,
-      hiveHomeSlug: opts.harnessSlug,
+      potHomeSlug: opts.harnessSlug,
       recordVersion: row.record_version,
       canonicalRecordJson: row.record_json,
     });

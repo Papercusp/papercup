@@ -43,22 +43,22 @@ export type RevokeHiveContributorResult =
 export interface RevokeHiveContributorInput {
   workspaceId: string;
   /** The Hive's home_slug (its hives PK handle). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** Numeric GitHub user id of the contributor to revoke. Positive integer. */
   githubUserId: number;
 }
 
 export interface RevokeHiveContributorSeams {
   /** Is THIS Swarm the Hive owner (holds the Hive private key)? Default: loadHivePubkey != null. */
-  isOwningSwarm?: (workspaceId: string, hiveHomeSlug: string) => Promise<boolean>;
+  isOwningSwarm?: (workspaceId: string, potHomeSlug: string) => Promise<boolean>;
   /** The local owner's numeric GitHub id (whose row holds the revoked set). */
   resolveOwnerGithubUserId?: () => Promise<number | null>;
   /** The target member's device pubkeys (the things to revoke). */
-  loadTargetPubkeys?: (workspaceId: string, hiveHomeSlug: string, githubUserId: number) => Promise<string[]>;
+  loadTargetPubkeys?: (workspaceId: string, potHomeSlug: string, githubUserId: number) => Promise<string[]>;
   /** Add `pubkeys` to the owner's own row + (P-004) federate. Throws if the owner has no row. */
   publishRevocation?: (
     workspaceId: string,
-    hiveHomeSlug: string,
+    potHomeSlug: string,
     ownerGithubUserId: number,
     pubkeys: string[],
   ) => Promise<{ live: boolean }>;
@@ -87,7 +87,7 @@ export async function revokeHiveContributor(
       const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
       recordBootEvent(
         input.workspaceId,
-        input.hiveHomeSlug,
+        input.potHomeSlug,
         'rekey_boundary_skipped',
         `revoke boundary advance skipped for gh=${input.githubUserId}: ${reason}` +
           (!result.ok && result.detail ? ` (${result.detail})` : ''),
@@ -115,7 +115,7 @@ async function revokeHiveContributorInner(
   } = seams;
 
   // 1. Owner gate: only the Swarm that holds the Hive secret may revoke.
-  if (!(await isOwningSwarm(input.workspaceId, input.hiveHomeSlug))) {
+  if (!(await isOwningSwarm(input.workspaceId, input.potHomeSlug))) {
     return { ok: false, code: 'not_owner' };
   }
 
@@ -126,7 +126,7 @@ async function revokeHiveContributorInner(
   // 3. Resolve the target's device pubkeys.
   let pubkeys: string[];
   try {
-    pubkeys = await loadTargetPubkeys(input.workspaceId, input.hiveHomeSlug, input.githubUserId);
+    pubkeys = await loadTargetPubkeys(input.workspaceId, input.potHomeSlug, input.githubUserId);
   } catch (err: unknown) {
     return { ok: false, code: 'revoke_failed', detail: err instanceof Error ? err.message : String(err) };
   }
@@ -136,7 +136,7 @@ async function revokeHiveContributorInner(
   try {
     const { live } = await publishRevocation(
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       ownerGithubUserId,
       pubkeys,
     );
@@ -158,11 +158,11 @@ async function realResolveOwnerGithubUserId(): Promise<number | null> {
 
 async function realPublishRevocation(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   ownerGithubUserId: number,
   pubkeys: string[],
 ): Promise<{ live: boolean }> {
-  const row = await addRevokedHivePubkeys(workspaceId, hiveHomeSlug, ownerGithubUserId, pubkeys);
+  const row = await addRevokedHivePubkeys(workspaceId, potHomeSlug, ownerGithubUserId, pubkeys);
   if (!row) {
     throw new Error('owner has no hive_members row — join the Hive before revoking');
   }
@@ -175,7 +175,7 @@ async function realPublishRevocation(
   // `live:false`. ON ⇒ the removal is a live read-cut → `live:true`.
   const { applied } = await advanceEpochOnHiveBoundary({
     workspaceId,
-    hiveHomeSlug,
+    potHomeSlug,
     enabled: await isHiveRekeyEnabled(),
     cutOffPubkeys: pubkeys,
   });

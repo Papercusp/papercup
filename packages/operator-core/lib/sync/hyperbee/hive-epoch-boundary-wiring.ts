@@ -36,7 +36,7 @@ import { loadHivePubkey } from '../../identity/hive-keypair';
  * Default flag = false (the whole re-key is dark until cutover).
  */
 export async function isHiveRekeyEnabled(): Promise<boolean> {
-  return getFlag(FLAGS.HIVE_REKEY, 'system');
+  return getFlag(FLAGS.POT_REKEY, 'system');
 }
 
 export interface BoundaryRekeyResult {
@@ -79,10 +79,10 @@ export interface BoundaryRekeySeams {
 /** Every device pubkey currently bound to the hive (deduped across every member). */
 export async function loadAllHiveMemberDevicePubkeys(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<string[]> {
-  const members = await listHiveMembers(workspaceId, hiveHomeSlug, sql);
+  const members = await listHiveMembers(workspaceId, potHomeSlug, sql);
   const out = new Set<string>();
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
@@ -122,7 +122,7 @@ export async function loadAllHiveMemberDevicePubkeys(
 export async function advanceEpochOnHiveBoundary(
   opts: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     enabled: boolean;
     cutOffPubkeys?: readonly string[];
     sql?: Sql;
@@ -140,24 +140,24 @@ export async function advanceEpochOnHiveBoundary(
   } = seams;
 
   const crypto = await resolveCrypto(true);
-  const all = await loadAllMemberPubkeys(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  const all = await loadAllMemberPubkeys(opts.workspaceId, opts.potHomeSlug, opts.sql);
   const cut = new Set(opts.cutOffPubkeys ?? []);
   // C-001: exclude every PRIOR revocation too, not just this call's own cut-off set —
   // otherwise a previously-revoked device is silently re-granted on the next boundary.
-  const revoked = await loadRevokedPubkeys(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  const revoked = await loadRevokedPubkeys(opts.workspaceId, opts.potHomeSlug, opts.sql);
   const remaining = all.filter((pk) => pk && !cut.has(pk) && !revoked.has(pk));
 
   const { newEpoch, wrapped } = await advanceAndWrap(
     crypto,
-    { workspaceId: opts.workspaceId, hiveHomeSlug: opts.hiveHomeSlug, potId: opts.hiveHomeSlug },
+    { workspaceId: opts.workspaceId, potHomeSlug: opts.potHomeSlug, potId: opts.potHomeSlug },
     remaining,
     opts.sql,
   );
 
-  const author = await resolveAuthorPubkey(opts.workspaceId, opts.hiveHomeSlug);
+  const author = await resolveAuthorPubkey(opts.workspaceId, opts.potHomeSlug);
   const distributed = await persistWrappedKeys(
     opts.workspaceId,
-    opts.hiveHomeSlug,
+    opts.potHomeSlug,
     newEpoch,
     wrapped,
     author,
@@ -185,7 +185,7 @@ export async function advanceEpochOnHiveBoundary(
 export async function grantEpochKeysToMembers(
   opts: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     enabled: boolean;
     /** the new member's device pubkeys (base64) to grant the current epoch key. */
     newMemberPubkeys: readonly string[];
@@ -217,23 +217,23 @@ export async function grantEpochKeysToMembers(
   // no-ops there — safe to call from the admit path on EVERY peer (328af's DUAL hook:
   // upsertHiveMember owner-side + the open-mode admittedIdentities.set, which fires on every
   // box) without the caller re-checking owner-ness.
-  const author = await resolveAuthorPubkey(opts.workspaceId, opts.hiveHomeSlug);
+  const author = await resolveAuthorPubkey(opts.workspaceId, opts.potHomeSlug);
   if (!author) return { applied: false, reason: 'no-author' };
 
   const crypto = await resolveCrypto(true);
-  const current = await getCurrentEpoch(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  const current = await getCurrentEpoch(opts.workspaceId, opts.potHomeSlug, opts.sql);
 
   // Grant EVERY epoch key [0..current] — content is encrypted-once per epoch + never
   // re-encrypted on advance, so a joiner needs all prior keys to read existing content
   // (c2a63's v1 correctness call). Owner derives each; the member unwraps to read history.
   let distributed = 0;
   for (let epoch = 0; epoch <= current; epoch++) {
-    const key = await crypto.deriveEpochKey(opts.hiveHomeSlug, epoch);
+    const key = await crypto.deriveEpochKey(opts.potHomeSlug, epoch);
     const wrapped: WrappedEpochKeyRow[] = [];
     for (const pk of fresh) {
       wrapped.push({ memberDevicePubkey: pk, wrappedKey: await crypto.wrapKeyToMember(key, pk) });
     }
-    distributed += await persistWrappedKeys(opts.workspaceId, opts.hiveHomeSlug, epoch, wrapped, author, opts.sql, {
+    distributed += await persistWrappedKeys(opts.workspaceId, opts.potHomeSlug, epoch, wrapped, author, opts.sql, {
       refederate: opts.refederate,
     });
   }
@@ -280,7 +280,7 @@ async function defaultLoadEpochKeyDevices(
 export async function reconcileEpochKeysForCurrentMembers(
   opts: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     enabled: boolean;
     /**
      * BUG B (D-028, layer 3): re-SEND keys, not just fill gaps. Threaded to
@@ -305,7 +305,7 @@ export async function reconcileEpochKeysForCurrentMembers(
 ): Promise<BoundaryRekeyResult> {
   if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
   const loadMembers = seams.loadMembers ?? listHiveMembers;
-  const members = await loadMembers(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  const members = await loadMembers(opts.workspaceId, opts.potHomeSlug, opts.sql);
   // C-001: a revoked device must NEVER be re-granted the current key — exclude the UNION of every
   // member row's revoked_pubkeys blocklist (a revocation written on one member's row applies hive-wide).
   const revoked = new Set<string>();
@@ -340,9 +340,9 @@ export async function reconcileEpochKeysForCurrentMembers(
   if (!opts.refederate && !opts.onlyDevices && pubkeys.length > 0) {
     const getCurrentEpoch = seams.getCurrentEpoch ?? getHiveEpoch;
     const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
-    const currentEpoch = await getCurrentEpoch(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+    const currentEpoch = await getCurrentEpoch(opts.workspaceId, opts.potHomeSlug, opts.sql);
     const have = new Set(
-      await loadEpochKeyDevices(opts.workspaceId, opts.hiveHomeSlug, currentEpoch, opts.sql),
+      await loadEpochKeyDevices(opts.workspaceId, opts.potHomeSlug, currentEpoch, opts.sql),
     );
     if (pubkeys.every((pk) => have.has(pk))) {
       return { applied: false, reason: 'no-gap' };
@@ -353,7 +353,7 @@ export async function reconcileEpochKeysForCurrentMembers(
   return grantEpochKeysToMembers(
     {
       workspaceId: opts.workspaceId,
-      hiveHomeSlug: opts.hiveHomeSlug,
+      potHomeSlug: opts.potHomeSlug,
       enabled: opts.enabled,
       newMemberPubkeys: pubkeys,
       refederate: opts.refederate,
@@ -366,7 +366,7 @@ export async function reconcileEpochKeysForCurrentMembers(
 /** A hive this box knows about (its workspace + home slug). */
 export interface OwnedHiveRef {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
 }
 
 export interface ReconcileOwnedHivesSeams
@@ -405,17 +405,17 @@ export async function reconcileOwnedHiveEpochKeys(
       const rows = (await client`
         SELECT DISTINCT workspace_id, home_slug FROM harness_shared.hives
       `) as unknown as Array<{ workspace_id: string; home_slug: string }>;
-      return rows.map((r) => ({ workspaceId: r.workspace_id, hiveHomeSlug: r.home_slug }));
+      return rows.map((r) => ({ workspaceId: r.workspace_id, potHomeSlug: r.home_slug }));
     });
   const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
 
   const hives = await listHives(opts.sql);
   let reconciled = 0;
   let gapsFound = 0;
-  for (const { workspaceId, hiveHomeSlug } of hives) {
+  for (const { workspaceId, potHomeSlug } of hives) {
     try {
-      const current = await getCurrentEpoch(workspaceId, hiveHomeSlug, opts.sql);
-      const members = await loadMembers(workspaceId, hiveHomeSlug, opts.sql);
+      const current = await getCurrentEpoch(workspaceId, potHomeSlug, opts.sql);
+      const members = await loadMembers(workspaceId, potHomeSlug, opts.sql);
       const revoked = new Set<string>();
       for (const m of members) for (const pk of m.revokedPubkeys ?? []) revoked.add(pk);
       const liveDevices: string[] = [];
@@ -426,33 +426,33 @@ export async function reconcileOwnedHiveEpochKeys(
         }
       }
       if (liveDevices.length === 0) continue;
-      const have = new Set(await loadEpochKeyDevices(workspaceId, hiveHomeSlug, current, opts.sql));
+      const have = new Set(await loadEpochKeyDevices(workspaceId, potHomeSlug, current, opts.sql));
       const hasGap = liveDevices.some((pk) => !have.has(pk));
       if (!hasGap) continue; // steady state — NO crypto (perf guard)
       gapsFound += 1;
       const r = await reconcileEpochKeysForCurrentMembers(
-        { workspaceId, hiveHomeSlug, enabled: true, sql: opts.sql },
+        { workspaceId, potHomeSlug, enabled: true, sql: opts.sql },
         seams,
       );
       if (r.applied) {
         reconciled += 1;
          
         console.info(
-          `[hive-epoch-key-reconcile] backfilled ${hiveHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
+          `[hive-epoch-key-reconcile] backfilled ${potHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
         );
       } else {
         // A gap was found but the grant did NOT run — name the cause (no-author = not the owner
         // box; flag-disabled; no-fresh-members). This is the queryable signal a stuck hive needs.
          
         console.info(
-          `[hive-epoch-key-reconcile] gap in ${hiveHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
+          `[hive-epoch-key-reconcile] gap in ${potHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
         );
       }
     } catch (e) {
       // best-effort per hive — one hive's failure must not abort the sweep
        
       console.info(
-        `[hive-epoch-key-reconcile] ${hiveHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
+        `[hive-epoch-key-reconcile] ${potHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }

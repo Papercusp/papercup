@@ -79,7 +79,7 @@ export const ArgsSchema = z.object({
       // PROACTIVE Sentinel sweep turn — the server-side voice-host "decide to speak" tick fires this so a
       // proactive sentinel turn is distinguishable from a user-driven one (the
       // prompt surfaces FLEET-STATUS instead of a reply to the human). Gated:
-      // only the server-side sweep (FLAGS.SENTINEL_PROACTIVE, default OFF) emits it.
+      // only the server-side sweep (FLAGS.PAPERCUP_PROACTIVE, default OFF) emits it.
       z.literal('sentinel_scan'),
     ])
     .optional(),

@@ -40,6 +40,10 @@ test-results/
 # into git-sync commits — 10GB of unpushed >100MB blobs wedged the push for 20h.)
 apps/*/target/
 apps/operator-mobile/src-tauri/target/
+# per-work-item isolated cargo target dirs (CARGO_TARGET_DIR=.wiNNNN-cargo-target):
+# 2026-07-09 git-sync excluded a 240MB blob from .wi3388-cargo-target/ every sweep
+.wi*-cargo-target/
+*cargo-target*/
 
 # operator-docs (Astro+Starlight)
 apps/operator-docs/dist/

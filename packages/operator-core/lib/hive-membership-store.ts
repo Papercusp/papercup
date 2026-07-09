@@ -29,7 +29,7 @@ import type { DeviceAttestationEntry } from './harness/contributor-row-types';
 export interface HiveMemberRecord {
   workspaceId: string;
   /** The Hive's home_slug (the hives PK handle this membership attaches to). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   githubUserId: number;
   githubUsername: string;
   displayName: string | null;
@@ -45,7 +45,7 @@ export interface HiveMemberRecord {
 
 export interface UpsertHiveMemberInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   githubUserId: number;
   githubUsername: string;
   displayName?: string | null;
@@ -86,7 +86,7 @@ function parseAttestations(v: DeviceAttestationEntry[] | string | null): DeviceA
 function rowToRecord(r: HiveMemberPgRow): HiveMemberRecord {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.hive_home_slug,
+    potHomeSlug: r.hive_home_slug,
     githubUserId: Number(r.github_user_id),
     githubUsername: r.github_username,
     displayName: r.display_name,
@@ -132,13 +132,13 @@ const COLS = `workspace_id, hive_home_slug, github_user_id, github_username,
  */
 export async function loadRevokedHivePubkeys(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<Set<string>> {
   const rows = (await pg(sql).unsafe(
     `SELECT revoked_pubkeys FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   )) as unknown as Array<{ revoked_pubkeys: string[] | null }>;
   const set = new Set<string>();
   for (const r of rows) {
@@ -174,14 +174,14 @@ export async function listWorkspaceMembers(
 /** Get one Hive member. */
 export async function getHiveMember(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {
   const rows = (await pg(sql).unsafe(
     `SELECT ${COLS} FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3 LIMIT 1`,
-    [workspaceId, hiveHomeSlug, githubUserId],
+    [workspaceId, potHomeSlug, githubUserId],
   )) as unknown as HiveMemberPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -189,13 +189,13 @@ export async function getHiveMember(
 /** All members of a Hive. */
 export async function listHiveMembers(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<HiveMemberRecord[]> {
   const rows = (await pg(sql).unsafe(
     `SELECT ${COLS} FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2 ORDER BY joined_at ASC`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   )) as unknown as HiveMemberPgRow[];
   return rows.map(rowToRecord);
 }
@@ -203,11 +203,11 @@ export async function listHiveMembers(
 /** The device pubkeys a member has bound to a Hive (for revoke targeting). */
 export async function loadHiveMemberDevicePubkeys(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<string[]> {
-  const member = await getHiveMember(workspaceId, hiveHomeSlug, githubUserId, sql);
+  const member = await getHiveMember(workspaceId, potHomeSlug, githubUserId, sql);
   if (!member) return [];
   const out = new Set<string>();
   for (const a of member.deviceAttestations) {
@@ -394,7 +394,7 @@ export async function upsertHiveMember(
      RETURNING ${COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       input.githubUserId,
       input.githubUsername,
       input.displayName ?? null,
@@ -424,7 +424,7 @@ export async function upsertHiveMember(
       );
       const grantResult = await grantEpochKeysToMembers({
         workspaceId: input.workspaceId,
-        hiveHomeSlug: input.hiveHomeSlug,
+        potHomeSlug: input.potHomeSlug,
         enabled: await isHiveRekeyEnabled(),
         newMemberPubkeys,
         sql,
@@ -442,7 +442,7 @@ export async function upsertHiveMember(
           const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
           recordBootEvent(
             input.workspaceId,
-            input.hiveHomeSlug,
+            input.potHomeSlug,
             'rekey_grant_skipped',
             `grantEpochKeysToMembers on upsertHiveMember skipped for gh=${input.githubUserId}: ${grantResult.reason}`,
           );
@@ -462,7 +462,7 @@ export async function upsertHiveMember(
       const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
       recordBootEvent(
         input.workspaceId,
-        input.hiveHomeSlug,
+        input.potHomeSlug,
         'rekey_grant_failed',
         `grantEpochKeysToMembers on upsertHiveMember failed for gh=${input.githubUserId}: ${detail}`,
       );
@@ -486,14 +486,14 @@ export async function upsertHiveMember(
  */
 export async function addRevokedHivePubkeys(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   ownerGithubUserId: number,
   pubkeys: string[],
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {
   assertStorableWorkspaceId(workspaceId, 'addRevokedHivePubkeys');
   if (pubkeys.length === 0) {
-    return getHiveMember(workspaceId, hiveHomeSlug, ownerGithubUserId, sql);
+    return getHiveMember(workspaceId, potHomeSlug, ownerGithubUserId, sql);
   }
   // array_cat + dedupe via a fresh distinct set in SQL keeps it a single round-trip.
   const rows = (await pg(sql).unsafe(
@@ -504,7 +504,7 @@ export async function addRevokedHivePubkeys(
         )
       WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3
       RETURNING ${COLS}`,
-    [workspaceId, hiveHomeSlug, ownerGithubUserId, pubkeys],
+    [workspaceId, potHomeSlug, ownerGithubUserId, pubkeys],
   )) as unknown as HiveMemberPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -519,7 +519,7 @@ export async function addRevokedHivePubkeys(
  */
 export async function removeHiveMember(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<number> {
@@ -527,7 +527,7 @@ export async function removeHiveMember(
   const res = await pg(sql).unsafe(
     `DELETE FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3`,
-    [workspaceId, hiveHomeSlug, githubUserId],
+    [workspaceId, potHomeSlug, githubUserId],
   );
   return Number((res as unknown as { count?: number }).count ?? 0);
 }
@@ -543,14 +543,14 @@ export async function removeHiveMember(
  */
 export async function removeAllHiveMembers(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<number> {
   assertStorableWorkspaceId(workspaceId, 'removeAllHiveMembers');
   const res = await pg(sql).unsafe(
     `DELETE FROM harness_shared.hive_members
       WHERE workspace_id = $1 AND hive_home_slug = $2`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   );
   return Number((res as unknown as { count?: number }).count ?? 0);
 }

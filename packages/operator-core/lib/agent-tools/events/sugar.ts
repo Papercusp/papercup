@@ -79,7 +79,6 @@ async function armAwaits(
       wakeHandle: handle,
       timeoutBehavior: "wake",
       timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
-      workspaceId: identity.workspaceId ?? undefined,
     });
     awaitIds.push(row.id);
   }

@@ -130,7 +130,7 @@ export interface LeaveHiveDeps {
   dropMembers?: (
     sql: Sql,
     workspaceId: string,
-    hiveHomeSlug: string,
+    potHomeSlug: string,
     githubUserId: number,
   ) => Promise<number>;
   /** rm -rf a clone dir (default fs.rm recursive force). */

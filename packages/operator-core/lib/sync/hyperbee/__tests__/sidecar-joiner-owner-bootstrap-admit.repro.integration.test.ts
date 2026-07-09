@@ -303,7 +303,7 @@ async function runScenario(
   const JOINER_SLUG = 'joined-owner-hive';
   // recv-but-no-admit-during-rekey regression: when set, the JOINER boots with its hive-home
   // UNRESOLVED (home=<none> — the real first-join state before the 2c rekey) via the
-  // joinerHiveHomeSlugOverride seam; the owner's announce arrives in that window, then we rekey.
+  // joinerPotHomeSlugOverride seam; the owner's announce arrives in that window, then we rekey.
   const unresolvedHome = scenarioOpts.unresolvedHomeUntilRekey === true;
   let homeResolved = !unresolvedHome;
 
@@ -348,7 +348,7 @@ async function runScenario(
   const { publicKey: hivePub } = generateKeyPairSync('ed25519');
   const hivePubkeyB64 = rawPubkeyBase64(hivePub);
 
-  // hives row for HIVE_HOME so getHiveBySlug(HIVE_HOME) resolves (hiveHomeSlugForHarness
+  // hives row for HIVE_HOME so getHiveBySlug(HIVE_HOME) resolves (potHomeSlugForHarness
   // + resolveHiveSwarmBinding need it). public_key is the hive pubkey.
   await orgDb.adminSql`
     INSERT INTO harness_shared.hives
@@ -381,10 +381,10 @@ async function runScenario(
   );
 
   // Sanity: the joiner's boot reads resolve as the repro relies on.
-  const { hiveHomeSlugForHarness, joinerHiveHomeSlug } = await import('../../../hive-federation');
+  const { potHomeSlugForHarness, joinerPotHomeSlug } = await import('../../../hive-federation');
   const { loadHiveOwnerDevicePubkey } = await import('../../../hive-membership-store');
-  expect(await hiveHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
-  expect(await joinerHiveHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+  expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+  expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
   expect(await loadHiveOwnerDevicePubkey(WORKSPACE_ID, hivePubkeyB64)).toBe(idOwner.devicePubkey);
 
   const testnet = await createTestnet(3);
@@ -440,7 +440,7 @@ async function runScenario(
       // recv-but-no-admit-during-rekey path the already-bound scenarios skip.
       ...(unresolvedHome
         ? {
-            joinerHiveHomeSlugOverride: async (): Promise<string | null> =>
+            joinerPotHomeSlugOverride: async (): Promise<string | null> =>
               homeResolved ? HIVE_HOME : null,
           }
         : {}),

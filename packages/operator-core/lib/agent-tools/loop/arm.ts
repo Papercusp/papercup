@@ -25,7 +25,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import { isParkedNextFire } from '@papercusp/db-org';
 import {
   materializeLoop,
@@ -179,7 +179,7 @@ export default defineTool({
     // No `?? ''` collapse — keep the unresolved case nullish so the guard below catches
     // it and fails loud (a routine with an empty harness namespace would collide across
     // hives). workspace-data-isolation-leaks P-003.
-    // EI-7734: route through resolveHiveHomeSlug(explicit, ctxSlug) — NOT a raw `??`
+    // EI-7734: route through resolvePotHomeSlug(explicit, ctxSlug) — NOT a raw `??`
     // chain — so its '*'-skip logic actually runs. Every superuser/operator-scope
     // session sets ctx.harnessSlug = '*' (the wildcard sentinel, `_harness-scope.ts`),
     // which is truthy and so WON A raw `args.harness ?? ctx.harnessSlug ?? …` chain
@@ -188,9 +188,9 @@ export default defineTool({
     // (`work_items:create { …, harness:'*', … }`) — a value work_items:create's own
     // harness resolution rejects, so an SU loop's every wake failed to self-assign its
     // iteration's work_item. Same class of bug as the 2026-07-01 `pot:wake` 404
-    // (installSlug='*') that resolveHiveHomeSlug's '*'-skip was written to prevent —
+    // (installSlug='*') that resolvePotHomeSlug's '*'-skip was written to prevent —
     // this call site just wasn't routed through it.
-    const harness = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const harness = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [

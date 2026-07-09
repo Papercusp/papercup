@@ -285,7 +285,7 @@ export interface HomeHarnessResolutionCheck {
 /**
  * Recurrence guard for EI-2224: verify the configured operator-home harness slug
  * resolves to a registered project. A RENAME that leaves the home pointer
- * (PAPERCUSP_HIVE_HOME_SLUG) or a fire-path env on the retired slug used to 404
+ * (PAPERCUSP_POT_HOME_SLUG) or a fire-path env on the retired slug used to 404
  * SILENTLY at dispatch time and sit dark for hours; surfacing it at BOOT turns a
  * 34h silent outage into a one-line boot failure. Returns a structured verdict and
  * NEVER throws — the caller (boot path) decides whether to console.error / exit /
@@ -359,7 +359,7 @@ export async function resolveWorkspaceForHarnessSlug(slug: string): Promise<stri
  * resolve a per-call `harness` arg's workspace BEFORE the request-scoped ALS is
  * pinned to the clamped workspace — so it can't rely on `activeWorkspaceId()` and
  * passes the session's clamped `ctx.workspaceId` explicitly (mirrors the hive-tier
- * clamp, which likewise hands `ctx.workspaceId` to hiveHomeSlugForHarness).
+ * clamp, which likewise hands `ctx.workspaceId` to potHomeSlugForHarness).
  */
 export async function resolveWorkspaceForHarnessSlugIn(
   preferredWs: string,

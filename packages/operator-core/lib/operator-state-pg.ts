@@ -171,7 +171,7 @@ export async function readOperatorState<T>(
   // on the in-place rekey INSIDE the substrate SIDECAR process (SUBSTRATE_SIDECAR),
   // a DIFFERENT process from the join-hive registry write — so the writer's
   // same-process cache invalidation never reached this process. A warm-stale
-  // harness_registry entry made joinerHiveHomeSlug return null at rekey → the rebind
+  // harness_registry entry made joinerPotHomeSlug return null at rekey → the rebind
   // block skipped → forceReFold never fired → the hive_members/hive_settings
   // projections stayed bound to the MEMBER slug → the owner's roster rows dropped
   // forever (empty until a restart cold-read fresh). A fresh read sees the committed

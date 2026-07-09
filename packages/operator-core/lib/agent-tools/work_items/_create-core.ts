@@ -40,7 +40,7 @@ export interface CreateOneWorkItemArgs {
   title: string;
   summary?: string;
   harness?: string;
-  hive?: string;
+  pot?: string;
   workspace?: string;
   severity?: 'critical' | 'major' | 'minor' | 'nit';
   parent?: string;
@@ -143,11 +143,11 @@ export async function createOneWorkItem(
     }
     // Hive-scope gate (D-019/D-020): a PIPELINE work-item belongs to a hive's fleet
     // queue, so it must resolve to a hive — auto-resolve-then-require from the explicit
-    // `hive` arg, else the item's harness, else the session's harness. Issue kinds
+    // `pot` arg, else the item's harness, else the session's harness. Issue kinds
     // (bug/change) are NOT gated — they may stay workspace-global (D-020).
     let harnessForItem = args.harness;
     if (HIVE_GATED_KINDS.has(args.kind)) {
-      const hiveScope = await resolveHiveScope(args.hive, {
+      const hiveScope = await resolveHiveScope(args.pot, {
         workspaceId: ctx.workspaceId,
         harnessSlug: args.harness ?? ctx.harnessSlug,
       });

@@ -26,28 +26,28 @@ import { getHiveGitMode } from '../git-sync/hive-git-mode';
 
 registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
-  const hiveHomeSlug = typeof cfg.hive_home_slug === 'string' ? cfg.hive_home_slug : ctx.installSlug;
+  const potHomeSlug = typeof cfg.hive_home_slug === 'string' ? cfg.hive_home_slug : ctx.installSlug;
   const repoKey = typeof cfg.repo_key === 'string' ? cfg.repo_key : null;
   if (!repoKey) {
-    console.warn(`[hive-git-gc] ${hiveHomeSlug}: missing trigger_config.repo_key — skipping tick`);
+    console.warn(`[hive-git-gc] ${potHomeSlug}: missing trigger_config.repo_key — skipping tick`);
     return;
   }
 
-  const mode = await getHiveGitMode(ctx.workspaceId, hiveHomeSlug);
+  const mode = await getHiveGitMode(ctx.workspaceId, potHomeSlug);
   if (mode === 'legacy') {
     // Self-gate: nothing publishes into the hive-git namespace tree for a legacy hive.
     return;
   }
 
   const keepPublishedRefsPerNamespace = Number(cfg.keep_published_refs_per_namespace);
-  const repoPath = hiveGitRepoPath(hiveHomeSlug, repoKey);
+  const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
   const result = await gcHiveGitRepo(repoPath, {
     ...(Number.isFinite(keepPublishedRefsPerNamespace) && keepPublishedRefsPerNamespace > 0
       ? { keepPublishedRefsPerNamespace }
       : {}),
   });
   console.log(
-    `[hive-git-gc] ${hiveHomeSlug}/${repoKey} (mode=${mode}): ` +
+    `[hive-git-gc] ${potHomeSlug}/${repoKey} (mode=${mode}): ` +
       `deleted ${result.deletedRefs.length} ref(s), archived ${result.archivedNamespaces.length} namespace(s), ` +
       `kept ${result.keptRefs.length}` +
       (result.errors.length ? `, ${result.errors.length} error(s)` : ''),

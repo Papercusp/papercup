@@ -149,7 +149,7 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   // harness_shared.autoloop_state, so consecutive_errors feeds the fire gate —
   // a repeatedly-failing decider backs off instead of re-firing at full cadence.
   void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {});
-  // queen-memory-hybrid L2 (QUEEN_WARM_SESSION, default OFF): try delivering a
+  // queen-memory-hybrid L2 (MUG_WARM_SESSION, default OFF): try delivering a
   // queen wake WARM (wake-executor resume of her tracked session) before the
   // cold /invoke spawn. Fail-soft + flag-gated inside the attempt; delivered ⇒
   // skip the spawn (the resumed session IS this wake); not ⇒ today's path,

@@ -217,7 +217,7 @@ beforeAll(async () => {
     CREATE TABLE IF NOT EXISTS harness_shared.harness_registry (
       workspace_id text PRIMARY KEY, payload jsonb, updated_at bigint)`);
   // resolvePlanScope's Hive gate (plans are Hive-scoped) resolves the child's hive
-  // home from this payload (hiveHomeSlugForHarness: harness_kind 'hive' ⇒ itself).
+  // home from this payload (potHomeSlugForHarness: harness_kind 'hive' ⇒ itself).
   // Production registration (papercusp init / pot:create) stamps the entry; the
   // stubbed scaffold dep here doesn't, so declare the child a hive home up front —
   // BEFORE anything reads the registry (loadHarnessRegistry read-cache would pin

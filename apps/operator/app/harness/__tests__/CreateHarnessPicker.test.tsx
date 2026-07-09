@@ -34,7 +34,7 @@ vi.mock('../../adv/harnesses/useViewer', () => ({
 }));
 
 // Per-key flag override map — the picker gates the hive-native layout on
-// HIVE_FROM_GITHUB_URL and useLexicon reads THE_HIVE. Unset keys default true
+// POT_FROM_GITHUB_URL and useLexicon reads THE_HIVE. Unset keys default true
 // (both flags default-ON in FLAG_DEFAULTS). Mocking the hook keeps jsdom away
 // from the real flag bootstrap (fetch + EventSource). vi.hoisted: the factory
 // runs during hoisted module mocking, before module-scope consts initialize.
@@ -288,9 +288,9 @@ describe('P-006 — New hive from a Comb blueprint', () => {
 
 // ── Legacy layout (flag off) — preserved byte-for-byte ──────────────────────
 
-describe('legacy picker layout (HIVE_FROM_GITHUB_URL off)', () => {
+describe('legacy picker layout (POT_FROM_GITHUB_URL off)', () => {
   it('renders the legacy cards under Local / Shared', () => {
-    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
+    flagValues[FLAGS.POT_FROM_GITHUB_URL] = false;
     renderPicker();
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
@@ -457,7 +457,7 @@ describe('P-009 — Search GitHub entry', () => {
   });
 
   it('flag off: the GitHub URL card still shows the coming-soon stub', async () => {
-    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
+    flagValues[FLAGS.POT_FROM_GITHUB_URL] = false;
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
@@ -465,7 +465,7 @@ describe('P-009 — Search GitHub entry', () => {
   });
 
   it('flag off: the stub back button returns to the picker', async () => {
-    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
+    flagValues[FLAGS.POT_FROM_GITHUB_URL] = false;
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));

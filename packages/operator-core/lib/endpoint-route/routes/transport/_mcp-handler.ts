@@ -1589,7 +1589,7 @@ const handler = createMcpHandler(
           // open via its cross-ws scan). We resolve the harness's workspace EXPLICITLY
           // against the session's own workspace — the request-scoped ALS is not yet pinned
           // to the clamped workspace at this point, so we pass ctx.workspaceId by hand
-          // (the hive-tier clamp below does the same with hiveHomeSlugForHarness). The
+          // (the hive-tier clamp below does the same with potHomeSlugForHarness). The
           // hive tier is a FINER same-workspace/different-hive check that composes on top.
           // Fail-OPEN on an infra error / unresolvable-or-ambiguous slug (P-006); fail-CLOSED
           // only on a CONFIRMED foreign resolution.
@@ -1624,13 +1624,13 @@ const handler = createMcpHandler(
           // it is confined to THAT hive's subtree: (a) cross_harness:* tools (which
           // read OTHER harnesses) are denied; (b) a per-call `harness` arg that
           // escapes the hive — harness:'all'/'*', or a harness in a different hive —
-          // is rejected. Subtree membership = hiveHomeSlugForHarness(harness) ===
+          // is rejected. Subtree membership = potHomeSlugForHarness(harness) ===
           // scopeHive (the hive home AND each member resolve to the home; D-006).
           // The harder half — confining the workspace-global coord/fleet/search/
           // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
           if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
-            const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
-            const scopeHive = await hiveHomeSlugForHarness(
+            const { potHomeSlugForHarness } = await import('../../../hive-federation');
+            const scopeHive = await potHomeSlugForHarness(
               spawnRes.ctx.workspaceId,
               spawnRes.ctx.harnessSlug,
             );
@@ -1652,7 +1652,7 @@ const handler = createMcpHandler(
                 const escapes =
                   argHarness === 'all' ||
                   argHarness === '*' ||
-                  (await hiveHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive;
+                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive;
                 if (escapes) {
                   return {
                     isError: true,
@@ -1677,7 +1677,7 @@ const handler = createMcpHandler(
                 const escapes =
                   argHarnessSlug === 'all' ||
                   argHarnessSlug === '*' ||
-                  (await hiveHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug)) !== scopeHive;
+                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug)) !== scopeHive;
                 if (escapes) {
                   return {
                     isError: true,

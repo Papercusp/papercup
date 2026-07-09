@@ -3,7 +3,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { getInProcessSubstrateStatus } from '../in-process-status';
+import { getInProcessSubstrateStatus, resolveEffectiveBootedHandles } from '../in-process-status';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
@@ -164,6 +164,96 @@ describe('getInProcessSubstrateStatus', () => {
       });
       expect(r.harnesses).toHaveLength(3);
       expect(calls).toBe(1);
+    });
+  });
+
+  // EI-8816: the cluster-worker blind spot. listBootedHandles() is process-local, so a
+  // request-only true-cluster worker's own local map is ALWAYS empty (the substrate boots
+  // only on the primary) — resolveEffectiveBootedHandles + the isSubstrateOwnerProcess(ForTest)
+  // seam decide whether to trust local directly, fall back to a cached remote broadcast, or
+  // report an explicit reachedSubstrateOwner:false blind spot (never silently identical to a
+  // genuinely-empty substrate).
+  describe('resolveEffectiveBootedHandles (EI-8816, pure unit)', () => {
+    const H1 = [{ workspaceId: 'ws-1', harnessSlug: 'a' }];
+
+    it('substrate-owner process (primary / single-process): trusts local directly, even when empty', () => {
+      expect(resolveEffectiveBootedHandles(H1, { isSubstrateOwnerProcess: true })).toEqual({
+        booted: H1,
+        reachedSubstrateOwner: true,
+      });
+      expect(resolveEffectiveBootedHandles([], { isSubstrateOwnerProcess: true })).toEqual({
+        booted: [],
+        reachedSubstrateOwner: true, // legitimately idle — NOT a blind spot
+      });
+    });
+
+    it('non-owner (worker) with a FRESH cached remote snapshot: uses the remote handles', () => {
+      const r = resolveEffectiveBootedHandles([], {
+        isSubstrateOwnerProcess: false,
+        resolveRemote: () => ({ handles: H1, receivedAt: 1_000 }),
+        now: 1_000 + 10_000, // 10s old, under the 15s default max age
+      });
+      expect(r).toEqual({ booted: H1, reachedSubstrateOwner: true });
+    });
+
+    it('non-owner (worker) with a STALE cached remote snapshot: blind spot, not silently trusted', () => {
+      const r = resolveEffectiveBootedHandles([], {
+        isSubstrateOwnerProcess: false,
+        resolveRemote: () => ({ handles: H1, receivedAt: 1_000 }),
+        now: 1_000 + 20_000, // past the 15s default max age
+      });
+      expect(r).toEqual({ booted: [], reachedSubstrateOwner: false });
+    });
+
+    it('non-owner (worker) with NO cached remote snapshot yet: blind spot', () => {
+      const r = resolveEffectiveBootedHandles([], {
+        isSubstrateOwnerProcess: false,
+        resolveRemote: () => null,
+      });
+      expect(r).toEqual({ booted: [], reachedSubstrateOwner: false });
+    });
+
+    it('non-owner (worker) with no resolveRemote wired at all: blind spot (never throws)', () => {
+      const r = resolveEffectiveBootedHandles([], { isSubstrateOwnerProcess: false });
+      expect(r).toEqual({ booted: [], reachedSubstrateOwner: false });
+    });
+
+    it('respects a custom maxAgeMs', () => {
+      const r = resolveEffectiveBootedHandles([], {
+        isSubstrateOwnerProcess: false,
+        resolveRemote: () => ({ handles: H1, receivedAt: 1_000 }),
+        now: 1_000 + 4_000,
+        maxAgeMs: 3_000,
+      });
+      expect(r.reachedSubstrateOwner).toBe(false);
+    });
+  });
+
+  describe('reachedSubstrateOwner wired through getInProcessSubstrateStatus (EI-8816)', () => {
+    it('defaults isSubstrateOwnerProcess from the real process (this test process is never a forked worker) — always true here', () => {
+      const r = getInProcessSubstrateStatus();
+      expect(r.reachedSubstrateOwner).toBe(true);
+    });
+
+    it('isSubstrateOwnerProcessForTest:false + no remote resolver ⇒ reachedSubstrateOwner:false, bootedCount:0 even with local handles set', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      const r = getInProcessSubstrateStatus({ isSubstrateOwnerProcessForTest: false });
+      expect(r.reachedSubstrateOwner).toBe(false);
+      expect(r.bootedCount).toBe(0);
+      expect(r.harnesses).toEqual([]);
+    });
+
+    it('isSubstrateOwnerProcessForTest:false + a fresh resolveRemoteBootedHandles ⇒ uses the remote handles', () => {
+      const r = getInProcessSubstrateStatus({
+        isSubstrateOwnerProcessForTest: false,
+        resolveRemoteBootedHandles: () => ({
+          handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
+          receivedAt: Date.now(),
+        }),
+      });
+      expect(r.reachedSubstrateOwner).toBe(true);
+      expect(r.bootedCount).toBe(1);
+      expect(r.harnesses[0]).toMatchObject({ workspaceId: 'ws-1', harnessSlug: 'remote-a' });
     });
   });
 });

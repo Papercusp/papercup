@@ -88,13 +88,13 @@ export interface ModerationDeps {
  * filterTakenDownContent; the signed-policy ordering gives no-resurrection.
  */
 export async function takedownContent(
-  input: { workspaceId: string; hiveHomeSlug: string; contentRef: string },
+  input: { workspaceId: string; potHomeSlug: string; contentRef: string },
   deps: ModerationDeps = {},
 ): Promise<AuthorHivePolicyResult> {
   const mutate = deps.mutateHivePolicy ?? realMutateHivePolicy;
   return mutate({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     mutate: (p: HivePolicy): HivePolicy => ({
       ...p,
       moderation: {
@@ -108,13 +108,13 @@ export async function takedownContent(
 /** OWNER restore (un-takedown): remove a content ref from the signed takedown list.
  *  Owner-authored + signed — legitimate owner action, distinct from a malicious resurrection. */
 export async function restoreContent(
-  input: { workspaceId: string; hiveHomeSlug: string; contentRef: string },
+  input: { workspaceId: string; potHomeSlug: string; contentRef: string },
   deps: ModerationDeps = {},
 ): Promise<AuthorHivePolicyResult> {
   const mutate = deps.mutateHivePolicy ?? realMutateHivePolicy;
   return mutate({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     mutate: (p: HivePolicy): HivePolicy => ({
       ...p,
       moderation: {
@@ -143,7 +143,7 @@ export interface BanMemberResult {
  * ban append is attempted first; if it fails (not owner Swarm), revoke is skipped.
  */
 export async function banMember(
-  input: { workspaceId: string; hiveHomeSlug: string; githubUserId: number; revoke?: boolean },
+  input: { workspaceId: string; potHomeSlug: string; githubUserId: number; revoke?: boolean },
   deps: ModerationDeps = {},
 ): Promise<BanMemberResult> {
   const mutate = deps.mutateHivePolicy ?? realMutateHivePolicy;
@@ -152,7 +152,7 @@ export async function banMember(
 
   const policy = await mutate({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     mutate: (p: HivePolicy): HivePolicy => ({
       ...p,
       moderation: {
@@ -169,7 +169,7 @@ export async function banMember(
   }
   const revoke = await revokeFn({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     githubUserId: input.githubUserId,
   });
   return { policy, revoke };
@@ -177,14 +177,14 @@ export async function banMember(
 
 /** OWNER unban: remove the github id from the signed ban list (re-join allowed again). */
 export async function unbanMember(
-  input: { workspaceId: string; hiveHomeSlug: string; githubUserId: number },
+  input: { workspaceId: string; potHomeSlug: string; githubUserId: number },
   deps: ModerationDeps = {},
 ): Promise<AuthorHivePolicyResult> {
   const mutate = deps.mutateHivePolicy ?? realMutateHivePolicy;
   const gid = String(input.githubUserId);
   return mutate({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     mutate: (p: HivePolicy): HivePolicy => ({
       ...p,
       moderation: {

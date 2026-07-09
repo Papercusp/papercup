@@ -35,7 +35,9 @@ describe('events:cancel dual-path result', () => {
   it('cancel-only success → ok:true, cancelled:true, no reason', async () => {
     vi.mocked(cancelAwait).mockResolvedValue(true);
     const out = await call({ await_id: 7 });
-    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 7, subscriberId: 'su-canceller', workspaceId: 'ws-x' });
+    // WI-3575: cancelAwait no longer takes workspaceId (events:await is
+    // single-workspace by design — see store.ts).
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 7, subscriberId: 'su-canceller' });
     expect(ackDelivery).not.toHaveBeenCalled();
     expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, await_id: 7, cancelled: true }] });
     expect(out.results[0].error).toBeUndefined();

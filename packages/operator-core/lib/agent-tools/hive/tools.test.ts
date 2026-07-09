@@ -9,7 +9,7 @@
  * fire-vs-floor-skip branch, and the read-only status assembly.
  *
  * The PG-touching hive fns + the blueprint launch are mocked at their module
- * seams; the pure floor/slug helpers (hiveWakeFloorSec / resolveHiveHomeSlug /
+ * seams; the pure floor/slug helpers (hiveWakeFloorSec / resolvePotHomeSlug /
  * withinWakeFloor) run REAL.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -103,7 +103,7 @@ type Tool = {
 const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content[0].text);
 const ctx = (over: Record<string, unknown> = {}): never => over as never;
-const ENV = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_HIVE_HOME_SLUG'] as const;
+const ENV = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_POT_HOME_SLUG'] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -246,7 +246,7 @@ describe('pot:declare-wake', () => {
       import('@papercusp/flags'),
     ]);
     listUnplacedHiveFrontier.mockResolvedValue(['WI-116', 'WI-117']); // a non-empty frontier
-    setFlagOverridesForTest({ [FLAGS.HIVE_WAKE_FRONTIER_GUARD]: false });
+    setFlagOverridesForTest({ [FLAGS.POT_WAKE_FRONTIER_GUARD]: false });
     try {
       const res = parse(await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup' }, ctx()));
       expect(res.mode).toBe('event'); // guard disabled ⇒ the declaration applies
@@ -257,7 +257,7 @@ describe('pot:declare-wake', () => {
     }
   });
 
-  it('ignores ctx.harnessSlug and requires an explicit harness or PAPERCUSP_HIVE_HOME_SLUG', async () => {
+  it('ignores ctx.harnessSlug and requires an explicit harness or PAPERCUSP_POT_HOME_SLUG', async () => {
     const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx({ harnessSlug: 'ctx-slug' })));
     expect(res.ok).toBe(false);
     expect(res.error).toBe('no_home_harness');

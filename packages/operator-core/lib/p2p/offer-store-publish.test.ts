@@ -28,7 +28,7 @@ const PK = 'pk';
 function storedOf(record: WorkOfferStoreRecord): StoredWorkOffer {
   return {
     workspaceId: WS,
-    hiveHomeSlug: HOME,
+    potHomeSlug: HOME,
     publisherGithubUserId: record.publisherGithubUserId,
     offerId: record.offerId,
     record,
@@ -130,7 +130,7 @@ describe('publishSeatOfferForDelegation — authoring', () => {
     expect(r).toMatchObject({ ok: true, changed: true });
     expect(putRecord).toHaveBeenCalledTimes(1);
     const input = putRecord.mock.calls[0]![0];
-    expect(input).toMatchObject({ workspaceId: WS, hiveHomeSlug: HOME, selfGithubUserId: UID, signer });
+    expect(input).toMatchObject({ workspaceId: WS, potHomeSlug: HOME, selfGithubUserId: UID, signer });
     expect(input.record).toEqual(freshRecord());
   });
 

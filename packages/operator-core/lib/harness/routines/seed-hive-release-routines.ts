@@ -7,7 +7,7 @@
  * `system:green-checkpoint` (+ `system:release-trigger` when a deploy target is declared)
  * for OTHER repo-backed coding hives, keyed on their own install_slug.
  *
- * FLAG-GATED (PER_HIVE_RELEASE_GATE, default-OFF, D-008) + best-effort. With the flag off
+ * FLAG-GATED (PER_POT_RELEASE_GATE, default-OFF, D-008) + best-effort. With the flag off
  * this is a no-op, so the live :3070 papercusp pipeline is untouched during rollout. The
  * operator-home slug is explicitly skipped (never double-seed it). Idempotent upsert keyed
  * on (install_slug, name) — the same shape seed-release-routines.ts uses. Returns an undo
@@ -45,7 +45,7 @@ export async function seedHiveReleaseRoutines(opts: {
     import('@papercusp/flags/server'),
     import('@papercusp/flags'),
   ]);
-  if (!(await getFlag(FLAGS.PER_HIVE_RELEASE_GATE, 'system'))) {
+  if (!(await getFlag(FLAGS.PER_POT_RELEASE_GATE, 'system'))) {
     return { seeded: false, reason: 'flag_off', undo: NOOP_UNDO };
   }
 

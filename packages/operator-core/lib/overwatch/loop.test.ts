@@ -48,8 +48,8 @@ vi.mock('../autoloop', async () => ({
   recordFire: (...a: unknown[]) => recordFire(...a),
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-const resolveHiveHomeSlug = vi.fn();
-vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: (...a: unknown[]) => resolveHiveHomeSlug(...a) }));
+const resolvePotHomeSlug = vi.fn();
+vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: (...a: unknown[]) => resolvePotHomeSlug(...a) }));
 const operatorHomeHarnessSlug = vi.fn();
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: (...a: unknown[]) => operatorHomeHarnessSlug(...a) }));
 
@@ -63,7 +63,7 @@ const ctx = { installSlug: SLUG, workspaceId: WS, triggerConfig: {}, payloadTemp
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // (PAPERCUSP_HIVE_HOME_SLUG cross-file leak is scrubbed centrally in
+  // (PAPERCUSP_POT_HOME_SLUG cross-file leak is scrubbed centrally in
   // @papercusp/test-config setup-hermetic-env.ts — no per-file guard needed.)
   // The loop is fail-soft: degraded-brief + skip paths log warn/log. Silence them
   // (the repo's vitest-fail-on-console plugin fails any test that logs).
@@ -75,7 +75,7 @@ beforeEach(() => {
   computeOverwatchBrief.mockResolvedValue({ potSlug: SLUG, anomalies: [] });
   renderOverwatchBrief.mockReturnValue('RENDERED-BRIEF');
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
-  resolveHiveHomeSlug.mockReturnValue('papercup-hive');
+  resolvePotHomeSlug.mockReturnValue('papercup-hive');
   operatorHomeHarnessSlug.mockReturnValue('papercusp');
   recordFire.mockResolvedValue(undefined);
   overwatchScorecardEndCheck.mockResolvedValue({ outcome: 'synthesized', reason: 'test backstop' });
@@ -149,12 +149,12 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
 
   // EI-5842 regression: the meta-monitor was DEAD 5 days on HTTP 404 "unknown
   // project". Root cause — a workspace-sentinel row (installSlug === workspaceId)
-  // resolved to resolveHiveHomeSlug(null,null), which returns NULL when
-  // PAPERCUSP_HIVE_HOME_SLUG is unset, so the `?? ctx.installSlug` chain
+  // resolved to resolvePotHomeSlug(null,null), which returns NULL when
+  // PAPERCUSP_POT_HOME_SLUG is unset, so the `?? ctx.installSlug` chain
   // re-produced the WORKSPACE ID as the invoke target → resolveProject 404. Now it
   // must fall back to operatorHomeHarnessSlug() (never the workspace id).
   it('sentinel row + null hive-home env falls back to operatorHomeHarnessSlug, NOT the workspace id (EI-5842)', async () => {
-    resolveHiveHomeSlug.mockReturnValue(null); // PAPERCUSP_HIVE_HOME_SLUG unset in the bg-host
+    resolvePotHomeSlug.mockReturnValue(null); // PAPERCUSP_POT_HOME_SLUG unset in the bg-host
     operatorHomeHarnessSlug.mockReturnValue('papercusp');
     let captured: OverwatchLaunchFireInput | null = null;
     setOverwatchLaunchFire((input) => {
@@ -183,7 +183,7 @@ describe('handleOverwatchLaunch — brief-injected launch (C-3)', () => {
       installSlug: '*',
       payloadTemplate: { kickoff: 'wildcard wake' },
     });
-    expect(captured!.installSlug).toBe(SLUG); // resolveHiveHomeSlug default → papercup-hive
+    expect(captured!.installSlug).toBe(SLUG); // resolvePotHomeSlug default → papercup-hive
     expect(captured!.installSlug).not.toBe('*');
   });
 
@@ -244,7 +244,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
   // NOT POST /api/harness/<workspaceId>/invoke — that is the exact URL that 404'd
   // "unknown project" and gated the overwatch dark. It must target the home hive.
   it('default fire for a sentinel row + null hive-home env posts to the home hive, not the workspace id (EI-5842)', async () => {
-    resolveHiveHomeSlug.mockReturnValue(null);
+    resolvePotHomeSlug.mockReturnValue(null);
     operatorHomeHarnessSlug.mockReturnValue('papercusp');
     await handleOverwatchLaunch({
       ...ctx,

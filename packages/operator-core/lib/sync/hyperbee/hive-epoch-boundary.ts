@@ -40,7 +40,7 @@ export interface AdvanceEpochResult {
 export interface HiveBoundaryCtx {
   workspaceId: string;
   /** The hive's home_slug — the hive_settings / federation scope. */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The hive's crypto identity id (deriveEpochKey / keychain key id). */
   potId: string;
 }
@@ -58,7 +58,7 @@ export async function advanceEpochAndWrap(
   remainingMemberPubkeys: readonly string[],
   sql?: Sql,
 ): Promise<AdvanceEpochResult> {
-  const newEpoch = await advanceHiveEpoch(ctx.workspaceId, ctx.hiveHomeSlug, sql);
+  const newEpoch = await advanceHiveEpoch(ctx.workspaceId, ctx.potHomeSlug, sql);
   const key = await crypto.deriveEpochKey(ctx.potId, newEpoch);
 
   const seen = new Set<string>();

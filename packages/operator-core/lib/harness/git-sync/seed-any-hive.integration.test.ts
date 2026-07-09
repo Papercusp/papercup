@@ -912,7 +912,7 @@ describe('S5: re-running add-member / the spine never clobbers a human-edited ro
     // spine's non-clobber check returns BEFORE the github probe, so no network.
     const r = await addHarnessToHive({
       workspaceId: WS1,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       memberHarnessSlug: MEMBER,
     });
 

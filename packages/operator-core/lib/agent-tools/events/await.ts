@@ -94,7 +94,6 @@ export default defineTool({
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
       timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
-      workspaceId: identity.workspaceId ?? undefined,
     });
 
     return {

@@ -198,17 +198,17 @@ export async function listHives(workspaceId?: string): Promise<HiveDescriptor[]>
 }
 
 /**
- * The workspace's HOME hive slug — `PAPERCUSP_HIVE_HOME_SLUG` when set, else the
+ * The workspace's HOME hive slug — `PAPERCUSP_POT_HOME_SLUG` when set, else the
  * FIRST formal hive in the registry (the same slug the 👑-tab UI writes steering
  * to via `resolveHomeHive`). The env var is unset on the dev/green operators, so
- * the env-only `resolveHiveHomeSlug()` returns null there — which silently skipped
+ * the env-only `resolvePotHomeSlug()` returns null there — which silently skipped
  * the owner-steering MODEL-TIER override read at the spawn chokepoint (the override
  * was written to the formal hive but never read). This registry fallback makes the
  * read resolve the SAME slug the UI wrote to, so the override actually applies.
  * (queen-steering-panel GAP 1, 2026-06-17.) Async (registry); fail-soft.
  */
 export async function resolveHomeHiveSlug(workspaceId?: string): Promise<string | null> {
-  const env = process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim();
+  const env = process.env.PAPERCUSP_POT_HOME_SLUG?.trim();
   if (env) return env;
   const hives = await listHives(workspaceId).catch(() => []);
   return hives[0]?.slug ?? null;

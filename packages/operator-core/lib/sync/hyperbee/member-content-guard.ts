@@ -40,7 +40,7 @@ export interface MemberContentGuardOpts {
   /** The hive-home slug when this harness is a hive MEMBER (a joined member harness); undefined
    *  for a non-hive / owned-home harness — in which case there is no cross-member content to
    *  admit and the guard reduces to today's own-slug-only behavior. */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   sql?: Sql;
 }
 
@@ -72,7 +72,7 @@ export async function decideMemberContentOp(
   // Own slug — apply (today's behavior; no membership work on the hot common path).
   if (rowHarnessSlug === opts.harnessSlug) return 'apply';
   // Cross-slug op on a NON-hive harness — there are no members to admit from → drop (not deferrable).
-  if (!opts.hiveHomeSlug)
+  if (!opts.potHomeSlug)
     return traceMemberDecision('drop', 'no-hiveHome', rowHarnessSlug, opts, sourceLogDevicePubkey);
   // Cross-member op with no VERIFIED source-log identity — cannot confirm membership, and there is
   // no author identity to key a deferral on → drop (fail-closed).
@@ -84,7 +84,7 @@ export async function decideMemberContentOp(
   // per-harness CONTENT-write connection (the projection's own DB), a different concern that merely
   // coincides with the workspace PG in production but diverges under a per-peer test topology. Passing
   // it sent the membership read at a content DB with no `hive_members` table (WI-259 close-gate repro).
-  const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.hiveHomeSlug, undefined, deps);
+  const memberSet = await resolveHiveMemberDeviceSet(opts.workspaceId, opts.potHomeSlug, undefined, deps);
   // Member NOW → apply. Author identified but not yet a member → DEFER (P-004): the member row may
   // simply not have federated to this peer yet (content-before-membership ordering).
   if (memberSet.has(sourceLogDevicePubkey)) return 'apply';
@@ -116,7 +116,7 @@ function traceMemberDecision(
      
     console.error(
       `[A-003] member-guard ${decision} (${reason}): own=${opts.harnessSlug} row=${rowHarnessSlug} ` +
-        `hiveHome=${opts.hiveHomeSlug ?? '<none>'} ` +
+        `hiveHome=${opts.potHomeSlug ?? '<none>'} ` +
         `srcDev=${sourceLogDevicePubkey ? sourceLogDevicePubkey.slice(0, 10) : '<null>'}`,
     );
   }

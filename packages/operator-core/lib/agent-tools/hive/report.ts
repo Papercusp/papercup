@@ -105,7 +105,7 @@ export default defineTool({
 
     const report = await fileReport({
       workspaceId,
-      hiveHomeSlug: args.pot,
+      potHomeSlug: args.pot,
       reporterGithubUserId: identity.githubUserId,
       reporterGithubUsername: identity.githubLogin,
       targetKind: args.targetKind,

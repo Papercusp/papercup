@@ -463,7 +463,7 @@ describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () =
     key: 'k1',
     ts: 1717000000000,
     row: {
-      harness_slug: 'the-hive-home', // stamped from hiveHomeSlug (mig 461)
+      harness_slug: 'the-hive-home', // stamped from potHomeSlug (mig 461)
       workspace_id: 'ws-1',
       scope: 'harness',
       scope_ref: 'member-a',

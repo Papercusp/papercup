@@ -90,7 +90,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.hive_members, harness_shared.shared_repo_binding_cache`;
   h.repoPerm.mockReset();
-  setFlagOverridesForTest({ [FLAGS.HIVE_ROLE_TIERS]: true }); // ON for every case except the flag-off test
+  setFlagOverridesForTest({ [FLAGS.POT_ROLE_TIERS]: true }); // ON for every case except the flag-off test
 });
 afterEach(() => setFlagOverridesForTest(null));
 
@@ -164,7 +164,7 @@ describe('requireHiveTier — the owner-action gate (B11 / P-014)', () => {
   });
 
   it('flag OFF → no-op (today\'s behavior); GitHub is never consulted', async () => {
-    setFlagOverridesForTest({ [FLAGS.HIVE_ROLE_TIERS]: false });
+    setFlagOverridesForTest({ [FLAGS.POT_ROLE_TIERS]: false });
     await bindRepo();
     await seedMember({ githubUserId: 1, username: 'alice' });
     h.repoPerm.mockResolvedValue('read'); // would DENY if the flag were on

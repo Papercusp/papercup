@@ -1618,10 +1618,10 @@
   color: #ffffff;
 }
 .h-proposals-panel .h-proposal-row-button .h-proposal-badge.status-applied {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 12px rgba(45, 212, 191, 0.08);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.08);
 }
 .h-proposals-panel .h-proposal-row-button .h-proposal-badge.status-pending {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 12px rgba(250, 204, 21, 0.08);
+  box-shadow: 0 0 12px rgba(250, 204, 21, 0.08);
 }
 .h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-accept {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
@@ -1674,14 +1674,14 @@
 }
 .h-proposals-panel .h-proposal-mini.ghost:not(:disabled),
 .h-proposals-panel .h-proposal-btn.ghost:not(:disabled) {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.026);
+  box-shadow: none;
 }
 .h-proposals-panel .h-proposal-mini.ghost:not(:disabled):hover,
 .h-proposals-panel .h-proposal-btn.ghost:not(:disabled):hover {
   color: color-mix(in oklab, var(--fg), white 4%);
 }
 .h-proposals-panel .h-proposal-btn.primary:not(:disabled) {
-  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent), transparent 86%), inset 0 1px 0 rgba(255,255,255,0.16);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent), transparent 86%);
 }
 .h-proposals-panel .h-proposal-btn.primary:not(:disabled):hover {
   filter: saturate(1.04) brightness(1.03);
@@ -2295,21 +2295,16 @@
 .h-proposals-panel .h-proposal-mini,
 .h-proposals-panel .h-proposal-btn {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.13), transparent 32%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 10%), color-mix(in srgb, var(--bg-deeper), transparent 4%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
-    0 6px 16px rgba(0, 0, 0, 0.16) !important;
+  background: radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.13), transparent 32%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-popover), transparent 10%), color-mix(in srgb, var(--bg-popover), transparent 10%)) !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.16) !important;
 }
 .h-proposals-panel .h-proposal-filter:hover,
 .h-proposals-panel .h-proposal-mini:hover:not(:disabled),
 .h-proposals-panel .h-proposal-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 60%) !important;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 4%), color-mix(in srgb, var(--bg), transparent 2%)) !important;
+  background: radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(0deg, color-mix(in srgb, var(--bg-raised-high), transparent 4%), color-mix(in srgb, var(--bg-raised-high), transparent 4%)) !important;
 }
 .h-proposals-panel .h-proposal-filter[data-state="active"],
 .h-proposals-panel .h-proposal-filter[aria-selected="true"],
@@ -2324,17 +2319,15 @@
 .h-proposals-panel .h-proposal-mini.good {
   color: color-mix(in oklab, var(--good), white 28%) !important;
   border-color: rgba(34, 197, 94, 0.48) !important;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(19, 91, 57, 0.62), color-mix(in srgb, var(--bg), transparent 4%)) !important;
+  background: radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(0deg, rgba(19, 91, 57, 0.62), rgba(19, 91, 57, 0.62)) !important;
 }
 .h-proposals-panel .h-proposal-btn.danger,
 .h-proposals-panel .h-proposal-mini.bad {
   color: color-mix(in oklab, var(--bad), white 30%) !important;
   border-color: rgba(248, 113, 113, 0.50) !important;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.16), transparent 34%),
-    linear-gradient(180deg, rgba(96, 28, 42, 0.62), rgba(28, 7, 13, 0.96)) !important;
+  background: radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.16), transparent 34%),
+    linear-gradient(0deg, rgba(96, 28, 42, 0.62), rgba(96, 28, 42, 0.62)) !important;
 }
 .h-proposals-panel .h-proposal-pin {
   width: 23px !important;
@@ -3057,20 +3050,16 @@
 
 .h-proposals-panel .h-proposal-btn {
   border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 72%), rgba(14, 116, 144, 0.18)),
+  background: linear-gradient(0deg, color-mix(in srgb, var(--accent), transparent 72%), color-mix(in srgb, var(--accent), transparent 72%)),
     color-mix(in srgb, var(--bg), transparent 4%) !important;
   color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
-  box-shadow:
-    0 6px 14px rgba(0, 0, 0, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.22) !important;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.34);
 }
 
 .h-proposals-panel .h-proposal-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 64%), rgba(14, 116, 144, 0.26)),
+  background: linear-gradient(0deg, color-mix(in srgb, var(--accent-strong), transparent 64%), color-mix(in srgb, var(--accent-strong), transparent 64%)),
     color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
   color: #ffffff !important;
 }

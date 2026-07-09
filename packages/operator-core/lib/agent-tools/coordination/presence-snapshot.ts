@@ -141,8 +141,8 @@ export async function resolvePresenceScope(
       const harness = c.harnessSlug && c.harnessSlug !== '*' ? c.harnessSlug : null;
       if (harness) {
         try {
-          const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-          hiveFilter = await hiveHomeSlugForHarness(callerWs ?? 'default', harness);
+          const { potHomeSlugForHarness } = await import('../../hive-federation');
+          hiveFilter = await potHomeSlugForHarness(callerWs ?? 'default', harness);
         } catch {
           hiveFilter = null; // best-effort — presence must list even if hive lookup fails
         }

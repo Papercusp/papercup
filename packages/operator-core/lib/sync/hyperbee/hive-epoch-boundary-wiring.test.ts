@@ -19,7 +19,7 @@ describe('advanceEpochOnHiveBoundary', () => {
     const loadAll = vi.fn(async () => ['A']);
     const persist = vi.fn(async () => 1);
     const r = await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false, cutOffPubkeys: ['B'] },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: false, cutOffPubkeys: ['B'] },
       { loadAllMemberPubkeys: loadAll, persistWrappedKeys: persist },
     );
     expect(r).toEqual({ applied: false });
@@ -48,7 +48,7 @@ describe('advanceEpochOnHiveBoundary', () => {
       },
     };
     const r = await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, cutOffPubkeys: ['B'] },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, cutOffPubkeys: ['B'] },
       seams,
     );
     // B (the cut-off member) is NEVER in the remaining set or persisted → no key → cut off.
@@ -57,10 +57,10 @@ describe('advanceEpochOnHiveBoundary', () => {
     expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 2 });
   });
 
-  it('passes potId = hiveHomeSlug to the core (mint ↔ encrypt/decrypt AAD agree per-peer)', async () => {
-    let ctxSeen: { potId?: string; hiveHomeSlug?: string } = {};
+  it('passes potId = potHomeSlug to the core (mint ↔ encrypt/decrypt AAD agree per-peer)', async () => {
+    let ctxSeen: { potId?: string; potHomeSlug?: string } = {};
     await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'hello-world-hive', enabled: true },
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A'],
@@ -74,13 +74,13 @@ describe('advanceEpochOnHiveBoundary', () => {
       },
     );
     expect(ctxSeen.potId).toBe('hello-world-hive');
-    expect(ctxSeen.hiveHomeSlug).toBe('hello-world-hive');
+    expect(ctxSeen.potHomeSlug).toBe('hello-world-hive');
   });
 
   it('go-private (no cutOffPubkeys) ⇒ re-keys ALL current members (future link-holders get no key)', async () => {
     let seenRemaining: readonly string[] = [];
     const r = await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A', 'B'],
@@ -108,7 +108,7 @@ describe('advanceEpochOnHiveBoundary', () => {
     // 'A' was revoked in an EARLIER call (not this one's cutOffPubkeys) — it must still be
     // excluded here via the accumulated revoked-pubkeys union, not just this call's cutOff.
     const r = await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, cutOffPubkeys: ['B'] }, // THIS call revokes B, not A
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, cutOffPubkeys: ['B'] }, // THIS call revokes B, not A
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A', 'B', 'C'], // A's device_attestations row still exists
@@ -133,7 +133,7 @@ describe('advanceEpochOnHiveBoundary', () => {
   it('go-private also excludes historically-revoked devices (not just the live member set)', async () => {
     let seenRemaining: readonly string[] = [];
     await advanceEpochOnHiveBoundary(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true }, // no cutOffPubkeys at all — this is the go-private shape
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true }, // no cutOffPubkeys at all — this is the go-private shape
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A', 'B'],
@@ -154,7 +154,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
   it('flag OFF ⇒ no-op', async () => {
     const persist = vi.fn(async () => 1);
     const r = await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false, newMemberPubkeys: ['B'] },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: false, newMemberPubkeys: ['B'] },
       { persistWrappedKeys: persist },
     );
     expect(r).toEqual({ applied: false, reason: 'flag-disabled' });
@@ -163,7 +163,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
 
   it('empty members ⇒ no-op', async () => {
     const r = await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: [] },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: [] },
       { getCurrentEpoch: async () => 2 },
     );
     expect(r).toEqual({ applied: false, reason: 'no-fresh-members' });
@@ -173,7 +173,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
     const derivedEpochs: number[] = [];
     const persistedEpochs: number[] = [];
     const r = await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true, newMemberPubkeys: ['B', 'B', 'C'] },
+      { workspaceId: 'w', potHomeSlug: 'hello-world-hive', enabled: true, newMemberPubkeys: ['B', 'B', 'C'] },
       {
         resolveCrypto: async () =>
           ({
@@ -199,7 +199,7 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
   it('non-owner box (resolveAuthorPubkey null) ⇒ no-op — self-gates, safe to call from the admit path anywhere', async () => {
     const derive = vi.fn();
     const r = await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] },
       {
         resolveAuthorPubkey: async () => null, // this box does not hold the hive key
         getCurrentEpoch: async () => 2,
@@ -231,10 +231,10 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
       },
     };
     // default (no refederate) ⇒ persistWrappedKeys sees refederate undefined/false (write-once).
-    await grantEpochKeysToMembers({ workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] }, seams);
+    await grantEpochKeysToMembers({ workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'] }, seams);
     // refederate:true ⇒ persistWrappedKeys sees refederate true (DO UPDATE re-stamp path).
     await grantEpochKeysToMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'], refederate: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B'], refederate: true },
       seams,
     );
     expect(seenRefederate).toEqual([undefined, true]);
@@ -252,7 +252,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
   it('flag OFF ⇒ no-op (no member load, no grant)', async () => {
     const loadMembers = vi.fn(async () => [member(['A'])]);
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: false },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: false },
       { loadMembers },
     );
     expect(r).toEqual({ applied: false, reason: 'flag-disabled' });
@@ -263,7 +263,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     // owner 'A' + joiner 'B' (B federated in after the epoch advanced to 1, so it lacks epoch 1).
     const persisted: Array<{ epoch: number; members: string[] }> = [];
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'hello-world-hive', enabled: true },
       {
         loadMembers: async () => [member(['A']), member(['B'])],
         loadEpochKeyDevices: async () => [], // nobody has any key yet ⇒ a gap exists ⇒ the guard grants
@@ -290,7 +290,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
   it('C-001 SAFE: a revoked device is EXCLUDED — a removed member is never re-granted the current key', async () => {
     const persisted: Array<{ epoch: number; members: string[] }> = [];
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         // 'B' is in the revoked blocklist (cut member) — must NOT receive the new key.
         loadMembers: async () => [member(['A']), member(['B'], ['B'])],
@@ -319,7 +319,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
   it('non-owner box (resolveAuthorPubkey null) ⇒ no-op — self-gates via the delegated grant', async () => {
     const derive = vi.fn();
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         loadMembers: async () => [member(['A'])],
         loadEpochKeyDevices: async () => [], // a gap exists ⇒ guard passes through to the (self-gating) grant
@@ -338,7 +338,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     const r = await reconcileEpochKeysForCurrentMembers(
       // The whole hive is owner 'A' + member 'B' + revoked-and-cut 'R'; the reconnecting
       // member announces devices ['B','R']. onlyDevices targets B; C-001 drops R (revoked).
-      { workspaceId: 'w', hiveHomeSlug: 'hello-world-hive', enabled: true, refederate: true, onlyDevices: ['B', 'R'] },
+      { workspaceId: 'w', potHomeSlug: 'hello-world-hive', enabled: true, refederate: true, onlyDevices: ['B', 'R'] },
       {
         loadMembers: async () => [member(['A']), member(['B']), member(['R'], ['R'])],
         resolveCrypto: async () =>
@@ -379,7 +379,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
     const derive = vi.fn(async () => 'K' as never);
     const persist = vi.fn(async () => 1);
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true },
       {
         loadMembers: async () => [member(['A']), member(['B'])],
         getCurrentEpoch: async () => 1,
@@ -398,7 +398,7 @@ describe('reconcileEpochKeysForCurrentMembers (WI-887 self-heal: backfill [0..cu
   it('PERF GUARD bypassed by refederate ⇒ re-sends even when no device is missing the key', async () => {
     const persisted: Array<{ epoch: number; members: string[] }> = [];
     const r = await reconcileEpochKeysForCurrentMembers(
-      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, refederate: true },
+      { workspaceId: 'w', potHomeSlug: 'h', enabled: true, refederate: true },
       {
         loadMembers: async () => [member(['A'])],
         getCurrentEpoch: async () => 0,
@@ -442,7 +442,7 @@ describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
   });
 
   it('flag OFF ⇒ no scan, no work', async () => {
-    const listHives = vi.fn(async () => [{ workspaceId: 'w', hiveHomeSlug: 'h' }]);
+    const listHives = vi.fn(async () => [{ workspaceId: 'w', potHomeSlug: 'h' }]);
     const r = await reconcileOwnedHiveEpochKeys({ enabled: false }, { listHives });
     expect(r).toEqual({ scanned: 0, reconciled: 0 });
     expect(listHives).not.toHaveBeenCalled();
@@ -454,7 +454,7 @@ describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
       { enabled: true },
       {
         ...cryptoSeams(derived),
-        listHives: async () => [{ workspaceId: 'w', hiveHomeSlug: 'hello-world-hive' }],
+        listHives: async () => [{ workspaceId: 'w', potHomeSlug: 'hello-world-hive' }],
         getCurrentEpoch: async () => 1,
         loadMembers: async () => [member(['A']), member(['B'])],
         // BOTH live devices already hold the current (epoch 1) key → no gap.
@@ -484,7 +484,7 @@ describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
           persisted.push({ epoch, members: rows.map((row) => row.memberDevicePubkey) });
           return rows.length;
         },
-        listHives: async () => [{ workspaceId: 'w', hiveHomeSlug: 'hello-world-hive' }],
+        listHives: async () => [{ workspaceId: 'w', potHomeSlug: 'hello-world-hive' }],
         getCurrentEpoch: async () => 1,
         loadMembers: async () => [member(['A']), member(['B'])],
         // only 'A' holds the current key → 'B' has a GAP → reconcile.

@@ -43,11 +43,11 @@ export interface SetPolicyDeps {
   /** Resolve the local viewer's GitHub user id (null when gh-auth is missing). */
   viewerGithubId: () => Promise<number | null>;
   /** Read the Hive's binding claim row (null when there is no binding). */
-  readClaimGate: (workspaceId: string, hiveHomeSlug: string) => Promise<ClaimGateRow | null>;
+  readClaimGate: (workspaceId: string, potHomeSlug: string) => Promise<ClaimGateRow | null>;
   /** Sign + write the policy on the owner Swarm. */
   author: (input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     policy: import('../../../hive-policy-schema').HivePolicy;
   }) => Promise<AuthorHivePolicyResult>;
 }
@@ -58,7 +58,7 @@ export interface SetPolicyDeps {
  */
 export async function runSetPolicy(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   rawBody: unknown,
   deps: SetPolicyDeps,
 ): Promise<SetPolicyResult> {
@@ -77,7 +77,7 @@ export async function runSetPolicy(
   if (viewer == null) {
     return { status: 401, body: { ok: false, error: 'gh_auth_required' } };
   }
-  const gate = await deps.readClaimGate(workspaceId, hiveHomeSlug);
+  const gate = await deps.readClaimGate(workspaceId, potHomeSlug);
   if (!gate || gate.claimStatus !== 'claimed') {
     // An unclaimed (or absent-binding) Hive has NO enforceable policy — the
     // provisional owner can't lock it down. (brief EN-1: unclaimed ⇒ 403.)
@@ -88,7 +88,7 @@ export async function runSetPolicy(
   }
 
   // 3. AUTHOR — sign with the Hive key (owner Swarm only) + write (federates).
-  const result = await deps.author({ workspaceId, hiveHomeSlug, policy: coerced.policy });
+  const result = await deps.author({ workspaceId, potHomeSlug, policy: coerced.policy });
   if (result.ok) {
     return { status: 200, body: { ok: true, policy: result.policy } };
   }
@@ -188,7 +188,7 @@ async function queryClaimedBindingsByTopic(workspaceId: string, topicHex: string
 export interface ClaimGateReadSeams {
   querySlugRow?: (workspaceId: string, slug: string) => Promise<ClaimGateRow | null>;
   queryClaimedTopicRows?: (workspaceId: string, topicHex: string) => Promise<ClaimGateRow[]>;
-  loadPubkey?: (workspaceId: string, hiveHomeSlug: string) => Promise<string | null>;
+  loadPubkey?: (workspaceId: string, potHomeSlug: string) => Promise<string | null>;
 }
 
 /**
@@ -207,7 +207,7 @@ export interface ClaimGateReadSeams {
  */
 export async function readClaimGateWithTopicFallback(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   seams: ClaimGateReadSeams = {},
 ): Promise<ClaimGateRow | null> {
   const {
@@ -215,9 +215,9 @@ export async function readClaimGateWithTopicFallback(
     queryClaimedTopicRows = queryClaimedBindingsByTopic,
     loadPubkey = loadHivePubkey,
   } = seams;
-  const direct = await querySlugRow(workspaceId, hiveHomeSlug);
+  const direct = await querySlugRow(workspaceId, potHomeSlug);
   if (direct) return direct;
-  const pubkey = await loadPubkey(workspaceId, hiveHomeSlug).catch(() => null);
+  const pubkey = await loadPubkey(workspaceId, potHomeSlug).catch(() => null);
   if (!pubkey) return null; // not the owner Swarm / unknown hive — keep 403 semantics
   const topicHex = topicAsHex(deriveHiveFederationTopic(pubkey));
   const rows = await queryClaimedTopicRows(workspaceId, topicHex);
@@ -227,8 +227,8 @@ export async function readClaimGateWithTopicFallback(
   return { claimStatus: 'claimed', claimedGithubUserIds: [...ids] };
 }
 
-async function realReadClaimGate(workspaceId: string, hiveHomeSlug: string): Promise<ClaimGateRow | null> {
-  return readClaimGateWithTopicFallback(workspaceId, hiveHomeSlug);
+async function realReadClaimGate(workspaceId: string, potHomeSlug: string): Promise<ClaimGateRow | null> {
+  return readClaimGateWithTopicFallback(workspaceId, potHomeSlug);
 }
 
 const realDeps: SetPolicyDeps = {
@@ -242,10 +242,10 @@ const post = defineTool({
   path: '/pot/:id/policy',
   auth: 'loopback',
   async handler(req, ctx) {
-    const hiveHomeSlug = ctx.params.id as string;
+    const potHomeSlug = ctx.params.id as string;
     const workspaceId = activeWorkspaceId();
     const body = await req.json().catch(() => null);
-    const result = await runSetPolicy(workspaceId, hiveHomeSlug, body, realDeps);
+    const result = await runSetPolicy(workspaceId, potHomeSlug, body, realDeps);
     return Response.json(result.body, { status: result.status });
   },
 });
@@ -255,10 +255,10 @@ const get = defineTool({
   path: '/pot/:id/policy',
   auth: 'public',
   async handler(_req, ctx) {
-    const hiveHomeSlug = ctx.params.id as string;
+    const potHomeSlug = ctx.params.id as string;
     const workspaceId = activeWorkspaceId();
     try {
-      const policy = await getHivePolicy(workspaceId, hiveHomeSlug);
+      const policy = await getHivePolicy(workspaceId, potHomeSlug);
       // null ⇒ no policy set (permissive). Return a stable shape for the GUI.
       return Response.json({ ok: true, policy });
     } catch (e: unknown) {

@@ -95,7 +95,7 @@ describe('receiver-enforced responder identity (M6/L9)', () => {
   ): P2pReceiptsProjectionOpts => ({
     workspaceId: 'ws-1',
     harnessSlug: 'papercup-hive',
-    hiveHomeSlug: 'papercup-hive',
+    potHomeSlug: 'papercup-hive',
     sql: throwingSql as unknown as postgres.Sql,
     resolveAuthorDevice: () => device,
     resolveAuthorIdentity: async () => ({ githubUserId: identity }),

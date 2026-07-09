@@ -75,7 +75,7 @@ import {
 } from '../../../../test/_work-items-schema';
 // WI-259 STEP 1 (P-001) membership-aware admission case (below) — these route the
 // PROCESS-GLOBAL getOrgPg() at a migrated throwaway DB so boot.ts's STEP 1 reads
-// (hiveHomeSlugForHarness + resolveHiveMemberDeviceSet, both hardcoded to getOrgPg()
+// (potHomeSlugForHarness + resolveHiveMemberDeviceSet, both hardcoded to getOrgPg()
 // with NO sql seam) resolve against a seeded hive_members/hives/harness_registry.
 // Mirrors the _baseline-coord-fixture env-routing in two-peer-convergence.integration.test.ts.
 import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
@@ -725,10 +725,10 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   //
   // THE SLUG-MISMATCH MECHANISM (root cause CONFIRMED — do not re-investigate):
   //   - `buildHarnessProjectionApply(opts)` (register-all.ts:236) takes a
-  //     `hiveHomeSlug`, but in `buildHarnessProjections` (register-all.ts:171-174)
+  //     `potHomeSlug`, but in `buildHarnessProjections` (register-all.ts:171-174)
   //     ONLY the hive-home-grained projections (hive_settings, hive_members,
   //     hive_policy, hive_reports, hive_pending_joins, hive_epoch_keys) rebind to
-  //     `hiveHomeSlug`. The ~16 OTHERS — INCLUDING harness_features — STAY scoped
+  //     `potHomeSlug`. The ~16 OTHERS — INCLUDING harness_features — STAY scoped
   //     to the member `harnessSlug`.
   //   - So A's feature op carries `harness_slug = 'hive-repo'` (A's member slug);
   //     B's features projection is scoped to `harnessSlug = 'joined-hive-repo'`;
@@ -737,7 +737,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   //     layer — even though the op WAS admitted + replicated to B.
   //
   // We wire each peer's apply with the REAL `buildHarnessProjectionApply` (its
-  // per-peer `sql` seam + `hiveHomeSlug` = the shared hive-home), NOT the
+  // per-peer `sql` seam + `potHomeSlug` = the shared hive-home), NOT the
   // simplified `buildPeerApply`, so the real harness_slug guard + the surgical
   // hive-home remap set are exercised exactly as production applies them.
   //
@@ -801,7 +801,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           applyA ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: A_SLUG,
-            hiveHomeSlug: HIVE_HOME,
+            potHomeSlug: HIVE_HOME,
             sql: dbA.sql,
             ownLogKeyHex: handleA!.ownLog.keyHex,
           });
@@ -830,7 +830,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           applyB ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: B_SLUG, // B's features projection is scoped HERE…
-            hiveHomeSlug: HIVE_HOME, // …and only hive_* projections rebind to this.
+            potHomeSlug: HIVE_HOME, // …and only hive_* projections rebind to this.
             sql: dbB.sql,
             ownLogKeyHex: handleB!.ownLog.keyHex,
           });
@@ -938,7 +938,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // WI-259 STEP 1 (P-001) — the MEMBERSHIP-AWARE admission gate (LANDED).
   //
   // The WI-261 Prong A case above does NOT seed hive_members, so on B
-  // `myHiveHome = hiveHomeProjectionSlug ?? hiveHomeSlugForHarness(ws, B-slug)`
+  // `myHiveHome = hiveHomeProjectionSlug ?? potHomeSlugForHarness(ws, B-slug)`
   // resolves null and STEP 1 is SKIPPED — it only exercises the APPLY-layer drop.
   // This case SEEDS membership so STEP 1's admission path actually FIRES: B admits
   // A's out-of-scope (different member slug) log BY IDENTITY because A's verified
@@ -946,7 +946,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // (resolveHiveMemberDeviceSet → listHiveMembers, boot.ts onAnnounce `if (!inScope)`).
   //
   // HOW MEMBERSHIP IS SEEDED (the real path — NOT the hiveHomeProjectionSlug shortcut):
-  // STEP 1 calls `hiveHomeSlugForHarness(ws, B_SLUG)` and
+  // STEP 1 calls `potHomeSlugForHarness(ws, B_SLUG)` and
   // `resolveHiveMemberDeviceSet(ws, myHiveHome)` with NO `sql` seam — BOTH hardcode
   // the PROCESS-GLOBAL `getOrgPg()`. The two booted peers, by contrast, bind their
   // PROJECTIONS to per-peer `sql` seams (dbA/dbB) — getOrgPg() is never their DB. So
@@ -960,7 +960,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   //                       entry carrying idA.devicePubkey), hive_home_slug = HIVE_HOME.
   //                       This is what resolveHiveMemberDeviceSet returns A's pubkey from.
   //   - `harness_registry` — B's project `{ slug: B_SLUG, hive_slug: HIVE_HOME }` so
-  //                       hiveHomeSlugForHarness(ws, B_SLUG) resolves HIVE_HOME (A's
+  //                       potHomeSlugForHarness(ws, B_SLUG) resolves HIVE_HOME (A's
   //                       home project + a hive entry too, for symmetry).
   // A's announce carries A's REAL device_pubkey + github_user_id (the identity override),
   // matched to the seeded hive_members row.
@@ -1055,7 +1055,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
                 ])}::text::jsonb,
                 '{}'::text[], 'verified')
       `;
-      // Registry: B's member project points at HIVE_HOME so hiveHomeSlugForHarness(B)
+      // Registry: B's member project points at HIVE_HOME so potHomeSlugForHarness(B)
       // → HIVE_HOME. (A's home + member projects seeded too for symmetry.)
       await mutateHarnessRegistry(
         (r) => ({
@@ -1071,9 +1071,9 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       );
 
       // ── Sanity: the SAME getOrgPg()-backed reads STEP 1 makes resolve as expected. ──
-      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, B_SLUG)).toBe(HIVE_HOME);
+      expect(await potHomeSlugForHarness(WORKSPACE_ID, B_SLUG)).toBe(HIVE_HOME);
       const seededSet = await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME);
       expect(seededSet.has(idA.devicePubkey)).toBe(true);
       _clearHiveMemberDeviceSetCacheForTest(); // drop the sanity-read cache so boot re-reads fresh
@@ -1119,7 +1119,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           applyA ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: A_SLUG,
-            hiveHomeSlug: HIVE_HOME,
+            potHomeSlug: HIVE_HOME,
             sql: dbA.sql,
             ownLogKeyHex: handleA!.ownLog.keyHex,
           });
@@ -1150,7 +1150,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           applyB ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: B_SLUG,
-            hiveHomeSlug: HIVE_HOME,
+            potHomeSlug: HIVE_HOME,
             sql: dbB.sql,
             ownLogKeyHex: handleB!.ownLog.keyHex,
             // WI-259 P-002 seam: mirror boot.ts's admit-time map. Boot stamps
@@ -1234,18 +1234,18 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // ──────────────────────────────────────────────────────────────────────────
   // WI-559 / FED-1 (fed-b→fed-a "discovers 0") — the OWNER-side apply.
   //
-  // The WI-259 P-002 case above proves a JOINER (member harness; its hiveHomeSlug is set via the
+  // The WI-259 P-002 case above proves a JOINER (member harness; its potHomeSlug is set via the
   // 2c rebind) applies a cross-member op. It did NOT cover the OTHER direction: the hive OWNER
   // (whose RECEIVING harness IS the hive home) applying a MEMBER's content. Boot's
-  // `resolveHiveHomeProjectionSlug` only resolves the JOINER rebind (`joinerHiveHomeSlug` → null
+  // `resolveHiveHomeProjectionSlug` only resolves the JOINER rebind (`joinerPotHomeSlug` → null
   // for an owner), so the owner's home harness ran the 6 content projections with
-  // hiveHomeSlug=undefined → `decideMemberContentOp` returned 'drop' (no-hiveHome) for EVERY
+  // potHomeSlug=undefined → `decideMemberContentOp` returned 'drop' (no-hiveHome) for EVERY
   // cross-member op → fed-b→fed-a "discovers 0". The fix resolves the owner's OWN hive-home (the
   // same way STEP-1 admit's `resolveSameHiveMember` already does: `hiveHomeProjectionSlug ??
-  // hiveHomeSlugForHarness`) and threads it as the content-guard fallback (the admit/apply
+  // potHomeSlugForHarness`) and threads it as the content-guard fallback (the admit/apply
   // asymmetry closed).
   //
-  // This case is the FAITHFUL proof (the existing cases all hardcode `hiveHomeSlug` + stub
+  // This case is the FAITHFUL proof (the existing cases all hardcode `potHomeSlug` + stub
   // `resolveAuthorDevice` through `applyOverride`, so none exercises boot's REAL resolution). The
   // RECEIVER (the OWNER) boots with the REAL `bootHarnessSubstrate` scopedApply — NO
   // `applyOverride`, NO stubbed `resolveAuthorDevice` — so boot's real
@@ -1301,7 +1301,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       const idMember = makeIdentityOverride('member', 7, 'kc-member');
 
       // ── Seed the hive + the MEMBER's membership in the org DB. getHiveBySlug(HIVE_HOME) truthy
-      //    ⇒ hiveHomeSlugForHarness(HIVE_HOME) === HIVE_HOME ⇒ the owner-home fallback engages. ──
+      //    ⇒ potHomeSlugForHarness(HIVE_HOME) === HIVE_HOME ⇒ the owner-home fallback engages. ──
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
@@ -1340,9 +1340,9 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       );
 
       // Sanity: the owner-home resolution + member set resolve as the fix relies on.
-      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, HIVE_HOME)).toBe(HIVE_HOME);
+      expect(await potHomeSlugForHarness(WORKSPACE_ID, HIVE_HOME)).toBe(HIVE_HOME);
       expect((await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME)).has(idMember.devicePubkey)).toBe(
         true,
       );
@@ -1372,14 +1372,14 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       let applyMember: ((op: OpEnvelope) => Promise<boolean>) | undefined;
 
       // ── Boot the OWNER: harnessSlug = the hive home; NO applyOverride → the REAL boot scopedApply
-      //    (getOrgPg → orgDb). This is what exercises the owner-home hiveHomeSlug fallback. ──
+      //    (getOrgPg → orgDb). This is what exercises the owner-home potHomeSlug fallback. ──
       handleOwner = await bootHarnessSubstrate({
         workspaceRoot: rootOwner,
         workspaceId: WORKSPACE_ID,
         harnessSlug: HIVE_HOME,
         // A real shared OWNER is on the hive topic (kind:'hive') — NOT a private 'local' binding;
         // this is what makes `bindingResolvesHiveHomeProjection` true so the owner-home fallback
-        // (boot.ts ownHiveHomeSlug) engages. Both peers derive the SAME topic from this pubkey.
+        // (boot.ts ownPotHomeSlug) engages. Both peers derive the SAME topic from this pubkey.
         swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
@@ -1449,7 +1449,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       ).toBe(true);
 
       // ── THE PROOF: the member's cross-member feature LANDS in the owner's PG (getOrgPg/orgDb)
-      //    under the MEMBER's slug. PRE-FIX the owner's scopedApply ran hiveHomeSlug=undefined and
+      //    under the MEMBER's slug. PRE-FIX the owner's scopedApply ran potHomeSlug=undefined and
       //    dropped it (no-hiveHome); POST-FIX the owner-home fallback engages the membership guard
       //    (member device ∈ members) and applies it. ──
       const landed = await pollUntil(
@@ -1462,7 +1462,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       expect(
         landed,
         "the member's feature never reached the OWNER's PG — WI-559/FED-1: the owner's home harness " +
-          'dropped the admitted cross-member op (owner-home hiveHomeSlug fallback not engaged)',
+          'dropped the admitted cross-member op (owner-home potHomeSlug fallback not engaged)',
       ).toBeTruthy();
       expect(landed).toMatchObject({
         feature_id: 'F-fed1',
@@ -1560,7 +1560,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         workspaceId: WORKSPACE_ID,
         harnessSlug: B_SLUG, // B applies A's cross-member op only if A ∈ members
         sql: orgDb.adminSql,
-        hiveHomeSlug: HIVE_HOME,
+        potHomeSlug: HIVE_HOME,
         // A REMOTE op's provenance.authorPubkey IS its receiver-stamped sourceLogKeyHex; boot maps
         // it → A's admit-verified device via admittedIdentities (boot.ts:607). Mirror that here.
         resolveAuthorDevice: (k) => (k === A_LOG_KEY ? idA.devicePubkey : null),

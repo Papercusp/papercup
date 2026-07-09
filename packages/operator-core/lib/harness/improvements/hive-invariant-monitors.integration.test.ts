@@ -39,15 +39,19 @@ afterAll(async () => {
 
 const HOUR = 3_600_000;
 
-async function insertFeature(slug: string, fid: string, opts: { ageHours: number; sourcePlan?: string }) {
+async function insertFeature(
+  slug: string,
+  fid: string,
+  opts: { ageHours: number; sourcePlan?: string; takenBy?: string },
+) {
   const ts = Date.now() - opts.ageHours * HOUR;
   const metadata = opts.sourcePlan ? JSON.stringify({ source_plan: opts.sourcePlan }) : null;
   await db.adminSql.unsafe(
     `INSERT INTO harness_shared.harness_features_consolidated
        (harness_slug, feature_id, title, status, attempts, item_kind, needs_human_review,
-        workspace_id, metadata, ts, created_ts, updated_ts)
-     VALUES ($1, $2, $3, 'todo', 0, 'feature', false, $4, $5::text::jsonb, $6, $6, $6)`,
-    [slug, fid, `feature ${fid}`, WS, metadata, ts],
+        workspace_id, metadata, ts, created_ts, updated_ts, taken_by)
+     VALUES ($1, $2, $3, 'todo', 0, 'feature', false, $4, $5::text::jsonb, $6, $6, $6, $7)`,
+    [slug, fid, `feature ${fid}`, WS, metadata, ts, opts.takenBy ?? null],
   );
 }
 
@@ -85,6 +89,16 @@ describe('stalled-feature collector (SQL half)', () => {
     const signals = await collectStalledFeatureSignals(db.adminSql as never, WS, { stalledFeatureHours: 12 });
     const b = signals.find((s) => s.key === 'stalled:inv-b');
     expect(b?.body).toContain('F-PLANNED');
+  });
+
+  it('EI-8781: a CLAIMED stale feature does not fire — that is stalled-claim\'s domain', async () => {
+    await insertFeature('inv-c', 'F-CLAIMED', { ageHours: 20, takenBy: 'su-someone' });
+    await insertFeature('inv-c', 'F-UNCLAIMED', { ageHours: 20 });
+
+    const signals = await collectStalledFeatureSignals(db.adminSql as never, WS, { stalledFeatureHours: 12 });
+    const c = signals.find((s) => s.key === 'stalled:inv-c');
+    expect(c?.body).toContain('F-UNCLAIMED');
+    expect(c?.body).not.toContain('F-CLAIMED');
   });
 });
 

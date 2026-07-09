@@ -30,10 +30,10 @@ vi.mock('../coordination/identity', () => ({
 // mock (previously a raw ctx.harnessSlug check short-circuited before ever calling it), so
 // a static `() => 'home-hive'` that ignores its args broke every test asserting an explicit
 // harness/ctx value wins — it silently returned 'home-hive' regardless of what was passed.
-// Mirror the real resolveHiveHomeSlug's precedence (explicit arg > ctx slug > 'home-hive'
+// Mirror the real resolvePotHomeSlug's precedence (explicit arg > ctx slug > 'home-hive'
 // env-fallback stand-in) so the mock actually honors the inputs it's given.
 vi.mock('../../hive/wake', () => ({
-  resolveHiveHomeSlug: vi.fn((explicit?: string | null, ctxSlug?: string | null) => {
+  resolvePotHomeSlug: vi.fn((explicit?: string | null, ctxSlug?: string | null) => {
     const concrete = (s?: string | null) => (s && s !== '*' ? s : undefined);
     return concrete(explicit) ?? concrete(ctxSlug) ?? 'home-hive';
   }),
@@ -145,8 +145,8 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('errors cleanly (no_harness) when no harness resolves anywhere — never writes an empty-namespace note', async () => {
-    const { resolveHiveHomeSlug } = await import('../../hive/wake');
-    vi.mocked(resolveHiveHomeSlug).mockReturnValueOnce(undefined as never);
+    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(undefined as never);
     const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({ ok: false, error: 'no_harness' });

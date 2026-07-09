@@ -25,7 +25,7 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import { activeWorkspaceId } from "../../workspace-registry";
-import { resolveHiveHomeSlug } from "../../hive/wake";
+import { resolvePotHomeSlug } from "../../hive/wake";
 import { getOrgPg } from "@papercusp/db-org";
 import {
   declareOverwatchTimeWake,
@@ -76,7 +76,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Pot home-harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).",
+          "Pot home-harness slug the wake fires against (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).",
         ),
       kickoff: softText(LIMITS.BRIEF)
         .optional()
@@ -94,7 +94,7 @@ export default defineTool({
   async handler(args, ctx) {
     const workspaceId =
       ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {
         content: [
@@ -104,7 +104,7 @@ export default defineTool({
               ok: false,
               error: "no_home_harness",
               message:
-                "Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the overwatch wake routine is harness-scoped.",
+                "Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the overwatch wake routine is harness-scoped.",
             }),
           },
         ],

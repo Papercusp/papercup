@@ -37,15 +37,15 @@ function coerceEpoch(value: unknown): number {
 }
 
 /** Read the hive's current epoch (BASELINE_EPOCH when unset). */
-export async function getHiveEpoch(workspaceId: string, hiveHomeSlug: string, sql?: Sql): Promise<number> {
-  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, EPOCH_SETTING_KEY, sql);
+export async function getHiveEpoch(workspaceId: string, potHomeSlug: string, sql?: Sql): Promise<number> {
+  const rec = await getHiveSetting(workspaceId, potHomeSlug, EPOCH_SETTING_KEY, sql);
   return coerceEpoch(rec?.value);
 }
 
 /** Set the hive's epoch to an explicit non-negative int (federates via hive_settings). */
 export async function setHiveEpoch(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   epoch: number,
   sql?: Sql,
 ): Promise<number> {
@@ -53,7 +53,7 @@ export async function setHiveEpoch(
     throw new Error(`setHiveEpoch: epoch must be a non-negative integer, got ${epoch}`);
   }
   await setHiveSetting(
-    { workspaceId, hiveHomeSlug, settingKey: EPOCH_SETTING_KEY, value: epoch },
+    { workspaceId, potHomeSlug, settingKey: EPOCH_SETTING_KEY, value: epoch },
     sql,
   );
   return epoch;
@@ -67,7 +67,7 @@ export async function setHiveEpoch(
  * infrequent, so a lost-update race is not a v1 concern; if it ever becomes one, make
  * this a CAS / SQL-atomic increment. Documented, not silently assumed.
  */
-export async function advanceHiveEpoch(workspaceId: string, hiveHomeSlug: string, sql?: Sql): Promise<number> {
-  const next = (await getHiveEpoch(workspaceId, hiveHomeSlug, sql)) + 1;
-  return setHiveEpoch(workspaceId, hiveHomeSlug, next, sql);
+export async function advanceHiveEpoch(workspaceId: string, potHomeSlug: string, sql?: Sql): Promise<number> {
+  const next = (await getHiveEpoch(workspaceId, potHomeSlug, sql)) + 1;
+  return setHiveEpoch(workspaceId, potHomeSlug, next, sql);
 }

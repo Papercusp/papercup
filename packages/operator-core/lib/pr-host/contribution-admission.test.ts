@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isHiveContributorRevoked,
   isPrAuthorRevoked,
-  resolveHarnessHiveHomeSlug,
+  resolveHarnessPotHomeSlug,
 } from './contribution-admission';
 
 const WS = 'ws-1';
@@ -13,7 +13,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   it('TEETH: a member whose only device is revoked IS revoked', async () => {
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => ['pk-A'],
       loadRevoked: async () => new Set(['pk-A']),
@@ -24,7 +24,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   it('TEETH: neutering the gate (treat revoked author as not-revoked) would re-open admission — every device revoked ⇒ true', async () => {
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => ['pk-A', 'pk-B'],
       loadRevoked: async () => new Set(['pk-A', 'pk-B']),
@@ -35,7 +35,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   it('a member with at least one ACTIVE (non-revoked) device is NOT revoked', async () => {
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => ['pk-A', 'pk-B'],
       loadRevoked: async () => new Set(['pk-A']), // pk-B still active
@@ -46,7 +46,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   it('a member with no revoked devices is NOT revoked', async () => {
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => ['pk-A'],
       loadRevoked: async () => new Set<string>(),
@@ -57,7 +57,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   it('a non-member / no bound devices is NOT revoked (the trust gate owns unknowns)', async () => {
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => [],
       loadRevoked: async () => new Set(['pk-A']),
@@ -69,7 +69,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
     const loadDevicePubkeys = vi.fn();
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: 0,
       loadDevicePubkeys,
       loadRevoked: async () => new Set(),
@@ -80,10 +80,10 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
 
   it('an empty workspace / hive slug is NOT revoked', async () => {
     expect(
-      await isHiveContributorRevoked({ workspaceId: '', hiveHomeSlug: HOME, githubUserId: GH }),
+      await isHiveContributorRevoked({ workspaceId: '', potHomeSlug: HOME, githubUserId: GH }),
     ).toBe(false);
     expect(
-      await isHiveContributorRevoked({ workspaceId: WS, hiveHomeSlug: '', githubUserId: GH }),
+      await isHiveContributorRevoked({ workspaceId: WS, potHomeSlug: '', githubUserId: GH }),
     ).toBe(false);
   });
 
@@ -91,7 +91,7 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
     const log = vi.fn();
     const revoked = await isHiveContributorRevoked({
       workspaceId: WS,
-      hiveHomeSlug: HOME,
+      potHomeSlug: HOME,
       githubUserId: GH,
       loadDevicePubkeys: async () => {
         throw new Error('pg down');
@@ -105,21 +105,21 @@ describe('isHiveContributorRevoked (PR-5 code-plane revocation)', () => {
   });
 });
 
-describe('resolveHarnessHiveHomeSlug', () => {
+describe('resolveHarnessPotHomeSlug', () => {
   it('returns the project hive_slug (the hive home slug a member is registered under)', async () => {
-    const home = await resolveHarnessHiveHomeSlug('papercusp-platform', async () => ({
+    const home = await resolveHarnessPotHomeSlug('papercusp-platform', async () => ({
       hive_slug: HOME,
     }));
     expect(home).toBe(HOME);
   });
 
   it('returns null for a solo/unbound harness (no hive_slug)', async () => {
-    expect(await resolveHarnessHiveHomeSlug('solo', async () => ({}))).toBeNull();
-    expect(await resolveHarnessHiveHomeSlug('missing', async () => null)).toBeNull();
+    expect(await resolveHarnessPotHomeSlug('solo', async () => ({}))).toBeNull();
+    expect(await resolveHarnessPotHomeSlug('missing', async () => null)).toBeNull();
   });
 
   it('returns null (never throws) when resolution fails', async () => {
-    const home = await resolveHarnessHiveHomeSlug('boom', async () => {
+    const home = await resolveHarnessPotHomeSlug('boom', async () => {
       throw new Error('registry read failed');
     });
     expect(home).toBeNull();

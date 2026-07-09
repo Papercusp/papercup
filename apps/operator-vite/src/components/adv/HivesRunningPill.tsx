@@ -19,7 +19,7 @@ import LocalHivesControl from '../left-sidebar/LocalHivesControl';
 
 export default function HivesRunningPill() {
   const t = useLexicon();
-  const on = useFlag(FLAGS.HIVE_CONTROL);
+  const on = useFlag(FLAGS.POT_CONTROL);
   const [open, setOpen] = useQueryState('hivesCtl', parseAsBoolean.withDefault(false));
   const { data } = useSyncQuery<HiveControlRow>({ queryName: 'hive.controlState', args: {} });
   const hives = (data as HiveControlRow[] | undefined) ?? [];

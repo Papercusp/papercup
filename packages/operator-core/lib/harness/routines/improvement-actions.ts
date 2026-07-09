@@ -552,8 +552,8 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     if (candidateScope && candidateScope.startsWith('harness:')) {
       const h = candidateScope.slice('harness:'.length);
       try {
-        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-        dispatchHiveSlug = (await hiveHomeSlugForHarness(ctx.workspaceId, h)) ?? h;
+        const { potHomeSlugForHarness } = await import('../../hive-federation');
+        dispatchHiveSlug = (await potHomeSlugForHarness(ctx.workspaceId, h)) ?? h;
       } catch {
         dispatchHiveSlug = h;
       }

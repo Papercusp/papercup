@@ -147,7 +147,7 @@ export default defineTool({
     // bootstrap's specifier-space then throws "Operation .featurePipeline is
     // already registered" — killing the whole DBOS boot (durable pipelines dead).
     const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
-    // P-005 kill-switch (QUEEN_TIER_SELECTION, default ON): with the flag OFF a
+    // P-005 kill-switch (MUG_TIER_SELECTION, default ON): with the flag OFF a
     // queen-supplied tier is dropped — her spawns run at the role's standing
     // default. Human/operator tier picks are honored regardless.
     let tier = args.tier ?? null;
@@ -156,7 +156,7 @@ export default defineTool({
         import('@papercusp/flags'),
         import('@papercusp/flags/server'),
       ]);
-      if (!(await getFlag(FLAGS.QUEEN_TIER_SELECTION, 'system'))) tier = null;
+      if (!(await getFlag(FLAGS.MUG_TIER_SELECTION, 'system'))) tier = null;
     }
     // Lineage: link to the caller ONLY when it's itself a real nursery node (a
     // spawned agent's owner == its spawnId, shaped `s-…`). A human/operator/SU

@@ -14,7 +14,7 @@ import {
   HIVE_BLUEPRINT_ID,
   claimHiveWakeFire,
   effectiveHiveWakeFloorSec,
-  resolveHiveHomeSlug,
+  resolvePotHomeSlug,
 } from '../../hive/wake';
 import { getHiveStarted } from '../../hive/started';
 import { getOrgPg } from '@papercusp/db-org';
@@ -59,12 +59,12 @@ export default defineTool({
   args: z.object({
     reason: softText(LIMITS.ANNOTATION).optional().describe('Why this wake fired — becomes the kickoff context. Auto-truncated to 2000 chars if longer.'),
     source: z.enum(['user', 'event', 'manual']).optional().describe("Provenance label (event-wake rules pass 'event')."),
-    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     force: z.boolean().optional().describe('Bypass the wake-floor debounce.'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {
         content: [
@@ -73,7 +73,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the pot launch is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the pot launch is harness-scoped.',
             }),
           },
         ],

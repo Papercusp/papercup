@@ -9,7 +9,7 @@
  * Queen abandoned (queen-brief-cache).
  *
  * THE FORK: when a drained (process-exited) bee is warm-injected a NEW work-item and
- * the BEE_FRESH_CONTEXT_WARM_INJECT flag is on, re-route AWAY from `--resume` to a
+ * the CUP_FRESH_CONTEXT_WARM_INJECT flag is on, re-route AWAY from `--resume` to a
  * FRESH spawn for that work-item — which already mints a fresh `--session-id`, pipes
  * the full bee preamble (buildPrompt), and runs assembleSpawnHydration (the dossier
  * P-008 + the work-item CHECKPOINT P-011 + predecessor handoff). The grown transcript
@@ -59,7 +59,7 @@ export function freshContextWarmInjectTarget(d: DeliveryWork): FreshContextTarge
 
 /** DI seam for the fork (real bindings below; injected in tests so no spawn/DB fires). */
 export interface FreshContextDeps {
-  /** Default: getFlag(BEE_FRESH_CONTEXT_WARM_INJECT). The fork double-checks the flag
+  /** Default: getFlag(CUP_FRESH_CONTEXT_WARM_INJECT). The fork double-checks the flag
    *  (defence in depth — the payload should only exist when on). */
   enabled?: () => Promise<boolean>;
   /** Default: spawnAgentInHarness (operator-spawn) — fresh session + full preamble +
@@ -77,7 +77,7 @@ export interface FreshContextDeps {
 }
 
 export async function defaultFreshContextEnabled(): Promise<boolean> {
-  return getFlag(FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT, 'system').catch(() => false);
+  return getFlag(FLAGS.CUP_FRESH_CONTEXT_WARM_INJECT, 'system').catch(() => false);
 }
 
 async function defaultSpawnFreshBee(input: {

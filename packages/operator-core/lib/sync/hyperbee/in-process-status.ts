@@ -292,5 +292,7 @@ export function getInProcessSubstrateStatus(
     logStats: collectSubstrateLogStats(),
     // P-004 (WI-1840): per-log replication-liveness verdicts.
     replicationLiveness,
+    // EI-8816: explicit blind-spot marker — see resolveEffectiveBootedHandles above.
+    reachedSubstrateOwner,
   };
 }

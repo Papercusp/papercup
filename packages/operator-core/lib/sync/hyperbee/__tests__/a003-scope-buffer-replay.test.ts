@@ -34,7 +34,7 @@
  * The REPLAY half (a buffered frame is admitted once `rekey` resolves `home`) is
  * proven end-to-end LIVE on the real binary by su-ee7e9's from-repo witness
  * (findings-A003-GREEN-witness-2026-06-19.md). A unit duplicate would require a real
- * Hyperswarm join (the `joinerHiveHomeSlugOverride` seam is gated on a hive binding →
+ * Hyperswarm join (the `joinerPotHomeSlugOverride` seam is gated on a hive binding →
  * `rekey` → `joinForBinding`), so it self-excludes from the green-checkpoint and adds
  * no gate protection beyond the BUFFER test below — it is therefore a documented
  * `it.skip`, not a gap (see the rationale at that test).
@@ -209,10 +209,10 @@ describe('A-003 receive-side slug-scope buffer (Brief I)', () => {
 
   // REPLAY half — DELIBERATELY not a unit test here (documented scoping decision).
   //
-  // The `joinerHiveHomeSlugOverride` boot seam (boot.ts) + immediate-replay-on-rebind
+  // The `joinerPotHomeSlugOverride` boot seam (boot.ts) + immediate-replay-on-rebind
   // (rekey → `await retryPendingOnce()`) DO exist, so a deterministic replay test is
   // *possible*: boot a member with `swarmBinding.kind:'hive'` +
-  // `joinerHiveHomeSlugOverride` → null (home=<none>) → onAnnounce buffers the owner
+  // `joinerPotHomeSlugOverride` → null (home=<none>) → onAnnounce buffers the owner
   // hive-home frame → flip the override to '<hive-home>' → `handle.rekey(binding)`
   // resolves home, re-admits the buffered frame → assert `handle.admitted.has(key)`.
   //

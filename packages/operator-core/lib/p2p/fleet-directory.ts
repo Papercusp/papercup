@@ -39,7 +39,7 @@ import {
 export interface StoredFleetRecord {
   workspaceId: string;
   /** The Hive's home_slug (= the `harness_slug` scope column). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   ownerGithubUserId: number;
   fleetSlug: string;
   /** The typed record (parsed from the canonical `record_json`); null only for a
@@ -90,7 +90,7 @@ interface FleetDirectoryDbRow {
 function rowToStored(r: FleetDirectoryDbRow): StoredFleetRecord {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.harness_slug,
+    potHomeSlug: r.harness_slug,
     ownerGithubUserId: Number(r.owner_github_user_id),
     fleetSlug: r.fleet_slug,
     record: parseFleetRecordJson(r.record_json),
@@ -107,7 +107,7 @@ function rowToStored(r: FleetDirectoryDbRow): StoredFleetRecord {
 /** Get one fleet's directory record (null = no record). */
 export async function getFleetRecord(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   ownerGithubUserId: number,
   fleetSlug: string,
   sql?: Sql,
@@ -116,7 +116,7 @@ export async function getFleetRecord(
     `SELECT ${READ_COLS} FROM harness_shared.p2p_fleet_directory
       WHERE workspace_id = $1 AND harness_slug = $2
         AND owner_github_user_id = $3 AND fleet_slug = $4 LIMIT 1`,
-    [workspaceId, hiveHomeSlug, ownerGithubUserId, fleetSlug],
+    [workspaceId, potHomeSlug, ownerGithubUserId, fleetSlug],
   )) as unknown as FleetDirectoryDbRow[];
   return rows[0] ? rowToStored(rows[0]) : null;
 }
@@ -125,7 +125,7 @@ export async function getFleetRecord(
  *  are excluded unless asked for (they remain visible for audit/successor flows). */
 export async function listFleetRecords(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   opts?: { includeArchived?: boolean },
   sql?: Sql,
 ): Promise<StoredFleetRecord[]> {
@@ -134,14 +134,14 @@ export async function listFleetRecords(
       WHERE workspace_id = $1 AND harness_slug = $2
         ${opts?.includeArchived ? '' : 'AND archived = false'}
       ORDER BY owner_github_user_id ASC, fleet_slug ASC`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   )) as unknown as FleetDirectoryDbRow[];
   return rows.map(rowToStored);
 }
 
 export interface PutFleetRecordInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The authoring user's PROVEN numeric gh user id (X9) — the caller resolves it
    *  from the session identity, never from the record body. */
   selfGithubUserId: number;
@@ -182,7 +182,7 @@ export async function putFleetRecord(input: PutFleetRecordInput): Promise<PutFle
 
   const existing = await getFleetRecord(
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     record.ownerGithubUserId,
     record.fleetSlug,
     input.sql,
@@ -197,7 +197,7 @@ export async function putFleetRecord(input: PutFleetRecordInput): Promise<PutFle
   const recordJson = canonicalFleetRecordJson(record);
   const bytes = fleetDirectorySignedBytes({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     recordVersion: record.recordVersion,
     canonicalRecordJson: recordJson,
   });
@@ -219,7 +219,7 @@ export async function putFleetRecord(input: PutFleetRecordInput): Promise<PutFle
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       record.ownerGithubUserId,
       record.fleetSlug,
       recordJson,
@@ -242,7 +242,7 @@ export async function putFleetRecord(input: PutFleetRecordInput): Promise<PutFle
  */
 export async function forceArchiveFleet(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   ownerGithubUserId: number;
   fleetSlug: string;
   /** The HIVE identity signer (hive keypair — hive-store/identity edges). */
@@ -251,7 +251,7 @@ export async function forceArchiveFleet(input: {
 }): Promise<PutFleetRecordResult> {
   const existing = await getFleetRecord(
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     input.ownerGithubUserId,
     input.fleetSlug,
     input.sql,
@@ -268,7 +268,7 @@ export async function forceArchiveFleet(input: {
   const recordJson = canonicalFleetRecordJson(record);
   const bytes = fleetDirectorySignedBytes({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     recordVersion: record.recordVersion,
     canonicalRecordJson: recordJson,
   });
@@ -287,7 +287,7 @@ export async function forceArchiveFleet(input: {
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       input.ownerGithubUserId,
       input.fleetSlug,
       recordJson,
@@ -398,7 +398,7 @@ export class PgFleetDirectory implements FleetDirectory {
         try {
           const bytes = fleetDirectorySignedBytes({
             workspaceId: ws,
-            hiveHomeSlug: this.deps.potSlug,
+            potHomeSlug: this.deps.potSlug,
             recordVersion: row.recordVersion,
             canonicalRecordJson: row.recordJson,
           });

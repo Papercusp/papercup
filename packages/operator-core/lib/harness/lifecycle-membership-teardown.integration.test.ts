@@ -21,7 +21,7 @@
  *
  * ── G24: pot:dissolve now tears down all of a hive's hive_members rows ──
  * `pot:dissolve` (the owner-side teardown of a LOCAL hive) gained a membership-
- * teardown leg that calls `removeAllHiveMembers(workspaceId, hiveHomeSlug)` BEFORE
+ * teardown leg that calls `removeAllHiveMembers(workspaceId, potHomeSlug)` BEFORE
  * deregister. Each per-row DELETE fires the mig-189 capture trigger → a federated
  * `del` tombstone. We exercise the exact fn dissolve invokes (the full tool needs
  * fleet/wake/registry machinery out of scope for a membership-row assertion) over a
@@ -164,7 +164,7 @@ describe('G27 — leaveHive drops the leaver presence AND the persistent hive_me
       VALUES (${WS}, ${MEMBER_SLUG}, ${LEAVER_UID}, 'machine-A', 'pk-leaver', ${HIVE})
     `;
     await upsertHiveMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: LEAVER_UID, githubUsername: 'alice', bindingStatus: 'verified' },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: LEAVER_UID, githubUsername: 'alice', bindingStatus: 'verified' },
       db.sql,
     );
 
@@ -211,11 +211,11 @@ describe('G24 — pot:dissolve tears down ALL of a hive\'s hive_members rows (+ 
     const UID_A = 71;
     const UID_B = 72;
     await upsertHiveMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: UID_A, githubUsername: 'carol', bindingStatus: 'verified' },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: UID_A, githubUsername: 'carol', bindingStatus: 'verified' },
       db.sql,
     );
     await upsertHiveMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: UID_B, githubUsername: 'dave', bindingStatus: 'verified' },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: UID_B, githubUsername: 'dave', bindingStatus: 'verified' },
       db.sql,
     );
     expect(await getHiveMember(WS, HIVE, UID_A, db.sql)).not.toBeNull();

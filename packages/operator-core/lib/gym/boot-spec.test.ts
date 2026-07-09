@@ -37,9 +37,9 @@ describe('buildGymOperatorBootSpec — hermetic DSN pinning', () => {
     // the live pooler (:6432) whose credentials the container lacks.
     expect(spec.env.PAPERCUSP_PGBOUNCER, 'sandbox must dial its container DIRECTLY').toBe('0');
     // Layer-5: the WORKSPACE-RESOLUTION leaks must be pinned too — a leaked
-    // PAPERCUSP_HIVE_HOME_SLUG fatals home-harness validation against the
+    // PAPERCUSP_POT_HOME_SLUG fatals home-harness validation against the
     // hermetic registry (the gym operator runs no hive).
-    expect(spec.env.PAPERCUSP_HIVE_HOME_SLUG, 'gym operator runs NO hive').toBe('');
+    expect(spec.env.PAPERCUSP_POT_HOME_SLUG, 'gym operator runs NO hive').toBe('');
     // WI-2604 root cause (1): a leaked PAPERCUSP_MCP_PROXY_BASE (bg-host's dev-api
     // service sets it, fronting the LIVE :3070 operator) makes resolveSpawnOperatorBase
     // / resolveAgentMcpBaseUrl point every gym eval agent's .mcp.json at the LIVE

@@ -542,7 +542,7 @@ export default defineTool({
             const { activeWorkspaceId } =
               await import("../../workspace-registry");
             armed = await getFlag(
-              FLAGS.QUEEN_AUTONOMY_ARMED,
+              FLAGS.MUG_AUTONOMY_ARMED,
               `autonomy:${activeWorkspaceId()}`,
             );
           } catch {

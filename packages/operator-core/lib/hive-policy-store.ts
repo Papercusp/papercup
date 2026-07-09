@@ -26,7 +26,7 @@ import { type HivePolicy, parseHivePolicyJson } from './hive-policy-schema';
 export interface ResolvedHivePolicy {
   workspaceId: string;
   /** The Hive's home_slug (= the `harness_slug` scope column). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The typed policy document (parsed from the canonical `policy_json`). */
   policy: HivePolicy;
   /** Monotone version; bumps each owner author. Higher = newer (fed_hlc is the LWW key). */
@@ -46,7 +46,7 @@ export interface ResolvedHivePolicy {
 /** The raw federated columns of a hive_policy row (the signed subset). */
 export interface HivePolicyRowInput {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The canonical policy JSON TEXT (from canonicalizeHivePolicy). */
   policyJson: string;
   ownerPubkey: string;
@@ -76,7 +76,7 @@ interface HivePolicyDbRow {
 function rowToResolved(r: HivePolicyDbRow): ResolvedHivePolicy {
   return {
     workspaceId: r.workspace_id,
-    hiveHomeSlug: r.harness_slug,
+    potHomeSlug: r.harness_slug,
     policy: parseHivePolicyJson(r.policy_json),
     policyVersion: Number(r.policy_version),
     ownerPubkey: r.owner_pubkey,
@@ -95,14 +95,14 @@ function rowToResolved(r: HivePolicyDbRow): ResolvedHivePolicy {
  */
 export async function getHivePolicy(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<ResolvedHivePolicy | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
     `SELECT ${READ_COLS} FROM harness_shared.hive_policy
       WHERE workspace_id = $1 AND harness_slug = $2 LIMIT 1`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   )) as unknown as HivePolicyDbRow[];
   return rows[0] ? rowToResolved(rows[0]) : null;
 }
@@ -134,15 +134,15 @@ const hivePolicyCache = new Map<string, { at: number; value: ResolvedHivePolicy 
 
 export async function getHivePolicyCached(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   opts?: { ttlMs?: number; sql?: Sql },
 ): Promise<ResolvedHivePolicy | null> {
   const ttlMs = opts?.ttlMs ?? 2000;
-  const key = `${workspaceId}::${hiveHomeSlug}`;
+  const key = `${workspaceId}::${potHomeSlug}`;
   const cached = hivePolicyCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < ttlMs) return cached.value;
-  const value = await getHivePolicy(workspaceId, hiveHomeSlug, opts?.sql);
+  const value = await getHivePolicy(workspaceId, potHomeSlug, opts?.sql);
   hivePolicyCache.set(key, { at: now, value });
   return value;
 }
@@ -178,7 +178,7 @@ export async function upsertHivePolicyRow(
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
-      input.hiveHomeSlug,
+      input.potHomeSlug,
       input.policyJson,
       input.ownerPubkey,
       input.signature,
@@ -192,14 +192,14 @@ export async function upsertHivePolicyRow(
 /** Delete a Hive's policy (idempotent). The delete federates (capture trigger). */
 export async function deleteHivePolicy(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<boolean> {
   const s = pg(sql);
   const rows = (await s.unsafe(
     `DELETE FROM harness_shared.hive_policy
       WHERE workspace_id = $1 AND harness_slug = $2 RETURNING harness_slug`,
-    [workspaceId, hiveHomeSlug],
+    [workspaceId, potHomeSlug],
   )) as unknown as Array<{ harness_slug: string }>;
   return rows.length > 0;
 }

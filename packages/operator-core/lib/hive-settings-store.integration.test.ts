@@ -43,14 +43,14 @@ describe('hive_settings (real PG, migration 186)', () => {
   });
 
   it('set/get/list/delete round-trips JSON values', async () => {
-    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'budget', value: { usd: 5 } }, sql);
-    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
+    await setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'myhive', settingKey: 'budget', value: { usd: 5 } }, sql);
+    await setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
 
     expect((await getHiveSetting('ws', 'myhive', 'budget', sql))?.value).toEqual({ usd: 5 });
     expect((await listHiveSettings('ws', 'myhive', sql)).map((s) => s.settingKey)).toEqual(['budget', 'tier']);
 
     // upsert overwrites
-    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'budget', value: { usd: 9 } }, sql);
+    await setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'myhive', settingKey: 'budget', value: { usd: 9 } }, sql);
     expect((await getHiveSetting('ws', 'myhive', 'budget', sql))?.value).toEqual({ usd: 9 });
 
     expect(await deleteHiveSetting('ws', 'myhive', 'tier', sql)).toBe(true);
@@ -73,7 +73,7 @@ describe('hive_settings (real PG, migration 186)', () => {
     );
 
     // list returns role -> markdown, filtered to the prompt-override prefix (ignores other settings)
-    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
+    await setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
     expect(await listHiveInstancePromptOverrides('ws', 'myhive', sql)).toEqual({
       cup: 'You are a Papercusp bee.',
       su: 'You are a Papercusp engineer.',
@@ -97,7 +97,7 @@ describe('hive_settings (real PG, migration 186)', () => {
 
     // list filters to the localBlueprint.* prefix only — ignores promptOverride.* + plain settings
     await setHiveInstancePromptOverride('ws', 'myhive', 'mug', 'persona', sql);
-    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
+    await setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
     expect(await listHiveLocalBlueprintConfig('ws', 'myhive', sql)).toEqual({
       scout: { buckets: { maxMoonshots: 2 } },
     });
@@ -117,7 +117,7 @@ describe('hive_settings (real PG, migration 186)', () => {
 
   it('refuses a setting for a non-existent Hive (logical scope, no hard FK)', async () => {
     await expect(
-      setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'nohive', settingKey: 'x', value: 1 }, sql),
+      setHiveSetting({ workspaceId: 'ws', potHomeSlug: 'nohive', settingKey: 'x', value: 1 }, sql),
     ).rejects.toThrow(/no Hive/);
   });
 

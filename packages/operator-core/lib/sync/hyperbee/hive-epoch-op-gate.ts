@@ -236,7 +236,7 @@ export function buildEpochDecryptGate(
 /** A boot-scope drain-queue entry: a `(hive, epoch)` whose `hive_epoch_keys` row just
  *  applied this merge pass (recorded by the projection's `onEpochKeyApplied` hook). */
 export interface DrainedEpoch {
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   epoch: number;
 }
 
@@ -272,8 +272,8 @@ export async function drainQueuedEpochContent(deps: {
   // that (defensively) somehow re-queued can't grow the loop within one drain.
   const toDrain = deps.drainQueue.splice(0);
   let reapplied = 0;
-  for (const { hiveHomeSlug, epoch } of toDrain) {
-    for (const deferred of deps.pending.drainEpoch(hiveHomeSlug, epoch)) {
+  for (const { potHomeSlug, epoch } of toDrain) {
+    for (const deferred of deps.pending.drainEpoch(potHomeSlug, epoch)) {
       try {
         if (await deps.applyImpl(deferred.op)) reapplied++;
       } catch {

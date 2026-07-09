@@ -151,8 +151,8 @@ function mapToGrants(map: GrantMap): CrossHiveGrant[] {
   }));
 }
 
-async function loadDirectedMap(workspaceId: string, hiveHomeSlug: string, sql?: Sql): Promise<DirectedGrantMap> {
-  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, CROSS_HIVE_GRANTS_KEY, sql);
+async function loadDirectedMap(workspaceId: string, potHomeSlug: string, sql?: Sql): Promise<DirectedGrantMap> {
+  const rec = await getHiveSetting(workspaceId, potHomeSlug, CROSS_HIVE_GRANTS_KEY, sql);
   return toDirectedGrantMap(rec?.value);
 }
 
@@ -163,10 +163,10 @@ async function loadDirectedMap(workspaceId: string, hiveHomeSlug: string, sql?: 
  */
 export async function loadCrossHiveGrants(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<CrossHiveGrant[]> {
-  return mapToGrants((await loadDirectedMap(workspaceId, hiveHomeSlug, sql)).in);
+  return mapToGrants((await loadDirectedMap(workspaceId, potHomeSlug, sql)).in);
 }
 
 /**
@@ -175,19 +175,19 @@ export async function loadCrossHiveGrants(
  */
 export async function loadOutboundCrossHiveGrants(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<CrossHiveGrant[]> {
-  return mapToGrants((await loadDirectedMap(workspaceId, hiveHomeSlug, sql)).out);
+  return mapToGrants((await loadDirectedMap(workspaceId, potHomeSlug, sql)).out);
 }
 
 /** Load both directions in one read (for `pot:cross_grant list` + the Network board). */
 export async function loadDirectedCrossHiveGrants(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<DirectedCrossHiveGrants> {
-  const directed = await loadDirectedMap(workspaceId, hiveHomeSlug, sql);
+  const directed = await loadDirectedMap(workspaceId, potHomeSlug, sql);
   return { in: mapToGrants(directed.in), out: mapToGrants(directed.out) };
 }
 
@@ -202,14 +202,14 @@ export async function loadDirectedCrossHiveGrants(
  */
 export async function setCrossHiveGrant(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   peerHivePubkey: string,
   allowedKinds: readonly CrossHiveKind[],
   direction: CrossHiveGrantDirection,
   sql?: Sql,
   quota?: CrossHiveGrantQuota,
 ): Promise<void> {
-  const directed = await loadDirectedMap(workspaceId, hiveHomeSlug, sql);
+  const directed = await loadDirectedMap(workspaceId, potHomeSlug, sql);
   const map = directed[direction];
   const clean = [...new Set(allowedKinds.filter(isKind))];
   if (clean.length === 0) delete map[peerHivePubkey];
@@ -225,7 +225,7 @@ export async function setCrossHiveGrant(
     map[peerHivePubkey] = entry;
   }
   await setHiveSetting(
-    { workspaceId, hiveHomeSlug, settingKey: CROSS_HIVE_GRANTS_KEY, value: directed },
+    { workspaceId, potHomeSlug, settingKey: CROSS_HIVE_GRANTS_KEY, value: directed },
     sql,
   );
 }
@@ -233,16 +233,16 @@ export async function setCrossHiveGrant(
 /** Revoke a peer-Hive's grant in the given direction (idempotent). */
 export async function revokeCrossHiveGrant(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   peerHivePubkey: string,
   direction: CrossHiveGrantDirection,
   sql?: Sql,
 ): Promise<void> {
-  const directed = await loadDirectedMap(workspaceId, hiveHomeSlug, sql);
+  const directed = await loadDirectedMap(workspaceId, potHomeSlug, sql);
   if (!(peerHivePubkey in directed[direction])) return;
   delete directed[direction][peerHivePubkey];
   await setHiveSetting(
-    { workspaceId, hiveHomeSlug, settingKey: CROSS_HIVE_GRANTS_KEY, value: directed },
+    { workspaceId, potHomeSlug, settingKey: CROSS_HIVE_GRANTS_KEY, value: directed },
     sql,
   );
 }
@@ -271,19 +271,19 @@ export interface AssertOutboundGrantOpts {
  */
 export async function assertOutboundGrant(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   toHivePubkey: string,
   kind: CrossHiveKind,
   sql?: Sql,
   opts: AssertOutboundGrantOpts = {},
 ): Promise<CrossHiveAdmission> {
-  const grants = await loadOutboundCrossHiveGrants(workspaceId, hiveHomeSlug, sql);
+  const grants = await loadOutboundCrossHiveGrants(workspaceId, potHomeSlug, sql);
   const nowMs = opts.nowMs ?? Date.now();
   const countRecent =
     opts.countRecentToPeer ??
     (async (peer: string) => {
       const { PgCrossHiveAsks } = await import('./cross-hive-asks-pg');
-      return new PgCrossHiveAsks(workspaceId, hiveHomeSlug, sql).countRecentByPeer(
+      return new PgCrossHiveAsks(workspaceId, potHomeSlug, sql).countRecentByPeer(
         peer,
         'out',
         nowMs - 60 * 60 * 1000,

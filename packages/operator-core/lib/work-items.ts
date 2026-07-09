@@ -2055,6 +2055,38 @@ export function federationDetectorExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The LOOP-ITERATION-NOISE self-select EXCLUSION floor for issue-family claims (EI-8802). An
+ * AUTO-loop iteration's own progress-tracking marker — titled "Loop wake #N: continue backlog
+ * drain..." or "AUTO loop iteration: claim and process next backlog item (su-XXXXX, <date>)" —
+ * is the agent's PRIVATE carry-note misfiled via `work_items:create` instead of
+ * `loop:checkpoint` (which is private and never enters the shared queue). Self-selecting one
+ * wastes a full claim cycle for zero real work: WI-3077 (filed 2026-07-05, su-a5da9b5a) and
+ * WI-3078 (filed 2026-07-05, su-40106c58) both sat open 4 days, each independently claimed and
+ * resolved as noise, before this floor existed.
+ *
+ * Title-pattern ILIKE rather than a payload tag (unlike observation-lane/needsHuman/federation-
+ * detector, above): these rows predate any tagging convention and a new agent can still
+ * accidentally recreate the pattern even after `improvements:capture`/`loop:checkpoint` guidance
+ * — a durable floor stops the CLASS from recurring regardless of whether every agent's loop
+ * discipline is fixed. UNCONDITIONAL (no caller bypass): no generic self-select caller
+ * legitimately wants one — still directly claimable BY ID (the same named-claim bypass every
+ * issue floor allows), so an operator can still inspect/close a stray marker that slips through.
+ *
+ * Mirrors {@link observationLaneExclusionSql}'s shape/placement exactly (same POOL+READY+claim
+ * call sites) so an all-loop-noise backlog also reads `drained:true` instead of idling a
+ * generic drainer on unpickable rows, and is likewise ONE source of truth shared by
+ * {@link claimNextIssueWorkItem} (the claim) and {@link diagnoseClaimNextMiss} (both counts).
+ */
+export function loopIterationNoiseExclusionSql(sql: OrgSql) {
+  // COALESCE so a NULL title can't NULL-out the whole AND chain (defensive — title is normally
+  // required, but this floor must never silently exclude a legitimate untitled row).
+  return sql`(
+    COALESCE(wi.title, '') NOT ILIKE 'Loop wake #%'
+    AND COALESCE(wi.title, '') NOT ILIKE 'AUTO loop iteration:%'
+  )`;
+}
+
+/**
  * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
  * excluded from `claim_next`/`scheduler:get_next` self-selection (see
  * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
@@ -2310,7 +2342,10 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- unactionable by a generic self-selector — pool-exclude it too (like observation/
          -- needsHuman) so an all-federation-EI backlog reads drained:true instead of idling a
          -- drainer on unpickable rows.
-         AND ${federationDetectorExclusionSql(sql)}`;
+         AND ${federationDetectorExclusionSql(sql)}
+         -- EI-8802: a stray AUTO-loop-iteration bookkeeping marker is likewise not work-queue
+         -- material AT ALL — pool-exclude it too, same rationale as observation/needsHuman.
+         AND ${loopIterationNoiseExclusionSql(sql)}`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
 
     // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
@@ -2363,6 +2398,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
          AND ${federationDetectorExclusionSql(sql)}
+         -- EI-8802: a stray AUTO-loop-iteration bookkeeping marker is not work-queue material
+         -- either — same floor the claim applies (below), so the miss diagnosis never disagrees.
+         AND ${loopIterationNoiseExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
          AND ${
@@ -2490,6 +2528,10 @@ export async function claimNextIssueWorkItem(
           -- substrate diagnostics — so it would only ever close it as gated-to-another-fleet,
           -- burning a wake each time. Still directly claimable BY ID (the p2p fleet's triage).
           AND ${federationDetectorExclusionSql(sql)}
+          -- EI-8802: never self-select a stray AUTO-loop-iteration bookkeeping marker (a
+          -- misfiled loop:checkpoint substitute) — pure recycle churn for zero real work.
+          -- Still directly claimable BY ID.
+          AND ${loopIterationNoiseExclusionSql(sql)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"

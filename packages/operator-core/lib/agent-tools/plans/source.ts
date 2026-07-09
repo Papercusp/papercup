@@ -30,7 +30,7 @@ import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-co
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
+import { potHomeSlugForHarness } from '../../hive-federation';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -409,7 +409,7 @@ export async function resolvePlanScope(
         `workspaceId. (Refusing to silently default to '${DEFAULT_WORKSPACE_ID}' — WI-148.)`,
     );
   }
-  const hiveHome = await hiveHomeSlugForHarness(workspaceId, raw!);
+  const hiveHome = await potHomeSlugForHarness(workspaceId, raw!);
   if (!hiveHome) {
     throw new Error(
       `resolvePlanScope: plans are Hive-scoped, but '${raw}' is not a Hive home and ` +

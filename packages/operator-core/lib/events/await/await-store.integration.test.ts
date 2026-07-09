@@ -9,6 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../test/_org-test-db';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-await-test' }));
 
@@ -218,14 +219,24 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(delivered).toMatchObject({ channel: 'plan-run-resume', count: 1 });
   });
 
-  it("workspace scoping NORMALIZES to the coord namespace: a '*'-scoped registration fires on a system emit (the live WI-40 regression)", async () => {
-    // An unscoped SU shell registers with identity.workspaceId '*'; a system
-    // source (work-items settle) emits with the active workspace. Both must
-    // land in the ONE coord-plane namespace or the wake never fires.
-    await store.registerAwait({ subscriberId: 'su-13', eventKey: 'ws:k', workspaceId: '*' });
-    const fired = await store.fireAwaitsForKey({ eventKey: 'ws:k', workspaceId: 'some-active-workspace' });
+  it('is single-workspace by construction: no caller can scope a row to a different namespace (WI-3575, formerly the live WI-40 regression)', async () => {
+    // Originally this test proved that a `workspaceId: '*'` registration and a
+    // `workspaceId: 'some-active-workspace'` emit still landed in the same coord
+    // namespace (an unscoped SU shell vs. a system source emitting under the
+    // active workspace). WI-3575 found the store never actually branched on the
+    // input at all — every exported function silently pinned DEFAULT_COORD_WORKSPACE
+    // regardless, so the two-different-workspaceIds scenario the test wrote wasn't
+    // exercising isolation, it just proved the ignoring was self-consistent. The
+    // dead parameter was removed everywhere (rather than "honored", which would
+    // resurrect the exact cross-workspace-mismatch bug this design fixed) — so the
+    // scenario is now a type error, not a runtime normalization. Assert the
+    // invariant that survives: registerAwait/fireAwaitsForKey take no workspaceId
+    // input at all and always land under the one coord workspace.
+    await store.registerAwait({ subscriberId: 'su-13', eventKey: 'ws:k' });
+    const fired = await store.fireAwaitsForKey({ eventKey: 'ws:k' });
     expect(fired).toHaveLength(1);
     expect(fired[0].subscriberId).toBe('su-13');
+    expect(fired[0].workspaceId).toBe(DEFAULT_COORD_WORKSPACE);
   });
 
   // ── unify-watch-primitive: cardinality + floor + coalesce (P-005/P-007) ──

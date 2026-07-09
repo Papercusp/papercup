@@ -289,14 +289,21 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
 
 describe('pump guard is keyed per workspace (audit P-033)', () => {
   it("workspace B pumps while A's pump is in flight; same-workspace reentry stays blocked", async () => {
+    // WI-3575: claimDueDeliveries no longer takes a workspaceId (events:await is
+    // single-workspace by design — see store.ts) — so this can no longer observe
+    // the `pumpsInFlight` per-workspace guard by inspecting the store call's
+    // workspaceId arg. The guard itself is unchanged (pumpWakeDeliveries's OWN `ws`
+    // param still keys the in-memory reentrancy Set); observe it instead via CALL
+    // COUNT — a guarded reentry never reaches claimDueDeliveries at all, so only a
+    // genuinely-proceeding pump increments it.
     let releaseA!: (rows: unknown[]) => void;
+    let claimCalls = 0;
     let parkedOnce = false;
-    const claimedWorkspaces: string[] = [];
-    (h.store.claimDueDeliveries as unknown as { mockImplementation: (fn: (opts: { workspaceId?: string }) => Promise<unknown[]>) => void }).mockImplementation(
-      async ({ workspaceId }) => {
-        claimedWorkspaces.push(workspaceId ?? '?');
-        if (workspaceId === 'ws-a' && !parkedOnce) {
-          parkedOnce = true; // only A's FIRST claim parks; later pumps complete normally
+    (h.store.claimDueDeliveries as unknown as { mockImplementation: (fn: () => Promise<unknown[]>) => void }).mockImplementation(
+      async () => {
+        claimCalls++;
+        if (!parkedOnce) {
+          parkedOnce = true; // only the FIRST (A's) claim parks; later pumps complete normally
           return new Promise<unknown[]>((res) => {
             releaseA = res;
           });
@@ -307,23 +314,23 @@ describe('pump guard is keyed per workspace (audit P-033)', () => {
 
     const pumpA = pumpWakeDeliveries('ws-a'); // parks inside claimDueDeliveries; guard entry held
     await Promise.resolve(); // let A reach its claim call
-    expect(claimedWorkspaces).toEqual(['ws-a']);
+    expect(claimCalls).toBe(1);
 
-    // Same-workspace reentry: still guarded — returns empty WITHOUT claiming.
+    // Same-workspace reentry: still guarded — returns empty WITHOUT ever claiming.
     const reentry = await pumpWakeDeliveries('ws-a');
     expect(reentry.claimed).toBe(0);
-    expect(claimedWorkspaces).toEqual(['ws-a']);
+    expect(claimCalls).toBe(1);
 
     // Cross-workspace: B must proceed (the old module-global boolean silently
     // swallowed this kick — cross-workspace wake starvation).
     await pumpWakeDeliveries('ws-b');
-    expect(claimedWorkspaces).toEqual(['ws-a', 'ws-b']);
+    expect(claimCalls).toBe(2);
 
     releaseA([]);
     await pumpA;
 
     // A's guard entry cleared with its pump — it can pump again.
     await pumpWakeDeliveries('ws-a');
-    expect(claimedWorkspaces).toEqual(['ws-a', 'ws-b', 'ws-a']);
+    expect(claimCalls).toBe(3);
   });
 });

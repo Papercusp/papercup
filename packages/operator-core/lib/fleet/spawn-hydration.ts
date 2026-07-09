@@ -95,7 +95,7 @@ export interface SpawnHydrationDeps {
    * `## Your work-item dossier` block (it carries its OWN `##`/`###` headings).
    * Absent/null ⇒ no dossier. It already includes the roster (D-008), so when a
    * dossier is present the standalone `getRoster` section below is SUPPRESSED — never
-   * a double roster (D-009 anti-bloat). Flag-gated (BEE_WAKE_DOSSIER) at the binding.
+   * a double roster (D-009 anti-bloat). Flag-gated (CUP_WAKE_DOSSIER) at the binding.
    */
   getDossier?: (q: {
     harness: string;

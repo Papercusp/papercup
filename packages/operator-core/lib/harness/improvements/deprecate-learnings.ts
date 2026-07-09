@@ -228,12 +228,12 @@ export const NEGATIVE_RESULT_FACT_TTL_SEC = 90 * 24 * 3600;
  *    draft refreshes ONE fact, never accretes duplicates.
  *  - body budgets tried/stalled/salvageable into the 500-char fact cap
  *    (stalled first — it is the "don't go here" signal peers act on).
- *  - `hiveHomeSlug` = the RESOLVED federation slug (member → hive home); the
+ *  - `potHomeSlug` = the RESOLVED federation slug (member → hive home); the
  *    caller resolves (emit does it via {@link resolveFactFederationSlug}).
  */
 export function buildNegativeResultFact(
   input: DeprecateLearningsInput,
-  hiveHomeSlug: string | null,
+  potHomeSlug: string | null,
 ): AssertFactInput {
   const { planSlug, learnings } = input;
   const key = `${NEGATIVE_RESULT_FACT_PREFIX}${planSlug}`.slice(0, 120);
@@ -256,7 +256,7 @@ export function buildNegativeResultFact(
     createdBy: input.createdBy ?? `deprecate:${input.deprecatedBy}`,
     ttlSec: NEGATIVE_RESULT_FACT_TTL_SEC,
     shareable: true,
-    ...(hiveHomeSlug ? { hiveHomeSlug } : {}),
+    ...(potHomeSlug ? { potHomeSlug } : {}),
   };
 }
 
@@ -290,8 +290,8 @@ export async function emitDeprecateLearnings(
 ): Promise<CaptureImprovementResult> {
   const result = await deps.captureImprovement(buildDeprecateLearningsObservation(input));
   try {
-    const hiveHomeSlug = await deps.resolveFactFederationSlug(input.sourceHive);
-    await deps.assertFact(buildNegativeResultFact(input, hiveHomeSlug));
+    const potHomeSlug = await deps.resolveFactFederationSlug(input.sourceHive);
+    await deps.assertFact(buildNegativeResultFact(input, potHomeSlug));
   } catch {
     /* best-effort — the observation already landed; the fact re-asserts on a
        future deprecate of the same draft (idempotent key). */

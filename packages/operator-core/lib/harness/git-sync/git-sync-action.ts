@@ -45,8 +45,17 @@ import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/hive-git/integrator-tick';
 import { runWorktreeBridgeTick } from '../../sync/hive-git/worktree-bridge-tick';
+import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/hive-git/ref-announce-tick';
+import {
+  REF_ANNOUNCE_EVENT_KEY,
+  isSignedRefAnnouncement,
+  type SignedRefAnnouncement,
+  type AnnounceBudgetState,
+} from '../../sync/hive-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/hive-git/staging-advance';
-import { hiveGitRepoPath } from '../../sync/hive-git/storage';
+import { hiveGitRepoPath, listNamespaces } from '../../sync/hive-git/storage';
+import { bootstrapFromPeer } from '../../sync/hive-git/bootstrap';
+import { Duplex } from 'node:stream';
 import { listHiveMembers } from '../../hive-membership-store';
 import { resolveUsageActor } from '../usage-actor';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
@@ -1052,9 +1061,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only
       // resolved for hive members (hive_slug) / self_repo hive homes; getHiveGitMode
       // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
-      const hiveHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
-      if (hiveHomeSlug && workspaceId) {
-        const mode = await getHiveGitMode(workspaceId, hiveHomeSlug);
+      const potHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
+      if (potHomeSlug && workspaceId) {
+        const mode = await getHiveGitMode(workspaceId, potHomeSlug);
         if (mode !== 'legacy') return { ...g, hiveGitMode: mode };
       }
       return g;
@@ -1188,6 +1197,35 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
   }
 
+  // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
+  // bootstrap-tick pass per git-sync tick, BEFORE ref-announce (P-202) — a
+  // genuinely cold local mirror (zero `refs/namespaces/*` yet) has nothing for
+  // ref-announce/integrator/worktree-bridge to read; seeding it first lets
+  // this SAME tick's later legs already see the seeded heads. Self-gates as a
+  // fast no-op the moment ANY namespace exists locally (runBootstrapLeg's own
+  // `listNamespaces` check) — this is what makes G-8 safe across a
+  // legacy→bridged→p2p-only→legacy→bridged mode cycle with NO re-seed: once a
+  // repo has been seeded (by this leg or by normal own-work commits), no
+  // later tick — regardless of how many times mode flips — ever re-attempts
+  // it, per bootstrap.ts's own re-run contract (bootstrap.integration.test.ts
+  // "a re-run seeds only namespaces NEW on the peer; existing ones are
+  // skipped untouched"). Own checkpoint so a resumed fire never re-attempts
+  // past it.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId));
+  }
+
+  // p2p-git-live-activation P-202: on ANY non-legacy hive (bridged OR
+  // p2p-only), one ref-announce-tick pass per git-sync tick — publish this
+  // device's own namespace advance (if any) hive-wide, then process any
+  // pending peer ref-announcements into the local mirror. Runs BEFORE the
+  // integrator leg (P-203) so it reads freshly-fetched member heads this
+  // same tick, not last tick's. Own checkpoint so a resumed fire never
+  // re-announces/re-receives past it.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:ref-announce', () => runRefAnnounceLeg(slug, workspaceId));
+  }
+
   // p2p-git-live-activation P-203: on ANY non-legacy hive (bridged OR
   // p2p-only), one integrator-tick pass per git-sync tick — the lock-authority
   // lease holder merges member namespace heads into staging + announces the
@@ -1222,8 +1260,8 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
       return; // registry unreadable — next tick retries
     }
     if (!entry) return;
-    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-    if (!hiveHomeSlug) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
@@ -1243,7 +1281,7 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
     }
 
     const outcome = await runGithubBridgeTick({
-      hiveHomeSlug,
+      potHomeSlug,
       workspaceId,
       repoKey: slug,
       githubRemote: entry.github_remote,
@@ -1273,6 +1311,259 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
 }
 
 /**
+ * p2p-git-live-activation P-205 (WI-3591): the G-8 cold-clone bootstrap leg —
+ * the production path a fresh JOINER's git-sync tick actually hits. Best-
+ * effort: never throws; outcome persists on the routine metadata under the
+ * `bootstrap` key (distinct from `ref_announce`/`integrator`/`worktree_bridge`
+ * so the four legs never clobber each other's watermark).
+ *
+ * SELF-GATE (the "reachable but only when it matters" contract): fast no-op
+ * unless the local hive-git bare store has ZERO `refs/namespaces/*` yet
+ * (`listNamespaces` — storage.ts). Any prior namespace (this device's own
+ * work, or a namespace already seeded by an earlier bootstrap tick) means
+ * this leg has nothing to do — `bootstrapFromPeer` itself is also safe to
+ * re-run (existing namespaces are left untouched per its own rewind-safety
+ * contract), but gating here avoids paying a wildcard-fetch attempt on every
+ * tick once a repo is warm.
+ *
+ * DIAL-REGISTRY GAP (same documented simplification as P-202/P-204's legs
+ * below): `openDuplex` has no live per-peer connection to dial yet from this
+ * call site (git-sync-action.ts does not resolve a hive-git swarm topic —
+ * that only exists inside the shared-swarm connection handler, swarm.ts). A
+ * cold repo therefore reports a clean `ok:false` (`fetch-failed`, matching
+ * `fetchOverDuplex`'s fail-soft contract) and retries next tick — reachable
+ * and exercised, but real cross-machine proof is Phase 3's job (P-302 "VM
+ * cold-joins via G-8 bootstrap from the tower peer" against the live rig).
+ * Once a shared topic-resolution helper is wired into this file for the
+ * ref-announce/worktree-bridge legs' own OPENDUPLEX/DIAL-REGISTRY gaps, this
+ * leg should adopt the same real dial (peer-dial-registry.ts's
+ * `openHiveGitDuplexToDevice` already exists and is ready for that — WI-3583).
+ */
+async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry) return;
+    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!hiveHomeSlug) return;
+
+    const repoPath = hiveGitRepoPath(hiveHomeSlug, slug);
+    const existingNamespaces = await listNamespaces(repoPath);
+    if (existingNamespaces.length > 0) return; // warm repo — nothing to bootstrap
+
+    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const memberDevicePubkeysBase64 = [
+      ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
+    ];
+    if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to seed from yet
+
+    const actor = await resolveUsageActor();
+    const selfDevicePubkey = actor?.devicePubkey;
+
+    // DIAL-REGISTRY GAP — see module doc above (WI-3583). Mirrors
+    // serve-wiring.ts's own "resolve a pre-destroyed duplex, never reject"
+    // fail-soft contract, so this always reports a clean `fetch-failed`
+    // outcome rather than an uncaught throw.
+    const stub = new Duplex({
+      read() {},
+      write(_chunk, _enc, cb) {
+        cb();
+      },
+    });
+    stub.destroy(new Error('hive-git: no live per-peer dial registry wired into this leg yet (WI-3583)'));
+
+    const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
+    await patchRoutineMetadata(slug, {
+      bootstrap: {
+        at: Date.now(),
+        ok: outcome.ok,
+        namespaceCount: outcome.namespaces.length,
+        skippedExisting: outcome.skippedExisting.length,
+      },
+    });
+    if (!outcome.ok) {
+      console.warn(`[git-sync] ${slug}: bootstrap-tick reported errors: ${outcome.stderr.trim().slice(0, 500)}`);
+    }
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: bootstrap-tick failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * p2p-git-live-activation P-202: the ref-announce-tick leg of one non-legacy
+ * hive's git-sync tick. Best-effort: never throws (the code plane must keep
+ * committing even when this pass fails); the fed-event cursor + per-device
+ * budget-state map persist on the routine metadata (the `lastAdmitted` idiom
+ * above, under the `ref_announce` key — distinct from P-204's
+ * `worktree_bridge` key and P-203's `integrator` key, so the three legs never
+ * clobber each other's watermark).
+ *
+ * TWO SUB-LEGS, same repo (`hiveGitRepoPath(potHomeSlug, slug)` — one bare
+ * store per (hive, repo) key holding every member's namespace, exactly like
+ * the integrator/worktree-bridge legs read/write):
+ *   1. PUBLISH — `runRefAnnouncePublishTick`: no-ops unless this device's own
+ *      namespace advanced since its last sigrefs snapshot; on advance, emits
+ *      the signed announcement hive-wide (local `emitAwaitedEvent` +
+ *      federated `sendMessage` fed_event — the same two-emission idiom
+ *      `runIntegratorLeg` uses for its staging-advance).
+ *   2. RECEIVE — pending `hive-git:ref-announce` fed-events collected off
+ *      `coord_event_log` since our watermark (the same collection shape
+ *      `runWorktreeBridgeLeg` uses for `hive-git:staging-advance`), fed
+ *      through `runRefAnnounceReceiveTick` against the local mirror.
+ *
+ * DIAL-REGISTRY GAP (known simplification, same shape as P-204's OPENDUPLEX
+ * GAP above): no live per-peer connection registry exists yet (device pubkey
+ * → swarm socket) — only the dial primitive itself (`openHiveGitFetchDuplex`,
+ * P-201/serve-wiring.ts). `openStream` here resolves an already-destroyed
+ * Duplex, so every fetch this leg would attempt reports through the
+ * documented `fetch-failed` result (never a throw, matching
+ * `fetchOverDuplex`'s fail-soft contract; never blocks the rest of the
+ * batch) until WI-3583 lands the registry and this `openStream` is swapped
+ * for a real per-device dial.
+ */
+async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
+
+    const actor = await resolveUsageActor();
+    if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
+
+    const members = await listHiveMembers(workspaceId, potHomeSlug);
+    const memberDevicePubkeysBase64 = [
+      ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
+    ];
+
+    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
+    const keychainId = resolveDeviceKeychainId(actor.githubUserId);
+    const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
+
+    // 1. Publish: announce our own namespace advance, if any.
+    const publishOutcome = await runRefAnnouncePublishTick({ repoPath, devicePubkeyBase64: actor.devicePubkey, sign });
+    if (publishOutcome.announcement) {
+      const announcement = publishOutcome.announcement;
+      await emitAwaitedEvent({
+        key: REF_ANNOUNCE_EVENT_KEY,
+        summary: `hive-git ref-announce v${announcement.version} from ${actor.devicePubkey.slice(0, 12)}`,
+        payload: announcement,
+        source: 'git-sync-ref-announce',
+      });
+      const identity: AgentIdentity = {
+        ownerId: 'git-sync-ref-announce',
+        ownerLabel: 'git-sync-ref-announce',
+        source: 'static-client',
+        userId: null,
+        workspaceId,
+      };
+      await sendMessage(identity, {
+        to: [],
+        summary: `[fed-event] ${REF_ANNOUNCE_EVENT_KEY}`,
+        harnessSlug: potHomeSlug,
+        extra: {
+          fed_event: { key: REF_ANNOUNCE_EVENT_KEY, payload: announcement, source: identity.ownerId },
+        },
+      });
+    }
+    if (publishOutcome.errors.length) {
+      console.warn(`[git-sync] ${slug}: ref-announce publish reported errors: ${publishOutcome.errors.join('; ')}`);
+    }
+
+    if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to receive from yet
+
+    // 2. Receive: pending peer ref-announce fed-events since our watermark.
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      { ref_announce: { lastEventId: number; budgetStates: Record<string, AnnounceBudgetState | null> } | null }[]
+    >`
+      SELECT metadata->'ref_announce' AS ref_announce
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const priorState = rows[0]?.ref_announce ?? null;
+    const lastEventId = priorState?.lastEventId ?? 0;
+    const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(Object.entries(priorState?.budgetStates ?? {}));
+
+    const feRows = await sql<{ id: number; body: Record<string, unknown> }[]>`
+      SELECT id, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${potHomeSlug}
+         AND surface = 'messages'
+         AND id > ${lastEventId}
+         AND body->'fed_event'->>'key' = ${REF_ANNOUNCE_EVENT_KEY}
+       ORDER BY id ASC
+       LIMIT 200
+    `;
+    if (feRows.length === 0) return; // fast no-op — nothing new to receive
+
+    const pending: SignedRefAnnouncement[] = [];
+    let maxRowId = lastEventId;
+    for (const row of feRows) {
+      maxRowId = Math.max(maxRowId, row.id);
+      const fe = row.body?.fed_event as { payload?: unknown } | undefined;
+      if (fe && isSignedRefAnnouncement(fe.payload)) pending.push(fe.payload);
+    }
+    if (pending.length === 0) {
+      // Rows existed (e.g. a malformed payload) but nothing usable — still
+      // advance the cursor past them so a bad row can't loop forever.
+      await patchRoutineMetadata(slug, {
+        ref_announce: { lastEventId: maxRowId, budgetStates: priorState?.budgetStates ?? {}, at: Date.now() },
+      });
+      return;
+    }
+
+    const receiveOutcome = await runRefAnnounceReceiveTick({
+      repoPath,
+      pending,
+      selfDevice: actor.devicePubkey,
+      allowedDevices: memberDevicePubkeysBase64,
+      budgetStates: priorBudgetStates,
+      openStream: () => {
+        // DIAL-REGISTRY GAP — see module doc above (WI-3583). Mirrors
+        // serve-wiring.ts's own "resolve a pre-destroyed duplex, never
+        // reject" fail-soft contract so this always reports a clean
+        // `fetch-failed` result rather than an uncaught throw.
+        const stub = new Duplex({
+          read() {},
+          write(_chunk, _enc, cb) {
+            cb();
+          },
+        });
+        stub.destroy(new Error('hive-git: no live per-peer dial registry yet (WI-3583)'));
+        return stub;
+      },
+      timeoutMs: 15_000,
+    });
+
+    await patchRoutineMetadata(slug, {
+      ref_announce: {
+        lastEventId: maxRowId,
+        budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
+        at: Date.now(),
+      },
+    });
+
+    if (receiveOutcome.errors.length) {
+      console.warn(`[git-sync] ${slug}: ref-announce receive reported errors: ${receiveOutcome.errors.join('; ')}`);
+    }
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: ref-announce-tick failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
  * p2p-git-live-activation P-203: the integrator-tick leg of one non-legacy
  * hive's git-sync tick. Best-effort: never throws (the code plane must keep
  * committing even when this pass fails); outcome + the `{epoch, seq}`
@@ -1296,13 +1587,13 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       return; // registry unreadable — next tick retries
     }
     if (!entry) return;
-    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-    if (!hiveHomeSlug) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
 
     const actor = await resolveUsageActor();
     if (!actor) return; // gh unauthenticated — no device identity to sign/integrate as
 
-    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
@@ -1321,7 +1612,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
 
     const keychainId = resolveDeviceKeychainId(actor.githubUserId);
     const outcome = await runIntegratorTick({
-      hiveHomeSlug,
+      potHomeSlug,
       workspaceId,
       repoKey: slug,
       memberDevicePubkeysBase64,
@@ -1330,7 +1621,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       priorSeq,
       sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
       resolveTier: async (devicePubkeyBase64) =>
-        (await resolveAuthorCommsTier({ workspaceId, hiveHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
+        (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
     });
 
     if (outcome.announcement) {
@@ -1353,7 +1644,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       await sendMessage(identity, {
         to: [],
         summary: `[fed-event] ${STAGING_ADVANCE_EVENT_KEY}`,
-        harnessSlug: hiveHomeSlug,
+        harnessSlug: potHomeSlug,
         extra: {
           fed_event: {
             key: STAGING_ADVANCE_EVENT_KEY,
@@ -1418,10 +1709,10 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       return; // registry unreadable — next tick retries
     }
     if (!entry) return;
-    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-    if (!hiveHomeSlug) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
 
-    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
@@ -1449,7 +1740,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       SELECT id, body
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${hiveHomeSlug}
+         AND harness_slug = ${potHomeSlug}
          AND surface = 'messages'
          AND id > ${lastEventId}
          AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
@@ -1479,7 +1770,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       return;
     }
 
-    const repoPath = hiveGitRepoPath(hiveHomeSlug, slug);
+    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
     const { projectDirForSlug } = await import('../../operator-notes');
     const worktreePath = await projectDirForSlug(slug);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries

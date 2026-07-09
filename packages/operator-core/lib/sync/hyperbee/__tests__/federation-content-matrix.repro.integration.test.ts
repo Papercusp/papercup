@@ -6,7 +6,7 @@
  * owner-content-to-joiner-faithful.repro.test.ts (real testnet-DHT swarm via
  * createTestnet + real testcontainer Postgres org DB; the REAL boot apply seam
  * `bootHarnessSubstrate` — NO applyOverride / NO resolveAuthorDevice stub on the
- * RECEIVER, so boot's real `joinerHiveHomeSlug` rebind / owner-home fallback +
+ * RECEIVER, so boot's real `joinerPotHomeSlug` rebind / owner-home fallback +
  * the `admittedIdentities → resolveAuthorDevice → resolveHiveMemberDeviceSet`
  * chain are on the path end-to-end).
  *
@@ -475,7 +475,7 @@ describe('federation content matrix — ALL shared content types federate BOTH d
   // DIRECTION A: OWNER → JOINER. Covers cases (1) plans→joiner [harness_plans] and
   // (2) plan-parts→joiner [harness_plan_parts]. The OWNER's slug IS the hive home;
   // the JOINER boots a member harness whose hive home is a remote_hive VIEW → boot's
-  // real joinerHiveHomeSlug rebind + membership chain are on the path.
+  // real joinerPotHomeSlug rebind + membership chain are on the path.
   // ────────────────────────────────────────────────────────────────────────────
   it(
     'OWNER→JOINER: a harness_plans row (+ harness_plan_parts row) authored on the OWNER federates to the JOINER',
@@ -497,7 +497,7 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         { userId: idJoiner.userId, login: 'joiner', devicePubkey: idJoiner.devicePubkey },
       ]);
       // Registry: HIVE_HOME a remote_hive VIEW (so the JOINER rebinds its hive-home
-      // projection slug via joinerHiveHomeSlug), JOINER_SLUG.hive_slug → HIVE_HOME.
+      // projection slug via joinerPotHomeSlug), JOINER_SLUG.hive_slug → HIVE_HOME.
       await mutateHarnessRegistry(
         (r) => ({
           ...r,
@@ -510,10 +510,10 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         WORKSPACE_ID,
       );
 
-      const { hiveHomeSlugForHarness, joinerHiveHomeSlug } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness, joinerPotHomeSlug } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
-      expect(await joinerHiveHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+      expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+      expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
       expect((await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME)).has(idOwner.devicePubkey)).toBe(true);
       _clearHiveMemberDeviceSetCacheForTest();
 
@@ -699,9 +699,9 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         WORKSPACE_ID,
       );
 
-      const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, HIVE_HOME)).toBe(HIVE_HOME);
+      expect(await potHomeSlugForHarness(WORKSPACE_ID, HIVE_HOME)).toBe(HIVE_HOME);
       expect((await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME)).has(idMember.devicePubkey)).toBe(true);
       _clearHiveMemberDeviceSetCacheForTest();
 

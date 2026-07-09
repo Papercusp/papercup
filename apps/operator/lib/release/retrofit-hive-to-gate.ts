@@ -84,7 +84,7 @@ async function buildPlan(slug: string): Promise<RetrofitPlan> {
     gateEnabled: gate?.enabled ?? false,
     gitSyncSeeded: names.has('git-sync'),
     greenCheckpointSeeded: names.has('green-checkpoint'),
-    flagOn: await getFlag(FLAGS.PER_HIVE_RELEASE_GATE, 'system'),
+    flagOn: await getFlag(FLAGS.PER_POT_RELEASE_GATE, 'system'),
   };
 }
 
@@ -98,7 +98,7 @@ function printPlan(p: RetrofitPlan): void {
   log(`  gate enabled:     ${p.gateEnabled}  greenCmd: ${p.greenCmd}`);
   log(`  staging exists:   local=${p.hasStagingLocal} remote=${p.hasStagingRemote}`);
   log(`  git-sync seeded:  ${p.gitSyncSeeded}   green-checkpoint seeded: ${p.greenCheckpointSeeded}`);
-  log(`  PER_HIVE_RELEASE_GATE flag: ${p.flagOn ? 'ON' : 'OFF'}`);
+  log(`  PER_POT_RELEASE_GATE flag: ${p.flagOn ? 'ON' : 'OFF'}`);
   log(`\n  Steps --apply WOULD take:`);
   if (!p.hasGit) {
     log(`   ✗ NOT a git repo — cannot gate. (Is this the metadata home rather than the code harness?)`);
@@ -113,7 +113,7 @@ function printPlan(p: RetrofitPlan): void {
   }
   log(`   2. registry: set github_default_branch '${p.currentDefaultBranch ?? '(unset)'}' → '${p.targetIntegrationBranch}'; repoint git-sync to push '${p.targetIntegrationBranch}'`);
   log(`   3. seed green-checkpoint for install_slug='${p.slug}' (greenCmd: ${p.greenCmd}) — '${p.targetReleaseRef}' becomes green-only`);
-  if (!p.flagOn) log(`      ⚠ requires PER_HIVE_RELEASE_GATE flag ON (currently OFF) — seeding self-gates on it.`);
+  if (!p.flagOn) log(`      ⚠ requires PER_POT_RELEASE_GATE flag ON (currently OFF) — seeding self-gates on it.`);
   log(`\n  Net: work flows to '${p.targetIntegrationBranch}'; '${p.targetReleaseRef}' fast-forwards only when '${p.greenCmd}' passes.`);
   log(`  Reversible: delete origin/${p.targetIntegrationBranch} + the green-checkpoint routine + repoint git-sync to '${p.currentDefaultBranch ?? 'main'}'.`);
 }

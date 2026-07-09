@@ -11,7 +11,7 @@
  * mid-task is never touched (D-005). The over-cap cohort is LOGGED every tick for
  * visibility, even flag-off / dry-run.
  *
- * DOUBLE-GATED (idle-session-reaper precedent): FLAGS.BEE_TRANSCRIPT_CAP default-OFF
+ * DOUBLE-GATED (idle-session-reaper precedent): FLAGS.CUP_TRANSCRIPT_CAP default-OFF
  * AND the routine seeded INACTIVE; `dry_run` previews the cohort without nudging.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';

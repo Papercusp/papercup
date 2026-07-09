@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   }
   // EI-2224 recurrence guard: assert the configured operator-home harness slug
   // resolves to a registered project (alias-aware) — fail LOUD at boot instead of
-  // 404ing SILENTLY at dispatch time. A rename that leaves PAPERCUSP_HIVE_HOME_SLUG
+  // 404ing SILENTLY at dispatch time. A rename that leaves PAPERCUSP_POT_HOME_SLUG
   // (or a fire-path env) on the retired slug used to dark the dispatcher ~34h.
   const homeSlug = operatorHomeHarnessSlug();
   const homeCheck = await checkHomeHarnessResolves(homeSlug);

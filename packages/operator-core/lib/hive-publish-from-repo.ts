@@ -521,7 +521,7 @@ async function publishListingForMeta(
     // topic: dc9db's (a′) announce extension carries MULTIPLE log announces per
     // topic (member-log + hive-home-log), and the boot.ts onAnnounce slug-filter
     // scopes admission so the owner's hive-home never cross-merges a member-log. A
-    // joiner's member harness admits the hive-home log (its `joinerHiveHomeSlug`
+    // joiner's member harness admits the hive-home log (its `joinerPotHomeSlug`
     // rebind) + applies hive_members/hive_settings under the home slug. Re-key IN
     // PLACE with the same owner-safe `rekeyHarness` as the members (a full reboot
     // would break the owner's corestore replication-serving — EI-681). NOT

@@ -37,7 +37,7 @@ import {
   getHiveTimeWake,
   readHiveWakeState,
   recordHiveWake,
-  resolveHiveHomeSlug,
+  resolvePotHomeSlug,
   withinWakeFloor,
 } from './wake';
 
@@ -61,13 +61,13 @@ export interface UrgentHiveWakeResult {
 export async function requestUrgentHiveWake(opts: {
   /** Why the brain is being woken — becomes the kickoff context. */
   reason: string;
-  /** The item's harness — used as the hive home slug (falls back to PAPERCUSP_HIVE_HOME_SLUG). */
+  /** The item's harness — used as the hive home slug (falls back to PAPERCUSP_POT_HOME_SLUG). */
   harness?: string | null;
   workspaceId?: string;
   /** Test seam. */
   now?: number;
 }): Promise<UrgentHiveWakeResult> {
-  const installSlug = resolveHiveHomeSlug(opts.harness ?? undefined, undefined);
+  const installSlug = resolvePotHomeSlug(opts.harness ?? undefined, undefined);
   if (!installSlug) return { fired: false, coalesced: false, skipped: 'no_home_harness' };
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const now = opts.now ?? Date.now();

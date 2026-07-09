@@ -171,8 +171,8 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   let sourceHive = input.sourceHive;
   if (!sourceHive) {
     try {
-      const { hiveHomeSlugForHarness } = await import('../hive-federation');
-      sourceHive = (await hiveHomeSlugForHarness(ws, input.harnessSlug)) ?? input.harnessSlug;
+      const { potHomeSlugForHarness } = await import('../hive-federation');
+      sourceHive = (await potHomeSlugForHarness(ws, input.harnessSlug)) ?? input.harnessSlug;
     } catch {
       // best-effort — fall back to the harness slug as the hive-home proxy.
       sourceHive = input.harnessSlug;
@@ -533,8 +533,8 @@ export async function getScoutLensWeights(
   let potSlug = opts.potSlug ?? opts.harnessSlug;
   if (!opts.potSlug && opts.harnessSlug) {
     try {
-      const { hiveHomeSlugForHarness } = await import('../hive-federation');
-      potSlug = (await hiveHomeSlugForHarness(opts.workspaceId ?? activeWorkspaceId(), opts.harnessSlug)) ?? opts.harnessSlug;
+      const { potHomeSlugForHarness } = await import('../hive-federation');
+      potSlug = (await potHomeSlugForHarness(opts.workspaceId ?? activeWorkspaceId(), opts.harnessSlug)) ?? opts.harnessSlug;
     } catch {
       // best-effort: keep the harnessSlug fallback
     }
@@ -618,8 +618,8 @@ export async function refreshScoutOutcomes(
   let potSlug = opts.harnessSlug;
   if (opts.harnessSlug) {
     try {
-      const { hiveHomeSlugForHarness } = await import('../hive-federation');
-      potSlug = (await hiveHomeSlugForHarness(ws, opts.harnessSlug)) ?? opts.harnessSlug;
+      const { potHomeSlugForHarness } = await import('../hive-federation');
+      potSlug = (await potHomeSlugForHarness(ws, opts.harnessSlug)) ?? opts.harnessSlug;
     } catch {
       // best-effort — keep the harnessSlug fallback
     }

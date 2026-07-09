@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import {
   setOverwatchStarted,
   setOverwatchCadenceSec,
@@ -53,7 +53,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Pot home-harness slug the Kettle supervises (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+      .describe('Pot home-harness slug the Kettle supervises (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
     cadenceSec: z
       .number()
@@ -64,7 +64,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
+    const installSlug = resolvePotHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
         content: [
@@ -73,7 +73,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the Kettle state is per-pot.',
+              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the Kettle state is per-pot.',
             }),
           },
         ],

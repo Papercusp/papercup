@@ -220,7 +220,7 @@ export async function listStartedHives(): Promise<Array<{ workspaceId: string; i
  * - OFF (the dark default) ⇒ the raw per-(ws,install) set, BYTE-IDENTICAL to
  *   `listStartedHives()` — every existing liveness loop is unchanged.
  * - ON ⇒ collapse to ONE entry per started workspace, seated at the workspace's
- *   home hive (`resolveHiveHomeSlug`, = `PAPERCUSP_HIVE_HOME_SLUG`), so the
+ *   home hive (`resolvePotHomeSlug`, = `PAPERCUSP_POT_HOME_SLUG`), so the
  *   single workspace loop's liveness/wake keys resolve against the same sentinel
  *   the wake routine (./wake.ts) is re-keyed to. The seat-home falls back to the
  *   row's own install slug when no env home is set (multi-home pre-flip stays
@@ -233,7 +233,7 @@ export async function listStartedWorkspaceLoops(): Promise<
   const rows = await readStartedRows();
   if (!(await isWorkspaceCoordinationOn())) return rows;
   // ON: one loop per workspace, seated at the workspace home hive.
-  const { resolveHiveHomeSlug } = await import('./wake');
+  const { resolvePotHomeSlug } = await import('./wake');
   const seen = new Set<string>();
   const out: Array<{ workspaceId: string; installSlug: string }> = [];
   for (const r of rows) {
@@ -241,7 +241,7 @@ export async function listStartedWorkspaceLoops(): Promise<
     seen.add(r.workspaceId);
     // The env home is workspace-agnostic today (single live workspace); fall back
     // to this row's install when unset so a never-env'd box still resolves a seat.
-    const seatHome = resolveHiveHomeSlug(undefined, undefined) ?? r.installSlug;
+    const seatHome = resolvePotHomeSlug(undefined, undefined) ?? r.installSlug;
     out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;

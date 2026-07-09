@@ -311,7 +311,6 @@ export default defineTool({
         // timeout is only the backstop behind the backstop.
         timeoutBehavior: 'wake',
         timeoutSec: WAKE_QUEUE_WINDOW_SEC + 120,
-        workspaceId: identity.workspaceId ?? undefined,
       });
       // NOTIFY fast path (best-effort; the sweep reconciler is load-bearing).
       await ensureGrantListener(coordinationDomain, identity.workspaceId ?? undefined);

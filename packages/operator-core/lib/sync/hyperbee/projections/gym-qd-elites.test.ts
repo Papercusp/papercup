@@ -154,7 +154,7 @@ describe('purgeRevokedForeignElites — D-005 revocation cleanup', () => {
     const { sql, calls } = fakeSql();
     const n = await purgeRevokedForeignElites({
       workspaceId: 'ws',
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       revokedPubkeys: [],
       sql,
     });
@@ -166,7 +166,7 @@ describe('purgeRevokedForeignElites — D-005 revocation cleanup', () => {
     const { sql, calls } = fakeSql([{ niche_key: 'n1' }, { niche_key: 'n2' }]);
     const n = await purgeRevokedForeignElites({
       workspaceId: 'ws',
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       revokedPubkeys: ['revoked-log-key'],
       sql,
     });
@@ -181,7 +181,7 @@ describe('purgeRevokedForeignElites — D-005 revocation cleanup', () => {
     const { sql, calls } = fakeSql([{ source_hive: 'log-x', niche_key: 'n' }]);
     await purgeRevokedForeignElites({
       workspaceId: 'ws',
-      hiveHomeSlug: 'papercusp',
+      potHomeSlug: 'papercusp',
       revokedPubkeys: ['revoked-device'],
       resolveAuthorDevice: (src) => (src === 'log-x' ? 'revoked-device' : null),
       sql,

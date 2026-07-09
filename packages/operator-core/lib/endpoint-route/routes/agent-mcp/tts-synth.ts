@@ -24,6 +24,9 @@ import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voic
 import type { VoicePrefs } from '../../../voice-prefs';
 import { encodeWavPcm16 } from '../../../voice-node/wav';
 import { KOKORO_URL } from './operator-voice-proxy-helpers';
+// WI-3557: shared with the settings key-test probe (voice-engines/cartesia.ts)
+// so the two never drift on which Cartesia-Version the two paths speak.
+import { CARTESIA_API_VERSION } from '../../../voice-engines/cartesia';
 
 const TTS_TIMEOUT_MS = 30_000;
 

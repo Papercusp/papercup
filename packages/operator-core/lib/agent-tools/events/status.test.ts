@@ -74,15 +74,17 @@ describe('events:status projection', () => {
     expect('meter' in out).toBe(false);
   });
 
-  it('meter:true → wakeMeter invoked with the workspaceId and the meter rides in the envelope', async () => {
+  it('meter:true → wakeMeter invoked and the meter rides in the envelope', async () => {
     const out = await call({ meter: true });
-    expect(wakeMeter).toHaveBeenCalledWith({ workspaceId: 'ws-x' });
+    // WI-3575: wakeMeter/listActiveAwaits no longer take workspaceId (events:await
+    // is single-workspace by design — see store.ts).
+    expect(wakeMeter).toHaveBeenCalledWith();
     expect(out.meter).toEqual({ total: 7 });
   });
 
   it('all three store reads run (Promise.all), scoped to identity', async () => {
     await call({ meter: true });
-    expect(listActiveAwaits).toHaveBeenCalledWith('su-status', 'ws-x');
+    expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
     expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
     expect(wakeMeter).toHaveBeenCalledTimes(1);
   });

@@ -326,3 +326,12 @@ current content (copy it from `rubrics:get`) with `methodRef` added, then
 (2026-07-07). When you author a NEW rubric whose grading needs any procedure beyond
 the per-criterion `method` strings, write the agent-insights runbook first and pass
 `methodRef` in the initial propose.
+
+**This file and its served twin must stay byte-identical.** This METHOD.md and
+`apps/operator-docs/src/content/docs/agent-insights/su-agent-behavior.mdx` (frontmatter
+aside) are hand-synced with no generation link — a grader reads the *mdx* via
+`docs:search`/`docs:get`, not this file directly, so an edit to only one silently
+staled the served copy for a whole rubric revision (WI-3456 → WI-3479, EI-8795).
+**Edit BOTH files together, in the same change.** `npm run lint:rubric-method-ref-parity`
+(CI-gating) fails loudly on drift — run it locally before you consider a METHOD.md
+edit done.

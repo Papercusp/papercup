@@ -10,7 +10,7 @@
  *      Swarm that does NOT hold the key gets `not_owner_swarm` (sign throws) — correct:
  *      only the canonical owner Swarm can author the authoritative signed policy.
  *
- * The signature binds {domain, workspaceId, hiveHomeSlug, policyVersion, canonicalPolicyJson}
+ * The signature binds {domain, workspaceId, potHomeSlug, policyVersion, canonicalPolicyJson}
  * (hive-policy-schema.hivePolicySignedBytes) so it cannot be replayed across Hives or
  * versions. The member-side projection verifies the SAME bytes against the Hive identity
  * pubkey. policy_version is monotone (current + 1) — a secondary order; fed_hlc is the
@@ -37,22 +37,22 @@ export type AuthorHivePolicyResult =
 export interface AuthorHivePolicyInput {
   workspaceId: string;
   /** The Hive's home_slug (its hive identity handle). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The full new policy document (an OPEN record; unknown keys are preserved + signed). */
   policy: HivePolicy;
 }
 
 export interface AuthorHivePolicySeams {
   /** Read the current policy (for the version bump). Default: getHivePolicy. */
-  readCurrent?: (workspaceId: string, hiveHomeSlug: string) => Promise<ResolvedHivePolicy | null>;
+  readCurrent?: (workspaceId: string, potHomeSlug: string) => Promise<ResolvedHivePolicy | null>;
   /** Sign bytes with the Hive private key (throws if this Swarm isn't the owner). */
-  sign?: (workspaceId: string, hiveHomeSlug: string, bytes: Buffer) => Promise<Buffer>;
+  sign?: (workspaceId: string, potHomeSlug: string, bytes: Buffer) => Promise<Buffer>;
   /** The Hive owner pubkey (raw-32 base64); null if this Swarm doesn't hold the key. */
-  loadOwnerPubkey?: (workspaceId: string, hiveHomeSlug: string) => Promise<string | null>;
+  loadOwnerPubkey?: (workspaceId: string, potHomeSlug: string) => Promise<string | null>;
   /** Persist the signed row. Default: upsertHivePolicyRow. */
   write?: (input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     policyJson: string;
     ownerPubkey: string;
     signature: string;
@@ -78,27 +78,27 @@ export async function authorHivePolicy(
   } = seams;
 
   // 1. Keypair-ownership gate: only the Swarm that holds the Hive secret can author.
-  const ownerPubkey = await loadOwnerPubkey(input.workspaceId, input.hiveHomeSlug);
+  const ownerPubkey = await loadOwnerPubkey(input.workspaceId, input.potHomeSlug);
   if (!ownerPubkey) {
     return { ok: false, code: 'not_owner_swarm', detail: 'this Swarm does not hold the Hive private key' };
   }
 
   // 2. Monotone version bump.
-  const current = await readCurrent(input.workspaceId, input.hiveHomeSlug);
+  const current = await readCurrent(input.workspaceId, input.potHomeSlug);
   const policyVersion = (current?.policyVersion ?? 0) + 1;
 
   // 3. Canonicalize + sign the binding {domain, ws, slug, version, canonicalJson}.
   const canonicalPolicyJson = canonicalizeHivePolicy(input.policy);
   const bytes = hivePolicySignedBytes({
     workspaceId: input.workspaceId,
-    hiveHomeSlug: input.hiveHomeSlug,
+    potHomeSlug: input.potHomeSlug,
     policyVersion,
     canonicalPolicyJson,
   });
 
   let signature: string;
   try {
-    const sig = await sign(input.workspaceId, input.hiveHomeSlug, bytes);
+    const sig = await sign(input.workspaceId, input.potHomeSlug, bytes);
     signature = Buffer.from(sig).toString('base64');
   } catch (err: unknown) {
     // signWithHiveKey throws when this Swarm doesn't hold the key (defense in depth vs step 1).
@@ -109,7 +109,7 @@ export async function authorHivePolicy(
   try {
     const policy = await write({
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       policyJson: canonicalPolicyJson,
       ownerPubkey,
       signature,
@@ -134,16 +134,16 @@ export async function authorHivePolicy(
 export async function mutateHivePolicy(
   input: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     mutate: (current: HivePolicy) => HivePolicy;
   },
   seams: AuthorHivePolicySeams = {},
 ): Promise<AuthorHivePolicyResult> {
   const readCurrent = seams.readCurrent ?? getHivePolicy;
-  const current = await readCurrent(input.workspaceId, input.hiveHomeSlug);
+  const current = await readCurrent(input.workspaceId, input.potHomeSlug);
   const nextPolicy = input.mutate(current?.policy ?? {});
   return authorHivePolicy(
-    { workspaceId: input.workspaceId, hiveHomeSlug: input.hiveHomeSlug, policy: nextPolicy },
+    { workspaceId: input.workspaceId, potHomeSlug: input.potHomeSlug, policy: nextPolicy },
     seams,
   );
 }

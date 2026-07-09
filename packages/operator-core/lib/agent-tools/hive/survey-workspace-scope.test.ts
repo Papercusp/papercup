@@ -21,9 +21,9 @@ vi.mock('../../hive/survey', () => ({
   surveyHive: h.surveyHive,
   surveyWorkspace: h.surveyWorkspace,
 }));
-// Keep resolveHiveHomeSlug real-ish but env-driven; the handler only needs a slug.
+// Keep resolvePotHomeSlug real-ish but env-driven; the handler only needs a slug.
 vi.mock('../../hive/wake', () => ({
-  resolveHiveHomeSlug: (explicit?: string | null) => explicit ?? 'papercusp',
+  resolvePotHomeSlug: (explicit?: string | null) => explicit ?? 'papercusp',
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 

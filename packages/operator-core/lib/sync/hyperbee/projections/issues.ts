@@ -51,7 +51,7 @@ export interface IssuesProjectionOpts {
   sql?: postgres.Sql;
   /** WI-259 P-002: hive-home slug when this harness is a hive MEMBER (cross-member content is
    *  membership-gated only when set); undefined for a non-hive / owned-home harness. */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 P-002: resolve an op's VERIFIED source-log device pubkey from its receiver-stamped
    *  sourceLogKeyHex (boot's admittedIdentities); threaded via RegisterAllOpts. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;

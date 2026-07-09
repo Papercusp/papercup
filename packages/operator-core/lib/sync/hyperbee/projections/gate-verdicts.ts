@@ -94,7 +94,7 @@ export interface GateVerdictProjectionOpts {
   sql?: postgres.Sql;
   /** The hive-home slug when this projection is HIVE-BOUND — receive-side
    *  verification applies to remote ops only when set (bee-claim-spec M6 scoping). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** Test seam: resolve the VERDICT SIGNER device's membership (githubUserId
    *  null ⇒ unadmitted). Default binds comms-tier-gate (hive_members attestations). */
   resolveSignerMembership?: (
@@ -117,7 +117,7 @@ async function writeToPg(
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 
-  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
     // (1)+(2): signature + content-address integrity — self-certifying, no state.
     if (!verifyGateVerdictWithId(gateVerdictFromWireRow(row), row.verdict_id)) return;
     // (3): the SIGNER must be an admitted hive member device. Fail-CLOSED: a
@@ -128,7 +128,7 @@ async function writeToPg(
       ((device: string) =>
         resolveAuthorCommsTier({
           workspaceId: opts.workspaceId,
-          hiveHomeSlug: opts.hiveHomeSlug!,
+          potHomeSlug: opts.potHomeSlug!,
           devicePubkey: device,
         }));
     let member: { githubUserId: number | null };

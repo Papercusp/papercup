@@ -378,7 +378,7 @@ export function defaultAutonomyTrustScanDeps(sql: Sql, workspaceId: string): Aut
   return {
     async isArmed() {
       try {
-        return await getFlag(FLAGS.QUEEN_AUTONOMY_ARMED, `autonomy:${workspaceId}`);
+        return await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${workspaceId}`);
       } catch {
         return false; // fail-dark
       }

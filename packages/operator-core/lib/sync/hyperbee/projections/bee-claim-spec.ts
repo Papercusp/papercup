@@ -50,7 +50,7 @@ export interface BeeClaimSpecProjectionOpts {
   /** M6 (audit D-013): the hive-home slug when this projection is HIVE-BOUND —
    *  a cross-machine claim-spec apply is comms-tier-gated only when set (mirrors
    *  coord-message / the WI-259 member-content guard). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** M6 test seam: resolve an op's VERIFIED source-log device pubkey from the
    *  provenance authorPubkey (sourceLogKeyHex). Prod wires resolveAuthorDevice. */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
@@ -88,7 +88,7 @@ async function writeToPg(
   // error falls to FALLBACK_COMMS_TIER ('message' < 'steer') ⇒ NOT applied
   // (fail-CLOSED — correct for a high-privilege action). Local/own writes (the
   // queen on this machine) and non-hive topologies stay full-passthrough.
-  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
     const sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -98,7 +98,7 @@ async function writeToPg(
         device
           ? resolveAuthorCommsTier({
               workspaceId: opts.workspaceId,
-              hiveHomeSlug: opts.hiveHomeSlug!,
+              potHomeSlug: opts.potHomeSlug!,
               devicePubkey: device,
             })
           : { tier: FALLBACK_COMMS_TIER, githubUserId: null });

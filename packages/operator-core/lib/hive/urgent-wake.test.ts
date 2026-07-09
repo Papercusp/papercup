@@ -49,11 +49,11 @@ const FLOOR_MS = 60_000; // hiveWakeFloorSec() default, hard-min 60 in tests (en
 
 beforeEach(() => {
   vi.clearAllMocks();
-  delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  delete process.env.PAPERCUSP_POT_HOME_SLUG;
   delete process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC;
 });
 afterEach(() => {
-  delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
 
 describe('requestUrgentHiveWake', () => {
@@ -123,8 +123,8 @@ describe('requestUrgentHiveWake', () => {
     expect((declareHiveTimeWake.mock.calls[0][1] as { at: Date }).at.getTime()).toBe(NOW + FLOOR_MS);
   });
 
-  it('honours PAPERCUSP_HIVE_HOME_SLUG as the slug fallback', async () => {
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'env-home';
+  it('honours PAPERCUSP_POT_HOME_SLUG as the slug fallback', async () => {
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'env-home';
     readHiveWakeState.mockResolvedValue({ subscriptions: [] });
     const res = await requestUrgentHiveWake({ reason: 'WI-11 urgent', now: NOW });
     expect(res.fired).toBe(true);

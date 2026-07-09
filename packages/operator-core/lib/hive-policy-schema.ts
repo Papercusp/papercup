@@ -149,14 +149,14 @@ export function canonicalizeHivePolicy(policy: HivePolicy | Record<string, unkno
 
 /**
  * The EXACT bytes the owner signs and a member verifies. Newline-delimited and
- * unambiguous: the domain tag + workspaceId + hiveHomeSlug + policyVersion can contain
+ * unambiguous: the domain tag + workspaceId + potHomeSlug + policyVersion can contain
  * no newline (slugs/ids are newline-free, the version is an int), and `canonicalPolicyJson`
  * is single-line canonical JSON. Binding workspace + slug + version into the signed
  * message prevents cross-Hive / cross-version signature replay.
  */
 export function hivePolicySignedBytes(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   policyVersion: number;
   /** The canonical policy JSON string (the value stored in `policy_json`). */
   canonicalPolicyJson: string;
@@ -164,7 +164,7 @@ export function hivePolicySignedBytes(input: {
   const msg = [
     HIVE_POLICY_SIG_DOMAIN,
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     String(input.policyVersion),
     input.canonicalPolicyJson,
   ].join('\n');

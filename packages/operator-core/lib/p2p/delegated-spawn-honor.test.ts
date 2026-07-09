@@ -161,7 +161,7 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   return { d, setDisposition, spawnMembers, emitReceipt };
 }
 
-const ARGS = { workspaceId: WS, hiveHomeSlug: HOME, row: row() };
+const ARGS = { workspaceId: WS, potHomeSlug: HOME, row: row() };
 
 describe('honorSpawnRequestFromProjection', () => {
   it('gate OFF ⇒ total silence: no disposition, no receipt, no spawn', async () => {
@@ -186,7 +186,7 @@ describe('honorSpawnRequestFromProjection', () => {
         seatRef: 'haiku:low:AUTO',
         launch: { model: 'haiku:low', account: 'auto' },
         requesterOwnerId: 'su-a',
-        hiveHomeSlug: HOME,
+        potHomeSlug: HOME,
         workspaceId: WS,
       }),
     );

@@ -198,11 +198,11 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   // EI-7655: resolved here for the pause check, reused below to wake the
   // correct Hive (a MEMBER harness's demand event must wake ITS hive home,
   // not itself) after Phase 2 queues a genuinely new canary.
-  let hiveHomeSlug = installSlug;
+  let potHomeSlug = installSlug;
   try {
     const reg = await loadHarnessRegistry(workspaceId);
-    hiveHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
-    const steering = await getOwnerSteering(workspaceId, hiveHomeSlug, sql);
+    potHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
+    const steering = await getOwnerSteering(workspaceId, potHomeSlug, sql);
     isPaused = isPausedNow(steering, Date.now());
   } catch (e) {
     console.warn(`[hive-canary] pause-check failed for ${installSlug} — treating as unpaused: ${e instanceof Error ? e.message : e}`);
@@ -298,7 +298,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
       try {
         const wake = await requestUrgentHiveWake({
           reason: `hive-canary: queued today's canary ${plan.queueId} in ${installSlug}`,
-          harness: hiveHomeSlug,
+          harness: potHomeSlug,
           workspaceId,
         });
         if (wake.error) {

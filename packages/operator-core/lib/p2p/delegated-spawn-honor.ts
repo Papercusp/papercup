@@ -154,7 +154,7 @@ export function evaluateSpawnRequestTarget(opts: {
 export interface SpawnMembersRequest {
   workspaceId: string;
   /** The hive HOME slug — the harness the members boot into. */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   fleetSlug: string;
   planSlug: string;
   count: number;
@@ -254,14 +254,14 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
     : `http://localhost:${process.env.PAPERCUSP_HONO_PORT?.trim() || '3070'}`;
   const base = await buildConsoleEnvelope({
     workspaceId: req.workspaceId,
-    slug: req.hiveHomeSlug,
+    slug: req.potHomeSlug,
     operatorBaseUrl,
     skipMcpJson: true,
   });
   const command = memberLaunchCommand({
     fleetSlug: req.fleetSlug,
     agent: isOmpLocalModel(req.launch.model) ? 'omp' : 'claude',
-    harness: req.hiveHomeSlug,
+    harness: req.potHomeSlug,
     plan: req.planSlug,
     model: req.launch.model,
     // Same cross-platform-member-credential-inheritance default as fleet:launch-on-plan: an
@@ -298,7 +298,7 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
 export async function honorSpawnRequestFromProjection(
   args: {
     workspaceId: string;
-    hiveHomeSlug: string;
+    potHomeSlug: string;
     row: { publisher_github_user_id: number; offer_id: string; record_json: string; fleet_slug: string };
     sql?: Sql;
   },
@@ -348,7 +348,7 @@ export async function honorSpawnRequestFromProjection(
   const refuse = async (code: string, detail: string, disposition: string): Promise<DelegatedSpawnHonorOutcome> => {
     const claimed = await setDisposition(
       args.workspaceId,
-      args.hiveHomeSlug,
+      args.potHomeSlug,
       publisher,
       args.row.offer_id,
       disposition,
@@ -358,7 +358,7 @@ export async function honorSpawnRequestFromProjection(
     if (!claimed) return { outcome: 'already_claimed' };
     await emitReceipt({
       workspaceId: args.workspaceId,
-      potSlug: args.hiveHomeSlug,
+      potSlug: args.potHomeSlug,
       kind: 'refusal',
       offerId: args.row.offer_id,
       action: 'delegated-seat:spawn',
@@ -394,7 +394,7 @@ export async function honorSpawnRequestFromProjection(
   // Gate 5: the atomic claim — exactly one hook invocation spawns.
   const claimed = await setDisposition(
     args.workspaceId,
-    args.hiveHomeSlug,
+    args.potHomeSlug,
     publisher,
     args.row.offer_id,
     'honoring',
@@ -407,7 +407,7 @@ export async function honorSpawnRequestFromProjection(
   try {
     spawn = await spawnMembers({
       workspaceId: args.workspaceId,
-      hiveHomeSlug: args.hiveHomeSlug,
+      potHomeSlug: args.potHomeSlug,
       fleetSlug: record.fleetSlug,
       planSlug: payload.planSlug,
       count: payload.count,
@@ -424,7 +424,7 @@ export async function honorSpawnRequestFromProjection(
   if (spawn.opened === 0) {
     await setDisposition(
       args.workspaceId,
-      args.hiveHomeSlug,
+      args.potHomeSlug,
       publisher,
       args.row.offer_id,
       'refused:spawn_failed',
@@ -433,7 +433,7 @@ export async function honorSpawnRequestFromProjection(
     );
     await emitReceipt({
       workspaceId: args.workspaceId,
-      potSlug: args.hiveHomeSlug,
+      potSlug: args.potHomeSlug,
       kind: 'refusal',
       offerId: args.row.offer_id,
       action: 'delegated-seat:spawn',
@@ -451,7 +451,7 @@ export async function honorSpawnRequestFromProjection(
 
   await setDisposition(
     args.workspaceId,
-    args.hiveHomeSlug,
+    args.potHomeSlug,
     publisher,
     args.row.offer_id,
     'honored',

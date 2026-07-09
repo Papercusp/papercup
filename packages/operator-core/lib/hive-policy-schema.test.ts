@@ -53,7 +53,7 @@ describe('canonicalizeHivePolicy', () => {
 });
 
 describe('hivePolicySignedBytes', () => {
-  const base = { workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 1, canonicalPolicyJson: '{}' };
+  const base = { workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 1, canonicalPolicyJson: '{}' };
 
   it('carries the domain tag (anti-cross-protocol replay)', () => {
     expect(hivePolicySignedBytes(base).toString('utf8').startsWith(HIVE_POLICY_SIG_DOMAIN)).toBe(true);
@@ -62,7 +62,7 @@ describe('hivePolicySignedBytes', () => {
   it('changes when ANY binding field changes (anti cross-hive/version replay)', () => {
     const b0 = hivePolicySignedBytes(base).toString('hex');
     expect(hivePolicySignedBytes({ ...base, workspaceId: 'ws2' }).toString('hex')).not.toBe(b0);
-    expect(hivePolicySignedBytes({ ...base, hiveHomeSlug: 'home2' }).toString('hex')).not.toBe(b0);
+    expect(hivePolicySignedBytes({ ...base, potHomeSlug: 'home2' }).toString('hex')).not.toBe(b0);
     expect(hivePolicySignedBytes({ ...base, policyVersion: 2 }).toString('hex')).not.toBe(b0);
     expect(hivePolicySignedBytes({ ...base, canonicalPolicyJson: '{"a":1}' }).toString('hex')).not.toBe(b0);
   });
@@ -73,7 +73,7 @@ describe('sign → verify roundtrip (the S0 crypto core)', () => {
     const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
     const policy: HivePolicy = { rate: { opsPerMin: 5 }, membership: 'allowlist', allowlist: ['octocat'] };
     const canonical = canonicalizeHivePolicy(policy);
-    const bytes = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 7, canonicalPolicyJson: canonical });
+    const bytes = hivePolicySignedBytes({ workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 7, canonicalPolicyJson: canonical });
     const sig = signWithPrivateKeyDer(privateKeyDer, bytes);
 
     // Valid.
@@ -81,7 +81,7 @@ describe('sign → verify roundtrip (the S0 crypto core)', () => {
 
     // Tampered policy → the recomputed bytes differ → verify fails.
     const tampered = hivePolicySignedBytes({
-      workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 7,
+      workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 7,
       canonicalPolicyJson: canonicalizeHivePolicy({ ...policy, allowlist: ['attacker'] }),
     });
     expect(verifyEd25519(tampered, pubkeyBase64, sig)).toBe(false);
@@ -91,7 +91,7 @@ describe('sign → verify roundtrip (the S0 crypto core)', () => {
     expect(verifyEd25519(bytes, attacker.pubkeyBase64, sig)).toBe(false);
 
     // Version replay → bytes differ → verify fails.
-    const replayed = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 8, canonicalPolicyJson: canonical });
+    const replayed = hivePolicySignedBytes({ workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 8, canonicalPolicyJson: canonical });
     expect(verifyEd25519(replayed, pubkeyBase64, sig)).toBe(false);
   });
 });
@@ -304,7 +304,7 @@ describe('policy.crefs (G-6 P-030 — canonical-ref rules)', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const canonical = canonicalizeHivePolicy(res.policy);
-    const bytes = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: canonical });
+    const bytes = hivePolicySignedBytes({ workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: canonical });
     const sig = signWithPrivateKeyDer(privateKeyDer, bytes);
     expect(verifyEd25519(bytes, pubkeyBase64, sig)).toBe(true);
 
@@ -318,7 +318,7 @@ describe('policy.crefs (G-6 P-030 — canonical-ref rules)', () => {
     const tampered = canonicalizeHivePolicy({
       crefs: { rules: { 'refs/tags/releases/*': { allow: ['attackerKey'], threshold: 1 } } },
     });
-    const tamperedBytes = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: tampered });
+    const tamperedBytes = hivePolicySignedBytes({ workspaceId: 'ws', potHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: tampered });
     expect(verifyEd25519(tamperedBytes, pubkeyBase64, sig)).toBe(false);
   });
 });

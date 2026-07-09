@@ -38,7 +38,7 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
 }));
 vi.mock('../../hive-federation', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  hiveHomeSlugForHarness: async () => 'alpha',
+  potHomeSlugForHarness: async () => 'alpha',
 }));
 vi.mock('../coordination/identity', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),

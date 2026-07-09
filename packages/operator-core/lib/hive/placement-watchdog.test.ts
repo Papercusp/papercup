@@ -687,7 +687,7 @@ describe('reconcileHivePlacements — the all-started-hives sweep (orchestration
   const startedHives = (hives: { workspaceId: string; installSlug: string }[]) => vi.fn(async () => hives);
   const orgPg = () => vi.fn(() => ({ sql: {} }));
 
-  it('is a no-op when the HIVE_PLACEMENT_WATCHDOG flag is off (never lists or reconciles)', async () => {
+  it('is a no-op when the POT_PLACEMENT_WATCHDOG flag is off (never lists or reconciles)', async () => {
     const listStartedHives = vi.fn();
     const reconcileOneHive = vi.fn();
     const out = await reconcileHivePlacements({

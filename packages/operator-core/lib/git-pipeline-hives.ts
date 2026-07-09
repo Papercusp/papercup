@@ -12,7 +12,7 @@
  *
  * READ-ONLY aggregation; every sub-read degrades to a best-effort default so a slow/missing
  * hive never breaks the surface. The list is empty until a coding hive with a repo is gated
- * (the PER_HIVE_RELEASE_GATE flag is default-OFF during rollout — D-008).
+ * (the PER_POT_RELEASE_GATE flag is default-OFF during rollout — D-008).
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';

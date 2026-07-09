@@ -22,7 +22,7 @@ function fakeLimiter(rows: RateStateRow[]): MemberRateLimiter {
 function resolvedPolicy(rate: ResolvedHivePolicy['policy']['rate']): ResolvedHivePolicy {
   return {
     workspaceId: WS,
-    hiveHomeSlug: HOME,
+    potHomeSlug: HOME,
     policy: { membership: 'open', rate },
     policyVersion: 1,
     ownerPubkey: 'pk',

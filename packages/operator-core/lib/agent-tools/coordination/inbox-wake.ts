@@ -87,7 +87,7 @@ export interface WakeRecipientsResult {
   woken: number;
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
-   *  (the default). Graduated off the HIVE_AGENT_TABS flag (start-hive P-007). */
+   *  (the default). Graduated off the POT_AGENT_TABS flag (start-hive P-007). */
   staged: number;
   /** EI-5957: the ACTUAL ownerIds whose wake STAGED (manual wake-mode) — the
    *  named set behind `staged`, so a leader-steering send/dispatch can surface a
@@ -131,7 +131,7 @@ export async function wakeRecipients(
     );
   }
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
-  // the HIVE_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
+  // the POT_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
   // hive's PAUSE primitive (pot:pause sets the global default to `manual`), so
   // it must hold regardless of a UI flag — a flipped-off flag silently unmaking
   // Pause would fire wakes into a frozen hive. Behavior-neutral otherwise:
@@ -336,7 +336,7 @@ export async function reportIdleRecipients(
       // watchers without firing/waking any of them — the deliberate report-only
       // peek the store documents for "is anyone waiting at all?".
       try {
-        const watchers = await listActiveAwaitsForKey(inboxWakeKey(ownerId), opts.workspaceId);
+        const watchers = await listActiveAwaitsForKey(inboxWakeKey(ownerId));
         activeWatchers = watchers.length;
       } catch (e) {
         // A per-recipient await-store hiccup degrades the WHOLE report (invariant

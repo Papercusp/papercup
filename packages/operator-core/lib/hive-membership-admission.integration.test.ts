@@ -97,7 +97,7 @@ async function setPolicy(policy: HivePolicy, version = 1, ws = WS, slug = HIVE):
   await upsertHivePolicyRow(
     {
       workspaceId: ws,
-      hiveHomeSlug: slug,
+      potHomeSlug: slug,
       policyJson: canonicalizeHivePolicy(policy),
       ownerPubkey: 'test-owner-pk',
       signature: 'test-sig',
@@ -112,15 +112,15 @@ async function setPolicy(policy: HivePolicy, version = 1, ws = WS, slug = HIVE):
  *  own surface), so banMember's two-leg composition runs against real PG. */
 async function pgMutate(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   mutate: (p: HivePolicy) => HivePolicy;
 }): Promise<AuthorHivePolicyResult> {
-  const current = await getHivePolicy(input.workspaceId, input.hiveHomeSlug, sql);
+  const current = await getHivePolicy(input.workspaceId, input.potHomeSlug, sql);
   const next = input.mutate(current?.policy ?? {});
   const resolved = await upsertHivePolicyRow(
     {
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       policyJson: canonicalizeHivePolicy(next),
       ownerPubkey: current?.ownerPubkey ?? 'test-owner-pk',
       signature: 'test-sig',
@@ -151,7 +151,7 @@ afterEach(async () => {
 describe('admission — OPEN mode (or absent policy) ⇒ auto-admit', () => {
   it('absent policy ⇒ admit; NO pending row, NO member row', async () => {
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out).toEqual({ outcome: 'admit' });
@@ -162,7 +162,7 @@ describe('admission — OPEN mode (or absent policy) ⇒ auto-admit', () => {
   it("explicit membership:'open' ⇒ admit; no pending recorded", async () => {
     await setPolicy({ membership: 'open' });
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out.outcome).toBe('admit');
@@ -176,7 +176,7 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
     await sql.unsafe('DELETE FROM harness_shared.substrate_outbox'); // isolate the pending-join capture
 
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out.outcome).toBe('pending');
@@ -200,10 +200,10 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
   it('owner APPROVE ⇒ joiner + captured devices land in hive_members (verified); pending → approved', async () => {
     await seedHive();
     await setPolicy({ membership: 'approval' });
-    await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
 
     const res = await approvePendingJoin(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
       { sql },
     );
     expect(res).toMatchObject({ ok: true, status: 'approved' });
@@ -221,12 +221,12 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
   it('owner DENY ⇒ pending → denied (reason logged); joiner NEVER trust-admitted', async () => {
     await seedHive();
     await setPolicy({ membership: 'approval' });
-    await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
 
     const res = await denyPendingJoin(
       {
         workspaceId: WS,
-        hiveHomeSlug: HIVE,
+        potHomeSlug: HIVE,
         githubUserId: alice.githubUserId,
         decidedByGithubUserId: OWNER_ID,
         reason: 'spam',
@@ -245,7 +245,7 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
   it('approve with NO pending row ⇒ no_pending; never trust-admits', async () => {
     await seedHive();
     const res = await approvePendingJoin(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 4040, decidedByGithubUserId: OWNER_ID },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 4040, decidedByGithubUserId: OWNER_ID },
       { sql },
     );
     expect(res).toEqual({ ok: false, code: 'no_pending' });
@@ -254,15 +254,15 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
 
   it('a DENIED joiner who re-requests STAYS denied (the owner decision is preserved)', async () => {
     await setPolicy({ membership: 'approval' });
-    await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     await denyPendingJoin(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID, reason: 'no' },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID, reason: 'no' },
       { sql },
     );
 
     // Re-request: the joiner tries again. It must NOT re-open the queue.
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out.outcome).toBe('pending'); // policy still approval-mode
@@ -278,7 +278,7 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
   it('double-join idempotency: a re-request while STILL PENDING refreshes fields, stays one row, status stays pending', async () => {
     await setPolicy({ membership: 'approval' });
     const first = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(first.outcome).toBe('pending');
@@ -288,7 +288,7 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
     const second = await evaluateJoinAdmission(
       {
         workspaceId: WS,
-        hiveHomeSlug: HIVE,
+        potHomeSlug: HIVE,
         joiner: { ...alice, displayName: 'Alice B.', deviceAttestations: [dev('devA'), dev('devB')] },
       },
       { sql },
@@ -306,15 +306,15 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
   it('an APPROVED joiner who re-requests STAYS approved (a re-request cannot un-admit a member)', async () => {
     await seedHive();
     await setPolicy({ membership: 'approval' });
-    await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     await approvePendingJoin(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
       { sql },
     );
 
     // Re-request after approval (e.g. the joiner's client retries the join call).
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out.outcome).toBe('pending'); // policy is still approval-mode — the GATE re-runs...
@@ -330,7 +330,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
   it('a banned github id is REFUSED in open mode (no pending, no member)', async () => {
     await setPolicy({ membership: 'open', moderation: { bannedGithubIds: [String(alice.githubUserId)] } });
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out).toEqual({ outcome: 'refuse', reason: 'banned' });
@@ -345,13 +345,13 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     );
 
     const res = await banMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId },
       { mutateHivePolicy: pgMutate as never, revokeHiveContributor: revoke as never },
     );
     expect(res.policy.ok).toBe(true);
     expect(revoke).toHaveBeenCalledWith({
       workspaceId: WS,
-      hiveHomeSlug: HIVE,
+      potHomeSlug: HIVE,
       githubUserId: alice.githubUserId,
     });
 
@@ -360,7 +360,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     expect(stored?.policy.moderation?.bannedGithubIds).toContain(String(alice.githubUserId));
     // ...and the real admission gate now refuses the join.
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out).toEqual({ outcome: 'refuse', reason: 'banned' });
@@ -369,12 +369,12 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
   it('unbanMember lifts the ban ⇒ admission admits again', async () => {
     await setPolicy({ membership: 'open', moderation: { bannedGithubIds: [String(alice.githubUserId)] } });
     // sanity: refused while banned
-    expect((await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql })).outcome).toBe(
+    expect((await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql })).outcome).toBe(
       'refuse',
     );
 
     const res = await unbanMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId },
       { mutateHivePolicy: pgMutate as never },
     );
     expect(res.ok).toBe(true);
@@ -382,7 +382,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     const stored = await getHivePolicy(WS, HIVE, sql);
     expect(stored?.policy.moderation?.bannedGithubIds ?? []).not.toContain(String(alice.githubUserId));
     const out = await evaluateJoinAdmission(
-      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { workspaceId: WS, potHomeSlug: HIVE, joiner: alice },
       { sql },
     );
     expect(out.outcome).toBe('admit');
@@ -392,7 +392,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     await setPolicy({ membership: 'open' });
     const revoke = vi.fn();
     const res = await banMember(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, revoke: false },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId, revoke: false },
       { mutateHivePolicy: pgMutate as never, revokeHiveContributor: revoke as never },
     );
     expect(res.revoke).toEqual({ skipped: true });
@@ -400,7 +400,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
     const stored = await getHivePolicy(WS, HIVE, sql);
     expect(stored?.policy.moderation?.bannedGithubIds).toContain(String(alice.githubUserId));
     // policy-only ban still enforces at admission.
-    expect((await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql })).outcome).toBe(
+    expect((await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql })).outcome).toBe(
       'refuse',
     );
   });
@@ -412,7 +412,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
 describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-639)', () => {
   it('OPEN / absent policy ⇒ trust-admit: a real hive_members row, NO pending', async () => {
     await seedHive();
-    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
     const member = await getHiveMember(WS, HIVE, alice.githubUserId, sql);
     expect(member).toMatchObject({ githubUserId: 1001, bindingStatus: 'verified' });
@@ -425,7 +425,7 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
     await setPolicy({ membership: 'approval' });
     await sql.unsafe('DELETE FROM harness_shared.substrate_outbox'); // isolate the pending-join capture
 
-    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out.action).toBe('pending');
 
     // A pending row exists; the joiner is NOT yet a member.
@@ -444,11 +444,11 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
   it('APPROVAL → ownerAdmitOrPend (pending) → owner APPROVE ⇒ joiner becomes a member', async () => {
     await seedHive();
     await setPolicy({ membership: 'approval' });
-    expect((await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql })).action).toBe(
+    expect((await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql })).action).toBe(
       'pending',
     );
     const res = await approvePendingJoin(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
       { sql },
     );
     expect(res).toMatchObject({ ok: true, status: 'approved' });
@@ -458,10 +458,10 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
   it('ALREADY a member ⇒ refresh (re-upsert), never a second pending row, even under approval', async () => {
     await seedHive();
     // First admit (open) makes alice a member.
-    await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     // Now flip to approval + re-run (a reconnect): she must STAY a member, no pending.
     await setPolicy({ membership: 'approval' });
-    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
     expect(await listHiveMembers(WS, HIVE, sql)).toHaveLength(1);
     expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
@@ -470,7 +470,7 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
   it('banned ⇒ refuse: no member, no pending', async () => {
     await seedHive();
     await setPolicy({ membership: 'open', moderation: { bannedGithubIds: [String(alice.githubUserId)] } });
-    const out = await ownerAdmitOrPend({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out).toEqual({ action: 'refuse', reason: 'banned' });
     expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toBeNull();
     expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);

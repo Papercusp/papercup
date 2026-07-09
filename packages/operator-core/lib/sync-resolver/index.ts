@@ -412,22 +412,22 @@ async function resolveDesignTokens(args: { category?: string }): Promise<unknown
  * the `learning.improvements` hive-scope resolution; returns BARE slugs (strips the
  * `harness:` scope prefix `hiveMemberHarnessScopes` adds) for a `WHERE harness_slug
  * IN (...)` content read. Best-effort: a registry read failure degrades to just
- * `[hiveHomeSlug]` (the rollup still shows the home's own content) rather than
+ * `[potHomeSlug]` (the rollup still shows the home's own content) rather than
  * throwing — a federation read must never 500 the tab.
  */
-async function resolveHiveMemberSlugs(hiveHomeSlug: string, workspaceId?: string): Promise<string[]> {
+async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string): Promise<string[]> {
   try {
     const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
     const reg = await loadHarnessRegistry(workspaceId);
-    const slugs = hiveMemberHarnessScopes(reg.projects, hiveHomeSlug).map((s) => s.replace(/^harness:/, ''));
+    const slugs = hiveMemberHarnessScopes(reg.projects, potHomeSlug).map((s) => s.replace(/^harness:/, ''));
     // hiveMemberHarnessScopes always includes the home, so this is non-empty; guard anyway.
-    return slugs.length > 0 ? slugs : [hiveHomeSlug];
+    return slugs.length > 0 ? slugs : [potHomeSlug];
   } catch (err) {
     console.warn(
       '[sync-resolver] hive member-slug resolution failed:',
       err instanceof Error ? err.message : err,
     );
-    return [hiveHomeSlug];
+    return [potHomeSlug];
   }
 }
 
@@ -1884,7 +1884,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   // hiveRoster.byHarness — presence-v2 P-007: the SAME unified hive-roster fold,
-  // but keyed by a HARNESS (resolved to its home Hive via hiveHomeSlugForHarness)
+  // but keyed by a HARNESS (resolved to its home Hive via potHomeSlugForHarness)
   // and stamped with the SAME AgentPaneKind/driveMode as fleetAssignments.byHarness
   // — so a harness-keyed UI surface (the B10 MemberWorkPanel) reads ONE projection
   // (presence + mig-277 scalars + Tier-1 + the {doing,queued,load,orphaned} work
@@ -1899,7 +1899,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { harnessSlug } = args as { harnessSlug: string };
       const [
         { listHiveRoster },
-        { hiveHomeSlugForHarness },
+        { potHomeSlugForHarness },
         { activeWorkspaceId },
         { listAdvSessions },
         { classifyAgentPane },
@@ -1911,7 +1911,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         import('@papercusp/agent-mcp'),
       ]);
       const workspaceId = activeWorkspaceId();
-      const potSlug = (await hiveHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
+      const potSlug = (await potHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
       const roster = await listHiveRoster({ potSlug, workspaceId });
       const roleByOwner = new Map<string, string | null>();
       try {
@@ -1971,10 +1971,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // + hiveMemberHarnessScopes). Best-effort: a registry read failure degrades to the
   // hive-home-slug-only read rather than 500ing the rollup.
   'featuresConsolidated.byHive': {
-    argsSchema: z.object({ hiveHomeSlug: z.string(), workspaceId: z.string().optional() }),
+    argsSchema: z.object({ potHomeSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { hiveHomeSlug, workspaceId } = args as { hiveHomeSlug: string; workspaceId?: string };
-      const memberSlugs = await resolveHiveMemberSlugs(hiveHomeSlug, workspaceId);
+      const { potHomeSlug, workspaceId } = args as { potHomeSlug: string; workspaceId?: string };
+      const memberSlugs = await resolveHiveMemberSlugs(potHomeSlug, workspaceId);
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq, inArray } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
@@ -2294,10 +2294,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // member origin) + the same attribution enrichment. Member-origin-scoped reads
   // (plans.list) are UNCHANGED; this is the explicit cross-member rollup view.
   'plans.byHive': {
-    argsSchema: z.object({ hiveHomeSlug: z.string(), workspaceId: z.string().optional() }),
+    argsSchema: z.object({ potHomeSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { hiveHomeSlug, workspaceId } = args as { hiveHomeSlug: string; workspaceId?: string };
-      const memberSlugs = await resolveHiveMemberSlugs(hiveHomeSlug, workspaceId);
+      const { potHomeSlug, workspaceId } = args as { potHomeSlug: string; workspaceId?: string };
+      const memberSlugs = await resolveHiveMemberSlugs(potHomeSlug, workspaceId);
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const r = (await callPlansRead('list', { harness_slugs: memberSlugs })) as {
         plans?: unknown[];
@@ -3350,7 +3350,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             if (isThisDevice && !isRevoked) thisDeviceLive = true;
             rows.push({
               kind: 'device',
-              hiveHomeSlug: m.hive_home_slug,
+              potHomeSlug: m.hive_home_slug,
               devicePubkey: pubkey,
               deviceLabel: typeof a.device_label === 'string' ? a.device_label : null,
               attestedAtMs: typeof a.created_at === 'number' ? a.created_at : null,
@@ -3360,7 +3360,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             });
           }
           if (!thisDeviceLive) {
-            rows.push({ kind: 'missing', hiveHomeSlug: m.hive_home_slug });
+            rows.push({ kind: 'missing', potHomeSlug: m.hive_home_slug });
           }
         }
         return rows;
@@ -3802,7 +3802,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // /admin/git surface — every repo-backed coding hive that is green-gated (NOT the
   // operator-home, which has its own full view above). Each row: resolved green command
   // (+ owner-override flag), gate 🟩/🟥 status, staging↔main gap, last green sha, last
-  // deploy. Empty until a coding hive with a repo is gated (PER_HIVE_RELEASE_GATE is
+  // deploy. Empty until a coding hive with a repo is gated (PER_POT_RELEASE_GATE is
   // default-OFF during rollout — D-008).
   'dev.gitPipelineHives': {
     resolve: async () => {
@@ -4138,18 +4138,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         }
       })();
       // HOME-hive stamp (2026-07-01): resolve the workspace's HOME queen the SAME way
-      // the loops do (resolveHiveHomeSlug env/ctx chain → operator-home fallback) and
+      // the loops do (resolvePotHomeSlug env/ctx chain → operator-home fallback) and
       // mark its row. The 👑-tab used to GUESS the home as "first project with
       // harness_kind:'hive'" — in a workspace with test hives that picked e.g.
       // sb-devboard-hive (paused, woke-never) and the panel showed a dead queen while
       // the real papercusp queen ran. The UI now prefers this stamp.
       const homeSlug = await (async () => {
         try {
-          const [{ resolveHiveHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+          const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
             import('../hive/wake'),
             import('../harness/operator-home-harness'),
           ]);
-          return resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+          return resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
         } catch {
           return null;
         }
@@ -4223,10 +4223,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspace?: string;
       };
       const { activeWorkspaceId } = await import('../workspace-registry');
-      const { resolveHiveHomeSlug } = await import('../hive/wake');
+      const { resolvePotHomeSlug } = await import('../hive/wake');
       const { PgCrossHiveAsks } = await import('../cross-hive-asks-pg');
       const ws = workspace ?? activeWorkspaceId();
-      const homeSlug = resolveHiveHomeSlug();
+      const homeSlug = resolvePotHomeSlug();
       if (!homeSlug) return [];
       return new PgCrossHiveAsks(ws, homeSlug).list({
         ...(peerPubkey ? { peerPubkey } : {}),

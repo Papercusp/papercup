@@ -754,7 +754,7 @@ export async function reconcileHivePlacements(
   const getOrgPgFn = opts.deps?.getOrgPg ?? getOrgPg;
   const reconcileOneHiveFn = opts.deps?.reconcileOneHive ?? reconcileOneHive;
   try {
-    if (!(await getFlagFn(FLAGS.HIVE_PLACEMENT_WATCHDOG, 'system'))) return results;
+    if (!(await getFlagFn(FLAGS.POT_PLACEMENT_WATCHDOG, 'system'))) return results;
     const started = await listStartedHivesFn();
     if (started.length === 0) return results;
     const { sql } = getOrgPgFn();

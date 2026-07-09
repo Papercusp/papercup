@@ -100,12 +100,12 @@ export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
  */
 export async function resolveVerifiedAuthorGithubId(
   sql: OrgSql,
-  opts: { workspaceId: string; authorPubkey: string | null | undefined; hiveHomeSlug?: string },
+  opts: { workspaceId: string; authorPubkey: string | null | undefined; potHomeSlug?: string },
 ): Promise<number | null> {
   const pubkey = (opts.authorPubkey ?? '').trim();
   if (!pubkey || !opts.workspaceId) return null;
   try {
-    const hiveFilter = opts.hiveHomeSlug ? sql`AND hive_home_slug = ${opts.hiveHomeSlug}` : sql``;
+    const hiveFilter = opts.potHomeSlug ? sql`AND hive_home_slug = ${opts.potHomeSlug}` : sql``;
     const rows = await sql<{ github_user_id: string | number }[]>`
       SELECT github_user_id
         FROM harness_shared.hive_members

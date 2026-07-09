@@ -33,7 +33,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { getWorkItem, setWorkItemState } from './work-items';
 import { isWorkItemAutoPickable } from './work-items-admission';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
-import { hiveHomeSlugForHarness } from './hive-federation';
+import { potHomeSlugForHarness } from './hive-federation';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { systemDistinctId } from './flag-distinct-id';
@@ -87,7 +87,7 @@ function replicaScopeOf(opts: { potSlug?: string | null; harnessSlug?: string; h
  */
 export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: string): Promise<string | null> {
   try {
-    return await hiveHomeSlugForHarness(workspaceId, harnessSlug);
+    return await potHomeSlugForHarness(workspaceId, harnessSlug);
   } catch {
     return null;
   }

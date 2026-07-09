@@ -256,12 +256,12 @@ describe('canonical bytes + parse round-trip', () => {
 
   it('signed bytes are domain-separated and bind workspace/hive/version', () => {
     const json = canonicalWorkOfferRecordJson(SEAT_RECORD as unknown as WorkOfferStoreRecord);
-    const base = { workspaceId: 'ws', hiveHomeSlug: 'hive', recordVersion: 1, canonicalRecordJson: json };
+    const base = { workspaceId: 'ws', potHomeSlug: 'hive', recordVersion: 1, canonicalRecordJson: json };
     const bytes = workOfferStoreSignedBytes(base).toString('utf8');
     expect(bytes.startsWith(`${WORK_OFFER_STORE_SIG_DOMAIN}\nws\nhive\n1\n`)).toBe(true);
     for (const variant of [
       { ...base, workspaceId: 'ws2' },
-      { ...base, hiveHomeSlug: 'hive2' },
+      { ...base, potHomeSlug: 'hive2' },
       { ...base, recordVersion: 2 },
     ]) {
       expect(workOfferStoreSignedBytes(variant).equals(workOfferStoreSignedBytes(base))).toBe(false);

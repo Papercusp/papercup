@@ -72,7 +72,7 @@ function opts(
   return {
     workspaceId: 'ws-1',
     harnessSlug: 'my-hive',
-    hiveHomeSlug: 'my-hive',
+    potHomeSlug: 'my-hive',
     sql,
     resolveSignerMembership: async () => {
       if (membership === 'throws') throw new Error('membership store down');

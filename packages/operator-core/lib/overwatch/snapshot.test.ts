@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   lastSystemHealth: vi.fn(),
   runSystemHealthTick: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-1'),
-  resolveHiveHomeSlug: vi.fn((): string | null => 'papercup-hive'),
+  resolvePotHomeSlug: vi.fn((): string | null => 'papercup-hive'),
   getOverwatchStarted: vi.fn(),
   getOverwatchCadenceSec: vi.fn(),
   listStartedOverwatches: vi.fn(async () => [] as Array<{ workspaceId: string; installSlug: string }>),
@@ -31,7 +31,7 @@ vi.mock('../system-health', () => ({
   runSystemHealthTick: h.runSystemHealthTick,
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: h.activeWorkspaceId }));
-vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: h.resolveHiveHomeSlug }));
+vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: h.resolvePotHomeSlug }));
 vi.mock('./control-state', () => ({
   getOverwatchStarted: h.getOverwatchStarted,
   getOverwatchCadenceSec: h.getOverwatchCadenceSec,
@@ -58,7 +58,7 @@ function healthFixture(potSlug: string | null, evaluatedAt: number) {
 beforeEach(() => {
   vi.clearAllMocks();
   h.activeWorkspaceId.mockReturnValue('ws-1');
-  h.resolveHiveHomeSlug.mockReturnValue('papercup-hive');
+  h.resolvePotHomeSlug.mockReturnValue('papercup-hive');
   h.listStartedOverwatches.mockResolvedValue([]);
   h.mapSystemHealthToBrief.mockReturnValue({ mapped: true });
   h.withAnomalies.mockImplementation((b: unknown) => ({ ...(b as object), anomalies: [] }));
@@ -142,7 +142,7 @@ describe('getOverwatchControlState', () => {
   });
 
   it('returns the zeroed default (no hive) when no home slug is resolvable', async () => {
-    h.resolveHiveHomeSlug.mockReturnValue(null);
+    h.resolvePotHomeSlug.mockReturnValue(null);
     h.listStartedOverwatches.mockResolvedValue([]);
     h.getFlag.mockResolvedValue(false);
 

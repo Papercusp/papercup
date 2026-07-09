@@ -46,7 +46,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 
-// Same HIVE_REKEY-off stand-in as the sibling suite (buildHiveRekeyBootDeps
+// Same POT_REKEY-off stand-in as the sibling suite (buildHiveRekeyBootDeps
 // would otherwise abort bootPresencePeer against a throwaway DB with no
 // harness_shared.hives table). This suite proves fed_event surfacing, not
 // rekey.

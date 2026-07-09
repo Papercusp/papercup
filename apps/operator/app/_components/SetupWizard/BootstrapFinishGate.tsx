@@ -17,7 +17,7 @@
  * surface a soft "still preparing…" with the Retry, so the user is never trapped.
  *
  * NEVER-TRAP contract (public-release, WI-791): the dogfood clone is, by the
- * DOGFOOD_PAPERCUSP_HIVE flag's own design, "best-effort + non-fatal — it can
+ * DOGFOOD_PAPERCUSP_POT flag's own design, "best-effort + non-fatal — it can
  * never break a fresh launch." A PUBLIC user can't even access the private
  * `papercup-db` / `papercup-shared` submodules (org-only), and a fresh Mac may
  * have no git — so a persistent clone error MUST NOT strand the user at the

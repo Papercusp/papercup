@@ -86,7 +86,7 @@ async function realVerifyHivePolicy(
   }
   const bytes = hivePolicySignedBytes({
     workspaceId: opts.workspaceId,
-    hiveHomeSlug: opts.harnessSlug,
+    potHomeSlug: opts.harnessSlug,
     policyVersion: row.policy_version,
     canonicalPolicyJson: row.policy_json,
   });

@@ -37,7 +37,7 @@ const readMigration = (f: string) =>
 
 const WS = 'default';
 const SLUG = 'declared-wake-harness';
-process.env.PAPERCUSP_HIVE_HOME_SLUG = SLUG;
+process.env.PAPERCUSP_POT_HOME_SLUG = SLUG;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -283,8 +283,8 @@ beforeAll(async () => {
   // chain under test can register rules at all.
   {
     const { setHiveStarted } = await import('./started');
-    const { resolveHiveHomeSlug } = await import('./wake');
-    await setHiveStarted(WS, resolveHiveHomeSlug('papercup', undefined)!, true);
+    const { resolvePotHomeSlug } = await import('./wake');
+    await setHiveStarted(WS, resolvePotHomeSlug('papercup', undefined)!, true);
   }
   // Deliberately NOT arming the default subscriptions — every rule in this test
   // comes from the Pot's own pot:declare-wake call (the declared path).

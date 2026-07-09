@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  hiveHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
+  potHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
     async (_workspaceId, harnessSlug) => harnessSlug,
   ),
 }));
 
 vi.mock('../../../hive-federation', () => ({
-  hiveHomeSlugForHarness: h.hiveHomeSlugForHarness,
+  potHomeSlugForHarness: h.potHomeSlugForHarness,
 }));
 
 import { resolvePlanScope } from '../source';
@@ -16,8 +16,8 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
 
 describe('resolvePlanScope — Hive-scoped plan key guard', () => {
   beforeEach(() => {
-    h.hiveHomeSlugForHarness.mockReset();
-    h.hiveHomeSlugForHarness.mockImplementation(async (_workspaceId, harnessSlug) => harnessSlug);
+    h.potHomeSlugForHarness.mockReset();
+    h.potHomeSlugForHarness.mockImplementation(async (_workspaceId, harnessSlug) => harnessSlug);
   });
 
   it('canonicalizes retired Papercup slugs to the Papercusp Hive home', async () => {
@@ -32,7 +32,7 @@ describe('resolvePlanScope — Hive-scoped plan key guard', () => {
   });
 
   it('collapses a member harness to its Hive home before using the plan key', async () => {
-    h.hiveHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
+    h.potHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
 
     await expect(
       resolvePlanScope({
@@ -46,7 +46,7 @@ describe('resolvePlanScope — Hive-scoped plan key guard', () => {
   });
 
   it('rejects a concrete harness that is not in a Hive', async () => {
-    h.hiveHomeSlugForHarness.mockResolvedValue(null);
+    h.potHomeSlugForHarness.mockResolvedValue(null);
 
     await expect(
       resolvePlanScope({

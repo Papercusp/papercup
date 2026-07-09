@@ -84,12 +84,12 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // DIRECTLY: pin the bouncer OFF.
     PAPERCUSP_PGBOUNCER: '0',
     // GYM-1 layer-5 fix (monitor-agent finding, 15:40): bg-host's
-    // PAPERCUSP_HIVE_HOME_SLUG=papercusp leaks through the process.env spread,
+    // PAPERCUSP_POT_HOME_SLUG=papercusp leaks through the process.env spread,
     // and the home-harness STARTUP VALIDATION then fatals — 'papercusp' is not
     // a registered project in the HERMETIC container's registry. The gym
-    // operator runs NO hive: pin the home slug EMPTY (resolveHiveHomeSlug
+    // operator runs NO hive: pin the home slug EMPTY (resolvePotHomeSlug
     // treats blank as unset → the hive-home validation is a no-op).
-    PAPERCUSP_HIVE_HOME_SLUG: '',
+    PAPERCUSP_POT_HOME_SLUG: '',
     // WI-2604 root cause (1): bg-host's dev-api service sets PAPERCUSP_MCP_PROXY_BASE
     // (mcp-host-availability-resilience P-005, e.g. http://127.0.0.1:9071 fronting the
     // LIVE :3070 operator) and that leaks through the `...process.env` spread. Both
@@ -101,7 +101,7 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // signature against ITS OWN spawn-signing-key (from the live DB), while the gym
     // process signed with the GYM DB's preminted key → HMAC mismatch → invalid_signature
     // on every gym eval spawn. Blank it so eval agents always hand-shake THIS hermetic
-    // instance (matching PAPERCUSP_HIVE_HOME_SLUG's seal above).
+    // instance (matching PAPERCUSP_POT_HOME_SLUG's seal above).
     PAPERCUSP_MCP_PROXY_BASE: '',
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',

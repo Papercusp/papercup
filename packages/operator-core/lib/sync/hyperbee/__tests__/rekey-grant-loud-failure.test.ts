@@ -67,7 +67,7 @@ afterEach(() => {
 /** A member with one bound device → upsertHiveMember runs the grant (newMemberPubkeys.length > 0). */
 const member = {
   workspaceId: WS,
-  hiveHomeSlug: HIVE,
+  potHomeSlug: HIVE,
   githubUserId: 42,
   githubUsername: 'alice',
   deviceAttestations: [

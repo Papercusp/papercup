@@ -6,13 +6,13 @@
  * = the Hive home). Before this fix the member-slug-bound projections dropped them
  * — the member list/settings never reached the joiner, and
  * `loadRevokedHivePubkeys(<home>)` was empty so a revoked member was never refused
- * by the joiner's admission union. `register-all`'s `hiveHomeSlug` binds ONLY those
+ * by the joiner's admission union. `register-all`'s `potHomeSlug` binds ONLY those
  * two projections to the home slug so the already-running member merge lands them.
  *
  * This drives the REAL `buildHarnessProjectionApply` dispatch (boot's scoped apply,
  * NOT a hand-bound projection), constructing federated (origin='remote') ops:
- *   - member-slug apply, no hiveHomeSlug  → DROPS the home-grained ops (the A-003 bug, RED)
- *   - member-slug apply WITH hiveHomeSlug → LANDS them under the home slug (the fix, GREEN)
+ *   - member-slug apply, no potHomeSlug  → DROPS the home-grained ops (the A-003 bug, RED)
+ *   - member-slug apply WITH potHomeSlug → LANDS them under the home slug (the fix, GREEN)
  * Teeth: the first two `it`s ARE the RED/GREEN pair; neutering `register-all`'s
  * `hiveScoped` (back to `opts`) flips the GREEN ones red.
  *
@@ -87,7 +87,7 @@ const joinerApply = () =>
     harnessSlug: MEMBER,
     sql: db.adminSql,
     ownLogKeyHex: OWN_LOG,
-    hiveHomeSlug: HOME,
+    potHomeSlug: HOME,
   });
 
 beforeAll(async () => {
@@ -115,7 +115,7 @@ async function seedHive(slug: string) {
 }
 
 describe('A-003 — hive_members/hive_settings reach a member-booted joiner', () => {
-  it('RED (the bug): a member-slug apply with NO hiveHomeSlug drops the home-grained ops', async () => {
+  it('RED (the bug): a member-slug apply with NO potHomeSlug drops the home-grained ops', async () => {
     await seedHive(HOME);
     const apply = memberBoundApply();
     await apply(memberOp());
@@ -125,7 +125,7 @@ describe('A-003 — hive_members/hive_settings reach a member-booted joiner', ()
     expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).toBeNull();
   });
 
-  it('GREEN (the fix): with hiveHomeSlug=HOME the same ops land under the home slug', async () => {
+  it('GREEN (the fix): with potHomeSlug=HOME the same ops land under the home slug', async () => {
     await seedHive(HOME);
     const apply = joinerApply();
     await apply(memberOp());
@@ -168,7 +168,7 @@ describe('A-003 — hive_members/hive_settings reach a member-booted joiner', ()
 describe('A-003 (a′) — slug-filter gate composed with the rebind apply', () => {
   it("a JOINER's member harness admits the hive-home log (slug-filter) → the rebind lands its ops under the home", async () => {
     await seedHive(HOME);
-    // GATE: a joiner's member harness (ownSlug=MEMBER) whose joinerHiveHomeSlug rebinds
+    // GATE: a joiner's member harness (ownSlug=MEMBER) whose joinerPotHomeSlug rebinds
     // HOME admits the hive-home log (origin-slug=HOME).
     expect(announceSlugInScope(HOME, MEMBER, HOME)).toBe(true);
     // LANDING: so the hive-home log's ops reach the member's (rebound) apply + materialise

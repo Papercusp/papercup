@@ -98,23 +98,33 @@ let cachedRemote: RemoteBootedHandlesSnapshot | null = null;
 
 /**
  * WORKER side: listen for the primary's booted-handles broadcast and cache the latest
- * snapshot + receipt time. Registers a `process.on('message', ...)` listener — a no-op
- * safe to call in any process (a primary/single-process host simply never receives this
- * message type, so the cache stays `null` there, which `resolveEffectiveBootedHandles`
+ * snapshot + receipt time. Registers a `process.on('message', ...)` listener by default
+ * (injectable `on`/`off` for tests — synthetically emitting on the REAL `process` object
+ * risks colliding with the test runner's own worker IPC, which uses the same event) — a
+ * no-op safe to call in any process (a primary/single-process host simply never receives
+ * this message type, so the cache stays `null` there, which `resolveEffectiveBootedHandles`
  * never consults for the owner process anyway).
  */
-export function startWorkerBootedHandlesCache(opts: { now?: () => number } = {}): { stop(): void } {
+export function startWorkerBootedHandlesCache(
+  opts: {
+    now?: () => number;
+    on?: (event: 'message', cb: (message: unknown) => void) => void;
+    off?: (event: 'message', cb: (message: unknown) => void) => void;
+  } = {},
+): { stop(): void } {
   const now = opts.now ?? (() => Date.now());
+  const on = opts.on ?? ((event: 'message', cb: (message: unknown) => void) => process.on(event, cb));
+  const off = opts.off ?? ((event: 'message', cb: (message: unknown) => void) => process.off(event, cb));
   const listener = (message: unknown): void => {
     const m = message as Partial<BootedHandlesSnapshotMessage> | null | undefined;
     if (m?.type === BOOTED_HANDLES_SNAPSHOT_TYPE && Array.isArray(m.handles)) {
       cachedRemote = { handles: m.handles as BootedHandleSummary[], receivedAt: now() };
     }
   };
-  process.on('message', listener);
+  on('message', listener);
   return {
     stop() {
-      process.off('message', listener);
+      off('message', listener);
     },
   };
 }

@@ -54,6 +54,8 @@ export async function armInboxWake(input: {
   /** A plan run arming its own inbox-wake: the wake resumes the run via
    *  plans:resume instead of a session resume (overrides the captured handle). */
   planRunId?: number;
+  /** @deprecated dead since WI-3575 — events:await is single-workspace by design
+   *  (see store.ts); accepted-but-ignored for caller compat, do not thread new callers. */
   workspaceId?: string;
 }): Promise<ArmInboxWakeResult> {
   const key = inboxWakeKey(input.ownerId);
@@ -67,15 +69,17 @@ export async function armInboxWake(input: {
     note: input.note ?? 'always-armed inbox-wake (turn-lifecycle-control)',
     wakeHandle: handle,
     minSleepSec: input.minSleepSec ?? idleWakeFloorSec(),
-    workspaceId: input.workspaceId,
   });
   return { awaitId: row.id, eventKey: key, handleNote };
 }
 
 /** Cancel an agent's standing inbox-wake watch — SessionEnd hygiene (D-003:
- *  a deliberately-ended session is not a wake target). Returns rows cancelled. */
-export async function cancelInboxWake(ownerId: string, workspaceId?: string): Promise<number> {
-  return cancelInboxWakeAwaits(ownerId, workspaceId);
+ *  a deliberately-ended session is not a wake target).
+ *  @param workspaceId @deprecated dead since WI-3575 — events:await is single-workspace by
+ *  design (see store.ts); accepted-but-ignored for caller compat, do not thread new callers.
+ *  Returns rows cancelled. */
+export async function cancelInboxWake(ownerId: string, _workspaceId?: string): Promise<number> {
+  return cancelInboxWakeAwaits(ownerId);
 }
 
 /** In-memory per-owner throttle for the activity-hot-path self-heal below. The
@@ -105,6 +109,8 @@ const ENSURE_ARMED_TTL_MS = 120_000;
  */
 export async function ensureInboxWakeArmedForActiveSession(input: {
   ownerId: string;
+  /** @deprecated dead since WI-3575 — forwarded to armInboxWake, itself a no-op; kept
+   *  for caller compat only. */
   workspaceId?: string;
 }): Promise<boolean> {
   const ownerId = input.ownerId;

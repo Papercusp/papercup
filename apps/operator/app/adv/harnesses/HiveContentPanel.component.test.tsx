@@ -100,9 +100,9 @@ describe('HiveContentPanel (adv:hive-content)', () => {
     const feat = syncCalls.find((c) => c.queryName === 'featuresConsolidated.byHive');
     const plan = syncCalls.find((c) => c.queryName === 'plans.byHive');
     expect(feat?.enabled).toBe(true);
-    expect(feat?.args).toEqual({ hiveHomeSlug: 'demo-hive' });
+    expect(feat?.args).toEqual({ potHomeSlug: 'demo-hive' });
     expect(plan?.enabled).toBe(true);
-    expect(plan?.args).toEqual({ hiveHomeSlug: 'demo-hive' });
+    expect(plan?.args).toEqual({ potHomeSlug: 'demo-hive' });
   });
 
   it('switches to the Plans tab and renders federated plans with their origin', async () => {
@@ -140,7 +140,7 @@ describe('HiveContentPanel (adv:hive-content)', () => {
     await waitFor(() => screen.getByText('cross-member browse'));
     const feat = syncCalls.find((c) => c.queryName === 'featuresConsolidated.byHive');
     expect(feat?.enabled).toBe(true);
-    expect(feat?.args).toEqual({ hiveHomeSlug: 'demo-hive' });
+    expect(feat?.args).toEqual({ potHomeSlug: 'demo-hive' });
   });
 
   it('shows a per-tab empty state when a hive has no federated content yet', async () => {

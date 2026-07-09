@@ -110,7 +110,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
     // own link; here it also carries the Protomux muxer for BOTH channels).
     server = createServer({ allowHalfOpen: true }, (srvConn) => {
       srvConn.on('error', () => {});
-      wireHiveGitServe(srvConn, TOPIC, { hiveHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      wireHiveGitServe(srvConn, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
     clientSocket = await new Promise<Socket>((resolve, reject) => {

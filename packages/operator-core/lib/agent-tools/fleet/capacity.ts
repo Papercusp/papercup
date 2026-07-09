@@ -28,7 +28,7 @@ export default defineTool({
   guidance: {
     when: 'Before a placement round, to size how many FRESH cups to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',
-    chaining: 'fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under QUEEN_CAPACITY_DISPATCH; this tool lets you reason about it first).',
+    chaining: 'fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -40,7 +40,7 @@ export default defineTool({
     let clampArmed = false;
     try {
       const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
-      clampArmed = await getFlag(FLAGS.QUEEN_CAPACITY_DISPATCH, 'system').catch(() => false);
+      clampArmed = await getFlag(FLAGS.MUG_CAPACITY_DISPATCH, 'system').catch(() => false);
     } catch {
       /* flags unavailable → report clampArmed:false (best-effort) */
     }

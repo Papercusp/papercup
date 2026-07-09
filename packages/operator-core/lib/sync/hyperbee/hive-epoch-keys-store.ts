@@ -62,7 +62,7 @@ export interface PutWrappedKeysOptions {
  */
 export async function putWrappedKeys(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   epoch: number,
   rows: readonly WrappedKeyInput[],
   authorPubkey: string | null,
@@ -95,7 +95,7 @@ export async function putWrappedKeys(
          (workspace_id, harness_slug, epoch, member_device_pubkey, wrapped_key, author_pubkey, origin)
        VALUES ($1, $2, $3, $4, $5, $6, 'local')
        ON CONFLICT (workspace_id, harness_slug, epoch, member_device_pubkey) ${conflict}`,
-      [workspaceId, hiveHomeSlug, epoch, r.memberDevicePubkey, wrapped, authorPubkey],
+      [workspaceId, potHomeSlug, epoch, r.memberDevicePubkey, wrapped, authorPubkey],
     );
     written += 1;
   }
@@ -105,7 +105,7 @@ export async function putWrappedKeys(
 /** Read THIS device's wrapped key (base64) for (hive, epoch), or null. */
 export async function getWrappedKey(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   epoch: number,
   memberDevicePubkey: string,
   sql?: Sql,
@@ -115,7 +115,7 @@ export async function getWrappedKey(
     `SELECT wrapped_key FROM harness_shared.hive_epoch_keys
       WHERE workspace_id = $1 AND harness_slug = $2 AND epoch = $3 AND member_device_pubkey = $4
       LIMIT 1`,
-    [workspaceId, hiveHomeSlug, epoch, memberDevicePubkey],
+    [workspaceId, potHomeSlug, epoch, memberDevicePubkey],
   )) as unknown as Array<{ wrapped_key: string }>;
   return rows[0]?.wrapped_key ?? null;
 }
@@ -125,16 +125,16 @@ export async function getWrappedKey(
  * Hive home). `load` returns the device's wrapped blob as bytes (base64-decoded), or
  * null when absent (removed member / not-yet-arrived → the provider fails closed).
  * The `potId` arg is the crypto identity (used by the provider for deriveEpochKey +
- * caching); the PG lookup keys by the bound `hiveHomeSlug`.
+ * caching); the PG lookup keys by the bound `potHomeSlug`.
  */
 export function createPgWrappedKeyLoader(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): WrappedKeyLoader {
   return {
     async load(_hiveId: string, epoch: number, memberDevicePubkey: string): Promise<Uint8Array | null> {
-      const b64 = await getWrappedKey(workspaceId, hiveHomeSlug, epoch, memberDevicePubkey, sql);
+      const b64 = await getWrappedKey(workspaceId, potHomeSlug, epoch, memberDevicePubkey, sql);
       return b64 == null ? null : new Uint8Array(Buffer.from(b64, 'base64'));
     },
   };

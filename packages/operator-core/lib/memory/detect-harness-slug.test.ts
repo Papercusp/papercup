@@ -146,11 +146,11 @@ describe('detectHarnessSlugSync — papercup meta detection', () => {
     expect(r).toEqual({ slug: LEGACY_DEFAULT_HOME_HARNESS, source: 'meta-papercup' });
   });
 
-  it('returns the configured home pointer (PAPERCUSP_HIVE_HOME_SLUG), not a baked literal', () => {
+  it('returns the configured home pointer (PAPERCUSP_POT_HOME_SLUG), not a baked literal', () => {
     const cwd = mkDir('papercup-root');
     mkFile('papercup-root/package.json', JSON.stringify({ name: 'papercup' }));
     mkDir('papercup-root/libs/papercusp');
-    const r = detectSync({ cwd, env: { PAPERCUSP_HIVE_HOME_SLUG: 'papercusp' } });
+    const r = detectSync({ cwd, env: { PAPERCUSP_POT_HOME_SLUG: 'papercusp' } });
     expect(r).toEqual({ slug: 'papercusp', source: 'meta-papercup' });
   });
 

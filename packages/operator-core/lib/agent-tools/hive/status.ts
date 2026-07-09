@@ -14,7 +14,7 @@ import {
   getHiveTimeWake,
   hiveWakeFloorSec,
   readHiveWakeState,
-  resolveHiveHomeSlug,
+  resolvePotHomeSlug,
 } from '../../hive/wake';
 import { getHiveStarted } from '../../hive/started';
 import { recentWatchdogFires, watchdogFallbackSleepSec, watchdogStaleSec } from '../../hive/watchdog';
@@ -39,7 +39,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -48,7 +48,7 @@ export default defineTool({
     // pot:get_steering. The old `undefined` ignored a scoped session's harness
     // and fell through to the degraded `started:false` default below, which a
     // Queen could not distinguish from a genuinely-paused hive.
-    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     const harnessUnresolved = !installSlug;
     const { sql } = getOrgPg();
 

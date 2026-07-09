@@ -15,7 +15,7 @@
  * EVERYTHING is GATED so live behavior is BYTE-FOR-BYTE UNCHANGED by default. A
  * sweep FIRES only when ALL of these hold (mirrors the browser-provider gates +
  * adds the server-side ones):
- *   1. FLAGS.SENTINEL_PROACTIVE is ON          (the master switch — DEFAULT OFF)
+ *   1. FLAGS.PAPERCUP_PROACTIVE is ON          (the master switch — DEFAULT OFF)
  *   2. humanFacingRole === 'sentinel'          (the Sentinel persona is live)
  *   3. NOT do-not-disturb (silenceVoice)       (DND — the user muted the Sentinel)
  *   4. NOT operator-paused                     (the global pause sentinel)
@@ -65,7 +65,7 @@ export interface SentinelFleetStatus {
 
 /** Everything the sweep needs from the outside world — real in prod, faked in tests. */
 export interface SentinelSweepDeps {
-  /** Is FLAGS.SENTINEL_PROACTIVE enabled? (getFlag, default OFF.) */
+  /** Is FLAGS.PAPERCUP_PROACTIVE enabled? (getFlag, default OFF.) */
   flagEnabled(): Promise<boolean>;
   /** The do-not-disturb pref (voice prefs `silenceVoice`). */
   isSilenced(): Promise<boolean>;

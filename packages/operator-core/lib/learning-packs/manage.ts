@@ -386,7 +386,7 @@ export async function setPackEnabled(opts: {
   const { setHiveSetting } = await import('../hive-settings-store');
   await setHiveSetting({
     workspaceId: opts.workspaceId,
-    hiveHomeSlug: opts.potSlug,
+    potHomeSlug: opts.potSlug,
     settingKey: DISABLED_PACKS_SETTING,
     value: next, // store serializes JSON values
   });

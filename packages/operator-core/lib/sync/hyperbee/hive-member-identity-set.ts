@@ -37,19 +37,19 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-function cacheKey(workspaceId: string, hiveHomeSlug: string): string {
+function cacheKey(workspaceId: string, potHomeSlug: string): string {
   // NUL separator — neither a workspace id nor a slug can contain it, so no key collision.
-  return `${workspaceId}\x00${hiveHomeSlug}`;
+  return `${workspaceId}\x00${potHomeSlug}`;
 }
 
 /** Every device pubkey (base64) bound to a CURRENT member of the hive, deduped. */
 async function loadMemberDeviceSet(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql: Sql | undefined,
   loadMembers: typeof listHiveMembers,
 ): Promise<Set<string>> {
-  const members = await loadMembers(workspaceId, hiveHomeSlug, sql);
+  const members = await loadMembers(workspaceId, potHomeSlug, sql);
   const set = new Set<string>();
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
@@ -74,16 +74,16 @@ export interface MemberDeviceSetDeps {
  */
 export async function resolveHiveMemberDeviceSet(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
   deps: MemberDeviceSetDeps = {},
 ): Promise<ReadonlySet<string>> {
   const { loadMembers = listHiveMembers, now = Date.now } = deps;
-  const key = cacheKey(workspaceId, hiveHomeSlug);
+  const key = cacheKey(workspaceId, potHomeSlug);
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now()) return hit.set;
 
-  const set = await loadMemberDeviceSet(workspaceId, hiveHomeSlug, sql, loadMembers);
+  const set = await loadMemberDeviceSet(workspaceId, potHomeSlug, sql, loadMembers);
   cache.set(key, { set, expiresAt: now() + MEMBER_SET_TTL_MS });
   return set;
 }
@@ -93,8 +93,8 @@ export async function resolveHiveMemberDeviceSet(
  * hive_members projection change (a join/leave) so the next apply re-reads a fresh set.
  * Idempotent + cheap (a Map delete); safe to call on every membership op.
  */
-export function invalidateHiveMemberDeviceSet(workspaceId: string, hiveHomeSlug: string): void {
-  cache.delete(cacheKey(workspaceId, hiveHomeSlug));
+export function invalidateHiveMemberDeviceSet(workspaceId: string, potHomeSlug: string): void {
+  cache.delete(cacheKey(workspaceId, potHomeSlug));
 }
 
 /** Test seam: wipe the whole cache between cases. NOT for production use. */

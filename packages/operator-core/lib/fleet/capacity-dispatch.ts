@@ -1,6 +1,6 @@
 /**
  * capacity-dispatch — the Queen's capacity-aware dispatch (gateway-priority-tiers-2026-06-22 Phase 4,
- * `QUEEN_CAPACITY_DISPATCH`). The SOURCE-side counterpart to the gateway's priority tiers (SINK-side): before
+ * `MUG_CAPACITY_DISPATCH`). The SOURCE-side counterpart to the gateway's priority tiers (SINK-side): before
  * a placement round the Queen reads the inference pool's live saturation (the gateway `/stats` — the SHARED
  * capacity oracle, D-007) and CLAMPS how many FRESH bees it spawns, so it stops flooding the gateway with bee
  * requests that just park/fail when the pool is capacity-scarce. The tiers ALLOCATE scarce capacity fairly;
@@ -180,7 +180,7 @@ export function resolveCapacityConfig(
 }
 
 /**
- * The Queen-side entry: flag-gated (`QUEEN_CAPACITY_DISPATCH`) capacity clamp on the fresh-spawn headroom.
+ * The Queen-side entry: flag-gated (`MUG_CAPACITY_DISPATCH`) capacity clamp on the fresh-spawn headroom.
  * Reads the gateway `/stats` (the shared oracle) unless a `signal` is injected (tests). Flag-OFF,
  * gateway-flag-OFF, or gateway-unreachable ⇒ NO clamp (returns the raw headroom).
  */
@@ -198,9 +198,9 @@ export async function queenCapacityHeadroom(
   let on = opts.flagOverride;
   if (on === undefined) {
     const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
-    on = await getFlag(FLAGS.QUEEN_CAPACITY_DISPATCH, 'system').catch(() => false);
+    on = await getFlag(FLAGS.MUG_CAPACITY_DISPATCH, 'system').catch(() => false);
   }
-  if (!on) return noClamp('QUEEN_CAPACITY_DISPATCH off → no clamp');
+  if (!on) return noClamp('MUG_CAPACITY_DISPATCH off → no clamp');
 
   const config = resolveCapacityConfig(opts.config, opts.env);
   let signal = opts.signal;
@@ -239,7 +239,7 @@ export interface CapacityReport {
   reachable: boolean;
   /** Whether the gateway's per-tier layer is active (GATEWAY_PRIORITY_TIERS) — `priorityTiers` present. */
   tierLayer: boolean;
-  /** Whether the Queen's automatic placement clamp is armed (QUEEN_CAPACITY_DISPATCH). */
+  /** Whether the Queen's automatic placement clamp is armed (MUG_CAPACITY_DISPATCH). */
   clampArmed: boolean;
   utilization: number | null;
   utilizationPct: number | null;

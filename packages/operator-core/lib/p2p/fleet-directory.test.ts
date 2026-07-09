@@ -93,7 +93,7 @@ describe('putFleetRecord', () => {
   it('refuses a non-owner author (D-006 single-owner gate)', async () => {
     const { sql } = fakeSql({});
     const r = await putFleetRecord({
-      workspaceId: WS, hiveHomeSlug: HIVE, selfGithubUserId: PUB,
+      workspaceId: WS, potHomeSlug: HIVE, selfGithubUserId: PUB,
       record: baseRecord, signer, sql,
     });
     expect(r.ok).toBe(false);
@@ -103,7 +103,7 @@ describe('putFleetRecord', () => {
   it('refuses a non-advancing recordVersion against the stored row', async () => {
     const { sql } = fakeSql({ select: () => [dbRow({ record_version: 3 })] });
     const r = await putFleetRecord({
-      workspaceId: WS, hiveHomeSlug: HIVE, selfGithubUserId: OWNER,
+      workspaceId: WS, potHomeSlug: HIVE, selfGithubUserId: OWNER,
       record: { ...baseRecord, recordVersion: 3 }, signer, sql,
     });
     expect(r.ok).toBe(false);
@@ -125,14 +125,14 @@ describe('putFleetRecord', () => {
       },
     });
     const r = await putFleetRecord({
-      workspaceId: WS, hiveHomeSlug: HIVE, selfGithubUserId: OWNER,
+      workspaceId: WS, potHomeSlug: HIVE, selfGithubUserId: OWNER,
       record: baseRecord, signer, sql,
     });
     expect(r.ok).toBe(true);
     expect(written).not.toBeNull();
     if (!r.ok) return;
     const bytes = fleetDirectorySignedBytes({
-      workspaceId: WS, hiveHomeSlug: HIVE,
+      workspaceId: WS, potHomeSlug: HIVE,
       recordVersion: r.stored.recordVersion, canonicalRecordJson: r.stored.recordJson,
     });
     expect(verifyEd25519(bytes, r.stored.signerDevicePubkey, Buffer.from(r.stored.signature, 'base64'))).toBe(true);
@@ -170,7 +170,7 @@ describe('PgFleetDirectory', () => {
     if (!c.ok) throw new Error(c.error);
     const json = canonicalFleetRecordJson(c.record);
     const sig = signWithPrivateKeyDer(kp.privateKeyDer, fleetDirectorySignedBytes({
-      workspaceId: WS, hiveHomeSlug: HIVE, recordVersion: 1, canonicalRecordJson: json,
+      workspaceId: WS, potHomeSlug: HIVE, recordVersion: 1, canonicalRecordJson: json,
     })).toString('base64');
     listHiveMembersMock.mockResolvedValue([
       { githubUserId: OWNER, deviceAttestations: [{ device_pubkey: devicePubkey }] },

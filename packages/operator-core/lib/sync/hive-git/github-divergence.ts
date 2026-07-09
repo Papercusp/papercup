@@ -135,12 +135,12 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
 
 /**
  * Write/refresh the bridge divergence escalation for a hive — or clear it on a
- * clean pass. One row per (hiveHomeSlug, 'github-bridge'), upserted like
+ * clean pass. One row per (potHomeSlug, 'github-bridge'), upserted like
  * git-sync's writers; the clear targets only our own kind (strict non-clobber).
  * Never throws (best-effort, mirrors the git-sync escalation writers).
  */
 export async function recordDivergenceVerdict(
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   workspaceId: string,
   verdict: DivergenceVerdict,
   sql?: Sql,
@@ -154,13 +154,13 @@ export async function recordDivergenceVerdict(
           WHERE harness_slug = $1 AND phase = $3
             AND escalation IS NOT NULL
             AND (escalation::jsonb ->> 'kind') = $4`,
-        [hiveHomeSlug, Date.now(), GITHUB_BRIDGE_ESCALATION_PHASE, GITHUB_BRIDGE_ESCALATION_KIND],
+        [potHomeSlug, Date.now(), GITHUB_BRIDGE_ESCALATION_PHASE, GITHUB_BRIDGE_ESCALATION_KIND],
       );
       return;
     }
     const body = JSON.stringify({
       kind: GITHUB_BRIDGE_ESCALATION_KIND,
-      harness_slug: hiveHomeSlug,
+      harness_slug: potHomeSlug,
       needs_owner: verdict.needsOwner,
       signals: verdict.signals,
       emitted_at: Date.now(),
@@ -171,11 +171,11 @@ export async function recordDivergenceVerdict(
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (harness_slug, phase)
        DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
-      [hiveHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, body, Date.now(), workspaceId],
+      [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, body, Date.now(), workspaceId],
     );
   } catch (e) {
     console.warn(
-      `[github-bridge] failed to record divergence verdict (${hiveHomeSlug}): ${e instanceof Error ? e.message : e}`,
+      `[github-bridge] failed to record divergence verdict (${potHomeSlug}): ${e instanceof Error ? e.message : e}`,
     );
   }
 }

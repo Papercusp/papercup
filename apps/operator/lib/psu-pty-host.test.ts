@@ -981,6 +981,7 @@ describe('WI-3455 — findLiveHostFor (the launcher resume-of-live guard read)',
   it('returns the meta for a live, identity-verified host whose sock exists', () => {
     const ownerId = mkOwner();
     try {
+      fs.mkdirSync(PSU_PTY_DIR, { recursive: true }); // PSU_PTY_DIR may not exist yet on a fresh box
       fs.writeFileSync(socketPathFor(ownerId), ''); // stand-in for the bound node
       writeMetaFile(ownerId, { ownerId, pid: process.pid, sock: socketPathFor(ownerId) });
       const hit = findLiveHostFor(ownerId, { verifyIdentity: () => true });
@@ -993,6 +994,7 @@ describe('WI-3455 — findLiveHostFor (the launcher resume-of-live guard read)',
     try {
       expect(findLiveHostFor(ownerId)).toBeNull(); // no file
 
+      fs.mkdirSync(PSU_PTY_DIR, { recursive: true }); // PSU_PTY_DIR may not exist yet on a fresh box
       fs.writeFileSync(socketPathFor(ownerId), '');
       writeMetaFile(ownerId, { ownerId: 'su-someone-else', pid: process.pid, sock: socketPathFor(ownerId) });
       expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // EI-151 mismatch

@@ -11,24 +11,24 @@
  *
  * WHY THE EXISTING TESTS DON'T CATCH IT (D-015): the green WI-259 P-002 close-gate
  * case and the WI-261/WI-259 cases all inject an `applyOverride` carrying a HARDCODED
- * `resolveAuthorDevice` stub + a hardcoded `hiveHomeSlug`. That stub short-circuits
+ * `resolveAuthorDevice` stub + a hardcoded `potHomeSlug`. That stub short-circuits
  * boot's REAL apply seam (`admittedIdentities → resolveAuthorDevice →
  * resolveHiveMemberDeviceSet`), so the boot-resolution path the live witness depends on
  * is never exercised. The WI-559/FED-1 case is faithful but only for the OTHER direction
- * (MEMBER → OWNER, receiver = the hive-home owner via the `ownHiveHomeSlug` fallback).
+ * (MEMBER → OWNER, receiver = the hive-home owner via the `ownPotHomeSlug` fallback).
  *
  * THIS CASE is the FAITHFUL OWNER→JOINER proof — the direction WI-559 didn't cover:
  *  - The RECEIVER is the JOINER (a member harness whose hive home is a `remote_hive`
  *    VIEW). It boots with the REAL `bootHarnessSubstrate` scopedApply — NO
  *    `applyOverride`, NO stubbed `resolveAuthorDevice` — so boot's real
- *    `joinerHiveHomeSlug` rebind AND the real `admittedIdentities → resolveAuthorDevice
+ *    `joinerPotHomeSlug` rebind AND the real `admittedIdentities → resolveAuthorDevice
  *    → resolveHiveMemberDeviceSet` chain are on the path end-to-end.
  *  - The OWNER (hive-home harness, slug IS the hive home) is the AUTHOR; it uses the
  *    throwaway per-peer `buildPeerApply` (its own content origin DB) exactly as the
  *    WI-559 member author does — its own apply is irrelevant to the assertion.
  *  - getOrgPg() is env-routed at a migrated org DB (harness_admin → RLS-bypass) so the
  *    JOINER's real projections write there, and boot's membership/registry reads
- *    (joinerHiveHomeSlug, hiveHomeSlugForHarness, loadHiveMembers,
+ *    (joinerPotHomeSlug, potHomeSlugForHarness, loadHiveMembers,
  *    resolveHiveMemberDeviceSet) all resolve against the seeded
  *    hives/hive_members/harness_registry there too.
  *  - hive_members seeds BOTH the owner device AND the joiner device as current verified
@@ -277,7 +277,7 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
 
       // ── Env-route getOrgPg() at a migrated org DB: the JOINER's REAL scopedApply writes here
       //    (getOrgPg = harness_admin, RLS-bypass) AND boot's joiner-rebind + STEP-1 + guard reads
-      //    (joinerHiveHomeSlug / hiveHomeSlugForHarness / loadHiveMembers / resolveHiveMemberDeviceSet)
+      //    (joinerPotHomeSlug / potHomeSlugForHarness / loadHiveMembers / resolveHiveMemberDeviceSet)
       //    all resolve here. Mirrors the WI-559/FED-1 env-routing exactly. ──
       const orgDb: OrgTestDb = await createOrgTestDb();
       const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
@@ -366,8 +366,8 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
                 '{}'::text[], 'verified')
       `;
       // Registry: HIVE_HOME materialized as a `remote_hive` VIEW so the JOINER's boot resolves
-      // its hive-home projection slug via `joinerHiveHomeSlug` (the real rebind, no override),
-      // and JOINER_SLUG's `hive_slug` points at HIVE_HOME so hiveHomeSlugForHarness(JOINER)→HIVE_HOME.
+      // its hive-home projection slug via `joinerPotHomeSlug` (the real rebind, no override),
+      // and JOINER_SLUG's `hive_slug` points at HIVE_HOME so potHomeSlugForHarness(JOINER)→HIVE_HOME.
       await mutateHarnessRegistry(
         (r) => ({
           ...r,
@@ -381,11 +381,11 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
       );
 
       // ── Sanity: the SAME getOrgPg()-backed reads boot makes resolve as the repro relies on. ──
-      const { hiveHomeSlugForHarness, joinerHiveHomeSlug } = await import('../../../hive-federation');
+      const { potHomeSlugForHarness, joinerPotHomeSlug } = await import('../../../hive-federation');
       const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
-      expect(await hiveHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+      expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
       // The keystone for an OWNER→JOINER repro: the joiner must REBIND to the hive home.
-      expect(await joinerHiveHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+      expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
       const seededSet = await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME);
       expect(seededSet.has(idOwner.devicePubkey)).toBe(true);
       _clearHiveMemberDeviceSetCacheForTest(); // drop the sanity-read cache so boot re-reads fresh
@@ -439,7 +439,7 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
 
       // ── Boot the JOINER (RECEIVER): member slug JOINER_SLUG; NO applyOverride → the REAL boot
       //    scopedApply (getOrgPg → orgDb). This is what exercises the REAL
-      //    joinerHiveHomeSlug rebind + admittedIdentities → resolveAuthorDevice →
+      //    joinerPotHomeSlug rebind + admittedIdentities → resolveAuthorDevice →
       //    resolveHiveMemberDeviceSet chain — the seam the existing tests stub. ──
       handleJoiner = await bootHarnessSubstrate({
         workspaceRoot: rootJoiner,

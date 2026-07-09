@@ -27,7 +27,7 @@ vi.mock('./workspace-registry', async () => {
 // Isolate the wiring from the federation registry/PG reads — the helper's Hive
 // resolution is the federation team's tested surface; here we exercise the lease path
 // with a non-Hive (harness-scoped) fallback.
-vi.mock('./hive-federation', () => ({ hiveHomeSlugForHarness: async () => null }));
+vi.mock('./hive-federation', () => ({ potHomeSlugForHarness: async () => null }));
 
 const { workItemClaimLeaseEnabled, leaseClaimedWorkItem } = await import('./work-item-claim-lease-wiring');
 const { getClaim } = await import('./work-item-claims');

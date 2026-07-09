@@ -49,29 +49,29 @@ function deps(raw: string | Error, seedDir: string | null = '/seed', disabled = 
 
 describe('resolveSeedLogKeys', () => {
   it('returns the corestore coreKeys (lowercased) for a hive-matched seed', async () => {
-    const keys = await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(manifestJson()) });
+    const keys = await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(manifestJson()) });
     expect(keys).toEqual([KEY_A, KEY_B.toLowerCase()]);
   });
 
   it('returns [] on hive mismatch — a seed must never admit logs into another hive', async () => {
-    const keys = await resolveSeedLogKeys({ hiveHomeSlug: 'calendar-app', ...deps(manifestJson()) });
+    const keys = await resolveSeedLogKeys({ potHomeSlug: 'calendar-app', ...deps(manifestJson()) });
     expect(keys).toEqual([]);
   });
 
   it('returns [] when no seed dir resolves / the seed is disabled', async () => {
-    expect(await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(manifestJson(), null) })).toEqual([]);
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(manifestJson(), null) })).toEqual([]);
     expect(
-      await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(manifestJson(), '/seed', true) }),
+      await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(manifestJson(), '/seed', true) }),
     ).toEqual([]);
   });
 
   it('returns [] when the manifest is unreadable or invalid (fail-soft, never throws)', async () => {
     expect(
-      await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(new Error('ENOENT')) }),
+      await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(new Error('ENOENT')) }),
     ).toEqual([]);
-    expect(await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps('not json') })).toEqual([]);
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps('not json') })).toEqual([]);
     expect(
-      await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps('{"seedFormatVersion":99}') }),
+      await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps('{"seedFormatVersion":99}') }),
     ).toEqual([]);
   });
 
@@ -79,7 +79,7 @@ describe('resolveSeedLogKeys', () => {
     const raw = manifestJson({
       stores: [{ kind: 'git', hash: 'h', sizeBytes: 1, source: { type: 'resource', path: 'g' } }],
     });
-    expect(await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(raw) })).toEqual([]);
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(raw) })).toEqual([]);
   });
 
   it('drops malformed key entries individually, keeping well-formed ones', async () => {
@@ -94,6 +94,6 @@ describe('resolveSeedLogKeys', () => {
         },
       ],
     });
-    expect(await resolveSeedLogKeys({ hiveHomeSlug: 'papercusp', ...deps(raw) })).toEqual([KEY_A]);
+    expect(await resolveSeedLogKeys({ potHomeSlug: 'papercusp', ...deps(raw) })).toEqual([KEY_A]);
   });
 });

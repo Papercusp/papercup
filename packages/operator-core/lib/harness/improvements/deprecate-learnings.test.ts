@@ -187,7 +187,7 @@ describe('emitDeprecateLearnings', () => {
     const fact = deps.assertFact.mock.calls[0][0] as ReturnType<typeof buildNegativeResultFact>;
     expect(fact).toEqual(buildNegativeResultFact(base, 'the-hive-home'));
     expect(fact.shareable).toBe(true);
-    expect(fact.hiveHomeSlug).toBe('the-hive-home');
+    expect(fact.potHomeSlug).toBe('the-hive-home');
   });
 
   it('F1-3: the fact leg is BEST-EFFORT — a fact-rail throw never fails the observation', async () => {
@@ -206,16 +206,16 @@ describe('buildNegativeResultFact (F1-3 — the federated dead-end op)', () => {
     expect(fact.scopeRef).toBe(base.sourceHive);
     expect(fact.key).toBe(`negative-result/${base.planSlug}`);
     expect(fact.shareable).toBe(true);
-    expect(fact.hiveHomeSlug).toBe('the-hive-home');
+    expect(fact.potHomeSlug).toBe('the-hive-home');
     expect(fact.sourceRef).toBe(`plan:${base.planSlug}`);
     expect(fact.ttlSec).toBe(NEGATIVE_RESULT_FACT_TTL_SEC);
     // The stall reason (the "don't go here" signal) leads the body.
     expect(fact.body.indexOf('Stalled:')).toBeLessThan(fact.body.indexOf('Tried:'));
   });
 
-  it('an unresolvable home slug yields an un-hived fact (no hiveHomeSlug key)', () => {
+  it('an unresolvable home slug yields an un-hived fact (no potHomeSlug key)', () => {
     const fact = buildNegativeResultFact(base, null);
-    expect('hiveHomeSlug' in fact).toBe(false);
+    expect('potHomeSlug' in fact).toBe(false);
     expect(fact.shareable).toBe(true); // still opt-in; simply won't route until hived
   });
 

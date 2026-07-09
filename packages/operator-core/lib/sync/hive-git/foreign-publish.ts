@@ -45,7 +45,7 @@ import { buildScopeSigrefs, type SigrefOriginClaim, type SignedSigrefs } from '.
 import { defaultRunGit, type RunGit } from './storage';
 
 export interface PublishForeignResultInput {
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   scope: ScopeId;
   /** The foreign workspace clone (leg-iv provision output). */
   foreignClonePath: string;
@@ -102,7 +102,7 @@ export async function publishForeignResult(
   input: PublishForeignResultInput,
 ): Promise<PublishForeignResultOutcome> {
   const runGit = input.runGit ?? defaultRunGit;
-  const scopeRepoPath = await ensureScopeRepo(input.hiveHomeSlug, input.scope);
+  const scopeRepoPath = await ensureScopeRepo(input.potHomeSlug, input.scope);
   const foreignRef = scopeForeignRef(input.scope, input.resultName);
 
   // Prior publish of this result name = the admission range anchor (only the

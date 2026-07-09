@@ -59,7 +59,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
       return true;
     };
     // onEpochKeyApplied('hive-x', 5) recorded this when the key row applied.
-    const drainQueue: DrainedEpoch[] = [{ hiveHomeSlug: 'hive-x', epoch: 5 }];
+    const drainQueue: DrainedEpoch[] = [{ potHomeSlug: 'hive-x', epoch: 5 }];
 
     const n = await drainQueuedEpochContent({ pending, drainQueue, applyImpl });
 
@@ -78,7 +78,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
       applied.push(o);
       return true;
     };
-    const drainQueue: DrainedEpoch[] = [{ hiveHomeSlug: 'hive-x', epoch: 5 }];
+    const drainQueue: DrainedEpoch[] = [{ potHomeSlug: 'hive-x', epoch: 5 }];
 
     await drainQueuedEpochContent({ pending, drainQueue, applyImpl });
 
@@ -98,7 +98,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
     };
     await drainQueuedEpochContent({
       pending,
-      drainQueue: [{ hiveHomeSlug: 'hive-x', epoch: 3 }],
+      drainQueue: [{ potHomeSlug: 'hive-x', epoch: 3 }],
       applyImpl,
     });
     expect(applied.map((o) => o.hbKey)).toEqual(['first', 'second', 'third']);
@@ -118,7 +118,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
     // Key applied but content arrived AFTER (normal case) → nothing was ever deferred.
     const n = await drainQueuedEpochContent({
       pending,
-      drainQueue: [{ hiveHomeSlug: 'hive-x', epoch: 7 }],
+      drainQueue: [{ potHomeSlug: 'hive-x', epoch: 7 }],
       applyImpl,
     });
     expect(n).toBe(0);
@@ -139,7 +139,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
     };
     const n = await drainQueuedEpochContent({
       pending,
-      drainQueue: [{ hiveHomeSlug: 'hive-x', epoch: 5 }],
+      drainQueue: [{ potHomeSlug: 'hive-x', epoch: 5 }],
       applyImpl,
     });
     expect(calls).toBe(2); // both attempted — the first threw but didn't abort
@@ -160,9 +160,9 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
     const n = await drainQueuedEpochContent({
       pending,
       drainQueue: [
-        { hiveHomeSlug: 'hive-x', epoch: 1 },
-        { hiveHomeSlug: 'hive-x', epoch: 2 },
-        { hiveHomeSlug: 'hive-y', epoch: 1 },
+        { potHomeSlug: 'hive-x', epoch: 1 },
+        { potHomeSlug: 'hive-x', epoch: 2 },
+        { potHomeSlug: 'hive-y', epoch: 1 },
       ],
       applyImpl,
     });
@@ -218,7 +218,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
 
     // 2. The epoch-3 hive_epoch_keys row applies → onEpochKeyApplied queued (HIVE, 3); key now local.
     keyAvailable = true;
-    const drainQueue: DrainedEpoch[] = [{ hiveHomeSlug: HIVE, epoch: 3 }];
+    const drainQueue: DrainedEpoch[] = [{ potHomeSlug: HIVE, epoch: 3 }];
 
     // 3. The drain re-applies through the SAME gate → decrypts → CONVERGES.
     const n = await drainQueuedEpochContent({ pending, drainQueue, applyImpl });

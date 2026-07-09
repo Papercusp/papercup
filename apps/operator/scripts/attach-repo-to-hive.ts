@@ -14,18 +14,18 @@
  * routine). Fully reversible (remove the member's hive_slug).
  *
  * Usage:
- *   npx tsx scripts/attach-repo-to-hive.ts <workspaceId> <hiveHomeSlug> <memberHarnessSlug>
+ *   npx tsx scripts/attach-repo-to-hive.ts <workspaceId> <potHomeSlug> <memberHarnessSlug>
  */
 import { addHarnessToHive } from '@papercusp/operator-core/lib/agent-tools/hive/_add-member';
 
 async function main(): Promise<void> {
-  const [workspaceId, hiveHomeSlug, memberHarnessSlug] = process.argv.slice(2);
-  if (!workspaceId || !hiveHomeSlug || !memberHarnessSlug) {
-    console.error('usage: attach-repo-to-hive.ts <workspaceId> <hiveHomeSlug> <memberHarnessSlug>');
+  const [workspaceId, potHomeSlug, memberHarnessSlug] = process.argv.slice(2);
+  if (!workspaceId || !potHomeSlug || !memberHarnessSlug) {
+    console.error('usage: attach-repo-to-hive.ts <workspaceId> <potHomeSlug> <memberHarnessSlug>');
     process.exit(2);
   }
-  console.log(`attaching repo harness '${memberHarnessSlug}' → hive '${hiveHomeSlug}' (ws=${workspaceId})…`);
-  const res = await addHarnessToHive({ workspaceId, hiveHomeSlug, memberHarnessSlug });
+  console.log(`attaching repo harness '${memberHarnessSlug}' → hive '${potHomeSlug}' (ws=${workspaceId})…`);
+  const res = await addHarnessToHive({ workspaceId, potHomeSlug, memberHarnessSlug });
   console.log(JSON.stringify(res, null, 1));
   process.exit(res.ok ? 0 : 1);
 }

@@ -399,7 +399,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       //       key [0..current] to each live device (delegates to grant-on-join). Owner
       //       derives; persisted to the owner PG. ──
       const reconcile = await reconcileEpochKeysForCurrentMembers(
-        { workspaceId: WORKSPACE_ID, hiveHomeSlug: HIVE_SLUG, enabled: true, sql: dbOwner.sql },
+        { workspaceId: WORKSPACE_ID, potHomeSlug: HIVE_SLUG, enabled: true, sql: dbOwner.sql },
         { resolveCrypto: async () => crypto, resolveAuthorPubkey: async () => ownerDevice.pubkeyBase64 },
       );
       expect(reconcile.applied, 'reconcile self-heal ran').toBe(true);
@@ -416,7 +416,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       const drainQueue: DrainedEpoch[] = [];
       const keysProj = buildHiveEpochKeysProjection({
         workspaceId: WORKSPACE_ID, harnessSlug: HIVE_SLUG, sql: dbJoiner.sql,
-        onEpochKeyApplied: (h, e) => drainQueue.push({ hiveHomeSlug: h, epoch: e }),
+        onEpochKeyApplied: (h, e) => drainQueue.push({ potHomeSlug: h, epoch: e }),
       });
       const keysLookup: ProjectionLookup = (tag) =>
         tag === 'hive-epoch-keys' ? (keysProj as TableProjection<unknown>) : null;
@@ -471,7 +471,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
     await expect(
       upsertHiveMember({
         workspaceId: '*', // the unscoped-superuser READ sentinel — never storable
-        hiveHomeSlug: HIVE_SLUG,
+        potHomeSlug: HIVE_SLUG,
         githubUserId: 9,
         githubUsername: 'ghost',
       }),

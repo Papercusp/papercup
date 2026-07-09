@@ -76,7 +76,7 @@ export default defineTool({
     const result = args.potSlug
       ? await revokeHiveContributor({
           workspaceId: args.workspaceId,
-          hiveHomeSlug: args.potSlug,
+          potHomeSlug: args.potSlug,
           githubUserId: args.githubUserId,
         })
       : await revokeContributorViaGithub({

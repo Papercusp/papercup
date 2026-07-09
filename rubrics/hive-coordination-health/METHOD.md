@@ -276,3 +276,14 @@ reason as evidence. Never invent a rating to fill the scorecard.
 - `rubric-driven-observations-2026-06-20` — the plan (D-001 model, D-002 scope + owner #1, D-003 the schema contract).
 - `hive-coordination-test-loop-2026-06-20` D-001 — the owner's original 13-question scorecard this rubric crystallizes.
 - `rubrics:get { rubric_id: 'hive-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
+
+## Maintaining this pointer (for future rubric authors)
+
+**This file and its served twin must stay byte-identical.** This METHOD.md and
+`apps/operator-docs/src/content/docs/agent-insights/hive-coordination-health.mdx`
+(frontmatter aside) are hand-synced with no generation link — a grader reads the *mdx*
+via `docs:search`/`docs:get`, not this file directly, so an edit to only one silently
+stales the served copy (the su-agent-behavior rubric hit exactly this: WI-3456 →
+WI-3479, EI-8795). **Edit BOTH files together, in the same change.**
+`npm run lint:rubric-method-ref-parity` (CI-gating) fails loudly on drift — run it
+locally before you consider a METHOD.md edit done.

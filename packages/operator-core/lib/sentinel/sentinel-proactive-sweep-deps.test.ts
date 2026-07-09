@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { SENTINEL_PROACTIVE: 'sentinel-proactive' } }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { PAPERCUP_PROACTIVE: 'sentinel-proactive' } }));
 vi.mock('@papercusp/agent-mcp', () => ({
   dispatchProjectedToolStream: vi.fn(),
   lookupByMcpName: vi.fn(),

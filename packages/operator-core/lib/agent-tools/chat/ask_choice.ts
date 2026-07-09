@@ -171,7 +171,7 @@ export default defineTool({
     // either way (the human/Queen answers via coord:resolve → unblockLinkedCard →
     // resolveCardResponse, which resolves THIS card and resumes the caller):
     //
-    //   (1) B-10 card interception (QUEEN_CARD_INTERCEPTION, queen-autonomous-execution
+    //   (1) B-10 card interception (MUG_CARD_INTERCEPTION, queen-autonomous-execution
     //       P-041/P-045): the caller is a FLEET AGENT (bee / signed-spawn) — no human
     //       is watching the card surface, so a blocking card is a freeze. Route it
     //       through the agent-question gate (owner Queue today; autonomy-policy injects
@@ -190,7 +190,7 @@ export default defineTool({
       const { getFlag } = await import('@papercusp/flags/server');
       const { FLAGS } = await import('@papercusp/flags');
       [flagIntercept, flagDurable] = await Promise.all([
-        getFlag(FLAGS.QUEEN_CARD_INTERCEPTION, 'system'),
+        getFlag(FLAGS.MUG_CARD_INTERCEPTION, 'system'),
         getFlag(FLAGS.INBOX_DURABLE_ESCALATIONS, 'system'),
       ]);
     } catch {

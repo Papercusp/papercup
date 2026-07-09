@@ -28,7 +28,7 @@ function skips() {
 describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAMED, not silent', () => {
   it('records rekey_boundary_skipped(no_target) when the revoke target has no devices (the witness K2 root)', async () => {
     const result = await revokeHiveContributor(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 42 },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
         isOwningSwarm: async () => true,
         resolveOwnerGithubUserId: async () => 1,
@@ -43,7 +43,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
 
   it("records rekey_boundary_skipped(advance-not-applied) when the revoke succeeds but the boundary advance no-op'd (flag off / no-author)", async () => {
     const result = await revokeHiveContributor(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 42 },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
         isOwningSwarm: async () => true,
         resolveOwnerGithubUserId: async () => 1,
@@ -59,7 +59,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
 
   it('does NOT record a skip on the happy path (revoke live, boundary advanced)', async () => {
     const result = await revokeHiveContributor(
-      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 42 },
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
         isOwningSwarm: async () => true,
         resolveOwnerGithubUserId: async () => 1,

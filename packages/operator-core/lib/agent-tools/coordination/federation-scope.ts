@@ -40,7 +40,7 @@ export interface FederationScopeDeps {
     workspaceId: string,
   ) => Promise<{ projects: Array<{ slug: string; remote_hive?: boolean }> }>;
   getOwnedHiveMeta: (
-    hiveHomeSlug: string,
+    potHomeSlug: string,
     workspaceId: string,
   ) => Promise<{ visibility?: string } | null | undefined>;
 }

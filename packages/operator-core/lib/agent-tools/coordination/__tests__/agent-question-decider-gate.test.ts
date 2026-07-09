@@ -13,11 +13,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentIdentity, IdentitySource } from '../identity';
 import { deciderAgentQuestionGate, postureToRung } from '../agent-question-decider-gate';
 
-// QUEEN_AUTONOMY_ARMED graduated to default-ON (flip-dark-flags-default-on-2026-06-23). These tests
+// MUG_AUTONOMY_ARMED graduated to default-ON (flip-dark-flags-default-on-2026-06-23). These tests
 // verify the UNARMED gate (owner-queue routing), so pin the arming flag OFF via the env override
 // (this file uses the real getFlag, which honors PAPERCUSP_FLAG_* over the default) rather than
 // depending on the now-ON default. The armed auto→bee-self mapping is covered by postureToRung above.
-// Pin BOTH autonomy flags OFF: QUEEN_FULL_AUTONOMY overrides every gate → auto, so the unarmed
+// Pin BOTH autonomy flags OFF: MUG_FULL_AUTONOMY overrides every gate → auto, so the unarmed
 // (owner-queue) path requires the full-autonomy grant OFF too, not just the arming flag.
 const ARMED_ENVS = ['PAPERCUSP_FLAG_PAPERCUSP_QUEEN_AUTONOMY_ARMED', 'PAPERCUSP_FLAG_PAPERCUSP_QUEEN_FULL_AUTONOMY'];
 beforeEach(() => {
@@ -55,7 +55,7 @@ describe('deciderAgentQuestionGate (behavior-neutral / fail-safe)', () => {
   });
 
   it('routes a question WITH decision-context to owner-Queue while unarmed', async () => {
-    // Even a reversible, low-risk, mapped action gates while QUEEN_AUTONOMY_ARMED is
+    // Even a reversible, low-risk, mapped action gates while MUG_AUTONOMY_ARMED is
     // OFF — the arming flag is the load-bearing floor (B-19).
     const r = await deciderAgentQuestionGate({
       identity: idOf('signed-spawn'),

@@ -45,7 +45,7 @@ const h = vi.hoisted(() => {
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
     scopedClampFlag: { value: false },
     /** Hive-tier resolver seam: maps a harness → its hive home slug (null = no hive). */
-    hiveHomeSlugForHarness: vi.fn(
+    potHomeSlugForHarness: vi.fn(
       async (_ws: string, harness: string): Promise<string | null> =>
         harness === 'hiveA-home' || harness === 'hiveA-member'
           ? 'hiveA-home'
@@ -175,7 +175,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
 });
 vi.mock('../../hive-federation', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, hiveHomeSlugForHarness: h.hiveHomeSlugForHarness };
+  return { ...actual, potHomeSlugForHarness: h.potHomeSlugForHarness };
 });
 // P-017 workspace-tier clamp seam — only the foreign-workspace harness resolver
 // is stubbed; the rest of harness-core stays real (the wide agent-tools import graph).

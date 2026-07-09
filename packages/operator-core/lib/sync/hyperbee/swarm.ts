@@ -34,6 +34,7 @@ import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type HiveGitServeConfig } from '../hive-git/serve-wiring';
+import { wireHiveGitDial } from '../hive-git/peer-dial-registry';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -205,6 +206,17 @@ export interface JoinHarnessSwarmOpts {
    * refuses, re-checked live — no re-seed needed on a mode flip).
    */
   hiveGitServe?: HiveGitServeConfig;
+  /**
+   * WI-3583 (p2p-git-live-activation-2026-07-09 Phase-3 prerequisite):
+   * register this connection on the hive-git dial-hello channel, so a
+   * device-pubkey → live-socket registry (`peer-dial-registry.ts`) can
+   * resolve "which live connection reaches device X" for a REAL cross-
+   * machine `openDuplex` (worktree-bridge-tick.ts / ref-announce-tick.ts's
+   * own `openDuplex` seam — currently omitted/local-mirror-only without
+   * this). Omitted for a non-hive-git harness, so byte-for-byte unchanged
+   * when not set. Independent of `hiveGitServe` — either can be set alone.
+   */
+  hiveGitDial?: { selfDevicePubkeyBase64: string };
 }
 
 /**
@@ -894,6 +906,12 @@ export async function joinHarnessSwarm(
       // the announce channel just rode — additive, never-throwing, no-op when
       // `hiveGitServe` is omitted (every non-hive-git harness, unchanged).
       if (opts.hiveGitServe) wireHiveGitServe(socket, opts.topic, opts.hiveGitServe);
+      // WI-3583: register the dial-hello handshake on the SAME connection so
+      // this device's live socket becomes resolvable by device_pubkey for a
+      // REAL cross-machine fetch (additive, never-throwing — see
+      // peer-dial-registry.ts's header for why this rides its own channel
+      // rather than extending wireHiveGitServe's wire format).
+      if (opts.hiveGitDial) wireHiveGitDial(socket, opts.topic, opts.hiveGitDial.selfDevicePubkeyBase64);
     } catch {
       // Replication failures shouldn't crash the swarm handler; the
       // peer will reconnect if relevant. Diagnostic counters could

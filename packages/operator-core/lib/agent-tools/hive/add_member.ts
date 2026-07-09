@@ -72,7 +72,7 @@ export default defineTool({
     );
     const result = await addHarnessToHive({
       workspaceId,
-      hiveHomeSlug: args.pot,
+      potHomeSlug: args.pot,
       memberHarnessSlug: args.member,
     });
     return text({ ...result });

@@ -72,7 +72,7 @@ export function groupHives(rows: FederatedRow[]): HiveGroup[] {
 
 export default function HivesTab({ active }: { active: boolean }) {
   const t = useLexicon();
-  const hiveControlOn = useFlag(FLAGS.HIVE_CONTROL);
+  const hiveControlOn = useFlag(FLAGS.POT_CONTROL);
   const hives = useSyncQuery<FederatedRow>({
     queryName: 'sidebar.hives',
     enabled: active,

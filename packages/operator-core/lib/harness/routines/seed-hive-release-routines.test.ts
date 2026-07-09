@@ -35,7 +35,7 @@ beforeEach(() => {
   envResult = { enabled: true, env: {}, hasDeploy: false, isOperatorHome: false };
   sqlCalls = [];
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => flagOn }));
-  vi.doMock('@papercusp/flags', () => ({ FLAGS: { PER_HIVE_RELEASE_GATE: 'papercusp-per-hive-release-gate' } }));
+  vi.doMock('@papercusp/flags', () => ({ FLAGS: { PER_POT_RELEASE_GATE: 'papercusp-per-hive-release-gate' } }));
   vi.doMock('./hive-release-env', () => ({ resolveHiveReleaseEnv: async () => envResult }));
 });
 afterEach(() => {

@@ -46,7 +46,7 @@ describe('beacon-consent (real PG, C-2 default-OFF)', () => {
     await setBeaconPublishConsent('ws', 'beaconhive', true, sql);
     // A junk / legacy value (not strictly `true`) must read OFF — the gate is structural.
     await setHiveSetting(
-      { workspaceId: 'ws', hiveHomeSlug: 'beaconhive', settingKey: BEACON_PUBLISH_CONSENT_KEY, value: 'yes' },
+      { workspaceId: 'ws', potHomeSlug: 'beaconhive', settingKey: BEACON_PUBLISH_CONSENT_KEY, value: 'yes' },
       sql,
     );
     expect(await getBeaconPublishConsent('ws', 'beaconhive', sql)).toBe(false);

@@ -87,7 +87,7 @@ beforeEach(() => {
   h.upserts.length = 0;
   h.registeredHives = [];
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
-  delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
 
 describe('setHiveStarted — K1 workspace-sentinel write key (P-003)', () => {
@@ -177,7 +177,7 @@ describe('listStartedWorkspaceLoops — de-duped Queen-liveness loop (P-003)', (
 
   it('flag ON → ONE loop per workspace, seated at the env home hive', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = HIVE;
+    process.env.PAPERCUSP_POT_HOME_SLUG = HIVE;
     // Two hives started in the same workspace (sentinel + a stray legacy row).
     h.kv.set(`hive_started:${WS}:${WS}`, 'true');
     h.kv.set(`hive_started:${WS}:hive-b`, 'true');
@@ -192,7 +192,7 @@ describe('listStartedWorkspaceLoops — de-duped Queen-liveness loop (P-003)', (
 
   it('flag ON → distinct workspaces each get exactly one loop', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = HIVE;
+    process.env.PAPERCUSP_POT_HOME_SLUG = HIVE;
     h.kv.set(`hive_started:${WS}:${WS}`, 'true');
     h.kv.set(`hive_started:other-ws:other-ws`, 'true');
     const loops = await listStartedWorkspaceLoops();

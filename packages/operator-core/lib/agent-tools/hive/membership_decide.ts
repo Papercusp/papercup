@@ -89,8 +89,8 @@ export default defineTool({
       async ({ githubUserId, decision, reason }) => {
         const result =
           decision === 'approve'
-            ? await approvePendingJoin({ workspaceId, hiveHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy })
-            : await denyPendingJoin({ workspaceId, hiveHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
+            ? await approvePendingJoin({ workspaceId, potHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy })
+            : await denyPendingJoin({ workspaceId, potHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
         // approvePendingJoin/denyPendingJoin return their own { ok, … }; surface it
         // verbatim, keyed by githubUserId.
         return { ...result, ok: (result as { ok?: boolean }).ok !== false, githubUserId };

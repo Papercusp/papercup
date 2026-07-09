@@ -137,7 +137,7 @@ export default function AutonomySettingsPage() {
   // The master switch (P-092). The whole policy is dormant unless this is on, so
   // the page must SHOW it — a stale "armed is pending" claim is what hid that
   // autonomy was already live. Owner flips it via /admin/features, not here.
-  const armed = useFlag(FLAGS.QUEEN_AUTONOMY_ARMED);
+  const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
 
   const [filter, setFilter] = useQueryState(
     'filter',

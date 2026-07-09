@@ -37,7 +37,7 @@ const readMigration = (f: string) =>
 
 const WS = 'default'; // = DEFAULT_WORKSPACE_ID, so plans:start + the hive state share one workspace
 const SLUG = 'hive-e2e-harness';
-process.env.PAPERCUSP_HIVE_HOME_SLUG = SLUG;
+process.env.PAPERCUSP_POT_HOME_SLUG = SLUG;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -268,8 +268,8 @@ beforeAll(async () => {
   // can fire.
   {
     const { setHiveStarted } = await import('./started');
-    const { resolveHiveHomeSlug } = await import('./wake');
-    await setHiveStarted(WS, resolveHiveHomeSlug('papercup', undefined)!, true);
+    const { resolvePotHomeSlug } = await import('./wake');
+    await setHiveStarted(WS, resolvePotHomeSlug('papercup', undefined)!, true);
   }
 
   // Arm the Queen's defaults (P-002) — the live reaction rules the chain rides.
@@ -295,7 +295,7 @@ describe('the missing link, end to end (P-003)', () => {
       { installSlug: string; kickoff?: string },
     ];
     // The reaction ctx INHERITS the trigger's harness scope (buildReactionCtx),
-    // which outranks the PAPERCUSP_HIVE_HOME_SLUG env fallback — the wake lands
+    // which outranks the PAPERCUSP_POT_HOME_SLUG env fallback — the wake lands
     // on the harness whose plan started. EI-7227: 'papercup' canonicalizes to
     // 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES, the 2026-06-19 rename-compat
     // shim) by the time it reaches the launch.

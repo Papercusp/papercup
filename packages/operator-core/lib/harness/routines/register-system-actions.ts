@@ -46,7 +46,7 @@
  *     is non-destructive.
  *   - `system:wake-brain` — the autonomous-Queen cadence (hive-agent-tabs-psu-tui
  *     P-005 / D-006). Wakes the EXISTING pinned brain session on cadence so it
- *     takes autonomous turns. Flag-gated by HIVE_AGENT_TABS (OFF → no-op); the
+ *     takes autonomous turns. Flag-gated by POT_AGENT_TABS (OFF → no-op); the
  *     cadence routine seed + live verify are the remaining P-005 wip.
  *   - `system:gym-cycle` — learning-system-audit-improvements-2026-06-09
  *     P-031/P-032. The gym's pulse: per tick, run ONE bounded human-gated gym
@@ -271,7 +271,7 @@ import './unclaimed-work-digest-action';
 // register-scout-action.ts (that module also provides `productionScoutRunner`, the
 // blender:cycle op's dependency, so the file stays).
 // queen-autonomy-policy-2026-06-13 B-16: the auto-revert tripwire + graduation
-// sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
+// sweep (`system:autonomy-trust-scan`). Self-gates on MUG_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).
 import './autonomy-trust-scan-action';
 import './cargo-test-action';

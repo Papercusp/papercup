@@ -34,11 +34,11 @@
  *
  * ## How this differs from owner-content-to-joiner-faithful.repro (the sibling)
  * That faithful repro takes the two shortcuts that HIDE this race, by construction:
- *   (1) it pre-stamps the registry so `joinerHiveHomeSlug(JOINER)` resolves the home
+ *   (1) it pre-stamps the registry so `joinerPotHomeSlug(JOINER)` resolves the home
  *       SYNCHRONOUSLY at boot → B boots ALREADY hive-home-bound, so rekey is a no-op
  *       rebind and the home=<none> window never exists;
  *   (2) it pre-inserts BOTH peers into hive_members → the roster is never empty.
- * THIS test AVOIDS BOTH: it drives the joinerHiveHomeSlugOverride seam to return null
+ * THIS test AVOIDS BOTH: it drives the joinerPotHomeSlugOverride seam to return null
  * at boot (the live fresh-joiner home=<none> window) and starts B with an EMPTY roster
  * (only the hives identity + the owner-device binding for ownerDeviceForHive bootstrap-
  * admit), then forces the BAD ordering (merge BEFORE rekey) and asserts the bug state,
@@ -252,7 +252,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       });
 
       // ── Env-route getOrgPg() at a migrated org DB: B's REAL scopedApply writes here
-      //    (getOrgPg = harness_admin, RLS-bypass) AND B's boot reads (hiveHomeSlugForHarness /
+      //    (getOrgPg = harness_admin, RLS-bypass) AND B's boot reads (potHomeSlugForHarness /
       //    listHiveMembers / resolveHiveMemberDeviceSet) all resolve here. Mirrors the sibling
       //    repros exactly. ──
       const orgDb: OrgTestDb = await createOrgTestDb();
@@ -309,8 +309,8 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       `;
 
       // Registry: HIVE_HOME materialized as a `remote_hive` VIEW + JOINER_SLUG.hive_slug → HIVE_HOME.
-      // NOTE: this makes the PRODUCTION joinerHiveHomeSlug(JOINER) resolve HIVE_HOME — but we do NOT
-      // use it at boot. We inject `joinerHiveHomeSlugOverride` (below) returning the CONTROLLED value
+      // NOTE: this makes the PRODUCTION joinerPotHomeSlug(JOINER) resolve HIVE_HOME — but we do NOT
+      // use it at boot. We inject `joinerPotHomeSlugOverride` (below) returning the CONTROLLED value
       // (null at boot → the home=<none> fresh-joiner window; the hive-home slug on rekey), so the
       // registry shape only matters for the post-rekey content-guard/STEP-1 reads, NOT for the boot
       // rebind. The override is the single source of truth for B's hive-home resolution timing
@@ -360,12 +360,12 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       let handleJoiner: BootedHarnessHandle | undefined;
       let applyOwner: ((op: OpEnvelope) => Promise<boolean>) | undefined;
 
-      // ── B's CONTROLLED hive-home resolver (the joinerHiveHomeSlugOverride seam). Returns null
+      // ── B's CONTROLLED hive-home resolver (the joinerPotHomeSlugOverride seam). Returns null
       //    until we flip it → B boots MEMBER-slug-bound (home=<none>), the live fresh-joiner window.
       //    Flipped to HIVE_HOME right before B.rekey() so the rebind engages. This is the single
       //    seam that controls the boot-vs-rekey timing the race hinges on. ──
       let joinerHomeResolves = false;
-      const joinerHiveHomeSlugOverride = async (): Promise<string | null> =>
+      const joinerPotHomeSlugOverride = async (): Promise<string | null> =>
         joinerHomeResolves ? HIVE_HOME : null;
 
       // ── Boot the OWNER (AUTHOR): harnessSlug = the hive home; throwaway per-peer apply on its
@@ -393,7 +393,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       });
 
       // ── Boot the JOINER (RECEIVER): member slug JOINER_SLUG; NO applyOverride → the REAL boot
-      //    scopedApply (getOrgPg → orgDb). joinerHiveHomeSlugOverride returns null at boot → B
+      //    scopedApply (getOrgPg → orgDb). joinerPotHomeSlugOverride returns null at boot → B
       //    boots hive_members/hive_settings MEMBER-slug-bound (home=<none>). ownerDeviceForHive
       //    Override returns A's device so B can bootstrap-admit A's owner log with an EMPTY roster
       //    (the WI-787/WI-797 keystone — the roster that would admit A lives inside A's un-merged
@@ -406,7 +406,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
         swarmOverride: swarmJoiner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idOwner.userId ? 'verified' : 'fail',
-        joinerHiveHomeSlugOverride,
+        joinerPotHomeSlugOverride,
         ownerDeviceForHiveOverride: async (hivePubkey) =>
           hivePubkey === hivePubkeyB64 ? idOwner.devicePubkey : null,
         mergePollMs: 0,
@@ -712,7 +712,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
       let applyOwner: ((op: OpEnvelope) => Promise<boolean>) | undefined;
 
       let joinerHomeResolves = false;
-      const joinerHiveHomeSlugOverride = async (): Promise<string | null> =>
+      const joinerPotHomeSlugOverride = async (): Promise<string | null> =>
         joinerHomeResolves ? HIVE_HOME : null;
 
       handleOwner = await bootHarnessSubstrate({
@@ -745,7 +745,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         swarmOverride: swarmJoiner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idOwner.userId ? 'verified' : 'fail',
-        joinerHiveHomeSlugOverride,
+        joinerPotHomeSlugOverride,
         ownerDeviceForHiveOverride: async (hivePubkey) =>
           hivePubkey === hivePubkeyB64 ? idOwner.devicePubkey : null,
         mergePollMs: 0,

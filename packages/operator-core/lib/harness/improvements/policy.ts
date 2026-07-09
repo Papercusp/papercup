@@ -220,7 +220,7 @@ export interface TierDecision {
 /** Per-call classification options (queen-autonomy-and-selffeed-fix Phase 2). */
 export interface ClassifyOptions {
   /**
-   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`). When true, the
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.MUG_FULL_AUTONOMY`). When true, the
    * self-improvement loop's protected-path/keyword TCB bars are LIFTED — a kind=bug
    * touching the deploy gate / flags / capability dispatch / migrations / the loop's
    * own code becomes auto-eligible (the owner accepted the recursive-self-improvement

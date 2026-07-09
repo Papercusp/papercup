@@ -13,7 +13,7 @@
  * a **Create** group (new local · existing local · search GitHub → create or
  * join a hive from any repo) and a **Join** group (browse the Comb · hive
  * invite). The whole hive-native layout is gated on
- * HIVE_FROM_GITHUB_URL — flag OFF keeps the legacy Local/Shared layout
+ * POT_FROM_GITHUB_URL — flag OFF keeps the legacy Local/Shared layout
  * (coming-soon GitHub stub). Every card carries a one-line
  * OUTCOME explainer (P-007) — what that entry produces.
  *
@@ -702,7 +702,7 @@ interface PickerSection {
 /**
  * Sections are built per-render: the domain-first hive-native layout
  * (domain-generic-hive P-006 — New coding hive · New work hive · New hive from a
- * Comb blueprint · Join) lights up on HIVE_FROM_GITHUB_URL; flag OFF keeps the
+ * Comb blueprint · Join) lights up on POT_FROM_GITHUB_URL; flag OFF keeps the
  * legacy Local/Shared layout (coming-soon GitHub stub). Labels are
  * lexicon-bound; every card carries a one-line OUTCOME explainer (P-007).
  */
@@ -1072,7 +1072,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   // P-012 (hive-from-github-url): the hive-native Create/Join layout + the
   // GitHub search entry go live behind this flag; off = the legacy
   // Local/Shared layout (coming-soon GitHub stub).
-  const githubUrlEnabled = useFlag(FLAGS.HIVE_FROM_GITHUB_URL);
+  const githubUrlEnabled = useFlag(FLAGS.POT_FROM_GITHUB_URL);
   // The Comb term for the "Browse the Comb" Join card (P-006) — lexicon-bound
   // (t('cupboard') = "Comb" | "Cupboard"). The hive term still rides the
   // parent-passed `hiveLabel` prop.

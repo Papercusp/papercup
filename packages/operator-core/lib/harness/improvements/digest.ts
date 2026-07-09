@@ -149,7 +149,7 @@ export interface BuildDigestOptions {
   /** Now, in ms — passed for deterministic tests; the tool passes Date.now(). */
   nowMs?: number;
   /**
-   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`, Phase 2). When true the
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.MUG_FULL_AUTONOMY`, Phase 2). When true the
    * tier split lifts the protected-path/keyword TCB bars (see {@link classifyImprovement}),
    * so a protected-surface kind=bug lands in the auto lane. The IO boundary reads the flag;
    * defaults off (today's classification). Display surfaces that omit it render the baseline.

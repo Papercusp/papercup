@@ -19,7 +19,7 @@ const OUTSIDER = 9999;
 
 function resolved(): ResolvedHivePolicy {
   return {
-    workspaceId: WS, hiveHomeSlug: HOME, policy: { membership: 'open' }, policyVersion: 1,
+    workspaceId: WS, potHomeSlug: HOME, policy: { membership: 'open' }, policyVersion: 1,
     ownerPubkey: 'pk', signature: 'sig', policyJson: '{"membership":"open"}', fedHlc: 'h', updatedAt: 1,
   };
 }
@@ -41,7 +41,7 @@ describe('runSetPolicy claim gate (S0 authority)', () => {
     const res = await runSetPolicy(WS, HOME, goodBody, d);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(d.author).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, hiveHomeSlug: HOME }));
+    expect(d.author).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, potHomeSlug: HOME }));
   });
 
   it('TEETH: claimed Hive + NON-claimant viewer → 403; flipping viewer to a claimant → 200', async () => {

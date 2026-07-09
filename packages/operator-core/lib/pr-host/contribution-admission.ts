@@ -47,18 +47,18 @@ import {
 export interface IsHiveContributorRevokedOpts {
   workspaceId: string;
   /** The Hive's home_slug (the hive_members PK handle). */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** The PR author's verified numeric GitHub user id. */
   githubUserId: number;
   /** Injected: the member's bound device pubkeys. Default: loadHiveMemberDevicePubkeys. */
   loadDevicePubkeys?: (
     workspaceId: string,
-    hiveHomeSlug: string,
+    potHomeSlug: string,
     githubUserId: number,
     sql?: Sql,
   ) => Promise<string[]>;
   /** Injected: the Hive's revoked-pubkey union. Default: loadRevokedHivePubkeys. */
-  loadRevoked?: (workspaceId: string, hiveHomeSlug: string, sql?: Sql) => Promise<Set<string>>;
+  loadRevoked?: (workspaceId: string, potHomeSlug: string, sql?: Sql) => Promise<Set<string>>;
   /** Injected logger (tests). */
   log?: (msg: string) => void;
   sql?: Sql;
@@ -72,7 +72,7 @@ export interface IsHiveContributorRevokedOpts {
 export async function isHiveContributorRevoked(
   opts: IsHiveContributorRevokedOpts,
 ): Promise<boolean> {
-  if (!opts.workspaceId || !opts.hiveHomeSlug) return false;
+  if (!opts.workspaceId || !opts.potHomeSlug) return false;
   if (!Number.isInteger(opts.githubUserId) || opts.githubUserId <= 0) return false;
 
   const loadDevicePubkeys = opts.loadDevicePubkeys ?? loadHiveMemberDevicePubkeys;
@@ -81,19 +81,19 @@ export async function isHiveContributorRevoked(
   try {
     const devices = await loadDevicePubkeys(
       opts.workspaceId,
-      opts.hiveHomeSlug,
+      opts.potHomeSlug,
       opts.githubUserId,
       opts.sql,
     );
     // No bound device ⇒ not a "revoked member" — the trust gate handles unknowns.
     if (devices.length === 0) return false;
 
-    const revoked = await loadRevoked(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+    const revoked = await loadRevoked(opts.workspaceId, opts.potHomeSlug, opts.sql);
     // Revoked iff EVERY bound device is in the revoked union (no active device).
     return devices.every((pk) => revoked.has(pk));
   } catch (e) {
     opts.log?.(
-      `[contribution-admission] revocation read failed for gh#${opts.githubUserId} on ${opts.hiveHomeSlug}: ${
+      `[contribution-admission] revocation read failed for gh#${opts.githubUserId} on ${opts.potHomeSlug}: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -108,7 +108,7 @@ export async function isHiveContributorRevoked(
  * null for a solo/unbound harness (no Hive ⇒ no contributor revocation applies).
  * Best-effort: null on any resolution failure.
  */
-export async function resolveHarnessHiveHomeSlug(
+export async function resolveHarnessPotHomeSlug(
   harnessSlug: string,
   resolveProject?: (slug: string) => Promise<unknown>,
 ): Promise<string | null> {
@@ -146,8 +146,8 @@ export async function isPrAuthorRevoked(opts: {
   log?: (msg: string) => void;
   sql?: Sql;
 }): Promise<boolean> {
-  const hiveHomeSlug = await resolveHarnessHiveHomeSlug(opts.harnessSlug, opts.resolveProject);
-  if (!hiveHomeSlug) {
+  const potHomeSlug = await resolveHarnessPotHomeSlug(opts.harnessSlug, opts.resolveProject);
+  if (!potHomeSlug) {
     // ── DESIGN BOUNDARY (GAP review 2026-06-20 — pr5-impl + pr3-impl consensus, option (b)) ──
     // The code-plane contribution gate keys on HIVE membership BY DESIGN. A shared harness
     // that is NOT a hive member (`hive_slug` null) uses the SUBSTRATE device-revocation plane
@@ -165,7 +165,7 @@ export async function isPrAuthorRevoked(opts: {
   }
   return isHiveContributorRevoked({
     workspaceId: opts.workspaceId,
-    hiveHomeSlug,
+    potHomeSlug,
     githubUserId: opts.githubUserId,
     ...(opts.loadDevicePubkeys ? { loadDevicePubkeys: opts.loadDevicePubkeys } : {}),
     ...(opts.loadRevoked ? { loadRevoked: opts.loadRevoked } : {}),

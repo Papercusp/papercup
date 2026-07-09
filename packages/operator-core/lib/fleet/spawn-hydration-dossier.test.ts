@@ -10,7 +10,7 @@
  *   - the dossier is fail-soft (a throwing getDossier degrades to no dossier, never the
  *     whole block) and bounded (truncated at its own budget).
  *
- * The flag gate (BEE_WAKE_DOSSIER, P-009) lives in productionSpawnHydrationDeps
+ * The flag gate (CUP_WAKE_DOSSIER, P-009) lives in productionSpawnHydrationDeps
  * (impure binding) — the assembler just composes whatever getDossier returns.
  */
 import { describe, it, expect, vi } from 'vitest';

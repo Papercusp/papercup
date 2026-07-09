@@ -39,12 +39,12 @@ export function productionSpawnHydrationDeps(): SpawnHydrationDeps {
       getWorkItemCheckpoint({ harness, workItemId, workspaceId }),
     // The precomputed work-item DOSSIER (bee-context P-008, D-004/D-008/D-009): item
     // world-state + plan item + blocks + topics + comments + the hive-roster snapshot,
-    // so the (re)spawned agent opens already-briefed. Flag-gated on BEE_WAKE_DOSSIER
+    // so the (re)spawned agent opens already-briefed. Flag-gated on CUP_WAKE_DOSSIER
     // (default on, P-009). FAIL-SOFT: a flag-read fault or a null dossier ⇒ no section
     // (the agent falls back to its read tools). computeBeeWakeDossier needs a concrete
     // workspaceId — the spawn paths thread it; activeWorkspaceId() is the safety floor.
     getDossier: async ({ harness, workItemId, workspaceId }) => {
-      if (!(await getFlag(FLAGS.BEE_WAKE_DOSSIER, 'system'))) return null;
+      if (!(await getFlag(FLAGS.CUP_WAKE_DOSSIER, 'system'))) return null;
       return computeBeeWakeDossier({ workspaceId: workspaceId ?? activeWorkspaceId(), harness, workItemId });
     },
   };

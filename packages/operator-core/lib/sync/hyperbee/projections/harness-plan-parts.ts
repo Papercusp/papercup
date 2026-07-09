@@ -67,7 +67,7 @@ export interface HarnessPlanPartsProjectionOpts {
   /** WI-259 parity (D-027): hive-home slug when this harness is a hive MEMBER —
    *  a cross-member plan-part op is membership-gated only when set; undefined for a
    *  non-hive / owned-home harness. Threaded via RegisterAllOpts (same as harness-plans). */
-  hiveHomeSlug?: string;
+  potHomeSlug?: string;
   /** WI-259 parity: resolve an op's VERIFIED source-log device pubkey from its
    *  receiver-stamped sourceLogKeyHex (boot's admittedIdentities). */
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;

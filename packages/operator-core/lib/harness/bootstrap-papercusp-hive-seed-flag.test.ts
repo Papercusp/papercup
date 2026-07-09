@@ -1,6 +1,6 @@
 /**
  * bootstrap-papercusp-hive-seed-flag.test.ts — the P-011 seed-bundle master gate
- * (FLAGS.HIVE_SEED_BUNDLE). Injects the flag reader (the codebase's seam idiom) so
+ * (FLAGS.POT_SEED_BUNDLE). Injects the flag reader (the codebase's seam idiom) so
  * the gate's three behaviors are proven with no PostHog and no module mock: honors
  * ON, honors OFF (the runtime kill-switch → cold path), and fails OPEN on a read
  * error (a flags hiccup never silently forces cold).

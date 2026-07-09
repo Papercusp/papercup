@@ -268,6 +268,34 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(calls.hiveCreated).toEqual(['shop-hive']);
   });
 
+  it('WI-3577: synthesizes a self memberLink when publish returns a hivePubkey but no memberLinks (the duplicateOf/cupboard-hit registry-race shape)', async () => {
+    const { deps } = fakes({
+      lookup: async () =>
+        ({
+          kind: 'hive',
+          coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true },
+          hive: { potId: 'h', title: 'H', hivePubkey: 'HPK' },
+          source: 'cupboard',
+          bindingUnverified: false,
+        }) as RepoHiveLookup,
+      // Mirrors the real publishListingForMeta output on the bug's repro shape:
+      // hivePubkey resolved, but the registry re-read found no members → memberLinks absent.
+      publish: async () => ({
+        announced: true,
+        reachablePeers: 1,
+        hivePubkey: 'aGl2ZXB1YmtleWJhc2U2NHBhZGRlZHRvMzJieXRlcyEh',
+        cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 },
+      }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, force: true, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('publish' in r)) throw new Error('expected publish outcome');
+    const publish = r.publish as { memberLinks?: string[] };
+    expect(publish.memberLinks).toBeDefined();
+    expect(publish.memberLinks?.length).toBe(1);
+    expect(publish.memberLinks?.[0]).toContain('acme%2Fshop');
+  });
+
   it('records REAL step transitions against the progressId (P-008 hardening)', async () => {
     const recorded: string[] = [];
     const { deps } = fakes({

@@ -28,19 +28,19 @@ export interface RateStateResponse {
 /** The gate + read core, deps-injected so it's unit-testable without a real boot/PG. */
 export async function runGetRateState(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   deps: {
     getRateLimiter: typeof getRateLimiter;
     getHivePolicy: typeof getHivePolicy;
   },
 ): Promise<RateStateResponse> {
-  const limiter = deps.getRateLimiter(workspaceId, hiveHomeSlug);
+  const limiter = deps.getRateLimiter(workspaceId, potHomeSlug);
   if (!limiter) {
     return { ok: true, booted: false, rows: [] };
   }
   let caps: import('../../../hive-policy-schema').HivePolicyRate | null = null;
   try {
-    const resolved = await deps.getHivePolicy(workspaceId, hiveHomeSlug);
+    const resolved = await deps.getHivePolicy(workspaceId, potHomeSlug);
     caps = resolved?.policy.rate ?? null;
   } catch (e: unknown) {
     // No policy row / missing table ⇒ uncapped (today's permissive default) — the
@@ -56,9 +56,9 @@ const get = defineTool({
   path: '/pot/:id/policy/rate',
   auth: 'public',
   async handler(_req, ctx) {
-    const hiveHomeSlug = ctx.params.id as string;
+    const potHomeSlug = ctx.params.id as string;
     const workspaceId = activeWorkspaceId();
-    const result = await runGetRateState(workspaceId, hiveHomeSlug, { getRateLimiter, getHivePolicy });
+    const result = await runGetRateState(workspaceId, potHomeSlug, { getRateLimiter, getHivePolicy });
     return Response.json(result);
   },
 });

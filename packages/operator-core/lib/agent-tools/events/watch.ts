@@ -158,7 +158,6 @@ export default defineTool({
       once,
       minSleepSec,
       urgency: args.urgency,
-      workspaceId: identity.workspaceId ?? undefined,
     });
     return {
       content: [

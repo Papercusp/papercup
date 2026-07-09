@@ -28,7 +28,7 @@ import type { DiscoveredHive } from '../hive-directory';
 import { getHiveDirectory } from '../hive-directory-deps';
 import { loadDirectedCrossHiveGrants } from '../cross-hive-grants';
 import { PgCrossHiveAsks } from '../cross-hive-asks-pg';
-import { resolveHiveHomeSlug } from '../hive/wake';
+import { resolvePotHomeSlug } from '../hive/wake';
 import { activeWorkspaceId } from '../workspace-registry';
 import { classifyNetworkTier } from './tier-classifier';
 import type { NetworkAsks, NetworkBoardRow } from './types';
@@ -228,7 +228,7 @@ function readDiscovered(): DiscoveredHive[] {
 
 export interface BuildNetworkBoardOpts {
   workspaceId?: string;
-  /** Override the home-hive slug (default: resolveHiveHomeSlug() / env). */
+  /** Override the home-hive slug (default: resolvePotHomeSlug() / env). */
   homeSlug?: string | null;
 }
 
@@ -241,7 +241,7 @@ export async function buildNetworkBoard(
   opts: BuildNetworkBoardOpts = {},
 ): Promise<NetworkBoardRow[]> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const homeSlug = opts.homeSlug !== undefined ? opts.homeSlug : resolveHiveHomeSlug();
+  const homeSlug = opts.homeSlug !== undefined ? opts.homeSlug : resolvePotHomeSlug();
 
   const [hives, fleetRows, federatedPeers] = await Promise.all([
     listHives(ws).catch(() => [] as HiveDescriptor[]),

@@ -12,7 +12,7 @@ const sk = (ws: string, slug: string, key: string) => `${ws}::${slug}::${key}`;
 vi.mock('../../hive-settings-store', () => ({
   getHiveSetting: async (ws: string, slug: string, key: string) =>
     settings.has(sk(ws, slug, key))
-      ? { workspaceId: ws, hiveHomeSlug: slug, settingKey: key, value: settings.get(sk(ws, slug, key)), createdAt: 0, updatedAt: 0 }
+      ? { workspaceId: ws, potHomeSlug: slug, settingKey: key, value: settings.get(sk(ws, slug, key)), createdAt: 0, updatedAt: 0 }
       : null,
   setHiveSetting: async () => ({}),
 }));
@@ -29,10 +29,10 @@ const { createHiveEpochCrypto } = await import('./hive-epoch-crypto-impl');
 const { encryptForCurrentEpoch } = await import('./hive-epoch-producer');
 const { decryptOpPayload } = await import('./hive-epoch-serving');
 
-const CTX = { workspaceId: 'default', hiveHomeSlug: 'hello-world-hive', potId: 'hive-1' };
+const CTX = { workspaceId: 'default', potHomeSlug: 'hello-world-hive', potId: 'hive-1' };
 const ID = { tableTag: 'harness-features', rowKey: 'F-1', authorPubkey: 'owner' };
 const enc = (s: string) => new TextEncoder().encode(s);
-const setEpoch = (n: number) => settings.set(sk(CTX.workspaceId, CTX.hiveHomeSlug, 'epoch'), n);
+const setEpoch = (n: number) => settings.set(sk(CTX.workspaceId, CTX.potHomeSlug, 'epoch'), n);
 
 beforeEach(() => { settings.clear(); mem.clear(); });
 

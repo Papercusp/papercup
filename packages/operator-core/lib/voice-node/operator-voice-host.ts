@@ -20,7 +20,7 @@ import { buildSentinelSweepDeps, speakIntoSession } from '../sentinel/sentinel-p
 const LEASE_HEARTBEAT_MS = 5_000;
 
 /** How often the server-side Sentinel proactive sweep ticks. The sweep is
- *  heavily gated (FLAGS.SENTINEL_PROACTIVE default OFF + role + DND/pause/budget +
+ *  heavily gated (FLAGS.PAPERCUP_PROACTIVE default OFF + role + DND/pause/budget +
  *  single-owner + an internal throttle), so a frequent tick is cheap — most ticks
  *  are a single flag read and a no-op. Env-tunable, hard min 5s. */
 function sentinelSweepTickMs(): number {
@@ -54,7 +54,7 @@ export function startOperatorVoiceHost(): void {
   }, { category: 'lifecycle' });
 
   // Server-side Sentinel proactive "decide to speak" sweep (P-019). DEFAULT OFF:
-  // the very first gate inside the sweep is FLAGS.SENTINEL_PROACTIVE (default
+  // the very first gate inside the sweep is FLAGS.PAPERCUP_PROACTIVE (default
   // false), so when the flag is off every tick is a single flag read returning a
   // no-op — live voice + the browser-provider proactive ticks are byte-for-byte
   // unchanged. The sweep only ever acts when the flag is ON *and* this host owns

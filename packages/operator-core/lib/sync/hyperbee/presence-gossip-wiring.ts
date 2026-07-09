@@ -65,7 +65,7 @@ export interface PresenceGossipWriter {
 interface TopicBinding {
   workspaceId: string;
   /** The hive HOME slug whose hive_members gate this topic. */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** Writer half (flag-gated by the caller; null = reader-only registration). */
   writer: PresenceGossipWriter | null;
   /** Cached admitted-device → attested-github_user_id map (audit D-013 root fix:
@@ -103,8 +103,8 @@ async function admittedDeviceMap(binding: TopicBinding): Promise<Map<string, num
     return binding.members.admitted;
   }
   const [members, revoked] = await Promise.all([
-    deps.listHiveMembers(binding.workspaceId, binding.hiveHomeSlug),
-    deps.loadRevokedHivePubkeys(binding.workspaceId, binding.hiveHomeSlug),
+    deps.listHiveMembers(binding.workspaceId, binding.potHomeSlug),
+    deps.loadRevokedHivePubkeys(binding.workspaceId, binding.potHomeSlug),
   ]);
   const revokedSet = new Set(revoked);
   // Root fix (audit D-013): keep the device_pubkey → attested github_user_id
@@ -150,7 +150,7 @@ async function ensureState(): Promise<WiringState> {
         // L9 (audit D-013): PIN the stored hive scope to the RECEIVER's registered
         // binding — never the sender-declared row.hive_slug. This is exactly the
         // pin the sessions path already applies (applySessions → potSlug:
-        // binding.hiveHomeSlug); the put path was trusting the sender, so an
+        // binding.potHomeSlug); the put path was trusting the sender, so an
         // admitted member could plant a presence row under a FOREIGN hive scope —
         // and the per-hive lock authority scopes by this column
         // (lockAuthorityForHive's `WHERE hive_slug=?`, mig 187), so a spoofed
@@ -158,7 +158,7 @@ async function ensureState(): Promise<WiringState> {
         // harness_slug stays the sender-declared within-hive demux (D-006) — the
         // sessions path likewise keeps per-session harness_slug sender-declared.
         await proj.writeToPg(
-          { ...row, hive_slug: binding.hiveHomeSlug },
+          { ...row, hive_slug: binding.potHomeSlug },
           { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs },
         );
       },
@@ -194,7 +194,7 @@ async function ensureState(): Promise<WiringState> {
             // Pin the stored hive scope to the RECEIVER's registered binding —
             // never the sender-declared hive_slug (an admitted member could
             // otherwise plant rows under a foreign hive scope).
-            potSlug: binding.hiveHomeSlug,
+            potSlug: binding.potHomeSlug,
             sessions: input.sessions,
             frameTs,
           },
@@ -231,7 +231,7 @@ async function ensureState(): Promise<WiringState> {
 export async function registerPresenceGossipTopic(input: {
   topicHex: string;
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** Writer half — flag-gated by the caller; omit for reader-only. */
   writer?: PresenceGossipWriter;
 }): Promise<boolean> {
@@ -244,7 +244,7 @@ export async function registerPresenceGossipTopic(input: {
     }
     s.bindings.set(input.topicHex, {
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       writer: input.writer ?? null,
     });
     s.gossip.joinTopic(Buffer.from(input.topicHex, 'hex'));

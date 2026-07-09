@@ -13,7 +13,7 @@
  * error, or a disarmed policy all fail-safe to owner-Queue. So importing this at
  * boot changes nothing today; it only starts honoring per-category ceilings once
  * the owner deliberately arms AND lowers a ceiling. No flag of its own: the whole
- * interception is already gated by `QUEEN_CARD_INTERCEPTION`, and the auto rungs by
+ * interception is already gated by `MUG_CARD_INTERCEPTION`, and the auto rungs by
  * the autonomy arming gate.
  *
  * Side-effect import (from agent-tools/index.ts) — `configureAgentQuestionGate`

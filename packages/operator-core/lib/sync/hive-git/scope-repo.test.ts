@@ -110,7 +110,7 @@ describe('isScopeRepoFamilyPath / parseScopeRepoPath (§5.3 gate encodings)', ()
     process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
     const p = scopeRepoPath('my-hive', SCOPE);
     expect(isScopeRepoFamilyPath(p)).toBe(true);
-    expect(parseScopeRepoPath(p)).toEqual({ hiveHomeSlug: 'my-hive', scope: SCOPE });
+    expect(parseScopeRepoPath(p)).toEqual({ potHomeSlug: 'my-hive', scope: SCOPE });
   });
 
   it('family check is BROADER than the strict parse (malformed inside scopes/ still trips the gate)', () => {

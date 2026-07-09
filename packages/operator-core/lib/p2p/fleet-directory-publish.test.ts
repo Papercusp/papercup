@@ -34,7 +34,7 @@ const fleetRow = {
 function storedOf(record: FleetDirectoryRecord): StoredFleetRecord {
   return {
     workspaceId: WS,
-    hiveHomeSlug: HOME,
+    potHomeSlug: HOME,
     ownerGithubUserId: record.ownerGithubUserId,
     fleetSlug: record.fleetSlug,
     record,
@@ -98,7 +98,7 @@ describe('publishFleetDirectoryRecord — authoring', () => {
     expect(r).toMatchObject({ ok: true, changed: true });
     expect(putRecord).toHaveBeenCalledTimes(1);
     const input = putRecord.mock.calls[0]![0];
-    expect(input).toMatchObject({ workspaceId: WS, hiveHomeSlug: HOME, selfGithubUserId: UID, signer });
+    expect(input).toMatchObject({ workspaceId: WS, potHomeSlug: HOME, selfGithubUserId: UID, signer });
     expect(input.record).toEqual({
       fleetSlug: 'alpha',
       ownerGithubUserId: UID,

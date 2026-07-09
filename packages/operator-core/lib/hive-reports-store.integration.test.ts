@@ -40,7 +40,7 @@ const HIVE = 'mod-hive';
 function input(over: Partial<FileReportInput> = {}): FileReportInput {
   return {
     workspaceId: WS,
-    hiveHomeSlug: HIVE,
+    potHomeSlug: HIVE,
     reporterGithubUserId: 4242,
     reporterGithubUsername: 'octocat',
     targetKind: 'content',
@@ -58,7 +58,7 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
     );
     expect(rec).toMatchObject({
       workspaceId: WS,
-      hiveHomeSlug: HIVE,
+      potHomeSlug: HIVE,
       reportId: 'r-file',
       reporterGithubUserId: 4242, // bigint column → number (not "4242")
       reporterGithubUsername: 'octocat',
@@ -101,7 +101,7 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
   it('listReports is the owner moderation queue: default = open only, newest-first', async () => {
     const hive = 'queue-hive';
     const mk = (id: string, reason: string) =>
-      fileReport({ ...input({ reportId: id, reportReason: reason }), hiveHomeSlug: hive }, db.adminSql);
+      fileReport({ ...input({ reportId: id, reportReason: reason }), potHomeSlug: hive }, db.adminSql);
     await mk('q-old', 'old');
     await mk('q-mid', 'mid');
     await mk('q-new', 'new');
@@ -120,8 +120,8 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
 
   it('setReportStatus resolves a report — it leaves the open queue and lands in the filtered view', async () => {
     const hive = 'resolve-hive';
-    await fileReport({ ...input({ reportId: 's-1' }), hiveHomeSlug: hive }, db.adminSql);
-    await fileReport({ ...input({ reportId: 's-2' }), hiveHomeSlug: hive }, db.adminSql);
+    await fileReport({ ...input({ reportId: 's-1' }), potHomeSlug: hive }, db.adminSql);
+    await fileReport({ ...input({ reportId: 's-2' }), potHomeSlug: hive }, db.adminSql);
 
     const resolved = await setReportStatus(WS, hive, 's-1', 'dismissed', db.adminSql);
     expect(resolved).toMatchObject({ reportId: 's-1', status: 'dismissed' });
@@ -142,8 +142,8 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
   });
 
   it('reports are scoped per (workspace, hive) — the explicit WHERE keeps another workspace/hive out', async () => {
-    await fileReport({ ...input({ reportId: 'iso' }), workspaceId: 'ws-A', hiveHomeSlug: 'iso-hive' }, db.adminSql);
-    await fileReport({ ...input({ reportId: 'iso' }), workspaceId: 'ws-B', hiveHomeSlug: 'iso-hive' }, db.adminSql);
+    await fileReport({ ...input({ reportId: 'iso' }), workspaceId: 'ws-A', potHomeSlug: 'iso-hive' }, db.adminSql);
+    await fileReport({ ...input({ reportId: 'iso' }), workspaceId: 'ws-B', potHomeSlug: 'iso-hive' }, db.adminSql);
 
     const aOnly = await listReports('ws-A', 'iso-hive', { status: null }, db.adminSql);
     expect(aOnly.map((r) => r.workspaceId)).toEqual(['ws-A']);
@@ -156,8 +156,8 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
 
   it('actioned vs dismissed are distinct terminal states the owner can filter independently', async () => {
     const hive = 'states-hive';
-    await fileReport({ ...input({ reportId: 't-act' }), hiveHomeSlug: hive }, db.adminSql);
-    await fileReport({ ...input({ reportId: 't-dis' }), hiveHomeSlug: hive }, db.adminSql);
+    await fileReport({ ...input({ reportId: 't-act' }), potHomeSlug: hive }, db.adminSql);
+    await fileReport({ ...input({ reportId: 't-dis' }), potHomeSlug: hive }, db.adminSql);
     await setReportStatus(WS, hive, 't-act', 'actioned', db.adminSql);
     await setReportStatus(WS, hive, 't-dis', 'dismissed', db.adminSql);
 

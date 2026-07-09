@@ -69,7 +69,7 @@ type DeviceRow =
   | { kind: 'identity'; githubUserId: number | null; devicePubkey: string | null }
   | {
       kind: 'device';
-      hiveHomeSlug: string;
+      potHomeSlug: string;
       devicePubkey: string;
       deviceLabel: string | null;
       attestedAtMs: number | null;
@@ -77,7 +77,7 @@ type DeviceRow =
       revoked: boolean;
       isThisDevice: boolean;
     }
-  | { kind: 'missing'; hiveHomeSlug: string };
+  | { kind: 'missing'; potHomeSlug: string };
 
 /* Wire type — mirrors PeerGrant (operator-core/lib/p2p/grant-store.ts), kept
  * local per the client wire-type decoupling convention. */
@@ -444,7 +444,7 @@ export default function P2pSettingsPage() {
   const hiveOptions = useMemo(() => {
     const slugs = new Set<string>();
     for (const r of deviceRows) {
-      if (r.kind === 'device' || r.kind === 'missing') slugs.add(r.hiveHomeSlug);
+      if (r.kind === 'device' || r.kind === 'missing') slugs.add(r.potHomeSlug);
     }
     return [...slugs].sort();
   }, [deviceRows]);
@@ -600,10 +600,10 @@ export default function P2pSettingsPage() {
               · this device <code style={{ fontSize: 11.5 }}>{shortKey(identity.devicePubkey)}</code>
             </p>
             {missing.map((m) => (
-              <p key={m.hiveHomeSlug} style={{ fontSize: 12.5, margin: '4px 0' }}>
+              <p key={m.potHomeSlug} style={{ fontSize: 12.5, margin: '4px 0' }}>
                 <span style={redBadge}>MISSING</span>{' '}
                 <span style={muteStyle}>
-                  this device has no live attestation on {t('pot', { lower: true })} <strong>{m.hiveHomeSlug}</strong> — attest it
+                  this device has no live attestation on {t('pot', { lower: true })} <strong>{m.potHomeSlug}</strong> — attest it
                   before it can offer or accept P2P work there.
                 </span>
               </p>
@@ -612,14 +612,14 @@ export default function P2pSettingsPage() {
               <p style={muteStyle}>No {t('pot', { lower: true })} memberships found for this identity in the workspace.</p>
             )}
             {devices.map((d) => (
-              <div key={`${d.hiveHomeSlug}:${d.devicePubkey}`} style={{ fontSize: 12.5, padding: '4px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div key={`${d.potHomeSlug}:${d.devicePubkey}`} style={{ fontSize: 12.5, padding: '4px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 {d.revoked ? <span style={redBadge}>REVOKED</span> : <span style={okBadge}>attested</span>}
                 <span>
                   {d.deviceLabel ?? 'device'} <code style={{ fontSize: 11 }}>{shortKey(d.devicePubkey)}</code>
                   {d.isThisDevice && <strong> (this device)</strong>}
                 </span>
                 <span style={muteStyle}>
-                  {t('pot', { lower: true })} {d.hiveHomeSlug}
+                  {t('pot', { lower: true })} {d.potHomeSlug}
                   {d.attestedAtMs ? ` · attested ${fmtTs(d.attestedAtMs)}` : ''}
                 </span>
               </div>

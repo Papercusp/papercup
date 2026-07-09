@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveHiveHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../hive/wake';
 import { readHiveSoakReport, MAX_SOAK_WINDOW_HOURS, MIN_SOAK_WINDOW_HOURS } from '../../hive/soak-report';
 
 export default defineTool({
@@ -23,11 +23,11 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().max(120).optional().describe('Pot home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Pot home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     windowHours: z.number().int().min(MIN_SOAK_WINDOW_HOURS).max(MAX_SOAK_WINDOW_HOURS).optional(),
   }),
   async handler(args, ctx) {
-    const potSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const potSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!potSlug) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no hive home harness resolved' }) }],

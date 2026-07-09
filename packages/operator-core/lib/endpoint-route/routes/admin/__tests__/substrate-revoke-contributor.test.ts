@@ -138,7 +138,7 @@ describe('handleRevokeContributor', () => {
     expect((await res.json()).revokedPubkeys).toEqual(['ed25519:k1', 'ed25519:k2']);
     expect(revokeHive).toHaveBeenCalledWith({
       workspaceId: 'ws1',
-      hiveHomeSlug: 'acme-hive',
+      potHomeSlug: 'acme-hive',
       githubUserId: 12345,
     });
     expect(revoke).not.toHaveBeenCalled();

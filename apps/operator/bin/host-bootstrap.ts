@@ -203,7 +203,7 @@ export function runBootstrap(): void {
 
     void (async () => {
       try {
-        if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_HIVE, 'system'))) return;
+        if (!(await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT, 'system'))) return;
         const { startBootstrapPapercuspHive } = await import(
           '@papercusp/operator-core/lib/harness/bootstrap-papercusp-hive'
         );
@@ -232,7 +232,7 @@ export function runBootstrap(): void {
   // to adopt mints its own empty per-device hive (dogfood-silent-canonical-hive-join;
   // proven live 2026-07-01: owner `papercusp` hive with ~1.6k work items but no gist →
   // fresh install federated 0 items). shareExistingHive() is fully SELF-GATING and safe to
-  // call on any box: it no-ops unless (a) DOGFOOD_PAPERCUSP_HIVE_SHARE is on, (b) `gh` is
+  // call on any box: it no-ops unless (a) DOGFOOD_PAPERCUSP_POT_SHARE is on, (b) `gh` is
   // signed in, AND (c) this box OWNS the hive (goSharedHive's first-device path returns
   // when it can't load the hive private key from the keychain); a gist/pubkey divergence
   // also self-skips. Idempotent (re-announces each boot), fire-and-forget + non-fatal.

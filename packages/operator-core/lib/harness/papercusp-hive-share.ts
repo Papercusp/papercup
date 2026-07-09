@@ -201,7 +201,7 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
       deps.contentWriteAuthority ?? (membershipMode === 'open' ? 'author-scoped' : 'member');
     await authorPolicy({
       workspaceId: PAPERCUSP_WORKSPACE_ID,
-      hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
+      potHomeSlug: PAPERCUSP_HIVE_SLUG,
       policy: {
         membership: membershipMode,
         // The allowlist is only consulted under 'allowlist' mode, but we always carry the owner+team

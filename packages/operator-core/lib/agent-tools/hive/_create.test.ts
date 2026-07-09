@@ -262,7 +262,7 @@ describe('createHiveHarness', () => {
     expect(upsertHiveMemberCalls).toEqual([
       expect.objectContaining({
         workspaceId: 'default',
-        hiveHomeSlug: 'wi280-hive',
+        potHomeSlug: 'wi280-hive',
         githubUserId: 1,
         githubUsername: 'owner-login',
         bindingStatus: 'verified',

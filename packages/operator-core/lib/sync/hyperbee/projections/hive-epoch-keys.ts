@@ -12,7 +12,7 @@
  * (`row.harness_slug !== opts.harnessSlug`) demuxes onto the Hive-home projection (the
  * A-003 (a′) hive-home→joiner seam d2230 landed).
  *
- * DRAIN HOOK (46b7a/J): on a successful apply, fire `onEpochKeyApplied(hiveHomeSlug,
+ * DRAIN HOOK (46b7a/J): on a successful apply, fire `onEpochKeyApplied(potHomeSlug,
  * epoch)` so J's pending-epoch-content buffer drains exactly when a key row lands —
  * deferred content for that (hive, epoch) is then re-applied (the remaining member can
  * now decrypt). The removed member never receives a row for its device → its deferred
@@ -55,8 +55,8 @@ export interface HiveEpochKeysProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
-  /** Fired (hiveHomeSlug, epoch) after a key row applies — drives J's pending drain. */
-  onEpochKeyApplied?: (hiveHomeSlug: string, epoch: number) => void;
+  /** Fired (potHomeSlug, epoch) after a key row applies — drives J's pending drain. */
+  onEpochKeyApplied?: (potHomeSlug: string, epoch: number) => void;
 }
 
 /** The peer-log key for a row: `${epoch}:${member_device_pubkey}` — matches the

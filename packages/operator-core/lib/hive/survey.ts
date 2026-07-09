@@ -80,16 +80,16 @@ type RegistryProjectForHiveSurvey = { slug: string; hive_slug?: string; harness_
  */
 export async function resolveHiveMembership(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   loadRegistry: (ws: string) => Promise<{ projects: RegistryProjectForHiveSurvey[] }> = loadHarnessRegistry,
 ): Promise<HiveMembership> {
   const reg = await loadRegistry(workspaceId);
   const members = reg.projects
-    .filter((p) => p.hive_slug === hiveHomeSlug && p.slug !== hiveHomeSlug)
+    .filter((p) => p.hive_slug === potHomeSlug && p.slug !== potHomeSlug)
     .map((p) => p.slug);
-  const surveySlugs = members.length > 0 ? Array.from(new Set([hiveHomeSlug, ...members])) : [];
+  const surveySlugs = members.length > 0 ? Array.from(new Set([potHomeSlug, ...members])) : [];
   return {
-    home: hiveHomeSlug,
+    home: potHomeSlug,
     members,
     surveySlugs,
     scope: surveySlugs.length > 0 ? 'members' : 'workspace',
@@ -487,10 +487,10 @@ export async function countPlaceableFrontier(
  */
 export async function hivePlaceableFrontierDepth(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
 ): Promise<number> {
   const { sql } = getOrgPg();
-  const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug);
+  const membership = await resolveHiveMembership(workspaceId, potHomeSlug);
   return countPlaceableFrontier(sql, workspaceId, membership.surveySlugs);
 }
 
@@ -572,7 +572,7 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
  */
 export async function surveyHive(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   opts: {
     frontierLimit?: number;
     scopeFilter?: ScopeFilter;
@@ -591,7 +591,7 @@ export async function surveyHive(
   const deps: SurveyDeps = { ...defaultSurveyDeps(workspaceId), ...opts.deps };
   const now = deps.now();
   const sf = opts.scopeFilter; // scope/pause filter (C-2) — used by both the plan loop + the frontier filter
-  const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug, deps.loadRegistry);
+  const membership = await resolveHiveMembership(workspaceId, potHomeSlug, deps.loadRegistry);
   const surveySlugs =
     membership.surveySlugs.length > 0 && (opts.extraSurveySlugs?.length ?? 0) > 0
       ? Array.from(new Set([...membership.surveySlugs, ...opts.extraSurveySlugs!]))
@@ -609,7 +609,7 @@ export async function surveyHive(
     planSlugs = surveySlugs;
   } else {
     const reg = await deps.loadRegistry(workspaceId);
-    planSlugs = Array.from(new Set([hiveHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
+    planSlugs = Array.from(new Set([potHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
   }
 
   const [planRowsPerHarness, frontierRows] = await Promise.all([

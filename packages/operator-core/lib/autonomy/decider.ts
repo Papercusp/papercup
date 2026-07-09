@@ -115,7 +115,7 @@ export interface AutonomyDecisionInput {
   armed?: boolean;
   /**
    * The OWNER FULL-AUTONOMY grant (queen-autonomy-and-selffeed-fix Phase 2 —
-   * `FLAGS.QUEEN_FULL_AUTONOMY`). When `true` the owner has accepted full autonomy
+   * `FLAGS.MUG_FULL_AUTONOMY`). When `true` the owner has accepted full autonomy
    * INCLUDING the residue the per-category ceilings can't reach: this lifts EVERY
    * substantive hard gate (owner-authority, protected/never-auto ceiling,
    * irreversible, above-ceiling, unmapped) and graduation:* asks → `auto`, so the
@@ -259,7 +259,7 @@ export interface DeciderDeps {
   isArmed: () => Promise<boolean>;
   /**
    * Is the OWNER FULL-AUTONOMY grant active for this workspace? (Phase 2 —
-   * `FLAGS.QUEEN_FULL_AUTONOMY`). When true the resolver lifts the entire residue.
+   * `FLAGS.MUG_FULL_AUTONOMY`). When true the resolver lifts the entire residue.
    * Default deps fail-DARK to `false` on a flag-IO error (a hiccup never grants).
    */
   isFullAutonomy: () => Promise<boolean>;
@@ -310,7 +310,7 @@ export function defaultDeciderDeps(
           import('@papercusp/flags'),
           import('@papercusp/flags/server'),
         ]);
-        return await getFlag(FLAGS.QUEEN_AUTONOMY_ARMED, `autonomy:${workspaceId}`);
+        return await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${workspaceId}`);
       } catch {
         return false; // fail-DARK: a flag hiccup must never arm autonomy
       }
@@ -321,7 +321,7 @@ export function defaultDeciderDeps(
           import('@papercusp/flags'),
           import('@papercusp/flags/server'),
         ]);
-        return await getFlag(FLAGS.QUEEN_FULL_AUTONOMY, `autonomy:${workspaceId}`);
+        return await getFlag(FLAGS.MUG_FULL_AUTONOMY, `autonomy:${workspaceId}`);
       } catch {
         return false; // fail-DARK: a flag hiccup must never grant full autonomy
       }

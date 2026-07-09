@@ -32,10 +32,10 @@ export const BEACON_PUBLISH_CONSENT_KEY = 'beacon-publish-consent';
  */
 export async function getBeaconPublishConsent(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<boolean> {
-  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, BEACON_PUBLISH_CONSENT_KEY, sql);
+  const rec = await getHiveSetting(workspaceId, potHomeSlug, BEACON_PUBLISH_CONSENT_KEY, sql);
   return rec?.value === true;
 }
 
@@ -47,12 +47,12 @@ export async function getBeaconPublishConsent(
  */
 export async function setBeaconPublishConsent(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   consent: boolean,
   sql?: Sql,
 ): Promise<void> {
   await setHiveSetting(
-    { workspaceId, hiveHomeSlug, settingKey: BEACON_PUBLISH_CONSENT_KEY, value: consent === true },
+    { workspaceId, potHomeSlug, settingKey: BEACON_PUBLISH_CONSENT_KEY, value: consent === true },
     sql,
   );
 }

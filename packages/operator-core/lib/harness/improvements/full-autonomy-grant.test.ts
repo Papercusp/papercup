@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   getFlag: vi.fn<(key: string, scope: string) => Promise<boolean>>(() => Promise.resolve(false)),
 }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { QUEEN_FULL_AUTONOMY: 'queen_full_autonomy' } }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { MUG_FULL_AUTONOMY: 'queen_full_autonomy' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
 
 import { readOwnerFullAutonomyGrant } from './full-autonomy-grant';

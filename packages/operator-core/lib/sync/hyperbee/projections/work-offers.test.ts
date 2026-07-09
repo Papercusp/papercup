@@ -73,7 +73,7 @@ function signedRow(
   if (!c.ok) throw new Error(c.error);
   const json = canonicalWorkOfferRecordJson(c.record);
   const sig = signWithPrivateKeyDer(kp.privateKeyDer, workOfferStoreSignedBytes({
-    workspaceId: WS, hiveHomeSlug: HIVE,
+    workspaceId: WS, potHomeSlug: HIVE,
     recordVersion: c.record.recordVersion, canonicalRecordJson: json,
   })).toString('base64');
   return {
@@ -262,7 +262,7 @@ describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
     await p.writeToPg(row, { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'hlc' } as never);
     expect(honorSpawnMock).toHaveBeenCalledTimes(1);
     expect(honorSpawnMock).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: WS, hiveHomeSlug: HIVE, row, sql }),
+      expect.objectContaining({ workspaceId: WS, potHomeSlug: HIVE, row, sql }),
     );
   });
 

@@ -640,6 +640,12 @@ function RosterStyles() {
       .pc-advshell__agents-pop {
         max-height: min(70vh, 560px);
         overflow-y: auto;
+        /* DEFINITE width, not content-driven: intrinsic max-content sizing let a
+           long agent intent blow the roster popover past the viewport (~1600px),
+           and typing a search query then snapped it down to the 420px min — the
+           "search box goes narrow" glitch. One stable width for every state
+           (roster / search results / inactive list); rows already ellipsize. */
+        width: min(680px, calc(100vw - 24px));
         min-width: 420px;
         padding: 4px;
         /* Solid, opaque surface (design tokens) — a header popover must be readable,

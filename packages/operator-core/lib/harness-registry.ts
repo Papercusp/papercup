@@ -294,13 +294,13 @@ export function canonicalizeLegacyPapercup(projects: ProjectEntry[]): ProjectEnt
  */
 export function hiveMemberHarnessScopes(
   projects: Pick<ProjectEntry, 'slug' | 'hive_slug'>[],
-  hiveHomeSlug: string,
+  potHomeSlug: string,
 ): string[] {
   const slugs = new Set<string>();
   // The home harness is always a member, even before any peer joins.
-  slugs.add(hiveHomeSlug);
+  slugs.add(potHomeSlug);
   for (const p of projects) {
-    if (p.slug === hiveHomeSlug || p.hive_slug === hiveHomeSlug) slugs.add(p.slug);
+    if (p.slug === potHomeSlug || p.hive_slug === potHomeSlug) slugs.add(p.slug);
   }
   return [...slugs].map((s) => `harness:${s}`);
 }

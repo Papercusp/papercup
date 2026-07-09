@@ -159,7 +159,7 @@ export async function publishFleetDirectoryRecord(
   }
   const res = await putRecord({
     workspaceId: opts.workspaceId,
-    hiveHomeSlug: scope.homeSlug,
+    potHomeSlug: scope.homeSlug,
     selfGithubUserId: actor.githubUserId,
     record,
     signer,

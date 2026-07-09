@@ -3,7 +3,7 @@
  * that binds the pure sweep engine (sentinel-proactive-sweep.ts) to the real
  * operator infrastructure:
  *
- *   flagEnabled          → getFlag(FLAGS.SENTINEL_PROACTIVE) (DEFAULT OFF)
+ *   flagEnabled          → getFlag(FLAGS.PAPERCUP_PROACTIVE) (DEFAULT OFF)
  *   isSilenced           → voice prefs `silenceVoice` (the Sentinel DND lever)
  *   isPaused             → the global operator pause sentinel
  *   proactiveTicksEnabled→ voice prefs `proactiveTicksEnabled`
@@ -181,7 +181,7 @@ export async function notifyHindsight(headline: string): Promise<void> {
 export function buildSentinelSweepDeps(broadcast: (frame: Uint8Array) => void): SentinelSweepDeps {
   const potSlug = ''; // workspace-default scope; the digests are workspace-wide.
   return {
-    flagEnabled: () => getFlag(FLAGS.SENTINEL_PROACTIVE, 'system'),
+    flagEnabled: () => getFlag(FLAGS.PAPERCUP_PROACTIVE, 'system'),
     isSilenced: async () => (await loadVoicePrefs().catch(() => null))?.silenceVoice ?? false,
     isPaused: () => isPaused().catch(() => false),
     proactiveTicksEnabled: async () => (await loadVoicePrefs().catch(() => null))?.proactiveTicksEnabled ?? true,

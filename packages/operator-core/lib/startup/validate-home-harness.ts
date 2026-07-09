@@ -27,7 +27,7 @@ export async function validateHomeHarnessResolution(): Promise<void> {
   if (!slug || !slug.trim()) {
     throw new Error(
       'STARTUP VALIDATION FAILED: operatorHomeHarnessSlug() returned an empty slug. ' +
-      'Check PAPERCUSP_HIVE_HOME_SLUG env or LEGACY_DEFAULT_HOME_HARNESS fallback.'
+      'Check PAPERCUSP_POT_HOME_SLUG env or LEGACY_DEFAULT_HOME_HARNESS fallback.'
     );
   }
 
@@ -38,7 +38,7 @@ export async function validateHomeHarnessResolution(): Promise<void> {
       `STARTUP VALIDATION FAILED: home harness slug '${slug}' does not resolve to a ` +
       `registered project in workspace '${ws}'. This will cause fire-paths (dispatcher, ` +
       `overwatch, routines) to 404 silently and go dark. Verify the harness is registered ` +
-      `and PAPERCUSP_HIVE_HOME_SLUG is set correctly, then restart the operator.`
+      `and PAPERCUSP_POT_HOME_SLUG is set correctly, then restart the operator.`
     );
   }
 }

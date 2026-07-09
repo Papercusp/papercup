@@ -36,14 +36,14 @@ export interface DeriveMemberRepoDeps {
  */
 export async function deriveHiveMemberRepoRefs(
   workspaceId: string | undefined,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   deps: DeriveMemberRepoDeps = {},
 ): Promise<string[]> {
   const loadReg = deps.loadRegistry ?? loadHarnessRegistry;
   const loadShared = deps.loadSharedConfig ?? loadSharedConfigFromProjectDir;
   const reg = await loadReg(workspaceId);
   const members = reg.projects.filter(
-    (p) => p.slug === hiveHomeSlug || p.hive_slug === hiveHomeSlug,
+    (p) => p.slug === potHomeSlug || p.hive_slug === potHomeSlug,
   );
   // key = lowercased owner/repo → encoded ref; id-bearing encodings win.
   const out = new Map<string, string>();

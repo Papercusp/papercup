@@ -26,7 +26,7 @@ vi.mock('../coordination/identity', () => ({
   })),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('../../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'papercusp') }));
+vi.mock('../../hive/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -198,8 +198,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   });
 
   it('fails loud with no_harness when neither args.harness nor ctx.harnessSlug nor a home hive resolves', async () => {
-    const { resolveHiveHomeSlug } = await import('../../hive/wake');
-    vi.mocked(resolveHiveHomeSlug).mockReturnValueOnce(null as never);
+    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null as never);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never) as Out;
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
@@ -207,20 +207,20 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
 
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'
   // (the wildcard sentinel, _harness-scope.ts). A raw `args.harness ?? ctx.harnessSlug ?? …`
-  // chain would let that truthy '*' win outright — bypassing resolveHiveHomeSlug's own
+  // chain would let that truthy '*' win outright — bypassing resolvePotHomeSlug's own
   // '*'-skip logic entirely — and the wildcard would then get interpolated verbatim into
   // the wake prompt's self-task example (`work_items:create { harness:'*', … }`), which
   // work_items:create's harness resolution rejects (harnessScope throws on the wildcard).
-  // The fix routes BOTH args.harness and ctx.harnessSlug THROUGH resolveHiveHomeSlug
+  // The fix routes BOTH args.harness and ctx.harnessSlug THROUGH resolvePotHomeSlug
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
-  it('EI-7734: routes ctx.harnessSlug through resolveHiveHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
-    const { resolveHiveHomeSlug } = await import('../../hive/wake');
-    vi.mocked(resolveHiveHomeSlug).mockReturnValueOnce('papercusp' as never);
+  it('EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
+    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('papercusp' as never);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never) as Out;
     const b = body(out);
-    // resolveHiveHomeSlug must be CALLED with the raw '*' so its own skip logic runs —
+    // resolvePotHomeSlug must be CALLED with the raw '*' so its own skip logic runs —
     // a pre-fix raw `??` chain would never call it at all (ctx.harnessSlug='*' wins first).
-    expect(vi.mocked(resolveHiveHomeSlug)).toHaveBeenCalledWith(undefined, '*');
+    expect(vi.mocked(resolvePotHomeSlug)).toHaveBeenCalledWith(undefined, '*');
     // The resolved (non-wildcard) harness is what actually arms + what the wake prompt sees —
     // never the raw '*'.
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });

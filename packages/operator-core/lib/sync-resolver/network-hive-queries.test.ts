@@ -39,7 +39,7 @@ describe('network.hive.* resolvers', () => {
     });
     vi.doMock('../cross-hive-asks-pg', () => ({ PgCrossHiveAsks: ctor }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
-    vi.doMock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'home-hive' }));
+    vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home-hive' }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     const out = await r('network.hive.asks', { peerPubkey: 'pk-9', limit: 25 });
@@ -53,7 +53,7 @@ describe('network.hive.* resolvers', () => {
 
   it('network.hive.asks returns [] when no home hive is resolvable (no ledger to read)', async () => {
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
-    vi.doMock('../hive/wake', () => ({ resolveHiveHomeSlug: () => null }));
+    vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => null }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     expect(await r('network.hive.asks', {})).toEqual([]);

@@ -53,7 +53,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
 /**
- * P-011 kill-switch: the seed-bundle feature master gate (FLAGS.HIVE_SEED_BUNDLE,
+ * P-011 kill-switch: the seed-bundle feature master gate (FLAGS.POT_SEED_BUNDLE,
  * DEFAULT ON — finished work never ships dark). OFF ⇒ both restore paths no-op and
  * the pure COLD join runs, byte-identical to a no-seed build (the runtime escape
  * hatch if a seed restore ever misbehaves). Fail-open to ON: getFlag already returns
@@ -62,7 +62,7 @@ import { FLAGS } from '@papercusp/flags';
  * a flag-read hiccup must not silently force cold.
  */
 export async function seedBundleEnabled(
-  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system'),
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.POT_SEED_BUNDLE, 'system'),
 ): Promise<boolean> {
   try {
     return await readFlag();
@@ -72,7 +72,7 @@ export async function seedBundleEnabled(
 }
 
 async function seedSelfAdmitEnabled(
-  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_SELF_ADMIT, 'system'),
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.POT_SEED_SELF_ADMIT, 'system'),
 ): Promise<boolean> {
   try {
     return await readFlag();
@@ -165,7 +165,7 @@ export interface BootstrapPapercuspHiveDeps {
     status: BootstrapProgressStatus,
     extra?: { percent?: number; detail?: string },
   ) => void;
-  /** Solution C (DOGFOOD_PAPERCUSP_HIVE_SHARE, default-on/reversible): adopt the owner's
+  /** Solution C (DOGFOOD_PAPERCUSP_POT_SHARE, default-on/reversible): adopt the owner's
    *  SHARED hive identity from their per-owner gist BEFORE the hive is created.
    *  Default: adoptSharedHiveIdentity (returns null — sharing skipped — when the
    *  flag is off / gh unauth). */
@@ -413,7 +413,7 @@ async function defaultRestoreDeferredGitSeed(
   // provider (always present when a seed shipped) as the offline fallback.
   const memberProvider = await buildMemberEpochKeyProvider({
     workspaceId: PAPERCUSP_WORKSPACE_ID,
-    hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
+    potHomeSlug: PAPERCUSP_HIVE_SLUG,
   });
   const epochKeyProvider = chainEpochKeyProviders([
     memberProvider,

@@ -567,7 +567,7 @@ async function maybeCaptureRecipe(
     if (!workspaceId) return []; // no workspace ⇒ nothing to scope a recipe to
 
     const { buildQueryEmbedder } = await import('../search/embedder');
-    const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+    const { potHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');
 
     let ownerId: string | null = null;
@@ -583,7 +583,7 @@ async function maybeCaptureRecipe(
       {
         sql: getOrgPg().sql,
         embed: async (text) => (embedder ? embedder(text) : null),
-        resolveHive: hiveHomeSlugForHarness,
+        resolveHive: potHomeSlugForHarness,
         log: (msg) => ctx.log(msg),
       },
       {

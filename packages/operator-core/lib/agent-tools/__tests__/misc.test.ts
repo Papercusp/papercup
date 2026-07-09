@@ -192,7 +192,7 @@ describe('loop:soak-report', () => {
   it('reads the resolved hive soak report', async () => {
     vi.doMock('../../hive/wake', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
-      resolveHiveHomeSlug: vi.fn(() => 'papercusp'),
+      resolvePotHomeSlug: vi.fn(() => 'papercusp'),
     }));
     vi.doMock('../../hive/soak-report', () => ({
       readHiveSoakReport: vi.fn(async () => ({ potSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
@@ -210,7 +210,7 @@ describe('loop:soak-report', () => {
   it('returns ok:false when no hive home resolves', async () => {
     vi.doMock('../../hive/wake', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
-      resolveHiveHomeSlug: vi.fn(() => null),
+      resolvePotHomeSlug: vi.fn(() => null),
     }));
     vi.doMock('../../hive/soak-report', () => ({
       readHiveSoakReport: vi.fn(),

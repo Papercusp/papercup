@@ -28,7 +28,7 @@ describe('upsertHiveGitGcRoutine', () => {
     const { sql, calls } = fakeSql([{ id: 'rt_shop_hive_git_gc' }]);
     const out = await upsertHiveGitGcRoutine(sql, {
       workspaceId: 'ws-1',
-      hiveHomeSlug: 'shop-hive',
+      potHomeSlug: 'shop-hive',
       repoKey: 'repo-1',
     });
     expect(out).toEqual({ id: 'rt_shop_hive_git_gc' });
@@ -52,7 +52,7 @@ describe('upsertHiveGitGcRoutine', () => {
     const { sql, calls } = fakeSql([{ id: 'rt_x' }]);
     await upsertHiveGitGcRoutine(sql, {
       workspaceId: 'ws-1',
-      hiveHomeSlug: 'shop-hive',
+      potHomeSlug: 'shop-hive',
       repoKey: 'repo-1',
       intervalSec: 1800,
       keepPublishedRefsPerNamespace: 3,

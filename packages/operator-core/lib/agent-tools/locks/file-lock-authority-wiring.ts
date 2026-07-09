@@ -116,7 +116,7 @@ async function refreshResolverSnapshot(): Promise<void> {
   const s2h = new Map<string, string>();
   for (const proj of reg.projects) {
     if (proj.path) d2s.set(realpathOrSelf(proj.path), proj.slug);
-    // The home Hive for this harness (mirrors hiveHomeSlugForHarness, sync from the
+    // The home Hive for this harness (mirrors potHomeSlugForHarness, sync from the
     // registry row): a kind:'hive' harness is its own home; a member points via hive_slug.
     const hiveHome = proj.harness_kind === 'hive' ? proj.slug : (proj.hive_slug ?? null);
     if (hiveHome) s2h.set(proj.slug, hiveHome);

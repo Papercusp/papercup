@@ -10,7 +10,7 @@
  * this sits on the merge hot path.
  *
  * Scope: enforcement only applies when the projection is HIVE-BOUND
- * (hiveHomeSlug present) — the same scoping as the WI-259 member-content gate.
+ * (potHomeSlug present) — the same scoping as the WI-259 member-content gate.
  * A non-hive topology resolves 'steer' (full passthrough — today's behavior).
  * An un-mapped device (no attestation match — shouldn't survive the member
  * gate) resolves the conservative fallback, never a grant.
@@ -46,15 +46,15 @@ let deps: CommsTierGateDeps = { listHiveMembers, effectiveCommsTier };
 
 async function deviceToUser(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   devicePubkey: string,
   now: number,
 ): Promise<number | null> {
-  const key = `${workspaceId}::${hiveHomeSlug}`;
+  const key = `${workspaceId}::${potHomeSlug}`;
   let entry = deviceMaps.get(key);
   if (!entry || now - entry.at >= CACHE_TTL_MS) {
     const map = new Map<string, number>();
-    const members = await deps.listHiveMembers(workspaceId, hiveHomeSlug);
+    const members = await deps.listHiveMembers(workspaceId, potHomeSlug);
     for (const m of members) {
       for (const a of m.deviceAttestations ?? []) {
         if (a?.device_pubkey) map.set(a.device_pubkey, m.githubUserId);
@@ -72,20 +72,20 @@ async function deviceToUser(
  */
 export async function resolveAuthorCommsTier(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   devicePubkey: string;
   nowMs?: number;
 }): Promise<{ tier: CommsTier; githubUserId: number | null }> {
   const now = input.nowMs ?? Date.now();
   try {
-    const user = await deviceToUser(input.workspaceId, input.hiveHomeSlug, input.devicePubkey, now);
+    const user = await deviceToUser(input.workspaceId, input.potHomeSlug, input.devicePubkey, now);
     if (user == null) return { tier: FALLBACK_COMMS_TIER, githubUserId: null };
-    const tkey = `${input.workspaceId}::${input.hiveHomeSlug}::${user}`;
+    const tkey = `${input.workspaceId}::${input.potHomeSlug}::${user}`;
     const cached = tiers.get(tkey);
     if (cached && now - cached.at < CACHE_TTL_MS) return { tier: cached.tier, githubUserId: user };
     const resolved = await deps.effectiveCommsTier({
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       githubUserId: user,
       nowMs: now,
     });

@@ -511,7 +511,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
     expect(out[0]).toEqual({ kind: 'identity', githubUserId: 279242982, devicePubkey: 'DEV-THIS' });
     const dev = out.find((row) => row.kind === 'device');
-    expect(dev).toMatchObject({ hiveHomeSlug: 'papercusp', devicePubkey: 'DEV-THIS', isThisDevice: true, revoked: false });
+    expect(dev).toMatchObject({ potHomeSlug: 'papercusp', devicePubkey: 'DEV-THIS', isThisDevice: true, revoked: false });
     expect(out.some((row) => row.kind === 'missing')).toBe(false); // this device is live → no RED
     vi.doUnmock('../harness/usage-actor');
     vi.doUnmock('@papercusp/db-org');
@@ -532,7 +532,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
-    expect(out).toContainEqual({ kind: 'missing', hiveHomeSlug: 'papercusp' });
+    expect(out).toContainEqual({ kind: 'missing', potHomeSlug: 'papercusp' });
     vi.doUnmock('../harness/usage-actor');
     vi.doUnmock('@papercusp/db-org');
     vi.doUnmock('../workspace-registry');
@@ -1089,7 +1089,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
-    const out = (await r('featuresConsolidated.byHive', { hiveHomeSlug: 'hive-home' })) as unknown[];
+    const out = (await r('featuresConsolidated.byHive', { potHomeSlug: 'hive-home' })) as unknown[];
 
     expect(out).toEqual(rows);
     expect(new Set(captured.values)).toEqual(new Set(['hive-home', 'member-a', 'member-b']));
@@ -1100,7 +1100,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     vi.doUnmock('drizzle-orm');
   });
 
-  it('degrades to [hiveHomeSlug] (never 500s the rollup) when the registry read fails', async () => {
+  it('degrades to [potHomeSlug] (never 500s the rollup) when the registry read fails', async () => {
     // The degrade path intentionally warns; swallow it so vitest-fail-on-console
     // doesn't flag the deliberate diagnostic.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1126,7 +1126,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
-    await r('featuresConsolidated.byHive', { hiveHomeSlug: 'lonely-home' });
+    await r('featuresConsolidated.byHive', { potHomeSlug: 'lonely-home' });
 
     expect(captured.values).toEqual(['lonely-home']);
     expect(warnSpy).toHaveBeenCalled();
@@ -1161,7 +1161,7 @@ describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan r
     vi.doMock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
-    const out = (await r('plans.byHive', { hiveHomeSlug: 'hive-home' })) as unknown[];
+    const out = (await r('plans.byHive', { potHomeSlug: 'hive-home' })) as unknown[];
 
     expect(out).toEqual([{ slug: 'p1', harnessSlug: 'member-a' }]);
     expect(callPlansRead).toHaveBeenCalledTimes(1);

@@ -1,4 +1,4 @@
-/** Tests for the Queen capacity-aware dispatch (gateway-priority-tiers-2026-06-22 Phase 4, QUEEN_CAPACITY_DISPATCH). */
+/** Tests for the Queen capacity-aware dispatch (gateway-priority-tiers-2026-06-22 Phase 4, MUG_CAPACITY_DISPATCH). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {

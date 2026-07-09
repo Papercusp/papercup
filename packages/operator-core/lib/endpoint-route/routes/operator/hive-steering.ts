@@ -19,7 +19,7 @@
  *
  * Hive + workspace resolve from defaults (the loopback sidecar carries no principal):
  * optional `?hive=` / `?workspace=` query overrides, else `activeWorkspaceId()` +
- * `resolveHiveHomeSlug()` (PAPERCUSP_HIVE_HOME_SLUG).
+ * `resolvePotHomeSlug()` (PAPERCUSP_POT_HOME_SLUG).
  *
  * ADDITIVE + INERT: nothing GETs here until the oddsmith bridge is armed (its
  * `ODDSMITH_OPERATOR_URL` env is set in a later step), so mounting this route does
@@ -34,7 +34,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOwnerSteering, DEFAULT_OWNER_STEERING } from '../../../owner-steering';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { resolveHiveHomeSlug } from '../../../hive/wake';
+import { resolvePotHomeSlug } from '../../../hive/wake';
 
 export default defineTool({
   method: 'GET',
@@ -46,12 +46,12 @@ export default defineTool({
     try {
       const url = new URL(req.url);
       const workspaceId = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
-      const hiveHomeSlug = resolveHiveHomeSlug(url.searchParams.get('hive'));
-      if (!hiveHomeSlug) {
+      const potHomeSlug = resolvePotHomeSlug(url.searchParams.get('hive'));
+      if (!potHomeSlug) {
         // No home hive ⇒ no steering to read. Safe default ⇒ engine keeps its defaults.
         return Response.json(DEFAULT_OWNER_STEERING);
       }
-      const steering = await getOwnerSteering(workspaceId, hiveHomeSlug);
+      const steering = await getOwnerSteering(workspaceId, potHomeSlug);
       return Response.json(steering);
     } catch {
       // Fail SAFE — any fault yields the no-steering default (kill-switch off, no knob

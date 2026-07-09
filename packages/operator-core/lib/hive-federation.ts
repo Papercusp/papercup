@@ -42,12 +42,12 @@ export async function resolveHiveSwarmBinding(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<SwarmBinding | null> {
-  const hiveHomeSlug = await hiveHomeSlugForHarness(workspaceId, harnessSlug);
-  if (!hiveHomeSlug) {
+  const potHomeSlug = await potHomeSlugForHarness(workspaceId, harnessSlug);
+  if (!potHomeSlug) {
     return null; // not part of a Hive
   }
 
-  const hive = await getHiveBySlug(workspaceId, hiveHomeSlug);
+  const hive = await getHiveBySlug(workspaceId, potHomeSlug);
   if (!hive) {
     return null; // Hive identity not resolvable (e.g. un-backfilled)
   }
@@ -57,7 +57,7 @@ export async function resolveHiveSwarmBinding(
   // those rows are captured under `harness_slug = hive_home_slug`. If the home
   // stays local-only, its send-side drain never appends those rows to the shared
   // Hive log, so joiners never receive settings/membership/epoch state.
-  if (harnessSlug === hiveHomeSlug) {
+  if (harnessSlug === potHomeSlug) {
     return { kind: 'hive', hive_pubkey: hive.pubkeyBase64 };
   }
 
@@ -71,9 +71,9 @@ export async function resolveHiveSwarmBinding(
   // un-published (no meta = local-only) owned Hive stays local (zero DHT
   // footprint — no privacy regression).
   const reg = await loadHarnessRegistry(workspaceId);
-  const isRemoteJoined = reg.projects.find((p) => p.slug === hiveHomeSlug)?.remote_hive === true;
+  const isRemoteJoined = reg.projects.find((p) => p.slug === potHomeSlug)?.remote_hive === true;
   if (!isRemoteJoined) {
-    const meta = await getOwnedHiveMeta(hiveHomeSlug, workspaceId);
+    const meta = await getOwnedHiveMeta(potHomeSlug, workspaceId);
     if (!meta || meta.visibility === 'private') {
       return null;
     }
@@ -89,11 +89,11 @@ export async function resolveHiveSwarmBinding(
  * per-Hive admission union (P-006 seam) — both answer "which Hive is this harness
  * in". Pure resolution (a PG identity read + a registry read).
  */
-export async function hiveHomeSlugForHarness(
+export async function potHomeSlugForHarness(
   workspaceId: string,
   harnessSlug: string,
   // WI-1378: forwarded to loadHarnessRegistry so a { fresh:true } resolve bypasses
-  // the cross-process-stale registry cache (see joinerHiveHomeSlug / boot.ts).
+  // the cross-process-stale registry cache (see joinerPotHomeSlug / boot.ts).
   opts?: { fresh?: boolean },
 ): Promise<string | null> {
   // Registry FIRST: it answers in EVERY process. The PG identity read used to
@@ -130,7 +130,7 @@ export async function hiveHomeSlugForHarness(
  * merge reads off the shared Hive topic are dropped by the member-slug projection
  * guard → the member list/settings never reach the joiner, and
  * `loadRevokedHivePubkeys(<home>)` is empty so a revoked member is never refused.
- * Binding those two projections to the home slug (register-all's `hiveHomeSlug`)
+ * Binding those two projections to the home slug (register-all's `potHomeSlug`)
  * lets the running member merge land them.
  *
  * Returns null when the Hive home is OWNED (not a remote view): the owner's home
@@ -141,7 +141,7 @@ export async function hiveHomeSlugForHarness(
  * — so the rebind triggers exactly when the joiner topic does. Pure resolution
  * (a PG identity read + a registry read); fail-open is the caller's job.
  */
-export async function joinerHiveHomeSlug(
+export async function joinerPotHomeSlug(
   workspaceId: string,
   harnessSlug: string,
   // WI-1378 (federation roster-empty, no-restart): pass { fresh:true } on the
@@ -153,9 +153,10 @@ export async function joinerHiveHomeSlug(
   // latched → the owner's roster rows dropped forever (empty until restart).
   opts?: { fresh?: boolean },
 ): Promise<string | null> {
-  const home = await hiveHomeSlugForHarness(workspaceId, harnessSlug, opts);
+  const home = await potHomeSlugForHarness(workspaceId, harnessSlug, opts);
   if (!home) return null;
   const reg = await loadHarnessRegistry(workspaceId, opts);
   const isRemoteJoined = reg.projects.find((p) => p.slug === home)?.remote_hive === true;
   return isRemoteJoined ? home : null;
 }
+

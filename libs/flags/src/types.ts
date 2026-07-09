@@ -84,7 +84,7 @@ export const FLAGS = {
   // per-frame tabs. Server-side gates only (wake delivery, roster stamping) —
   // the pui dock ships the unified shape unconditionally since P-014 retired
   // the legacy `pui chat-pane`/`pui watch-pane` surfaces (2026-06-12).
-  HIVE_AGENT_TABS: "papercusp-hive-agent-tabs",
+  POT_AGENT_TABS: "papercusp-hive-agent-tabs",
   // hive-inference-gateway-2026-06-09 (P-012): when ON, every bee spawn gets
   // ANTHROPIC_BASE_URL pointed at the localhost pacing gateway (127.0.0.1:8788), so
   // the whole fleet egresses through ONE bound account paced against the unified
@@ -129,7 +129,7 @@ export const FLAGS = {
   // hive home + member → visibility-gated auto-publish), join the existing hive
   // when the paste-time lookup hits, or clone standalone (D-007). OFF = the
   // legacy coming-soon stub renders instead. Backend (P-006..P-010) is ungated.
-  HIVE_FROM_GITHUB_URL: "papercusp-hive-from-github-url",
+  POT_FROM_GITHUB_URL: "papercusp-hive-from-github-url",
   // auth-tier-rollout Wave 1 (audit D-007/D-009, owner-approved 2026-06-10):
   // when ON, routes declared `auth: 'loopback'` are enforced at the dispatch
   // chokepoint — non-loopback Host → 403. OFF is the emergency revert lever
@@ -142,7 +142,7 @@ export const FLAGS = {
   // and her spawns run at the role's standing default. Human/operator tier
   // and model args are honored regardless — this gates only the Queen's
   // autonomous escalation lever.
-  QUEEN_TIER_SELECTION: "papercusp-queen-tier-selection",
+  MUG_TIER_SELECTION: "papercusp-queen-tier-selection",
   // EI-322 (authenticated authority RPC): when ON, POST /api/authority/rpc
   // REQUIRES a valid Ed25519-signed caller envelope (sig + freshness +
   // non-revoked device) before running a mutating lock/claim op — closing the
@@ -276,7 +276,7 @@ export const FLAGS = {
   // unplaced todo work items — forcing the Queen to place them or arm a time-wake
   // instead of sleeping on phantom self-claim. force:true overrides per-call.
   // OFF = the kill-switch if the guard ever wrongly blocks a declaration.
-  HIVE_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
+  POT_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
   // learning-packs-2026-06-11 (P-005): seeding a new hive's mem0 store with the
   // selected learning pack at pot:create, plus the learning_packs:* management
   // verbs and the Learnings UI surfaces. OFF skips seeding + hides pack
@@ -292,14 +292,14 @@ export const FLAGS = {
   // provision failure warns and reports, never fails the create. OFF skips
   // provisioning (a hive still works; it just has no per-hive loop until armed
   // by hand). The matching pot:dissolve teardown is P-021.
-  PER_HIVE_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
+  PER_POT_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
   // per-hive-git-and-release-gate-2026-06-29 (P-009, D-008): gates seeding the per-hive
   // staging→main green-checkpoint (+ release-trigger when a deploy target is declared) for
   // repo-backed CODING hives at create/retrofit. DEFAULT-OFF (dark): with it off, only the
   // operator-home (papercusp) release routines run — the live :3070 pipeline is untouched.
   // Flip ON after verifying the gate on one canary hive (oddsmith-hive). Effective only for
   // a hive whose releaseGate.enabled AND that actually has a repo.
-  PER_HIVE_RELEASE_GATE: "papercusp-per-hive-release-gate",
+  PER_POT_RELEASE_GATE: "papercusp-per-hive-release-gate",
   // slash-exposure-tool-catalog-2026-06-12 (P-007): gates the DYNAMIC slash
   // projection — every MCP-exposed tool a session can see surfaces as a
   // `tool:*` MCP prompt (slash command) on prompts/list, with prompts/get
@@ -541,7 +541,7 @@ export const FLAGS = {
   // no human is watching, and the card gets a bounded timeout that degrades to
   // {action:'cancel'} so the bee never spins forever. ON by default (behavior-neutral
   // throughput improvement, D-007): interactive callers (human/operator) are untouched.
-  QUEEN_CARD_INTERCEPTION: "papercusp-queen-card-interception",
+  MUG_CARD_INTERCEPTION: "papercusp-queen-card-interception",
   // agent-capability-confinement-2026-06-13 B-06 (P-012): ENFORCEMENT of the per-role
   // capability envelope at the dispatch chokepoint. OFF by default — DELIBERATE (not the
   // alpha flags-default-on policy): enabling it would DENY autonomous-fleet MCP tool calls
@@ -618,7 +618,7 @@ export const FLAGS = {
   // gating downstream work is escalated once (P-022). Behavior-neutral throughput
   // (D-007): the sweep only acts on STARTED hives, and the hive is owner-gated.
   // OFF = the kill-switch (the sweep returns immediately).
-  HIVE_PLACEMENT_WATCHDOG: "papercusp-hive-placement-watchdog",
+  POT_PLACEMENT_WATCHDOG: "papercusp-hive-placement-watchdog",
   // queen-autonomy-policy-2026-06-13 B-12 (P-070/P-092): the ARMING GATE for the
   // Queen autonomy decider (lib/autonomy/decider.ts). When OFF the decider returns
   // `gated` for EVERY queue item — autonomy is dark, behavior identical to today
@@ -629,7 +629,7 @@ export const FLAGS = {
   // owner's P-092 arming act, gated on B-19's behavior-neutral proof + the frontier
   // consume-edges live proof. The decider's default deps fail-DARK on a flag-IO
   // error so a hiccup can never arm autonomy. Surfaced loudly as the pending P-092 flip.
-  QUEEN_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
+  MUG_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
   // queen-autonomy-and-selffeed-fix-2026-06-15 Phase 2 (P-001/P-002): the OWNER
   // FULL-AUTONOMY grant — the reversible knob the owner flips to let the Queen
   // auto-decide the ENTIRE residue the per-category ceilings can't reach. When ON,
@@ -649,16 +649,16 @@ export const FLAGS = {
   // REVERSIBLE: flipping it OFF restores today's gated residue VERBATIM (the safety
   // net for an alpha — pinned both directions in tests). Audited via the flag change +
   // the decision ledger (every auto decision records `owner-full-autonomy-grant`).
-  QUEEN_FULL_AUTONOMY: "papercusp-queen-full-autonomy",
+  MUG_FULL_AUTONOMY: "papercusp-queen-full-autonomy",
   // queen-autonomy-policy-2026-06-13 B-15 (P-030): the owner control surface —
   // /settings/autonomy, where the owner sets per-category risk ceilings / locks
   // and sees the earned graduated + derived effective level. ON by default (alpha
   // flags-default-on policy): the page only reads + writes the already-audited
   // autonomy_policy (every category ships never-auto, and editing a ceiling never
-  // ARMS autonomy — that's the separate QUEEN_AUTONOMY_ARMED / P-092 gate). OFF is
+  // ARMS autonomy — that's the separate MUG_AUTONOMY_ARMED / P-092 gate). OFF is
   // the kill-switch that hides the nav entry (the page's auto-decisions feed +
   // graduation prompts are still stubbed pending B-16).
-  QUEEN_AUTONOMY_SETTINGS: "papercusp-queen-autonomy-settings",
+  MUG_AUTONOMY_SETTINGS: "papercusp-queen-autonomy-settings",
   // storage-settings-page-2026-06-15 (P-002): the Settings → Storage owner
   // surface — live usage by category + user-controlled trim-by-age. ON by default
   // (alpha flags-default-on); keep-all is the default behavior regardless. OFF
@@ -763,7 +763,7 @@ export const FLAGS = {
   // state). DEFAULT-ON (owner-directed) — enforces immediately; this key is the
   // kill-switch. OFF = today's behavior (existing root-only/source/confirm gates
   // only); SOLO/unbound hives are never gated (the owner keeps owner tier).
-  HIVE_ROLE_TIERS: "papercusp-hive-role-tiers",
+  POT_ROLE_TIERS: "papercusp-hive-role-tiers",
   // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / P-004): route the coding
   // director's worker dispatch to the operator-hosted `worker:chunk-loop` op instead
   // of the subprocess chunk loop. DEFAULT ON, but it is the FIRST of a TWO-gate guard —
@@ -785,13 +785,13 @@ export const FLAGS = {
   // flags-default-on): additive surfacing over the existing gated controls; OFF
   // = the new surfaces render nothing (per-hive start/stop in AdvNowRunning is
   // unchanged either way).
-  HIVE_CONTROL: "papercusp-hive-control",
+  POT_CONTROL: "papercusp-hive-control",
   // queen-interactive-brain-fresh-context-2026-06-14: when ON (default), the
   // interactive `psu --brain` pane launches FRESH per open (new session + an
   // injected computeQueenWakeBrief) instead of resuming the persistent D-013
   // pinned brain (which grows → Claude compacts → the resume picker). Reverses
   // native-terminal-desktop D-013; OFF = the persistent-resume brain (today's).
-  QUEEN_BRAIN_FRESH: "papercusp-queen-brain-fresh",
+  MUG_BRAIN_FRESH: "papercusp-queen-brain-fresh",
   // per-hive-learning-loops-2026-06-14 P-070 (D-006/D-007): the deployment-mode
   // knob for the LAYER-3 PLATFORM-IMPROVEMENT loops — the workspace-SINGLETON
   // Class-C frontier/measurement/watchdog set (negative-space, neologism,
@@ -831,16 +831,17 @@ export const FLAGS = {
   // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
   // after that proof — surfaced loudly in the plan's ## Now + every lane report.
   OVERWATCH: "papercusp-overwatch",
-  // sentinel-as-herald-2026-06-21: gates the SENTINEL role — a new always-on
-  // autonomous system-health supervisor (sibling to the Queen, mirrors OVERWATCH).
-  // The flag gates (a) the `sentinel` role registration, (b) the autonomous wake-loop +
-  // its routine/rule, and (c) the Sentinel UI pane. Runtime default ON: the
-  // live-run proof landed (sentinel-herald ## Now, verified live 2026-06-24) and
-  // the flag was live-enabled; with the derived FLAG_DEFAULTS inversion it is
-  // ON-by-default and voice-unified-sentinel-pipeline-2026-07-01 P-011 makes
-  // that DELIBERATE — the Sentinel pane is now the one voice brain, so a dark
-  // sentinel means a dead voice product. Flip OFF via /admin/features to go dark.
-  SENTINEL: "papercusp-sentinel",
+  // sentinel-as-herald-2026-06-21: gates the PAPERCUP role (formerly `sentinel`) — a
+  // new always-on autonomous system-health supervisor (sibling to the Mug, mirrors
+  // OVERWATCH). The flag gates (a) the `papercup` role registration, (b) the
+  // autonomous wake-loop + its routine/rule, and (c) the Papercup UI pane. Runtime
+  // default ON: the live-run proof landed (sentinel-herald ## Now, verified live
+  // 2026-06-24) and the flag was live-enabled; with the derived FLAG_DEFAULTS
+  // inversion it is ON-by-default and voice-unified-sentinel-pipeline-2026-07-01
+  // P-011 makes that DELIBERATE — the Papercup pane is now the one voice brain, so a
+  // dark papercup means a dead voice product. Flip OFF via /admin/features to go
+  // dark. (Wire value stays "papercusp-sentinel" until the stored-axis slice.)
+  PAPERCUP: "papercusp-sentinel",
   // sentinel-as-herald-2026-06-21 Phase 5 (P-018..P-022): gates the SERVER-SIDE
   // proactive "decide to speak" sweep — the voice-host periodic tick that lets the
   // Sentinel Herald speak out-of-band (a role:'sentinel' converse turn with trigger
@@ -853,7 +854,7 @@ export const FLAGS = {
   // DND/paused/over-budget AND the voice-host owns the lease (single-owner) —
   // most ticks are a flag read + no-op. Flip OFF via /admin/features to silence
   // proactive speech entirely.
-  SENTINEL_PROACTIVE: "papercusp-sentinel-proactive",
+  PAPERCUP_PROACTIVE: "papercusp-sentinel-proactive",
   // scheduled-recurring-plans-2026-06-16 (P-028 → D-019): the global master switch for
   // the scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT ON
   // (owner-directed at ship, D-019). Safe despite being an autonomous executor: the real
@@ -901,7 +902,7 @@ export const FLAGS = {
   // grown transcript (the ~138K/turn dead-transcript carry, D-011). DEFAULT OFF — an
   // unverified HOT-PATH change to live bee re-invocation; flip ON after P-006 live
   // verification (kill-switch: OFF ⇒ legacy `--resume`, behavior-neutral).
-  BEE_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
+  CUP_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
   // bee-context-efficiency Phase 2 (P-008/P-009, D-004): inject the precomputed
   // work-item DOSSIER (computeBeeWakeDossier — item text + linked plan item + outgoing
   // `blocks` edges + topics + recent comments + hive-roster snapshot) into the spawn/
@@ -910,7 +911,7 @@ export const FLAGS = {
   // ONLY (never the cacheable preamble, D-004); a sub-feature of SPAWN_HANDOFF_HYDRATION.
   // DEFAULT ON (alpha flags-default-on) — additive, bounded, fail-soft; OFF ⇒ no dossier
   // (the agent falls back to its read tools), behavior otherwise unchanged.
-  BEE_WAKE_DOSSIER: "papercusp-bee-wake-dossier",
+  CUP_WAKE_DOSSIER: "papercusp-bee-wake-dossier",
   // bee-context-efficiency Phase 4 (P-013, D-007): the transcript-cap BACKSTOP. A
   // cadence sweep recycles a bee whose session has carried too many tasks / too large a
   // token-span (force a fresh spawn after a threshold; the work-item checkpoint carries
@@ -920,7 +921,7 @@ export const FLAGS = {
   // INACTIVE on first insert (a separate, routine-level gate from this flag) —
   // check routines:list/routines:set for its live active state before relying on
   // the sweep actually firing.
-  BEE_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap",
+  CUP_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap",
   // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
   // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.
@@ -946,7 +947,7 @@ export const FLAGS = {
   // (alpha flags-default-on): a complete presentation switch over the unchanged
   // persisted (eligibleHives, eligiblePlans) shape (D-001); OFF renders the legacy
   // two flat sections as the fallback.
-  STEERING_HIVE_TREE: "papercusp-steering-hive-tree",
+  STEERING_POT_TREE: "papercusp-steering-hive-tree",
   // workspace-data-isolation-leaks-2026-06-17 (F-C1): scope the coordination plane
   // (messages / handoffs / escalations / plan-events via coord_event_log + watermarks)
   // to the ACTIVE workspace instead of the single shared `default` partition. DEFAULT
@@ -1038,7 +1039,7 @@ export const FLAGS = {
   // per-epoch crypto (encrypt-on-write / decrypt-on-read) for NEW hives; existing hives
   // stay legacy-unencrypted (rekey D-003). Re-add to DARK_FLAGS to fall back to the
   // notImplemented stub (byte-identical to pre-rekey).
-  HIVE_REKEY: "papercusp-hive-rekey",
+  POT_REKEY: "papercusp-hive-rekey",
   // hive-seed-bundle-2026-07-04 (P-011): the master gate for the installer-shipped
   // SEED restore — a bundled snapshot of the shared hive (git bundles + federated
   // corestore) that first boot RESTORES so the live join only carries the DELTA.
@@ -1051,14 +1052,14 @@ export const FLAGS = {
   // seed restore ever misbehaves. Inert on a build with no bundled seed (resolveSeedDir
   // → null ⇒ cold join regardless). Read at the two bootstrap restore call sites
   // (bootstrap-papercusp-hive.ts). NOT in KNOWN_DARK_FLAGS.
-  HIVE_SEED_BUNDLE: "papercusp-hive-seed-bundle",
+  POT_SEED_BUNDLE: "papercusp-hive-seed-bundle",
   // WI-3232 (owner v1 directive): a packaged install with the bundled papercusp seed
   // must materialize a LOCAL papercusp hive offline (no GitHub login, no federation
   // admission) by adopting the canonical hive identity from the baked invite and the
   // installer seed. DEFAULT ON (not in DARK_FLAGS): v1 explicitly excludes the
   // federation dependency; OFF restores the pre-WI-3232 behavior where a skipped
   // canonical join retries next boot.
-  HIVE_SEED_SELF_ADMIT: "papercusp-hive-seed-self-admit",
+  POT_SEED_SELF_ADMIT: "papercusp-hive-seed-self-admit",
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
   // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a
   // warm su session N sec after each turn settles). DEFAULT ON (WI-612): the B-LOOP-1..5
@@ -1097,7 +1098,7 @@ export const FLAGS = {
   // anomaly) falls through to the cold spawn (today's behavior, byte-identical).
   // DEFAULT OFF (dark, cutover): flips after an attended A/B verify (tokens/wake,
   // latency, time-to-place, re-derivation count). KNOWN_DARK_FLAGS.
-  QUEEN_WARM_SESSION: "papercusp-queen-warm-session",
+  MUG_WARM_SESSION: "papercusp-queen-warm-session",
   // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): ENFORCEMENT —
   // every plan-item claim auto-mints a tracked work-item. When ON, the three bare-claim
   // bypass paths (plan_items:claim, coord:declare-intent { items }, plans:set-status → wip
@@ -1192,7 +1193,7 @@ export const FLAGS = {
   // dispatch (placement keyed on live fleet capacity). DEFAULT OFF — the
   // implementation is in-flight; flips ON at rollout after the :3170 verify.
   // KNOWN_DARK_FLAGS.
-  QUEEN_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
+  MUG_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
   // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT ON
@@ -1291,7 +1292,7 @@ export const FLAGS = {
   // default-on — it no-ops without gh auth or a local repo and retries on the next
   // boot, so it can never break a fresh launch. OFF ⇒ the app boots with no default
   // hive (bare onboarding). The repo is too large to bundle (~5GB) → clone-on-boot.
-  DOGFOOD_PAPERCUSP_HIVE: "papercusp-dogfood-papercusp-hive",
+  DOGFOOD_PAPERCUSP_POT: "papercusp-dogfood-papercusp-hive",
   // DEFAULT ON (owner-ratified 2026-06-24, after the single-device smoke): announce
   // the dogfood `papercusp` hive as a SHARED P2P hive on install, under a PER-OWNER
   // identity (Solution C). The hive keypair + invite secret live in a per-owner
@@ -1301,7 +1302,7 @@ export const FLAGS = {
   // ONLY the owner's own GitHub login (strangers refused). Best-effort + non-fatal:
   // no gh auth → no-op + retry next boot, so it can never break a fresh launch.
   // Flow: agent-insights/papercusp-shared-hive-per-owner.
-  DOGFOOD_PAPERCUSP_HIVE_SHARE: "papercusp-dogfood-papercusp-hive-share",
+  DOGFOOD_PAPERCUSP_POT_SHARE: "papercusp-dogfood-papercusp-hive-share",
   // DEFAULT ON (alpha flags-default-on): the shared embed-TPM admission lane
   // (watchdog-and-exposed-systems-improvement-2026-06-18 P-002). Routes BOTH embed paths
   // (search:semantic/work_items:search + memory:*) through ONE RateLimitGovernor whose
@@ -1409,6 +1410,15 @@ export const FLAGS = {
   // short-circuits with `reason: 'flag_off'` (the detector still files a durable
   // EI naming the MANUAL recovery). Listed in KNOWN_DARK_FLAGS.
   OWN_LOG_FORK_AUTO_RECOVERY: "papercusp-own-log-fork-auto-recovery",
+  // WI-3388 (owner ask 2026-07-08): the desktop native-terminal dock's
+  // draggable divider + collapse-to-rail — <TerminalDivider>, driving the
+  // terminal_get_layout/terminal_set_layout Tauri commands. DEFAULT ON
+  // (derived FLAG_DEFAULTS) — a fully reversible presentation/interaction
+  // switch (no destructive/irreversible action, no owner-authority surface);
+  // OFF just hides the divider/rail, leaving the terminal at its fixed
+  // env-configured width like before this feature. No-op outside Tauri
+  // (isTauri() false ⇒ the component never mounts).
+  TERMINAL_DIVIDER: "papercusp-terminal-divider",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1441,13 +1451,13 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
-    // PER_HIVE_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
+    // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
     // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
     // cutover — the flip needs every peer on the new wire first
     [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
-    // QUEEN_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
+    // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
     // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
     // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
     [FLAGS.OPEN_SIGNUP, { case: 'owner-authority', reason: 'SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.' }],

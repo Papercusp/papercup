@@ -177,7 +177,7 @@ describe('/settings/p2p render', () => {
   });
 
   it('surfaces the resolved GitHub identity + a MISSING attestation badge', () => {
-    h.devices = [identityRow, { kind: 'missing', hiveHomeSlug: 'papercusp' }];
+    h.devices = [identityRow, { kind: 'missing', potHomeSlug: 'papercusp' }];
     render(<P2pSettingsPage />);
     const id = screen.getByRole('region', { name: 'Identity and devices' });
     expect(within(id).getByText(String(identityRow.githubUserId))).toBeTruthy();

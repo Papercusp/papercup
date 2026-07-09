@@ -4,7 +4,7 @@
  * The engine is pure + fully dependency-injected, so these tests pass FAKE deps
  * directly — no module mocks. They pin the load-bearing safety contract:
  *
- *   - GATED OFF (FLAGS.SENTINEL_PROACTIVE default off) ⇒ NO proactive fire, and
+ *   - GATED OFF (FLAGS.PAPERCUP_PROACTIVE default off) ⇒ NO proactive fire, and
  *     none of the work deps (gather / scan / speak / push) are even consulted —
  *     PROVING live behavior is byte-for-byte unchanged by default.
  *   - GATED ON + an anomaly ⇒ EXACTLY ONE throttled utterance (the broadcast/speak

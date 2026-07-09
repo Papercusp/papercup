@@ -10,7 +10,7 @@ import {
   decideHiveWakeAdmission,
   getHiveTimeWake,
   hiveWakeFloorSec,
-  resolveHiveHomeSlug,
+  resolvePotHomeSlug,
   syncHiveWakeRules,
   withinWakeFloor,
 } from './wake';
@@ -21,7 +21,7 @@ import {
   matchReactions,
 } from '../events/registry';
 
-const ENV_KEYS = ['PAPERCUSP_HIVE_WAKE_FLOOR_SEC', 'PAPERCUSP_HIVE_HOME_SLUG'] as const;
+const ENV_KEYS = ['PAPERCUSP_HIVE_WAKE_FLOOR_SEC', 'PAPERCUSP_POT_HOME_SLUG'] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -125,36 +125,36 @@ describe('decideHiveWakeAdmission', () => {
   });
 });
 
-describe('resolveHiveHomeSlug', () => {
+describe('resolvePotHomeSlug', () => {
   it('prefers explicit arg, then ctx harness, then the env default', () => {
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'env-slug';
-    expect(resolveHiveHomeSlug('arg-slug', 'ctx-slug')).toBe('arg-slug');
-    expect(resolveHiveHomeSlug(undefined, 'ctx-slug')).toBe('ctx-slug');
-    expect(resolveHiveHomeSlug(undefined, undefined)).toBe('env-slug');
-    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
-    expect(resolveHiveHomeSlug('', '')).toBe(null);
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'env-slug';
+    expect(resolvePotHomeSlug('arg-slug', 'ctx-slug')).toBe('arg-slug');
+    expect(resolvePotHomeSlug(undefined, 'ctx-slug')).toBe('ctx-slug');
+    expect(resolvePotHomeSlug(undefined, undefined)).toBe('env-slug');
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
+    expect(resolvePotHomeSlug('', '')).toBe(null);
   });
 
   it('canonicalizes retired home slugs before persisting wake launch targets', () => {
-    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
-    expect(resolveHiveHomeSlug('papercup', 'ctx-slug')).toBe('papercusp');
-    expect(resolveHiveHomeSlug('  papercup-hive  ', undefined)).toBe('papercusp');
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'papercup';
-    expect(resolveHiveHomeSlug(undefined, undefined)).toBe('papercusp');
-    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
+    expect(resolvePotHomeSlug('papercup', 'ctx-slug')).toBe('papercusp');
+    expect(resolvePotHomeSlug('  papercup-hive  ', undefined)).toBe('papercusp');
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'papercup';
+    expect(resolvePotHomeSlug(undefined, undefined)).toBe('papercusp');
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
   });
 
   it('treats a wildcard "*" as NOT a concrete hive home — skips it so the chain falls through (2026-07-01 404 fix)', () => {
-    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
     // '*' at any level is skipped — before this fix it fired the launch with installSlug '*' → 404 "unknown project".
-    expect(resolveHiveHomeSlug('*')).toBe(null);
-    expect(resolveHiveHomeSlug(undefined, '*')).toBe(null);
-    expect(resolveHiveHomeSlug('  *  ', undefined)).toBe(null);
+    expect(resolvePotHomeSlug('*')).toBe(null);
+    expect(resolvePotHomeSlug(undefined, '*')).toBe(null);
+    expect(resolvePotHomeSlug('  *  ', undefined)).toBe(null);
     // An explicit/ctx '*' falls THROUGH to a real slug lower in the chain rather than 404-ing.
-    expect(resolveHiveHomeSlug('*', 'papercusp')).toBe('papercusp');
-    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'papercusp';
-    expect(resolveHiveHomeSlug(undefined, '*')).toBe('papercusp');
-    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    expect(resolvePotHomeSlug('*', 'papercusp')).toBe('papercusp');
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'papercusp';
+    expect(resolvePotHomeSlug(undefined, '*')).toBe('papercusp');
+    delete process.env.PAPERCUSP_POT_HOME_SLUG;
   });
 });
 

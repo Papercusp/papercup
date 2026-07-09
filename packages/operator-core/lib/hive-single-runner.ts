@@ -49,7 +49,7 @@
  */
 import type { AuthorityResolution, LockAuthorityDeps } from './authority/lock-authority';
 import { lockAuthorityForHive } from './authority/lock-authority';
-import { hiveHomeSlugForHarness } from './hive-federation';
+import { potHomeSlugForHarness } from './hive-federation';
 
 /** The single-runner verdict for one cadence tick of a per-Hive loop. */
 export interface HiveSingleRunnerVerdict {
@@ -66,7 +66,7 @@ export interface HiveSingleRunnerVerdict {
 
 /** Injectable resolution seams (tests; production uses the live defaults). */
 export interface HiveSingleRunnerDeps {
-  /** harness → its home Hive slug (null = not in a Hive). Default: hiveHomeSlugForHarness. */
+  /** harness → its home Hive slug (null = not in a Hive). Default: potHomeSlugForHarness. */
   resolveHive?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /**
    * The per-Hive lock authority. Default: lockAuthorityForHive. The optional
@@ -89,7 +89,7 @@ export async function checkHiveSingleRunner(
   harnessSlug: string,
   deps: HiveSingleRunnerDeps = {},
 ): Promise<HiveSingleRunnerVerdict> {
-  const resolveHive = deps.resolveHive ?? hiveHomeSlugForHarness;
+  const resolveHive = deps.resolveHive ?? potHomeSlugForHarness;
   const authority =
     deps.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug, deps.authorityDeps ?? {}));
   try {

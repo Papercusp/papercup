@@ -46,7 +46,7 @@ function mockSources(directed: { in: unknown[]; out: unknown[] }) {
       }
     },
   }));
-  vi.doMock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'home' }));
+  vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
   vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 }
 
@@ -121,7 +121,7 @@ function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
       }
     },
   }));
-  vi.doMock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'home' }));
+  vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
   vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
   return listCalls;
 }

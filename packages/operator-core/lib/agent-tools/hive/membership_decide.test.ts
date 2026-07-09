@@ -57,7 +57,7 @@ describe('pot:membership_decide handler (bulk keyed-array, P-006)', () => {
     const b = await env({ pot: 'sheets', githubUserId: 42, decision: 'approve' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, githubUserId: 42, status: 'approved' });
-    expect(h.approve).toHaveBeenCalledWith(expect.objectContaining({ hiveHomeSlug: 'sheets', githubUserId: 42, decidedByGithubUserId: 7 }));
+    expect(h.approve).toHaveBeenCalledWith(expect.objectContaining({ potHomeSlug: 'sheets', githubUserId: 42, decidedByGithubUserId: 7 }));
   });
 
   it('items:[…] decides many heterogeneous (approve + deny), keyed by githubUserId; owner gate fires ONCE', async () => {

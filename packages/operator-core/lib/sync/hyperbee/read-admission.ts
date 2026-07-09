@@ -152,7 +152,7 @@ export function trustedHiveMemberDeviceAdmission(
  *   - its OWN slug (the normal same-harness peer log), OR
  *   - the hive-home slug it rebinds — for a JOINER's member harness, which applies
  *     the hive-home log's hive_members/hive_settings under the home (the receive-
- *     side rebind: `joinerHiveHomeSlug(self)`). `null`/absent for any other harness.
+ *     side rebind: `joinerPotHomeSlug(self)`). `null`/absent for any other harness.
  * An ABSENT origin-slug (legacy / single-harness peer — the field post-dates the
  * feature) is admitted, so single-harness federation + the existing two-hive
  * integration test are byte-for-byte unchanged (backward-compatible).

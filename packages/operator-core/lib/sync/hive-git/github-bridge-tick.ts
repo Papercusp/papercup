@@ -38,7 +38,7 @@ export const BRIDGE_CANONICAL_REF = 'refs/hive/staging';
 export const BRIDGE_REMOTE_STAGING_REF = 'refs/heads/staging';
 
 export interface BridgeTickInput {
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   workspaceId: string;
   /** The member repo key under the hive-git root (usually the member slug). */
   repoKey: string;
@@ -89,7 +89,7 @@ async function readCanonicalSha(repoPath: string, runGit: RunGit): Promise<strin
 export async function runGithubBridgeTick(input: BridgeTickInput): Promise<BridgeTickOutcome> {
   const errors: string[] = [];
   const runGit = input.deps?.runGit ?? defaultRunGit;
-  const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.hiveHomeSlug, input.repoKey);
+  const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.potHomeSlug, input.repoKey);
   const record = input.deps?.record ?? ((h, w, v) => recordDivergenceVerdict(h, w, v));
 
   const empty: BridgeTickOutcome = {
@@ -134,7 +134,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
       lastAdmitted,
       head: u.to,
       workspaceId: input.workspaceId,
-      hiveHomeSlug: input.hiveHomeSlug,
+      potHomeSlug: input.potHomeSlug,
       runGit,
     });
     admissionResults.push({ head: u.to, result });
@@ -167,7 +167,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   const verdict = classifyDivergence(
     collectDivergenceSignals({ egress, ingress, admissions: admissionResults }),
   );
-  await record(input.hiveHomeSlug, input.workspaceId, verdict);
+  await record(input.potHomeSlug, input.workspaceId, verdict);
 
   return {
     ran: true,

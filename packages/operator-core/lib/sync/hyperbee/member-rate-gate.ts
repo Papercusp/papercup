@@ -37,12 +37,12 @@ interface PolicyRateCache {
 const policyCache = new Map<string, PolicyRateCache>(); // ws::hive
 
 export interface MemberRateDeps {
-  loadPolicyRate: (workspaceId: string, hiveHomeSlug: string) => Promise<HivePolicyRate | null>;
+  loadPolicyRate: (workspaceId: string, potHomeSlug: string) => Promise<HivePolicyRate | null>;
 }
 const defaultDeps: MemberRateDeps = {
-  loadPolicyRate: async (workspaceId, hiveHomeSlug) => {
+  loadPolicyRate: async (workspaceId, potHomeSlug) => {
     const { getHivePolicy } = await import('../../hive-policy-store');
-    const policy = await getHivePolicy(workspaceId, hiveHomeSlug);
+    const policy = await getHivePolicy(workspaceId, potHomeSlug);
     const rate = (policy?.policy as { rate?: HivePolicyRate } | null | undefined)?.rate;
     return rate && typeof rate === 'object' ? rate : null;
   },
@@ -51,15 +51,15 @@ let deps: MemberRateDeps = defaultDeps;
 
 async function policyRateFor(
   workspaceId: string,
-  hiveHomeSlug: string,
+  potHomeSlug: string,
   now: number,
 ): Promise<HivePolicyRate | null> {
-  const key = `${workspaceId}::${hiveHomeSlug}`;
+  const key = `${workspaceId}::${potHomeSlug}`;
   const hit = policyCache.get(key);
   if (hit && now - hit.at < POLICY_CACHE_TTL_MS) return hit.rate;
   let rate: HivePolicyRate | null = null;
   try {
-    rate = await deps.loadPolicyRate(workspaceId, hiveHomeSlug);
+    rate = await deps.loadPolicyRate(workspaceId, potHomeSlug);
   } catch {
     rate = null; // fail-open: membership is the allow-list; rate is throttling
   }
@@ -74,18 +74,18 @@ async function policyRateFor(
  */
 export async function tryConsumeMemberMessageRate(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   devicePubkey: string;
   nowMs?: number;
 }): Promise<boolean> {
   const now = input.nowMs ?? Date.now();
-  const rate = await policyRateFor(input.workspaceId, input.hiveHomeSlug, now);
+  const rate = await policyRateFor(input.workspaceId, input.potHomeSlug, now);
   const opsPerMin = typeof rate?.opsPerMin === 'number' && rate.opsPerMin >= 0 ? rate.opsPerMin : null;
   const rowsPerHour =
     typeof rate?.rowsPerHour === 'number' && rate.rowsPerHour >= 0 ? rate.rowsPerHour : null;
   if (opsPerMin == null && rowsPerHour == null) return true; // uncapped
 
-  const key = `${input.workspaceId}::${input.hiveHomeSlug}::${input.devicePubkey}`;
+  const key = `${input.workspaceId}::${input.potHomeSlug}::${input.devicePubkey}`;
   let w = windows.get(key);
   if (!w) {
     w = { minute: [], hour: [], warnedAt: 0 };

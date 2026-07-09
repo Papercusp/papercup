@@ -2,7 +2,7 @@
  * SentinelTab — the Sentinel settings panel, docked in the Colony left
  * sidebar. Mirrors the OverwatchTab / QueenTab
  * idiom: a header + vertical sections, `{ active }`-gated, rendered only while the
- * tab is open. Flag-gated by SENTINEL at the sidebar (LeftSidebar hides the tab
+ * tab is open. Flag-gated by PAPERCUP at the sidebar (LeftSidebar hides the tab
  * when the role is dark).
  *
  * The Sentinel speaks for the system, so this tab surfaces its voice/persona

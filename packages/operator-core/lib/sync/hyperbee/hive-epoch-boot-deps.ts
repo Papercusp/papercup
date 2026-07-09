@@ -29,7 +29,7 @@ import { resolveHiveEpochCrypto, type EpochKeyProvider } from './hive-epoch-serv
 import { getHiveEpoch } from './hive-epoch-state';
 import { PendingEpochContent } from './pending-epoch-content';
 import { isCanonicalHiveOwner } from '../../hive-identity';
-import { hiveHomeSlugForHarness } from '../../hive-federation';
+import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
 import {
@@ -43,7 +43,7 @@ import type { EpochEncryptCapability } from './outbox-drain';
 
 export interface HiveRekeyBootDeps {
   /** The Hive home slug (= potId) — also what the drain hook keys `pending.drainEpoch` on. */
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   /** Wrap the per-pass enforcement stack OUTERMOST: `applyImpl = epochGate(enforcedApply)`. */
   epochGate: (inner: (op: OpEnvelope) => Promise<boolean>) => (op: OpEnvelope) => Promise<boolean>;
   /** Inject into `startOutboxDrain({ epochEncrypt })`. */
@@ -82,11 +82,11 @@ export async function buildHiveRekeyBootDeps(opts: {
   harnessSlug: string;
 }): Promise<HiveRekeyBootDeps | null> {
   // 1. Flag FIRST — the cheapest off-path (cached read). Default-off ⇒ null ⇒ unchanged.
-  if (!(await getFlag(FLAGS.HIVE_REKEY, 'system'))) {
+  if (!(await getFlag(FLAGS.POT_REKEY, 'system'))) {
     // seed-57-drop diagnostic: this bail is BEFORE the try/dbg below, so it needs its own
     // guarded log — a flag off on the shipped build silently disables the whole decrypt gate.
     if (process.env.PAPERCUSP_EPOCH_BOOT_DEBUG)
-      console.error('[epoch-boot]', 'GATE NOT BUILT: FLAGS.HIVE_REKEY off', {
+      console.error('[epoch-boot]', 'GATE NOT BUILT: FLAGS.POT_REKEY off', {
         workspaceId: opts.workspaceId,
         harnessSlug: opts.harnessSlug,
       });
@@ -98,12 +98,12 @@ export async function buildHiveRekeyBootDeps(opts: {
   // a harness-composition-rig test scope that doesn't wire a cell around this boot-time
   // call the way it does per-op cell-scoped calls, a missing local device identity —
   // degrades to null rather than failing the whole harness boot. This mirrors the
-  // `ownHiveHomeSlug` resolution immediately above this function's boot.ts call site,
-  // which wraps the SAME `hiveHomeSlugForHarness` call in an identical fail-open try/catch
+  // `ownPotHomeSlug` resolution immediately above this function's boot.ts call site,
+  // which wraps the SAME `potHomeSlugForHarness` call in an identical fail-open try/catch
   // for the identical reason.
   try {
     // seed-57-drop diagnostic (env-gated, off by default): the gate keys on the
-    // workspace-resolved hiveHomeSlug — a fresh packaged install booting under the
+    // workspace-resolved potHomeSlug — a fresh packaged install booting under the
     // 'default' workspace while the hive lives in 'papercusp-workspace' resolves null →
     // NO gate → encrypted content never decrypts → only plaintext rows project (the 57).
     // Set PAPERCUSP_EPOCH_BOOT_DEBUG=1 to dump the exact branch to stderr/serve.log.
@@ -111,10 +111,10 @@ export async function buildHiveRekeyBootDeps(opts: {
       ? (msg: string, o?: unknown) => console.error('[epoch-boot]', msg, o ?? '')
       : () => {};
     // 2. The re-key applies only to a hive harness.
-    const hiveHomeSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-    dbg('resolved', { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, hiveHomeSlug });
-    if (!hiveHomeSlug) {
-      dbg('GATE NOT BUILT: hiveHomeSlugForHarness → null (harness not a registered hive in this workspace)');
+    const potHomeSlug = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+    dbg('resolved', { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, potHomeSlug });
+    if (!potHomeSlug) {
+      dbg('GATE NOT BUILT: potHomeSlugForHarness → null (harness not a registered hive in this workspace)');
       return null;
     }
     // WI-3232 (offline pot): a BUNDLED seed epoch key is an OFFLINE key source needing NO
@@ -164,7 +164,7 @@ export async function buildHiveRekeyBootDeps(opts: {
       }
       memberProvider = createEpochKeyProvider(
         crypto,
-        createPgWrappedKeyLoader(opts.workspaceId, hiveHomeSlug),
+        createPgWrappedKeyLoader(opts.workspaceId, potHomeSlug),
         localDevice,
       );
     }
@@ -180,13 +180,13 @@ export async function buildHiveRekeyBootDeps(opts: {
       // JOINER resolve isOwner=true here and MINT fresh-random epoch keys instead of
       // unwrapping the owner's wrapped rows → permanent mutual epoch_decrypt_fail
       // (proven live tower↔VM 2026-07-03, with NO re-mint of the hive key).
-      isOwner: () => isCanonicalHiveOwner(opts.workspaceId, hiveHomeSlug),
+      isOwner: () => isCanonicalHiveOwner(opts.workspaceId, potHomeSlug),
     });
     const pending = new PendingEpochContent();
     const epochGate = buildEpochDecryptGate({
       crypto,
       resolveKey,
-      potId: hiveHomeSlug,
+      potId: potHomeSlug,
       pending,
       // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
       // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
@@ -196,25 +196,25 @@ export async function buildHiveRekeyBootDeps(opts: {
     const epochEncrypt = buildEpochEncryptCapability({
       crypto,
       resolveKey,
-      potId: hiveHomeSlug,
-      getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, hiveHomeSlug),
+      potId: potHomeSlug,
+      getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, potHomeSlug),
     });
     // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
-    // resolved hiveHomeSlug — which is the AAD `potId`, so a decrypt-fail's hive=… can be
+    // resolved potHomeSlug — which is the AAD `potId`, so a decrypt-fail's hive=… can be
     // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
-    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
+    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `potHomeSlug=${potHomeSlug}`);
     // seed-57-drop diagnostic: the SUCCESS path — the gate IS installed. If this prints yet the
     // fold still drops to 57, the bug is DOWNSTREAM of gate-build (resolver key / AAD / opId),
     // not the workspace-context bail; if it does NOT print, the gate never built (bail above).
     dbg('GATE BUILT', {
-      hiveHomeSlug,
+      potHomeSlug,
       memberProvider: memberProvider != null,
       bundledProvider: bundledProvider != null,
     });
-    return { hiveHomeSlug, epochGate, epochEncrypt, pending };
+    return { potHomeSlug, epochGate, epochEncrypt, pending };
   } catch (e) {
     // Fail-open: today's behavior (plaintext path, byte-for-byte) — same silent-catch
-    // pattern as `ownHiveHomeSlug`'s `hiveHomeSlugForHarness` call at this function's
+    // pattern as `ownPotHomeSlug`'s `potHomeSlugForHarness` call at this function's
     // boot.ts call site (no console.error: a caught, expected-degradation path here
     // must not trip a fail-on-console test harness — WI-755).
     // WI-2009 / wake-#5742 (v3 instrumentation, leg c): the fail-open was fully
@@ -236,7 +236,7 @@ export async function buildHiveRekeyBootDeps(opts: {
 }
 
 /**
- * Build JUST the member-side EpochKeyProvider for (workspace, hiveHomeSlug) — the
+ * Build JUST the member-side EpochKeyProvider for (workspace, potHomeSlug) — the
  * device-identity + crypto + provider slice that {@link buildHiveRekeyBootDeps} also
  * composes inline (steps 3–4a). Returns null when this box has no local device
  * identity (⇒ it can unwrap no epoch key). Best-effort: any resolution hiccup ⇒ null,
@@ -252,7 +252,7 @@ export async function buildHiveRekeyBootDeps(opts: {
  */
 export async function buildMemberEpochKeyProvider(opts: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
 }): Promise<EpochKeyProvider | null> {
   try {
     const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
@@ -260,7 +260,7 @@ export async function buildMemberEpochKeyProvider(opts: {
     if (ident.kind !== 'ok') return null;
     const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
     const crypto = await resolveHiveEpochCrypto(true);
-    return createEpochKeyProvider(crypto, createPgWrappedKeyLoader(opts.workspaceId, opts.hiveHomeSlug), localDevice);
+    return createEpochKeyProvider(crypto, createPgWrappedKeyLoader(opts.workspaceId, opts.potHomeSlug), localDevice);
   } catch {
     return null;
   }

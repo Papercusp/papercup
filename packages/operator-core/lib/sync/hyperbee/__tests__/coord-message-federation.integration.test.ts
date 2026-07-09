@@ -633,7 +633,7 @@ describe('coord_event_log federation (real PG)', () => {
         workspaceId: WS,
         harnessSlug: HARNESS,
         sql: db.sql,
-        hiveHomeSlug: HARNESS,
+        potHomeSlug: HARNESS,
         resolveCommsTier: async () => ({ tier: 'observe' as const, githubUserId: 4242 }),
       });
       const fedEventCtrlRow: CoordMessageRow = {
@@ -667,7 +667,7 @@ describe('coord_event_log federation (real PG)', () => {
         workspaceId: WS,
         harnessSlug: HARNESS,
         sql: db.sql,
-        hiveHomeSlug: HARNESS, // hive-bound ⇒ enforcement active
+        potHomeSlug: HARNESS, // hive-bound ⇒ enforcement active
         resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
       });
     const wakeRow = (msgId: string, extra: Record<string, unknown> = {}): CoordMessageRow => ({
@@ -779,7 +779,7 @@ describe('coord_event_log federation (real PG)', () => {
       await tierProj('steer').writeToPg(wakeRow('q-6'), { authorPubkey: 'peerPubA', origin: 'remote' });
       expect(await applied('q-6')).toBe(true);
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
-      // non-hive-bound (no hiveHomeSlug): even an 'observe' resolver is never consulted
+      // non-hive-bound (no potHomeSlug): even an 'observe' resolver is never consulted
       const resolver = vi.fn(async () => ({ tier: 'observe' as const, githubUserId: 1 }));
       const plain = buildCoordMessageProjection({
         workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, resolveCommsTier: resolver,
@@ -802,7 +802,7 @@ describe('coord_event_log federation (real PG)', () => {
         workspaceId: WS,
         harnessSlug: HARNESS,
         sql: db.sql,
-        hiveHomeSlug: HARNESS,
+        potHomeSlug: HARNESS,
         resolveCommsTier: async () => ({ tier: 'steer' as const, githubUserId: 4242 }),
         consumeMessageRate: async () => ++n <= allowFirstN,
       });
@@ -832,7 +832,7 @@ describe('coord_event_log federation (real PG)', () => {
         workspaceId: WS,
         harnessSlug: HARNESS,
         sql: db.sql,
-        hiveHomeSlug: HARNESS,
+        potHomeSlug: HARNESS,
         resolveCommsTier: async () => ({ tier: 'steer' as const, githubUserId: 4242 }),
         consumeMessageRate: async () => {
           throw new Error('rate store down');

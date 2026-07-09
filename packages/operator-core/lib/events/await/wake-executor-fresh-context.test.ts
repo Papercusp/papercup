@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const flagH = vi.hoisted(() => ({
   getFlag: vi.fn<(key: string, scope: string) => Promise<boolean>>(() => Promise.resolve(false)),
 }));
-vi.mock('@papercusp/flags', () => ({ FLAGS: { BEE_FRESH_CONTEXT_WARM_INJECT: 'bee_fresh_context_warm_inject' } }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { CUP_FRESH_CONTEXT_WARM_INJECT: 'bee_fresh_context_warm_inject' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: flagH.getFlag }));
 
 import {

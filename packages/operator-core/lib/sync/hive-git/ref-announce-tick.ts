@@ -58,6 +58,12 @@ import {
   type RefAnnounceHandleResult,
   type SignedRefAnnouncement,
 } from './ref-announce';
+import {
+  checkPublishGuard,
+  describePublishRefusal,
+  type PublishGuardCaps,
+  type PublishGuardResult,
+} from './publish-guard';
 
 // ── Publish tick ─────────────────────────────────────────────────────────
 
@@ -69,20 +75,32 @@ export interface RefAnnouncePublishTickInput {
   sign: (bytes: Buffer) => Promise<Buffer>;
   nowMs?: number;
   runGit?: RunGit;
+  /** G-10 own-namespace publish-admission caps (secrets-guard.ts / P-205).
+   *  Omit for the module defaults (matches foreign-mirror-quarantine's own
+   *  blob-size posture). */
+  publishGuardCaps?: PublishGuardCaps;
 }
 
 export interface RefAnnouncePublishTickOutcome {
   ran: boolean;
   /** true when the namespace ref-set changed since the prior sigrefs snapshot
-   *  (a fresh sigrefs + announcement were built this tick). false ⇒ nothing
-   *  to announce (the common no-op case on a git-sync tick that committed
-   *  nothing new under this device's namespace). */
+   *  AND every changed ref cleared the publish guard (a fresh sigrefs +
+   *  announcement were built this tick). false ⇒ nothing to announce — either
+   *  the common no-op case (nothing new under this device's namespace) or a
+   *  guard REFUSAL (see `refused`) — check `refused` to tell the two apart. */
   changed: boolean;
   /** Set only when `changed` — the caller MUST emit it hive-wide
    *  (`events:emit { event: REF_ANNOUNCE_EVENT_KEY, scope: 'hive', payload }`)
    *  and may persist it for observability (mirrors `announcement` on
    *  `IntegratorTickOutcome`). */
   announcement: SignedRefAnnouncement | null;
+  /** Set when a changed ref's (fromOid, toOid] range was REFUSED by the G-10
+   *  publish guard (secrets / oversized blob / object-flood) — the whole
+   *  publish for this tick was skipped (no sigrefs bump, nothing signed,
+   *  nothing announced). Namespace-wide, safe to retry next tick: nothing
+   *  was exposed. A deliberate refusal, not a transient error — the caller
+   *  should log it loudly (`describePublishRefusal`). */
+  refused: PublishGuardResult | null;
   errors: string[];
 }
 
@@ -107,7 +125,7 @@ export async function runRefAnnouncePublishTick(
   const errors: string[] = [];
   const runGit = input.runGit ?? defaultRunGit;
   const nowMs = input.nowMs ?? Date.now();
-  const noop: RefAnnouncePublishTickOutcome = { ran: false, changed: false, announcement: null, errors };
+  const noop: RefAnnouncePublishTickOutcome = { ran: false, changed: false, announcement: null, refused: null, errors };
 
   let currentRefs: NamespaceRef[];
   try {
@@ -121,7 +139,7 @@ export async function runRefAnnouncePublishTick(
   if (currentRefs.length === 0) {
     // Nothing published under this namespace yet — buildRefAnnouncement would
     // throw (no sigrefs to announce). A legitimate no-op, not an error.
-    return { ran: true, changed: false, announcement: null, errors };
+    return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
   let prior: { refs: readonly NamespaceRef[] } | null = null;
@@ -135,7 +153,35 @@ export async function runRefAnnouncePublishTick(
     );
   }
   if (prior && sameRefs(prior.refs, currentRefs)) {
-    return { ran: true, changed: false, announcement: null, errors };
+    return { ran: true, changed: false, announcement: null, refused: null, errors };
+  }
+
+  // G-10 own-namespace publish guard (publish-guard.ts / P-205): judge every
+  // NEW-or-CHANGED ref's (fromOid, toOid] range BEFORE any of it is signed
+  // into a sigrefs snapshot or announced hive-wide. One refusal blocks the
+  // WHOLE publish this tick — namespace-wide, safe to retry: nothing was
+  // exposed under the namespace ref, so a peer can't have fetched it either.
+  const priorShaByRef = new Map((prior?.refs ?? []).map((r) => [r.ref, r.sha] as const));
+  for (const r of currentRefs) {
+    const fromOid = priorShaByRef.get(r.ref) ?? null;
+    if (fromOid === r.sha) continue; // this ref didn't move
+    let guard: PublishGuardResult;
+    try {
+      guard = await checkPublishGuard({
+        repoPath: input.repoPath,
+        fromOid,
+        toOid: r.sha,
+        caps: input.publishGuardCaps,
+        runGit,
+      });
+    } catch (e) {
+      errors.push(`publish guard threw judging ${r.ref} (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);
+      return { ran: true, changed: false, announcement: null, refused: null, errors };
+    }
+    if (!guard.ok) {
+      errors.push(`publish guard refused ${r.ref}: ${describePublishRefusal(guard)}`);
+      return { ran: true, changed: false, announcement: null, refused: guard, errors };
+    }
   }
 
   try {
@@ -144,10 +190,10 @@ export async function runRefAnnouncePublishTick(
       nowMs,
       runGit,
     });
-    return { ran: true, changed: true, announcement, errors };
+    return { ran: true, changed: true, announcement, refused: null, errors };
   } catch (e) {
     errors.push(`buildSigrefs/buildRefAnnouncement failed: ${e instanceof Error ? e.message : e}`);
-    return { ran: true, changed: false, announcement: null, errors };
+    return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 }
 

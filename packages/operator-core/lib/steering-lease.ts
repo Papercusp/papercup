@@ -29,7 +29,7 @@
  */
 import type { AuthorityResolution } from './authority/lock-authority';
 import { lockAuthorityForHive } from './authority/lock-authority';
-import { hiveHomeSlugForHarness } from './hive-federation';
+import { potHomeSlugForHarness } from './hive-federation';
 import { evaluateQueenTurnGate } from './shared-hive-loop/queen-guard';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
@@ -48,7 +48,7 @@ export interface SteeringLeaseVerdict {
 
 /** Injectable resolution seams (tests; production uses the live defaults). */
 export interface SteeringLeaseDeps {
-  /** harness → its home Hive slug (null = not in a Hive). Default: hiveHomeSlugForHarness. */
+  /** harness → its home Hive slug (null = not in a Hive). Default: potHomeSlugForHarness. */
   resolveHive?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
   /** The per-Hive lock authority. Default: lockAuthorityForHive. */
   hiveAuthority?: (potSlug: string) => Promise<AuthorityResolution>;
@@ -95,7 +95,7 @@ export async function checkSteeringLease(
   harnessSlug: string,
   deps: SteeringLeaseDeps = {},
 ): Promise<SteeringLeaseVerdict> {
-  const resolveHive = deps.resolveHive ?? testDeps?.resolveHive ?? hiveHomeSlugForHarness;
+  const resolveHive = deps.resolveHive ?? testDeps?.resolveHive ?? potHomeSlugForHarness;
   const authority =
     deps.hiveAuthority ?? testDeps?.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug));
   const resolveQueenHome =

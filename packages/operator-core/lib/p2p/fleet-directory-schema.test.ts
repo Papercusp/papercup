@@ -78,11 +78,11 @@ describe('canonical form + signed bytes', () => {
     const c = coerceFleetDirectoryRecord(minimal);
     if (!c.ok) throw new Error(c.error);
     const json = canonicalFleetRecordJson(c.record);
-    const base = { workspaceId: 'ws-1', hiveHomeSlug: 'hive-a', recordVersion: 1, canonicalRecordJson: json };
+    const base = { workspaceId: 'ws-1', potHomeSlug: 'hive-a', recordVersion: 1, canonicalRecordJson: json };
     const bytes = fleetDirectorySignedBytes(base);
     expect(bytes.toString('utf8').startsWith(`${FLEET_DIRECTORY_SIG_DOMAIN}\n`)).toBe(true);
     expect(fleetDirectorySignedBytes({ ...base, workspaceId: 'ws-2' }).equals(bytes)).toBe(false);
-    expect(fleetDirectorySignedBytes({ ...base, hiveHomeSlug: 'hive-b' }).equals(bytes)).toBe(false);
+    expect(fleetDirectorySignedBytes({ ...base, potHomeSlug: 'hive-b' }).equals(bytes)).toBe(false);
     expect(fleetDirectorySignedBytes({ ...base, recordVersion: 2 }).equals(bytes)).toBe(false);
   });
 

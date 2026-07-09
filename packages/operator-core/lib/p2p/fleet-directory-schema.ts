@@ -178,7 +178,7 @@ export function canonicalFleetRecordJson(record: FleetDirectoryRecord): string {
  */
 export function fleetDirectorySignedBytes(input: {
   workspaceId: string;
-  hiveHomeSlug: string;
+  potHomeSlug: string;
   recordVersion: number;
   /** The canonical record JSON string (the value stored in `record_json`). */
   canonicalRecordJson: string;
@@ -186,7 +186,7 @@ export function fleetDirectorySignedBytes(input: {
   const msg = [
     FLEET_DIRECTORY_SIG_DOMAIN,
     input.workspaceId,
-    input.hiveHomeSlug,
+    input.potHomeSlug,
     String(input.recordVersion),
     input.canonicalRecordJson,
   ].join('\n');

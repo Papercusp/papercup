@@ -22,12 +22,15 @@ function fakeGetStatus(booted: Array<[string, string]>) {
       bootedCount: booted.length,
       summary: {} as never,
       logStats: [],
+      replicationLiveness: [],
+      reachedSubstrateOwner: true,
       harnesses: booted.map(([ws, slug]) => ({
         workspaceId: ws,
         harnessSlug: slug,
         verdict: 'healthy',
         reasons: [],
         drain: opts.resolveDrainStats(ws, slug),
+        ownLogFork: { forked: false, keyHex: null, detectedAtMs: null, detail: null },
       })),
     }) as InProcessSubstrateStatus;
 }

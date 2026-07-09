@@ -234,6 +234,16 @@ jobs:
       - name: Lint agent-insights doc citations resolve on disk
         run: npm run lint:insight-citations
 
+      # Rubric method_ref parity guard (EI-8795): rubrics/<id>/METHOD.md and its served
+      # apps/operator-docs agent-insights/<id>.mdx twin are hand-synced with no
+      # generation link — an author who edits only one leaves docs:search/docs:get (what
+      # a grader actually reads) silently stale (WI-3456 landed 21 criteria in METHOD.md
+      # while the served mdx stayed at 12, caught a turn later only by hand-diff on
+      # WI-3479). GATING — every METHOD.md must have a byte-identical mdx twin
+      # (frontmatter aside).
+      - name: Lint rubric method_ref (METHOD.md ⇄ agent-insights mdx) parity
+        run: npm run lint:rubric-method-ref-parity
+
       # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
       # pre-existing baseline of type errors. This gates NEW errors above the
       # baseline while allowing legacy errors. Baseline is stored in
