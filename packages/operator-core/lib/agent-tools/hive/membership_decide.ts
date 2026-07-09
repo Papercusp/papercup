@@ -52,7 +52,7 @@ export default defineTool({
   agentRoles: ['operator', 'architect', 'debugger'],
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The Hive's home harness slug (batch-level — one Hive per call)."),
+      pot: z.string().min(1).max(120).describe("The Hive's home harness slug (batch-level — one Hive per call)."),
       githubUserId: z.number().int().positive().optional().describe('n=1: a single pending joiner id (pair with decision).'),
       decision: z.enum(['approve', 'deny']).optional().describe('n=1: the decision for the single githubUserId.'),
       reason: softText(LIMITS.ANNOTATION).optional().describe('n=1: optional note for the single decision. Auto-truncated to 2000 chars if longer.'),
@@ -71,7 +71,7 @@ export default defineTool({
 
     // Owner gate (once for the batch): only the CANONICAL owner Swarm may decide
     // (WI-2000: a divergent/stale local key must never pass this gate).
-    const isOwner = await isCanonicalHiveOwner(workspaceId, args.hive).catch(() => false);
+    const isOwner = await isCanonicalHiveOwner(workspaceId, args.pot).catch(() => false);
     if (!isOwner) {
       return text({ ok: false, code: 'not_owner', detail: 'this Swarm does not hold the Hive private key' });
     }
@@ -89,8 +89,8 @@ export default defineTool({
       async ({ githubUserId, decision, reason }) => {
         const result =
           decision === 'approve'
-            ? await approvePendingJoin({ workspaceId, hiveHomeSlug: args.hive, githubUserId, decidedByGithubUserId: decidedBy })
-            : await denyPendingJoin({ workspaceId, hiveHomeSlug: args.hive, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
+            ? await approvePendingJoin({ workspaceId, hiveHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy })
+            : await denyPendingJoin({ workspaceId, hiveHomeSlug: args.pot, githubUserId, decidedByGithubUserId: decidedBy, reason: clampText(reason, LIMITS.ANNOTATION) ?? null });
         // approvePendingJoin/denyPendingJoin return their own { ok, … }; surface it
         // verbatim, keyed by githubUserId.
         return { ...result, ok: (result as { ok?: boolean }).ok !== false, githubUserId };

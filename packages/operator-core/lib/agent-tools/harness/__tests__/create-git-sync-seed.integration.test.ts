@@ -112,7 +112,7 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         slug: 'member-x',
         path: dir,
         blueprint: { id: 'member-x', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
-        hive: 'my-hive',
+        pot: 'my-hive',
       });
       expect(payload.ok).toBe(true);
       expect(payload.hive).toBe('my-hive');
@@ -156,7 +156,7 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         slug: 'member-err',
         path: dir,
         blueprint: { id: 'member-err', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
-        hive: 'my-hive',
+        pot: 'my-hive',
       });
       expect(payload.ok).toBe(true);
       expect(payload.gitSync).toEqual({ seeded: false, reason: 'error', message: 'routines pg down' });

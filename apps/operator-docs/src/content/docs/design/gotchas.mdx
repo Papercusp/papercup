@@ -90,9 +90,11 @@ The carve-out is narrow: native checkboxes that legitimately can't be wrapped (m
 
 ## Floating widgets that pin to a viewport corner are NOT centered Modals
 
-A few surfaces — the Deck (`OperatorPanel`, the fixed `.operator-panel` HUD whose wordmark reads "Deck"; not to be confused with `OperatorChatSidebar`, which renders the separate `.op-chat-sidebar` "Papercup chat" surface sitting in front of it) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, `motion` `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
+The canonical example is the Deck (`OperatorPanel`, the fixed `.operator-panel` HUD whose wordmark reads "Deck") — a floating, viewport-anchored panel with its own bespoke animations and HUD overlays. It's not a centered modal (Modal would yank it to screen-center and add a backdrop), not an anchored Popover (no trigger to align to), and not a side Drawer (it doesn't slide in from the edge).
 
-For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
+For this shape, the correct pattern is landmark/dialog semantics by hand — an `aria-label`ed container using `role="region"` (non-blocking, always-on-screen HUD) or `role="dialog"` (if it genuinely captures a task) — with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck as the canonical exception; if you add a new floating-corner-widget pattern, document it next to it.
+
+*(History: `OracleDock` and `OperatorChatSidebar` — the "Papercup chat" web sidebar — were the other two examples of this pattern. Both were retired 2026-07-09 (`_retired/legacy-web-chats/`): the only chat surface is the terminal-native pui chat pane in the zellij dock.)*
 
 ## Radix Select doesn't allow empty-string values
 

@@ -1733,6 +1733,26 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
         { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
         { severity: 'blocker', summary, body, meta: { source: 'green-checkpoint' } },
       );
+      // platform-ops-batch-2026-07-09 P-002: a LIVE push (desktop-native + mobile) the
+      // moment the gate FIRST goes red — the durable escalation above already surfaces
+      // in the Attention panel, but that is pull (the owner has to look); this is push,
+      // symmetric with the self-watchdog's own notifyAttention call below. Fires once
+      // per hold (the dedup return above skips this on every subsequent hourly tick
+      // while still red — the rising-urgency `broadcast` tiers cover the "still red"
+      // drumbeat instead of re-pushing every tick).
+      try {
+        const { notifyAttention } = await import('../../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Release gate RED',
+          body: summary,
+          importance: 'urgent',
+          workspaceId: cfg.workspaceId,
+          data: { source: 'green-checkpoint' },
+        });
+      } catch {
+        // best-effort — the gate verdict never depends on the push landing.
+      }
     },
     async clearEscalation() {
       const { listEscalations, resolveEscalation } = await import(

@@ -299,6 +299,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
       },
       publish: async () => ({
         announced: true,
+        reachablePeers: 1,
         cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 },
         localBindings: { created: 1, existed: 0, failed: 0 },
       }),

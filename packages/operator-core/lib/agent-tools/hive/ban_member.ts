@@ -40,7 +40,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("The Hive's home harness slug."),
+    pot: z.string().min(1).max(120).describe("The Hive's home harness slug."),
     githubUserId: z.number().int().positive().describe('The numeric GitHub user id of the member to ban (the stable id, not the login).'),
     unban: z.boolean().optional().describe('Set true to LIFT a ban (remove from the signed ban list; re-join allowed again).'),
     revoke: z
@@ -56,12 +56,12 @@ export default defineTool({
       ctx.principal?.workspaceId,
     );
     if (args.unban) {
-      const result = await unbanMember({ workspaceId, hiveHomeSlug: args.hive, githubUserId: args.githubUserId });
+      const result = await unbanMember({ workspaceId, hiveHomeSlug: args.pot, githubUserId: args.githubUserId });
       return text({ action: 'unban', githubUserId: args.githubUserId, ...result });
     }
     const result = await banMember({
       workspaceId,
-      hiveHomeSlug: args.hive,
+      hiveHomeSlug: args.pot,
       githubUserId: args.githubUserId,
       revoke: args.revoke,
     });

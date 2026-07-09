@@ -20,7 +20,6 @@ import AutoLoginWelcomeToast from './AutoLoginWelcomeToast';
 import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
-import TutorialButton from './TutorialButton';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
@@ -29,17 +28,17 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { isChromeShellNavActive } from './chrome-shell-nav';
-// The operator chat is the app's primary surface and must appear on first
-// paint, not pop in seconds later. Import it eagerly so it ships in the main
-// bundle and mounts immediately — a lazy() chunk fetch (or, in the Tauri dev
-// shell, an on-demand Turbopack compile of that chunk) is exactly what caused
-// the visible delay. The remaining docks below stay lazy/idle-deferred.
-import { OperatorChatSidebar } from './OperatorChatSidebar';
+// Legacy web chats RETIRED (design-simplification-2026-07-09 P-003, owner
+// decision D1): the ONLY chat surface is the terminal-native pui "Papercup
+// chat" panes in the zellij dock. OracleDock + OperatorChatSidebar (+ the
+// TutorialButton that fired OracleDock's walkthrough event) moved to
+// `_retired/legacy-web-chats/` — see its RESTORE.md. The shared
+// operator:converse backend + OperatorConversationProvider remain live (the
+// pui chat uses them too).
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
-const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
 const OperatorDelegationListener = lazy(() => import('./OperatorDelegationListener'));
 const RegistryShortcuts = lazy(() => import('../../lib/commands/shims/shortcut-shim').then(m => ({ default: m.RegistryShortcuts })));
@@ -246,7 +245,6 @@ export default function ChromeShell() {
           })()}
           <RouteLink href="/cupboard" {...navLinkProps('/cupboard')}>{t('cupboard')}</RouteLink>
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
-          {testingFlag ? <TutorialButton /> : null}
           <UpdateChip />
           <NotificationCenter />
           <RecentActionsCenter />
@@ -273,12 +271,9 @@ export default function ChromeShell() {
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      {/* native-terminal-desktop D-011 / P-016: the desktop chat is now the
-          TERMINAL-NATIVE pui chat panes (the docked native terminal), so this
-          web operator chat is OFF by default and kept behind the TESTING flag
-          for testing only. NB: the shared operator:converse / operator
-          conversations backend is NOT gated — the pui operator chat uses it too. */}
-      {testingFlag && <OperatorChatSidebar />}
+      {/* The web operator chat sidebar is RETIRED (see the retirement note at
+          the top of this file) — the desktop chat is the TERMINAL-NATIVE pui
+          chat panes in the zellij dock. */}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
@@ -290,7 +285,6 @@ export default function ChromeShell() {
 // chains, polling, and event-listener registration.
 function DeferredDocks() {
   const [ready, setReady] = useState(false);
-  const testingEnabled = useFlag(FLAGS.TESTING);
   useEffect(() => {
     const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
     let idleId: number | undefined;
@@ -324,7 +318,6 @@ function DeferredDocks() {
   return (
     <Suspense fallback={null}>
       <ChatwootWidget />
-      {testingEnabled ? <OracleDock /> : null}
       <VoiceAppBridge />
       <OperatorDelegationListener />
       <OperatorVoiceAnnouncer />

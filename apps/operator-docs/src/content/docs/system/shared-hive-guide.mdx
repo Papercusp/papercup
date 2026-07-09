@@ -122,7 +122,7 @@ on a TTL. Only a *shared* (public/invite) hive actually syncs to other machines.
 <Aside type="note" title="Optional: a live status beacon">
 A published hive can additionally broadcast a **live status beacon** (active
 agents, queue depth, focus) onto the directory gossip. It is **owner-consent,
-default-OFF**: `hive:beacon_consent { hive, consent: true }` to opt in (`false`
+default-OFF**: `pot:beacon_consent { pot, consent: true }` to opt in (`false`
 to stop; omit `consent` to read). It only rides a **published** (public/invite)
 hive — enabling it on a private hive does nothing until you publish.
 </Aside>

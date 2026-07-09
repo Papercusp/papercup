@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const VALID = { workspaceId: 'ws1', harnessSlug: 'papercup', githubUserId: 12345 };
 
-const VALID_HIVE = { workspaceId: 'ws1', hiveSlug: 'acme-hive', githubUserId: 12345 };
+const VALID_HIVE = { workspaceId: 'ws1', potSlug: 'acme-hive', githubUserId: 12345 };
 
 beforeEach(() => vi.resetModules());
 afterEach(() => {
@@ -74,7 +74,7 @@ describe('substrate:revoke_contributor tool', () => {
   it('args schema rejects BOTH harnessSlug and hiveSlug (exactly one scope)', async () => {
     const tool = await loadTool();
     expect(
-      tool.args.safeParse({ ...VALID, hiveSlug: 'acme-hive' }).success,
+      tool.args.safeParse({ ...VALID, potSlug: 'acme-hive' }).success,
     ).toBe(false);
   });
 

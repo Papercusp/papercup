@@ -43,7 +43,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1).optional().describe('Filter to one harness (the cup runs executing there).'),
-    bee: z.string().max(120).optional().describe('Filter to one cup (its ownerId).'),
+    cup: z.string().max(120).optional().describe('Filter to one cup (its ownerId).'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
@@ -56,10 +56,10 @@ export default defineTool({
       actorWorkspace = null;
     }
     const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
-    const runs = await listBeeRuns({ harness: args.harness, bee: args.bee, workspaceId });
+    const runs = await listBeeRuns({ harness: args.harness, bee: args.cup, workspaceId });
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, summary: summarizeBeeRuns(runs), runs }) },
+        { type: 'text' as const, text: JSON.stringify({ ok: true, summary: summarizeBeeRuns(runs), runs: runs.map(({ bee, ...rest }) => ({ cup: bee, ...rest })) }) },
       ],
     };
   },

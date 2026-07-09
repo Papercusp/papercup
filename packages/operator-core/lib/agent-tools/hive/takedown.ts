@@ -37,7 +37,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("The Hive's home harness slug."),
+    pot: z.string().min(1).max(120).describe("The Hive's home harness slug."),
     contentRef: z.string().min(1).max(200).describe('The content ref to take down (a feature / work-item id).'),
     restore: z.boolean().optional().describe('Set true to RESTORE (un-hide) a previously taken-down ref.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
@@ -46,8 +46,8 @@ export default defineTool({
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const result = args.restore
-      ? await restoreContent({ workspaceId, hiveHomeSlug: args.hive, contentRef: args.contentRef })
-      : await takedownContent({ workspaceId, hiveHomeSlug: args.hive, contentRef: args.contentRef });
+      ? await restoreContent({ workspaceId, hiveHomeSlug: args.pot, contentRef: args.contentRef })
+      : await takedownContent({ workspaceId, hiveHomeSlug: args.pot, contentRef: args.contentRef });
     return text({ action: args.restore ? 'restore' : 'takedown', contentRef: args.contentRef, ...result });
   },
 });

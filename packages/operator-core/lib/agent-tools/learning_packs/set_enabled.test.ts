@@ -32,19 +32,19 @@ describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
 
   it('refuses when the flag is off (top-level)', async () => {
     mockFlag.mockResolvedValue(false);
-    expect(body(await callTool({ hive: 'h', pack: 'p1', enabled: false }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
+    expect(body(await callTool({ pot: 'h', pack: 'p1', enabled: false }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
     expect(mockSet).not.toHaveBeenCalled();
   });
 
   it('inline { hive, pack, enabled } wires through; one ok result keyed by hive+pack', async () => {
-    const r = body(await callTool({ hive: 'h', pack: 'p1', enabled: false }, { principal: { workspaceId: 'ws-prin' } }));
+    const r = body(await callTool({ pot: 'h', pack: 'p1', enabled: false }, { principal: { workspaceId: 'ws-prin' } }));
     expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(r.results[0]).toMatchObject({ ok: true, hive: 'h', pack: 'p1', enabled: false });
+    expect(r.results[0]).toMatchObject({ ok: true, pot: 'h', pack: 'p1', enabled: false });
     expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-prin', hiveSlug: 'h', packId: 'p1', enabled: false });
   });
 
   it('packs:[…] flips MANY for the same hive; per-item results keyed by hive+pack', async () => {
-    const r = body(await callTool({ hive: 'h', packs: ['p1', 'p2'], enabled: true }));
+    const r = body(await callTool({ pot: 'h', packs: ['p1', 'p2'], enabled: true }));
     expect(r.counts).toEqual({ ok: 2, failed: 0 });
     expect(r.results.map((x: { pack: string }) => x.pack)).toEqual(['p1', 'p2']);
     expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h', packId: 'p2', enabled: true });
@@ -55,14 +55,14 @@ describe('learning_packs:set_enabled tool (bulk keyed-array)', () => {
       if (o.packId === 'bad') throw new Error('store write failed');
       return { ok: true, disabled: [] } as never;
     });
-    const r = body(await callTool({ hive: 'h', packs: ['p1', 'bad'], enabled: false }));
+    const r = body(await callTool({ pot: 'h', packs: ['p1', 'bad'], enabled: false }));
     expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
-    expect(r.results[0]).toMatchObject({ ok: true, hive: 'h', pack: 'p1' });
-    expect(r.results[1]).toMatchObject({ ok: false, hive: 'h', pack: 'bad', error: 'store write failed' });
+    expect(r.results[0]).toMatchObject({ ok: true, pot: 'h', pack: 'p1' });
+    expect(r.results[1]).toMatchObject({ ok: false, pot: 'h', pack: 'bad', error: 'store write failed' });
   });
 
   it('items:[…] heterogeneous flips across hives', async () => {
-    const r = body(await callTool({ items: [{ hive: 'h1', pack: 'p1', enabled: true }, { hive: 'h2', pack: 'p2', enabled: false }] }));
+    const r = body(await callTool({ items: [{ pot: 'h1', pack: 'p1', enabled: true }, { pot: 'h2', pack: 'p2', enabled: false }] }));
     expect(r.counts).toEqual({ ok: 2, failed: 0 });
     expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h1', packId: 'p1', enabled: true });
     expect(mockSet).toHaveBeenCalledWith({ workspaceId: 'ws-active', hiveSlug: 'h2', packId: 'p2', enabled: false });

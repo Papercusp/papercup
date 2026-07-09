@@ -44,7 +44,7 @@ export default defineTool({
   agentRoles: ['operator', 'architect', 'debugger'],
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The Hive's home harness slug (batch-level — one Hive per call)."),
+      pot: z.string().min(1).max(120).describe("The Hive's home harness slug (batch-level — one Hive per call)."),
       reportId: z.string().min(1).max(200).optional().describe('n=1: a single report id (pair with status).'),
       status: z.enum(['actioned', 'dismissed']).optional().describe('n=1: the resolution for the single reportId.'),
       items: z.array(Resolution).min(1).max(100).optional().describe('resolutions to apply (1–100), each { reportId, status }'),
@@ -57,7 +57,7 @@ export default defineTool({
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     // Owner gate (once for the batch): the CANONICAL owner, not merely "holds a key".
-    const isOwner = await isCanonicalHiveOwner(workspaceId, args.hive).catch(() => false);
+    const isOwner = await isCanonicalHiveOwner(workspaceId, args.pot).catch(() => false);
     if (!isOwner) {
       return text({ ok: false, code: 'not_owner', detail: 'this Swarm does not hold the Hive private key' });
     }
@@ -67,7 +67,7 @@ export default defineTool({
     const env = await runBulk(
       resolutions,
       async ({ reportId, status }) => {
-        const report = await setReportStatus(workspaceId, args.hive, reportId, status);
+        const report = await setReportStatus(workspaceId, args.pot, reportId, status);
         if (!report) return { ok: false as const, reportId, error: 'no report with that id' };
         return { ok: true as const, reportId, report };
       },

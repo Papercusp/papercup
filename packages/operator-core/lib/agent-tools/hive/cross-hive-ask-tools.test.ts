@@ -215,7 +215,7 @@ describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
   it('pot:ask resolves the registered boundary + store and returns the await key', async () => {
     const tool = (await import('./ask')).default as unknown as Tool;
     const res = parse(
-      await tool.handler({ hive: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
+      await tool.handler({ pot: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
     );
     expect(res.ok).toBe(true);
     expect((res.answeredEvent as string).startsWith('cross-hive:answered:')).toBe(true);
@@ -226,7 +226,7 @@ describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
   it('pot:request_work sends a work-request envelope', async () => {
     const tool = (await import('./request_work')).default as unknown as Tool;
     const res = parse(
-      await tool.handler({ hive: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
+      await tool.handler({ pot: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
     );
     expect(res.ok).toBe(true);
     expect(fb.sends[0]).toMatchObject({ kind: 'work-request' });
@@ -237,7 +237,7 @@ describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
     __clearCrossHiveBoundaryRegistry(); // home is now dark
     const tool = (await import('./ask')).default as unknown as Tool;
     const res = parse(
-      await tool.handler({ hive: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
+      await tool.handler({ pot: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
     );
     expect(res.ok).toBe(false);
     expect(res.reason as string).toMatch(/not live/);
@@ -245,18 +245,18 @@ describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
 
   it('pot:asks lists + filters the ledger', async () => {
     const askTool = (await import('./ask')).default as unknown as Tool;
-    await askTool.handler({ hive: 'home', peerHivePubkey: 'peer-a', subject: 's1', body: 'b', workspace: 'ws-1' }, ROOT_CTX);
-    await askTool.handler({ hive: 'home', peerHivePubkey: 'peer-b', subject: 's2', body: 'b', workspace: 'ws-1' }, ROOT_CTX);
+    await askTool.handler({ pot: 'home', peerHivePubkey: 'peer-a', subject: 's1', body: 'b', workspace: 'ws-1' }, ROOT_CTX);
+    await askTool.handler({ pot: 'home', peerHivePubkey: 'peer-b', subject: 's2', body: 'b', workspace: 'ws-1' }, ROOT_CTX);
 
     const asksTool = (await import('./asks')).default as unknown as Tool;
-    const all = parse(await asksTool.handler({ hive: 'home', workspace: 'ws-1' }, ROOT_CTX));
+    const all = parse(await asksTool.handler({ pot: 'home', workspace: 'ws-1' }, ROOT_CTX));
     expect(all.count).toBe(2);
 
-    const onePeer = parse(await asksTool.handler({ hive: 'home', peerHivePubkey: 'peer-a', workspace: 'ws-1' }, ROOT_CTX));
+    const onePeer = parse(await asksTool.handler({ pot: 'home', peerHivePubkey: 'peer-a', workspace: 'ws-1' }, ROOT_CTX));
     expect(onePeer.count).toBe(1);
     expect((onePeer.asks as CrossHiveAsk[])[0]?.peerPubkey).toBe('peer-a');
 
-    const sent = parse(await asksTool.handler({ hive: 'home', state: 'sent', workspace: 'ws-1' }, ROOT_CTX));
+    const sent = parse(await asksTool.handler({ pot: 'home', state: 'sent', workspace: 'ws-1' }, ROOT_CTX));
     expect(sent.count).toBe(2);
   });
 });

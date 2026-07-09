@@ -48,7 +48,7 @@ import { runGitSync, type RunGit } from './run-git-sync';
 // Custom runGit that disables fleet pre-push hook for testing
 const testRunGit: RunGit = (args, cwd) =>
   new Promise((resolve) => {
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
     // Clear any GIT_CONFIG that might install the fleet pre-push hook
     delete env.GIT_CONFIG;
     // Inject -c core.hooksPath=<nonexistent> before any git subcommand to disable hooks
@@ -64,7 +64,7 @@ const testRunGit: RunGit = (args, cwd) =>
 
 function shx(args: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
-    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+    const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
     delete env.GIT_CONFIG;
     const hooksDisabled = ['-c', 'core.hooksPath=/nonexistent', ...args];
     const child = spawn('git', hooksDisabled, { cwd, env });

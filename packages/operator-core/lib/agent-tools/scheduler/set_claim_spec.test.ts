@@ -51,7 +51,7 @@ describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
     expect(claimSpecInertWarning('x', 'some-future-role')).toBeNull();
   });
 
-  it('names the beeId in the warning so the operator can act on it', () => {
+  it('names the cupId in the warning so the operator can act on it', () => {
     const w = claimSpecInertWarning('bee-abc123', 'scoper');
     expect(w).toContain('bee-abc123');
   });
@@ -73,7 +73,7 @@ describe('claimSpecWakeabilityWarning — EI-6079 warm-inject-miss advisory', ()
     expect(claimSpecWakeabilityWarning('bee-x', null)).toBeNull();
   });
 
-  it('names the beeId so the operator can act on it', () => {
+  it('names the cupId so the operator can act on it', () => {
     const w = claimSpecWakeabilityWarning('bee-abc123', false);
     expect(w).toContain('bee-abc123');
   });

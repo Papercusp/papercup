@@ -171,6 +171,22 @@ export async function reapDeadExecutorWorkflows(
     // longer, env-tunable orphan window. A PENDING no-output fire is left to the 60m
     // no-output window, its explicit deadline, or the dead-executor branch.
     //
+    // SEMANTICS CORRECTED AGAIN (WI-3519, verified live 2026-07-09): in this DBOS
+    // version dbos.workflow_queue holds NO rows even for never-dequeued ENQUEUED
+    // workflows (the table was observed 0-rows-total while 9 fires sat ENQUEUED),
+    // so "ENQUEUED with no queue row" is the NORMAL state of every backlogged fire,
+    // not an anomaly — the guard above is vacuous. Under queue-slot starvation
+    // (routines-critical concurrency=2; two slow-but-checkpointing fires under host
+    // CPU pressure) every waiting fire aged past the orphan window and was
+    // cancelled+requeued each sweep (oddsmith reaped_count hit 114 — the WI-1415
+    // flap, reintroduced). The fast path therefore ALSO requires the QUEUE itself to
+    // be dead: no sibling workflow on the same queue_name either actively PENDING
+    // (recent updated_at) or recently drained to SUCCESS/ERROR within the orphan
+    // window. CANCELLED is deliberately NOT liveness — the reaper's own cancels
+    // bump updated_at and would self-mask a genuinely wedged queue. A healthy
+    // backlog behind live workers is left alone (the 60m no-output window, explicit
+    // deadlines, and the dead-executor branch still backstop true wedges).
+    //
     // Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery can
     // refresh BOTH timestamps on a row it still has not checkpointed, and that
     // heartbeat must not keep a wedged dedup pin alive indefinitely.
@@ -189,6 +205,14 @@ export async function reapDeadExecutorWorkflows(
                         FROM dbos.workflow_queue q
                        WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
                          AND q.completed_at_epoch_ms IS NULL
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM dbos.workflow_status w2
+                       WHERE w2.queue_name = dbos.workflow_status.queue_name
+                         AND w2.workflow_uuid <> dbos.workflow_status.workflow_uuid
+                         AND w2.updated_at > ${staleRoutineFireOrphanAt}
+                         AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                     )
                   )
                 )
@@ -230,6 +254,14 @@ export async function reapDeadExecutorWorkflows(
                      FROM dbos.workflow_queue q
                     WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
                       AND q.completed_at_epoch_ms IS NULL
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM dbos.workflow_status w2
+                    WHERE w2.queue_name = dbos.workflow_status.queue_name
+                      AND w2.workflow_uuid <> dbos.workflow_status.workflow_uuid
+                      AND w2.updated_at > ${staleRoutineFireOrphanAt}
+                      AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                  )
                )
              )

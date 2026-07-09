@@ -211,6 +211,14 @@ function floorCap(n: number | null | undefined): number | null {
 export function clampFleetTopUpToCapacity(
   requestedOpenCount: number,
   report: Pick<ReturnType<typeof buildCapacityReport>, 'reachable' | 'healthyAccounts' | 'dispatchBudget' | 'recommendedHeadroom'>,
+  opts?: {
+    /** Whether the members being opened will route through the inference GATEWAY ('auto' or a
+     *  pinned pool account / seat). Default true (the conservative legacy behavior). Pass false
+     *  for DIRECT-credential members (no --account on linux/windows, or explicit
+     *  'default'/'system') — they never ask the gateway to authenticate, so pool health must
+     *  not gate them (fleet-launch-zero-gate-routing-blind, 2026-07-09). */
+    gatewayRouted?: boolean;
+  },
 ): FleetLaunchCapacityClamp | null {
   const requested = Math.max(0, Math.floor(requestedOpenCount));
   if (!report.reachable) return null;
@@ -233,17 +241,22 @@ export function clampFleetTopUpToCapacity(
   //    budget tightness is not a concurrency limit, so it is DEMOTED to an advisory
   //    (utilizationTight): the members still all launch; they may just burn the remaining
   //    weekly budget faster. Same treatment `healthyAccounts` already got.
-  // `healthyAccounts` still gates the ZERO case: no routable account ⇒ no valid credential ⇒
-  // nothing could authenticate, so suppress the top-up entirely.
+  // `healthyAccounts` gates the ZERO case ONLY for GATEWAY-routed members: no routable pool
+  // account ⇒ no valid gateway credential ⇒ nothing could authenticate, so suppress the top-up.
+  // fleet-launch-zero-gate-routing-blind (2026-07-09): a member launched WITHOUT gateway routing
+  // authenticates with the DIRECT system credential and never touches the pool — an exhausted
+  // pool must NOT suppress its launch (live incident: a 1-member default-routed canary was
+  // clamped 1→0 by a fully-walled pool despite dispatchBudget=13 free slots).
+  const gatewayRouted = opts?.gatewayRouted ?? true;
   const caps = [dispatchBudget].filter((n): n is number => n != null);
-  if (healthyAccounts === 0) caps.push(0); // no routable account ⇒ suppress the top-up entirely
+  if (healthyAccounts === 0 && gatewayRouted) caps.push(0); // no routable gateway account ⇒ suppress the top-up
   if (caps.length === 0) return null; // no concurrency signal ⇒ fail open (never strand on a missing signal)
   const capacityHeadroom = Math.min(...caps);
   const openCount = Math.min(requested, capacityHeadroom);
   const clamped = openCount < requested;
   // ADVISORY only — the weekly budget is tight for this many members, but never a clamp.
   const utilizationTight = recommendedHeadroom != null && recommendedHeadroom < openCount;
-  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (accounts do NOT cap sessions)`;
+  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (${gatewayRouted ? 'accounts do NOT cap sessions; 0 = nothing can authenticate' : 'pool — does NOT gate this launch: members route on the direct system credential, gateway skipped'})`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -839,9 +852,18 @@ export default defineTool({
         clampArmed: true,
         headroom: openCount,
       });
-      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity);
+      // fleet-launch-zero-gate-routing-blind (2026-07-09): the healthyAccounts===0 zero-gate
+      // applies only to GATEWAY-routed members. Resolve the members' planned routing the same
+      // way the launch command will (a seat pins a pool account ⇒ gateway; otherwise
+      // defaultMemberAccountRouting: darwin ⇒ 'auto', else the direct system credential).
+      const plannedAccount = seatsRequested ? 'auto' : defaultMemberAccountRouting(args.account?.trim() || undefined);
+      const gatewayRouted = !!plannedAccount && plannedAccount !== 'default' && plannedAccount !== 'system';
+      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, { gatewayRouted });
       if (capacityClamp) openCount = capacityClamp.openCount;
       sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
+      // A "they WILL still launch" sizing advisory alongside a zero-clamp is a self-contradictory
+      // response (hit live 2026-07-09) — the clamp reason is authoritative; drop the advisory.
+      if (capacityClamp?.clamped && capacityClamp.openCount === 0) sizingAdvisory = null;
     } catch {
       capacityClamp = null;
       sizingAdvisory = null;

@@ -18,7 +18,7 @@ const fail = (payload: Record<string, unknown>) => ({
 });
 
 const hiveSpecArgs = z.object({
-  hiveId: z.string().min(1).describe('Pot id (the grouping)'),
+  potId: z.string().min(1).describe('Pot id (the grouping)'),
   members: z.array(z.string().min(1)).describe('Member harness slugs to deploy onto the Swarm'),
   swarm: DeploymentConfigSchema.describe('The cloud target for execution frames (e.g. {target:"latitude",region:"NYC",size:"m4-metal-small"}). Set desktop:true (or {displays,geometry}) for GUI-capable frames — one Xvfb display per agent slot.'),
   queen: z
@@ -38,7 +38,7 @@ export default defineTool({
   guidance: {
     when: 'Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.',
     notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_pot.',
-    chaining: 'deploy:pot { hiveId, members, swarm } → deploy:teardown_pot when done.',
+    chaining: 'deploy:pot { potId, members, swarm } → deploy:teardown_pot when done.',
     seeAlso: [
       'deploy:teardown_pot (tear down the deployed pot when done)',
       'deploy:status (check deployment state)',

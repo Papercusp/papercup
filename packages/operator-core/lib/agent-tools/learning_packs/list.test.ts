@@ -52,14 +52,14 @@ describe('learning_packs:list tool', () => {
     expect(mockReadHive).not.toHaveBeenCalled();
   });
 
-  it('projects installed state for a hive: enabled (from disabled set) + updateAvailable vs the catalog', async () => {
+  it('projects installed state for a pot: enabled (from disabled set) + updateAvailable vs the catalog', async () => {
     mockReadHive.mockResolvedValue({
       packs: [{ packId: 'papercusp-default', packVersion: '1.0.0' }],
       organicCount: 4,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue(['papercusp-default']);
-    const res = body(await callTool({ hive: 'my-hive' }));
-    expect(res.hive).toBe('my-hive');
+    const res = body(await callTool({ pot: 'my-hive' }));
+    expect(res.pot).toBe('my-hive');
     expect(res.organicCount).toBe(4);
     expect(res.installed[0]).toMatchObject({
       packId: 'papercusp-default',
@@ -79,7 +79,7 @@ describe('learning_packs:list tool', () => {
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);
-    const res = body(await callTool({ hive: 'my-hive' }));
+    const res = body(await callTool({ pot: 'my-hive' }));
     expect(res.installed[0]).toMatchObject({
       packId: 'papercusp-default',
       updateAvailable: false, // 1.0.0 is NOT newer than installed 2.0.0
@@ -94,7 +94,7 @@ describe('learning_packs:list tool', () => {
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);
-    const res = body(await callTool({ hive: 'my-hive' }));
+    const res = body(await callTool({ pot: 'my-hive' }));
     expect(res.installed[0].updateAvailable).toBe(true);
   });
 
@@ -105,7 +105,7 @@ describe('learning_packs:list tool', () => {
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);
-    const res = body(await callTool({ hive: 'my-hive' }));
+    const res = body(await callTool({ pot: 'my-hive' }));
     expect(res.installed[0].updateAvailable).toBe(false);
   });
 });

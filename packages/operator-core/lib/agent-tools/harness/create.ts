@@ -104,10 +104,10 @@ export default defineTool({
         })
         .optional()
         .describe('Per-install INSTANCE config to seed (cloud-deployment-layer P-008 + retire-snapshots-instance-spec P-005): the genome + phase/phases/dept/configOverrides. This is what `boot(InstanceSpec)` threads to reproduce a captured instance — record/reuse the spec at create.'),
-      hive: z
+      pot: z
         .string()
         .min(1)
-        .regex(/^[a-z0-9][a-z0-9-]*$/, 'hive must be a harness slug')
+        .regex(/^[a-z0-9][a-z0-9-]*$/, 'pot must be a harness slug')
         .optional()
         .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of pot:add-member (which adds an EXISTING harness).'),
     })
@@ -129,14 +129,14 @@ export default defineTool({
     if (reg.projects.some((p) => p.slug === args.slug)) return fail({ error: 'slug already exists' });
 
     // Create-time Hive membership (shared-hive-federation D-010 producer): when
-    // `hive` is given, validate it's a real Hive home + capture the hive_slug to
+    // `pot` is given, validate it's a real Hive home + capture the hive_slug to
     // stamp on the new registry entry below. Fail-fast before any dir/schema side
     // effect, like the deployment + dependency gates. No nesting guard needed —
     // harness:create never sets harness_kind, so the new harness is never a Hive
     // home (Hive homes come only from pot:create), so it cannot nest a Hive.
     let hiveMembership: string | undefined;
-    if (args.hive != null) {
-      const membership = resolveCreateHiveMembership(reg, args.hive);
+    if (args.pot != null) {
+      const membership = resolveCreateHiveMembership(reg, args.pot);
       if (!membership.ok) return fail({ error: membership.error, message: membership.message });
       hiveMembership = membership.hive_slug;
     }
@@ -503,7 +503,7 @@ export default defineTool({
             blueprintFile: bpFile,
             blueprint: { id: validation.blueprint!.id, version: validation.blueprint!.version },
             deployment,
-            ...(hiveMembership ? { hive: hiveMembership } : {}),
+            ...(hiveMembership ? { pot: hiveMembership } : {}),
             warnings: validation.validation!.warnings,
             provisioning,
             scheduledRoutines,

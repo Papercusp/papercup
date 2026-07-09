@@ -26,7 +26,7 @@ export default defineTool({
     notWhen:
       'Inbound admission policy (pot:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).',
     chaining:
-      'pot:ask / pot:request_work create rows here; pot:asks { hive, state: "answered" } reviews the replies.',
+      'pot:ask / pot:request_work create rows here; pot:asks { pot, state: "answered" } reviews the replies.',
     seeAlso: [
       'pot:ask (post a new cross-Hive question)',
       'pot:request_work (the other row-creator — request work from a peer)',
@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("THIS Hive's home slug — the ledger is Hive-scoped."),
+    pot: z.string().min(1).max(120).describe("THIS Hive's home slug — the ledger is Hive-scoped."),
     state: z
       .enum(['queued', 'sent', 'answered', 'declined', 'expired'])
       .optional()
@@ -56,7 +56,7 @@ export default defineTool({
       ...(args.kind ? { kind: args.kind } : {}),
       ...(args.limit ? { limit: args.limit } : {}),
     };
-    const asks = await productionCrossHiveAsksStore().list(ws, args.hive, filter);
-    return json({ ok: true, hive: args.hive, count: asks.length, asks });
+    const asks = await productionCrossHiveAsksStore().list(ws, args.pot, filter);
+    return json({ ok: true, pot: args.pot, count: asks.length, asks });
   },
 });

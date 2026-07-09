@@ -16,7 +16,7 @@ export default defineTool({
     when: 'The user wants a pack gone from a pot, or before re-installing a pack from scratch.',
     notWhen:
       'To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.',
-    chaining: 'learning_packs:list { hive } shows what remains; kept edited rows are listed in the response.',
+    chaining: 'learning_packs:list { pot } shows what remains; kept edited rows are listed in the response.',
     seeAlso: [
       'learning_packs:set_enabled (quarantine instead of removing)',
       'learning_packs:list (see what remains after)',
@@ -24,7 +24,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120),
+    pot: z.string().min(1).max(120),
     pack: z.string().min(1).max(120),
     keepEdited: z.boolean().optional().describe('Default true — edited rows survive the uninstall.'),
     workspace: z.string().max(120).optional(),
@@ -35,7 +35,7 @@ export default defineTool({
     const { uninstallPack } = await import('../../learning-packs/manage');
     const loaded = await loadLearningPack(args.pack);
     const result = await uninstallPack({
-      hiveSlug: args.hive,
+      hiveSlug: args.pot,
       packId: args.pack,
       pack: loaded?.pack ?? null,
       ...(args.keepEdited !== undefined ? { keepEdited: args.keepEdited } : {}),

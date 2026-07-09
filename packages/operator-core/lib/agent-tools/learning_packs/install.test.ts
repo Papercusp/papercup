@@ -43,13 +43,13 @@ describe('learning_packs:install tool', () => {
 
   it('refuses when the flag is off', async () => {
     mockFlag.mockResolvedValue(false);
-    expect(body(await callTool({ hive: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
     expect(mockLoad).not.toHaveBeenCalled();
   });
 
   it('returns pack_not_found when the pack does not resolve', async () => {
     mockLoad.mockResolvedValue(null as never);
-    expect(body(await callTool({ hive: 'h', pack: 'ghost' }))).toMatchObject({ ok: false, reason: 'pack_not_found', pack: 'ghost' });
+    expect(body(await callTool({ pot: 'h', pack: 'ghost' }))).toMatchObject({ ok: false, reason: 'pack_not_found', pack: 'ghost' });
     expect(mockApply).not.toHaveBeenCalled();
   });
 
@@ -57,20 +57,20 @@ describe('learning_packs:install tool', () => {
     mockClassify.mockResolvedValue(review({ duplicates: 1, conflicts: 1 }) as unknown as Awaited<
       ReturnType<typeof classifyPackInstall>
     >);
-    const res = body(await callTool({ hive: 'h', pack: 'p1' }));
+    const res = body(await callTool({ pot: 'h', pack: 'p1' }));
     expect(res).toMatchObject({ ok: false, reason: 'review_required' });
     expect(mockApply).not.toHaveBeenCalled();
   });
 
   it('installs a clean pack immediately (no clashes → straight to apply)', async () => {
-    const res = body(await callTool({ hive: 'h', pack: 'p1' }));
+    const res = body(await callTool({ pot: 'h', pack: 'p1' }));
     expect(mockApply).toHaveBeenCalled();
     expect(res).toMatchObject({ ok: true, review: { clean: 3, duplicates: 0, conflicts: 0 } });
   });
 
   it('applies with resolutions even when clashes exist (acceptDefaults bypass)', async () => {
     mockClassify.mockResolvedValue(review({ duplicates: 2 }) as unknown as Awaited<ReturnType<typeof classifyPackInstall>>);
-    await callTool({ hive: 'h', pack: 'p1', acceptDefaults: true });
+    await callTool({ pot: 'h', pack: 'p1', acceptDefaults: true });
     expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', createdBy: 'user-1' }));
   });
 });

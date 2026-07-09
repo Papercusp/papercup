@@ -1695,30 +1695,13 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     // Whisper spins up only on wake — big idle-CPU win.
     if (await maybeStartWakeWordGate(prefs)) return;
     if (prefs.sttEngine === 'deepgram') {
-      // Deepgram cloud streaming (BYO key + leak-ack gate, same as Web Speech).
-      if (!prefs.webSpeechLeakAcked) { startWakeWordListening(); return; }
-      const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
-      if (!bootR?.ok) { startWakeWordListening(); return; }
-      const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
-      if (!apiKey) { startWakeWordListening(); return; }
-      const { startDeepgramStream } = await import('@papercusp/operator-core/lib/voice-engines/deepgram');
-      whisperCapture = await startDeepgramStream({
-        apiKey,
-        onFinal: (text) => {
-          setState({ lastTranscript: text });
-          onUtteranceFinal(text);
-        },
-        onSoftCap: (usd) => {
-          // Server already deduped to once-per-day; just speak it.
-          speak(`Heads up: Deepgram spend just crossed ${usd.toFixed(2)} today.`, 'system:stt-soft-cap', 'polite');
-        },
-        onHardCap: (usd) => {
-          speak(`Deepgram daily cap reached at ${usd.toFixed(2)}; switching microphone off.`, 'system:stt-hard-cap', 'assertive');
-          whisperCapture = null;
-          // Fall back to wake-word listening so always-on still works (free path).
-          startWakeWordListening();
-        },
-      });
+      // Deepgram streaming STT was REMOVED from operator-core (voice-engine
+      // slim-down, 2026-07-09 — lib/voice-engines/deepgram.ts deleted). A
+      // stored 'deepgram' preference degrades to the free wake-word path
+      // instead of crashing the build/runtime on a dead dynamic import
+      // (desktop-auto-update-operational-2026-07-09 release-gate fix).
+      console.warn('[voice-mode] sttEngine=deepgram is no longer supported — falling back to wake-word listening');
+      startWakeWordListening();
       return;
     }
     if (prefs.sttEngine !== 'voicemode') {
@@ -2040,23 +2023,11 @@ async function maybeStartCaptureForPtt(): Promise<void> {
     setMicCaptureError(err);
   }
 
-  // Resolve the configured engine; swap to a cloud streaming engine if set.
-  const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs').catch(() => null);
-  const prefs = prefsR?.ok ? await prefsR.json() : null;
-  if (prefs?.sttEngine === 'deepgram' && prefs.webSpeechLeakAcked) {
-    const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
-    const apiKey: string | null = bootR?.ok ? ((await bootR.json())?.apiKey ?? null) : null;
-    if (apiKey) {
-      // Hand the mic from the raw capture over to Deepgram's own stream.
-      if (pttRawCapture) { try { pttRawCapture.stop(); } catch { /* ignore */ } pttRawCapture = null; }
-      const { startDeepgramStream } = await import('@papercusp/operator-core/lib/voice-engines/deepgram');
-      whisperCapture = await startDeepgramStream({
-        apiKey,
-        onFinal: (text) => { setState({ lastTranscript: text }); onUtteranceFinal(text); },
-      });
-      return;
-    }
-  }
+  // Deepgram streaming STT was REMOVED from operator-core (voice-engine
+  // slim-down, 2026-07-09 — see WI-3510); a stored 'deepgram' preference now
+  // just keeps the raw-capture voicemode path below instead of importing the
+  // deleted engine (second dead call site of the same class as the always-on
+  // branch above — desktop-auto-update-operational-2026-07-09 release-gate fix).
 
   // Voicemode default keeps the raw capture already running. If neither the raw
   // capture nor a streaming engine came up, last-ditch Web Speech.

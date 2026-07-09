@@ -35,7 +35,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("The Hive's home harness slug."),
+    pot: z.string().min(1).max(120).describe("The Hive's home harness slug."),
     status: z
       .enum(['pending', 'approved', 'denied', 'all'])
       .optional()
@@ -46,7 +46,7 @@ export default defineTool({
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const status = args.status === 'all' ? null : args.status; // undefined ⇒ store default 'pending'
-    const rows = await listPendingJoins(workspaceId, args.hive, { status });
-    return text({ ok: true, hive: args.hive, count: rows.length, pending: rows });
+    const rows = await listPendingJoins(workspaceId, args.pot, { status });
+    return text({ ok: true, pot: args.pot, count: rows.length, pending: rows });
   },
 });

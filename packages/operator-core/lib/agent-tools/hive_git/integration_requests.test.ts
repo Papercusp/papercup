@@ -73,7 +73,7 @@ describe('pot_git:integration_requests', () => {
   it("action:'list' threads state/limit/scope filters through to the store", async () => {
     const t = await tool();
     await t.handler(
-      { action: 'list', hiveSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', state: 'ratified', limit: 5 },
+      { action: 'list', potSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', state: 'ratified', limit: 5 },
       ctxWith({ workspaceId: 'ws-1' }),
     );
     expect(listIntegrationRequests.mock.calls[0]![0]).toMatchObject({
@@ -90,7 +90,7 @@ describe('pot_git:integration_requests', () => {
     const t = await tool();
     const b = body(
       await t.handler(
-        { action: 'ratify', hiveSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', headSha: SAMPLE_ROW.headSha },
+        { action: 'ratify', potSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', headSha: SAMPLE_ROW.headSha },
         ctxWith({ workspaceId: 'ws-1' }),
       ),
     );
@@ -109,7 +109,7 @@ describe('pot_git:integration_requests', () => {
     const t = await tool();
     const b = body(
       await t.handler(
-        { action: 'ratify', hiveSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', headSha: 'b'.repeat(40) },
+        { action: 'ratify', potSlug: 'hive-1', repoKey: 'papercup', devicePubkey: 'dev-pk', headSha: 'b'.repeat(40) },
         ctxWith({ workspaceId: 'ws-1' }),
       ),
     );
@@ -121,9 +121,9 @@ describe('pot_git:integration_requests', () => {
     const t = (await import('./integration_requests')).default as unknown as {
       args: { safeParse: (v: unknown) => { success: boolean } };
     };
-    expect(t.args.safeParse({ action: 'ratify', hiveSlug: 'hive-1' }).success).toBe(false);
+    expect(t.args.safeParse({ action: 'ratify', potSlug: 'hive-1' }).success).toBe(false);
     expect(
-      t.args.safeParse({ action: 'ratify', hiveSlug: 'h', repoKey: 'r', devicePubkey: 'd', headSha: 's' }).success,
+      t.args.safeParse({ action: 'ratify', potSlug: 'h', repoKey: 'r', devicePubkey: 'd', headSha: 's' }).success,
     ).toBe(true);
     expect(t.args.safeParse({ action: 'list' }).success).toBe(true);
   });

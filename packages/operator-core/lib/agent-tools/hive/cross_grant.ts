@@ -45,7 +45,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("This Hive's home slug (grants are Hive-scoped + federate to its Swarms)."),
+    pot: z.string().min(1).max(120).describe("This Hive's home slug (grants are Hive-scoped + federate to its Swarms)."),
     action: z.enum(['grant', 'revoke', 'list']),
     direction: z
       .enum(['in', 'out'])
@@ -79,26 +79,26 @@ export default defineTool({
     const ws = args.workspace ?? activeWorkspaceId();
     const direction = args.direction ?? 'in';
     if (args.action === 'list') {
-      return json({ ok: true, action: 'list', hive: args.hive, grants: await loadDirectedCrossHiveGrants(ws, args.hive) });
+      return json({ ok: true, action: 'list', pot: args.pot, grants: await loadDirectedCrossHiveGrants(ws, args.pot) });
     }
     if (!args.peerHivePubkey) {
       return json({ ok: false, error: 'peerHivePubkey is required for grant/revoke' });
     }
     if (args.action === 'grant') {
-      await setCrossHiveGrant(ws, args.hive, args.peerHivePubkey, args.kinds ?? ['ask'], direction, undefined, {
+      await setCrossHiveGrant(ws, args.pot, args.peerHivePubkey, args.kinds ?? ['ask'], direction, undefined, {
         ...(args.maxPerHour != null ? { maxPerHour: args.maxPerHour } : {}),
         ...(args.maxBodyBytes != null ? { maxBodyBytes: args.maxBodyBytes } : {}),
         ...(args.expiresInHours != null ? { expiresAt: Date.now() + args.expiresInHours * 3_600_000 } : {}),
       });
     } else {
-      await revokeCrossHiveGrant(ws, args.hive, args.peerHivePubkey, direction);
+      await revokeCrossHiveGrant(ws, args.pot, args.peerHivePubkey, direction);
     }
     return json({
       ok: true,
       action: args.action,
       direction,
-      hive: args.hive,
-      grants: await loadDirectedCrossHiveGrants(ws, args.hive),
+      pot: args.pot,
+      grants: await loadDirectedCrossHiveGrants(ws, args.pot),
     });
   },
 });

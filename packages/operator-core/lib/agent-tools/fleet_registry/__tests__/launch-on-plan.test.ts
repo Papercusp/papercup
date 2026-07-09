@@ -364,9 +364,10 @@ describe('clampFleetTopUpToCapacity', () => {
     ).toMatchObject({ requestedOpenCount: 3, openCount: 1, clamped: true });
   });
 
-  it('suppresses the top-up entirely when ZERO accounts are routable (no credential to authenticate)', () => {
-    // healthyAccounts=0 is the one account signal that IS a gate: no routable account means
-    // no valid credential, so nothing could authenticate — open 0 even if slots look free.
+  it('suppresses a GATEWAY-routed top-up entirely when ZERO pool accounts are routable (no credential to authenticate)', () => {
+    // healthyAccounts=0 is the one account signal that IS a gate — but only for gateway-routed
+    // members (the conservative default when opts are omitted): no routable pool account means
+    // no valid gateway credential, so nothing could authenticate — open 0 even if slots look free.
     expect(
       clampFleetTopUpToCapacity(3, {
         reachable: true,
@@ -375,6 +376,27 @@ describe('clampFleetTopUpToCapacity', () => {
         recommendedHeadroom: 3,
       }),
     ).toMatchObject({ requestedOpenCount: 3, openCount: 0, clamped: true });
+    expect(
+      clampFleetTopUpToCapacity(
+        3,
+        { reachable: true, healthyAccounts: 0, dispatchBudget: 24, recommendedHeadroom: 3 },
+        { gatewayRouted: true },
+      ),
+    ).toMatchObject({ openCount: 0, clamped: true });
+  });
+
+  it('does NOT zero-gate a DIRECT-credential launch on an exhausted pool (the walled-pool canary incident, 2026-07-09)', () => {
+    // The live incident: a 1-member canary on the DEFAULT system account (gateway skipped) was
+    // clamped 1→0 because every POOL account was usage-walled — but a default-routed member
+    // never asks the gateway to authenticate, so pool health must not gate it; dispatchBudget
+    // remains the only hard cap.
+    const clamp = clampFleetTopUpToCapacity(
+      1,
+      { reachable: true, healthyAccounts: 0, dispatchBudget: 13, recommendedHeadroom: 1 },
+      { gatewayRouted: false },
+    );
+    expect(clamp).toMatchObject({ requestedOpenCount: 1, openCount: 1, clamped: false, healthyAccounts: 0 });
+    expect(clamp?.reason).toMatch(/direct system credential/);
   });
 
   it('fails open when the gateway headroom report is unreachable', () => {

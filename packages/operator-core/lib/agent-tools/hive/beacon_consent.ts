@@ -35,7 +35,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z
+    pot: z
       .string()
       .min(1)
       .max(120)
@@ -49,14 +49,14 @@ export default defineTool({
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
     if (args.consent === undefined) {
-      return json({ ok: true, action: 'get', hive: args.hive, consent: await getBeaconPublishConsent(ws, args.hive) });
+      return json({ ok: true, action: 'get', pot: args.pot, consent: await getBeaconPublishConsent(ws, args.pot) });
     }
     try {
-      await setBeaconPublishConsent(ws, args.hive, args.consent);
+      await setBeaconPublishConsent(ws, args.pot, args.consent);
     } catch (e) {
       // setHiveSetting rejects when the hive doesn't exist (logical scope, no FK).
-      return json({ ok: false, error: e instanceof Error ? e.message : String(e), hive: args.hive });
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e), pot: args.pot });
     }
-    return json({ ok: true, action: 'set', hive: args.hive, consent: args.consent });
+    return json({ ok: true, action: 'set', pot: args.pot, consent: args.consent });
   },
 });

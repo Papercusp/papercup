@@ -30,12 +30,12 @@ describe('learning_packs:sweep tool', () => {
 
   it('refuses when the flag is off', async () => {
     mockFlag.mockResolvedValue(false);
-    expect(body(await callTool({ hive: 'h' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
+    expect(body(await callTool({ pot: 'h' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
     expect(mockSweep).not.toHaveBeenCalled();
   });
 
   it('sweeps the named hive and merges the result into an ok envelope', async () => {
-    const res = body(await callTool({ hive: 'my-hive' }));
+    const res = body(await callTool({ pot: 'my-hive' }));
     expect(mockSweep).toHaveBeenCalledWith({ hiveSlug: 'my-hive' });
     expect(res).toMatchObject({ ok: true, scanned: 12, pairs: [] });
   });

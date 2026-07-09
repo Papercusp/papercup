@@ -21,7 +21,7 @@ export default defineTool({
   guidance: {
     when: 'A pot is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.',
     notWhen: 'Tearing down the whole pot — pot:dissolve already releases the desktop. There is nothing to release if the pot never provisioned one.',
-    chaining: 'computer:list_desktops to see what is leased → computer:release_desktop { hive }.',
+    chaining: 'computer:list_desktops to see what is leased → computer:release_desktop { pot }.',
     seeAlso: [
       'computer:list_desktops (see what is leased first)',
       'computer:provision_desktop (stand one back up)',
@@ -33,12 +33,12 @@ export default defineTool({
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The pot's home-harness slug whose desktop to release."),
+      pot: z.string().min(1).max(120).describe("The pot's home-harness slug whose desktop to release."),
     })
     .strict(),
   async handler(args) {
-    const had = !!hiveDesktop(args.hive);
-    await releaseHiveDesktop(args.hive);
-    return text({ ok: true, hive: args.hive, released: had, note: had ? 'desktop torn down.' : 'no desktop was leased (no-op).' });
+    const had = !!hiveDesktop(args.pot);
+    await releaseHiveDesktop(args.pot);
+    return text({ ok: true, pot: args.pot, released: had, note: had ? 'desktop torn down.' : 'no desktop was leased (no-op).' });
   },
 });

@@ -44,7 +44,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z
+    pot: z
       .string()
       .max(120)
       .optional()
@@ -148,12 +148,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.hive, ctx.harnessSlug ?? undefined);
+    const installSlug = resolveHiveHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {
       return json({
         ok: false,
         error: 'no_home_harness',
-        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
+        message: 'Pass `pot` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
       });
     }
     const patch: OwnerSteeringPatch = {};
@@ -179,7 +179,7 @@ export default defineTool({
       steering = await setOwnerSteering(workspaceId, installSlug, patch);
     } catch (e) {
       // setHiveSetting rejects when the hive doesn't exist (logical scope, no FK).
-      return json({ ok: false, error: e instanceof Error ? e.message : String(e), hive: installSlug });
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e), pot: installSlug });
     }
 
     // Materialize the Sentinel's session model override to the file the dock's
@@ -206,6 +206,6 @@ export default defineTool({
       workspaceId,
     }).catch(() => null);
 
-    return json({ ok: true, hive: installSlug, steering, queenWoken: wake?.fired ?? false });
+    return json({ ok: true, pot: installSlug, steering, queenWoken: wake?.fired ?? false });
   },
 });

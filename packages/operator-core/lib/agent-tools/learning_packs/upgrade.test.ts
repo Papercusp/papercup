@@ -50,12 +50,12 @@ describe('learning_packs:upgrade tool', () => {
 
   it('refuses when the flag is off', async () => {
     mockFlag.mockResolvedValue(false);
-    expect(body(await callTool({ hive: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
   });
 
   it('returns pack_not_found when the pack does not resolve', async () => {
     mockLoad.mockResolvedValue(null as never);
-    expect(body(await callTool({ hive: 'h', pack: 'ghost' }))).toMatchObject({ ok: false, reason: 'pack_not_found' });
+    expect(body(await callTool({ pot: 'h', pack: 'ghost' }))).toMatchObject({ ok: false, reason: 'pack_not_found' });
     expect(mockApply).not.toHaveBeenCalled();
   });
 
@@ -63,7 +63,7 @@ describe('learning_packs:upgrade tool', () => {
     mockPlan.mockResolvedValue(
       plan({ newItems: { items: [], duplicates: 0, conflicts: 0 } }) as unknown as Awaited<ReturnType<typeof planPackUpgrade>>,
     );
-    const res = body(await callTool({ hive: 'h', pack: 'p1' }));
+    const res = body(await callTool({ pot: 'h', pack: 'p1' }));
     expect(res).toMatchObject({ ok: true, upToDate: true });
     expect(mockApply).not.toHaveBeenCalled();
   });
@@ -74,12 +74,12 @@ describe('learning_packs:upgrade tool', () => {
         ReturnType<typeof planPackUpgrade>
       >,
     );
-    expect(body(await callTool({ hive: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'review_required' });
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'review_required' });
     expect(mockApply).not.toHaveBeenCalled();
   });
 
   it('applies the new items (clean) and reports installed/available versions', async () => {
-    const res = body(await callTool({ hive: 'h', pack: 'p1' }));
+    const res = body(await callTool({ pot: 'h', pack: 'p1' }));
     expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', createdBy: 'user-1' }));
     expect(res).toMatchObject({ ok: true, installedVersions: ['1.0.0'], availableVersion: '1.1.0' });
   });

@@ -53,7 +53,8 @@ vi.mock('./AutoLoginWelcomeToast', () => ({ default: () => null }));
 vi.mock('./UpdateChip', () => ({ default: () => null }));
 vi.mock('./NotificationCenter', () => ({ NotificationCenter: () => null }));
 vi.mock('./RecentActionsCenter', () => ({ RecentActionsCenter: () => null }));
-vi.mock('./TutorialButton', () => ({ default: () => <button type="button">Tutorial</button> }));
+// (TutorialButton + OperatorChatSidebar + OracleDock retired 2026-07-09 →
+// _retired/legacy-web-chats/ — design-simplification-2026-07-09 P-003.)
 vi.mock('./AnimatedPapercuspCup', () => ({ AnimatedPapercuspCup: () => null }));
 vi.mock('./RouteLink', () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
@@ -61,7 +62,6 @@ vi.mock('./RouteLink', () => ({
   ),
 }));
 vi.mock('./PuiLauncherButton', () => ({ PuiLauncherButton: () => null }));
-vi.mock('./OperatorChatSidebar', () => ({ OperatorChatSidebar: () => <div data-testid="op-chat" /> }));
 vi.mock('./ChatwootWidget', () => ({ ChatwootWidget: () => null }));
 
 import ChromeShell from './ChromeShell';
@@ -114,21 +114,28 @@ describe('ChromeShell', () => {
     testingFlag = false;
     render(<ChromeShell />);
     expect(screen.queryByRole('link', { name: 'Plugins' })).toBeNull();
-    expect(screen.queryByTestId('op-chat')).toBeNull();
-    expect(screen.queryByText('Tutorial')).toBeNull();
     // RES CTA (RouteLink aria-label="Resources") is now TESTING-gated too.
     expect(screen.queryByRole('link', { name: 'Resources' })).toBeNull();
   });
 
-  it('shows the testing-only surfaces (Plugins link + web chat + Tutorial) when TESTING is on', () => {
+  it('shows the testing-only surfaces (Plugins link) when TESTING is on', () => {
     pathname = '/';
     testingFlag = true;
     render(<ChromeShell />);
     expect(screen.getByRole('link', { name: 'Plugins' })).toBeTruthy();
-    expect(screen.getByTestId('op-chat')).toBeTruthy();
-    expect(screen.getByText('Tutorial')).toBeTruthy();
     // RES CTA appears (mock useFlag returns testingFlag for every flag, so the
     // RES_ALLOCATION gate is satisfied too); RES RouteLink aria-label="Resources".
     expect(screen.getByRole('link', { name: 'Resources' })).toBeTruthy();
+  });
+
+  it('never renders the retired legacy web chats (OracleDock / OperatorChatSidebar / Tutorial), regardless of flags', () => {
+    // Recurrence guard for design-simplification-2026-07-09 P-003 (owner D1):
+    // the only chat surface is the terminal-native pui chat in the zellij dock.
+    pathname = '/';
+    testingFlag = true;
+    render(<ChromeShell />);
+    expect(screen.queryByTestId('op-chat')).toBeNull();
+    expect(screen.queryByText('Tutorial')).toBeNull();
+    expect(document.querySelector('[data-oracle-dock]')).toBeNull();
   });
 });

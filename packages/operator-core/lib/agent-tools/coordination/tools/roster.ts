@@ -57,7 +57,7 @@ export default defineTool({
       .describe(
         'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace (admin/Queen). Caller with no Hive (SU/operator) falls back to workspace.',
       ),
-    hive: z
+    pot: z
       .string()
       .optional()
       .describe('Explicit Hive slug to scope to (overrides caller-hive resolution; implies scope=hive).'),
@@ -112,7 +112,7 @@ export default defineTool({
       // Live and members views: use presence-snapshot infrastructure
       const resolved = await resolvePresenceScope(c, {
         scope: effScope,
-        hive: args.hive,
+        hive: args.pot,
         workspace: args.workspace,
       });
 
@@ -165,7 +165,7 @@ export default defineTool({
         workspaceId,
         agent: args.agent,
         plan: args.plan,
-        harness: args.hive,
+        harness: args.pot,
         activeOnly: !args.include_stale,
       });
 

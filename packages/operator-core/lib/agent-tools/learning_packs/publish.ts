@@ -39,7 +39,7 @@ export const exportTool = defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120),
+    pot: z.string().min(1).max(120),
     packId: z.string().min(1).max(120).describe('Kebab-case pack id (becomes the Comb listing_ref).'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(LIMITS.ANNOTATION),
@@ -52,7 +52,7 @@ export const exportTool = defineTool({
     if (!(await learningPacksEnabled())) return text(FLAG_OFF);
     const { exportHiveLearningsToPack } = await import('../../learning-packs/export');
     const result = await exportHiveLearningsToPack({
-      hiveSlug: args.hive,
+      hiveSlug: args.pot,
       packId: args.packId,
       title: args.title,
       description: args.description,

@@ -25,7 +25,7 @@ export default defineTool({
     notWhen:
       'At hive creation (pot:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.',
     chaining:
-      "learning_packs:list { hive } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes.",
+      "learning_packs:list { pot } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes.",
     seeAlso: [
       'learning_packs:list (browse available packs first)',
       'learning_packs:set_enabled (try / quarantine without uninstalling)',
@@ -34,7 +34,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120).describe('Pot home slug.'),
+    pot: z.string().min(1).max(120).describe('Pot home slug.'),
     pack: z.string().min(1).max(120).describe('Pack id (learning_packs:list enumerates).'),
     resolutions: z
       .array(z.object({ itemId: z.string().min(1), action: z.enum(['install', 'skip', 'replace', 'keep-both']) }))
@@ -54,7 +54,7 @@ export default defineTool({
     if (!loaded) return text({ ok: false, reason: 'pack_not_found', pack: args.pack });
 
     const { classifyPackInstall, applyPackInstall } = await import('../../learning-packs/manage');
-    const review = await classifyPackInstall({ hiveSlug: args.hive, pack: loaded.pack });
+    const review = await classifyPackInstall({ potSlug: args.pot, pack: loaded.pack });
 
     const hasClashes = review.duplicates + review.conflicts > 0;
     if (hasClashes && !args.resolutions && args.acceptDefaults !== true) {
@@ -69,7 +69,7 @@ export default defineTool({
 
     const result = await applyPackInstall({
       workspaceId,
-      hiveSlug: args.hive,
+      hiveSlug: args.pot,
       pack: loaded.pack,
       review,
       ...(args.resolutions ? { resolutions: args.resolutions } : {}),

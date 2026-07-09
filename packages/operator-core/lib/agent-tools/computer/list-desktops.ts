@@ -34,7 +34,7 @@ export default defineTool({
   async handler() {
     const desktops = leasedHiveDesktops().map((hive) => {
       const d = hiveDesktop(hive);
-      return { hive, display: d?.display ?? null, width: d?.width ?? null, height: d?.height ?? null };
+      return { pot: hive, display: d?.display ?? null, width: d?.width ?? null, height: d?.height ?? null };
     });
     return text({ ok: true, count: desktops.length, desktops });
   },

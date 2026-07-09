@@ -67,7 +67,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe('hive (DEFAULT) = your Hive\'s agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.'),
-    hive: z
+    pot: z
       .string()
       .optional()
       .describe('Explicit Hive slug to scope to (overrides caller-hive resolution; implies scope=hive).'),
@@ -107,7 +107,7 @@ export default defineTool({
     const effScope = args.scope === 'all' && !c.isSuperuser ? 'workspace' : args.scope;
     const resolved = await resolvePresenceScope(c, {
       scope: effScope,
-      hive: args.hive,
+      hive: args.pot,
       workspace: args.workspace,
     });
     // P-011: include_detail adds the cross-DB held-files lane. The lock store is

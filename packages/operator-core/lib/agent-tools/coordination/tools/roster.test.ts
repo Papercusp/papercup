@@ -335,7 +335,7 @@ describe('coord:roster', () => {
 
     it('should accept explicit hive', async () => {
       const { output } = await call(
-        { hive: 'custom-hive' },
+        { pot: 'custom-hive' },
         { workspaceId: 'test-ws' },
       );
 

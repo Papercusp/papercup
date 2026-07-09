@@ -56,7 +56,7 @@ const FACTORY_PUSH_ROLES = new Set([
 export function claimSpecInertWarning(beeId: string, spawnedRole: string | null): string | null {
   if (!spawnedRole || !FACTORY_PUSH_ROLES.has(spawnedRole)) return null;
   return (
-    `beeId "${beeId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
+    `cupId "${beeId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
     'that is HANDED a FEATURE_ID and never calls scheduler:get_next — so this claim-spec is INERT ' +
     '(it will never select any work). Claim-specs steer SELF-PULLING agents: a coding-hive bee ' +
     '(role="cup"), the queen, or an su fleet leader/member instructed to pull via get_next. ' +
@@ -84,7 +84,7 @@ export function claimSpecInertWarning(beeId: string, spawnedRole: string | null)
 export function claimSpecWakeabilityWarning(beeId: string, wakeable: boolean | null): string | null {
   if (wakeable !== false) return null; // true, or unknown (null) — never cry wolf on a lookup miss
   return (
-    `beeId "${beeId}" has NO live coord:inbox-wake standing await right now — a subsequent ` +
+    `cupId "${beeId}" has NO live coord:inbox-wake standing await right now — a subsequent ` +
     'coord:send { wake:"required" } warm-inject to this bee will return woken:0 even though ' +
     "fleet:assignments may show it alive (EI-6079: a fresh spawn hasn't reached its first await " +
     'yet, or the session already ended/was reaped). The spec is stored regardless (it applies ' +
@@ -94,8 +94,8 @@ export function claimSpecWakeabilityWarning(beeId: string, wakeable: boolean | n
 }
 
 /**
- * Best-effort: resolve the role a `beeId` was spawned as, by looking it up in the nursery
- * (harness_shared.spawned_agents). `beeId` is the bee's session/owner id, which the nursery records
+ * Best-effort: resolve the role a `cupId` was spawned as, by looking it up in the nursery
+ * (harness_shared.spawned_agents). `cupId` is the bee's session/owner id, which the nursery records
  * under ANY of spawn_id / session_owner / session_id (the fleet-assignment-view alias set), so match
  * all three. Returns null when no spawn row resolves (a plain session id with no nursery record, a
  * superuser, etc.) — the caller then skips the warning. Swallows every lookup error: a claim-spec
@@ -138,11 +138,11 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      beeId: z
+      cupId: z
         .string()
         .min(1)
         .optional()
-        .describe('the cup to steer (its session/owner id) — exactly one of beeId | fleet'),
+        .describe('the cup to steer (its session/owner id) — exactly one of cupId | fleet'),
       fleet: z
         .string()
         .min(1)
@@ -165,15 +165,15 @@ export default defineTool({
             'EXAMPLE: { specVersion:"1.0", specId:"bc-general", revision:1, view:{ filter:{ all:[{ field:"kind", op:"in", value:["bug","change"] }] } }, rank:{ mode:"lexicographic", terms:[{ expr:"priority", dir:"asc" }, { expr:"age", dir:"desc" }] } }.',
         ),
     })
-    .refine((a) => Boolean(a.beeId) !== Boolean(a.fleet), {
-      message: 'pass exactly ONE of beeId (steer one cup) or fleet (steer the whole fleet via inheritance)',
+    .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
+      message: 'pass exactly ONE of cupId (steer one cup) or fleet (steer the whole fleet via inheritance)',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     // Fleet target (P-002): validate the fleet exists (mirrors WI-1408 — a typo'd slug
     // must fail loud, not store a spec no member will ever inherit), then store under
     // the sentinel key. Membership-spec resolution happens bee-side in getClaimSpec.
-    let targetBeeId = args.beeId as string;
+    let targetBeeId = args.cupId as string;
     if (args.fleet) {
       const fleetSlug = args.fleet.trim();
       const wsForFleet =

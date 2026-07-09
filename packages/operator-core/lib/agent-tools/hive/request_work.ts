@@ -32,7 +32,7 @@ export default defineTool({
     notWhen:
       'Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound pot:cross_grant).',
     chaining:
-      'discovery:pots (find the peer Hive pubkey) → pot:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks.',
+      'discovery:pots (find the peer Hive pubkey) → pot:request_work { pot, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks.',
     seeAlso: [
       'pot:asks (review outstanding requests + replies)',
       'pot:ask (ask a QUESTION instead of requesting work)',
@@ -43,7 +43,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("THIS Hive's home slug — the requesting Hive (signer + boundary are scoped to it)."),
+    pot: z.string().min(1).max(120).describe("THIS Hive's home slug — the requesting Hive (signer + boundary are scoped to it)."),
     peerHivePubkey: z.string().min(1).max(400).describe('The peer Hive\'s pubkey (from discovery:pots) to address the work-request to.'),
     subject: z.string().min(1).max(200).describe('A short title for the requested work.'),
     body: hardText(8000).describe('What is being requested (becomes the peer work_item\'s summary).'),
@@ -53,7 +53,7 @@ export default defineTool({
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
     const result = await sendCrossHiveAsk(
-      { workspaceId: ws, hiveSlug: args.hive, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body, askedBy: args.askedBy },
+      { workspaceId: ws, hiveSlug: args.pot, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body, askedBy: args.askedBy },
       productionSendCrossHiveAskDeps(),
     );
     return json(result);

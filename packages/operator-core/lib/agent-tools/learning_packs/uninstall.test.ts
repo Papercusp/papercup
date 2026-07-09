@@ -36,22 +36,22 @@ describe('learning_packs:uninstall tool', () => {
 
   it('refuses when the flag is off', async () => {
     mockFlag.mockResolvedValue(false);
-    expect(body(await callTool({ hive: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: false, reason: 'feature-disabled' });
     expect(mockUninstall).not.toHaveBeenCalled();
   });
 
   it('uninstalls by id even when the pack no longer resolves (pack:null tolerated)', async () => {
     mockLoad.mockResolvedValue(null as never);
-    await callTool({ hive: 'h', pack: 'p-gone' });
+    await callTool({ pot: 'h', pack: 'p-gone' });
     expect(mockUninstall).toHaveBeenCalledWith(expect.objectContaining({ hiveSlug: 'h', packId: 'p-gone', pack: null }));
   });
 
   it('forwards keepEdited when provided', async () => {
-    await callTool({ hive: 'h', pack: 'p1', keepEdited: false });
+    await callTool({ pot: 'h', pack: 'p1', keepEdited: false });
     expect(mockUninstall).toHaveBeenCalledWith(expect.objectContaining({ keepEdited: false }));
   });
 
   it('returns the core result', async () => {
-    expect(body(await callTool({ hive: 'h', pack: 'p1' }))).toMatchObject({ ok: true, removed: 5 });
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: true, removed: 5 });
   });
 });

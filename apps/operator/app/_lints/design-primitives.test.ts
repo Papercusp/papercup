@@ -103,7 +103,7 @@ const AUDITED_DIRECT_CYAN_FILES = [
   'operator/app/eval-viz/arms.ts',
   'operator-vite/src/components/adv/AdvEvalsTab.tsx',
   'operator/app/_components/ChatwootWidget.tsx',
-  'operator/app/_components/OracleDock.tsx',
+  // OracleDock retired 2026-07-09 → _retired/legacy-web-chats/ (P-003).
   'operator/app/globals.css',
   'operator/app/harness/harness.css',
   'operator/app/operator-mock/page.tsx',

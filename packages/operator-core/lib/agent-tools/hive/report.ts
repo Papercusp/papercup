@@ -48,7 +48,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("The Hive's home harness slug."),
+    pot: z.string().min(1).max(120).describe("The Hive's home harness slug."),
     targetKind: z.enum(['content', 'member']).describe("What's being reported: 'content' (a feature/work-item ref) or 'member'."),
     targetRef: z
       .string()
@@ -63,7 +63,7 @@ export default defineTool({
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
 
     // Gate: reporting must be enabled by the owner-signed policy.
-    const resolved = await getHivePolicy(workspaceId, args.hive).catch(() => null);
+    const resolved = await getHivePolicy(workspaceId, args.pot).catch(() => null);
     if (!resolved?.policy.moderation?.reportable) {
       return text({ ok: false, code: 'reporting_not_enabled', detail: 'the Hive owner has not enabled reporting' });
     }
@@ -77,7 +77,7 @@ export default defineTool({
     // be able to file reports — "any admitted MEMBER" is the doc contract, but nothing
     // previously checked it. Fail closed on a lookup error (never let an unresolvable
     // membership check silently admit the report).
-    const member = await getHiveMember(workspaceId, args.hive, identity.githubUserId).catch(() => null);
+    const member = await getHiveMember(workspaceId, args.pot, identity.githubUserId).catch(() => null);
     if (!member) {
       return text({
         ok: false,
@@ -91,7 +91,7 @@ export default defineTool({
     // report — this is an abuse guard, not a correctness gate).
     const recentCount = await countReportsSince(
       workspaceId,
-      args.hive,
+      args.pot,
       identity.githubUserId,
       Date.now() - REPORT_RATE_LIMIT_WINDOW_MS,
     ).catch(() => 0);
@@ -105,7 +105,7 @@ export default defineTool({
 
     const report = await fileReport({
       workspaceId,
-      hiveHomeSlug: args.hive,
+      hiveHomeSlug: args.pot,
       reporterGithubUserId: identity.githubUserId,
       reporterGithubUsername: identity.githubLogin,
       targetKind: args.targetKind,

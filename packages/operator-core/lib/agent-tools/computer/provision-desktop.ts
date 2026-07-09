@@ -32,7 +32,7 @@ export default defineTool({
     notWhen:
       'For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.',
     chaining:
-      'computer:provision_desktop { hive, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done.',
+      'computer:provision_desktop { pot, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done.',
     seeAlso: [
       'capability:computer (drive the provisioned desktop)',
       'computer:list_desktops (verify it stood up)',
@@ -46,7 +46,7 @@ export default defineTool({
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z
     .object({
-      hive: z.string().min(1).max(120).describe("The pot's home-harness slug to equip with a desktop."),
+      pot: z.string().min(1).max(120).describe("The pot's home-harness slug to equip with a desktop."),
       apps: z
         .array(z.array(z.string().min(1)).min(1).max(16))
         .max(16)
@@ -57,15 +57,15 @@ export default defineTool({
     })
     .strict(),
   async handler(args) {
-    const already = hiveDesktop(args.hive);
-    const d = await ensureHiveDesktop(args.hive, {
+    const already = hiveDesktop(args.pot);
+    const d = await ensureHiveDesktop(args.pot, {
       ...(args.apps ? { apps: args.apps } : {}),
       ...(args.width ? { width: args.width } : {}),
       ...(args.height ? { height: args.height } : {}),
     });
     return text({
       ok: true,
-      hive: args.hive,
+      pot: args.pot,
       display: d.display,
       width: d.width,
       height: d.height,

@@ -45,25 +45,25 @@ beforeEach(() => {
 
 describe('discovery:set_pot args validation (DISC-1)', () => {
   it('REJECTS invite visibility with no inviteSecret (mirrors the HTTP 400 + publish throw)', () => {
-    expect(argsSchema.safeParse({ hiveId: 'h', title: 'T', visibility: 'invite' }).success).toBe(false);
+    expect(argsSchema.safeParse({ potId: 'h', title: 'T', visibility: 'invite' }).success).toBe(false);
   });
 
   it('accepts invite visibility WITH inviteSecret', () => {
     expect(
-      argsSchema.safeParse({ hiveId: 'h', title: 'T', visibility: 'invite', inviteSecret: 's' }).success,
+      argsSchema.safeParse({ potId: 'h', title: 'T', visibility: 'invite', inviteSecret: 's' }).success,
     ).toBe(true);
   });
 
   it('accepts public visibility with no inviteSecret', () => {
-    expect(argsSchema.safeParse({ hiveId: 'h', title: 'T', visibility: 'public' }).success).toBe(true);
+    expect(argsSchema.safeParse({ potId: 'h', title: 'T', visibility: 'public' }).success).toBe(true);
   });
 
   it('accepts private visibility with no inviteSecret', () => {
-    expect(argsSchema.safeParse({ hiveId: 'h', title: 'T', visibility: 'private' }).success).toBe(true);
+    expect(argsSchema.safeParse({ potId: 'h', title: 'T', visibility: 'private' }).success).toBe(true);
   });
 
   it('defaults visibility to public (and so passes with no secret)', () => {
-    const r = argsSchema.safeParse({ hiveId: 'h', title: 'T' });
+    const r = argsSchema.safeParse({ potId: 'h', title: 'T' });
     expect(r.success).toBe(true);
   });
 });
@@ -71,7 +71,7 @@ describe('discovery:set_pot args validation (DISC-1)', () => {
 describe('discovery:set_pot handler forwarding (P-015)', () => {
   it('forwards an invite listing carrying the inviteSecret + active workspace', async () => {
     setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'invite', saved: true, announced: true });
-    await call({ hiveId: 'h', title: 'T', visibility: 'invite', inviteSecret: 'sekret' });
+    await call({ potId: 'h', title: 'T', visibility: 'invite', inviteSecret: 'sekret' });
     expect(setHiveListing).toHaveBeenCalledTimes(1);
     expect(setHiveListing.mock.calls[0][0]).toMatchObject({
       hiveId: 'h',
@@ -83,7 +83,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
   });
 
   it('OMITS inviteSecret from the meta for a public listing', async () => {
-    await call({ hiveId: 'h', title: 'T', visibility: 'public' });
+    await call({ potId: 'h', title: 'T', visibility: 'public' });
     const meta = setHiveListing.mock.calls[0][0] as Record<string, unknown>;
     expect(meta).toMatchObject({ hiveId: 'h', visibility: 'public' });
     expect('inviteSecret' in meta).toBe(false);
@@ -91,7 +91,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
 
   it('forwards memberTopics / memberLinks / createdAt only when provided', async () => {
     await call({
-      hiveId: 'h',
+      potId: 'h',
       title: 'T',
       visibility: 'public',
       memberTopics: ['t1'],
@@ -106,7 +106,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
   });
 
   it('omits the optional spread fields when absent', async () => {
-    await call({ hiveId: 'h', title: 'T', visibility: 'public' });
+    await call({ potId: 'h', title: 'T', visibility: 'public' });
     const meta = setHiveListing.mock.calls[0][0] as Record<string, unknown>;
     expect('memberTopics' in meta).toBe(false);
     expect('memberLinks' in meta).toBe(false);
@@ -115,7 +115,7 @@ describe('discovery:set_pot handler forwarding (P-015)', () => {
 
   it('returns the composition result verbatim', async () => {
     setHiveListing.mockResolvedValue({ ok: true, hiveId: 'h', visibility: 'public', saved: true, announced: false, announceError: 'x' });
-    const out = await call({ hiveId: 'h', title: 'T', visibility: 'public' });
+    const out = await call({ potId: 'h', title: 'T', visibility: 'public' });
     expect(out).toMatchObject({ ok: true, announced: false, announceError: 'x' });
   });
 });

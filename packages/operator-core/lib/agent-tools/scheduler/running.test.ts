@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 
 describe('scheduler:running handler — the live-execution view', () => {
-  it('surfaces a seeded running bee: current item + spec specId@revision + progress + lease/heartbeat + idle reason', async () => {
+  it('surfaces a seeded running cup: current item + spec specId@revision + progress + lease/heartbeat + idle reason', async () => {
     // A bee mid-run, no item-scoped progress yet (grace window) → an idle/blocked reason, under
     // a Queen-authored spec at revision 7.
     mockList.mockResolvedValue([row({ lastProgressAt: null })] as FleetAssignmentRow[]);
@@ -89,7 +89,7 @@ describe('scheduler:running handler — the live-execution view', () => {
     expect(runs).toHaveLength(1);
     const run = runs[0]!;
     // current claimed work-item (the bee + the item it is running)
-    expect(run).toMatchObject({ bee: 'su-bee', item: 'F-42', title: 'wire the resolver', status: 'wip' });
+    expect(run).toMatchObject({ cup: 'su-bee', item: 'F-42', title: 'wire the resolver', status: 'wip' });
     // claim-spec specId@revision the bee runs under
     expect(run.spec).toEqual({ specId: 'queen-spec', revision: 7 });
     // lease / heartbeat
@@ -133,7 +133,7 @@ describe('scheduler:running handler — the live-execution view', () => {
 
   it('passes the { harness } / { bee } filters through to the live query', async () => {
     mockList.mockResolvedValue([] as FleetAssignmentRow[]);
-    await call({ harness: 'other-harness', bee: 'su-zzz' });
+    await call({ harness: 'other-harness', cup: 'su-zzz' });
     expect(mockList).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'other-harness', agent: 'su-zzz', workspaceId: 'ws-1' }),
     );

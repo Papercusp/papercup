@@ -255,6 +255,11 @@ import './hive-canary-action';
 import './coord-invariant-actions';
 import './cross-hive-drain-action';
 import './human-queue-digest-action';
+// platform-ops-batch-2026-07-09 P-001: the daily 09:00 UTC unclaimed-work digest —
+// broadcasts (`to: ['*']`) a summary of currently-unclaimed papercusp work-items to
+// the coord feed so the fleet sees what is going stale. Read-only; seeded ACTIVE
+// (seed-unclaimed-work-digest-routine.ts).
+import './unclaimed-work-digest-action';
 // P-130 (deterministic-blueprints-migration-2026-06-13): TWELVE bucket-A learning
 // loops migrated to deterministic blueprints — their bespoke `system:<loop>` action
 // handlers are RETIRED (negative-space / neologism / regret / transfer / fleet-ekg /

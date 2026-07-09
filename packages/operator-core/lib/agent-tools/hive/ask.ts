@@ -31,7 +31,7 @@ export default defineTool({
     notWhen:
       'Handing the peer WORK to do (use pot:request_work). Within-Hive questions (coord:ask / conversations). Granting a peer to send asks INTO this Hive (that is the inbound pot:cross_grant).',
     chaining:
-      'discovery:pots (find the peer Hive pubkey) → pot:ask { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks.',
+      'discovery:pots (find the peer Hive pubkey) → pot:ask { pot, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks.',
     seeAlso: [
       'pot:asks (review outstanding asks + their replies)',
       'discovery:pots (find the peer Hive to ask)',
@@ -42,7 +42,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).max(120).describe("THIS Hive's home slug — the asking Hive (signer + boundary are scoped to it)."),
+    pot: z.string().min(1).max(120).describe("THIS Hive's home slug — the asking Hive (signer + boundary are scoped to it)."),
     peerHivePubkey: z.string().min(1).max(400).describe('The peer Hive\'s pubkey (from discovery:pots) to address the ask to.'),
     subject: z.string().min(1).max(200).describe('A short subject line for the ask.'),
     body: hardText(8000).describe('The question body.'),
@@ -52,7 +52,7 @@ export default defineTool({
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
     const result = await sendCrossHiveAsk(
-      { workspaceId: ws, hiveSlug: args.hive, peerPubkey: args.peerHivePubkey, kind: 'ask', subject: args.subject, body: args.body, askedBy: args.askedBy },
+      { workspaceId: ws, hiveSlug: args.pot, peerPubkey: args.peerHivePubkey, kind: 'ask', subject: args.subject, body: args.body, askedBy: args.askedBy },
       productionSendCrossHiveAskDeps(),
     );
     return json(result);

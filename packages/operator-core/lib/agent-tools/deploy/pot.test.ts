@@ -28,7 +28,7 @@ const teardownTool = mod.deployTeardownHiveTool;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
-const baseArgs = { hiveId: 'h1', members: ['a'], swarm: {} };
+const baseArgs = { potId: 'h1', members: ['a'], swarm: {} };
 const callDeploy = (extra: Record<string, unknown> = {}) =>
   deployTool.handler({ ...baseArgs, ...extra } as never, {} as never) as Promise<Out>;
 const callTeardown = (extra: Record<string, unknown> = {}) =>

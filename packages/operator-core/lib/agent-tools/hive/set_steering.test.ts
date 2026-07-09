@@ -48,35 +48,35 @@ describe('pot:set-steering', () => {
   it('writes the provided fields, refreshes the panel, and WAKES the Queen', async () => {
     const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null };
     setOwnerSteering.mockResolvedValueOnce(next);
-    const res = parse(await setTool.handler({ hive: 'acme', directive: 'focus', eligiblePlans: ['p1'] }, ctx()));
+    const res = parse(await setTool.handler({ pot: 'acme', directive: 'focus', eligiblePlans: ['p1'] }, ctx()));
 
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { directive: 'focus', eligiblePlans: ['p1'] });
     expect(requestUrgentHiveWake).toHaveBeenCalledWith(expect.objectContaining({ harness: 'acme', workspaceId: 'ws-active' }));
-    expect(res).toMatchObject({ ok: true, hive: 'acme', steering: next, queenWoken: true });
+    expect(res).toMatchObject({ ok: true, pot: 'acme', steering: next, queenWoken: true });
     // notifySyncInvalidate is fire-and-forget (void dynamic import) — it lands on a
     // later microtask, after the handler returns; poll for it.
     await vi.waitFor(() => expect(notifySyncInvalidate).toHaveBeenCalledWith('hive.steering', {}));
   });
 
   it('passes only the supplied fields (omitted are not in the patch)', async () => {
-    await setTool.handler({ hive: 'acme', pauseNewWork: true }, ctx());
+    await setTool.handler({ pot: 'acme', pauseNewWork: true }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { pauseNewWork: true });
   });
 
   it('clear:true forwards a clear patch', async () => {
-    await setTool.handler({ hive: 'acme', clear: true }, ctx());
+    await setTool.handler({ pot: 'acme', clear: true }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { clear: true });
   });
 
   it('forwards eligibleHives (the placement scope, B-04 round-2)', async () => {
-    await setTool.handler({ hive: 'acme', eligibleHives: ['hive-a', 'hive-b'] }, ctx());
+    await setTool.handler({ pot: 'acme', eligibleHives: ['hive-a', 'hive-b'] }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { eligibleHives: ['hive-a', 'hive-b'] });
   });
 
   it('forwards the throttle knobs (P-006/P-009) into the patch', async () => {
     await setTool.handler(
       {
-        hive: 'acme',
+        pot: 'acme',
         cadenceFloorSec: 420,
         maxBees: 5,
         idleActivities: { gym: false },
@@ -95,7 +95,7 @@ describe('pot:set-steering', () => {
   });
 
   it('honors an explicit workspace override', async () => {
-    await setTool.handler({ hive: 'acme', pauseNewWork: true, workspace: 'ws-other' }, ctx());
+    await setTool.handler({ pot: 'acme', pauseNewWork: true, workspace: 'ws-other' }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-other', 'acme', { pauseNewWork: true });
   });
 
@@ -108,7 +108,7 @@ describe('pot:set-steering', () => {
 
   it('a store failure (e.g. hive not found) surfaces ok:false with the reason', async () => {
     setOwnerSteering.mockRejectedValueOnce(new Error("no Hive 'ghost' in workspace 'ws-active'"));
-    const res = parse(await setTool.handler({ hive: 'ghost', directive: 'x' }, ctx()));
+    const res = parse(await setTool.handler({ pot: 'ghost', directive: 'x' }, ctx()));
     expect(res.ok).toBe(false);
     expect(String(res.error)).toMatch(/no Hive/);
   });
@@ -118,9 +118,9 @@ describe('pot:get-steering', () => {
   it('reads the current steering for the hive', async () => {
     const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], eligibleHives: ['hive-a'], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null };
     getOwnerSteering.mockResolvedValueOnce(cur);
-    const res = parse(await getTool.handler({ hive: 'acme' }, ctx()));
+    const res = parse(await getTool.handler({ pot: 'acme' }, ctx()));
     expect(getOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme');
-    expect(res).toMatchObject({ ok: true, hive: 'acme', steering: cur });
+    expect(res).toMatchObject({ ok: true, pot: 'acme', steering: cur });
   });
 
   it('no resolvable hive → ok:false no_home_harness', async () => {

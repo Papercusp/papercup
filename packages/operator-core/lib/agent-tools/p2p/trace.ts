@@ -33,7 +33,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z.string().min(1).describe('the pot HOME slug whose P2P timeline to read'),
+    pot: z.string().min(1).describe('the pot HOME slug whose P2P timeline to read'),
     offerId: z
       .string()
       .min(1)
@@ -56,12 +56,12 @@ export default defineTool({
       });
     }
     const [receipts, counters] = await Promise.all([
-      listP2pReceipts({ workspaceId: ws, hiveSlug: args.hive, offerId: args.offerId ?? null, limit: args.limit }),
-      listRefusedOpCounters({ workspaceId: ws, hiveSlug: args.hive }),
+      listP2pReceipts({ workspaceId: ws, hiveSlug: args.pot, offerId: args.offerId ?? null, limit: args.limit }),
+      listRefusedOpCounters({ workspaceId: ws, hiveSlug: args.pot }),
     ]);
     return json({
       ok: true,
-      hive: args.hive,
+      pot: args.pot,
       offerId: args.offerId ?? null,
       // Ascending event time when tracing one offer (a lifecycle reads forward);
       // listP2pReceipts already orders ASC for offerId reads, DESC otherwise.

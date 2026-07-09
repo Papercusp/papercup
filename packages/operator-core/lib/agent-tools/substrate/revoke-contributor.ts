@@ -16,7 +16,7 @@
  * Two scopes (provide exactly one):
  *   - `harnessSlug` — revoke from ONE shared harness's federation (the per-harness
  *     revoked set; authority = repo-admin GitHub token).
- *   - `hiveSlug` — revoke from the WHOLE Hive (all its harnesses' federation) in one
+ *   - `potSlug` — revoke from the WHOLE Hive (all its harnesses' federation) in one
  *     action — the "join the Hive once, revoke from the Hive once" symmetry (P-006).
  *     Authority = the Swarm that HOLDS the Hive private key (keypair-native, not
  *     gh-repo-admin — a Hive may be repo-less).
@@ -31,10 +31,10 @@ export default defineTool({
   name: 'substrate:revoke_contributor',
   profile: 'engineer',
   description:
-    "OWNER action: revoke another contributor by adding their device pubkeys to a revocation set. Scope is per-HARNESS (`harnessSlug`) or per-HIVE (`hiveSlug` — revokes from the whole Hive's federation at once, P-006). Every peer honors it on the next admission re-verify and drops them from live federation. Harness scope requires a repo-admin token; Hive scope requires holding the Hive key.",
+    "OWNER action: revoke another contributor by adding their device pubkeys to a revocation set. Scope is per-HARNESS (`harnessSlug`) or per-HIVE (`potSlug` — revokes from the whole Hive's federation at once, P-006). Every peer honors it on the next admission re-verify and drops them from live federation. Harness scope requires a repo-admin token; Hive scope requires holding the Hive key.",
   capability: 'intel:write',
   guidance: {
-    when: "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to a revocation set. Pass `harnessSlug` to drop them from ONE harness's federation (repo-admin token), or `hiveSlug` to drop them from the WHOLE Hive's federation in one action (P-006 — requires this Swarm to hold the Hive key). Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared federation entirely.",
+    when: "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to a revocation set. Pass `harnessSlug` to drop them from ONE harness's federation (repo-admin token), or `potSlug` to drop them from the WHOLE Hive's federation in one action (P-006 — requires this Swarm to hold the Hive key). Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared federation entirely.",
     notWhen:
       'Revoking your OWN device — use `substrate:revoke_self_device` instead. For harness scope, not when the token lacks GitHub admin on the shared repo. For Hive scope, not when this Swarm does not hold the Hive private key (only the owning Swarm may revoke Hive-wide).',
     chaining:
@@ -54,7 +54,7 @@ export default defineTool({
         .min(1)
         .optional()
         .describe('HARNESS-scoped revoke: the harness slug. Provide EITHER harnessSlug OR hiveSlug.'),
-      hiveSlug: z
+      potSlug: z
         .string()
         .min(1)
         .optional()
@@ -69,14 +69,14 @@ export default defineTool({
           'The NUMERIC GitHub user id of the contributor to revoke (e.g. 12345). This is the stable id, not the login string. Their device pubkeys are added to the revocation set.',
         ),
     })
-    .refine((a) => !!a.harnessSlug !== !!a.hiveSlug, {
-      message: 'Provide exactly one of harnessSlug (harness scope) or hiveSlug (Hive scope).',
+    .refine((a) => !!a.harnessSlug !== !!a.potSlug, {
+      message: 'Provide exactly one of harnessSlug (harness scope) or potSlug (Pot scope).',
     }),
   async handler(args) {
-    const result = args.hiveSlug
+    const result = args.potSlug
       ? await revokeHiveContributor({
           workspaceId: args.workspaceId,
-          hiveHomeSlug: args.hiveSlug,
+          hiveHomeSlug: args.potSlug,
           githubUserId: args.githubUserId,
         })
       : await revokeContributorViaGithub({

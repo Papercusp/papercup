@@ -33,7 +33,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z
+    pot: z
       .string()
       .max(120)
       .optional()
@@ -42,18 +42,18 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.hive, ctx.harnessSlug ?? undefined);
+    const installSlug = resolveHiveHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {
       return json({
         ok: false,
         error: 'no_home_harness',
-        message: 'Pass `hive` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
+        message: 'Pass `pot` (or set PAPERCUSP_HIVE_HOME_SLUG) — steering is per-pot.',
       });
     }
     const steering = await getOwnerSteering(workspaceId, installSlug);
     return json({
       ok: true,
-      hive: installSlug,
+      pot: installSlug,
       steering,
       // EI-8277: flag when the directive text reads like "resumed" but pauseNewWork
       // is still the hard gate ON — advisory only, never auto-clears the pause.

@@ -52,7 +52,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    hive: z
+    pot: z
       .string()
       .min(1)
       .max(120)
@@ -72,7 +72,7 @@ export default defineTool({
     );
     const result = await addHarnessToHive({
       workspaceId,
-      hiveHomeSlug: args.hive,
+      hiveHomeSlug: args.pot,
       memberHarnessSlug: args.member,
     });
     return text({ ...result });

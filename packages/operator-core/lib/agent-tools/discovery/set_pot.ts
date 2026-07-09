@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   args: z
     .object({
-      hiveId: z.string().min(1).max(120),
+      potId: z.string().min(1).max(120),
       title: hardText(LIMITS.SHORT_TITLE),
       description: hardText(LIMITS.ANNOTATION, { min: 0 }).default(''),
       visibility: z.enum(HIVE_VISIBILITIES as unknown as [string, ...string[]]).default('public'),
@@ -64,7 +64,7 @@ export default defineTool({
     const { setHiveListing } = await import('../../hive-set-listing');
     const res = await setHiveListing(
       {
-        hiveId: args.hiveId,
+        hiveId: args.potId,
         title: args.title,
         description: args.description,
         visibility: args.visibility as HiveDirectoryMeta['visibility'],

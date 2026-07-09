@@ -24,7 +24,7 @@ const revokeM = vi.mocked(revokeCrossHiveGrant);
 const tool = (await import('./cross_grant')).default;
 
 type Out = { content: { text: string }[] };
-const call = (args: Record<string, unknown>) => tool.handler({ hive: 'my-hive', ...args } as never, {} as never) as Promise<Out>;
+const call = (args: Record<string, unknown>) => tool.handler({ pot: 'my-hive', ...args } as never, {} as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
@@ -32,7 +32,7 @@ beforeEach(() => vi.clearAllMocks());
 describe('pot:cross_grant handler', () => {
   it('list returns the current grants', async () => {
     const b = body(await call({ action: 'list' }));
-    expect(b).toMatchObject({ ok: true, action: 'list', hive: 'my-hive', grants: [{ peer: 'pk1' }] });
+    expect(b).toMatchObject({ ok: true, action: 'list', pot: 'my-hive', grants: [{ peer: 'pk1' }] });
     expect(setM).not.toHaveBeenCalled();
   });
 

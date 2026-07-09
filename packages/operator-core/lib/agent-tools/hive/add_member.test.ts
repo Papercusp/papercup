@@ -40,7 +40,7 @@ describe('pot:add-member (EI-1582)', () => {
       changed: true,
       gitSync: { seeded: true },
     });
-    const out = await call(addMember as never, { hive: 'papercusp', member: 'papercup' }, { workspaceId: 'ws-1' });
+    const out = await call(addMember as never, { pot: 'papercusp', member: 'papercup' }, { workspaceId: 'ws-1' });
     expect(addHarnessToHive).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       hiveHomeSlug: 'papercusp',
@@ -57,7 +57,7 @@ describe('pot:add-member (EI-1582)', () => {
       error: 'hive_not_found',
       message: "no hive 'nope' in this workspace",
     });
-    const out = await call(addMember as never, { hive: 'nope', member: 'papercup' }, { workspaceId: 'ws-1' });
+    const out = await call(addMember as never, { pot: 'nope', member: 'papercup' }, { workspaceId: 'ws-1' });
     expect(out.ok).toBe(false);
     expect(out.error).toBe('hive_not_found');
   });
@@ -69,14 +69,14 @@ describe('pot:add-member (EI-1582)', () => {
       memberHarnessSlug: 'papercup',
       changed: false,
     });
-    const out = await call(addMember as never, { hive: 'papercusp', member: 'papercup' }, { workspaceId: 'ws-1' });
+    const out = await call(addMember as never, { pot: 'papercusp', member: 'papercup' }, { workspaceId: 'ws-1' });
     expect(out.ok).toBe(true);
     expect(out.changed).toBe(false);
   });
 
   it('falls back to the active workspace when neither args.workspace nor ctx carry one', async () => {
     addHarnessToHive.mockResolvedValue({ ok: true, changed: true });
-    await call(addMember as never, { hive: 'papercusp', member: 'papercup' }, {});
+    await call(addMember as never, { pot: 'papercusp', member: 'papercup' }, {});
     expect(addHarnessToHive).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-fallback' }),
     );
@@ -84,7 +84,7 @@ describe('pot:add-member (EI-1582)', () => {
 
   it('prefers an explicit args.workspace over ctx', async () => {
     addHarnessToHive.mockResolvedValue({ ok: true, changed: true });
-    await call(addMember as never, { hive: 'papercusp', member: 'papercup', workspace: 'ws-explicit' }, { workspaceId: 'ws-1' });
+    await call(addMember as never, { pot: 'papercusp', member: 'papercup', workspace: 'ws-explicit' }, { workspaceId: 'ws-1' });
     expect(addHarnessToHive).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-explicit' }),
     );

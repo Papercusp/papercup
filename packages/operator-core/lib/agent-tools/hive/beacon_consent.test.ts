@@ -36,34 +36,34 @@ afterEach(() => vi.clearAllMocks());
 describe('pot:beacon_consent', () => {
   it('omitting consent READS the current value (no write)', async () => {
     getBeaconPublishConsent.mockResolvedValueOnce(true);
-    const res = parse(await tool.handler({ hive: 'acme-hive' }, ctx()));
-    expect(res).toMatchObject({ ok: true, action: 'get', hive: 'acme-hive', consent: true });
+    const res = parse(await tool.handler({ pot: 'acme-hive' }, ctx()));
+    expect(res).toMatchObject({ ok: true, action: 'get', pot: 'acme-hive', consent: true });
     expect(getBeaconPublishConsent).toHaveBeenCalledWith('ws-active', 'acme-hive');
     expect(setBeaconPublishConsent).not.toHaveBeenCalled();
   });
 
   it('consent:true SETS publish on and echoes the new state', async () => {
-    const res = parse(await tool.handler({ hive: 'acme-hive', consent: true }, ctx()));
-    expect(res).toMatchObject({ ok: true, action: 'set', hive: 'acme-hive', consent: true });
+    const res = parse(await tool.handler({ pot: 'acme-hive', consent: true }, ctx()));
+    expect(res).toMatchObject({ ok: true, action: 'set', pot: 'acme-hive', consent: true });
     expect(setBeaconPublishConsent).toHaveBeenCalledWith('ws-active', 'acme-hive', true);
   });
 
   it('consent:false SETS publish off', async () => {
-    const res = parse(await tool.handler({ hive: 'acme-hive', consent: false }, ctx()));
+    const res = parse(await tool.handler({ pot: 'acme-hive', consent: false }, ctx()));
     expect(res).toMatchObject({ ok: true, action: 'set', consent: false });
     expect(setBeaconPublishConsent).toHaveBeenCalledWith('ws-active', 'acme-hive', false);
   });
 
   it('honors an explicit workspace override', async () => {
-    await tool.handler({ hive: 'acme-hive', consent: true, workspace: 'ws-other' }, ctx());
+    await tool.handler({ pot: 'acme-hive', consent: true, workspace: 'ws-other' }, ctx());
     expect(setBeaconPublishConsent).toHaveBeenCalledWith('ws-other', 'acme-hive', true);
   });
 
   it('a set failure (e.g. hive not found) surfaces ok:false with the reason', async () => {
     setBeaconPublishConsent.mockRejectedValueOnce(new Error("no Hive 'ghost' in workspace 'ws-active'"));
-    const res = parse(await tool.handler({ hive: 'ghost', consent: true }, ctx()));
+    const res = parse(await tool.handler({ pot: 'ghost', consent: true }, ctx()));
     expect(res.ok).toBe(false);
     expect(String(res.error)).toMatch(/no Hive/);
-    expect(res.hive).toBe('ghost');
+    expect(res.pot).toBe('ghost');
   });
 });

@@ -35,12 +35,12 @@ beforeEach(() => {
 describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
   it('owner gate fails the WHOLE call when this Swarm does not hold the key', async () => {
     h.isCanonicalHiveOwner.mockResolvedValue(false);
-    const b = await env({ hive: 'sheets', reportId: 'r1', status: 'actioned' });
+    const b = await env({ pot: 'sheets', reportId: 'r1', status: 'actioned' });
     expect(b).toMatchObject({ ok: false, code: 'not_owner' });
   });
 
   it('n=1 inline { reportId, status } → one keyed result', async () => {
-    const b = await env({ hive: 'sheets', reportId: 'r1', status: 'actioned' });
+    const b = await env({ pot: 'sheets', reportId: 'r1', status: 'actioned' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, reportId: 'r1', report: { reportId: 'r1', status: 'actioned' } });
     expect(h.setReportStatus).toHaveBeenCalledWith('default', 'sheets', 'r1', 'actioned');
@@ -48,7 +48,7 @@ describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
 
   it('items:[…] resolves many heterogeneous statuses, keyed by reportId; owner gate fires ONCE', async () => {
     const b = await env({
-      hive: 'sheets',
+      pot: 'sheets',
       items: [
         { reportId: 'r1', status: 'actioned' },
         { reportId: 'r2', status: 'dismissed' },
@@ -67,7 +67,7 @@ describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
       reportId === 'gone' ? null : { reportId, status },
     );
     const b = await env({
-      hive: 'sheets',
+      pot: 'sheets',
       items: [
         { reportId: 'r1', status: 'actioned' },
         { reportId: 'gone', status: 'dismissed' },
@@ -79,8 +79,8 @@ describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
   });
 
   it('arg schema requires { reportId, status } (one) or items[]', () => {
-    expect(tool.args.safeParse({ hive: 'sheets' }).success).toBe(false);
-    expect(tool.args.safeParse({ hive: 'sheets', reportId: 'r1', status: 'actioned' }).success).toBe(true);
-    expect(tool.args.safeParse({ hive: 'sheets', items: [{ reportId: 'r1', status: 'dismissed' }] }).success).toBe(true);
+    expect(tool.args.safeParse({ pot: 'sheets' }).success).toBe(false);
+    expect(tool.args.safeParse({ pot: 'sheets', reportId: 'r1', status: 'actioned' }).success).toBe(true);
+    expect(tool.args.safeParse({ pot: 'sheets', items: [{ reportId: 'r1', status: 'dismissed' }] }).success).toBe(true);
   });
 });

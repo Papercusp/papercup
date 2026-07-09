@@ -29,7 +29,7 @@ function call(tool: unknown, args: Record<string, unknown>, ctx: Record<string, 
 }
 const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
-const EXPORT_ARGS = { hive: 'h', packId: 'my-pack', title: 'T', description: 'D', targetDir: '/repo' };
+const EXPORT_ARGS = { pot: 'h', packId: 'my-pack', title: 'T', description: 'D', targetDir: '/repo' };
 const PUBLISH_ARGS = { packId: 'my-pack', title: 'T', description: 'D', repoDir: '/repo' };
 const COORDS = {
   github_repository_id: 9,

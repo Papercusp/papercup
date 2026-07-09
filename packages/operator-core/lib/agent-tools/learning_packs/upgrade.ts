@@ -26,7 +26,7 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120),
+    pot: z.string().min(1).max(120),
     pack: z.string().min(1).max(120),
     resolutions: z
       .array(z.object({ itemId: z.string().min(1), action: z.enum(['install', 'skip', 'replace', 'keep-both']) }))
@@ -42,7 +42,7 @@ export default defineTool({
     if (!loaded) return text({ ok: false, reason: 'pack_not_found', pack: args.pack });
 
     const { planPackUpgrade, applyPackInstall } = await import('../../learning-packs/manage');
-    const plan = await planPackUpgrade({ hiveSlug: args.hive, pack: loaded.pack });
+    const plan = await planPackUpgrade({ potSlug: args.pot, pack: loaded.pack });
 
     if (plan.newItems.items.length === 0) {
       return text({ ok: true, upToDate: true, ...plan, hint: 'No new items to adopt.' });
@@ -58,7 +58,7 @@ export default defineTool({
     }
     const result = await applyPackInstall({
       workspaceId,
-      hiveSlug: args.hive,
+      hiveSlug: args.pot,
       pack: loaded.pack,
       review: plan.newItems,
       ...(args.resolutions ? { resolutions: args.resolutions } : {}),

@@ -33,11 +33,11 @@ export default defineTool({
   capability: 'audit:write',
   guidance: {
     when:
-      "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
+      "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', potSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
     notWhen:
       "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (pot:set-steering / the pot policy) instead of a one-off per-SHA ratify.",
     chaining:
-      "{action:'list', state:'pending'} → review the head → {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it.",
+      "{action:'list', state:'pending'} → review the head → {action:'ratify', potSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it.",
     seeAlso: ['trust:comms (comms-reach tiers — separable)', 'pot:set-steering (policy authoring)'],
   },
   requirePrincipal: false,
@@ -49,7 +49,7 @@ export default defineTool({
         .string()
         .optional()
         .describe('Workspace id. Defaults to the active workspace when omitted.'),
-      hiveSlug: z.string().optional().describe("The Pot's home slug. Required for action:'ratify'."),
+      potSlug: z.string().optional().describe("The Pot's home slug. Required for action:'ratify'."),
       repoKey: z
         .string()
         .optional()
@@ -74,8 +74,8 @@ export default defineTool({
     .refine(
       (a) =>
         a.action !== 'ratify' ||
-        (Boolean(a.hiveSlug) && Boolean(a.repoKey) && Boolean(a.devicePubkey) && Boolean(a.headSha)),
-      { message: "action:'ratify' needs hiveSlug, repoKey, devicePubkey, and headSha" },
+        (Boolean(a.potSlug) && Boolean(a.repoKey) && Boolean(a.devicePubkey) && Boolean(a.headSha)),
+      { message: "action:'ratify' needs potSlug, repoKey, devicePubkey, and headSha" },
     ),
   async handler(args, ctx) {
     const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -88,7 +88,7 @@ export default defineTool({
     if (args.action === 'list') {
       const requests = await listIntegrationRequests({
         workspaceId: ws,
-        hiveSlug: args.hiveSlug,
+        hiveSlug: args.potSlug,
         repoKey: args.repoKey,
         devicePubkey: args.devicePubkey,
         state: args.state,
@@ -98,7 +98,7 @@ export default defineTool({
     } else {
       const ratified = await ratifyIntegrationRequest({
         workspaceId: ws,
-        hiveSlug: args.hiveSlug!,
+        hiveSlug: args.potSlug!,
         repoKey: args.repoKey!,
         devicePubkey: args.devicePubkey!,
         headSha: args.headSha!,

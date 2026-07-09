@@ -25,13 +25,13 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
-    hive: z.string().min(1).max(120),
+    pot: z.string().min(1).max(120),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args) {
     if (!(await learningPacksEnabled())) return text(FLAG_OFF);
     const { sweepHiveConflicts } = await import('../../learning-packs/manage');
-    const result = await sweepHiveConflicts({ hiveSlug: args.hive });
+    const result = await sweepHiveConflicts({ hiveSlug: args.pot });
     return text({ ok: true, ...result });
   },
 });

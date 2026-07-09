@@ -101,13 +101,13 @@ function fakeBoundary(delivered = true): {
 
 // ── Tool-call helpers (always pass `workspace` so the tools never touch activeWorkspaceId). ──
 const grant = async (extra: Record<string, unknown>) =>
-  parse(await crossGrantTool.handler({ hive: HIVE, workspace: WS, ...extra }, ROOT_CTX));
+  parse(await crossGrantTool.handler({ pot: HIVE, workspace: WS, ...extra }, ROOT_CTX));
 const ask = async (extra: Record<string, unknown> = {}) =>
-  parse(await askTool.handler({ hive: HIVE, workspace: WS, peerHivePubkey: PEER, subject: 's', body: 'b', ...extra }, ROOT_CTX));
+  parse(await askTool.handler({ pot: HIVE, workspace: WS, peerHivePubkey: PEER, subject: 's', body: 'b', ...extra }, ROOT_CTX));
 const requestWork = async (extra: Record<string, unknown> = {}) =>
-  parse(await requestWorkTool.handler({ hive: HIVE, workspace: WS, peerHivePubkey: PEER, subject: 's', body: 'b', ...extra }, ROOT_CTX));
+  parse(await requestWorkTool.handler({ pot: HIVE, workspace: WS, peerHivePubkey: PEER, subject: 's', body: 'b', ...extra }, ROOT_CTX));
 const listAsks = async (extra: Record<string, unknown> = {}) =>
-  parse(await asksTool.handler({ hive: HIVE, workspace: WS, ...extra }, ROOT_CTX));
+  parse(await asksTool.handler({ pot: HIVE, workspace: WS, ...extra }, ROOT_CTX));
 
 let db: OrgTestDb;
 let boundary: ReturnType<typeof fakeBoundary>;
