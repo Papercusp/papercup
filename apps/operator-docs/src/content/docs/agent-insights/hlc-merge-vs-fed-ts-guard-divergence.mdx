@@ -199,3 +199,53 @@ not a new one — they make its *comparator* transitive and its *ties* total,
 closing the two windows a same-key-contention smell test should now also
 cover: (a) mixed HLC-presence cycling across 3+ peers, (b) two peers minting
 the exact same `fed_hlc`.
+
+## FURTHER REFINED (WI-2923/WI-2933 — mig 504, `fed_apply_wins`)
+
+WI-1672 (above) made a genuine full HLC *tie* total by construction (a node
+segment breaks `(ms, count)` ties), but that only covers two peers minting the
+literal **same** `fed_hlc`. It does NOT cover two peers minting **different**
+`fed_hlc`s that still collapse to an **equal `fed_order_key`** — e.g. two
+cells independently completing the SAME item in the same clock tick with
+distinct per-writer HLCs. Before WI-2923, the PG apply-guard's `WHERE
+fed_order_key(EXCLUDED…) >= fed_order_key(stored…)` applied
+**UNCONDITIONALLY** on such a key tie: each cell's own write beats-or-ties its
+own stored row (`>=` is reflexive), so **both** cells apply the **other's**
+value on heal — a stable value SWAP, not a rejection, so it slips past the
+`fixedPoint=true`-with-divergent-values smell test silently (no rejected op to
+notice; composition-chaos P-002, `F-003 winner a/b swap`).
+
+The fix (migration `504-fed-apply-writer-tiebreak.sql`) replaces the bare
+`>=` with a SQL function, **`harness_shared.fed_apply_wins(...)`**, that
+resolves an equal-key tie deterministically and *symmetrically* across every
+replica:
+
+1. Strictly newer/older `fed_order_key` → apply/reject as before.
+2. **Equal key, both writers known and different** → the higher
+   `author_pubkey` wins on every replica (value-independent, mirrors
+   `beatsStored`'s `sourceLogKeyHex` total-order tiebreak).
+3. **Otherwise** (a writer unknown — local rows are `author_pubkey NULL` by
+   design, mig 214 — or the same writer) → the higher **content digest**
+   wins. The digest is computed SYMMETRICALLY over content columns only
+   (never `fed_ts`/`fed_hlc`/`origin`/`author_pubkey`/bookkeeping), so cell A
+   comparing `digest(B) vs digest(A)` and cell B comparing `digest(A) vs
+   digest(B)` settle on the SAME content in one exchange; equal digests mean
+   identical content, so applying is an idempotent no-op.
+
+`fed_apply_wins` was rolled out to every LWW projection's apply-guard, not
+just `harness-features.ts`: `engineer-issues.ts`, `fleet-leader-leases.ts`
+(WI-2923), then `coord-message.ts`, `contributors.ts`, and
+`fleet-directory.ts` (WI-2933, extending the same function to more
+projections). Regression coverage:
+`packages/operator-core/lib/sync/hyperbee/projections/__tests__/fed-ts-lww-guard.integration.test.ts`
+(same-writer equal-key falls to the digest tiebreak) and
+`fleet-leader-leases.test.ts` (asserts the guard SQL calls `fed_apply_wins`).
+
+⚠️ **This tie-break lives in the PG apply-guard only** — `read-merge.ts`'s
+in-process fold (`beatsStored`) still orders an equal-`fed_order_key`
+(same-`ts`) tie by `sourceLogKeyHex` alone, not by writer-pubkey-then-digest.
+The two layers' tie-break rules are therefore not byte-identical; they were
+not observed to diverge in practice (the fold's `sourceLogKeyHex` total order
+already prevents the fold itself from flip-flopping), but a future smell-test
+pass should treat "the merge fold and the PG guard use a different equal-key
+tiebreak" as the same class of risk this whole doc is about.
