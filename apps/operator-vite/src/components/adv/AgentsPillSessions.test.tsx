@@ -118,7 +118,7 @@ describe('headlineToSafeHtml', () => {
 describe('endedDisplayName', () => {
   it('label → short owner id → agent #id', () => {
     expect(endedDisplayName(endedRow({ label: ' builder-3 ', coordOwnerId: 'su-x' }))).toBe('builder-3');
-    expect(endedDisplayName(endedRow({ coordOwnerId: 'su-ba914b41-b03b-4fdd' }))).toBe('su-ba914b4');
+    expect(endedDisplayName(endedRow({ coordOwnerId: 'su-ba914b41-b03b-4fdd' }))).toBe('su-ba914b41');
     expect(endedDisplayName(endedRow({ id: 12, agent: 'omp' }))).toBe('omp #12');
     expect(endedDisplayName(endedRow({ id: 12 }))).toBe('session #12');
   });

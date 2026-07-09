@@ -308,7 +308,11 @@ export default function AgentsRunningPill() {
     return () => clearInterval(id);
   }, [open]);
   // Search-anything box state — URL-backed like agentsRoster/agentsMachine.
-  const [searchQ, setSearchQ] = useQueryState('agentsQ', parseAsString.withDefault(''));
+  // Plain string form (no parseAsString.withDefault): the parser object runs at
+  // every pill render, and the suite-wide nuqs test mocks stub parseAsString as
+  // a bare `{}` — the guard also tolerates their single-shared-value stubs.
+  const [searchQRaw, setSearchQ] = useQueryState('agentsQ');
+  const searchQ = typeof searchQRaw === 'string' ? searchQRaw : '';
   // Shown = present (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps
   // working on a cadence even while parked between wakes, so it belongs here even if
   // its presence heartbeat has gone stale. Memoed on `data` so the identities stay

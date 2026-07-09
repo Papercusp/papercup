@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import '@xterm/xterm/css/xterm.css';
 import { Checkbox } from '../harness/Checkbox';
+import { statusToneColor } from '../harness/theme';
 import type { StreamEvent, StreamStep } from './structured-stream-types';
 
 export type { StreamEvent, StreamStep, StepStatus } from './structured-stream-types';
@@ -70,12 +71,6 @@ const STATUS_GLYPH: Record<StreamStep['status'], string> = {
   failed: '✗',
   running: '●',
   info: '•',
-};
-const STATUS_COLOR: Record<StreamStep['status'], string> = {
-  ok: 'var(--good)',
-  failed: 'var(--bad)',
-  running: 'var(--accent)',
-  info: 'var(--fg-mute)',
 };
 
 /* ─── raw drawer (xterm), mounted only when open ───────────────────────── */
@@ -325,7 +320,7 @@ export function StructuredStreamView({
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13 }}>
                   <span
                     style={{
-                      color: STATUS_COLOR[s.status],
+                      color: statusToneColor(s.status),
                       width: 14,
                       display: 'inline-block',
                       textAlign: 'center',

@@ -195,6 +195,12 @@ export interface FleetLaunchCapacityClamp {
    *  (recommendedHeadroom < openCount). They still all launch; they may burn the remaining
    *  weekly budget faster and hit the wall sooner. See clampFleetTopUpToCapacity. */
   utilizationTight: boolean;
+  /** The clamp the capacity signal RECOMMENDED, independent of whether it was applied. Non-null whenever a
+   *  concurrency signal existed. With `override`, `openCount` stays at `requestedOpenCount` while this still
+   *  reports what the pool advised — an override is never invisible. */
+  recommendedOpenCount: number | null;
+  /** True when a binding recommendation was consciously OVERRIDDEN by the caller (`opts.override`). */
+  overridden: boolean;
   reason: string;
 }
 
@@ -218,6 +224,17 @@ export function clampFleetTopUpToCapacity(
      *  'default'/'system') — they never ask the gateway to authenticate, so pool health must
      *  not gate them (fleet-launch-zero-gate-routing-blind, 2026-07-09). */
     gatewayRouted?: boolean;
+    /** OWNER DIRECTIVE 2026-07-09 ("when the gateway clamps it should just be a recommendation, agents
+     *  should be able to override"): honor the capacity signal as ADVICE, not a cap. The recommendation is
+     *  still computed and REPORTED (`recommendedOpenCount`, `overridden:true`, `reason`), but every
+     *  requested member launches — including through a pool reading `healthyAccounts:0`.
+     *
+     *  This is a real escape hatch, not a footgun: `healthyAccounts` reads the gateway's IN-MEMORY
+     *  exhaustedUntil map, which no store-side tool can clear (accounts:reset-rate is another process;
+     *  gateway:reload only drops absent ids). A STALE exhaustion therefore suppressed gateway-routed
+     *  launches to ZERO with a full dispatchBudget of free slots, and the only remedy was restarting the
+     *  gateway. Default OFF — the clamp remains the safe default. */
+    override?: boolean;
   },
 ): FleetLaunchCapacityClamp | null {
   const requested = Math.max(0, Math.floor(requestedOpenCount));
@@ -248,12 +265,17 @@ export function clampFleetTopUpToCapacity(
   // pool must NOT suppress its launch (live incident: a 1-member default-routed canary was
   // clamped 1→0 by a fully-walled pool despite dispatchBudget=13 free slots).
   const gatewayRouted = opts?.gatewayRouted ?? true;
+  const override = opts?.override ?? false;
   const caps = [dispatchBudget].filter((n): n is number => n != null);
   if (healthyAccounts === 0 && gatewayRouted) caps.push(0); // no routable gateway account ⇒ suppress the top-up
   if (caps.length === 0) return null; // no concurrency signal ⇒ fail open (never strand on a missing signal)
   const capacityHeadroom = Math.min(...caps);
-  const openCount = Math.min(requested, capacityHeadroom);
+  // The RECOMMENDATION — what capacity advises, always computed so an override is always legible.
+  const recommendedOpenCount = Math.min(requested, capacityHeadroom);
+  // ADVISORY CLAMP (owner directive 2026-07-09): `override` honors the recommendation as advice only.
+  const openCount = override ? requested : recommendedOpenCount;
   const clamped = openCount < requested;
+  const overridden = override && recommendedOpenCount < requested;
   // ADVISORY only — the weekly budget is tight for this many members, but never a clamp.
   const utilizationTight = recommendedHeadroom != null && recommendedHeadroom < openCount;
   const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (${gatewayRouted ? 'accounts do NOT cap sessions; 0 = nothing can authenticate' : 'pool — does NOT gate this launch: members route on the direct system credential, gateway skipped'})`;
@@ -266,11 +288,15 @@ export function clampFleetTopUpToCapacity(
     dispatchBudget,
     recommendedHeadroom,
     utilizationTight,
-    reason: clamped
-      ? `capacity-clamped top-up ${requested}→${openCount} (${detail})`
-      : utilizationTight
-        ? `capacity-ok top-up ${requested}, but weekly-token-budget is tight for this many members (recommendedHeadroom=${recommendedHeadroom}) — they still all launch, may hit the wall sooner (${detail})`
-        : `capacity-ok top-up ${requested} (${detail})`,
+    recommendedOpenCount,
+    overridden,
+    reason: overridden
+      ? `capacity OVERRIDDEN: launching all ${requested} (capacity recommended ${recommendedOpenCount}). The recommendation stands — if it was RIGHT, these members will contend or fail to authenticate; if healthyAccounts=0 is a STALE in-memory exhaustion, probe/readmit the pool (accounts:probe-capacity, POST /admin/readmit) rather than relying on the override (${detail})`
+      : clamped
+        ? `capacity-clamped top-up ${requested}→${openCount} — pass override to launch all ${requested} anyway (${detail})`
+        : utilizationTight
+          ? `capacity-ok top-up ${requested}, but weekly-token-budget is tight for this many members (recommendedHeadroom=${recommendedHeadroom}) — they still all launch, may hit the wall sooner (${detail})`
+          : `capacity-ok top-up ${requested} (${detail})`,
   };
 }
 
@@ -563,6 +589,12 @@ export default defineTool({
       .max(MAX_MEMBERS)
       .optional()
       .describe(`Number of member terminals to open (default 1, max ${MAX_MEMBERS}).`),
+    overrideCapacityClamp: z
+      .boolean()
+      .optional()
+      .describe(
+        "Treat the inference-pool capacity signal as a RECOMMENDATION, not a cap: launch all `count` members even when capacity would clamp them (including a pool reading healthyAccounts:0, which otherwise suppresses a gateway-routed launch to ZERO). The recommendation is still computed and reported (capacityClamp.recommendedOpenCount / overridden). Use when you believe the pool signal is STALE — but prefer FIXING the signal first: `accounts:probe-capacity` (store projection) and `POST /admin/readmit` (the gateway's in-memory exhaustion) are the real remedies. Default false.",
+      ),
     // --- optional psu launch flags threaded onto EVERY member (EI-5765 / owner request) ---
     account: z
       .string()
@@ -858,7 +890,7 @@ export default defineTool({
       // defaultMemberAccountRouting: darwin ⇒ 'auto', else the direct system credential).
       const plannedAccount = seatsRequested ? 'auto' : defaultMemberAccountRouting(args.account?.trim() || undefined);
       const gatewayRouted = !!plannedAccount && plannedAccount !== 'default' && plannedAccount !== 'system';
-      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, { gatewayRouted });
+      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, { gatewayRouted, override: args.overrideCapacityClamp ?? false });
       if (capacityClamp) openCount = capacityClamp.openCount;
       sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
       // A "they WILL still launch" sizing advisory alongside a zero-clamp is a self-contradictory

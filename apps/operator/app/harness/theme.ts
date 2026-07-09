@@ -201,6 +201,8 @@ const _STATUS_TONE_TABLE: Record<string, ToneKey> = {
   SUCCESS: 'good', ERROR: 'bad', PENDING: 'warn', ENQUEUED: 'warn', CANCELLED: 'neutral',
   // Gym proposal states (/adv Learning tab)
   accepted: 'good', pending: 'warn', rejected: 'bad', superseded: 'neutral',
+  // Structured-stream step states (StructuredStreamView) — `failed` shared above
+  ok: 'good', running: 'accent', info: 'neutral',
 };
 
 /** One-color status → CSS color. `fallback` names the tone for unknown statuses. */

@@ -364,13 +364,14 @@ function warnOrFail(
 
   if (!opts.enforce) {
     // WARN-ONLY: log loudly, do NOT fail. Lets a new rule's offenders surface and be
-    // allowlisted before the rule is flipped to enforce:true.
-    // eslint-disable-next-line no-console
-    console.warn(
+    // allowlisted before the rule is flipped to enforce:true. Writes to stdout directly:
+    // the suite runs under vitest-fail-on-console, so a console.warn here would turn
+    // the warn-only path into a hard failure — defeating warn-first entirely.
+    process.stdout.write(
       `⚠️  [design-lint WARN-ONLY, not yet enforced] ${label} found in ${offenders.length} file(s):\n` +
         `${offenders.map((f) => `  ${f}`).join('\n')}\n` +
         `${hint}\n` +
-        `(This rule is in warn-only mode — seed its allowlist, then flip enforce:true.)`,
+        `(This rule is in warn-only mode — seed its allowlist, then flip enforce:true.)\n`,
     );
     return;
   }
@@ -493,16 +494,20 @@ describe('warnOrFail (warn-first lint rollout)', () => {
   });
 
   it('WARN-ONLY (enforce:false): logs offenders loudly but does NOT fail the suite', () => {
-    const warnings: string[] = [];
-    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
-      warnings.push(args.map(String).join(' '));
+    // The warn path writes to stdout, NOT console.warn — the suite runs under
+    // vitest-fail-on-console, where a console.warn would hard-fail the test and
+    // silently defeat warn-first.
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
     });
     try {
       expect(() => warnOrFail('New native select', OFFENDERS, { enforce: false })).not.toThrow();
     } finally {
       spy.mockRestore();
     }
-    const logged = warnings.join('\n');
+    const logged = writes.join('\n');
     expect(logged).toMatch(/WARN-ONLY/);
     expect(logged).toMatch(/New native select/);
     // Every offender is surfaced so the author can seed the allowlist before flipping.
@@ -510,7 +515,7 @@ describe('warnOrFail (warn-first lint rollout)', () => {
   });
 
   it('ENFORCED (enforce:true): throws with the offenders listed', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       expect(() => warnOrFail('New native select', OFFENDERS, { enforce: true })).toThrow(/New native select/);
       // Enforced mode must NOT route through the warn-only logger.

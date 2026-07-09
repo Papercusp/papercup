@@ -399,6 +399,71 @@ describe('clampFleetTopUpToCapacity', () => {
     expect(clamp?.reason).toMatch(/direct system credential/);
   });
 
+  // ── ADVISORY CLAMP + OVERRIDE (owner directive 2026-07-09) ───────────────────────────────────
+  // "when the inference gateway clamps it should just be a recommendation, agents should be able to
+  // override". `override` is OPT-IN, so every default-path test above is byte-identical (that is the
+  // point: the EI-8797 gatewayRouted semantics survive untouched).
+
+  it('override launches ALL requested members through a zero-healthyAccounts gate, and SAYS it overrode', () => {
+    // The exact live 2026-07-09 condition: healthyAccounts:0 from a STALE in-memory exhaustion while
+    // dispatchBudget shows free slots. Without override this suppresses to 0 (test above).
+    const clamp = clampFleetTopUpToCapacity(
+      3,
+      { reachable: true, healthyAccounts: 0, dispatchBudget: 24, recommendedHeadroom: 3 },
+      { gatewayRouted: true, override: true },
+    );
+    expect(clamp).toMatchObject({
+      requestedOpenCount: 3,
+      openCount: 3,
+      clamped: false,
+      overridden: true,
+      recommendedOpenCount: 0,
+    });
+    // The recommendation must remain legible — an override is never silent.
+    expect(clamp?.reason).toMatch(/OVERRIDDEN/);
+    expect(clamp?.reason).toMatch(/accounts:probe-capacity/);
+  });
+
+  it('override lifts a dispatchBudget concurrency clamp too', () => {
+    const clamp = clampFleetTopUpToCapacity(
+      6,
+      { reachable: true, healthyAccounts: 4, dispatchBudget: 2, recommendedHeadroom: 6 },
+      { override: true },
+    );
+    expect(clamp).toMatchObject({ openCount: 6, clamped: false, overridden: true, recommendedOpenCount: 2 });
+  });
+
+  it('override on an UNCONSTRAINED pool reports overridden:false — nothing was actually overridden', () => {
+    const clamp = clampFleetTopUpToCapacity(
+      2,
+      { reachable: true, healthyAccounts: 4, dispatchBudget: 24, recommendedHeadroom: 2 },
+      { override: true },
+    );
+    expect(clamp).toMatchObject({ openCount: 2, clamped: false, overridden: false, recommendedOpenCount: 2 });
+    expect(clamp?.reason).not.toMatch(/OVERRIDDEN/);
+  });
+
+  it('WITHOUT override the clamp still binds, and the reason advertises the escape hatch', () => {
+    const clamp = clampFleetTopUpToCapacity(3, {
+      reachable: true,
+      healthyAccounts: 0,
+      dispatchBudget: 24,
+      recommendedHeadroom: 3,
+    });
+    expect(clamp).toMatchObject({ openCount: 0, clamped: true, overridden: false, recommendedOpenCount: 0 });
+    expect(clamp?.reason).toMatch(/pass override/);
+  });
+
+  it('recommendedOpenCount is reported on the happy path too (always legible)', () => {
+    const clamp = clampFleetTopUpToCapacity(2, {
+      reachable: true,
+      healthyAccounts: 4,
+      dispatchBudget: 24,
+      recommendedHeadroom: 2,
+    });
+    expect(clamp).toMatchObject({ openCount: 2, recommendedOpenCount: 2, overridden: false });
+  });
+
   it('fails open when the gateway headroom report is unreachable', () => {
     expect(
       clampFleetTopUpToCapacity(4, {
