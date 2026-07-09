@@ -169,3 +169,19 @@ cannot fix; clearing the ledger row does not mask it because WI-1415 is the auth
 (`{ response, action:'clear' }`, `auth:'loopback'`) — it **appends** `supervisor_notes` and bumps
 `mtime_ms`, so probing it writes real rows (and a bumped mtime pulls the row into the escalation-spike
 6h window until you `clear` it). A non-project harness like `oddsmith` still resolves through this route.
+
+⚠⚠ **You MUST pass `?phase=<the row's phase>` or the clear silently no-ops the row the collector
+reads (EI-8788).** The resolve route (`supervisor-actions.ts`) appends `supervisor_notes` to the
+**disk** `supervisor-notes.md` + the un-phased PG text-artifact **unconditionally**, but its
+`UPDATE harness_shared.harness_escalations` is scoped to `phase = (requestedPhase ?? 'staging')`.
+So if you call `.../escalation/resolve` **without** `?phase=git-sync-watchdog` (or with a wrong
+phase), the disk notes ARE written — and `harness:escalation` (disk-backed) then shows your
+resolution — while the PG `harness_escalations` row the improvement-watchdog's
+`collectEscalationSignals` actually reads is **never touched**: `escalation` stays set,
+`supervisor_notes` stays `''`, and it re-fires next tick. This is exactly how EI-8787 "resolved"
+`shared-hive-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
+the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc,
+COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE
+harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
+`has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true,
+has_notes=false`, your resolve missed the phase.

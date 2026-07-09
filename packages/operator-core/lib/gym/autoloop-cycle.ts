@@ -33,7 +33,7 @@ import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { provisionGymDatabase } from './gym-db-init';
+import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { readGymGates } from '../gym-gates';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
@@ -227,7 +227,7 @@ export async function runOneAutoloopCycle(
   try {
     // 1. Dedicated gym DB (execution data).
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_loop').start();
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_loop').start();
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
     // Control plane (proposals/autoloop/QD) → caller's client, else a DSN we open, else the gym DB.

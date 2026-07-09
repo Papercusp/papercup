@@ -5,7 +5,7 @@
  * failure leaves no held lock), the pure invariant evaluation (each check's
  * threshold + stable dedup titles), and registration.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   evaluateProbe,
@@ -16,6 +16,7 @@ import {
   evaluateInvariants,
   planStaleHandoffAccepts,
   planSharedHiveCapture,
+  drainOperationalEscalationsBeforeMeasure,
   DEFAULT_THRESHOLDS,
   ESCALATION_RECONCILE_GRACE_MS,
   PROBE_A,
@@ -341,6 +342,26 @@ describe('planStaleHandoffAccepts (F-FIX-037 stale-handoff auto-accept)', () => 
     expect(planStaleHandoffAccepts([{ msg_id: 'edge', ts: hoursAgo(12) }], 12, NOW)).toEqual([]);
     const justOver = new Date(NOW - 12 * 3_600_000 - 1).toISOString();
     expect(planStaleHandoffAccepts([{ msg_id: 'edge', ts: justOver }], 12, NOW)).toEqual(['edge']);
+  });
+});
+
+describe('drainOperationalEscalationsBeforeMeasure (EI-8786 drain-before-measure)', () => {
+  it('drains stale operational escalations via the reconcile sweep and returns the resolved count', async () => {
+    // The fix: the invariant DRAINS in-pass before measuring (mirroring the handoff
+    // auto-accept + wake-queue sweeps), so it no longer false-fires when the SEPARATE
+    // hourly reconcile DBOS tick is late / shed / down. Here the in-pass reconcile
+    // clears the operational backlog itself.
+    const reconcile = vi.fn().mockResolvedValue({ resolved: 3 });
+    expect(await drainOperationalEscalationsBeforeMeasure(reconcile)).toBe(3);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('is best-effort: a reconcile failure never aborts the invariant pass (returns 0)', async () => {
+    // Fail-open: if the in-pass drain throws, the pass continues and the invariant
+    // measures the un-drained state (filing a genuine violation) — it must NOT reject.
+    const reconcile = vi.fn().mockRejectedValue(new Error('drain failed'));
+    await expect(drainOperationalEscalationsBeforeMeasure(reconcile)).resolves.toBe(0);
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 });
 

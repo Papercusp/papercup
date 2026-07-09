@@ -162,8 +162,15 @@ export function buildItemLine(
   // Emit the importance keyword only when it departs from the parser
   // default (`normal`) — keeps routine lines clean, mirrors blocked-by.
   const impSuffix = importance !== 'normal' ? ` importance: ${importance}` : '';
+  // Grammar guard (WI-3447): an item is ONE physical line — ITEM_LINE_RE's
+  // `(.*)$` does not span newlines. A newline in `text` (e.g. a multi-line
+  // paste) would split the line, truncating the item and orphaning the rest as
+  // stray prose. Collapse any newline-bearing whitespace run to a single space
+  // so the built line always parses back to the intended item. Single-line text
+  // is unaffected (no newline → no-op).
+  const singleLineText = text.trim().replace(/\s*[\r\n]+\s*/g, ' ');
   // Single-line form — preserves the ASCII-canonical examples in the spec.
-  return `- **${itemId}** \`todo\` ${text.trim()}${bbSuffix}${impSuffix}`;
+  return `- **${itemId}** \`todo\` ${singleLineText}${bbSuffix}${impSuffix}`;
 }
 
 /**

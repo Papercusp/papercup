@@ -77,7 +77,7 @@ import { listEscalations } from '../../agent-tools/coordination/escalations';
 // reader + reconcile sweep already agree on) and (b) the reconcile drain deadline
 // (OPERATIONAL_ESCALATION_TTL_MS — the single source of truth in reconcile-escalations.ts).
 import { isOperationalEscalation } from '../../attention/adapters';
-import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
+import { OPERATIONAL_ESCALATION_TTL_MS, reconcileStaleEscalationsOnce } from '../../attention/reconcile-escalations';
 
 /**
  * EI-7087: grace window added ON TOP of OPERATIONAL_ESCALATION_TTL_MS before the
@@ -685,6 +685,38 @@ async function autoAcceptStaleHandoffs(thresholdHours: number): Promise<number> 
   }
 }
 
+/**
+ * EI-8786: drain stale OPERATIONAL escalations IN-PASS, immediately before the
+ * invariant measures them — exactly like the sibling handoff check
+ * (autoAcceptStaleHandoffs) and wake-queue checks (sweepDeadOwnerPendingWakes /
+ * sweepStalePendingWakes) already do above. Before this, the escalation invariant
+ * ONLY measured, relying on the SEPARATE hourly attentionReconcile DBOS tick (:20)
+ * having drained the operational backlog before this monitor runs (:37). A missed /
+ * shed / stalled / cadence-lagged reconcile tick then leaves an operational
+ * escalation past the TTL at measure time, firing this "minor" EI on tick-timing
+ * noise rather than a genuine drain failure — the ESCALATION_RECONCILE_GRACE_MS 1h
+ * grace only partially covers the tick cadence race and does NOT cover a missed/down
+ * tick at all (observed live: an operational escalation open at 49.5h while the
+ * separate reconcile tick had not resolved anything for 8h). Draining here makes the
+ * check SELF-HEALING: after this the invariant fires ONLY when the reconcile ITSELF
+ * cannot drain an operational escalation (a real stuck row), never because a separate
+ * tick was late or down. Best-effort — a drain failure never aborts the pass (the
+ * invariant then measures the un-drained state and files, which is the correct
+ * fail-open behavior). The reconcile is injectable for unit tests; the default is the
+ * live sweep, scoped (like gatherSnapshot) to this monitor's active workspace.
+ * Returns the number of escalations resolved.
+ */
+export async function drainOperationalEscalationsBeforeMeasure(
+  reconcile: () => Promise<{ resolved: number }> = reconcileStaleEscalationsOnce,
+): Promise<number> {
+  try {
+    const r = await reconcile();
+    return r.resolved;
+  } catch {
+    return 0;
+  }
+}
+
 /** Gather the live snapshot. Every leg is isolated — a failing query zeroes
  *  its own check (and notes it), never the fire. */
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
@@ -906,6 +938,12 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
   // acceptance are auto-accepted by the monitor before the invariant check runs.
   // Best-effort — a failure never aborts the pass.
   await autoAcceptStaleHandoffs(t.stuckHandoffHours).catch(() => 0);
+  // EI-8786: Drain stale OPERATIONAL escalations BEFORE measuring, mirroring the
+  // handoff auto-accept above and the wake-queue sweeps — so the escalation invariant
+  // fires only on a genuine, unrecoverable drain failure, never because the separate
+  // hourly attentionReconcile DBOS tick was late / shed / down (see the helper doc).
+  // Best-effort — a failure never aborts the pass.
+  await drainOperationalEscalationsBeforeMeasure().catch(() => 0);
   const snap = await gatherSnapshot(t);
   const violations = evaluateInvariants(snap, t, Date.now());
   for (const v of violations) {

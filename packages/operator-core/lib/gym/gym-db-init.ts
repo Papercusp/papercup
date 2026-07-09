@@ -56,6 +56,26 @@ export function resolveMainSqlDir(startDir: string): string {
 /** The main schema migration dir (000-baseline.sql + 107+). */
 export const MAIN_SQL_DIR = resolveMainSqlDir(__dirname);
 
+/**
+ * The Postgres image the gym cycle provisions its dedicated ephemeral DB from.
+ *
+ * EI-8784: MUST track the shipped/embedded operator's PG major AND the shared
+ * integration-test container (`@papercusp/test-config` pg-container.ts,
+ * `TEST_PG_IMAGE`). WI-2942 (2026-07-05) bumped BOTH the test infra and the
+ * embedded operator from PG16 → PG18 ("PG16 silently ALLOWED behavior PG18
+ * REJECTS, and vice versa") but MISSED this gym provisioning line, which stayed
+ * on `pgvector/pgvector:pg16`. The gym applies the SAME `000-baseline.sql` the
+ * operator ships, so a version skew makes provisioning drift from what the
+ * passing `gym-db-init.integration.test.ts` (which runs on pg18 via getTestPg)
+ * actually validates — every live gym-cycle fire on gymloopharness then died at
+ * `CREATE DATABASE cannot run inside a transaction block` (29 consecutive reds),
+ * a failure the pg18 integration test never reproduced because it runs the
+ * identical code against pg18. Pinning this to pg18 makes the live path
+ * byte-identical to the green test; `gym-provision-image.test.ts` asserts it
+ * can't drift from `TEST_PG_IMAGE` again.
+ */
+export const GYM_PROVISION_PG_IMAGE = 'pgvector/pgvector:pg18';
+
 const FRAMEWORK_ROLES_DDL = `
   DO $pg$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_app') THEN
