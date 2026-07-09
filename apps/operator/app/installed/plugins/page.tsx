@@ -200,7 +200,7 @@ export default function InstalledPluginsPage() {
         <div className="pc-marketplace-mini-stats" aria-label="Installed plugins">
           <div><strong>{plugins.length}</strong><span>installed</span></div>
           {Object.keys(updates).length > 0 && (
-            <div style={{ background: 'var(--accent, #22d3ee)', color: '#000' }}>
+            <div style={{ background: 'var(--accent, #22d3ee)', color: 'var(--accent-ink, #051827)' }}>
               <strong>{Object.keys(updates).length}</strong>
               <span>update{Object.keys(updates).length === 1 ? '' : 's'}</span>
             </div>
@@ -263,7 +263,7 @@ export default function InstalledPluginsPage() {
                   {updates[p.name] && (
                     <Tooltip label={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}><button
                       className="pc-button"
-                      style={{ background: 'var(--accent, #22d3ee)', color: '#000' }}
+                      style={{ background: 'var(--accent, #22d3ee)', color: 'var(--accent-ink, #051827)' }}
                       onClick={() => update(p.name)}
                       disabled={busy === p.name}
 

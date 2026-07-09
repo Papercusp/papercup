@@ -347,12 +347,12 @@ export default function FeaturesAdmin() {
         }
         .fa-preset:hover:not(:disabled) {
           background: color-mix(in srgb, var(--bg-1), transparent 2%);
-          border-color: rgba(103, 232, 249, 0.30);
+          border-color: rgb(from var(--accent-strong) r g b / 0.30);
           transform: translateY(-1px);
         }
         .fa-preset.active {
           background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 2%), color-mix(in srgb, var(--bg-1), transparent 1%));
-          border-color: rgba(103, 232, 249, 0.42);
+          border-color: rgb(from var(--accent-strong) r g b / 0.42);
         }
         .fa-preset:disabled { opacity: 0.62; cursor: progress; }
         .fa-preset-emoji { font-size: 20px; }
@@ -398,10 +398,10 @@ export default function FeaturesAdmin() {
         }
         .fa-toggle.on {
           background: color-mix(in srgb, var(--accent), transparent 66%);
-          border-color: rgba(103, 232, 249, 0.46);
+          border-color: rgb(from var(--accent-strong) r g b / 0.46);
         }
         .fa-toggle:hover:not(:disabled) {
-          border-color: rgba(103, 232, 249, 0.36);
+          border-color: rgb(from var(--accent-strong) r g b / 0.36);
         }
         .fa-toggle:disabled { cursor: not-allowed; }
         .fa-toggle-knob {

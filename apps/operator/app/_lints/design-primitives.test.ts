@@ -106,6 +106,12 @@ const AUDITED_DIRECT_CYAN_FILES = [
   'operator-vite/src/components/adv/AdvShell.tsx',
   'operator/app/adv/harnesses/AdvDocsTab.tsx',
   'operator/app/adv/harnesses/AdvGitGraphPanel.tsx',
+  // Theme-contract sweep P-006 (design-simplification-2026-07-09): migrated to
+  // rgb(from var(--accent-strong)…) / var(--accent…) forms — keep them clean.
+  'operator/app/admin/features/FeaturesAdmin.tsx',
+  'operator-vite/src/components/adv/AdvConversationsTab.tsx',
+  'operator-vite/src/components/adv/FrameVncView.tsx',
+  'operator/app/installed/plugins/page.tsx',
   'operator/app/harness/TrustBadge.tsx',
   'operator/app/harness/PrsTab.tsx',
   'operator/app/harness/theme.ts',
@@ -310,8 +316,10 @@ function unexpectedLocalStatusColorMaps(): string[] {
 
 function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   const offenders: string[] = [];
+  // All six brand-adjacent cyan/sky shades (P-006f): cyan-400/300, sky-500/400/300/200
+  // — hex and rgba-triplet forms. Lines carrying var( are skipped (token fallbacks).
   const cyanLiteralRe =
-    /#(?:22d3ee|38bdf8|7dd3fc)|rgba\(\s*(?:34\s*,\s*211\s*,\s*238|56\s*,\s*189\s*,\s*248|125\s*,\s*211\s*,\s*252)\s*,\s*[^)]+\)/g;
+    /#(?:22d3ee|67e8f9|0ea5e9|38bdf8|7dd3fc|bae6fd)|rgba\(\s*(?:34\s*,\s*211\s*,\s*238|103\s*,\s*232\s*,\s*249|14\s*,\s*165\s*,\s*233|56\s*,\s*189\s*,\s*248|125\s*,\s*211\s*,\s*252|186\s*,\s*230\s*,\s*253)\s*,\s*[^)]+\)/g;
   for (const path of AUDITED_DIRECT_CYAN_FILES) {
     const file = join(APPS_ROOT, path);
     let content: string;

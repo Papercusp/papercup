@@ -20,12 +20,15 @@ export const COLORS = {
   accent: 'var(--hive-harness-accent, #5e6ad2)',
   accentHover: 'var(--hive-harness-accent-hover, #7178d8)',
 
-  danger: '#7f1d1d',
-  dangerBg: '#2a1315',
-  dangerText: '#fca5a5',
-  success: '#065f46',
-  successBg: '#0f3024',
-  successText: '#a7f3d0',
+  // Solid filled-button tones: the semantic status hue pulled toward the page's
+  // deepest bg so white button text keeps contrast in every theme (P-006c —
+  // frost renders ≈ the old red-900/emerald-900 literals these replace).
+  danger: 'color-mix(in srgb, var(--bad, #fb7185), var(--bg-deepest, #02060C) 55%)',
+  dangerBg: 'var(--bad-bg, rgba(251, 113, 133, 0.1))',
+  dangerText: 'var(--bad, #fca5a5)',
+  success: 'color-mix(in srgb, var(--good, #34d399), var(--bg-deepest, #02060C) 55%)',
+  successBg: 'var(--good-bg, rgba(52, 211, 153, 0.1))',
+  successText: 'var(--good, #a7f3d0)',
 } as const;
 
 // Status palette — dot uses COLOR_SOLID, pill bg uses COLOR_BG for subtler look.

@@ -199,7 +199,7 @@ const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
 // (mirrors the Create sidebar's per-view button colours). 'feed' is the muted
 // debug firehose, so it gets a quiet slate.
 const VIEW_ACCENT: Record<ConvView, string> = {
-  threads: '#38bdf8',
+  threads: 'var(--accent, #38bdf8)',
   deliberations: '#a78bfa',
   agentchats: '#22c55e',
   messages: '#f59e0b',

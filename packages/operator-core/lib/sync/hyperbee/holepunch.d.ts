@@ -70,8 +70,27 @@ declare module 'protomux' {
 }
 
 declare module 'compact-encoding' {
-  // We only use the `json` codec for the announce frame.
-  const c: { json: unknown; [k: string]: unknown };
+  // We only use the `json` codec for the announce frame — PLUS the raw
+  // primitives (P-201, hive-git serve-wiring.ts) for a hand-rolled binary frame
+  // encoding (a git pack is tens of MB; JSON/base64 would double it on the wire).
+  export interface CompactEncodingState {
+    start: number;
+    end: number;
+    buffer: Buffer | null;
+  }
+  export interface CompactEncoding<T> {
+    preencode(state: CompactEncodingState, value: T): void;
+    encode(state: CompactEncodingState, value: T): void;
+    decode(state: CompactEncodingState): T;
+  }
+  const c: {
+    json: unknown;
+    uint: CompactEncoding<number>;
+    int: CompactEncoding<number>;
+    string: CompactEncoding<string>;
+    buffer: CompactEncoding<Buffer>;
+    [k: string]: unknown;
+  };
   export default c;
 }
 

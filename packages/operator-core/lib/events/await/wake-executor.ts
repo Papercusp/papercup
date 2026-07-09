@@ -235,6 +235,50 @@ function pidAlive(pid: number | null): boolean {
   }
 }
 
+/** System identity for the degrade-to-inbox notify send below (mirrors
+ *  engine.ts's own `emitterIdentity` — kept as a private duplicate rather
+ *  than a shared export to avoid a wake-executor↔engine import cycle). */
+function inboxNotifierIdentity(workspaceId: string): AgentIdentity {
+  return {
+    ownerId: 'await-event',
+    ownerLabel: 'await-event',
+    source: 'static-client',
+    workspaceId,
+    userId: null,
+  } as AgentIdentity;
+}
+
+/**
+ * Degrade a would-be DROP to a coord inbox notification (P-001,
+ * wake-delivery-degradation-fix-2026-07-09). Per the events:await
+ * registration contract, a subscriber always has a coord inbox to fall back
+ * to — no live pty/socket to inject into and nothing safely resumable is NOT
+ * the same as "no resolvable owner". Only when the inbox write itself fails
+ * (the one case where delivery is genuinely impossible) does this still drop,
+ * visibly, folding the inbox failure into the reason.
+ */
+async function degradeToInboxOrDrop(
+  d: DeliveryWork,
+  reason: string,
+  send: typeof sendMessage,
+): Promise<WakeOutcome> {
+  try {
+    await send(inboxNotifierIdentity(d.workspaceId), {
+      to: [d.subscriberId],
+      summary: `[await-event] ${d.eventKey} fired — delivered to your coord inbox (${reason})`,
+      body: wakeTurnText(d),
+      category: 'event',
+      extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },
+    });
+    return { kind: 'delivered', channel: 'inbox' };
+  } catch (err) {
+    return {
+      kind: 'drop',
+      reason: `${reason} — inbox delivery also failed (no resolvable owner): ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 /** Per-client resume invocation (mirrors psu-launcher resumeArgsFor, headless-
  *  capable). Returns null when the session is not safely resumable. */
 export function resumeCommandFor(handle: {
@@ -554,6 +598,10 @@ export interface ExecuteWakeDeps {
   kill?: typeof killPty;
   presence?: typeof getPresence;
   alive?: (pid: number | null) => boolean;
+  /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
+   *  used to degrade a would-be DROP into a durable inbox notification.
+   *  Injected for tests; defaults to the real sendMessage. */
+  sendCoordMessage?: typeof sendMessage;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
    *  psu-hosted managed-pty session's control socket. The operator can't see it
@@ -689,6 +737,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
+  const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
 
   try {
     const handle = d.wakeHandle;
@@ -703,10 +752,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         const outcome = await injectPsuHostWake(d, psuHost.sock, wakeTurnText(d), injectPsuHost, deps);
         if (outcome) return outcome;
       }
-      // No injectable socket: presence fresh → the inbox nudge reaches it; gone → drop.
+      // No injectable socket: presence fresh → park (a one-time inbox nudge
+      // reaches it, engine.ts); gone/stale → degrade straight to a durable
+      // coord inbox delivery instead of dropping outright (P-001).
       const p = await presence(d.subscriberId).catch(() => null);
       if (p && !p.stale && !p.revoked) return { kind: 'park', reason: 'no wake handle; presence live — inbox only' };
-      return { kind: 'drop', reason: 'no wake handle and presence gone/stale — dead waiter' };
+      return degradeToInboxOrDrop(d, 'no wake handle and presence gone/stale — dead waiter', sendCoordMessage);
     }
 
     if (handle.kind === 'plan-run') {
@@ -855,7 +906,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       if (p && !p.stale && !p.revoked) {
         return { kind: 'park', reason: 'session ended but not safely resumable (no native session id / unsupported client) — inbox only' };
       }
-      return { kind: 'drop', reason: 'session ended, not resumable, presence gone — dead waiter' };
+      return degradeToInboxOrDrop(d, 'session ended, not resumable, presence gone — dead waiter', sendCoordMessage);
     }
 
     const env: Record<string, string> = {

@@ -93,7 +93,7 @@ export default function FrameVncView({
           position: absolute; inset: 0;
           display: flex; align-items: center; justify-content: center;
           font-size: 12px; color: var(--fg-mute, #7f9bb4);
-          background: rgba(7, 16, 29, 0.6);
+          background: rgb(from var(--bg, #07101d) r g b / 0.6);
           pointer-events: none;
         }
       `}</style>

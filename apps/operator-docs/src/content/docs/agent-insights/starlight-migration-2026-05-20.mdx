@@ -69,7 +69,7 @@ Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`.
 
 ### 3. Postbuild copy is in `apps/operator-docs/package.json`
 
-The build script is `"build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the `.md`-twin emit and the static copy steps are skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
+The build script is `"build": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
 
 ### 4. Both fumadocs setups were removed
 
