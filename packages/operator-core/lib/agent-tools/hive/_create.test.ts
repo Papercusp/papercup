@@ -497,5 +497,79 @@ describe('createHiveHarness', () => {
       // No existingPath -> no repo context for the resolver -> localDirs stays [] (unchanged).
       expect(resolveExtendsCalls).toEqual([{ localDirs: [] }]);
     });
+
+    // WI-3646: a pre-existing harness registry entry that already lives at the
+    // linked path never got `hive_slug` backfilled onto ITS OWN entry — only the
+    // JOIN path (_create_from_repo.ts) writes that field. Without it, that harness
+    // never resolves its swarm binding (potHomeSlugForHarness/resolveHiveSwarmBinding
+    // return null) and silently never federates with the hive it now belongs to
+    // (confirmed live: rig-a's 'hello-world' harness vs its own 'hello-world-hive').
+    it('backfills hive_slug onto a pre-existing sibling harness registry entry at the same path', async () => {
+      const existing = mkdtempSync(join(tmpdir(), 'hive-link-backfill-'));
+      try {
+        // A harness ALREADY registered at this path, with no hive_slug (mirrors
+        // rig-a's 'hello-world' before 'hello-world-hive' is created via existingPath).
+        registry.projects.push({ slug: 'hello-world', path: existing, harness_kind: 'coding' });
+        const { createHiveHarness } = await import('./_create');
+        const res = await createHiveHarness({
+          slug: 'hello-world-hive',
+          workspaceId: 'default',
+          parentDir: tmpParent,
+          existingPath: existing,
+        });
+        expect(res.ok).toBe(true);
+        const sibling = registry.projects.find((p) => p.slug === 'hello-world');
+        expect(sibling?.hive_slug).toBe('hello-world-hive');
+        // The new hive-home entry itself needs no hive_slug (it IS the home).
+        const home = registry.projects.find((p) => p.slug === 'hello-world-hive');
+        expect(home?.hive_slug).toBeUndefined();
+      } finally {
+        rmSync(existing, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT backfill a sibling entry at a DIFFERENT path (only same-path siblings)', async () => {
+      const existing = mkdtempSync(join(tmpdir(), 'hive-link-backfill-2-'));
+      const elsewhere = mkdtempSync(join(tmpdir(), 'hive-link-elsewhere-'));
+      try {
+        registry.projects.push({ slug: 'unrelated', path: elsewhere, harness_kind: 'coding' });
+        const { createHiveHarness } = await import('./_create');
+        const res = await createHiveHarness({
+          slug: 'another-hive',
+          workspaceId: 'default',
+          parentDir: tmpParent,
+          existingPath: existing,
+        });
+        expect(res.ok).toBe(true);
+        expect(registry.projects.find((p) => p.slug === 'unrelated')?.hive_slug).toBeUndefined();
+      } finally {
+        rmSync(existing, { recursive: true, force: true });
+        rmSync(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    it('a forced rollback undoes the hive_slug backfill on the sibling entry', async () => {
+      scaffoldImpl = async () => {
+        throw new Error('schema boom');
+      };
+      const existing = mkdtempSync(join(tmpdir(), 'hive-link-backfill-rollback-'));
+      try {
+        registry.projects.push({ slug: 'hello-world', path: existing, harness_kind: 'coding' });
+        const { createHiveHarness } = await import('./_create');
+        const res = await createHiveHarness({
+          slug: 'hello-world-hive',
+          workspaceId: 'default',
+          parentDir: tmpParent,
+          existingPath: existing,
+        });
+        expect(res.ok).toBe(false);
+        // Sibling's hive_slug was rolled back (undo ran), and it's otherwise intact.
+        const sibling = registry.projects.find((p) => p.slug === 'hello-world');
+        expect(sibling).toBeTruthy();
+        expect(sibling?.hive_slug).toBeUndefined();
+      } finally {
+        rmSync(existing, { recursive: true, force: true });
+      }
+    });
   });
 });

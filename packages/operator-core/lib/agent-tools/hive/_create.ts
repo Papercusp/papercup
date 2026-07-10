@@ -277,6 +277,38 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     // 2. Register with harness_kind:'hive' (the marker resolveHive filters on —
     //    harness:create does NOT set this, so the hive path must).
     const fresh = await loadHarnessRegistry(ws);
+
+    // WI-3646: LINK-EXISTING mode creates a NEW hive-home registry entry at `dest`,
+    // but any PRE-EXISTING harness registry entry that already lives at that same
+    // path (the common case: `pot:create { existingPath }` turning an already-running
+    // harness into a hive-home) never had its OWN `hive_slug` backfilled — only the
+    // JOIN path (`_create_from_repo.ts`'s `hive_slug: potSlug` write) does that. Without
+    // it, `potHomeSlugForHarness`/`resolveHiveSwarmBinding` return null for that harness
+    // and it never binds to any swarm topic — it silently never federates with the rest
+    // of the hive it supposedly owns (confirmed live: rig-a's `hello-world` harness vs.
+    // its own `hello-world-hive`). Backfill `hive_slug` onto every sibling entry sharing
+    // this path so it resolves its swarm binding correctly from here on.
+    if (linkExisting) {
+      let backfilled = false;
+      for (const p of fresh.projects) {
+        if (p.slug !== opts.slug && resolvePath(p.path) === dest && p.hive_slug !== opts.slug) {
+          p.hive_slug = opts.slug;
+          backfilled = true;
+        }
+      }
+      if (backfilled) {
+        undo.push(async () => {
+          const r = await loadHarnessRegistry(ws);
+          for (const p of r.projects) {
+            if (p.path && resolvePath(p.path) === dest && p.hive_slug === opts.slug) {
+              delete p.hive_slug;
+            }
+          }
+          await saveHarnessRegistry(r, ws, { allowEmpty: true });
+        });
+      }
+    }
+
     fresh.projects.push({
       slug: opts.slug,
       path,

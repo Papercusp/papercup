@@ -16,6 +16,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -96,6 +97,8 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
+  // WI-3649: the by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
+  await ensureCoordCapabilityTables(db.sql);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => { await db.sql`TRUNCATE harness_shared.work_items`; });
@@ -263,7 +266,7 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
   });
 
   it('claimNextIssueWorkItem (the claim_next/scheduler:get_next self-select) never claims a remote-origin row', async () => {
-    await seedIssue('WI-remote-only', { origin: 'remote', createdTs: 100 });
+    await seedIssue('WI-remote-only', { origin: 'remote', createdTs: 100, status: 'open' });
     // Nothing else eligible — a remote-origin-only pool must report a genuine miss,
     // NOT silently succeed by writing taken_by on the federation-owned row (the WI-3649
     // bug: this UPDATE writes harness_shared.work_items directly, bypassing the view
@@ -274,8 +277,8 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
   });
 
   it('claimNextIssueWorkItem skips a remote row and claims the local one behind it', async () => {
-    await seedIssue('WI-remote-first', { origin: 'remote', createdTs: 100 });
-    await seedIssue('WI-local-second', { origin: 'local', createdTs: 200 });
+    await seedIssue('WI-remote-first', { origin: 'remote', createdTs: 100, status: 'open' });
+    await seedIssue('WI-local-second', { origin: 'local', createdTs: 200, status: 'open' });
     const claimed = await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default');
     expect(claimed?.id).toBe('WI-local-second');
     const remoteRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-remote-first'`)[0];

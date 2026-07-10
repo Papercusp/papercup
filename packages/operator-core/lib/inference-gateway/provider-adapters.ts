@@ -1,4 +1,5 @@
 import type { AccountPool } from './gateway';
+import { CODEX_ORIGINATOR, CODEX_OPENAI_BETA } from './codex-oauth-proxy';
 
 export type GatewayProviderId = 'claude' | 'codex' | 'omp';
 export type GatewayProviderProtocol = 'anthropic' | 'openai-compatible' | 'unsupported';
@@ -116,6 +117,19 @@ export function providerForGatewayRequest(
   if (path.startsWith('/v1/models')) {
     const pinnedAccount = headerValue(headers, ACCOUNT_HEADER);
     if (pinnedAccount && (adapters.codex.pool?.select?.(pinnedAccount) || isExtraCodexAccount?.(pinnedAccount))) {
+      return adapters.codex;
+    }
+    // WI-3651: an UNPINNED codex request (WI-3645 auto-routing, no x-papercusp-account) still
+    // self-identifies via the headers the codex CLI stamps on every request (codex-oauth-proxy.ts:
+    // `originator: codex_cli_rs`, `OpenAI-Beta: responses=experimental`). Without this, an unpinned
+    // `/v1/models` probe fell through to the Claude adapter, which answers with Claude's catalog
+    // shape ({ data: [{ id: 'claude-...' }] }) -- missing the `models` field codex expects -- so
+    // codex logged a noisy "failed to refresh available models" ERROR once per auto session and
+    // fell back to its baked-in model list. Pure header sniffing, no pool lookup: cheap, and safe
+    // even for an all-CLI codex deployment (no bearer pool at all).
+    const originator = headerValue(headers, 'originator');
+    const openaiBeta = headerValue(headers, 'openai-beta');
+    if (originator === CODEX_ORIGINATOR || openaiBeta === CODEX_OPENAI_BETA) {
       return adapters.codex;
     }
   }

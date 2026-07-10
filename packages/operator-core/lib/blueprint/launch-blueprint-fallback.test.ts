@@ -188,6 +188,19 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
 describe('defaultFire fallback — heartbeats the launch row while the fetch is in flight (P-011)', () => {
   // Real timers (the SPAWN_HEARTBEAT_INTERVAL_MS mock is 10ms) — fake timers here pull a
   // lazy import chain into the partial @papercusp/db-org mock during microtask flushing.
+  //
+  // EI-8978 (watchdog-caught flake, 2026-07-09): the ORIGINAL margins here were tick(45)/
+  // tick(25) against a 10ms interval — only a 2-4x safety margin. On this box's routinely
+  // shared/contended event loop (concurrent vitest workers, host load spikes) a few tens of
+  // ms of scheduling jitter is common, so a fixed-sleep-then-assert-exact-count check at
+  // this granularity is inherently flaky in BOTH directions: too few beats observed (the
+  // "expected 1 to be >= 2" failure) AND — more subtly — extra beats sneaking in before the
+  // "no further growth" snapshot is taken (the "expected 14 to be 9" failure). The interval
+  // itself is deterministically cleared (`stopHeartbeat()` runs SYNCHRONOUSLY as the first
+  // statement of the fetch's `.then`/`.catch`, before any further macrotask can fire — see
+  // launch-blueprint.ts), so this is a test-margin problem, not a production race. Fix:
+  // widen every margin to a large multiple of the interval (10-30x, still <1s wall-clock
+  // total) and poll for the lower-bound instead of asserting after one fixed sleep.
   const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   beforeEach(() => {
@@ -205,22 +218,26 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     await fireLaunchBlueprint('cup', { ...opts, kickoff: 'wake' });
     const recordedSpawnId = vi.mocked(recordSpawn).mock.calls[0]![1].spawnId;
 
-    // Several heartbeat intervals while the worker (fetch) is still running.
-    await tick(45);
-    expect(heartbeatSpawns).toHaveBeenCalled();
-    expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Poll for the ≥2-beats threshold instead of a fixed sleep — robust to scheduling
+    // jitter that would otherwise slow the interval below the naive tick(45) assumption.
+    await vi.waitFor(() => expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBeGreaterThanOrEqual(2), {
+      timeout: 3000,
+    });
     for (const [sql, ids] of vi.mocked(heartbeatSpawns).mock.calls) {
       expect(sql).toBe(mockSql);
       expect(ids).toEqual([recordedSpawnId]);
     }
 
-    // Worker finishes → the heartbeat stops and the row flips done.
+    // Worker finishes → the heartbeat stops (synchronously, before finishSpawn is even
+    // invoked — see the STATUS comment above) and the row flips done.
     resolveFetch(new Response('', { status: 200 }));
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
     const beatsAtFinish = vi.mocked(heartbeatSpawns).mock.calls.length;
 
-    // No further beats after the fetch settled (the interval was cleared).
-    await tick(45);
+    // No further beats after the fetch settled (the interval was cleared). A generous
+    // multiple of the interval — not a razor-thin margin — so this genuinely proves
+    // stability rather than just outrunning the next scheduling slot.
+    await tick(300);
     expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBe(beatsAtFinish);
   });
 
@@ -230,13 +247,12 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await fireLaunchBlueprint('cup', opts);
-    await tick(25);
-    expect(heartbeatSpawns).toHaveBeenCalled();
+    await vi.waitFor(() => expect(heartbeatSpawns).toHaveBeenCalled(), { timeout: 3000 });
 
     rejectFetch(new Error('loopback: ECONNREFUSED'));
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
     const beatsAtFail = vi.mocked(heartbeatSpawns).mock.calls.length;
-    await tick(45);
+    await tick(300);
     expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBe(beatsAtFail);
     warn.mockRestore();
   });
@@ -247,7 +263,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await fireLaunchBlueprint('cup', opts);
-    await tick(45);
+    await tick(300);
     expect(heartbeatSpawns).not.toHaveBeenCalled();
     warn.mockRestore();
   });

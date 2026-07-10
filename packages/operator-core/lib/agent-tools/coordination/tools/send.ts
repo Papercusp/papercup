@@ -157,7 +157,7 @@ const itemSpec = z.object({
 async function sendOne(
   msg: SendMsg,
   identity: AgentIdentity,
-  harnessSlug: string | undefined,
+  harnessSlug: string | null,
   bcast?: { scoped?: { from: '*'; to: string; reason: string }; allHive?: boolean },
   cueAuthority?: CueAuthorityStamp | null,
 ): Promise<BulkItemResult> {
@@ -238,7 +238,10 @@ async function sendOne(
     files: msg.files,
     plan_slug: msg.plan_slug,
     related_msg_id: msg.related_msg_id,
-    ...(harnessSlug ? { harnessSlug } : {}),
+    // WI-3653: pass the resolved scope THROUGH, including the explicit-local
+    // null — omitting it would re-trigger sendMessage's AUTO default and defeat
+    // scope:'local'.
+    harnessSlug,
     ...(Object.keys(extra).length ? { extra } : {}),
   });
 
@@ -569,8 +572,11 @@ async function effectiveFederationScope(
   ctxHarness: string | undefined,
   workspaceId: string | null | undefined,
   to: string[],
-): Promise<{ harnessSlug: string | undefined } | { error: BulkItemResult }> {
-  if (msgScope === 'local') return { harnessSlug: undefined };
+): Promise<{ harnessSlug: string | null } | { error: BulkItemResult }> {
+  // WI-3653: every "stay local" DECISION returns null (sendMessage's explicit
+  // machine-local opt-out) — this layer has already resolved the scope, so the
+  // write seam's own AUTO default (undefined → resolve) must not re-decide it.
+  if (msgScope === 'local') return { harnessSlug: null };
   if (ctxHarness) return { harnessSlug: ctxHarness };
   if (!workspaceId || workspaceId === '*') {
     if (msgScope === 'hive') {
@@ -584,7 +590,7 @@ async function effectiveFederationScope(
         },
       };
     }
-    return { harnessSlug: undefined };
+    return { harnessSlug: null };
   }
   const resolved = await resolveWorkspaceHiveScope(workspaceId);
   if (resolved.kind === 'one') return { harnessSlug: resolved.homeSlug };
@@ -602,7 +608,7 @@ async function effectiveFederationScope(
       },
     };
   }
-  return { harnessSlug: undefined }; // auto: none/ambiguous → today's local behavior
+  return { harnessSlug: null }; // auto: none/ambiguous → machine-local, decided HERE
 }
 
 export default defineTool({

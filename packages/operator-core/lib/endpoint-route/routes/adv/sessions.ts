@@ -405,7 +405,7 @@ const searchTranscripts = defineTool({
   method: 'GET',
   path: '/adv/sessions/search-transcripts',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, { signal }) {
     const url = new URL(req.url);
     const q = (url.searchParams.get('q') ?? '').trim().slice(0, 500);
     if (!q) {
@@ -432,6 +432,11 @@ const searchTranscripts = defineTool({
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
     const embedder = await buildQueryEmbedder();
     const { sql } = getOrgPg();
+    // The route watchdog's signal is threaded into the engine so a timed-out
+    // search stops running instead of grinding all sources to completion
+    // after the 408 already went out (2026-07-09 incident: 34–69s server
+    // burn past the 30s budget under host load). Abort → throw → the route
+    // stack's aborted-catch path returns the 408.
     const { results } = await runHybridSearch(sources, {
       sql,
       query: q,
@@ -440,6 +445,7 @@ const searchTranscripts = defineTool({
       limit: hitLimit,
       mode: 'hybrid',
       embedder,
+      signal,
     });
 
     // Engine hits → turn refs (source_id = `<sourceKind>:<sessionId>:<turnIdx>`).
@@ -464,6 +470,7 @@ const searchTranscripts = defineTool({
     // Hydrate per-turn metadata (ts/speaker/owner) — ts anchors the deep-link
     // into the transcript viewer; owner matches claude isolation transcripts to
     // their roster agent. One batched unnest join, never per-hit queries.
+    signal.throwIfAborted(); // watchdog fired mid-search → stop, don't hydrate
     if (turnHits.length > 0) {
       try {
         const kinds = turnHits.map((h) => h.sourceKind);
@@ -482,7 +489,10 @@ const searchTranscripts = defineTool({
           const m = metaByKey.get(`${h.sourceKind}:${h.sessionId}:${h.turnIdx}`);
           if (m) { h.ts = m.ts; h.speaker = m.speaker; h.owner = m.owner; }
         }
-      } catch { /* metadata is a bonus — never fail the search */ }
+      } catch (err) {
+        if (signal.aborted) throw err; // abort outranks the bonus-metadata degradation
+        /* metadata is a bonus — never fail the search */
+      }
     }
 
     const groups = groupHitsBySession(turnHits);

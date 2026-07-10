@@ -50,7 +50,12 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
-import { autoPickableWhereSql, isAutoPickable, loadTrustedGithubUserIds } from './work-items-admission';
+import {
+  autoPickableWhereSql,
+  isAutoPickable,
+  isIssueLocallyClaimable,
+  loadTrustedGithubUserIds,
+} from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
 import {
@@ -545,6 +550,11 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       state: (filter.state as IssueState) || undefined,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      // WI-3649: mirror the feature branch's admissibleOnly gate (line ~530) so
+      // "claimable backlog" excludes federated (origin='remote') issue-family rows
+      // that the write path (claimNextIssueWorkItem / the engineer_issues_view_dml
+      // trigger) will never actually let a local claim succeed against.
+      admissibleOnly: filter.admissibleOnly,
       limit,
     });
     out.push(...issues.map(issueToWorkItem));
@@ -2504,6 +2514,13 @@ export async function claimNextIssueWorkItem(
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR wi.taken_by = '')
           AND wi.status = ANY(${[...states]}::text[])
+          -- WI-3649 (EI-7841's issue-family half): this base-table UPDATE bypasses the
+          -- engineer_issues VIEW/trigger entirely, so unlike the single-id work_items:claim
+          -- path (gated by engineer_issues_view_dml's EI-7833 remote-skip) it had NO origin
+          -- guard at all — a self-select could actually SUCCEED in locally mutating taken_by
+          -- on a federated row, violating the "authoring peer owns it" LWW invariant. Mirrors
+          -- isIssueLocallyClaimable (work-items-admission.ts): only origin NULL/'local' self-selectable.
+          AND (wi.origin IS NULL OR wi.origin = 'local')
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
@@ -2674,6 +2691,13 @@ export async function observeWorkItem(
       pickable = isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trusted);
     }
     if (!pickable) return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+  }
+  // WI-3649: the issue-family (bug/change/task) half of the same EI-7841 class — a
+  // federated (origin='remote') issue-family row is never locally claimable (its
+  // authoring peer's core owns it, EI-7833/mig-521), so `available` must say so here
+  // too, not just report unclaimed and let the real claim bounce with not_claimable.
+  if (unclaimed && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
+    return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
   }
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }

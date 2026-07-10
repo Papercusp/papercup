@@ -26,6 +26,7 @@ import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
 import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
 import { resolveBestEffortAgainstRoster } from './recipient-resolve';
+import { resolveWorkspaceHiveScope } from './federation-scope';
 
 export type { InboxOptions };
 
@@ -38,11 +39,22 @@ export interface SendOptions {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
-  /** Originating harness slug, when the sender is a harness-scoped agent.
-   *  Lets the human inbox open a chat scoped to the right harness (most
-   *  agent→human messages are about a specific harness). Omitted for
-   *  workspace-level senders (operator/oracle/SU broadcasts). */
-  harnessSlug?: string;
+  /** Originating harness slug — ALSO the coord federation key (the capture
+   *  trigger only outboxes a coord_event_log row whose harness_slug names a
+   *  federating harness/hive-home). Tri-state (WI-3653):
+   *    string    → stamp verbatim (harness-scoped sender / MCP-resolved scope);
+   *    null      → EXPLICIT machine-local (coord:send scope:'local') — never
+   *                auto-stamped;
+   *    undefined → AUTO: stamp the workspace's single shared Hive home when
+   *                exactly one exists (the SAME rule coord:send documents for
+   *                an omitted scope), else stay local.
+   *  WHY the auto default lives HERE and not only in the MCP tool layer: the
+   *  serve plane's system emitters (plan-clobber-watch etc.) call sendMessage
+   *  directly, so on a fed-plane machine (P-059 Mac rig) every locally-emitted
+   *  coord event carried harness_slug NULL and could NEVER federate — zero
+   *  coord ops ever entered that machine's outbox while plan-parts/issues
+   *  federated fine. The write seam is the one place every writer passes. */
+  harnessSlug?: string | null;
   /** Default 'message'. Use other kinds for typed channel writes. */
   kind?: CoordKind;
   /** Ambient-classification tag (e.g. 'service-health'). A categorised message
@@ -104,7 +116,24 @@ export async function sendMessage(
   // Canonical snake_case envelope field (matches plan_slug/msg_id/related_msg_id
   // and the coord_event_log.harness_slug column PgCoordLog projects it to for
   // federation — distributed-coordination-shared-harness-2026-06-04 Track A).
-  if (opts.harnessSlug !== undefined) env.harness_slug = opts.harnessSlug;
+  if (typeof opts.harnessSlug === 'string') {
+    env.harness_slug = opts.harnessSlug;
+  } else if (opts.harnessSlug === undefined) {
+    // WI-3653 AUTO-stamp (see SendOptions.harnessSlug): an un-scoped writer in a
+    // workspace with EXACTLY ONE shared Hive stamps that Hive's home so the
+    // message federates; none/many → machine-local (byte-identical to before).
+    // Fail-soft: a resolver error means "no shared hive visible here" — it must
+    // never block the send. `null` (explicit scope:'local') skips this entirely.
+    try {
+      const ws = identity.workspaceId ?? coordWorkspaceId();
+      if (ws && ws !== '*') {
+        const resolved = await resolveWorkspaceHiveScope(ws);
+        if (resolved.kind === 'one') env.harness_slug = resolved.homeSlug;
+      }
+    } catch {
+      /* stay machine-local */
+    }
+  }
   // Merge caller-supplied extra keys LAST, but never let them clobber the
   // reserved envelope fields (identity + addressing integrity).
   if (opts.extra) {

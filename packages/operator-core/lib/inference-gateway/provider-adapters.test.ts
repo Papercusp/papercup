@@ -56,6 +56,33 @@ describe('gateway provider adapters', () => {
     expect(providerForGatewayRequest('/v1/models', {}, adapters)).toBe(adapters.claude);
   });
 
+  it('WI-3651: routes an UNPINNED /v1/models probe to Codex when the codex CLI self-identifies via its own headers', () => {
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+
+    // No x-papercusp-account pin at all (WI-3645 auto-routing) -- disambiguate by the headers
+    // the codex CLI stamps on every request instead of defaulting to Claude.
+    expect(providerForGatewayRequest('/v1/models', { originator: 'codex_cli_rs' }, adapters)).toBe(adapters.codex);
+    expect(providerForGatewayRequest('/v1/models', { 'openai-beta': 'responses=experimental' }, adapters)).toBe(adapters.codex);
+    // Case/array-header handling reuses headerValue's existing normalization.
+    expect(providerForGatewayRequest('/v1/models', { originator: ['codex_cli_rs'] }, adapters)).toBe(adapters.codex);
+    // A genuinely ambiguous probe (neither pin nor codex-identifying header) still defaults Claude.
+    expect(providerForGatewayRequest('/v1/models', { originator: 'something-else' }, adapters)).toBe(adapters.claude);
+    // Works even with NO codex bearer pool at all (all-CLI codex deployment, WI-3068) -- pure
+    // header sniffing, no pool lookup required.
+    const cliOnlyAdapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexCliAccountCount: () => 1,
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    expect(providerForGatewayRequest('/v1/models', { originator: 'codex_cli_rs' }, cliOnlyAdapters)).toBe(cliOnlyAdapters.codex);
+  });
+
   it('keeps Codex present but unavailable when no Codex account pool is configured', () => {
     const adapters = makeGatewayProviderAdapters({
       claudePool: pool('claude-a'),

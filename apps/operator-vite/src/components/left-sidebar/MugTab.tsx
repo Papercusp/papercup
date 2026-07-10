@@ -32,8 +32,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useNavigate } from '@tanstack/react-router';
+import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
+import { Activity, AlertTriangle, CalendarClock, Crown, Gauge, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
@@ -46,7 +47,7 @@ import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
 import MugHeartbeat from './MugHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
-import ThrottleSection, { type IdleKind, type IdleToggles, type ThrottleDefaults } from './ThrottleSection';
+import ThrottleSection, { throttleActiveCount, type IdleKind, type IdleToggles, type ThrottleDefaults } from './ThrottleSection';
 import AutonomySurfacing, { type DecompMode } from './AutonomySurfacing';
 import HiveSteeringTree from './HiveSteeringTree';
 import {
@@ -228,6 +229,9 @@ function countLabel(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+export const MUG_VIEWS = ['now', 'work', 'capacity', 'schedule'] as const;
+export type MugView = (typeof MUG_VIEWS)[number];
+
 export default function MugTab({ active }: { active: boolean }) {
   const t = useLexicon();
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
@@ -239,6 +243,7 @@ export default function MugTab({ active }: { active: boolean }) {
   });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const navigate = useNavigate();
+  const [mugView, setMugView] = useQueryState('qMug', parseAsStringLiteral(MUG_VIEWS).withDefault('now'));
 
   // Optimistic overlay over the server steering row (owner bug 2026-06-16). The
   // REF is the synchronous source of truth for back-to-back toggles (React state
@@ -285,6 +290,27 @@ export default function MugTab({ active }: { active: boolean }) {
     : `Any ${t('pot', { lower: true })} · any plan`;
   const directiveLabel = view.directive?.trim() ? 'Directive set' : 'No directive';
   const tierLabel = view.modelTiers?.length ? `${countLabel(view.modelTiers.length, 'tier')} override` : 'Workspace tiers';
+  const throttleOverrideCount = throttleActiveCount({
+    cadenceFloorSec: view.cadenceFloorSec ?? null,
+    maxBees: view.maxBees ?? null,
+    beeTier: view.tierCeilings?.bee ?? null,
+    idleActivities: view.idleActivities ?? null,
+    autoScaleOut: view.autoScaleOut ?? null,
+  });
+  const capacityOverrideCount = throttleOverrideCount + (view.modelTiers?.length ? 1 : 0) + (view.decomposition ? 1 : 0);
+  const workIsFocused = hiveRestricted || planRestricted || !view.includeUnplannedWork;
+  const workLabel = workIsFocused
+    ? [hiveRestricted ? `${view.eligibleHives.length} ${hiveWord(view.eligibleHives.length)}` : null, planRestricted ? countLabel(view.eligiblePlans.length, 'plan') : null, !view.includeUnplannedWork ? 'plans only' : null]
+        .filter(Boolean)
+        .join(' · ')
+    : 'All work';
+  const nowLabel = pause.active ? pause.label : view.directive?.trim() ? 'Flowing · brief set' : 'Flowing';
+  const mugLanes: Array<{ id: MugView; label: string; value: string; icon: typeof Activity }> = [
+    { id: 'now', label: 'Now', value: nowLabel, icon: Activity },
+    { id: 'work', label: 'Work', value: workLabel, icon: ListChecks },
+    { id: 'capacity', label: 'Capacity', value: capacityOverrideCount > 0 ? `${capacityOverrideCount} custom` : 'Defaults', icon: Gauge },
+    { id: 'schedule', label: 'Schedule', value: 'Routines', icon: CalendarClock },
+  ];
 
   // ── Nested hive→plan picker (steering-nested-hive-plan-tree-2026-06-17, P-002) ──
   const steeringTreeOn = useFlag(FLAGS.STEERING_POT_TREE);
@@ -488,7 +514,7 @@ export default function MugTab({ active }: { active: boolean }) {
         <Crown size={14} aria-hidden />
         <span className="pc-queen__identity">
           <span className="pc-queen__title">{t('brain')}</span>
-          <span className="pc-queen__subtitle">Steering controls</span>
+          <span className="pc-queen__subtitle">Plans and places work</span>
         </span>
         {home && (
           <Tooltip label={`The home ${t('brain')} this steers`}>
@@ -501,26 +527,29 @@ export default function MugTab({ active }: { active: boolean }) {
         </button>
       </header>
 
-      {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
-      <MugHeartbeat homeSlug={home} />
-
-      <div className="pc-queen__summary" aria-label={`${t('brain')} steering summary`}>
-        <div className={`pc-queen__summary-item${pause.active ? ' pc-queen__summary-item--warn' : ' pc-queen__summary-item--good'}`}>
-          <span className="pc-queen__summary-label">Work</span>
-          <span className="pc-queen__summary-value">{pause.active ? pause.label : 'Flowing'}</span>
-        </div>
-        <div className={`pc-queen__summary-item${hiveRestricted || planRestricted ? ' pc-queen__summary-item--warn' : ''}`}>
-          <span className="pc-queen__summary-label">Scope</span>
-          <span className="pc-queen__summary-value">{scopeLabel}</span>
-        </div>
-        <div className="pc-queen__summary-item">
-          <span className="pc-queen__summary-label">Brief</span>
-          <span className="pc-queen__summary-value">{directiveLabel}</span>
-        </div>
-        <div className="pc-queen__summary-item">
-          <span className="pc-queen__summary-label">Models</span>
-          <span className="pc-queen__summary-value">{tierLabel}</span>
-        </div>
+      <div className="pc-queen__lanes" role="tablist" aria-label={`${t('brain')} controls`}>
+        {mugLanes.map((lane) => {
+          const Icon = lane.icon;
+          const selected = lane.id === mugView;
+          return (
+            <button
+              key={lane.id}
+              id={`mug-lane-${lane.id}`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`mug-panel-${lane.id}`}
+              className="pc-queen__lane"
+              onClick={() => void setMugView(lane.id)}
+            >
+              <span className="pc-queen__lane-icon"><Icon size={13} aria-hidden /></span>
+              <span className="pc-queen__lane-copy">
+                <span className="pc-queen__lane-label">{lane.label}</span>
+                <span className="pc-queen__lane-value">{lane.value}</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {err && (
@@ -528,6 +557,18 @@ export default function MugTab({ active }: { active: boolean }) {
           <AlertTriangle size={12} aria-hidden /> {err}
         </div>
       )}
+
+      <div
+        id={`mug-panel-${mugView}`}
+        className="pc-queen__panel"
+        role="tabpanel"
+        aria-labelledby={`mug-lane-${mugView}`}
+      >
+
+      {mugView === 'now' && (
+        <>
+      {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
+      <MugHeartbeat homeSlug={home} />
 
       {/* 1 — Pause new work (TOPMOST, owner-review round 2) */}
       <section className="pc-queen__section pc-queen__section--pause">
@@ -555,7 +596,6 @@ export default function MugTab({ active }: { active: boolean }) {
             <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={controlsBusy}>clear</button>
           )}
         </div>
-        <span className="pc-queen__hint">drives existing placements to terminal, starts nothing new</span>
       </section>
 
       {/* 2 — Focus directive */}
@@ -565,16 +605,20 @@ export default function MugTab({ active }: { active: boolean }) {
         busy={controlsBusy}
         onSave={onSaveDirective}
       />
+        </>
+      )}
 
       {/* Steering scope (moved ABOVE Model tiers, owner 2026-06-30) — WHAT WORK the
           Queen may start. First the single non-plan (loose) work toggle, then the
           plan focus. The nested hive→plan picker (P-002) makes the illegal "eligible
           plan under an excluded hive" state unrepresentable; the flag-OFF fallback
           is the legacy two flat lists. */}
+      {mugView === 'work' && (
+        <>
       <section className="pc-queen__section">
         <div className="pc-queen__section-head">
           <ListChecks size={12} aria-hidden />
-          <span className="pc-queen__section-title">Non-plan work items</span>
+          <span className="pc-queen__section-title">Loose work</span>
           <span className="pc-queen__count">{view.includeUnplannedWork ? 'included' : 'excluded'}</span>
         </div>
         <label className="pc-queen__planlabel" style={{ cursor: 'pointer', padding: '2px 0' }}>
@@ -584,13 +628,8 @@ export default function MugTab({ active }: { active: boolean }) {
             onChange={() => setIncludeUnplannedWork(!view.includeUnplannedWork)}
             ariaLabel="Work non-plan work items"
           />
-          <span className="pc-queen__planslug">Work loose items not tied to any plan</span>
+          <span className="pc-queen__planslug">Items outside plans</span>
         </label>
-        <div className={`pc-queen__scope${view.includeUnplannedWork ? '' : ' pc-queen__scope--restricted'}`}>
-          {view.includeUnplannedWork
-            ? `The ${t('brain')} also places work-items with no plan (directly-filed features, ad-hoc items) — not just the eligible plans below.`
-            : `The ${t('brain')} works ONLY items from the eligible plans below — loose (non-plan) work is skipped.`}
-        </div>
       </section>
 
       {steeringTreeOn ? (
@@ -677,8 +716,12 @@ export default function MugTab({ active }: { active: boolean }) {
           </section>
         </>
       )}
+        </>
+      )}
 
       {/* Model tiers (session override, D-006 / #4) — now BELOW Steering scope (owner 2026-06-30) */}
+      {mugView === 'capacity' && (
+        <>
       <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={controlsBusy} />
 
       {/* 6 — Throttle knobs (P-007): cadence floor, max bees, model-tier pin (the
@@ -709,11 +752,14 @@ export default function MugTab({ active }: { active: boolean }) {
         onSetDecomposition={setDecomposition}
         onManageAutonomy={onManageAutonomy}
       />
+        </>
+      )}
 
       {/* 8 — Scheduled routines (the ops glance, scheduled-recurring-plans P-026).
           Reads the same plans.scheduledOccurrences ledger the Calendar does; a row
           per scheduled plan with next-fire + armed/paused + last-run outcome. Click
           jumps to the Calendar focused on that plan. */}
+      {mugView === 'schedule' && (
       <section className="pc-queen__section">
         <div className="pc-queen__section-head">
           <CalendarClock size={12} aria-hidden />
@@ -729,6 +775,8 @@ export default function MugTab({ active }: { active: boolean }) {
           }
         />
       </section>
+      )}
+      </div>
       </div>
     </TooltipPrimitive.Provider>
   );
