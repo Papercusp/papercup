@@ -162,8 +162,6 @@ describe('ThrottleSection rendering + writes', () => {
     fireEvent.change(input, { target: { value: '4.7' } });
     fireEvent.click(screen.getByLabelText('Apply Max concurrent contributor change'));
     expect(props.onSetMaxBees).toHaveBeenCalledWith(4);
-    // Applying clears the dirty state — the actions disappear again.
-    expect(screen.queryByLabelText('Apply Max concurrent contributor change')).toBeNull();
   });
 
   it('pressing Enter on a valid max-bees draft commits it', () => {
@@ -197,13 +195,16 @@ describe('ThrottleSection rendering + writes', () => {
     expect(props.onSetMaxBees).not.toHaveBeenCalled();
   });
 
-  // WI-3788: a non-numeric / below-min max-bees draft used to silently reset the
-  // override to null on blur. It must now block Apply and never write anything.
-  it('an invalid max-bees draft blocks Apply and never silently resets to null', () => {
+  // WI-3788: a below-min max-bees draft used to silently reset the override to
+  // null on blur (native number inputs can't hold non-numeric text — the browser
+  // strips it to empty, which is the valid "clear" case; below-min is the real
+  // invalid case a number input can actually carry). It must now block Apply and
+  // never write anything.
+  it('an invalid (below-min) max-bees draft blocks Apply and never silently resets to null', () => {
     const props = makeProps({ maxBees: 3 });
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
     const input = screen.getByLabelText('Max concurrent contributor') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'not-a-number' } });
+    fireEvent.change(input, { target: { value: '0' } }); // below the min=1 floor
     expect(input.getAttribute('aria-invalid')).toBe('true');
     const applyBtn = screen.getByLabelText('Apply Max concurrent contributor change') as HTMLButtonElement;
     expect(applyBtn.disabled).toBe(true);

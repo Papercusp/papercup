@@ -115,7 +115,6 @@ function DraftNumberInput({
   // have no pending edit of our own.
   useEffect(() => {
     setDraft(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
   const dirty = draft !== saved;
   const trimmed = draft.trim();
@@ -123,9 +122,10 @@ function DraftNumberInput({
   const invalid = dirty && trimmed !== '' && !(Number.isFinite(parsed) && (parsed as number) >= min);
   const commit = () => {
     if (invalid) return;
-    const next = trimmed === '' ? null : Math.floor(parsed as number);
-    onCommit(next);
-    setDraft(next == null ? '' : String(next));
+    onCommit(trimmed === '' ? null : Math.floor(parsed as number));
+    // Don't snapshot the new value locally — fall through to the `saved`/effect
+    // sync above once the parent's optimistic overlay reflects it in `value`,
+    // same as ModelTiersOverride's drafts-map-delete-on-commit pattern.
   };
   const discard = () => setDraft(saved);
   return (
@@ -204,7 +204,6 @@ function DraftMinutesInput({
   const [draft, setDraft] = useState(saved);
   useEffect(() => {
     setDraft(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
   const dirty = draft !== saved;
   const trimmed = draft.trim();
@@ -212,9 +211,9 @@ function DraftMinutesInput({
   const invalid = dirty && trimmed !== '' && !(Number.isFinite(parsed) && (parsed as number) >= 1);
   const commit = () => {
     if (invalid) return;
-    const next = trimmed === '' ? null : Math.round((parsed as number) * 60);
-    onCommit(next);
-    setDraft(next == null ? '' : String(next / 60));
+    onCommit(trimmed === '' ? null : Math.round((parsed as number) * 60));
+    // See DraftNumberInput's commit(): no local snapshot — the effect above
+    // re-syncs `draft` once the parent's optimistic overlay updates `valueSec`.
   };
   const discard = () => setDraft(saved);
   return (
