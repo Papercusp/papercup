@@ -169,6 +169,23 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // attended multi-peer verify). Count 19 → 20; well under DARK_FLAGS_HIGH_WATERMARK
   // (22).
   'papercusp-hrw-rendezvous-authority',
+  // 2026-07-10 (EI-9064 dark-flag-age sweep, su-043a1) — NOT a new post-inversion
+  // darkening: the FIFTH instance of the same bug-fix class as papercusp-watchdog-
+  // auto-close / papercusp-substrate-sidecar / papercusp-reclaim-stalled /
+  // papercusp-psu-end-user above. papercusp-plan-part-federation's OWN code comment
+  // (libs/flags/src/types.ts, plan-federation-regrain-2026-06-13 P-005/P-006) has
+  // ALWAYS said "DEFAULT-OFF: an UNVERIFIED cutover that needs a real two-machine
+  // merge proof (P-008) + the existing-plan backfill (P-007) before the flip... The
+  // owner flips this ON at cutover" but was never actually added to DARK_FLAGS, so it
+  // silently derived default-ON both before AND after the P-011 inversion. Confirmed:
+  // no PG override row exists for it in workspace `papercusp-workspace`
+  // (harness_shared.operator_flag_overrides), so it was resolving purely off the
+  // buggy default. HIGH severity: gates the per-PART plan federation path
+  // (boot-all.ts / projections/harness-plan-parts.ts) in the SAME hyperbee substrate
+  // the P-059 fed-plane investigation (WI-3619, WI-3653) is actively debugging.
+  // Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
+  // Count 20 → 21; well under DARK_FLAGS_HIGH_WATERMARK (22).
+  'papercusp-plan-part-federation',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -314,7 +331,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // scope HRW rendezvous hashing; every peer must agree on the flag value or they compute
     // different authorities for the same scope, so it ships dark until an attended multi-peer
     // verify. Count 19 → 20.
-    expect(offCount).toBe(20);
+    // 2026-07-10 (EI-9064 dark-flag-age sweep) — papercusp-plan-part-federation: BUG-FIX
+    // correction, not a new darkening (own comment always said dark, never actually added —
+    // see PRE_INVERSION_DEFAULT_OFF above). FIFTH instance of the EI-7230-class bug. Count 20 → 21.
+    expect(offCount).toBe(21);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

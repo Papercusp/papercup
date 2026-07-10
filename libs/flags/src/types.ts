@@ -1539,6 +1539,25 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.RUBRICS_MARKETPLACE, { case: 'parked', reason: 'local-first-party-rubric-bundling-2026-07-07 (owner-directed 2026-07-07, the templates-v1 design applied to rubrics): V1 ships the first-party rubrics bundled in-app (sidecar/rubrics content dirs) and seeds them into the workspace rubric store on first rubrics:* read (idempotent, no-clobber — an existing workspace rubricId always wins). The Cupboard MARKETPLACE merge for kind=rubric listings is deliberately deferred to v2 — no remote-fetch code exists yet; the flag reserves the seam. OFF ⇒ rubrics:* resolve the workspace store (+ bundled seed) only. Owner flips ON in v2 when the rubric marketplace ships.' }],
     [FLAGS.OWN_LOG_FORK_AUTO_RECOVERY, { case: 'owner-authority', reason: 'p2p-parity-parallel-lanes-2026-07-09 P-003 (WI-3535): the own-log-fork-guard auto-recovery sketch (own-log-fork-recovery.ts) performs a per-harness Corestore STORE RESET — deletes the on-disk peer-log directory so a fresh keypair is minted on next boot — to break the equivocation-loop boot loop. DESTRUCTIVE: it discards any local hypercore-only history not yet merged into PG, so unattended auto-recovery is unsafe until the owner personally ratifies it (the plan explicitly requires this flag-gated default-OFF). OFF ⇒ recoverForkedOwnLog always short-circuits with reason:"flag_off"; the detector still files a durable EI naming the supported MANUAL recovery. Owner flips ON only after reviewing the destructive blast radius.' }],
     [FLAGS.HRW_RENDEZVOUS_AUTHORITY, { case: 'cutover', reason: 'WI-1491 (cross-machine-coord-parity-and-trust-2026-07-01 P-021 live cutover): flips lockAuthorityFor/lockAuthorityForHive from the global argmin(device_pubkey) winner rule to per-scope HRW rendezvous hashing. Every peer computes the winner independently and PURELY from shared_presence + the flag value — if peers disagree on the flag mid-flip (rolling deploy), they compute DIFFERENT authorities for the same scope, defeating the whole point of a single serialization point (same class of risk as PRESENCE_GOSSIP\'s reader/writer skew). OFF ⇒ selectAuthorityFromRows argmin, byte-identical to pre-WI-1491 behavior. Owner flips ON after a multi-peer verify that every live peer resolves the same authority for a shared scope.' }],
+    // EI-9064 dark-flag-age sweep (2026-07-10, su-043a1): FIFTH instance of the
+    // identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-
+    // RECLAIM_STALLED/WI-3093-PSU_END_USER bug-fix class in this same file — the
+    // flag's OWN code comment (plan-federation-regrain-2026-06-13 P-005/P-006,
+    // directly above in FLAGS) has always said "DEFAULT-OFF: an UNVERIFIED cutover
+    // that needs a real two-machine merge proof (P-008) + the existing-plan
+    // backfill (P-007) before the flip... The owner flips this ON at cutover" but
+    // was never actually added here, so it silently derived default-ON (FLAG_DEFAULTS
+    // = !DARK_FLAGS.has(k)). CONFIRMED LIVE in workspace `papercusp-workspace`: no PG
+    // override row exists for it (harness_shared.operator_flag_overrides), so it was
+    // resolving purely off the buggy default. HIGH severity: this flag gates the
+    // per-PART plan federation path (boot-all.ts / projections/harness-plan-parts.ts)
+    // in the SAME hyperbee substrate the P-059 fed-plane investigation (WI-3619
+    // outbox-drain hangs, WI-3653 slug-stamp) is actively debugging — an unverified
+    // cutover silently live there is a plausible contributing factor, flagged to the
+    // fleet leader. OFF ⇒ plans federate as the whole-document LWW blob (mig 125,
+    // today's actually-verified behavior); per-part capture/projection go inert.
+    // Owner/leader flips ON only after the two-machine merge proof + backfill land.
+    [FLAGS.PLAN_PART_FEDERATION, { case: 'cutover', reason: 'plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation — kills the whole-document LWW clobber where two peers editing DIFFERENT plan items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a real two-machine merge proof (P-008) + the existing-plan backfill (P-007) before the flip. When OFF, plans federate EXACTLY as today (the whole harness_plans.content blob, mig 125) and the per-part capture/projection are inert — the live path is byte-identical. The owner flips this ON at cutover.' }],
   ]);
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────

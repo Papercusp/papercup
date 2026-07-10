@@ -204,13 +204,35 @@ export function makeLiveBeeTraceLoaders(sql: postgres.Sql, transcriptBaseDir?: s
   return {
     loadSpawn: (spawnId) => readSpawnRow(sql, spawnId),
     loadRunTokens: (runId) => readRunTokens(sql, runId),
-    loadTranscript: (spawnId) => {
+    loadTranscript: async (spawnId) => {
       const path = locateBeeTranscript(spawnId, transcriptBaseDir);
-      if (!path) return null;
+      if (path) {
+        try {
+          return readFileSync(path, 'utf8');
+        } catch {
+          /* raced with archive-at-death — fall through to the archive */
+        }
+      }
+      // Archive fall-through (session-db-archive-retire-dirs P-010): a dead
+      // bee's per-spawn CLAUDE_CONFIG_DIR is archived-then-DELETED ~15s after
+      // its session ends, so a post-run trace must read the permanent copy —
+      // session_archives keyed by owner = spawnId (the dir name IS the owner).
       try {
-        return readFileSync(path, 'utf8');
+        const rows = await sql<{ session_id: string }[]>`
+          SELECT session_id FROM harness_shared.session_archives
+           WHERE source_kind = 'claude' AND owner = ${spawnId}
+           ORDER BY archived_at DESC
+           LIMIT 1`;
+        const sid = rows[0]?.session_id;
+        if (!sid) return null;
+        const { pgSessionArchiveStore, decompressArchiveBlob } = await import('../session-archive');
+        const files = (await pgSessionArchiveStore().readFiles('claude', sid))
+          .filter((f) => f.relpath.includes('projects/') && f.relpath.endsWith('.jsonl'))
+          .sort((a, b) => (b.mtime?.getTime() ?? 0) - (a.mtime?.getTime() ?? 0));
+        if (!files.length) return null;
+        return (await decompressArchiveBlob(files[0])).toString('utf8');
       } catch {
-        return null;
+        return null; // best-effort: a lost transcript degrades the trace, never aborts the battery
       }
     },
   };
