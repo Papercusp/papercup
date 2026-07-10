@@ -49,6 +49,13 @@ interface SendMsg {
   related_msg_id?: string;
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
+  /** EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when
+   *  a reply ARRIVES). If no reply lands within this many seconds, the
+   *  reply-deadline-sweep (dbos/periodic-workflows.ts, every 5m) nudges you
+   *  once: a coord message + a fail-soft wake. Independent of wakeOnReply —
+   *  set either, both, or neither. Omitted = no deadline tracking (today's
+   *  behavior). */
+  replyDeadlineSec?: number;
   endTurn?: boolean;
   /** P-001 (cross-machine-coord-parity-and-trust): federation-scope override.
    *  'hive' forces the workspace's shared-Hive scope (loud error naming the
@@ -87,6 +94,14 @@ const wakeOnReplyArg = z
   .optional()
   .describe(
     "When a peer REPLIES to this message (their coord:send sets related_msg_id to this message's msg_id), wake YOU (the sender) so you re-invoke the moment the reply lands — the dual of waking the recipient. Default: ON for DIRECTED sends (concrete recipients), OFF for broadcasts (to '*'/'human'). Set false to opt out (fire-and-forget).",
+  );
+
+const replyDeadlineSecArg = z
+  .number()
+  .positive()
+  .optional()
+  .describe(
+    'EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when a reply ARRIVES; this wakes you when one does NOT). If no reply lands within this many seconds, a periodic backstop sweep nudges you ONCE: a coord message + a fail-soft wake — never a recurring alarm. Independent of wakeOnReply — set either, both, or neither. Omit for no deadline tracking (today\'s behavior).',
   );
 
 const endTurnArg = z
@@ -141,6 +156,7 @@ const itemSpec = z.object({
   related_msg_id: z.string().optional(),
   wake: wakeArg,
   wakeOnReply: wakeOnReplyArg,
+  replyDeadlineSec: replyDeadlineSecArg,
   endTurn: endTurnArg,
   backstop: backstopArg,
   scope: scopeArg,
@@ -218,6 +234,14 @@ async function sendOne(
   const extra: Record<string, unknown> = {};
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
+  // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
+  // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —
+  // no need to re-derive "elapsed since send" from `ts` at sweep time. Positive
+  // finite seconds only; a bad value is silently dropped rather than failing
+  // the send (this is a best-effort nudge, never a hard requirement).
+  if (typeof msg.replyDeadlineSec === 'number' && Number.isFinite(msg.replyDeadlineSec) && msg.replyDeadlineSec > 0) {
+    extra.replyDeadlineAt = Date.now() + msg.replyDeadlineSec * 1000;
+  }
   // P-008 (cross-machine-coord-parity): a FEDERATED, DIRECTED, required-wake
   // send requests a DELIVERY RECEIPT — the receiving machine's projection sends
   // back a fed-event `coord:receipt:<msg_id>` when it applies the row (payload:

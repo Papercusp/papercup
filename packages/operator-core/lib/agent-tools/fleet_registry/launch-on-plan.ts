@@ -573,13 +573,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Pass `perMemberLaunchContext` for DISTINCT per-member briefs (EI-8985) instead of hand-rolling capability:terminal. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. `perMemberLaunchContext` gives distinct per-member briefs. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
   guidance: {
     when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
       'Not for background cups (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start (promotes the plan + sets a plan-scoped claim spec before opening terminals), but run plans:start yourself so the Mug/orchestrator also gets plan-started visibility. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -672,7 +672,7 @@ export default defineTool({
       .max(MAX_MEMBERS)
       .optional()
       .describe(
-        "EI-8985: per-member launch-context brief paths, index-aligned to member number (entry 0 → member 1, etc). Each member gets its OWN composed context (baseline + that entry's brief) instead of one shared file. Fewer entries than members opened ⇒ the remaining members fall back to `launchContext` (or the bare baseline if that's also unset) — never an error. Takes precedence over `launchContext` per-index. This is the knob that used to force a hand-rolled fleet:create + capability:terminal launch (EI-5835) — prefer this tool now.",
+        'Per-member brief paths, index-aligned to member number (entry 0 → member 1, …) — each member gets its OWN composed context. Fewer entries than members opened ⇒ the rest fall back to `launchContext`/baseline, never an error.',
       ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z

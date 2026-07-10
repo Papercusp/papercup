@@ -40,6 +40,7 @@ import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
+import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
@@ -357,6 +358,24 @@ const handoffReconcileWorkflow = DBOS.registerWorkflow(handoffReconcileTick, {
   name: 'handoffReconcile', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26,56 * * * *' });
+
+// Every 5 minutes: coord:send { replyDeadlineSec } backstop (EI-8986) — the
+// "nudge if silent" dual of coord-wake-on-reply. Finds every message whose
+// reply deadline has passed with no reply yet and nudges the ORIGINAL sender
+// once (a coord message, which doubles as the idempotency marker — see
+// reply-deadline-sweep.ts's module docstring — + a fail-soft wake). Cheap,
+// indexed, opt-in-only query; runs far more often than the daily GC ticks
+// above because a deadline nudge is only useful if it's prompt.
+async function replyDeadlineSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('reply-deadline-sweep')) return;
+    await runReplyDeadlineSweepOnce();
+  }, { name: 'reply-deadline-sweep' });
+}
+const replyDeadlineSweepWorkflow = DBOS.registerWorkflow(replyDeadlineSweepTick, {
+  name: 'replyDeadlineSweep', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep', crontab: '0 */5 * * * *' });
 
 // Hourly (:23, off the stampede): surface silently-dead DBOS workflows
 // (MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR) — the embedBackfill/systemHealth class the
