@@ -8,7 +8,20 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// This suite exercises DISPLAY leasing, NOT the exec-sandbox. capability:bash resolves
+// the papercusp-capability-exec-sandbox flag at spawn (bash.ts → capabilityExecSandboxEnabled),
+// and when the flag reads ON but the host has no sandbox binary (bubblewrap absent — e.g. a
+// headless VM / CI runner / packaged install), bash-jobs.ts console.warns "running unsandboxed",
+// which vitest-fail-on-console turns into a failure. Whether the flag reads on/off is ambient
+// (flag-store state), so leaving it unpinned made this suite pass or fail by host. Pin it OFF —
+// the no-sandbox path is exactly what these DISPLAY tests intend — so the suite is hermetic
+// regardless of flag state or sandbox availability.
+vi.mock('./exec-sandbox', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./exec-sandbox')>()),
+  capabilityExecSandboxEnabled: vi.fn(async () => false),
+}));
+
 import bashTool from './bash';
 import { __resetBashJobs } from './bash-jobs';
 import {

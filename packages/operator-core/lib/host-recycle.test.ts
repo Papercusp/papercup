@@ -113,6 +113,56 @@ describe('gracefulHostRecycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(42);
   });
+
+  // WI-3795: a cluster-wide SIGTERM broadcast races the substrate teardown
+  // against a native Napi::Error/SIGABRT crash when the loop is already
+  // critically saturated — skip attempting the close in that case instead of
+  // starting a native op that can crash the process below the JS layer.
+  describe('WI-3795 — skip substrate teardown when the loop is critically saturated', () => {
+    it('does NOT call closeSubstrate when isSaturated() reads true, and still exits cleanly', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const isSaturated = vi.fn(() => true);
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, isSaturated });
+      expect(closeSubstrate).not.toHaveBeenCalled();
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      expect(closeSubstrate).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('still calls closeSubstrate as normal when isSaturated() reads false', async () => {
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const isSaturated = vi.fn(() => false);
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, isSaturated });
+      expect(closeSubstrate).toHaveBeenCalledTimes(1);
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    });
+
+    it('defaults isSaturated to the real event-loop-lag monitor, which reads false absent a running monitor (no behavior change when unconfigured)', async () => {
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate }); // no isSaturated override
+      expect(closeSubstrate).toHaveBeenCalledTimes(1); // no monitor running in this test process → not saturated
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    });
+  });
 });
 
 describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () => {
@@ -177,5 +227,25 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     const { on, handlers } = fakeSignals();
     installGracefulShutdown({ server: makeServer().server, on, signals: ['SIGTERM'], exit: vi.fn(), closeSubstrate: () => Promise.resolve() });
     expect([...handlers.keys()]).toEqual(['SIGTERM']);
+  });
+
+  // WI-3795: installGracefulShutdown forwards isSaturated through to
+  // gracefulHostRecycle so the SIGTERM path (the one a cluster-wide restart
+  // actually broadcasts to every worker) gets the same saturated-skip.
+  it('forwards isSaturated to gracefulHostRecycle — skips the substrate close on SIGTERM when saturated', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const exit = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const isSaturated = vi.fn(() => true);
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({ server, on, exit, closeSubstrate, isSaturated });
+    fire('SIGTERM');
+    expect(closeSubstrate).not.toHaveBeenCalled();
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+    warnSpy.mockRestore();
   });
 });

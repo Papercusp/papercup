@@ -136,6 +136,8 @@ export interface GracefulShutdownOpts {
   exit?: (code: number) => void;
   /** Test seam — forwarded to gracefulHostRecycle. */
   closeSubstrate?: () => Promise<unknown>;
+  /** Test seam — forwarded to gracefulHostRecycle (WI-3795 saturated-skip check). */
+  isSaturated?: () => boolean;
   /** Forwarded to gracefulHostRecycle (hard-exit backstop). */
   hardExitMs?: number;
   /** Test seam — defaults to console.log. */
@@ -173,6 +175,7 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
       recycleExitCode: 0, // intentional stop, not the non-zero recycle code
       exit: opts.exit,
       closeSubstrate: opts.closeSubstrate,
+      isSaturated: opts.isSaturated,
       hardExitMs: opts.hardExitMs,
     });
   };
