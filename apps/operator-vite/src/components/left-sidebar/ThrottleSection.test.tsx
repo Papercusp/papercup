@@ -142,23 +142,109 @@ describe('ThrottleSection rendering + writes', () => {
     expect(props.onSetCadenceFloor).toHaveBeenCalledWith(120);
   });
 
-  it('typing a max-bees value and blurring commits it (floored, ≥1)', () => {
+  // WI-3788: blur no longer auto-saves — a dirty max-bees draft requires an
+  // explicit Apply click (or Enter) before it writes through.
+  it('typing a max-bees value does NOT commit on blur (hidden blur-save removed)', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
     const input = screen.getByLabelText('Max concurrent contributor');
     fireEvent.change(input, { target: { value: '4' } });
     fireEvent.blur(input);
-    expect(props.onSetMaxBees).toHaveBeenCalledWith(4);
+    expect(props.onSetMaxBees).not.toHaveBeenCalled();
+    // The dirty draft surfaces an explicit cyan Apply action.
+    expect(screen.getByLabelText('Apply Max concurrent contributor change')).toBeTruthy();
   });
 
-  it('custom minutes commit to the seconds-based steering seam', () => {
+  it('clicking Apply commits the max-bees draft (floored, ≥1)', () => {
+    const props = makeProps();
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor');
+    fireEvent.change(input, { target: { value: '4.7' } });
+    fireEvent.click(screen.getByLabelText('Apply Max concurrent contributor change'));
+    expect(props.onSetMaxBees).toHaveBeenCalledWith(4);
+    // Applying clears the dirty state — the actions disappear again.
+    expect(screen.queryByLabelText('Apply Max concurrent contributor change')).toBeNull();
+  });
+
+  it('pressing Enter on a valid max-bees draft commits it', () => {
+    const props = makeProps();
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor');
+    fireEvent.change(input, { target: { value: '6' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(props.onSetMaxBees).toHaveBeenCalledWith(6);
+  });
+
+  it('pressing Escape on a dirty max-bees draft discards it without committing', () => {
+    const props = makeProps({ maxBees: 3 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '99' } });
+    expect(screen.getByLabelText('Apply Max concurrent contributor change')).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input.value).toBe('3');
+    expect(props.onSetMaxBees).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Apply Max concurrent contributor change')).toBeNull();
+  });
+
+  it('clicking Discard on a dirty max-bees draft reverts it without committing', () => {
+    const props = makeProps({ maxBees: 3 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '99' } });
+    fireEvent.click(screen.getByLabelText('Discard Max concurrent contributor change'));
+    expect(input.value).toBe('3');
+    expect(props.onSetMaxBees).not.toHaveBeenCalled();
+  });
+
+  // WI-3788: a non-numeric / below-min max-bees draft used to silently reset the
+  // override to null on blur. It must now block Apply and never write anything.
+  it('an invalid max-bees draft blocks Apply and never silently resets to null', () => {
+    const props = makeProps({ maxBees: 3 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'not-a-number' } });
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    const applyBtn = screen.getByLabelText('Apply Max concurrent contributor change') as HTMLButtonElement;
+    expect(applyBtn.disabled).toBe(true);
+    fireEvent.click(applyBtn);
+    fireEvent.blur(input);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(props.onSetMaxBees).not.toHaveBeenCalled();
+  });
+
+  it('an empty max-bees draft is a VALID "clear override" and applies to null', () => {
+    const props = makeProps({ maxBees: 3 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Max concurrent contributor') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Apply Max concurrent contributor change'));
+    expect(props.onSetMaxBees).toHaveBeenCalledWith(null);
+  });
+
+  it('custom minutes does NOT commit on blur; Apply writes the seconds-based steering seam', () => {
     const props = makeProps({ cadenceFloorSec: 300 });
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
     const input = screen.getByLabelText('Custom time between wakes in minutes');
     expect((input as HTMLInputElement).value).toBe('5');
     fireEvent.change(input, { target: { value: '2.5' } });
     fireEvent.blur(input);
+    expect(props.onSetCadenceFloor).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Apply custom wake timing'));
     expect(props.onSetCadenceFloor).toHaveBeenCalledWith(150);
+  });
+
+  it('an invalid custom-minutes draft blocks Apply and never silently resets to null', () => {
+    const props = makeProps({ cadenceFloorSec: 300 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    const input = screen.getByLabelText('Custom time between wakes in minutes') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '0' } }); // below the 1-minute floor
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    const applyBtn = screen.getByLabelText('Apply custom wake timing') as HTMLButtonElement;
+    expect(applyBtn.disabled).toBe(true);
+    fireEvent.blur(input);
+    expect(props.onSetCadenceFloor).not.toHaveBeenCalled();
   });
 
   it('resets custom wake timing directly to the workspace value', () => {

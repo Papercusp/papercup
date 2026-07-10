@@ -1006,9 +1006,12 @@ body.has-left-sidebar .pc-header {
 .pc-queen__presetrow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .pc-queen__presetrow .pc-queen__chip { justify-content: center; padding-inline: 4px; }
 .pc-queen__custom-number { display: flex; align-items: center; gap: 6px; width: fit-content; font-size: 10.5px; color: var(--fg-mute); cursor: text; }
+.pc-queen__draftnum { display: inline-flex; align-items: center; gap: 5px; }
 .pc-queen__num { width: 62px; font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 5px; color: var(--fg, #e7f7ff); background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.3)); }
 .pc-queen__num--minutes { width: 58px; }
 .pc-queen__num:focus { outline: none; border-color: color-mix(in srgb, var(--accent), transparent 35%); }
+.pc-queen__num--dirty { border-color: color-mix(in srgb, var(--accent), transparent 30%); }
+.pc-queen__num--invalid, .pc-queen__num--invalid:focus { border-color: var(--bad); box-shadow: 0 0 0 1px color-mix(in srgb, var(--bad), transparent 62%); }
 .pc-queen__num:disabled { opacity: 0.6; }
 .pc-queen__select { width: 100%; font: inherit; font-size: 11.5px; padding: 5px 7px; border-radius: 6px; color: var(--fg, #e7f7ff); background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.3)); cursor: pointer; }
 .pc-queen__select:focus { outline: none; border-color: color-mix(in srgb, var(--accent), transparent 35%); }

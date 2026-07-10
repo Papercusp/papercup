@@ -28,7 +28,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { ChevronDown, ChevronRight, Cpu, Gauge, Moon, RotateCcw, TrendingUp, Users } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Cpu, Gauge, Moon, RotateCcw, TrendingUp, Users, X } from 'lucide-react';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env — mirror ModelTiersOverride.
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
@@ -90,9 +90,12 @@ export function throttleActiveCount(args: {
   return n;
 }
 
-/** A number input with a mid-edit draft (useState — render-only, not URL state):
- *  commits on blur / Enter, an empty or invalid value CLEARS the override (null),
- *  matching the backend's fail-soft decode. */
+/** A number input with an EXPLICIT apply/discard draft (mirrors ModelTiersOverride's
+ *  editor, WI-3788): typing never auto-saves — blur does nothing. A dirty draft
+ *  shows cyan Apply/Discard actions; Enter applies (when valid), Escape discards.
+ *  An empty draft is a valid "clear the override" (⇒ null on Apply); a non-numeric
+ *  or below-`min` draft is INVALID — Apply is disabled and nothing is written,
+ *  replacing the old silent-reset-to-null-on-blur behavior. */
 function DraftNumberInput({
   value,
   ariaLabel,
@@ -106,31 +109,74 @@ function DraftNumberInput({
   busy: boolean;
   onCommit: (n: number | null) => void;
 }) {
-  const [draft, setDraft] = useState(value == null ? '' : String(value));
-  // Re-seed when the server value changes (e.g. another client / a clear).
+  const saved = value == null ? '' : String(value);
+  const [draft, setDraft] = useState(saved);
+  // Re-seed when the server value changes (e.g. another client / a reset) and we
+  // have no pending edit of our own.
   useEffect(() => {
-    setDraft(value == null ? '' : String(value));
-  }, [value]);
+    setDraft(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+  const dirty = draft !== saved;
+  const trimmed = draft.trim();
+  const parsed = trimmed === '' ? null : Number(trimmed);
+  const invalid = dirty && trimmed !== '' && !(Number.isFinite(parsed) && (parsed as number) >= min);
   const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === '') return onCommit(null);
-    const n = Number(trimmed);
-    onCommit(Number.isFinite(n) && n >= min ? Math.floor(n) : null);
+    if (invalid) return;
+    const next = trimmed === '' ? null : Math.floor(parsed as number);
+    onCommit(next);
+    setDraft(next == null ? '' : String(next));
   };
+  const discard = () => setDraft(saved);
   return (
-    <input
-      type="number"
-      min={min}
-      className="pc-queen__num"
-      value={draft}
-      disabled={busy}
-      aria-label={ariaLabel}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-      }}
-    />
+    <span className="pc-queen__draftnum">
+      <input
+        type="number"
+        min={min}
+        className={`pc-queen__num${dirty ? ' pc-queen__num--dirty' : ''}${invalid ? ' pc-queen__num--invalid' : ''}`}
+        value={draft}
+        disabled={busy}
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && dirty && !invalid) {
+            e.preventDefault();
+            commit();
+          }
+          if (e.key === 'Escape' && dirty) {
+            e.preventDefault();
+            discard();
+          }
+        }}
+      />
+      {dirty && (
+        <span className="pc-mt__actions">
+          <Tooltip label={`Apply ${ariaLabel} change`}>
+            <button
+              type="button"
+              className="pc-mt__action pc-mt__action--apply"
+              onClick={commit}
+              disabled={busy || invalid}
+              aria-label={`Apply ${ariaLabel} change`}
+            >
+              <Check size={12} aria-hidden />
+            </button>
+          </Tooltip>
+          <Tooltip label={`Discard ${ariaLabel} change`}>
+            <button
+              type="button"
+              className="pc-mt__action pc-mt__action--discard"
+              onClick={discard}
+              disabled={busy}
+              aria-label={`Discard ${ariaLabel} change`}
+            >
+              <X size={12} aria-hidden />
+            </button>
+          </Tooltip>
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -142,7 +188,9 @@ export function formatCadence(seconds: number): string {
   return `${Number.isInteger(minutes) ? minutes : Number(minutes.toFixed(1))} min`;
 }
 
-/** Minute-facing editor for the seconds-based steering seam. */
+/** Minute-facing editor for the seconds-based steering seam — same explicit
+ *  apply/discard draft as DraftNumberInput (WI-3788): blur never auto-saves, an
+ *  invalid draft blocks Apply instead of silently resetting to null. */
 function DraftMinutesInput({
   valueSec,
   busy,
@@ -152,31 +200,73 @@ function DraftMinutesInput({
   busy: boolean;
   onCommit: (seconds: number | null) => void;
 }) {
-  const [draft, setDraft] = useState(valueSec == null ? '' : String(valueSec / 60));
+  const saved = valueSec == null ? '' : String(valueSec / 60);
+  const [draft, setDraft] = useState(saved);
   useEffect(() => {
-    setDraft(valueSec == null ? '' : String(valueSec / 60));
-  }, [valueSec]);
+    setDraft(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+  const dirty = draft !== saved;
+  const trimmed = draft.trim();
+  const parsed = trimmed === '' ? null : Number(trimmed);
+  const invalid = dirty && trimmed !== '' && !(Number.isFinite(parsed) && (parsed as number) >= 1);
   const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === '') return onCommit(null);
-    const minutes = Number(trimmed);
-    onCommit(Number.isFinite(minutes) && minutes >= 1 ? Math.round(minutes * 60) : null);
+    if (invalid) return;
+    const next = trimmed === '' ? null : Math.round((parsed as number) * 60);
+    onCommit(next);
+    setDraft(next == null ? '' : String(next / 60));
   };
+  const discard = () => setDraft(saved);
   return (
-    <input
-      type="number"
-      min={1}
-      step={0.5}
-      className="pc-queen__num pc-queen__num--minutes"
-      value={draft}
-      disabled={busy}
-      aria-label="Custom time between wakes in minutes"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-      }}
-    />
+    <span className="pc-queen__draftnum">
+      <input
+        type="number"
+        min={1}
+        step={0.5}
+        className={`pc-queen__num pc-queen__num--minutes${dirty ? ' pc-queen__num--dirty' : ''}${invalid ? ' pc-queen__num--invalid' : ''}`}
+        value={draft}
+        disabled={busy}
+        aria-label="Custom time between wakes in minutes"
+        aria-invalid={invalid || undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && dirty && !invalid) {
+            e.preventDefault();
+            commit();
+          }
+          if (e.key === 'Escape' && dirty) {
+            e.preventDefault();
+            discard();
+          }
+        }}
+      />
+      {dirty && (
+        <span className="pc-mt__actions">
+          <Tooltip label="Apply custom wake timing">
+            <button
+              type="button"
+              className="pc-mt__action pc-mt__action--apply"
+              onClick={commit}
+              disabled={busy || invalid}
+              aria-label="Apply custom wake timing"
+            >
+              <Check size={12} aria-hidden />
+            </button>
+          </Tooltip>
+          <Tooltip label="Discard custom wake timing change">
+            <button
+              type="button"
+              className="pc-mt__action pc-mt__action--discard"
+              onClick={discard}
+              disabled={busy}
+              aria-label="Discard custom wake timing change"
+            >
+              <X size={12} aria-hidden />
+            </button>
+          </Tooltip>
+        </span>
+      )}
+    </span>
   );
 }
 

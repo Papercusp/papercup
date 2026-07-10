@@ -17,8 +17,24 @@ import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadavg } from 'node:os';
+import { loadavg, availableParallelism } from 'node:os';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
+
+// ── Shared-host worker cap (WI-3792 follow-up, 2026-07-10) ──────────────────
+// Vitest defaults each suite's fork pool to EVERY core. On the shared 128-core
+// dev box that means ONE full-suite run spawns ~128 workers — and the gate,
+// peers' runs, and agent sessions routinely overlap, so 2-3 concurrent suites
+// put 300+ runnable tasks on the host (loadavg 1000-3000; twice this week the
+// box melted: /tmp/pcv day + the ORT spin-pool day, both amplified by exactly
+// this). Cap workers per suite at min(32, max(8, cores/4)) unless the caller
+// already chose a cap. Wall-clock per suite gets slower; the HOST stays alive.
+// VITEST_MAX_WORKERS is the vitest-4 name (verified: the only worker-cap env
+// in vitest 4.1.8's dist); MAX_THREADS/MAX_FORKS kept as belts for any tree
+// still on vitest ≤3.
+const WORKER_CAP = String(Math.min(32, Math.max(8, Math.floor(availableParallelism() / 4))));
+if (!process.env.VITEST_MAX_WORKERS) process.env.VITEST_MAX_WORKERS = WORKER_CAP;
+if (!process.env.VITEST_MAX_FORKS) process.env.VITEST_MAX_FORKS = WORKER_CAP;
+if (!process.env.VITEST_MAX_THREADS) process.env.VITEST_MAX_THREADS = WORKER_CAP;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
