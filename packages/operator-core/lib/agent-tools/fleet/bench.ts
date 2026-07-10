@@ -140,7 +140,18 @@ export default defineTool({
       .describe(`(stage mode) Deadline in seconds (default ${AWAIT_DEFAULT_TIMEOUT_SEC}) — the member is woken with a TIMEOUT marker if the key never fires.`),
   }),
   async handler(args, ctx) {
-    const identity = resolveAgentIdentity(ctx);
+    // Resolved defensively (mirrors fleet:leader-brief): a read-mostly fleet
+    // tool should still work for `list` even if identity resolution fails —
+    // only stage mode's `benched_by` stamp genuinely needs `ownerId`.
+    let actorWorkspace: string | null = null;
+    let ownerId: string | undefined;
+    try {
+      const identity = resolveAgentIdentity(ctx);
+      actorWorkspace = identity.workspaceId ?? null;
+      ownerId = identity.ownerId;
+    } catch {
+      actorWorkspace = null;
+    }
 
     if (args.list) {
       const fleet = args.fleet ?? deriveFleetMembership().fleetSlug;
@@ -152,12 +163,6 @@ export default defineTool({
             hint: "No fleet resolvable — pass { fleet: '<slug>' } explicitly.",
           },
         };
-      }
-      let actorWorkspace: string | null = null;
-      try {
-        actorWorkspace = identity.workspaceId ?? null;
-      } catch {
-        actorWorkspace = null;
       }
       const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
       const rows = await listFleetAssignments({
