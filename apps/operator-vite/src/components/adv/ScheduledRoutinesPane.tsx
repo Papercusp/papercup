@@ -151,11 +151,11 @@ const ROUTINES_CSS = `
   .pc-routines__empty { padding: 14px 8px; text-align: center; font-size: 11px; color: var(--fg-mute, #7f9bb4); border: 1px dashed var(--border, rgba(125,211,252,0.15)); border-radius: 8px; }
   .pc-routines__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; }
   .pc-routines__item { margin: 0; }
-  .pc-routines__row { width: 100%; display: flex; flex-direction: column; gap: 5px; padding: 8px 9px; text-align: left; color: inherit; background: var(--bg-2, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(125,211,252,0.15)); border-radius: 8px; cursor: pointer; }
+  .pc-routines__row { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 8px 9px; overflow: hidden; text-align: left; color: inherit; background: var(--bg-2, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(125,211,252,0.15)); border-radius: 8px; cursor: pointer; }
   .pc-routines__row:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent), transparent 55%); background: color-mix(in srgb, var(--accent), transparent 94%); }
   .pc-routines__row:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
   .pc-routines__row:disabled { cursor: default; opacity: 1; }
-  .pc-routines__topline, .pc-routines__meta { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .pc-routines__topline, .pc-routines__meta { width: 100%; max-width: 100%; display: flex; align-items: center; gap: 7px; min-width: 0; }
   .pc-routines__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 700; }
   .pc-routines__state, .pc-routines__outcome { flex-shrink: 0; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); font-size: 9px; font-weight: 700; color: var(--fg-mute); }
   .pc-routines__state[data-active='true'] { color: var(--good); border-color: color-mix(in srgb, var(--good), transparent 58%); background: color-mix(in srgb, var(--good), transparent 92%); }

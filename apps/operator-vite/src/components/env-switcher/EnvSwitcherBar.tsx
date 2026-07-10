@@ -388,18 +388,34 @@ export function EnvSwitcherBar() {
         background: 'var(--bg-1, #0b1220)',
         borderBottom: '1px solid var(--border, #2a2d36)',
         boxShadow: '0 1px 6px rgba(0,0,0,0.35)',
+        // WI-3386 last-resort: if even the buttons don't fit an extreme-narrow
+        // viewport, scroll rather than silently clip — nothing in this bar
+        // (least of all the release escape hatch) should become unreachable.
+        overflowX: 'auto',
       }}
     >
       <span
         title="Click an env to switch; right-click to enable/disable it"
-        style={{ color: 'var(--fg-mute, #888)', textTransform: 'uppercase', fontSize: 10, cursor: 'help' }}
+        style={{
+          color: 'var(--fg-mute, #888)',
+          textTransform: 'uppercase',
+          fontSize: 10,
+          cursor: 'help',
+          flexShrink: 0,
+        }}
       >
         env
       </span>
       {tauriEnvs != null && envOps.length > 0 && (
         <span
           title="Global keyboard shortcuts — switch env even when this bar is hidden or a build white-screens"
-          style={{ color: 'var(--fg-mute, #888)', fontSize: 9.5, opacity: 0.85, whiteSpace: 'nowrap' }}
+          style={{
+            color: 'var(--fg-mute, #888)',
+            fontSize: 9.5,
+            opacity: 0.85,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
         >
           {MOD}1–{envOps.length}
         </span>
@@ -415,6 +431,18 @@ export function EnvSwitcherBar() {
             fontWeight: 400,
             whiteSpace: 'nowrap',
             color: 'var(--fg-mute, #888)',
+            // WI-3386: this is the widest element in the bar and the one most
+            // safely dropped under pressure (it's decorative — see the
+            // `pipeline?.deploy &&` guard above). On a narrowed viewport (the
+            // mac packaged GUI's native terminal embed leaves the webview well
+            // under what this row needs) let it shrink/truncate INSTEAD of
+            // forcing the whole row to overflow and push the release button
+            // (below, flexShrink:0) off-screen — that button is the documented
+            // escape hatch and must never become unreachable.
+            minWidth: 0,
+            flexShrink: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}
         >
           staging {sha7(pipeline.deploy.mainHead?.sha)}·{ago(pipeline.deploy.mainHead?.committedAtMs)} · green{' '}

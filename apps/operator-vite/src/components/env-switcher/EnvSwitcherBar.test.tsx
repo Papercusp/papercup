@@ -221,4 +221,36 @@ describe('EnvSwitcherBar', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/set-enabled'))).toBe(false);
   });
+
+  // WI-3386 (mac GUI: release button pushed off-screen on a narrow viewport —
+  // the native terminal embed there leaves the webview well under what this
+  // row needs). jsdom doesn't run real layout, so this can't assert pixel
+  // visibility; it locks the CSS contract that made the button unreachable:
+  // the decorative pipeline-stats text must be the thing that shrinks, and
+  // every button (least of all the release escape hatch) must never shrink.
+  it('WI-3386: only the pipeline-stats text may shrink — every button (esp. release) is flexShrink:0', async () => {
+    mockFetch(
+      [
+        op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
+        op({ id: 'staging', port: 3170, reachable: true }),
+        op({ id: 'release', port: 9999, reachable: true, kind: 'release' }),
+      ],
+      {
+        deploy: { mainHead: { sha: 'aaaaaaa1234' }, ready: { sha: 'bbbbbbb5678' }, deployed: { sha: 'ccccccc9012' } },
+        gate: { stalled: false },
+      },
+    );
+    render(<EnvSwitcherBar />);
+    await screen.findByTestId('env-switcher-bar');
+    const release = screen.getByTestId('env-btn-release');
+    expect(release.style.flexShrink).toBe('0');
+    const dev = screen.getByTestId('env-btn-dev');
+    expect(dev.style.flexShrink).toBe('0');
+    const stats = await screen.findByTestId('env-pipeline-stats');
+    expect(stats.style.flexShrink).toBe('1');
+    expect(stats.style.minWidth).toBe('0px');
+    expect(stats.style.textOverflow).toBe('ellipsis');
+    const nav = screen.getByTestId('env-switcher-bar');
+    expect(nav.style.overflowX).toBe('auto');
+  });
 });
