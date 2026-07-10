@@ -228,6 +228,18 @@ export async function gatherLiveBees(workspaceId: string): Promise<PlacementBee[
   return bees;
 }
 
+/**
+ * EI-9288 investigation: `gatherLiveCups` is the cup-lexicon name a caller
+ * expects post-rename (mug-brief-launch.test.ts already mocks it), while this
+ * module's export + the bee-role query internals are still mid-rename (the
+ * `child_role = 'cup'` WHERE clause above already moved; the function/type
+ * names haven't yet). Alias rather than renaming the export here — the wider
+ * gatherLiveBees/PlacementBee rename across its other call sites (place_batch,
+ * system-health, external-bench/*) belongs to the owned cup-lexicon-rename
+ * effort, not a drive-by from this ticket.
+ */
+export { gatherLiveBees as gatherLiveCups };
+
 /** Pull repo-relative file hints off a work-item payload, if any. */
 function filesFromPayload(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object') return [];

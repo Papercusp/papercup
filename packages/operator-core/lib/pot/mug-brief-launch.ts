@@ -23,7 +23,7 @@ import { readTriagedHandledItemIds } from '../attention/triage-store';
 import { isOperationalEscalation } from '../attention/adapters';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
-import { gatherLiveBees } from '../fleet/placement-gather';
+import { gatherLiveCups } from '../fleet/placement-gather';
 import { readInbox } from '../agent-tools/coordination/messages';
 import { drainSlotMessages } from '../agent-tools/coordination/slot-parked-store';
 import { runWithWorkspace } from '../workspace-als';
@@ -61,10 +61,10 @@ async function gatherCapacity(): Promise<BriefCapacity | undefined> {
 }
 
 /** Live pot cups → the floor's cup load + liveness (warm-inject-vs-spawn signal).
- *  gatherLiveBees already excludes non-cups + joins load/liveness; fail-soft. */
+ *  gatherLiveCups already excludes non-cups + joins load/liveness; fail-soft. */
 async function gatherCups(workspaceId: string): Promise<BriefCup[]> {
   try {
-    const cups = await gatherLiveBees(workspaceId);
+    const cups = await gatherLiveCups(workspaceId);
     return cups.map((b) => ({
       id: b.label || b.ownerId,
       doing: b.intent || b.currentPlanSlug || b.doingHarness || null,
@@ -353,9 +353,15 @@ export async function computeMugWakeBrief(
     })().catch(() => '');
     return renderMugBrief({ floor, carryJournal, factsFold, memoryFold });
   } catch (err) {
+    // EI-9288: this catch previously logged only `err.message`, which for a
+    // bare `TypeError: Cannot read properties of undefined (reading 'length')`
+    // gives no file/line — every occurrence was undiagnosable after the fact.
+    // Log the stack (falls back to the bare value for a non-Error throw) so
+    // the NEXT occurrence points straight at the throwing call site instead
+    // of re-starting this same code-reading investigation from scratch.
     console.warn(
       `[mug-brief] precompute failed for '${installSlug}' — Mug falls back to the survey tools:`,
-      err instanceof Error ? err.message : err,
+      err instanceof Error ? (err.stack ?? err.message) : err,
     );
     return null;
   }
