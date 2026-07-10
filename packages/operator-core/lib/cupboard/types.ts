@@ -61,6 +61,11 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *   learning-pack → install   (a distributable set of curated hive learnings,
  *                              installed into a hive's shared memory through
  *                              the conflict review)
+ *   template      → install   (a first-party app-template — a GitHub-repo-backed
+ *                              per-`listing_ref` subdir with template.yaml +
+ *                              GUIDE.md; installing drops the dir into the user
+ *                              template store the materializer reads, cf.
+ *                              cupboard-full-dogfood-2026-07-10 P-003)
  *
  * The `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005):
  * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
@@ -70,7 +75,7 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * publish PENDING and surface publicly only after operator approval — see
  * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -94,6 +99,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'plugin':
     case 'tool-pack':
     case 'learning-pack':
+    case 'template':
       return 'install';
   }
 }

@@ -13,8 +13,14 @@ import type { Env } from './env.ts';
  *  Migration 008 (learning-packs-2026-06-11 D-005): `pack` was RENAMED
  *  `tool-pack` (a runtime-less code-tool pack) and `learning-pack` (a
  *  distributable set of curated hive learnings) joined. `pack` stays accepted
- *  on the wire as a normalized alias for older clients. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
+ *  on the wire as a normalized alias for older clients.
+ *  `template` (app-templates-2026-07-04; standard-path publish wired in
+ *  cupboard-full-dogfood-2026-07-10 P-003): a first-party app-template listing,
+ *  GitHub-repo-backed per `listing_ref` like a blueprint. Previously the 11
+ *  official template rows were seeded directly (bypassing POST /listings); it is
+ *  now accepted on the publish path so templates list "as authored by papercusp"
+ *  via the standard flow. */
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {

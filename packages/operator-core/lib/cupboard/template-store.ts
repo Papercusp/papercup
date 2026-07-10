@@ -82,8 +82,10 @@ export function templateRoots(): TemplateRoot[] {
   });
 }
 
-/** Read a template subdir's self-describing metadata into a LocalTemplate. */
-function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'user'): LocalTemplate | null {
+/** Read a template subdir's self-describing metadata into a LocalTemplate.
+ *  Exported so the cupboard install-template path (P-003) can validate + read a
+ *  freshly-cloned `<ref>/` dir with the SAME parser the store enumeration uses. */
+export function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'user'): LocalTemplate | null {
   const listingPath = join(dir, 'listing.json');
   const manifestPath = join(dir, 'template.yaml');
   // A template dir MUST carry a template.yaml (the manifest). listing.json is the
