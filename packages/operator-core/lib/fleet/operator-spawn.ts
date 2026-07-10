@@ -32,6 +32,7 @@ import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
+import { logSpawnReadinessShadow } from '../inference-gateway/spawn-readiness';
 import { ensureStallWakerLoop } from '../inference-gateway/stall-waker-loop';
 import { evaluateOpusBudgetForSpawn } from '../deployment/account-pool-store';
 import { classifyRoleCriticality, type WorkCriticality } from '../opus-budget-governor';
@@ -877,6 +878,11 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   const runId = `opspawn-${Date.now()}-${randomUUID().slice(0, 6)}`;
   const { sql } = getOrgPg();
   const idemKey = (input.idempotencyKey ?? '').trim() || null;
+
+  // WI-390 layer 1 (SHADOW mode, non-enforcing): log whether the gateway would have
+  // deferred this spawn for pool exhaustion — fire-and-forget, never awaited into the
+  // critical path and never allowed to affect admission. See spawn-readiness.ts STATUS.
+  void logSpawnReadinessShadow({ role, spawnId });
 
   // Atomic admission (audit P-017 + P-039, EI-73) — see admitSpawn.
   // Over-ceiling stays a QUEUE+AWAIT, not a silent drop (D-004): the result

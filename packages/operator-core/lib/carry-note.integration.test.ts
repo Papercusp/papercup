@@ -164,3 +164,41 @@ describe('the three roles converge on ONE store, isolated by scope + workspace',
     expect(loopScope('papercusp', 'su-a')).not.toBe(loopScope('papercusp', 'su-b'));
   });
 });
+
+describe("WI-3648: a '*' workspaceId (the unscoped-superuser read wildcard) never keys its own row", () => {
+  // Same bug class as EI-8824/EI-3409/WI-892, but on the READ side: '*' is
+  // TRUTHY, so a bare `ref.workspaceId ?? activeWorkspaceId()` let it win
+  // outright instead of falling back — silently keying a wildcard-scoped
+  // caller's read/write under the literal workspace_id='*', divergent from
+  // every concrete-workspace write/read of the SAME scope. Observed live: a
+  // work_items:checkpoint write (which resolves through
+  // resolveConcreteWorkspaceId, per EI-8824) landed under the concrete ws, but
+  // orient's post-compaction recovery fold (carry-brief.ts's
+  // readHeldWorkItems → getWorkItemCheckpoint) passed ctx.workspaceId — '*'
+  // for an unscoped su session — straight through, so the read missed the
+  // fresh write and silently returned a stale row (or nothing).
+  it("'*' resolves to the SAME concrete row as omitting workspaceId — not its own separate row", async () => {
+    const scope = workItemScope('h1', 'WI-wildcard');
+    expect(await setCarryNote({ scope }, 'written under the concrete default ws', { journal: false })).toBe(
+      'written under the concrete default ws',
+    );
+    // A caller passing the wildcard explicitly (e.g. an unscoped superuser
+    // ctx.workspaceId) must read back the SAME row as a caller that omitted
+    // workspaceId entirely — never a distinct, always-empty '*'-keyed row.
+    expect(await getCarryNote({ scope, workspaceId: '*' })).toBe('written under the concrete default ws');
+    // And a write under the wildcard lands on that same concrete row too —
+    // round-trips through the wildcard exactly like omitting it.
+    expect(await setCarryNote({ scope, workspaceId: '*' }, 'updated via wildcard', { journal: false })).toBe(
+      'updated via wildcard',
+    );
+    expect(await getCarryNote({ scope })).toBe('updated via wildcard');
+    expect(await rowCount()).toBe(1); // never a second, orphaned '*' row
+  });
+
+  it('an empty-string workspaceId is treated the same as omitted/wildcard — not its own row', async () => {
+    const scope = workItemScope('h1', 'WI-empty-ws');
+    await setCarryNote({ scope, workspaceId: '' }, 'via empty string', { journal: false });
+    expect(await getCarryNote({ scope })).toBe('via empty string');
+    expect(await rowCount()).toBe(1);
+  });
+});

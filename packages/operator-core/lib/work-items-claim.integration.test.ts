@@ -60,6 +60,27 @@ async function seedFeature(
     VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
 
+// WI-3649: the issue-family (bug/change/task) counterpart of seedFeature — inserted
+// directly into the base `work_items` table (mirroring how a real federated row
+// arrives: the hyperbee->PG projector writes work_items directly, never through the
+// engineer_issues view), so `origin` is under direct control the way a real
+// federation-synced row would be.
+async function seedIssue(
+  id: string,
+  opts: {
+    createdTs?: number;
+    kind?: string;
+    status?: string;
+    takenBy?: string | null;
+    origin?: string;
+  } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'todo'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'})`;
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('wi-claim');
   h.sql = db.sql;
@@ -197,5 +218,67 @@ describe('work_items:list admissibleOnly — claimable selector matches the clai
 
     const admissibleOnly = await wi.listWorkItems({ harness: H, state: 'todo', admissibleOnly: true });
     expect(admissibleOnly.map((r) => r.id).sort()).toEqual(['F-local', 'F-remote-admitted']);
+  });
+});
+
+// WI-3649: the issue-family (bug/change/task) counterpart of the EI-7833/EI-7841 gates
+// above. A federated (origin='remote') issue-family row is owned EXCLUSIVELY by its
+// authoring peer's core (engineer_issues_view_dml's remote-skip guard, migration 521) —
+// there is NO trust-list escape hatch like the feature family's autoPickableWhereSql, so
+// `isIssueLocallyClaimable` is a flat origin check. Three surfaces must all agree with
+// what the real claim path (claimWorkItem → the view trigger) will actually do.
+describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 class, issue-family half (WI-3649)', () => {
+  it('observeWorkItem reports available:false + gated:true for a remote issue-family item — matching the claim gate', async () => {
+    await seedIssue('WI-remote-bug', { origin: 'remote' });
+    const obs = await wi.observeWorkItem('WI-remote-bug', { harness: H });
+    expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
+    // ...and the claim path genuinely refuses it too (the view trigger's remote-skip guard).
+    expect(await wi.claimWorkItem('WI-remote-bug', 'agA', { harness: H })).toBeNull();
+  });
+
+  it('observeWorkItem reports available:true (no gated flag) for a local issue-family item', async () => {
+    await seedIssue('WI-local-bug', { origin: 'local' });
+    const obs = await wi.observeWorkItem('WI-local-bug', { harness: H });
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+    expect(obs?.gated).toBeUndefined();
+    expect((await wi.claimWorkItem('WI-local-bug', 'agA', { harness: H }))?.assignee).toBe('agA');
+  });
+
+  it('a HELD remote issue-family item reports available:false with the real holder, not gated', async () => {
+    await seedIssue('WI-remote-held', { origin: 'remote', takenBy: 'agB' });
+    const obs = await wi.observeWorkItem('WI-remote-held', { harness: H });
+    expect(obs).toMatchObject({ available: false, claimedBy: 'agB' });
+    expect(obs?.gated).toBeUndefined();
+  });
+
+  it('work_items:list admissibleOnly excludes a remote issue-family row only when passed; default lists everything', async () => {
+    await seedIssue('WI-local', { origin: 'local' });
+    await seedIssue('WI-remote', { origin: 'remote' });
+
+    const full = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'todo' });
+    expect(full.map((r) => r.id).sort()).toEqual(['WI-local', 'WI-remote']);
+
+    const admissibleOnly = await wi.listWorkItems({ harness: H, kind: 'bug', state: 'todo', admissibleOnly: true });
+    expect(admissibleOnly.map((r) => r.id)).toEqual(['WI-local']);
+  });
+
+  it('claimNextIssueWorkItem (the claim_next/scheduler:get_next self-select) never claims a remote-origin row', async () => {
+    await seedIssue('WI-remote-only', { origin: 'remote', createdTs: 100 });
+    // Nothing else eligible — a remote-origin-only pool must report a genuine miss,
+    // NOT silently succeed by writing taken_by on the federation-owned row (the WI-3649
+    // bug: this UPDATE writes harness_shared.work_items directly, bypassing the view
+    // trigger's EI-7833 remote-skip guard entirely).
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default')).toBeNull();
+    const row = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-remote-only'`)[0];
+    expect(row.taken_by).toBeNull();
+  });
+
+  it('claimNextIssueWorkItem skips a remote row and claims the local one behind it', async () => {
+    await seedIssue('WI-remote-first', { origin: 'remote', createdTs: 100 });
+    await seedIssue('WI-local-second', { origin: 'local', createdTs: 200 });
+    const claimed = await wi.claimNextIssueWorkItem({ harness: H, assignee: 'w1' }, 'default');
+    expect(claimed?.id).toBe('WI-local-second');
+    const remoteRow = (await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id='WI-remote-first'`)[0];
+    expect(remoteRow.taken_by).toBeNull();
   });
 });

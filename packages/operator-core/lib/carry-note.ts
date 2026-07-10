@@ -31,7 +31,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { activeWorkspaceId } from './workspace-registry';
+import { resolveConcreteWorkspaceId } from './workspace-registry';
 
 // ── Scope keys (the convergence axis) ────────────────────────────────────────
 
@@ -309,7 +309,20 @@ export interface CarryNoteRef {
 
 function resolveRef(ref: CarryNoteRef | string): { ws: string; scope: string } {
   const scope = typeof ref === 'string' ? ref : ref.scope;
-  const ws = (typeof ref === 'string' ? undefined : ref.workspaceId) ?? activeWorkspaceId();
+  // WI-3648 (same bug class as EI-8824/EI-3409/WI-892): canonicalize through
+  // resolveConcreteWorkspaceId, not a bare `?? activeWorkspaceId()`. A bare
+  // fallback only fires on null/undefined — it lets a TRUTHY '*' (the
+  // unscoped-superuser read-scoping wildcard, e.g. carry-brief.ts's
+  // readHeldWorkItems → getWorkItemCheckpoint passing ctx.workspaceId straight
+  // through) win outright, so a superuser session's checkpoint READ keyed
+  // under the literal workspace_id='*' while EI-8824 already made every WRITE
+  // (work_items:checkpoint) resolve to the concrete activeWorkspaceId() — the
+  // write/read mismatch silently orphaned the checkpoint (observed live: a
+  // 01:47Z write reported ok, but a ~01:49Z post-compaction read returned the
+  // stale pre-EI-8824 '*'-keyed row instead). Canonicalizing HERE, in the one
+  // shared resolveRef both setCarryNote and getCarryNote funnel through, closes
+  // the gap for every current AND future caller — not just the write path.
+  const ws = resolveConcreteWorkspaceId(typeof ref === 'string' ? undefined : ref.workspaceId);
   if (!ws) throw new Error('carry-note — no active workspace to scope the carry-note to');
   if (!scope) throw new Error('carry-note — a scope is required');
   return { ws, scope };

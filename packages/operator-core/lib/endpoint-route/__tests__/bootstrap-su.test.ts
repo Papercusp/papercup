@@ -686,11 +686,28 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.notice).toMatch(/--account auto ignored.*gateway is off/i);
   });
 
-  it("'auto' is not wired for codex yet → fail-soft notice (codex needs a per-session config + explicit id)", async () => {
+  it("'auto' + codex → UNPINNED gateway routing carried by gatewayAuto (WI-3645), not a fail-soft", async () => {
+    // The old behavior ("auto gateway routing isn't wired for codex yet") silently bypassed the
+    // gateway: the session egressed direct-to-ChatGPT on the local credential, unmetered. Now
+    // auto returns provider:'codex' + gatewayAuto:true — the CODEX_HOME writers translate that
+    // into the UNPINNED gateway provider block (x-papercusp-account header omitted; the gateway
+    // auto-selects via its bearer-pool → codex-CLI fallback). env stays {} deliberately: codex
+    // routing rides in config.toml, never ANTHROPIC_* env.
     getFlagMock.mockResolvedValue(true);
     const r = await pin('auto', 'codex');
     expect(r.env).toEqual({});
-    expect(r.notice).toMatch(/auto gateway routing isn't wired for codex yet/i);
+    expect(r.provider).toBe('codex');
+    expect(r.accountId).toBeNull();
+    expect(r.gatewayAuto).toBe(true);
+    expect(r.notice).toMatch(/routing through the inference gateway \(auto/i);
+  });
+
+  it("'auto' + omp still fail-softs (models.yml needs a specific account — unchanged)", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('auto', 'omp');
+    expect(r.env).toEqual({});
+    expect(r.gatewayAuto).toBeUndefined();
+    expect(r.notice).toMatch(/auto gateway routing isn't wired for omp yet/i);
   });
 
   it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {

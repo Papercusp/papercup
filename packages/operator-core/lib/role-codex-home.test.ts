@@ -106,6 +106,50 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('trust_level = "trusted"');
   });
 
+  // WI-3645: the gateway provider block comes from the SHARED builder
+  // (@papercusp/orchestrator/codex-gateway-config) — the same one spawn-mcp.ts renders. These
+  // three cases pin the routing contract on the INTERACTIVE path, which previously had NO
+  // gateway assertions at all (which is exactly how its local copy drifted pin-required while
+  // the spawned copy learned auto).
+  it('codexGatewayAccountId → gateway provider block WITH the x-papercusp-account pin header', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 'gw-pin',
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+      codexGatewayAccountId: 'chatgpt-sub-cli',
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(toml).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(toml).toContain('"x-papercusp-account" = "chatgpt-sub-cli"');
+  });
+
+  it('codexGatewayAuto (no pin) → the SAME provider block with the account header OMITTED — unpinned auto-routing, never an empty header', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 'gw-auto',
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+      codexGatewayAuto: true,
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(toml).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(toml).not.toContain('x-papercusp-account');
+  });
+
+  it('neither pin nor auto → NO gateway config at all (direct egress unchanged)', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 'gw-off',
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+    });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).not.toContain('papercusp-codex-gateway');
+  });
+
   it('symlinks auth.json to the real ~/.codex/auth.json (shared OAuth, not a copy)', async () => {
     const realAuthDir = join(fakeHome, '.codex');
     const { mkdirSync } = await import('node:fs');

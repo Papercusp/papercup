@@ -932,20 +932,9 @@
   border-color: color-mix(in oklab, var(--accent), transparent 50%);
 }
 
-.h-issue-mini-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: color-mix(in oklab, var(--fg-dim), white 5%);
-  font-size: 10px;
-  font-weight: 650;
-  white-space: nowrap;
-}
 
-.h-issue-mini-stat strong {
-  color: var(--fg);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
+
+
 
 .h-issues {
   display: flex;
@@ -955,176 +944,51 @@
   overflow: auto;
 }
 
-.h-issue {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 9px 10px 9px 12px;
-  border: 1px solid color-mix(in oklab, var(--border), transparent 18%);
-  border-radius: 11px;
-  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), white 1%));
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
-  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
 
-.h-issue::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 0 999px 999px 0;
-  background: color-mix(in oklab, var(--fg-dim), transparent 30%);
-}
 
-.h-issue.h-issue-critical::before { background: #dc2626; }
-.h-issue.h-issue-major::before { background: var(--warn); }
-.h-issue.h-issue-minor::before { background: var(--info); }
-.h-issue.h-issue-nit::before { background: color-mix(in oklab, var(--fg-dim), white 14%); }
 
-.h-issue:hover,
-.h-issue:focus-visible {
-  background: linear-gradient(90deg, color-mix(in oklab, var(--accent), transparent 91%), color-mix(in oklab, var(--bg-2), white 3%));
-  border-color: color-mix(in oklab, var(--accent), transparent 55%);
-  outline: none;
-  transform: translateY(-1px);
-}
 
-.h-issue-sev {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-}
-.h-issue-sev.sev-critical { background: color-mix(in oklab, #dc2626, transparent 80%); color: #fca5a5; border-color: color-mix(in oklab, #dc2626, transparent 55%); }
-.h-issue-sev.sev-major    { background: color-mix(in oklab, var(--warn), transparent 82%); color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 60%); }
-.h-issue-sev.sev-minor    { background: color-mix(in oklab, var(--info), transparent 82%); color: var(--info); border-color: color-mix(in oklab, var(--info), transparent 60%); }
-.h-issue-sev.sev-nit      { background: color-mix(in oklab, var(--fg-dim), transparent 82%); color: var(--fg-dim); border-color: color-mix(in oklab, var(--fg-dim), transparent 60%); }
 
-.h-issue-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.h-issue-title {
-  font-size: 12.5px;
-  font-weight: 680;
-  color: color-mix(in oklab, var(--fg), white 3%);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-issue-meta {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 10.5px;
-  color: var(--fg-dim);
-  overflow: hidden;
-  flex-wrap: wrap;
-}
 
-.h-issue-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: color-mix(in oklab, var(--fg-dim), white 10%);
-  text-transform: lowercase;
-}
-.h-issue-id { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-.h-issue-feat { color: color-mix(in oklab, var(--fg-dim), transparent 20%); }
-.h-issue-code {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  display: inline-flex;
-  gap: 3px;
-  align-items: center;
-  color: var(--counter);
-}
 
-.h-issue-right {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-shrink: 0;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* The "open" affordance badge — appears on hover. Renamed from the
    bare `h-issue-open` class (which collided with the row's
    `h-issue-{status}` class when status === 'open' and made entire rows
    transparent + display:none). */
-.h-issue-open-affordance {
-  opacity: 0;
-  transform: translateX(-2px);
-  border: 1px solid color-mix(in oklab, var(--accent), transparent 62%);
-  border-radius: 999px;
-  padding: 2px 7px;
-  color: color-mix(in oklab, var(--accent), white 10%);
-  background: color-mix(in oklab, var(--accent), transparent 90%);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
-}
 
-.h-issue:hover .h-issue-open-affordance,
-.h-issue:focus-visible .h-issue-open-affordance {
-  opacity: 1;
-  transform: translateX(0);
-}
-.h-issue-linked {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  color: var(--good);
-  background: color-mix(in oklab, var(--good), transparent 85%);
-  border: 1px solid color-mix(in oklab, var(--good), transparent 60%);
-  border-radius: 999px;
-  padding: 1px 7px;
-  font-family: ui-monospace, monospace;
-  font-weight: 600;
-}
-.h-issue-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-weight: 600;
-  text-transform: lowercase;
-  border: 1px solid transparent;
-}
-.h-issue-status.st-open         { background: color-mix(in oklab, var(--bad), transparent 82%); color: var(--bad); border-color: color-mix(in oklab, var(--bad), transparent 60%); }
-.h-issue-status.st-acknowledged { background: color-mix(in oklab, var(--fg-dim), transparent 82%); color: var(--fg-dim); border-color: color-mix(in oklab, var(--fg-dim), transparent 60%); }
-.h-issue-status.st-fixing       { background: color-mix(in oklab, var(--info), transparent 82%); color: var(--info); border-color: color-mix(in oklab, var(--info), transparent 60%); }
-.h-issue-status.st-closed       { background: color-mix(in oklab, var(--good), transparent 82%); color: var(--good); border-color: color-mix(in oklab, var(--good), transparent 60%); }
-.h-issue-status.st-wontfix      { background: color-mix(in oklab, var(--fg-dim), transparent 88%); color: var(--fg-dim); border-color: color-mix(in oklab, var(--fg-dim), transparent 70%); text-decoration: line-through; }
 
-.h-issue-pre {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px 10px;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--fg);
-  max-height: 320px;
-  overflow: auto;
-}
+
+
+
+
+
+
+
+
+
+
 
 .h-spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1756,198 +1620,73 @@
 }
 
 /* ── Recent agents table polish ────────────────────────────── */
-.h-agent-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
 
-.h-agent-table thead {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: color-mix(in oklab, var(--bg-2), white 3%);
-}
 
-.h-agent-table th {
-  padding: 7px 10px;
-  color: var(--fg-dim);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-align: left;
-  text-transform: uppercase;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 10%);
-}
 
-.h-agent-table th.right,
-.h-agent-table td.right {
-  text-align: right;
-}
 
-.h-agent-table td {
-  padding: 7px 10px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 44%);
-}
 
-.h-agent-table tr[role="button"] {
-  cursor: pointer;
-  transition: background 140ms var(--ease-out), transform 140ms var(--ease-out);
-}
 
-.h-agent-table tr[role="button"]:hover,
-.h-agent-table tr[role="button"]:focus-visible {
-  background: color-mix(in oklab, var(--accent), transparent 94%);
-  outline: none;
-}
 
-.h-agent-table tr[role="button"]:active {
-  transform: translateY(1px);
-}
 
-.h-agent-table .muted { color: var(--fg-dim); }
-.h-agent-table .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-.h-agent-table .nowrap { white-space: nowrap; }
-.h-agent-table .runid { color: color-mix(in oklab, var(--fg-dim), white 12%); }
 
-.h-agent-role {
-  display: inline-flex;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 1px solid color-mix(in oklab, var(--accent), transparent 68%);
-  border-radius: 999px;
-  padding: 2px 7px;
-  color: color-mix(in oklab, var(--accent), white 14%);
-  background: color-mix(in oklab, var(--accent), transparent 90%);
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0;
-}
 
-.h-agent-role.validator {
-  color: #c084fc;
-  border-color: color-mix(in oklab, #a855f7, transparent 64%);
-  background: color-mix(in oklab, #a855f7, transparent 88%);
-}
 
-.h-agent-role.orchestrator {
-  color: var(--good);
-  border-color: color-mix(in oklab, var(--good), transparent 64%);
-  background: color-mix(in oklab, var(--good), transparent 88%);
-}
 
-.h-agent-row {
-  position: relative;
-  outline: 1px solid transparent;
-}
 
-.h-agent-row::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--accent), transparent 25%);
-  opacity: 0.8;
-}
 
-.h-agent-row.role-validator::before { background: #a855f7; }
-.h-agent-row.role-orchestrator::before { background: var(--good); }
-.h-agent-row.role-worker::before { background: var(--info); }
-.h-agent-row.role-documenter::before { background: #f59e0b; }
 
-.h-agent-table .h-agent-row td {
-  padding-block: 8px;
-}
 
-.h-agent-time-cell {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: color-mix(in oklab, var(--fg-dim), white 10%);
-  font-variant-numeric: tabular-nums;
-}
 
-.h-agent-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: color-mix(in oklab, var(--accent), white 12%);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 86%);
-}
 
-.h-agent-row.role-validator .h-agent-dot { background: #a855f7; box-shadow: 0 0 0 3px color-mix(in oklab, #a855f7, transparent 86%); }
-.h-agent-row.role-orchestrator .h-agent-dot { background: var(--good); box-shadow: 0 0 0 3px color-mix(in oklab, var(--good), transparent 86%); }
-.h-agent-row.role-worker .h-agent-dot { background: var(--info); box-shadow: 0 0 0 3px color-mix(in oklab, var(--info), transparent 86%); }
-.h-agent-row.role-documenter .h-agent-dot { background: #f59e0b; box-shadow: 0 0 0 3px color-mix(in oklab, #f59e0b, transparent 86%); }
 
-.h-agent-role-cell {
-  min-width: 0;
-}
 
-.h-agent-run-cell {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 
-.h-agent-run-hint {
-  color: color-mix(in oklab, var(--fg-dim), transparent 12%);
-  font-size: 10px;
-  letter-spacing: 0;
-}
 
-.h-agent-size-cell {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  white-space: nowrap;
-}
 
-.h-agent-open {
-  opacity: 0;
-  transform: translateX(-2px);
-  border: 1px solid color-mix(in oklab, var(--accent), transparent 62%);
-  border-radius: 999px;
-  padding: 2px 7px;
-  color: color-mix(in oklab, var(--accent), white 10%);
-  background: color-mix(in oklab, var(--accent), transparent 90%);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
-}
 
-.h-agent-row:hover .h-agent-open,
-.h-agent-row:focus-visible .h-agent-open {
-  opacity: 1;
-  transform: translateX(0);
-}
 
-.h-agent-row:focus-visible {
-  outline-color: color-mix(in oklab, var(--accent), transparent 45%);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-agent-table th:nth-child(4),
-  .h-agent-table td:nth-child(4) {
-    display: none;
-  }
+  
 
-  .h-agent-run-hint {
-    display: none;
-  }
+  
 
-  .h-agent-table td {
-    padding-inline: 8px;
-  }
+  
 }
 
 @media (max-width: 760px) {
@@ -1983,10 +1722,7 @@
     min-height: 210px;
   }
 
-  .h-agent-table th:nth-child(3),
-.h-agent-table td:nth-child(3) {
-    display: none;
-  }
+  
 }
 /* ── assistant-ui chat shell ────────────────────────────────── */
 .h-chat-root {
@@ -2855,27 +2591,11 @@
 .h-status-token.blocked { color: var(--warn); }
 .h-status-token.passed { color: var(--good); }
 
-.h-overview-action {
-  min-width: 136px;
-  padding: 0 14px;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: border-color 150ms var(--ease-out), transform 150ms var(--ease-out), background 150ms var(--ease-out);
-}
 
-.h-overview-action:hover,
-.h-overview-action:focus-visible {
-  border-color: color-mix(in oklab, var(--accent), transparent 35%);
-  transform: translateY(-1px);
-  outline: none;
-}
 
-.h-overview-action.warn {
-  color: var(--warn);
-  border-color: color-mix(in oklab, var(--warn), transparent 55%);
-  background: color-mix(in oklab, var(--warn), transparent 88%);
-}
+
+
+
 
 @media (max-width: 760px) {
   nav.top {
@@ -2927,10 +2647,7 @@
     gap: 7px;
   }
 
-  .h-overview-action {
-    min-height: 34px;
-    width: 100%;
-  }
+  
 }
 
 /* ── Brainstorm workspace polish ────────────────────────────── */
@@ -3736,21 +3453,11 @@
     display: none;
   }
 
-  .h-issue {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-    gap: 7px;
-    padding: 10px 11px 10px 13px;
-  }
+  
 
-  .h-issue-right {
-    justify-content: space-between;
-    flex-wrap: wrap;
-  }
+  
 
-  .h-issue-open-affordance {
-    display: none;
-  }
+  
 }
 
 @media (max-width: 760px) {
@@ -3771,61 +3478,23 @@
 }
 
 /* Dense data views: keep high information throughput in small dashboard panels. */
-.h-agent-table {
-  table-layout: fixed;
-  font-size: 11.5px;
-}
 
-.h-agent-table th {
-  padding: 4px 8px;
-  line-height: 1.2;
-}
 
-.h-agent-table td,
-.h-agent-table .h-agent-row td {
-  padding: 3px 8px;
-  line-height: 1.25;
-  vertical-align: middle;
-}
 
-.h-agent-row::before {
-  top: 4px;
-  bottom: 4px;
-  left: 1px;
-}
 
-.h-agent-time-cell,
-.h-agent-run-cell,
-.h-agent-size-cell {
-  display: table-cell;
-}
 
-.h-agent-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 6px;
-  vertical-align: 1px;
-}
 
-.h-agent-role {
-  max-width: 92px;
-  padding: 1px 6px;
-  font-size: 10px;
-  line-height: 1.35;
-}
 
-.h-agent-run-cell,
-.h-agent-table .runid {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-agent-run-hint,
-.h-agent-open {
-  display: none;
-}
+
+
+
+
+
+
+
+
+
 
 .h-issues-toolbar {
   gap: 6px;
@@ -3844,9 +3513,7 @@
   line-height: 1.25;
 }
 
-.h-issue-mini-stat {
-  font-size: 9.5px;
-}
+
 
 .h-pending-banner {
   min-height: 19px;
@@ -3859,98 +3526,40 @@
   padding: 0;
 }
 
-.h-issue {
-  grid-template-columns: 56px minmax(0, 1fr) auto;
-  gap: 8px;
-  min-height: 31px;
-  padding: 4px 8px 4px 10px;
-  border-width: 0 0 1px;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
 
-.h-issue::before {
-  top: 5px;
-  bottom: 5px;
-  width: 2px;
-}
 
-.h-issue:hover,
-.h-issue:focus-visible {
-  transform: none;
-}
 
-.h-issue-sev {
-  padding: 1px 5px;
-  font-size: 9px;
-  line-height: 1.35;
-}
 
-.h-issue-body {
-  gap: 1px;
-}
 
-.h-issue-title {
-  font-size: 12px;
-  font-weight: 620;
-  line-height: 1.25;
-}
 
-.h-issue-meta {
-  flex-wrap: nowrap;
-  gap: 5px;
-  font-size: 10px;
-  line-height: 1.2;
-  white-space: nowrap;
-}
 
-.h-issue-meta > * {
-  flex-shrink: 0;
-}
 
-.h-issue-code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.h-issue-right {
-  gap: 4px;
-}
 
-.h-issue-linked,
-.h-issue-status {
-  padding: 1px 6px;
-  font-size: 9.5px;
-  line-height: 1.35;
-}
 
-.h-issue-open-affordance {
-  display: none;
-}
+
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-agent-table th,
-  .h-agent-table td,
-  .h-agent-table .h-agent-row td {
-    padding-inline: 6px;
-  }
+  
 
   .h-issues-toolbar {
     gap: 4px;
   }
 
-  .h-issue {
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-    gap: 6px;
-    min-height: 30px;
-    padding: 4px 7px 4px 9px;
-  }
+  
 
-  .h-issue-meta {
-    display: none;
-  }
+  
 }
 
 /* Pending count is already in the triage chip; keep the list area for issue rows. */
@@ -4376,10 +3985,7 @@
     font-size: 10px;
   }
 
-  .h-overview-action {
-    min-height: 30px;
-    border-radius: 11px;
-  }
+  
 
   .h-running-strip {
     align-items: center;
@@ -4511,255 +4117,72 @@
    The git tab lives in a narrow left pane inside the harness dashboard.
    ReactFlow wheel-panning was cramped there and could trap scroll direction;
    this list keeps branch/lane signal while using normal browser scrolling. */
-.h-git-panel {
-  height: min(760px, calc(100vh - var(--app-nav-height, 49px) - 140px));
-  min-height: 420px;
-  max-height: 760px;
-  min-width: 0;
-}
 
-.h-git-head {
-  min-height: 42px;
-  padding: 7px 8px;
-}
 
-.h-git-title-stack {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
 
-.h-git-title-stack .h-panel-count {
-  font-size: 10px;
-  line-height: 1.1;
-}
 
-.h-git-actions {
-  gap: 5px;
-}
 
-.h-git-limit {
-  height: 24px;
-  min-width: 58px;
-  padding: 0 6px;
-  color: var(--fg);
-  border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  border-radius: 7px;
-  background: var(--bg-3);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  outline: none;
-}
 
-.h-git-limit:focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 62%);
-}
 
-.h-git-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
-  padding: 7px 8px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 25%);
-  background: color-mix(in oklab, var(--bg-2), white 1.5%);
-}
 
-.h-git-summary span {
-  min-width: 0;
-  padding: 5px 6px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 16%);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--bg), transparent 30%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-git-summary b {
-  color: var(--fg);
-  font-weight: 750;
-}
 
-.h-git-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  touch-action: pan-y;
-  padding: 5px;
-  scrollbar-color: color-mix(in oklab, var(--fg-dim), transparent 55%) transparent;
-  scrollbar-width: thin;
-}
 
-.h-git-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: stretch;
-  min-height: 54px;
-  padding: 7px 7px 7px 5px;
-  color: inherit;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
 
-.h-git-row:hover,
-.h-git-row:focus-visible {
-  background: color-mix(in oklab, var(--bg-2), white 4%);
-  border-color: color-mix(in oklab, var(--border), white 8%);
-  outline: none;
-}
 
-.h-git-row:active {
-  transform: translateY(1px);
-}
 
-.h-git-rail {
-  position: relative;
-  align-self: stretch;
-  min-height: 40px;
-  flex: 0 0 auto;
-}
 
-.h-git-lane {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  opacity: 0.22;
-  transform: translateX(-50%);
-}
 
-.h-git-lane.active {
-  width: 2px;
-  opacity: 0.56;
-}
 
-.h-git-dot {
-  position: absolute;
-  top: 7px;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--bg);
-  border-radius: 999px;
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--border), white 8%);
-}
 
-.h-git-row-body {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  align-content: center;
-}
 
-.h-git-subject {
-  min-width: 0;
-  color: var(--fg);
-  font-size: 12px;
-  font-weight: 620;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-git-meta {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-  color: var(--fg-dim);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-  line-height: 1.2;
-  overflow: hidden;
-  white-space: nowrap;
-}
 
-.h-git-meta span,
-.h-git-meta time {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.h-git-meta span:nth-child(2) {
-  max-width: 80px;
-}
 
-.h-git-merge {
-  color: var(--warn);
-}
 
-.h-git-refs {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
-}
 
-.h-git-ref {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 105px;
-  padding: 1px 5px;
-  color: color-mix(in oklab, var(--fg-dim), white 10%);
-  border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--bg-3), transparent 20%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-git-ref.head {
-  color: color-mix(in oklab, var(--good), white 10%);
-  border-color: color-mix(in oklab, var(--good), transparent 55%);
-  background: color-mix(in oklab, var(--good), transparent 90%);
-}
 
-.h-git-ref.tag {
-  color: color-mix(in oklab, var(--info), white 10%);
-  border-color: color-mix(in oklab, var(--info), transparent 55%);
-  background: color-mix(in oklab, var(--info), transparent 90%);
-}
 
-.h-git-ref.muted {
-  color: var(--fg-faint);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-git-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px;
-  }
+  
 
-  .h-git-list {
-    padding: 4px;
-  }
+  
 
-  .h-git-row {
-    min-height: 50px;
-    gap: 7px;
-    padding: 6px;
-  }
+  
 
-  .h-git-subject {
-    font-size: 11.5px;
-  }
+  
 }
 
 /* Standalone /harness has a lot of mission chrome above embed tabs; without a
@@ -5634,413 +5057,80 @@
 }
 
 /* Git dashboard refinement: searchable native-scroll commit cockpit. */
-.h-git-panel {
-  background:
-    radial-gradient(circle at 0% 0%, color-mix(in oklab, var(--accent), transparent 90%), transparent 34%),
-    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 1.5%), var(--bg-2));
-}
-.h-git-command {
-  display: grid;
-  gap: 6px;
-  padding: 7px 8px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 24%);
-  background: color-mix(in oklab, var(--bg-2), transparent 8%);
-}
-.h-git-search-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px;
-  align-items: center;
-}
-.h-git-search {
-  width: 100%;
-  min-width: 0;
-  height: 27px;
-  padding: 0 9px;
-  color: var(--fg);
-  border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  border-radius: 9px;
-  background: color-mix(in oklab, var(--bg), transparent 18%);
-  font-size: 11px;
-  outline: none;
-}
-.h-git-search::placeholder {
-  color: var(--fg-faint);
-}
-.h-git-search:focus {
-  border-color: color-mix(in oklab, var(--accent), white 8%);
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 68%);
-}
-.h-git-clear {
-  height: 27px;
-  padding: 0 8px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 8%);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--bg-3), transparent 22%);
-  font-size: 10px;
-  font-weight: 650;
-  cursor: pointer;
-}
-.h-git-clear:hover,
-.h-git-clear:focus-visible {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--accent), transparent 45%);
-  outline: none;
-}
-.h-git-filter-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
-}
-.h-git-filter {
-  min-width: 0;
-  height: 25px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  padding: 0 6px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 10%);
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--bg-3), transparent 30%);
-  cursor: pointer;
-}
-.h-git-filter span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0;
-}
-.h-git-filter b {
-  color: var(--fg);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-}
-.h-git-filter.on {
-  color: color-mix(in oklab, var(--accent), white 15%);
-  border-color: color-mix(in oklab, var(--accent), transparent 48%);
-  background: color-mix(in oklab, var(--accent), transparent 88%);
-}
-.h-git-ref-rail,
-.h-git-author-rail {
-  display: flex;
-  gap: 5px;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 6px 8px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 30%);
-  scrollbar-width: none;
-  mask-image: linear-gradient(90deg, transparent 0, black 10px, black calc(100% - 18px), transparent 100%);
-}
-.h-git-ref-rail::-webkit-scrollbar,
-.h-git-author-rail::-webkit-scrollbar {
-  display: none;
-}
-.h-git-ref-chip,
-.h-git-author-rail button {
-  flex: 0 0 auto;
-  max-width: 150px;
-  min-width: 0;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 7px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 10%);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--bg-3), transparent 28%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9.5px;
-  cursor: pointer;
-}
-.h-git-ref-chip {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.h-git-ref-chip.head {
-  color: color-mix(in oklab, var(--good), white 10%);
-  border-color: color-mix(in oklab, var(--good), transparent 58%);
-  background: color-mix(in oklab, var(--good), transparent 91%);
-}
-.h-git-ref-chip.tag {
-  color: color-mix(in oklab, var(--info), white 12%);
-  border-color: color-mix(in oklab, var(--info), transparent 58%);
-  background: color-mix(in oklab, var(--info), transparent 91%);
-}
-.h-git-ref-chip:hover,
-.h-git-ref-chip:focus-visible,
-.h-git-author-rail button:hover,
-.h-git-author-rail button:focus-visible {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--accent), transparent 54%);
-  outline: none;
-}
-.h-git-author-rail {
-  padding-top: 0;
-}
-.h-git-author-rail button span {
-  max-width: 92px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.h-git-author-rail button b {
-  color: var(--fg);
-  font-size: 9.5px;
-}
-.h-git-row.is-active {
-  border-color: color-mix(in oklab, var(--accent), transparent 45%);
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--accent), transparent 84%), transparent 45%),
-    color-mix(in oklab, var(--bg-2), white 5%);
-}
-.h-git-row.is-active .h-git-dot {
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent), transparent 45%);
-}
-.h-git-error {
-  color: var(--bad);
-}
-.h-git-empty {
-  gap: 8px;
-}
-.h-git-empty .h-git-clear {
-  margin-top: 6px;
-}
-.h-git-panel .h-git-summary {
-  padding-block: 6px;
-}
-.h-git-panel .h-git-list {
-  padding-top: 6px;
-}
-.h-git-panel .h-git-row {
-  min-height: 52px;
-}
-.h-git-panel .h-git-meta {
-  gap: 5px;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @media (max-width: 760px) {
-  .h-git-command {
-    padding: 6px;
-  }
-  .h-git-search {
-    height: 26px;
-  }
-  .h-git-clear {
-    height: 26px;
-    padding-inline: 7px;
-  }
-  .h-git-filter {
-    padding-inline: 5px;
-  }
-  .h-git-ref-rail,
-  .h-git-author-rail {
-    padding-inline: 6px;
-  }
-  .h-git-author-rail {
-    padding-top: 0;
-  }
+  
+  
+  
+  
+  
+  
 }
 
 /* Git is data-heavy: keep the dashboard list tall after adding command controls. */
-.h-main-shell.dashboard:has(.h-git-panel) {
-  min-height: 760px;
-}
-.h-main-shell.dashboard .h-git-panel {
-  height: 760px;
-  min-height: 760px;
-  max-height: 760px;
-}
+
+
 
 /* Git commit detail drawer polish. */
-.h-git-detail-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(0, 0, 0, 0.68);
-  backdrop-filter: blur(3px);
-}
-.h-git-detail-drawer {
-  width: min(1120px, 82vw);
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background:
-    radial-gradient(circle at 0% 0%, color-mix(in oklab, var(--accent), transparent 88%), transparent 38%),
-    var(--bg-2);
-  border-left: 1px solid color-mix(in oklab, var(--border), white 8%);
-  box-shadow: -30px 0 60px rgba(0, 0, 0, 0.34);
-}
-.h-git-detail-head {
-  flex-shrink: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 11px 14px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 18%);
-  background: color-mix(in oklab, var(--bg-2), white 2%);
-}
-.h-git-detail-id {
-  display: grid;
-  gap: 2px;
-  min-width: 98px;
-}
-.h-git-detail-id span {
-  color: var(--fg-faint);
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-.h-git-detail-id code {
-  color: color-mix(in oklab, var(--accent), white 18%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.h-git-detail-title-stack {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-.h-git-detail-title-stack strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 720;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.h-git-detail-meta {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  mask-image: linear-gradient(90deg, black calc(100% - 18px), transparent 100%);
-}
-.h-git-detail-meta::-webkit-scrollbar {
-  display: none;
-}
-.h-git-detail-meta span {
-  flex: 0 0 auto;
-  max-width: 190px;
-  overflow: hidden;
-  padding: 3px 7px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 14%);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--bg-3), transparent 28%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.h-git-detail-actions {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.h-git-detail-copy {
-  height: 28px;
-  padding: 0 9px;
-  color: var(--fg-dim);
-  border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  border-radius: 9px;
-  background: color-mix(in oklab, var(--bg-3), transparent 18%);
-  font-size: 10.5px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.h-git-detail-copy:hover,
-.h-git-detail-copy:focus-visible {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--accent), transparent 45%);
-  outline: none;
-}
-.h-git-detail-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 14px;
-  scrollbar-color: color-mix(in oklab, var(--fg-dim), transparent 55%) transparent;
-  scrollbar-width: thin;
-}
-.h-git-detail-loading .h-empty-icon {
-  animation: spin 1s linear infinite;
-}
-.h-git-detail-message {
-  margin: 0 0 14px;
-  padding: 12px 13px;
-  color: var(--fg);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 10%);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--bg), transparent 18%);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.h-git-detail-empty {
-  color: var(--fg-dim);
-  font-size: 12px;
-}
-.h-git-file-card {
-  margin-bottom: 14px;
-  overflow: hidden;
-  border: 1px solid color-mix(in oklab, var(--border), white 4%);
-  border-radius: 10px;
-  background: var(--bg-2);
-}
-.h-git-file-head {
-  display: flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 7px 10px;
-  color: var(--fg);
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 12%);
-  background: color-mix(in oklab, var(--bg-3), transparent 10%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11.5px;
-}
-.h-git-file-head span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @media (max-width: 760px) {
-  .h-git-detail-drawer {
-    width: 100vw;
-  }
-  .h-git-detail-head {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 10px;
-  }
-  .h-git-detail-id {
-    display: none;
-  }
-  .h-git-detail-title-stack strong {
-    font-size: 12px;
-  }
-  .h-git-detail-copy {
-    display: none;
-  }
-  .h-git-detail-body {
-    padding: 10px;
-  }
+  
+  
+  
+  
+  
+  
 }
 
 /* Proposals queue refinement: sort, quick focus, and copy affordances. */
@@ -6051,85 +5141,22 @@
  * Same shape as dashboard + brainstorm: shell fills the available
  * height, panel fills inside it. The 760px floor keeps small viewports
  * usable; max caps removed so we don't truncate on normal screens. */
-.h-main-shell.embed:has(.h-git-panel) {
-  min-height: 760px;
-}
-.h-main-shell.embed .h-git-panel {
-  width: 100%;
-  flex: 1;
-  height: auto;
-  min-height: 760px;
-  max-height: none;
-}
-.h-git-filter-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-.h-git-summary {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-.h-git-row {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-}
-.h-git-row.is-bookmarked {
-  border-color: color-mix(in oklab, var(--warn), transparent 60%);
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--warn), transparent 90%), transparent 42%),
-    color-mix(in oklab, var(--bg-3), transparent 35%);
-}
-.h-git-row-bookmark {
-  align-self: start;
-  justify-self: end;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
-  color: var(--fg-faint);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  opacity: 0.48;
-  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
-}
-.h-git-row:hover .h-git-row-bookmark,
-.h-git-row:focus-within .h-git-row-bookmark,
-.h-git-row-bookmark.on {
-  opacity: 1;
-}
-.h-git-row-bookmark:hover,
-.h-git-row-bookmark:focus-visible,
-.h-git-row-bookmark.on {
-  color: color-mix(in oklab, var(--warn), white 16%);
-  border-color: color-mix(in oklab, var(--warn), transparent 58%);
-  background: color-mix(in oklab, var(--warn), transparent 91%);
-  outline: none;
-}
-.h-git-row.is-bookmarked .h-git-dot {
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn), transparent 52%);
-}
+
+
+
+
+
+
+
+
+
+
 @media (max-width: 760px) {
-  .h-main-shell.embed:has(.h-git-panel) {
-    min-height: 760px;
-    max-height: none;
-  }
-  .h-main-shell.embed .h-git-panel {
-    height: 760px;
-    min-height: 760px;
-  }
-  .h-git-filter {
-    padding-inline: 4px;
-  }
-  .h-git-filter span {
-    font-size: 9px;
-  }
-  .h-git-row-bookmark {
-    width: 20px;
-    height: 20px;
-  }
+  
+  
+  
+  
+  
 }
 
 /* Proposals review workflow: keyboard navigation + bulk shortlist without shrinking the reader. */
@@ -6140,47 +5167,23 @@
   flex-direction: column;
   gap: 8px;
 }
-.h-dashboard-grid {
-  flex: 1 1 auto;
-  min-height: 760px;
-}
+
 /* In /papercup the grid is bounded by the iframe viewport (~908px tall),
    most of which is consumed by the harness chrome. The 760px floor would
    force scroll past the iframe edge, leaving the grid bottom hidden.
    Let the grid flex into the actual remaining space instead. */
-.papercup-route .h-dashboard-grid {
-  min-height: 0;
-}
+
 .h-compact-dashboard {
   flex: 1 1 auto;
   min-height: 0;
 }
 
 /* Dashboard grid anchors preserve full-height panels without an extra command strip. */
-.h-dashboard-panel-anchor {
-  height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  outline: none;
-  scroll-margin-block-start: 168px;
-}
-.h-dashboard-panel-anchor > .h-panel {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.h-dashboard-panel-anchor:focus-visible {
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 42%), 0 0 0 4px color-mix(in oklab, var(--accent), transparent 82%);
-  border-radius: 12px;
-}
-.h-compact-dashboard .h-dashboard-panel-anchor {
-  height: auto;
-  min-height: 300px;
-}
-.h-compact-dashboard .h-dashboard-panel-anchor > .h-panel {
-  min-height: 300px;
-  height: auto;
-}
+
+
+
+
+
 
 /* Proposals dense queue: one-line rows so reviewers can scan many items before scrolling. */
 
@@ -6321,16 +5324,7 @@ body:has(.h-top-collapse-inline) main {
   gap: 6px !important;
   min-width: 0 !important;
 }
-.h-project-topline-statuses .h-overview-pulse,
-.h-project-topline-statuses .h-overview-lanes {
-  flex: 0 0 auto !important;
-  width: fit-content !important;
-  min-width: 0 !important;
-  height: 26px !important;
-  min-height: 26px !important;
-  padding: 0 8px !important;
-  border-radius: 8px !important;
-}
+
 .h-project-pulse .h-pulse-feed {
   min-height: 24px !important;
 }
@@ -7066,133 +6060,43 @@ body:has(.h-top-collapse-inline) main {
   font-size: 11px;
 }
 
-.h-issue > div {
-  min-height: 62px !important;
-}
 
-.h-issue-body {
-  gap: 3px !important;
-  min-width: 0;
-}
 
-.h-issue-title {
-  display: -webkit-box !important;
-  -webkit-box-orient: vertical !important;
-  -webkit-line-clamp: 2 !important;
-  white-space: normal !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  font-size: 12.4px !important;
-  font-weight: 760 !important;
-  letter-spacing: 0 !important;
-  line-height: 1.25 !important;
-  color: color-mix(in oklab, var(--fg), white 4%) !important;
-}
 
-.h-issue-meta {
-  min-height: 16px;
-  gap: 7px !important;
-  flex-wrap: wrap !important;
-  font-size: 10px !important;
-  line-height: 1.25 !important;
-  color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
-}
 
-.h-issue-source,
-.h-issue-id,
-.h-issue-feat,
-.h-issue-code {
-  min-width: 0;
-  max-width: 100%;
-}
 
-.h-issue-code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.h-issue-right {
-  display: inline-flex !important;
-  flex-direction: column !important;
-  align-items: flex-end !important;
-  justify-content: center !important;
-  gap: 5px !important;
-  min-width: 0;
-}
 
-.h-issue-right-top,
-.h-issue-row-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  min-width: 0;
-}
 
-.h-issue-row-actions {
-  flex-wrap: wrap;
-}
 
-.h-issue-open-affordance {
-  display: none !important;
-}
 
-.h-issue-row-action {
-  min-height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--border), white 8%);
-  background: color-mix(in oklab, var(--bg-3), transparent 12%);
-  color: color-mix(in oklab, var(--fg-dim), white 18%);
-  font-size: 9.5px;
-  font-weight: 820;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-}
 
-.h-issue-row-action:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: color-mix(in oklab, var(--accent), transparent 50%);
-  background: color-mix(in oklab, var(--accent), transparent 88%);
-}
 
-.h-issue-row-action.primary {
-  color: color-mix(in oklab, var(--accent), white 24%);
-  border-color: color-mix(in oklab, var(--accent), transparent 45%);
-  background: color-mix(in oklab, var(--accent), transparent 88%);
-}
 
-.h-issue-row-action.success {
-  color: color-mix(in oklab, var(--good), white 10%);
-  border-color: color-mix(in oklab, var(--good), transparent 55%);
-  background: color-mix(in oklab, var(--good), transparent 92%);
-}
 
-.h-issue-row-action.danger {
-  color: color-mix(in oklab, var(--bad), white 18%);
-  border-color: color-mix(in oklab, var(--bad), transparent 56%);
-  background: color-mix(in oklab, var(--bad), transparent 92%);
-}
 
-.h-issue-row-action:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* Issue rows carry inline containment from RichGrid; override it so restored two-line rows can size to their action stack. */
-.h-issue {
-  min-height: 70px !important;
-  height: auto !important;
-  contain: paint !important;
-  padding: 4px 8px 4px 10px !important;
-}
 
-.h-issue > div {
-  min-height: 62px !important;
-}
+
+
 
 .h-feature-row-actions {
   gap: 3px;
@@ -7260,14 +6164,9 @@ body:has(.h-top-collapse-inline) main {
   box-shadow: 0 14px 28px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03);
 }
 
-.h-issue {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), white 1%));
-}
 
-.h-issue:hover,
-.h-issue:focus-visible {
-  box-shadow: 0 12px 26px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.025);
-}
+
+
 
 .h-feature-row-action,
 .h-issue-row-action {
@@ -7401,32 +6300,17 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 4%) !important;
 }
 
-.h-issue {
-  min-height: 60px !important;
-  padding: 3px 8px 3px 10px !important;
-}
 
-.h-issue > div {
-  min-height: 54px !important;
-}
 
-.h-issue-body {
-  gap: 2px !important;
-}
 
-.h-issue-title {
-  line-height: 1.2 !important;
-}
 
-.h-issue-meta {
-  min-height: 14px;
-  font-size: 9.5px !important;
-  line-height: 1.15 !important;
-}
 
-.h-issue-right {
-  gap: 4px !important;
-}
+
+
+
+
+
+
 
 
 /* Keep the compact now-running control as a single aligned pill. */
@@ -7507,9 +6391,7 @@ body:has(.h-top-collapse-inline) main {
 
 /* At the 1280px operator viewport, prioritize the now-running chip over pulse text so it never clips to just "NO". */
 @media (max-width: 1320px) {
-  .h-project-topline-statuses .h-overview-pulse {
-    display: none !important;
-  }
+  
 
   .h-project-topline-statuses .h-project-lanes {
     width: 154px !important;
@@ -8546,616 +7428,279 @@ body:has(.h-top-collapse-inline) main {
 /* Proposals tab usability polish: clearer active row, controls, and reader contrast only. */
 
 /* run.log pane usability polish: keep controls visible and log rows easier to scan without changing content. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-body {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.016), rgba(255, 255, 255, 0)), color-mix(in oklab, var(--bg), white 1%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 5px 6px 6px;
-  overflow-x: visible;
-  overflow-y: visible;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs-spacer {
-  flex: 1 1 10px;
-  min-width: 0;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar {
-  margin-left: auto;
-  padding: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  row-gap: 4px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  min-height: 24px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  background: rgba(255, 255, 255, 0.018);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log {
-  scrollbar-gutter: stable;
-  tab-size: 2;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.6%), color-mix(in srgb, var(--accent-strong), transparent 100%) 34%), color-mix(in oklab, var(--bg), white 1%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-  grid-template-columns: 18px 38px 96px minmax(0, auto) minmax(50px, auto) minmax(0, 1fr);
-  column-gap: 7px;
-  padding-block: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.018);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:not(:has(.h-log-source)) .h-log-msg {
-  grid-column: 5 / -1;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-msg {
-  color: color-mix(in oklab, var(--fg), var(--fg-dim) 28%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line .h-log-source,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tag {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
-}
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-    grid-template-columns: 16px 34px 82px minmax(0, auto) minmax(42px, auto) minmax(0, 1fr);
-    column-gap: 5px;
-  }
+  
 
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line .h-log-source {
-    max-width: 72px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  
 }
 
 /* run.log second-pass polish: slightly clearer hierarchy, hover/focus states, and scan anchors. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-head {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 94.8%), rgba(255, 255, 255, 0.012) 48%, transparent);
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-title {
-  color: color-mix(in oklab, var(--fg), var(--fg-dim) 24%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-count {
-  color: color-mix(in oklab, var(--accent-cool), white 8%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active {
-  box-shadow: inset 0 -2px 0 color-mix(in oklab, var(--accent-cool), transparent 18%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:hover,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:hover {
-  background: color-mix(in srgb, var(--accent-strong), transparent 93%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-collapse-badge:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill:focus-visible {
-  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%);
-  outline-offset: 2px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-no {
-  color: color-mix(in oklab, var(--fg-dim), white 9%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-ts {
-  color: color-mix(in oklab, var(--fg-dim), white 14%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-msg {
-  line-height: 1.52;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 91.8%), color-mix(in srgb, var(--accent-strong), transparent 97%) 44%, rgba(255, 255, 255, 0.012));
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin {
-  opacity: 0.26;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-pin,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-pin,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin.active {
-  opacity: 1;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber {
-  height: 20px;
-  padding-inline: 6px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.024), rgba(255, 255, 255, 0)), color-mix(in oklab, var(--bg-2), black 5%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar {
-  border-radius: 999px 999px 2px 2px;
-  opacity: 0.72;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar:hover:not(:disabled),
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar.has-errors:hover {
-  opacity: 1;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* run.log third-pass polish: copy, scroll, and pinned-row readability refinements. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-body {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.024);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log {
-  font-variant-ligatures: none;
-  overscroll-behavior: contain;
-  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 72%) transparent;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log::selection,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log *::selection {
-  background: color-mix(in srgb, var(--accent-strong), transparent 78%);
-  color: var(--fg);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-  scroll-margin-block: 38px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:nth-child(2n) {
-  background: rgba(255, 255, 255, 0.016);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.bookmarked {
-  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--accent-cool), transparent 14%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.bookmarked .h-log-msg {
-  color: color-mix(in oklab, var(--fg), var(--fg-dim) 18%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-source {
-  margin-top: 1px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tag {
-  margin-top: 1px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link {
-  text-decoration-thickness: 1px;
-  text-decoration-color: color-mix(in srgb, var(--accent-strong), transparent 54%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link:hover {
-  background: color-mix(in srgb, var(--accent-strong), transparent 93%);
-  border-radius: 3px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.5%), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.6%), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.044);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* run.log fourth-pass polish: compact control states, severity cues, and long-line readability. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-  row-gap: 5px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
-  border-radius: 5px 5px 3px 3px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
-  line-height: 1.35;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  font-weight: 720;
-  line-height: 1.25;
-  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:active,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:active,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:active {
-  transform: translateY(1px);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-msg {
-  overflow-wrap: anywhere;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.error,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-error {
-  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.12);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.warn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-warn {
-  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.10);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-decision {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 90%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-collapse-badge {
-  margin-right: 6px;
-  vertical-align: 1px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill {
-  backdrop-filter: blur(8px);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-empty {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97.2%), rgba(255, 255, 255, 0.006));
-}
+
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar {
-    justify-content: flex-start;
-  }
+  
 
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-    padding-inline: 8px;
-  }
+  
 }
 
 /* run.log fifth-pass polish: source clipping, hover context, and compact scan affordances. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-source {
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-no,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-no {
-  color: color-mix(in oklab, var(--fg-dim), white 18%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-ts,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-ts {
-  color: color-mix(in oklab, var(--fg-dim), white 26%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-plan {
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--info), transparent 90%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-invoke {
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--good), transparent 90%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle.paused {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.050), 0 0 0 1px rgba(251, 191, 36, 0.05);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar.has-errors {
-  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.10);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:hover {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 54%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:hover:not(:disabled) {
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
-}
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
-    padding-inline: 8px;
-  }
+  
 
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-source {
-    max-width: 68px;
-  }
+  
 }
 
 
 /* run.log sixth-pass polish: softer control depth, clearer row focus, and motion comfort. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-container {
-  isolation: isolate;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  box-shadow: none;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active .h-log-tab-count {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-  background-clip: padding-box;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-source,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-source {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-tag,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-tag {
-  filter: brightness(1.08);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks-label {
-  color: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 36%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill:hover {
-  transform: translateX(-50%) translateY(-1px);
-}
+
+
+
+
+
+
+
+
 
 @media (prefers-reduced-motion: reduce) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill {
-    animation: none;
-  }
+  
 
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab,
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle,
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin,
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar {
-    transition-duration: 1ms;
-  }
+  
 }
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber {
-    height: 18px;
-  }
+  
 }
 
 /* run.log seventh-pass polish: grouped controls, severity context, and bookmark readability. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 92.5%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar {
-  column-gap: 5px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn + .h-log-toolbar-btn {
-  margin-left: 1px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-iteration {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.030);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.error .h-log-no,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-error .h-log-no {
-  color: color-mix(in oklab, var(--bad), white 16%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.warn .h-log-no,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-warn .h-log-no {
-  color: color-mix(in oklab, var(--warn), white 10%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin.active {
-  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 68%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-collapse-badge {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-ts {
-  color: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 32%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-msg {
-  color: color-mix(in oklab, var(--fg), var(--fg-dim) 22%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar:disabled {
-  opacity: 0.26;
-}
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-    padding-inline: 5px;
-  }
+  
 
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar {
-    column-gap: 4px;
-  }
+  
 }
 
 /* run.log eighth-pass polish: final density, affordance, and empty-state tuning. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.026);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  min-width: 0;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-collapse-badge,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-collapse-badge {
-  border-color: rgba(251, 191, 36, 0.48);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-plan .h-log-ts {
-  color: color-mix(in oklab, var(--info), white 4%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-invoke .h-log-ts {
-  color: color-mix(in oklab, var(--good), white 2%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-decision .h-log-ts {
-  color: color-mix(in oklab, var(--accent-cool), white 4%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link:focus-visible {
-  border-radius: 3px;
-  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%);
-  outline-offset: 2px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber-bar:not(:disabled) {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-empty-icon {
-  color: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 24%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks::-webkit-scrollbar,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs::-webkit-scrollbar {
-  height: 6px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks::-webkit-scrollbar-thumb,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--accent-strong), transparent 80%);
-  border-radius: 999px;
-}
+
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-    min-width: 16px;
-    padding-inline: 4px;
-  }
+  
 }
 
 /* run.log ninth-pass polish: quiet edge cases, timestamp cues, and chip refinement. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  font-variant-numeric: tabular-nums;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-source,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tag {
-  min-width: 0;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.error .h-log-ts,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-error .h-log-ts {
-  color: color-mix(in oklab, var(--bad), white 18%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.warn .h-log-ts,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-warn .h-log-ts {
-  color: color-mix(in oklab, var(--warn), white 10%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-plan .h-log-no {
-  color: color-mix(in oklab, var(--info), white 2%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-invoke .h-log-no {
-  color: color-mix(in oklab, var(--good), white 2%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link-app {
-  border-radius: 3px;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link-app:hover {
-  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 88%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks::-webkit-scrollbar-track,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.012);
-  border-radius: 999px;
-}
+
+
+
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-    padding-inline: 5px 7px;
-  }
+  
 }
 
 /* run.log tenth-pass polish: ultra-small spacing, chip hover, and tail-state clarity. */
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover .h-log-tab-count {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:focus-visible,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 90%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-source {
-  color: color-mix(in oklab, var(--accent-cool), white 6%);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.error .h-log-source,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-error .h-log-source {
-  border-color: rgba(248, 113, 113, 0.32);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.warn .h-log-source,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-warn .h-log-source {
-  border-color: rgba(251, 191, 36, 0.28);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin:hover {
-  transform: scale(1.06);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older {
-  letter-spacing: 0;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill {
-  font-weight: 780;
-  letter-spacing: 0;
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:active,
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:active {
-  transform: translateY(1px);
-}
 
-.h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-empty {
-  color: color-mix(in oklab, var(--fg-dim), white 8%);
-}
+
+
+
+
+
+
+
+
+
+
 /* Second top-bar pass: refine hierarchy and affordances without adding vertical space. */
 .h-brand-kicker {
   color: color-mix(in oklab, var(--accent-cool), white 12%) !important;
@@ -9202,12 +7747,7 @@ body:has(.h-top-collapse-inline) main {
   background: color-mix(in oklab, var(--good), transparent 87%) !important;
 }
 
-.h-project-topline-statuses .h-overview-pulse,
-.h-project-topline-statuses .h-overview-lanes {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  background: rgba(255, 255, 255, 0.035) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
+
 
 .h-running-head strong {
   color: color-mix(in oklab, var(--accent-cool), white 6%) !important;
@@ -9518,10 +8058,7 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg), white 5%) !important;
 }
 
-.h-project-topline-statuses .h-overview-pulse:hover,
-.h-project-topline-statuses .h-overview-lanes:hover {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 94.5%) !important;
-}
+
 
 .h-stat {
   position: relative !important;
@@ -11974,48 +10511,21 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
 }
 
-.h-issue {
-  min-height: 62px !important;
-  padding-block: 8px !important;
-}
 
-.h-issue-title {
-  font-size: 12.4px !important;
-  font-weight: 720 !important;
-  line-height: 1.22 !important;
-}
 
-.h-issue-meta {
-  gap: 5px !important;
-  font-size: 10px !important;
-  line-height: 1.2 !important;
-}
 
-.h-issue-sev,
-.h-issue-status,
-.h-issue-linked {
-  min-height: 18px !important;
-  padding-block: 1px !important;
-}
 
-.h-agent-row {
-  border-radius: 9px;
-  outline-offset: -1px;
-}
 
-.h-agent-row > div {
-  min-height: 32px !important;
-}
 
-.h-agent-row > div > div {
-  padding-inline: 8px !important;
-  font-size: 12.5px !important;
-}
 
-.h-agent-role {
-  min-height: 18px;
-  padding-block: 1px;
-}
+
+
+
+
+
+
+
+
 
 /* Fixed-column list polish: every scalar value sits in a compact pill. */
 .h-feature-row-id,
@@ -12180,106 +10690,39 @@ body:has(.h-top-collapse-inline) main {
   min-width: 38px;
 }
 
-.h-issue-meta {
-  flex-wrap: nowrap !important;
-}
 
-.h-issue-source,
-.h-issue-id,
-.h-issue-feat,
-.h-issue-code {
-  flex: 0 1 auto;
-  max-inline-size: 170px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-.h-issue-source {
-  text-transform: lowercase;
-}
 
-.h-issue-code {
-  color: color-mix(in oklab, var(--counter, var(--accent-strong)), white 12%) !important;
-  border-color: color-mix(in oklab, var(--counter, var(--accent-strong)), transparent 66%);
-}
 
-.h-issue {
-  min-height: 36px !important;
-  padding-block: 2px !important;
-}
 
-.h-issue > div {
-  min-height: 36px !important;
-  align-items: center !important;
-}
 
-.h-issue-body--inline {
-  display: flex !important;
-  flex-direction: row !important;
-  align-items: center !important;
-  gap: 7px !important;
-  inline-size: 100%;
-}
 
-.h-issue-body--inline .h-issue-title {
-  display: block !important;
-  flex: 1 1 auto;
-  min-inline-size: 80px;
-  white-space: nowrap !important;
-  -webkit-line-clamp: 1 !important;
-  line-height: 1.15 !important;
-}
 
-.h-issue-meta--inline {
-  flex: 0 1 auto;
-  display: inline-flex !important;
-  align-items: center;
-  max-inline-size: 56%;
-  min-height: 0 !important;
-  overflow: hidden;
-  gap: 4px !important;
-}
 
-.h-issue-meta--inline > * {
-  flex: 0 1 auto;
-}
 
-.h-issue-status {
-  box-sizing: border-box;
-  justify-content: center;
-  inline-size: 100%;
-}
 
-.h-issue-right {
-  inline-size: 100%;
-}
 
-.h-issue-row-actions {
-  flex-wrap: nowrap !important;
-  gap: 3px !important;
-}
 
-.h-issue-row-action {
-  min-height: 18px !important;
-  padding-inline: 5px !important;
-  font-size: 9px !important;
-}
 
-.h-agent-role,
-.h-agent-time-cell,
-.h-agent-runid-pill,
-.h-agent-size-pill {
-  inline-size: 100%;
-}
 
-.h-agent-role {
-  justify-content: center;
-}
 
-.h-agent-runid-pill {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 .h-inbox-row {
   grid-template-columns: minmax(0, 1fr) 86px !important;
@@ -12391,20 +10834,9 @@ body:has(.h-top-collapse-inline) main {
   box-shadow: none;
 }
 
-.h-git-meta {
-  gap: 4px;
-}
 
-.h-git-meta span,
-.h-git-meta time {
-  display: inline-flex;
-  align-items: center;
-  min-height: 17px;
-  padding: 1px 6px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 83%);
-  border-radius: 999px;
-  line-height: 1;
-}
+
+
 
 /* Fixed columns keep layout stable; pill chrome should hug the text. */
 .h-feature-row-title,
@@ -12445,21 +10877,14 @@ body:has(.h-top-collapse-inline) main {
   max-inline-size: 100% !important;
 }
 
-.h-issue-body--inline .h-issue-title {
-  flex: 0 1 auto !important;
-}
+
 
 .h-feature-status-pill,
 .h-issue-status {
   justify-self: end;
 }
 
-.h-agent-role,
-.h-agent-time-cell,
-.h-agent-runid-pill,
-.h-agent-size-pill {
-  justify-self: center;
-}
+
 
 .h-inbox-kind {
   justify-self: end;
@@ -12593,13 +11018,7 @@ body:has(.h-top-collapse-inline) main {
   color: #fee2e2 !important;
 }
 
-.h-issue-row-action.success {
-  border-color: rgba(74, 222, 128, 0.50) !important;
-  background:
-    linear-gradient(180deg, rgba(74, 222, 128, 0.23), rgba(22, 101, 52, 0.17)),
-    color-mix(in srgb, var(--bg-deep), transparent 4%) !important;
-  color: #dcfce7 !important;
-}
+
 
 /* Maximal HUD experiment branch: mirrored harness overlay pass */
 @keyframes h-hud-scanline {
@@ -12850,40 +11269,11 @@ body:has(.h-top-collapse-inline) main {
 .h-root--maximal-hud .h-pill.validating {
   box-shadow: 0 0 18px rgb(from var(--accent) r g b / 0.12);
 }
-.h-root--maximal-hud .h-dashboard-panel-anchor {
-  transform-style: preserve-3d;
-}
-.h-root--maximal-hud .h-dashboard-panel-anchor::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92%);
-  clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%, 0 14px);
-  pointer-events: none;
-}
-.h-root--maximal-hud .h-dashboard-panel-anchor::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(120deg, transparent 0 34%, rgba(255,255,255,0.08) 44%, transparent 52%) -120% 0 / 34% 100% no-repeat,
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 95%), rgba(255,255,255,0.01));
-  opacity: 0.72;
-  pointer-events: none;
-  animation: h-hud-scanline 3.6s ease-in-out infinite;
-}
-.h-root--maximal-hud .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
-  overflow: hidden;
-}
-.h-root--maximal-hud .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-soft), transparent 84%), transparent);
-  opacity: 0.2;
-  pointer-events: none;
-  animation: h-hud-log-flicker 2.2s linear infinite;
-}
+
+
+
+
+
 .h-root--maximal-hud .h-main-shell.dashboard {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
@@ -12962,38 +11352,13 @@ body:has(.h-top-collapse-inline) main {
 
 
 /* Continue darker dashboard restoration: deepen queue/inbox/git controls to match issues tab contrast. */
-.h-dashboard-left-pane {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.004)),
-    color-mix(in srgb, var(--bg), transparent 12%) !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
-  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
-}
 
-.h-dashboard-left-pane > div:first-child {
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
-    color-mix(in srgb, var(--bg-1), transparent 6%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
 
-.h-dashboard-left-pane > div:first-child button {
-  color: color-mix(in oklab, var(--fg-dim), white 18%) !important;
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.045)),
-    color-mix(in srgb, var(--bg-1), transparent 10%) !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14) !important;
-}
 
-.h-dashboard-left-pane > div:first-child button:hover,
-.h-dashboard-left-pane > div:first-child button:focus-visible,
-.h-dashboard-left-pane > div:first-child button[aria-selected="true"] {
-  color: color-mix(in oklab, var(--fg), white 6%) !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
-  background: linear-gradient(0deg, color-mix(in srgb, var(--accent-strong), transparent 86%), color-mix(in srgb, var(--accent-strong), transparent 86%)),
-    color-mix(in srgb, var(--bg-1), transparent 4%) !important;
-}
+
+
+
+
 
 .h-inbox-search,
 .h-inbox-filter,
@@ -13905,20 +12270,14 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 /* Harness top-bar contrast continuation v7: keep Pulse visible in the compact header width. */
 @media (max-width: 1320px) {
-  .h-root .h-project-topline-statuses .h-overview-pulse {
-    display: inline-flex !important;
-  }
+  
 }
 
 .h-root .h-project-topline-statuses {
   gap: 7px !important;
 }
 
-.h-root .h-project-topline-statuses .h-overview-pulse {
-  flex: 0 0 auto !important;
-  width: auto !important;
-  max-width: 176px !important;
-}
+
 
 .h-root .h-project-pulse > div {
   height: 26px !important;
@@ -14235,149 +12594,37 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 /* Dashboard chrome contrast v9: shorter issues header, darker issues/agents frames, clearer run.log tabs. */
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] > .h-panel,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] > .h-panel {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
-  background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 95.5%), transparent 54%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-deeper), transparent 1%)) !important;
-  box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-head,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-head {
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 93%), color-mix(in srgb, var(--accent), transparent 97.4%) 42%, rgba(255, 255, 255, 0.010)),
-    color-mix(in srgb, var(--bg-deeper), transparent 6%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.060),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-title,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-title {
-  color: color-mix(in oklab, var(--fg), var(--accent-strong) 16%) !important;
-  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 84%);
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-count,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-count {
-  color: color-mix(in oklab, var(--accent-cool), white 8%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-head {
-  min-height: 28px !important;
-  padding: 4px 8px 3px !important;
-  gap: 6px !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions {
-  gap: 3px !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions .h-tab {
-  min-height: 22px !important;
-  padding: 2px 8px 3px !important;
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
-  border-radius: 7px 7px 0 0 !important;
-  background: color-mix(in srgb, var(--bg-deeper), transparent 50%) !important;
-  line-height: 1.15 !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions .h-tab.on {
-  color: #e0faff !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
-  border-bottom-color: color-mix(in srgb, var(--bg), transparent 4%) !important;
-  background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 82%), transparent 72%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 85%), color-mix(in srgb, var(--bg), transparent 4%)) !important;
-  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--accent-strong), transparent 52%), 0 0 14px color-mix(in srgb, var(--accent), transparent 90%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-  padding: 5px 6px 0 !important;
-  gap: 4px !important;
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 2%), color-mix(in srgb, var(--bg-deeper), transparent 1%)) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
-  position: relative !important;
-  min-height: 25px !important;
-  padding: 4px 10px 5px !important;
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 89%) !important;
-  border-radius: 8px 8px 0 0 !important;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94%), rgba(255, 255, 255, 0.010)),
-    color-mix(in srgb, var(--bg-deep), transparent 16%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.060),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.26) !important;
-  margin-bottom: -1px !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 3px;
-  height: 1px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 58%), transparent);
-  opacity: 0.45;
-  pointer-events: none;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover {
-  color: #e0faff !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 68%) !important;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 90%), rgba(255, 255, 255, 0.014)),
-    color-mix(in srgb, var(--bg-1), transparent 8%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active {
-  color: #f0fdff !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
-  border-bottom-color: color-mix(in srgb, var(--bg), transparent 1%) !important;
-  background:
-    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent-strong), transparent 82%), transparent 70%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 85%), color-mix(in srgb, var(--bg), transparent 1%)) !important;
-  box-shadow:
-    inset 0 2px 0 color-mix(in srgb, var(--accent-strong), transparent 38%),
-    0 -1px 16px color-mix(in srgb, var(--accent), transparent 88%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.090) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 1px;
-  background: color-mix(in srgb, var(--bg), transparent 1%);
-  pointer-events: none;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
-  background: color-mix(in srgb, var(--bg-deeper), transparent 52%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active .h-log-tab-count {
-  color: #f0fdff !important;
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
-  background: color-mix(in srgb, var(--accent), transparent 82%) !important;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* Harness topbar text sharpness v10: keep contrast in chrome, not text blur. */
 .h-root .h-project-card,
@@ -14409,41 +12656,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   text-shadow: none !important;
 }
 
-.h-root :is(
-  .h-project-phases .h-phase-item,
-  .h-project-phases .h-phase-open,
-  .h-project-progress,
-  .h-project-count,
-  .h-status-chip,
-  .h-stat,
-  .h-stat-button:hover .h-stat,
-  .h-stat-button:focus-visible .h-stat,
-  .h-phase-plan-row .h-phase-plan-focus,
-  .h-phase-plan-row .h-plan-review-banner.compact,
-  .h-phase-plan-row .h-phase-plan-review,
-  .h-phase-plan-row .h-overview-action,
-  .h-phase-plan-row .h-btn,
-  .h-phase-plan-row .h-btn.primary,
-  .h-phase-plan-row .h-btn.danger,
-  .h-header-side .h-btn,
-  .h-decision-chip,
-  .h-quick-action-btn,
-  .h-project-pulse,
-  .h-project-pulse > div,
-  .h-project-topline-statuses .h-project-lanes,
-  .h-main-tabs .h-tab,
-  .h-main-tabs .h-tab[aria-selected="true"],
-  .h-main-tabs .h-tab:not([disabled]):hover,
-  .h-main-tabs .h-tab:not([disabled]):active,
-  .h-feature-filter,
-  .h-feature-project-filter,
-  .h-feature-tag-filter,
-  .h-feature-search,
-  .h-feature-mode,
-  .h-feature-add
-) {
-  filter: none !important;
-}
+
 
 /* Harness topbar text sharpness v10b: clear remaining status/collapse compositing. */
 .h-root :is(
@@ -14567,9 +12780,7 @@ html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tab {
   overflow-x: hidden !important;
 }
 
-.h-dashboard-panel-anchor > .h-panel > .h-panel-body > * {
-  min-width: 0;
-}
+
 
 /* Harness topbar text sharpness v11: render button text directly instead of
    rasterizing it through glow/filter layers or grayscale font smoothing. */
@@ -14601,36 +12812,7 @@ html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tab {
   text-shadow: none !important;
 }
 
-.h-root :is(
-  .h-project-card,
-  .h-project-meta-status,
-  .h-project-phases .h-phase-item,
-  .h-project-phases .h-phase-open,
-  .h-phase-setup-btn,
-  .h-project-progress,
-  .h-project-count,
-  .h-status-chip,
-  .h-project-topline-statuses,
-  .h-project-topline-statuses .h-overview-pulse,
-  .h-project-topline-statuses .h-overview-lanes,
-  .h-project-topline-statuses .h-project-lanes,
-  .h-project-topline-statuses .h-running-lane,
-  .h-project-pulse,
-  .h-project-pulse > div,
-  .h-stats .h-stat,
-  .h-phase-plan-row .h-btn,
-  .h-phase-plan-row .h-phase-plan-focus,
-  .h-phase-plan-row .h-plan-review-banner,
-  .h-phase-plan-row .h-overview-action,
-  .h-decision-chip,
-  .h-quick-action-btn,
-  .h-tabs.h-main-tabs,
-  .h-tabs.h-main-tabs .h-tab
-) {
-  filter: none !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
+
 
 .h-root :is(
   .h-project-phases .h-phase-item,
@@ -14807,37 +12989,13 @@ html body .h-root.h-root :is(
     linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 1.5%), color-mix(in srgb, var(--bg-deeper), transparent 0.5%)) !important;
 }
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] > .h-panel {
-  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
-  background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 95.5%), transparent 54%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-deeper), transparent 1%)) !important;
-  box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-head {
-  min-height: 28px !important;
-  padding: 4px 8px 3px !important;
-  gap: 6px !important;
-  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 93%), color-mix(in srgb, var(--accent), transparent 97.4%) 42%, rgba(255, 255, 255, 0.010)),
-    color-mix(in srgb, var(--bg-deeper), transparent 6%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.060),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-title {
-  color: color-mix(in oklab, var(--fg), var(--accent-strong) 16%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-count {
-  color: color-mix(in oklab, var(--accent-cool), white 8%) !important;
-}
+
+
+
+
 
 /* Harness non-dashboard chrome v13: continue the dashboard metallic language across the other tabs. */
 .h-root .h-main-shell.embed,
@@ -15416,17 +13574,7 @@ html body .h-root.h-root :is(
   letter-spacing: 0 !important;
 }
 
-.h-issue-detail-drawer > div:nth-of-type(2) > div:first-of-type {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  width: fit-content;
-  max-width: 100%;
-  padding: 6px 9px;
-  border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
-}
+
 
 .h-feature-peek-drawer pre,
 .h-issue-detail-drawer pre,
@@ -15472,15 +13620,7 @@ html body .h-root.h-root :is(
   box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.28) !important;
 }
 
-.h-issue-detail-drawer input {
-  min-height: 34px;
-  border-color: color-mix(in oklab, var(--h-popout-accent), transparent 74%) !important;
-  border-radius: 999px !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008)),
-    color-mix(in oklab, var(--bg), black 8%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.052);
-}
+
 
 @media (max-width: 860px) {
   .h-feature-peek-drawer,
@@ -15577,22 +13717,9 @@ html body .h-root.h-root :is(
   box-shadow: none;
 }
 
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status,
-.h-issue-detail-drawer .h-issue-linked,
-.h-issue-detail-drawer .h-issue-id {
-  min-height: 24px;
-  padding-inline: 9px;
-  border-radius: 999px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.075),
-    0 8px 18px rgba(0, 0, 0, 0.18);
-}
 
-.h-issue-detail-drawer .h-issue-id {
-  border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 68%);
-  background: color-mix(in srgb, var(--accent-strong), transparent 95%);
-}
+
+
 
 .h-feature-peek-drawer button,
 .h-feature-peek-drawer a,
@@ -15601,9 +13728,7 @@ html body .h-root.h-root :is(
   box-shadow: none;
 }
 
-.h-issue-detail-drawer input::placeholder {
-  color: color-mix(in oklab, var(--fg-dim), white 8%);
-}
+
 
 @media (max-width: 860px) {
   .h-feature-peek-drawer,
@@ -15633,19 +13758,7 @@ html body .h-root.h-root :is(
   line-height: 1.18 !important;
 }
 
-.h-issue-detail-drawer > div:nth-of-type(2) > h2 + div {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  max-width: 100%;
-  margin-bottom: 18px !important;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%);
-  border-radius: 999px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.036), rgba(255, 255, 255, 0.008)),
-    color-mix(in srgb, var(--accent-strong), transparent 96%) !important;
-}
+
 
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child,
 .h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) {
@@ -15702,23 +13815,11 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, var(--fg), white 6%) !important;
 }
 
-.h-issue-detail-drawer > div:nth-of-type(3) {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  padding: 12px 18px 14px !important;
-}
 
-.h-issue-detail-drawer > div:nth-of-type(3) input {
-  min-height: 38px;
-  padding-inline: 14px !important;
-}
 
-.h-issue-detail-drawer > div:nth-of-type(3) .h-btn {
-  min-height: 36px;
-  padding-inline: 14px !important;
-  border-radius: 999px !important;
-}
+
+
+
 
 @media (max-width: 860px) {
   .h-feature-peek-drawer > div:nth-of-type(2),
@@ -15726,10 +13827,7 @@ html body .h-root.h-root :is(
     padding-inline: 16px !important;
   }
 
-  .h-issue-detail-drawer > div:nth-of-type(2) > h2 + div {
-    width: 100%;
-    border-radius: 16px;
-  }
+  
 }
 
 /* Right-side drawer feedback pass: semantic header/title hierarchy,
@@ -15867,143 +13965,72 @@ html body .h-root.h-root :is(
 /* Issues + logs polish: clearer issue-filter tint separation, move the
    issues/tests/report tabs to the left side, and remove the run.log
    timeline scrubber graph entirely. */
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-head {
-  justify-content: flex-start;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions {
-  margin-left: 8px !important;
-  margin-right: auto;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all:not(.on) {
-  color: color-mix(in oklab, var(--accent-strong), white 8%) !important;
-  border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
-  background:
-    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-soft), transparent 88%), transparent 34%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 6%), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all.on {
-  border-color: color-mix(in srgb, var(--accent), transparent 44%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.10),
-    0 0 18px color-mix(in srgb, var(--accent), transparent 84%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--closed:not(.on) {
-  color: color-mix(in oklab, #c4b5fd, white 6%) !important;
-  border-color: rgba(167, 139, 250, 0.34) !important;
-  background:
-    radial-gradient(circle at 18% 12%, rgba(233, 213, 255, 0.11), transparent 34%),
-    linear-gradient(180deg, rgba(34, 18, 64, 0.94), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--closed.on {
-  border-color: rgba(167, 139, 250, 0.56) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.10),
-    0 0 18px rgba(167, 139, 250, 0.16) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-scrubber {
-  display: none !important;
-}
+
+
+
+
+
+
+
 
 @media (max-width: 760px) {
-  .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-head {
-    align-items: flex-start !important;
-  }
+  
 
-  .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions {
-    margin-left: 0 !important;
-  }
+  
 }
 
 
 /* Pane tint pass: give sibling controls distinct visual identities without
    changing dashboard structure. */
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab {
-  border-color: color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), transparent 66%) !important;
-  background:
-    radial-gradient(circle at 16% 12%, color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), transparent 82%), transparent 36%),
-    linear-gradient(180deg, color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), transparent 91%), color-mix(in srgb, var(--bg-deeper), transparent 4%)) !important;
-  color: color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), white 22%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:nth-of-type(1) {
-  --issue-tab-accent: var(--accent-strong);
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:nth-of-type(2) {
-  --issue-tab-accent: #a7f3d0;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:nth-of-type(3) {
-  --issue-tab-accent: #fbbf24;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab.on {
-  border-color: color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), white 4%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.10),
-    0 0 18px color-mix(in oklab, var(--issue-tab-accent, var(--accent-cool)), transparent 82%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
-  border-color: color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 70%) !important;
-  background:
-    linear-gradient(180deg, color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 93%), color-mix(in srgb, var(--bg-deeper), transparent 6%)) !important;
-  color: color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), white 26%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n + 1) { --log-tab-accent: var(--accent-strong); }
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n + 2) { --log-tab-accent: #a7f3d0; }
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n + 3) { --log-tab-accent: #c4b5fd; }
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n + 4) { --log-tab-accent: #fbbf24; }
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n + 5) { --log-tab-accent: #fb7185; }
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:nth-of-type(6n) { --log-tab-accent: var(--accent); }
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active {
-  border-color: color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), white 4%) !important;
-  box-shadow:
-    inset 0 -2px 0 color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 18%),
-    0 0 16px color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 84%) !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  border-color: color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 72%) !important;
-  background: color-mix(in oklab, var(--log-tab-accent, var(--accent-cool)), transparent 90%) !important;
-}
 
-.h-root .h-git-panel :is(button, .h-btn-icon) {
-  border-color: color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 70%) !important;
-  background: linear-gradient(0deg, color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 92%), color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 92%)) !important;
-  color: color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), white 24%) !important;
-}
 
-.h-root .h-git-panel :is(button, .h-btn-icon):is(:hover, :focus-visible, .on, [aria-selected="true"]) {
-  border-color: color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), white 2%) !important;
-  background: radial-gradient(circle at 18% 12%, color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 80%), transparent 36%),
-    linear-gradient(0deg, color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 86%), color-mix(in oklab, var(--git-button-accent, var(--accent-cool)), transparent 86%)) !important;
-}
 
-.h-root .h-git-actions .h-btn-icon { --git-button-accent: var(--accent-strong); }
-.h-root .h-git-clear { --git-button-accent: #fb7185; }
-.h-root .h-git-filter-row .h-git-filter:nth-of-type(1) { --git-button-accent: var(--accent-strong); }
-.h-root .h-git-filter-row .h-git-filter:nth-of-type(2) { --git-button-accent: #a7f3d0; }
-.h-root .h-git-filter-row .h-git-filter:nth-of-type(3) { --git-button-accent: #c4b5fd; }
-.h-root .h-git-filter-row .h-git-filter:nth-of-type(4) { --git-button-accent: #fbbf24; }
-.h-root .h-git-ref-rail .h-git-ref-chip:nth-of-type(4n + 1) { --git-button-accent: var(--accent); }
-.h-root .h-git-ref-rail .h-git-ref-chip:nth-of-type(4n + 2) { --git-button-accent: #a7f3d0; }
-.h-root .h-git-ref-rail .h-git-ref-chip:nth-of-type(4n + 3) { --git-button-accent: #c4b5fd; }
-.h-root .h-git-ref-rail .h-git-ref-chip:nth-of-type(4n) { --git-button-accent: #fbbf24; }
-.h-root .h-git-author-rail button:nth-of-type(4n + 1) { --git-button-accent: var(--accent-strong); }
-.h-root .h-git-author-rail button:nth-of-type(4n + 2) { --git-button-accent: #a7f3d0; }
-.h-root .h-git-author-rail button:nth-of-type(4n + 3) { --git-button-accent: #c4b5fd; }
-.h-root .h-git-author-rail button:nth-of-type(4n) { --git-button-accent: #fb7185; }
-.h-root .h-git-row-bookmark { --git-button-accent: #fbbf24; }
-.h-root .h-git-row-bookmark.on { --git-button-accent: #f59e0b; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* Right-side drawer feedback pass r2: polish readability, scroll hooks,
    and selected lifecycle semantics. */
 .h-feature-peek-drawer,
@@ -16024,18 +14051,9 @@ html body .h-root.h-root :is(
   text-transform: none;
 }
 
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status,
-.h-issue-detail-drawer .h-issue-linked,
-.h-issue-detail-drawer .h-issue-id {
-  font-size: 11px !important;
-  line-height: 1.35 !important;
-}
 
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status {
-  font-weight: 760 !important;
-}
+
+
 
 .h-feature-status-button[aria-pressed="true"],
 .h-feature-status-button.is-current {
@@ -17362,10 +15380,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
     inset 0 1px 0 rgba(255, 255, 255, 0.09) !important;
 }
 
-.h-issue-detail-drawer {
-  --h-popout-accent: #fb7185;
-  --h-popout-accent-2: #f59e0b;
-}
+
 
 .h-feature-peek-drawer::after,
 .h-issue-detail-drawer::after {
@@ -17518,11 +15533,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
     inset 0 1px 0 rgba(255, 255, 255, 0.060) !important;
 }
 
-.h-issue-detail-drawer input {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.010)),
-    color-mix(in srgb, var(--bg-deeper), transparent 6%) !important;
-}
+
 
 @media (max-width: 860px) {
   .h-feature-peek-drawer,
@@ -17743,29 +15754,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   justify-self: end;
 }
 
-.h-issue-detail-drawer > div:nth-of-type(3) {
-  display: grid !important;
-  grid-template-columns: auto minmax(14rem, 1fr) auto auto;
-  align-items: center !important;
-  gap: 10px !important;
-  padding: 12px 20px 14px !important;
-  background: color-mix(in srgb, var(--bg-deeper), transparent 4%) !important;
-  border-top-color: color-mix(in oklab, var(--h-popout-accent), transparent 78%) !important;
-  box-shadow: none !important;
-}
 
-.h-issue-detail-drawer > div:nth-of-type(3) input {
-  min-width: 0;
-  width: 100%;
-  min-height: 38px;
-  border-radius: 10px !important;
-  background: color-mix(in srgb, var(--bg-deeper), transparent 22%) !important;
-}
 
-.h-issue-detail-drawer > div:nth-of-type(3) .h-drawer-footer-hint {
-  margin-left: 0 !important;
-  justify-self: end;
-}
+
+
+
 
 
 /* Specificity follow-up for the readability pass: older HUD selectors target
@@ -17968,16 +15961,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   z-index: 3;
 }
 
-.h-issue-detail-drawer .h-issue-detail-footer {
-  display: grid !important;
-  grid-template-columns: auto minmax(14rem, 1fr) auto auto;
-  align-items: center !important;
-  gap: 10px !important;
-}
 
-.h-issue-detail-drawer .h-issue-detail-footer input {
-  min-width: 0;
-}
+
+
 
 @media (max-width: 860px) {
   .h-feature-peek-drawer,
@@ -19015,140 +17001,27 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border-color: rgba(59, 130, 246, 0.68) !important;
 }
 
-.h-root :is(
-  .h-phase-actions-btn,
-  .h-guide-action,
-  .h-save-template-btn,
-  .h-save-snapshot-btn,
-  .h-proposal-btn,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button,
-  .h-btn-icon
-) {
-  --h-flat-panel-tone: var(--git-button-accent, var(--h-topbar-control-tone, var(--h-flat-control-tone, var(--accent-cool))));
-  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 56%) !important;
-  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-2) 90%) !important;
-  color: color-mix(in oklab, var(--h-flat-panel-tone), white 46%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(
-  .h-phase-actions-btn,
-  .h-guide-action,
-  .h-save-template-btn,
-  .h-save-snapshot-btn,
-  .h-proposal-btn,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button,
-  .h-btn-icon
-):hover,
-.h-root :is(
-  .h-phase-actions-btn,
-  .h-guide-action,
-  .h-save-template-btn,
-  .h-save-snapshot-btn,
-  .h-proposal-btn,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button,
-  .h-btn-icon
-):focus-visible {
-  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
-  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 82%) !important;
-  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  outline-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 40%) !important;
-}
 
-.h-root .h-git-filter.on,
-.h-root .h-git-filter[aria-selected="true"],
-.h-root .h-git-ref-chip.head {
-  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
-  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 80%) !important;
-  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
-}
 
-.h-root .h-git-ref-chip.head {
-  --h-flat-panel-tone: var(--good);
-}
 
-.h-root .h-git-ref-chip.tag {
-  --h-flat-panel-tone: var(--info);
-}
 
-.h-root :is(
-  .h-feature-row,
-  .h-issue,
-  .h-inbox-row,
-  .h-agent-row,
-  .h-git-row,
-  .h-proposal-item,
-  .h-proposals-card,
-  .h-proposals-goal-preview,
-  .h-project-topline-statuses .h-overview-pulse,
-  .h-project-topline-statuses .h-overview-lanes,
-  .h-project-topline-statuses .h-project-lanes
-) {
-  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 96%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row, .h-issue, .h-inbox-row, .h-agent-row, .h-git-row, .h-proposal-item):hover,
-.h-root :is(.h-feature-row, .h-issue, .h-inbox-row, .h-agent-row, .h-git-row, .h-proposal-item):focus-visible {
-  background: color-mix(in oklab, var(--accent-cool), var(--bg-3) 90%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
 
-.h-root :is(.h-status-token, .h-pill, .h-feature-status-pill, .h-inbox-kind-chip, .h-log-tag, .h-agent-badge) {
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).primary,
-.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).active {
-  border-color: color-mix(in oklab, var(--accent), transparent 42%) !important;
-  background: color-mix(in oklab, var(--accent), transparent 84%) !important;
-  color: color-mix(in oklab, var(--accent), white 32%) !important;
-  box-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).success {
-  border-color: color-mix(in oklab, var(--good), transparent 48%) !important;
-  background: color-mix(in oklab, var(--good), transparent 88%) !important;
-  color: color-mix(in oklab, var(--good), white 16%) !important;
-  box-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).danger {
-  border-color: color-mix(in oklab, var(--bad), transparent 48%) !important;
-  background: color-mix(in oklab, var(--bad), transparent 88%) !important;
-  color: color-mix(in oklab, var(--bad), white 20%) !important;
-  box-shadow: none !important;
-}
+
+
+
+
+
+
+
+
+
+
+
 
 /* Specificity guards for panel-local control rules that load with stronger
    selectors than the generic flat pass above. */
@@ -19173,67 +17046,13 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   filter: none !important;
 }
 
-.h-root .h-git-panel :is(
-  button,
-  .h-btn-icon,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button
-) {
-  --h-flat-panel-tone: var(--git-button-accent, #d7f3ff);
-  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 56%) !important;
-  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-2) 90%) !important;
-  color: color-mix(in oklab, var(--h-flat-panel-tone), white 46%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root .h-git-panel :is(
-  button,
-  .h-btn-icon,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button
-):hover,
-.h-root .h-git-panel :is(
-  button,
-  .h-btn-icon,
-  .h-git-worktree-filter,
-  .h-git-limit,
-  .h-git-clear,
-  .h-git-filter,
-  .h-git-ref-chip,
-  .h-git-author-rail button,
-  .h-git-row-bookmark,
-  .h-git-actions button
-):focus-visible,
-.h-root .h-git-panel .h-git-filter.on,
-.h-root .h-git-panel .h-git-ref-chip.head {
-  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
-  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 80%) !important;
-  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
 
-.h-root .h-git-panel .h-git-ref-chip.head {
-  --h-flat-panel-tone: var(--good);
-}
 
-.h-root .h-git-panel .h-git-ref-chip.tag {
-  --h-flat-panel-tone: var(--info);
-}
+
+
+
+
 
 .h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab,
 .h-root .h-dashboard-panel-anchor .h-tab {
@@ -19309,38 +17128,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
 }
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
-  --h-panel-tab-tone: var(--issue-tab-accent, var(--log-tab-accent, var(--accent-cool)));
-  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 58%) !important;
-  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-2) 90%) !important;
-  color: color-mix(in oklab, var(--h-panel-tab-tone), white 46%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab.on,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:hover,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:focus-visible,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:focus-visible {
-  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 34%) !important;
-  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-3) 80%) !important;
-  color: color-mix(in oklab, var(--h-panel-tab-tone), white 62%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
-  border-color: color-mix(in oklab, var(--accent-cool), transparent 62%) !important;
-  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 92%) !important;
-  color: color-mix(in oklab, var(--accent-cool), white 48%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
+
+
+
 
 .h-root .h-chip.h-issues-filter {
   --h-issues-filter-tone: var(--accent-cool);
@@ -19368,21 +17160,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   filter: none !important;
 }
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar) {
-  border-color: color-mix(in oklab, var(--accent-cool), transparent 66%) !important;
-  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 94%) !important;
-  color: color-mix(in oklab, var(--accent-cool), white 48%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar):hover,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar):focus-visible {
-  border-color: color-mix(in oklab, var(--accent-cool), transparent 44%) !important;
-  background: color-mix(in oklab, var(--accent-cool), var(--bg-3) 86%) !important;
-  box-shadow: none !important;
-}
+
+
 
 /* Row readability pass: every list/table row keeps its semantic color, but
    uses a flatter, higher-contrast wash so dense panels scan cleanly. */
@@ -19398,51 +17178,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   --h-row-orange: #f59e0b;
 }
 
-.h-root :is(
-  .h-feature-row,
-  .h-issue,
-  .h-git-row,
-  .h-inbox-row,
-  .h-agent-row,
-  .h-proposal-item,
-  .h-plugin-action-row,
-  .h-feature-run-row,
-  .h-log-line,
-  .h-insights-status-row
-) {
-  --h-row-tone: var(--h-row-accent);
-  --h-row-border-alpha: 62%;
-  background: color-mix(in oklab, var(--h-row-tone) 11%, color-mix(in srgb, var(--bg), transparent 4%)) !important;
-  border-color: color-mix(in oklab, var(--h-row-tone), transparent var(--h-row-border-alpha)) !important;
-  color: color-mix(in oklab, var(--fg), white 3%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row, .h-issue, .h-git-row, .h-inbox-row, .h-agent-row, .h-proposal-item, .h-log-line):is(.h-row-even, :nth-child(2n)) {
-  background: color-mix(in oklab, var(--h-row-tone) 8%, color-mix(in srgb, var(--bg-popover), transparent 3%)) !important;
-}
 
-.h-root :is(
-  .h-feature-row,
-  .h-issue,
-  .h-git-row,
-  .h-inbox-row,
-  .h-agent-row,
-  .h-proposal-item,
-  .h-plugin-action-row,
-  .h-feature-run-row,
-  .h-log-line,
-  .h-insights-status-row
-):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected) {
-  --h-row-border-alpha: 36%;
-  background: color-mix(in oklab, var(--h-row-tone) 22%, color-mix(in srgb, var(--bg-raised), transparent 2%)) !important;
-  border-color: color-mix(in oklab, var(--h-row-tone), transparent var(--h-row-border-alpha)) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  outline-color: color-mix(in oklab, var(--h-row-tone), transparent 42%) !important;
-}
+
+
+
 
 .h-root :is(.h-feature-row.status-in_progress, .h-feature-row.status-running) { --h-row-tone: var(--h-row-info); }
 .h-root .h-feature-row.status-validating { --h-row-tone: var(--h-row-validating); }
@@ -19455,21 +17195,15 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   opacity: 0.86;
 }
 
-.h-root .h-issue.h-issue-critical { --h-row-tone: #f87171; }
-.h-root .h-issue.h-issue-major { --h-row-tone: var(--h-row-warn); }
-.h-root .h-issue.h-issue-minor { --h-row-tone: var(--h-row-info); }
-.h-root .h-issue.h-issue-nit { --h-row-tone: var(--h-row-neutral); }
-.h-root :is(.h-issue.h-issue-closed, .h-issue.h-issue-wontfix) {
-  --h-row-tone: var(--h-row-good);
-  opacity: 0.90;
-}
 
-.h-root .h-git-row {
-  --h-row-tone: var(--h-row-accent);
-  border-left: 3px solid color-mix(in oklab, var(--h-row-tone), transparent 36%) !important;
-}
-.h-root .h-git-row.is-active { --h-row-tone: var(--accent); }
-.h-root .h-git-row.is-bookmarked { --h-row-tone: var(--h-row-warn); }
+
+
+
+
+
+
+
+
 
 .h-root .h-inbox-row.tone-warn { --h-row-tone: var(--h-row-warn); }
 .h-root .h-inbox-row.tone-bad { --h-row-tone: var(--h-row-bad); }
@@ -19478,13 +17212,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root :is(.h-inbox-row.tone-purple, .h-inbox-row.tone-violet) { --h-row-tone: var(--h-row-validating); }
 .h-root .h-inbox-row.tone-rose { --h-row-tone: var(--h-row-pink); }
 
-.h-root .h-agent-row.role-validator { --h-row-tone: var(--h-row-validating); }
-.h-root .h-agent-row.role-orchestrator { --h-row-tone: var(--h-row-good); }
-.h-root .h-agent-row.role-worker { --h-row-tone: var(--h-row-info); }
-.h-root .h-agent-row.role-documenter { --h-row-tone: var(--h-row-orange); }
-.h-root .h-agent-row td:first-child {
-  border-left: 3px solid color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 36%) !important;
-}
+
+
+
+
+
 
 .h-root .h-proposal-item.status-pending { --h-row-tone: var(--h-row-warn); }
 .h-root .h-proposal-item.status-applied { --h-row-tone: var(--h-row-good); }
@@ -19521,82 +17253,28 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
 }
 
-.h-root :is(
-  .h-feature-row-title,
-  .h-issue-title,
-  .h-inbox-row-title,
-  .h-proposal-row-title,
-  .h-git-subject,
-  .h-agent-role,
-  .h-log-msg
-) {
-  color: color-mix(in oklab, var(--fg), white 5%) !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(
-  .h-feature-row-id,
-  .h-feature-row-meta,
-  .h-feature-status-text,
-  .h-issue-meta,
-  .h-issue-source,
-  .h-issue-feat,
-  .h-inbox-row-sub,
-  .h-inbox-row-foot,
-  .h-proposal-row-meta,
-  .h-proposal-row-age,
-  .h-git-meta,
-  .h-git-sha,
-  .h-agent-meta,
-  .h-log-no,
-  .h-log-ts
-) {
-  color: color-mix(in oklab, var(--fg-dim), var(--h-row-tone, var(--h-row-accent)) 16%) !important;
-  text-shadow: none !important;
-}
 
-.h-root :is(.h-feature-row-id, .h-issue-id, .h-git-sha, .h-log-source) {
-  color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), white 46%) !important;
-}
 
-.h-root :is(.h-row-odd, .h-row-even) :is(.h-issue-sev, .h-issue-status, .h-feature-claims-chip, .h-feature-attempts-pill, .h-inbox-kind, .h-log-tag) {
-  box-shadow: none !important;
-  text-shadow: none !important;
-}
+
+
+
+
 
 /* Panel-local row selectors with older specificity get the same readable wash. */
-.h-root .h-git-panel .h-git-row,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue {
-  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 11%, rgb(7 15 28 / 0.96)) !important;
-  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 62%) !important;
-  color: color-mix(in oklab, var(--fg), white 3%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root .h-git-panel .h-git-row:nth-child(2n),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:nth-child(2n),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue.h-row-even {
-  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 8%, rgb(11 25 42 / 0.97)) !important;
-}
 
-.h-root .h-git-panel .h-git-row:is(:hover, :focus-visible, :focus-within, .is-active),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:is(:hover, :focus-within),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within) {
-  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 22%, rgb(17 37 61 / 0.98)) !important;
-  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 36%) !important;
-  box-shadow: none !important;
-}
 
-.h-root .h-agent-row.role-scoper { --h-row-tone: var(--h-row-info); }
-.h-root .h-agent-row.role-architect { --h-row-tone: var(--h-row-validating); }
-.h-root .h-agent-row.role-reviewer { --h-row-tone: var(--h-row-pink); }
-.h-root .h-agent-row.role-debugger { --h-row-tone: var(--h-row-bad); }
-.h-root .h-agent-row.role-curator { --h-row-tone: var(--h-row-orange); }
-.h-root .h-agent-row.role-oracle { --h-row-tone: #818cf8; }
-.h-root .h-agent-row.role-unknown { --h-row-tone: var(--h-row-neutral); }
+
+
+
+
+
+
+
+
+
+
 
 .h-root .h-agent-table .h-agent-row,
 .h-root .h-proposals-panel .h-proposal-item,
@@ -19710,22 +17388,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 }
 
 /* Row title cleanup: titles should read as text on the row, not as pills. */
-.h-root :is(
-  .h-feature-row-title,
-  .h-issue-title,
-  .h-inbox-row-title,
-  .h-proposal-row-title,
-  .h-git-subject,
-  .h-agent-role,
-  .h-log-msg
-) {
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-  color: color-mix(in oklab, var(--fg), white 6%) !important;
-}
+
 
 .h-root .h-feature-row-main .h-feature-row-title,
 .h-root .h-issue-body--inline .h-issue-title {
@@ -19838,30 +17501,13 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 /* Higher-specificity guards for lazy panel stylesheets loaded after the main
    harness stylesheet. */
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-chip.h-issues-filter,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--active,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--all:not(.on),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--closed:not(.on),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--triage:not(.on) {
-  background: color-mix(in oklab, var(--h-issues-filter-tone), rgb(5 12 24 / 0.98) 88%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-  text-shadow: none !important;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--all:not(.on) {
-  --h-issues-filter-tone: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 46%);
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter.h-issues-filter--closed:not(.on) {
-  --h-issues-filter-tone: #a78bfa;
-}
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-toolbar .h-issues-filter:is(.on, [aria-pressed="true"], :hover, :focus-visible) {
-  background: color-mix(in oklab, var(--h-issues-filter-tone), rgb(10 22 38 / 0.98) 80%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
+
+
+
+
 
 .h-root .h-feature-row .h-feature-attempts-pill {
   --h-attempt-pill-tone: color-mix(in oklab, var(--h-row-tone, var(--accent-cool)), var(--fg-dim) 42%);
@@ -19905,12 +17551,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   filter: none !important;
 }
 
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] > .h-panel,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] > .h-panel {
-  background: color-mix(in oklab, var(--accent-cool), rgb(5 12 24 / 0.98) 94%) !important;
-  box-shadow: none !important;
-  filter: none !important;
-}
+
 
 /* Feature / issue right-side popouts: flat, readable inspector treatment. */
 .h-feature-peek-overlay,
@@ -20119,14 +17760,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
 }
 
-.h-issue-detail-drawer input {
-  min-height: 36px !important;
-  border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%) !important;
-  border-radius: 8px !important;
-  background: rgb(3 9 18 / 0.96) !important;
-  color: var(--fg) !important;
-  box-shadow: none !important;
-}
+
 
 /* Drawer specificity guards: lazy drawer polish rules above use structural
    selectors, so repeat the flat treatment with equal-or-higher specificity. */

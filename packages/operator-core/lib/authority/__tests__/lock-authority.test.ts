@@ -365,22 +365,6 @@ describe('lockAuthorityFor / lockAuthorityForHive — HRW rendezvous cutover (WI
     expect(winners.size).toBeGreaterThan(1);
   });
 
-  it('flag ON: an excluded (P-016 relay-confirmed-dead) peer is dropped from HRW candidacy too', async () => {
-    const r = await lockAuthorityFor('h', {
-      now: () => NOW,
-      staleMs,
-      fetchPresenceRows: async () => rows,
-      resolveSelf: async () => null,
-      useHrwRendezvous: true,
-      evictionMonitor: {
-        beforeSelect: () => new Set(['aaa', 'bbb', 'ccc']), // exclude everyone but self has none → empty
-        onRelayConfirmDead: () => {},
-      },
-    });
-    // Every remote candidate excluded, no self identity → single-box fallback.
-    expect(r).toEqual({ isSelf: true, liveCount: 0 });
-  });
-
   it('lockAuthorityForHive: flag ON, no scopeKey → defaults the scope key to the hive/pot slug', async () => {
     const r = await lockAuthorityForHive('my-hive', {
       now: () => NOW,

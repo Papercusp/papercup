@@ -43,6 +43,7 @@ import {
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
 
 
 import { dirname as __esmDirname } from 'node:path';
@@ -110,12 +111,12 @@ const CODEX_LOCK_ENFORCEMENT_NOTE = [
 ].join('\n');
 
 // The gateway config-TOML builder + tomlEscape are SHARED with the spawned-agent path
-// (orchestrator's spawn-mcp.ts writeSignedSpawnCodexHome) via the package subpath export —
-// WI-3645: the two local copies had drifted (this one still REQUIRED an account pin, which is
-// why interactive `auto` stayed unwired for codex). One builder, one behavior: a pin renders
-// the x-papercusp-account header; `gatewayOn` without a pin renders the SAME provider block
-// with the header omitted (the gateway auto-selects); neither renders nothing.
-import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
+// (orchestrator's spawn-mcp.ts writeSignedSpawnCodexHome) via the package's
+// `@papercusp/orchestrator/codex-gateway-config` subpath export (imported above) — WI-3645:
+// the two local copies had drifted (this one still REQUIRED an account pin, which is why
+// interactive `auto` stayed unwired for codex). One builder, one behavior: a pin renders the
+// x-papercusp-account header; `gatewayOn` without a pin renders the SAME provider block with
+// the header omitted (the gateway auto-selects); neither renders nothing.
 
 /** Single-quote a value for a shell command (env prefix). */
 function shellSingleQuote(s: string): string {
@@ -453,6 +454,10 @@ export function writeRoleCodexHome(opts: {
   sid?: string;
   /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
   codexGatewayAccountId?: string | null;
+  /** Route through the gateway with NO pin (explicit-auto, WI-3645): writes the SAME provider
+   *  block with the x-papercusp-account header omitted — the gateway auto-selects. Ignored
+   *  when codexGatewayAccountId is set. */
+  codexGatewayAuto?: boolean;
   /** The directory the operator is launching this agent into (spec.cwd). Seeded
    *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
    *  not block at codex's "Do you trust this directory?" boot prompt. */
@@ -477,7 +482,7 @@ export function writeRoleCodexHome(opts: {
   // bearer_token_env_var. codex does NOT env-expand config.toml, so the
   // url is baked verbatim.
   const configPath = join(codexHome, 'config.toml');
-  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
   const toml = [
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
@@ -699,6 +704,10 @@ export function writeSuCodexHome(opts: {
   token?: string | null;
   /** Optional Codex account pin; writes a custom model provider that points Codex at the inference gateway. */
   codexGatewayAccountId?: string | null;
+  /** Route through the gateway with NO pin (explicit-auto, WI-3645): writes the SAME provider
+   *  block with the x-papercusp-account header omitted — the gateway auto-selects. Ignored
+   *  when codexGatewayAccountId is set. */
+  codexGatewayAuto?: boolean;
   /** The directory the operator is launching this SU session into (resolveSuLaunchCwd).
    *  Seeded as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME
    *  does not block at codex's "Do you trust this directory?" boot prompt. */
@@ -716,7 +725,7 @@ export function writeSuCodexHome(opts: {
   const sep = opts.mcpUrl.includes('?') ? '&' : '?';
   const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
   const configPath = join(codexHome, 'config.toml');
-  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId);
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
   const toml = [
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,

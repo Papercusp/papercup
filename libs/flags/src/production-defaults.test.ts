@@ -160,6 +160,15 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // Deliberate new dark flag, not inversion drift. Count 18 → 19; well under
   // DARK_FLAGS_HIGH_WATERMARK (22).
   'papercusp-own-log-fork-auto-recovery',
+  // 2026-07-10 (WI-1491) — papercusp-hrw-rendezvous-authority (cross-machine-coord-
+  // parity-and-trust-2026-07-01 P-021 live cutover, case: cutover): flips
+  // lockAuthorityFor/lockAuthorityForHive's winner rule from the global argmin to
+  // per-scope-key HRW rendezvous hashing. Deliberate new dark flag, not inversion
+  // drift — same class as papercusp-presence-gossip (a live coordination-primitive
+  // cutover needs every peer computing the SAME winner, so it ships dark until an
+  // attended multi-peer verify). Count 19 → 20; well under DARK_FLAGS_HIGH_WATERMARK
+  // (22).
+  'papercusp-hrw-rendezvous-authority',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -299,7 +308,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // P-003 / WI-3535, owner-authority): DELIBERATE new dark flag — the own-log-fork-guard's
     // sketched auto-recovery is destructive (per-harness Corestore store reset, discards
     // unmerged local history), so it ships default-OFF until the owner ratifies it. Count 18 → 19.
-    expect(offCount).toBe(19);
+    // 2026-07-10 (WI-1491) — papercusp-hrw-rendezvous-authority (cross-machine-coord-parity-
+    // and-trust-2026-07-01 P-021 live cutover): DELIBERATE new dark flag (case: cutover) —
+    // flips lockAuthorityFor/lockAuthorityForHive's winner rule from global argmin to per-
+    // scope HRW rendezvous hashing; every peer must agree on the flag value or they compute
+    // different authorities for the same scope, so it ships dark until an attended multi-peer
+    // verify. Count 19 → 20.
+    expect(offCount).toBe(20);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

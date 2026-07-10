@@ -19,7 +19,6 @@
  * under another active theme (preview swatches). One @import per built-in theme. */
 @import './_semantic.frost.css';
 @import './_semantic.black.css';
-@import './_semantic.hive.css';
 @import './_semantic.honeycomb.css';
 
 :root {
@@ -94,11 +93,10 @@
    */
 }
 
-[data-theme="hive"],
 [data-theme="honeycomb"] {
   /* Legacy harness dashboard tables still consume JS color constants. These
-   * vars let the Hive skin retune those inline styles without changing the
-   * classic Linear-indigo fallbacks in app/harness/theme.ts. */
+   * vars let the Swarm/honeycomb skin retune those inline styles without
+   * changing the classic Linear-indigo fallbacks in app/harness/theme.ts. */
   --hive-harness-bg: var(--bg-deepest);
   --hive-harness-surface: var(--bg);
   --hive-harness-surface-raised: var(--bg-raised);

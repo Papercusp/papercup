@@ -2,10 +2,12 @@
  * spawn-readiness.test.ts — the deterministic gateway-readiness spawn-admission core
  * (WI-390 layer 1). Pure decision table; no I/O.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   decideSpawnAdmission,
   isGatewayReadyForSpawn,
+  fetchGatewayReadinessSignals,
+  logSpawnReadinessShadow,
   DEFAULT_SPAWN_DEFER_BACKOFF_MS,
   type GatewayReadinessSignals,
 } from './spawn-readiness';
@@ -63,5 +65,101 @@ describe('decideSpawnAdmission (WI-390 deterministic readiness gate)', () => {
     expect(isGatewayReadyForSpawn(sig())).toBe(true);
     expect(isGatewayReadyForSpawn(sig({ serviceableAccounts: 0 }))).toBe(false);
     expect(isGatewayReadyForSpawn(sig({ admissionQueued: 256 }))).toBe(false);
+  });
+});
+
+describe('fetchGatewayReadinessSignals (WI-390 wiring: gateway GET /stats → signals)', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = origFetch;
+  });
+
+  it('maps a healthy /stats response into GatewayReadinessSignals', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ healthyAccounts: 3, admission: { queued: 5 }, maxQueued: 256 }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const s = await fetchGatewayReadinessSignals({ gatewayBase: 'http://x' });
+    expect(s).toEqual({ serviceableAccounts: 3, admissionQueued: 5, admissionMaxQueued: 256 });
+  });
+
+  it('returns null (fail-open) on a non-ok HTTP status', async () => {
+    global.fetch = vi.fn(async () => new Response('{}', { status: 500 })) as unknown as typeof fetch;
+    expect(await fetchGatewayReadinessSignals({ gatewayBase: 'http://x' })).toBeNull();
+  });
+
+  it('returns null (fail-open) when the gateway is unreachable', async () => {
+    global.fetch = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    expect(await fetchGatewayReadinessSignals({ gatewayBase: 'http://x' })).toBeNull();
+  });
+
+  it('returns null (fail-open) on a malformed / missing healthyAccounts field', async () => {
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({ admission: { queued: 0 } }), { status: 200 })) as unknown as typeof fetch;
+    expect(await fetchGatewayReadinessSignals({ gatewayBase: 'http://x' })).toBeNull();
+  });
+
+  it('defaults missing admission.queued / maxQueued to 0', async () => {
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({ healthyAccounts: 2 }), { status: 200 })) as unknown as typeof fetch;
+    const s = await fetchGatewayReadinessSignals({ gatewayBase: 'http://x' });
+    expect(s).toEqual({ serviceableAccounts: 2, admissionQueued: 0, admissionMaxQueued: 0 });
+  });
+});
+
+describe('logSpawnReadinessShadow (WI-390 SHADOW-mode wiring: non-enforcing telemetry only)', () => {
+  const origFetch = global.fetch;
+  const origEnv = process.env.PAPERCUSP_SPAWN_READINESS_SHADOW;
+  beforeEach(() => {
+    delete process.env.PAPERCUSP_SPAWN_READINESS_SHADOW;
+  });
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (origEnv === undefined) delete process.env.PAPERCUSP_SPAWN_READINESS_SHADOW;
+    else process.env.PAPERCUSP_SPAWN_READINESS_SHADOW = origEnv;
+  });
+
+  it('logs a "would DEFER" line when the live signals say not-ready', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ healthyAccounts: 0, admission: { queued: 0 }, maxQueued: 256 }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const logFn = vi.fn();
+    await logSpawnReadinessShadow({ role: 'cup', spawnId: 'sp-1' }, logFn);
+    expect(logFn).toHaveBeenCalledTimes(1);
+    const msg = logFn.mock.calls[0][0] as string;
+    expect(msg).toContain('[spawn-readiness][SHADOW]');
+    expect(msg).toContain('would DEFER');
+    expect(msg).toContain('role=cup');
+    expect(msg).toContain('spawnId=sp-1');
+    expect(msg).toContain('no_serviceable_account');
+    expect(msg).toContain('NOT enforced');
+  });
+
+  it('does NOT log when the live signals say ready', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ healthyAccounts: 3, admission: { queued: 0 }, maxQueued: 256 }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const logFn = vi.fn();
+    await logSpawnReadinessShadow({ role: 'cup' }, logFn);
+    expect(logFn).not.toHaveBeenCalled();
+  });
+
+  it('never throws / logs when the gateway is unreachable (fail-open, no opinion)', async () => {
+    global.fetch = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const logFn = vi.fn();
+    await expect(logSpawnReadinessShadow({ role: 'cup' }, logFn)).resolves.toBeUndefined();
+    expect(logFn).not.toHaveBeenCalled();
+  });
+
+  it('is disabled entirely via PAPERCUSP_SPAWN_READINESS_SHADOW=0 — never fetches, never logs', async () => {
+    process.env.PAPERCUSP_SPAWN_READINESS_SHADOW = '0';
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ healthyAccounts: 0 }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const logFn = vi.fn();
+    await logSpawnReadinessShadow({ role: 'cup' }, logFn);
+    expect(logFn).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

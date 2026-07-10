@@ -23,12 +23,35 @@
  * provide an export named …" line names the culprit directly).
  */
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const execFileP = promisify(execFile);
+
+// Resolve the tsx CLI entry directly, rather than shelling out to `npx tsx`.
+// `npx` is an npm wrapper and a PACKAGED install ships no npm/npx by design —
+// so `npx tsx` there fails with `spawn npx ENOENT`, which this test's own
+// catch reported as "the operator host would fail at boot" even though the
+// module imports perfectly (the packaged desktop boots all its operators).
+// That conflates missing-tooling with a real D-007 export break — the exact
+// signal this guard exists to catch. Run tsx's CLI under THIS process's node
+// (process.execPath) so no `npx`/PATH lookup is needed and the packaged node
+// at sidecar/bin/node works too. If tsx can't be resolved at all, the guard
+// self-skips (see TSX_CLI below) instead of firing a false boot alarm.
+const TSX_CLI = (() => {
+  try {
+    const req = createRequire(import.meta.url);
+    const pkgPath = req.resolve('tsx/package.json');
+    const bin = JSON.parse(readFileSync(pkgPath, 'utf8')).bin;
+    const rel = typeof bin === 'string' ? bin : bin?.tsx;
+    return rel ? resolve(dirname(pkgPath), rel) : null;
+  } catch {
+    return null;
+  }
+})();
 
 /** Boot-critical package-boundary seams the host imports under tsx. */
 const GUARDED_MODULES = [
@@ -50,14 +73,14 @@ const GUARDED_MODULES = [
 const OPERATOR_DIR = resolve(process.cwd(), '../../apps/operator');
 const PER_MODULE_TIMEOUT_MS = 60_000;
 
-describe.skipIf(!existsSync(OPERATOR_DIR))('tsx-runtime imports (D-007 guard)', () => {
+describe.skipIf(!existsSync(OPERATOR_DIR) || !TSX_CLI)('tsx-runtime imports (D-007 guard)', () => {
   for (const mod of GUARDED_MODULES) {
     it(
       `loads ${mod} under the real tsx runtime`,
       async () => {
         const script = `import(${JSON.stringify(mod)}).then(()=>{console.log('TSX_IMPORT_OK')}).catch(e=>{console.error(e?.message ?? e);process.exit(1)})`;
         try {
-          const { stdout } = await execFileP('npx', ['tsx', '-e', script], {
+          const { stdout } = await execFileP(process.execPath, [TSX_CLI as string, '-e', script], {
             cwd: OPERATOR_DIR,
             timeout: PER_MODULE_TIMEOUT_MS,
           });

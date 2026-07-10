@@ -139,41 +139,10 @@ describe('design tokens — black theme variant ([data-theme="black"])', () => {
   });
 });
 
-describe('design tokens — Hive theme variant ([data-theme="hive"])', () => {
-  const hive = loadTokens('design-tokens/hive.semantic.tokens.json');
-  const hiveCss = loadCss('apps/operator/app/_semantic.hive.css');
-  const baseSemantic = loadTokens('design-tokens/desktop.semantic.tokens.json');
-  const baseMotion = loadTokens('design-tokens/desktop.motion.tokens.json');
-  const allowed = new Set(
-    [...Object.keys(baseSemantic), ...Object.keys(baseMotion)].map((k) =>
-      k.replace(/^motion-/, '').replace(/^shadow-/, '').replace(/^overlay-/, ''),
-    ),
-  );
-
-  test('every Hive token is emitted into _semantic.hive.css with a resolved value', () => {
-    expect(Object.keys(hive).length).toBeGreaterThan(0);
-    for (const key of Object.keys(hive)) {
-      const cssKey = key.replace(/^hive-/, '');
-      expect(hiveCss, `Hive token "${cssKey}" not emitted`).toHaveProperty(cssKey);
-      expect(hiveCss[cssKey]).not.toMatch(/^\{/);
-    }
-  });
-
-  test('the generated block is scoped to [data-theme="hive"], not :root', () => {
-    const css = readFileSync(join(REPO, 'apps/operator/app/_semantic.hive.css'), 'utf8');
-    expect(css).toContain('[data-theme="hive"]');
-    expect(css).not.toMatch(/:root\s*\{/);
-  });
-
-  test('THEME CONTRACT — Hive only overrides base semantic tokens (never primitives/invented names)', () => {
-    for (const cssKey of Object.keys(hiveCss)) {
-      expect(
-        allowed.has(cssKey),
-        `Hive overrides "--${cssKey}", which is not a base semantic token — themes may only override the high (semantic) layer`,
-      ).toBe(true);
-    }
-  });
-});
+// The legacy `[data-theme="hive"]` alias (hive.semantic.tokens.json →
+// _semantic.hive.css) was deleted in design-simplification-2026-07-09 P-011:
+// nothing selected it (HiveThemeBridge applies data-theme="honeycomb", and
+// isValidThemeId('hive') is false). The Swarm skin ships as Honeycomb, below.
 
 describe('design tokens — Honeycomb theme variant ([data-theme="honeycomb"])', () => {
   const honeycomb = loadTokens('design-tokens/honeycomb.semantic.tokens.json');

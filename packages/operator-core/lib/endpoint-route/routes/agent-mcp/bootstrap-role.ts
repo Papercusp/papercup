@@ -400,6 +400,9 @@ const post = defineTool({
           // this worker's tool calls under it (codex bakes it; can't env-expand).
           sid,
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
+          // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
+          // the gateway auto-selects). False whenever a pin resolved or routing is off.
+          codexGatewayAuto: accountPin.provider === 'codex' && !!accountPin.gatewayAuto,
           // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
           // "Do you trust this directory?" boot prompt (role sessions are trusted).
           trustDir: spec.cwd,

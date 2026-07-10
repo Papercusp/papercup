@@ -57,6 +57,28 @@ export function isAutoPickable(
 }
 
 /**
+ * Issue-family (bug/change/task) LOCAL-claimability predicate — the issue-family
+ * counterpart of {@link isAutoPickable}, but SIMPLER: a federated (origin='remote')
+ * issue-family row is owned EXCLUSIVELY by its authoring peer's core (the
+ * hyperbee->PG projector writes it under LWW — see EI-7833 / migration 521's
+ * engineer_issues_view_dml remote-skip guard, and the hard invariant enforced at
+ * work-items.ts's issue-family setWorkItemState: "its authoring peer must
+ * claim/resolve it"). Unlike the feature family, there is NO audit-admit /
+ * trust-list escape hatch here — a remote issue-family row is never locally
+ * claimable, full stop. `origin` NULL (pre-federation back-compat) or 'local' is
+ * locally claimable; anything else (today only 'remote') is not.
+ *
+ * WI-3649: `claimNextIssueWorkItem` (the claim_next/scheduler:get_next self-select),
+ * `listWorkItems`'s issue branch (`admissibleOnly`), and `observeWorkItem` must all
+ * apply this SAME predicate so "claimable"/"available" means what the actual claim
+ * path (`claimIssue`'s view-trigger) will honor — mirroring EI-7841's fix, which
+ * closed the identical read/write gap for the feature family only.
+ */
+export function isIssueLocallyClaimable(origin: string | null | undefined): boolean {
+  return origin == null || origin === 'local';
+}
+
+/**
  * SQL form — a composable WHERE fragment for the porsager `sql` instance the caller
  * already holds (so it composes into that query). Columns are UNQUALIFIED — use only
  * in single-table queries over `harness_features_consolidated` (every claim/place

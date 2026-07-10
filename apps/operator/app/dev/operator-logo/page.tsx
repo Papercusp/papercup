@@ -120,7 +120,7 @@ function IdentityPanel() {
       <section className={`${styles.panel} ${styles.wide}`}>
         <div className={styles.panelHeader}>
           <span>Color system</span>
-          <code>design-tokens/hive.semantic.tokens.json</code>
+          <code>design-tokens/honeycomb.semantic.tokens.json</code>
         </div>
         <div className={styles.swatches}>
           {SWATCHES.map(([id, label, value]) => (

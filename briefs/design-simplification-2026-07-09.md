@@ -310,8 +310,26 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   (1,468) = ~96% of it; any future split is along THAT seam, and must preserve
   source order (equal-specificity cascade). Filed separately rather than smuggled
   into a deletion item.
-- **P-011** delete legacy hive theme alias (hive.semantic.tokens.json +
-  generated css + theme.ts readers map hive→honeycomb + docs). npm run tokens.
+- **P-011** delete legacy `[data-theme="hive"]` theme alias — **[DONE 2026-07-09]**
+  The alias was provably dead: `HiveThemeBridge.tsx` applies `data-theme="honeycomb"`
+  (HIVE_THEME_ID='honeycomb'), `isValidThemeId('hive')` is already false, and the
+  settings picker never lists it. Deleted `design-tokens/hive.semantic.tokens.json`
+  + the generated `apps/operator/app/_semantic.hive.css`; removed the
+  `css-semantic-hive` platform block + "hive" from `THEME_NAMESPACES` in
+  `style-dictionary.config.mjs`; dropped the `@import` (globals.css:22) and the
+  `[data-theme="hive"],` selector (globals.css:97); removed the Hive describe in
+  `design-tokens/tokens.test.ts`; fixed a stale `<code>` label in
+  `dev/operator-logo/page.tsx`. `npm run tokens` regenerates clean (only
+  _semantic.hive.css deleted, all other theme CSS byte-identical). Verified:
+  design-tokens 12/12, theme-tokens 9/9, css-tokens 2/2, operator-vite build exit 0
+  + shipped bundle has 0 `[data-theme="hive"]`, honeycomb intact, 13 `--hive-harness-*`.
+  ⚠ Two brief imprecisions corrected: (a) "theme.ts readers map hive→honeycomb" —
+  FALSE; theme.ts reads `--hive-harness-*` (a SEPARATE, still-LIVE namespace defined
+  under `[data-theme="honeycomb"]`), needs no change and was NOT touched. (b) "+docs"
+  — branding.mdx describes the LIVE `the-hive` **brand pack** (flag/assets/"The Swarm"),
+  a different "hive" from the dead CSS alias — deliberately NOT touched. The live
+  `the-hive` brand pack + `FLAGS.THE_HIVE` + `--hive-harness-*` vars all remain. Sent
+  su-fd2fb a heads-up (their cup-lexicon P-006 listed the now-deleted file).
 - **P-012** letter-spacing: add baseline reset; delete ~495 css + ~60 inline
   `letter-spacing: 0` declarations.
 - **P-013** demote lab routes under /dev + FLAGS.TESTING: editor-demo, el-min,

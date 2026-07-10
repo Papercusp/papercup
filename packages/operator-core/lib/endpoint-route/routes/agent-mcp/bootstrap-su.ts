@@ -184,7 +184,16 @@ export async function resolveAccountPin(
   // true (a person picking an account means "use THIS one"); autonomous role spawns leave it false so the
   // fleet's soft cache-affinity pin (which yields to liveness/load) is unchanged.
   hardPin: boolean = false,
-): Promise<{ env: Record<string, string>; notice: string | null; accountId: string | null; provider: BackendAccountProvider | null }> {
+): Promise<{
+  env: Record<string, string>;
+  notice: string | null;
+  accountId: string | null;
+  provider: BackendAccountProvider | null;
+  /** WI-3645: explicit-auto routing for a config-FILE-carried backend (codex) — the CODEX_HOME
+   *  writers translate this into an UNPINNED gateway provider block (codexGatewayAuto). Claude
+   *  auto needs no marker (its routing rides entirely in `env`); absent on pins/default/fail. */
+  gatewayAuto?: boolean;
+}> {
   const raw = requested?.trim();
   const lower = (raw ?? '').toLowerCase();
   // account-routing-3-options (owner, 2026-06-30): three explicit routing modes carried on the ONE
@@ -240,8 +249,25 @@ export async function resolveAccountPin(
           provider: expected,
         };
       }
-      // Codex/OMP auto-routing needs a per-session config pointing at a specific account (there is none here),
-      // so it is not wired interactively yet — fail-soft to the default credential, never block the launch.
+      if (expected === 'codex') {
+        // WI-3645: interactive codex auto. The routing is carried by the per-session CODEX_HOME
+        // config.toml, not env — the writer call sites translate `gatewayAuto` into
+        // codexGatewayAuto, and the SHARED builder (@papercusp/orchestrator/codex-gateway-config)
+        // renders the provider block WITHOUT the x-papercusp-account header; the gateway then
+        // auto-selects (bearer pool first, codex-CLI account fallback). The old fail() here
+        // rested on a premise the gateway has since outgrown ("needs a specific account") —
+        // an unpinned codex request is served, it is not an error.
+        return {
+          env: {},
+          notice: 'routing through the inference gateway (auto — it selects an available codex account).',
+          accountId: null,
+          provider: expected,
+          gatewayAuto: true,
+        };
+      }
+      // OMP auto-routing needs a per-session models.yml pointing at a specific account (there is
+      // none here), so it is not wired interactively yet — fail-soft to the default credential,
+      // never block the launch.
       return fail(`auto gateway routing isn't wired for ${agent} yet`);
     }
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
@@ -1251,6 +1277,9 @@ const post = defineTool({
           sid,
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
+          // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
+          // the gateway auto-selects). False whenever a pin resolved or routing is off.
+          codexGatewayAuto: accountPin.provider === 'codex' && !!accountPin.gatewayAuto,
           // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,

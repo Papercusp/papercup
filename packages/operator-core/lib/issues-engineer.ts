@@ -424,6 +424,16 @@ export interface ListIssuesFilter {
    *  seam (read-items.ts) is what defaults to organic-only. */
   signalOrigins?: readonly SignalOrigin[];
   limit?: number;
+  /**
+   * WI-3649: when true, exclude a federated (origin='remote') row — the issue-family
+   * counterpart of `listWorkItems`'s feature-family `admissibleOnly` (EI-7841), applying
+   * {@link isIssueLocallyClaimable}'s SAME predicate the actual claim path
+   * (`claimIssue`'s engineer_issues_view_dml trigger, EI-7833) enforces. Default
+   * false/omitted: byte-identical to before (every existing caller keeps seeing the
+   * full backlog including remote-authored rows). Opt in for a SELF-SELECT consumer
+   * (work_items:list's issue branch) so "claimable" actually means claimable.
+   */
+  admissibleOnly?: boolean;
 }
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
@@ -450,6 +460,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);
