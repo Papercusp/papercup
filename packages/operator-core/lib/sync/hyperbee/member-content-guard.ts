@@ -78,7 +78,7 @@ export async function decideMemberContentOp(
   // no author identity to key a deferral on → drop (fail-closed).
   if (!sourceLogDevicePubkey)
     return traceMemberDecision('drop', 'no-srcDevice', rowHarnessSlug, opts, sourceLogDevicePubkey);
-  // Membership lives in `harness_shared.hive_members` — WORKSPACE-shared, NOT per-harness content.
+  // Membership lives in `harness_shared.pot_members` — WORKSPACE-shared, NOT per-harness content.
   // Read it from the workspace source (getOrgPg, sql omitted), the SAME seam STEP 1 admission uses
   // (boot.ts onAnnounce → resolveHiveMemberDeviceSet with no sql). Do NOT pass `opts.sql`: that is the
   // per-harness CONTENT-write connection (the projection's own DB), a different concern that merely

@@ -42,7 +42,7 @@ export interface CanonicalHiveInviteConst {
   inviteSecret: string;
 }
 
-// VERIFIED 2026-06-29 from the LIVE operator Postgres (harness_shared.hives +
+// VERIFIED 2026-06-29 from the LIVE operator Postgres (harness_shared.pots +
 // harness_registry.hiveDirectoryMeta) for workspace 'papercusp-workspace', home_slug
 // 'papercusp' — the authoritative canonical hive identity the owner is announcing on.
 // NOTE: WI-867 recorded pubkey `73cHWul…`, which is STALE/divergent — the LIVE hive
@@ -71,7 +71,7 @@ export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
  * installs are refused (dogfood-silent-canonical-hive-join D-001 / P-007).
  *
  * POPULATED (P-007, 2026-06-29) by DERIVING from the live canonical-hive membership — the
- * GitHub identities VERIFIED in the `papercusp` hive (harness_shared.hive_members, binding_status
+ * GitHub identities VERIFIED in the `papercusp` hive (harness_shared.pot_members, binding_status
  * 'verified'): `aviynw` (the owner) + `papercupai` (the org/bot identity, a verified member across
  * all of this workspace's hives). These are the actual team, not guessed. `aviynw` is also auto-
  * merged as the owner in goSharedHive (dedup-safe). To add a NEW teammate: append their GitHub

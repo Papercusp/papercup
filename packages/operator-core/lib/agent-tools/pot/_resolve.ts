@@ -7,7 +7,7 @@
  * plus its per-home-slug `pot-wake` routine + (workspace-scoped) event
  * subscriptions, plus a live Mug woken via the parentless system path —
  * keyed to the FIRST-CLASS Pot entity for identity. That entity shipped:
- * `harness_shared.hives` holds each pot's stable Ed25519 keypair
+ * `harness_shared.pots` holds each pot's stable Ed25519 keypair
  * (shared-hive-federation-2026-06-08 P-002, owner-ratified multiplicity D-008 =
  * many hives per workspace), and this descriptor composes the two — the registry
  * is the enumeration source (D-008: hives ARE the `kind:'hive'` projects), the

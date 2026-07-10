@@ -449,7 +449,7 @@ export interface BootHarnessOpts {
   /**
    * Test seam (WI-787 / WI-780) — resolve the OWNER device pubkey the SIGNED, gh-verified
    * hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`, captured at join
-   * from the verified directory descriptor and persisted on `harness_shared.hives`).
+   * from the verified directory descriptor and persisted on `harness_shared.pots`).
    * Production leaves this undefined and the real `loadHiveOwnerDevicePubkey(workspaceId,
    * hivePubkey)` (reads `hives.owner_device_pubkey` from PG, fail-closed to null) is used.
    * Used ONLY to BOOTSTRAP-admit the owner's OWN log on a fresh joiner whose `hive_members`
@@ -2433,7 +2433,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // WI-787 / WI-780 — owner-log BOOTSTRAP seam: resolve the OWNER device pubkey the SIGNED,
   // gh-verified hive-announce binds to a joined `hive_pubkey` (`owner_device_pubkey`,
   // captured at join from the verified directory descriptor and persisted on
-  // `harness_shared.hives`). Used ONLY by the owner-bootstrap admit in resolveSameHiveMember.
+  // `harness_shared.pots`). Used ONLY by the owner-bootstrap admit in resolveSameHiveMember.
   // Fail-closed to null (no bootstrap) on any error — never throws into the swarm handler.
   const ownerDeviceForHive: (hivePubkey: string) => Promise<string | null> =
     opts.ownerDeviceForHiveOverride ??

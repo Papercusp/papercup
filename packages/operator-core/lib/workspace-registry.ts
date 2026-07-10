@@ -138,7 +138,7 @@ export function activeWorkspaceId(): string {
  * Use this for ANY operation that PERSISTS or filters a concrete `workspace_id` — above
  * all WRITES. `'*'` is a read-scoping wildcard, never a storable workspace value:
  * persisting it (EI-3409 / WI-892) stamps a row that no concrete-workspace read can ever
- * see, silently diverging the operator's view from the table. For `harness_shared.hive_members`
+ * see, silently diverging the operator's view from the table. For `harness_shared.pot_members`
  * that means the membership guard, epoch-key grant, and cross-member content federation —
  * all keyed off `WHERE workspace_id = '<concrete>'` — never see the row, breaking shared-hive
  * federation. This replaces the copy-pasted `x && x !== '*' ? x : activeWorkspaceId()` idiom;

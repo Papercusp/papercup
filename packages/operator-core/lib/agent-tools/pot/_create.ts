@@ -560,7 +560,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          // The owner self-row is BEST-EFFORT and FKs harness_shared.hives(workspace_id, home_slug). In a
+          // The owner self-row is BEST-EFFORT and FKs harness_shared.pots(workspace_id, home_slug). In a
           // fresh create the hives PARENT row is written by a later federation/keypair step (and in a
           // PG-free unit test the parent is never written), so an FK / parent-missing error here is the
           // EXPECTED no-op (the row is re-asserted when membership is next touched) — NOT a real failure,

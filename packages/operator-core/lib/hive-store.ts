@@ -1,5 +1,5 @@
 /**
- * hive-store — PG access to harness_shared.hives, the first-class Hive entity
+ * hive-store — PG access to harness_shared.pots, the first-class Hive entity
  * (shared-hive-federation-2026-06-08 P-002, D-008; migration 184).
  *
  * A Hive = a PROJECT, identified by a stable Ed25519 keypair (D-002). This module

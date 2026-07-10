@@ -109,6 +109,7 @@ describe('pot_integration_requests (G-5c P-035 — queue, don’t integrate)', (
       nowMs: 1_000,
     });
 
+    if (res.errors.length) console.error('DEBUG res.errors', JSON.stringify(res.errors));
     // steer → integrates (as a namespace-hex MemberHead), nothing queued for it
     expect(res.integrate).toEqual([{ deviceHex: deviceNamespaceKey(trusted), sha: SHA(1) }]);
     // below-steer → queued, NOT integrated

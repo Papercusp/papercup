@@ -158,7 +158,7 @@ export default defineTool({
     steps.cancelledSpawns = cancelledSpawns;
 
     // 2.5. Delete the pot's membership records (G24 — shared-pot-public-release-
-    // 2026-06-22). dissolve previously left harness_shared.hive_members rows behind,
+    // 2026-06-22). dissolve previously left harness_shared.pot_members rows behind,
     // so a dissolved pot's members lingered and kept federating. Delete them all
     // (done BEFORE deregister, while the substrate is still live): the mig-189
     // capture trigger enqueues a `del` per local-origin row → federates a membership

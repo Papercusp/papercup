@@ -8,7 +8,7 @@
  * DROPPED, never materialized — that is what makes the policy authoritative over P2P
  * (the plan's honest-peer trust model; brief EN-1 build step 3).
  *
- * The trust anchor is the HIVE IDENTITY pubkey (`harness_shared.hives.public_key`,
+ * The trust anchor is the HIVE IDENTITY pubkey (`harness_shared.pots.public_key`,
  * resolved by getHiveBySlug) — known on the owner AND every member (it is the key they
  * joined / derived the federation topic from). A valid policy must (a) carry
  * `owner_pubkey === <the hive identity pubkey>` and (b) verify the Ed25519 signature

@@ -4,7 +4,7 @@
  * picks the hive's customized role prompts over the built-in blueprint's.
  * (domain-generic-hive-architecture-2026-06-18 P-012 / D-005 / D-006 / D-007 / D-012.)
  *
- * WHERE THE OVERRIDE LIVES: `harness_shared.hive_settings` under `promptOverride.<role>`
+ * WHERE THE OVERRIDE LIVES: `harness_shared.pot_settings` under `promptOverride.<role>`
  * (the existing federated key — hive-settings-store.ts), so it already syncs over the
  * Hive's peer-log to every node of a shared Hive (D-007 / I1) with NO new transport.
  * This module is the read-side: it turns those settings into files at launch.

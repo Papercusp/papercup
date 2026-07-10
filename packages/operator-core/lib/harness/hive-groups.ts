@@ -16,7 +16,7 @@
  *   1. FORMAL (Phase 3, shared-hive-federation D-004/D-010): a
  *      `harness_kind:'hive'` home owns the members whose `hive_slug` equals the
  *      home slug. `hive_slug` is a registry `ProjectEntry` field — it does NOT
- *      depend on the (not-yet-live) `harness_shared.hives` table, so this works
+ *      depend on the (not-yet-live) `harness_shared.pots` table, so this works
  *      on the live DB today and upgrades cleanly when that entity is wired.
  *   2. LEGACY (Phase 1, D-002): the `parent_slug` sub-harness tree — a root
  *      harness plus the subtree hanging off it (`.papercusp/config.json`).

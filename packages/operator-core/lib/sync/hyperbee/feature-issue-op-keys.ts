@@ -635,7 +635,7 @@ function toFleetLeaderLeaseValue(row: Record<string, unknown>): FleetLeaderLease
 }
 
 /** Map an outbox `row` jsonb to the `ReportWireRow` the hive-reports projection INSERT
- *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.hive_reports —
+ *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.pot_reports —
  *  harness_slug = the Hive home (demux), report_id = the peer-log key, the reporter
  *  identity + target + status. created_at/updated_at are machine-local (not federated). */
 function toHiveReportValue(row: Record<string, unknown>): ReportWireRow {
@@ -652,7 +652,7 @@ function toHiveReportValue(row: Record<string, unknown>): ReportWireRow {
 }
 
 /** Map an outbox `row` jsonb to the `PendingJoinWireRow` the hive-pending-joins projection
- *  INSERT consumes (EN-3 / P-MEMBER). The federated subset of harness_shared.hive_pending_joins
+ *  INSERT consumes (EN-3 / P-MEMBER). The federated subset of harness_shared.pot_pending_joins
  *  — harness_slug = the Hive home (demux), github_user_id = the peer-log key, the joiner's
  *  identity + devices + the decision (status/decided_*). device_attestations stays a jsonb
  *  array; requested_at/decided_at are bigint epoch-ms (federated, the request/decision order).
@@ -676,7 +676,7 @@ function toHivePendingJoinValue(row: Record<string, unknown>): PendingJoinWireRo
 }
 
 /** Map an outbox `row` jsonb to the `HiveMemberRow` the hive-members projection
- *  INSERT consumes — the federated subset of harness_shared.hive_members. The Hive
+ *  INSERT consumes — the federated subset of harness_shared.pot_members. The Hive
  *  scope key (`hive_home_slug`) is the projection demux; device_attestations stays a
  *  jsonb array; github_user_id (BIGINT) → number. No TIMESTAMPTZ (joined_at/channels
  *  are machine-local, not federated). */
@@ -695,7 +695,7 @@ function toHiveMemberValue(row: Record<string, unknown>): HiveMemberRow {
 
 /** Map an outbox `row` jsonb to the `HiveEpochKeyRow` the hive-epoch-keys projection
  *  INSERT consumes (shared-hive-rekey-2026-06-19 P-005). The federated subset of
- *  harness_shared.hive_epoch_keys — harness_slug = the Hive home (the projection demux),
+ *  harness_shared.pot_epoch_keys — harness_slug = the Hive home (the projection demux),
  *  epoch + member_device_pubkey = the compound peer-log key, wrapped_key = the epoch key
  *  sealed to that member's device. workspace_id/author_pubkey/origin/fed_ts come from the
  *  op envelope, not the wire value (mirrors toHiveSettingValue). */

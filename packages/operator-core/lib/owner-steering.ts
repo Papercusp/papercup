@@ -3,7 +3,7 @@
  * (queen-steering-panel-2026-06-15, brief B-01; CONTRACT C-1).
  *
  * The owner's "what should the Queen work on, and how" knobs live as
- * `owner-steering:*` keys in the existing `harness_shared.hive_settings` KV (D-001
+ * `owner-steering:*` keys in the existing `harness_shared.pot_settings` KV (D-001
  * — no migration; Hive-scoped, federates over the Hive peer-log via the capture
  * trigger). This module OWNS the key names + the decoded {@link OwnerSteering}
  * shape (C-1): `pot:set-steering` writes through it, the `hive.steering` sync
