@@ -1268,6 +1268,49 @@ export function readExpectedDhtBootstrap(): string | undefined {
   }
 }
 
+/**
+ * Read the EFFECTIVE `PAPERCUSP_DHT_BOOTSTRAP` value this process should join —
+ * the raw string, preferring the env var but falling back to a marker FILE
+ * (`PAPERCUSP_DHT_BOOTSTRAP_FILE` or `~/.papercusp/dht-bootstrap`) when the env
+ * is unset/empty. This is the input to {@link parseDhtBootstrap} everywhere the
+ * swarm actually resolves its bootstrap (see {@link swarmConstructorOpts} and
+ * {@link getSharedSwarm}), so a file-provided value drives BOTH the real
+ * hyperdht bootstrap AND the boot banner / {@link assertDhtUniverse} guard.
+ *
+ * EI-8893 (durable fix — kills the whole env-inheritance failure class): on
+ * macOS a Server.app that SELF-RELAUNCHES via LaunchServices (update/restart
+ * path) does NOT inherit its LaunchAgent's `EnvironmentVariables`, so the
+ * relaunched process comes up env-less and silently joins the PUBLIC DHT
+ * instead of the isolated testnet — severing federation with no loud error,
+ * and the `launchctl setenv` mitigation does not survive reboot. Reading the
+ * bootstrap from a file that a provisioning/install script writes independently
+ * of this process's launch-time environment makes the isolated-DHT selection
+ * immune to the relaunch path entirely (the same file-fallback trick
+ * {@link readExpectedDhtBootstrap} uses for the DECLARED expectation). The env
+ * var still WINS when present, so nothing changes for env-configured hosts.
+ * Best-effort: a missing/unreadable file is not an error. Exported for unit
+ * testing (I/O redirectable via `PAPERCUSP_DHT_BOOTSTRAP_FILE`).
+ */
+export function readEffectiveDhtBootstrapRaw(): string | undefined {
+  const envVal = process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim();
+  if (envVal) return envVal;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('node:fs') as typeof import('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const os = require('node:os') as typeof import('node:os');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require('node:path') as typeof import('node:path');
+    const filePath =
+      process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE?.trim() ||
+      path.join(os.homedir(), '.papercusp', 'dht-bootstrap');
+    const contents = fs.readFileSync(filePath, 'utf8').trim();
+    return contents || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 let _dhtUniverseAssertion: DhtUniverseAssertion | null = null;
 
 /** The DHT-universe assertion computed once, alongside the shared swarm's
@@ -1300,7 +1343,11 @@ export function swarmConstructorOpts(args?: {
   const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
   const fallback = args?.defaultMaxPeers ?? resolveDefaultMaxPeers();
   const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : fallback;
-  const bootstrap = parseDhtBootstrap(process.env.PAPERCUSP_DHT_BOOTSTRAP);
+  // EI-8893: resolve the bootstrap via the env→file fallback so a
+  // self-relaunched macOS Server.app (whose LaunchAgent env is stripped by
+  // LaunchServices) still reads its isolated-DHT bootstrap from
+  // ~/.papercusp/dht-bootstrap instead of silently defaulting to the public DHT.
+  const bootstrap = parseDhtBootstrap(readEffectiveDhtBootstrapRaw());
   const dhtHost = parseDhtHost(process.env.PAPERCUSP_DHT_HOST);
   return {
     maxPeers,
@@ -1338,7 +1385,10 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   // resolved bootstrap empty → hyperdht's `opts.bootstrap || BOOTSTRAP_NODES` quietly uses
   // the public DHT → isolated 2-machine federation breaks via public-DHT NAT hairpin) was
   // invisible. Loud-warn that exact case so it never has to be re-diagnosed by packet capture.
-  const dhtUniverse = resolveDhtUniverseState(process.env.PAPERCUSP_DHT_BOOTSTRAP);
+  // EI-8893: classify against the SAME env→file effective value swarmConstructorOpts
+  // resolves, so a file-provided bootstrap (relaunch-immune) is reported ISOLATED, not
+  // a false PUBLIC, and the assertDhtUniverse guard checks the value actually used.
+  const dhtUniverse = resolveDhtUniverseState(readEffectiveDhtBootstrapRaw());
   if (dhtUniverse.mode === 'isolated') {
     // Informational (console.info, not warn) so the fail-on-console test gate stays
     // a defect signal — still captured in the operator's stdout log for observability.

@@ -7,6 +7,7 @@ import {
   resolveDhtUniverseState,
   assertDhtUniverse,
   readExpectedDhtBootstrap,
+  readEffectiveDhtBootstrapRaw,
   type HyperswarmLike,
   _setSharedSwarmForTests,
   _peekSharedSwarmForTests,
@@ -779,5 +780,96 @@ describe('WI-3604: readExpectedDhtBootstrap', () => {
   it('falls back to a missing file → undefined (best-effort, never throws)', () => {
     process.env[FILE_KEY] = '/nonexistent/path/that/does/not/exist-wi3604';
     expect(readExpectedDhtBootstrap()).toBeUndefined();
+  });
+});
+
+// ─── EI-8893: readEffectiveDhtBootstrapRaw + file-fallback in swarmConstructorOpts ─
+//
+// Root cause: on macOS a Server.app that self-relaunches via LaunchServices does
+// NOT inherit its LaunchAgent's EnvironmentVariables, so PAPERCUSP_DHT_BOOTSTRAP
+// goes missing and the process silently joins the PUBLIC DHT instead of the
+// isolated testnet. The durable fix reads the bootstrap from a marker FILE
+// (~/.papercusp/dht-bootstrap, or PAPERCUSP_DHT_BOOTSTRAP_FILE) when the env is
+// absent — immune to the relaunch env-stripping path entirely.
+describe('EI-8893: readEffectiveDhtBootstrapRaw (env→file bootstrap fallback)', () => {
+  const ENV_KEY = 'PAPERCUSP_DHT_BOOTSTRAP';
+  const FILE_KEY = 'PAPERCUSP_DHT_BOOTSTRAP_FILE';
+  const MAXPEERS_KEY = 'PAPERCUSP_SWARM_MAX_PEERS';
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('node:fs') as typeof import('node:fs');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const os = require('node:os') as typeof import('node:os');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('node:path') as typeof import('node:path');
+  const orig: Record<string, string | undefined> = {};
+  let tmpDir: string;
+  beforeEach(() => {
+    for (const k of [ENV_KEY, FILE_KEY, MAXPEERS_KEY]) {
+      orig[k] = process.env[k];
+      delete process.env[k];
+    }
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ei8893-'));
+  });
+  afterEach(() => {
+    for (const k of [ENV_KEY, FILE_KEY, MAXPEERS_KEY]) {
+      if (orig[k] === undefined) delete process.env[k];
+      else process.env[k] = orig[k];
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('prefers the env var when set (unchanged behavior for env-configured hosts)', () => {
+    process.env[ENV_KEY] = '172.31.44.1:49838';
+    // A file exists too, but the env WINS.
+    const file = path.join(tmpDir, 'dht-bootstrap');
+    fs.writeFileSync(file, '10.0.0.9:1234', 'utf8');
+    process.env[FILE_KEY] = file;
+    expect(readEffectiveDhtBootstrapRaw()).toBe('172.31.44.1:49838');
+  });
+
+  it('falls back to the marker FILE when the env var is unset (the relaunch fix)', () => {
+    const file = path.join(tmpDir, 'dht-bootstrap');
+    fs.writeFileSync(file, '172.31.44.1:49838\n', 'utf8');
+    process.env[FILE_KEY] = file;
+    expect(readEffectiveDhtBootstrapRaw()).toBe('172.31.44.1:49838');
+  });
+
+  it('returns undefined when neither env nor file is present (best-effort, never throws)', () => {
+    process.env[FILE_KEY] = path.join(tmpDir, 'does-not-exist');
+    expect(readEffectiveDhtBootstrapRaw()).toBeUndefined();
+  });
+
+  it('REGRESSION: swarmConstructorOpts resolves bootstrap from the file when env is stripped', () => {
+    // Simulate the macOS self-relaunch: PAPERCUSP_DHT_BOOTSTRAP is NOT in the
+    // environment, but the provisioning file is present. Before the fix,
+    // swarmConstructorOpts read env only → bootstrap undefined → PUBLIC DHT.
+    const file = path.join(tmpDir, 'dht-bootstrap');
+    fs.writeFileSync(file, '172.31.44.1:49838,172.31.44.1:49839', 'utf8');
+    process.env[FILE_KEY] = file;
+    expect(process.env[ENV_KEY]).toBeUndefined();
+    expect(swarmConstructorOpts().bootstrap).toEqual([
+      { host: '172.31.44.1', port: 49838 },
+      { host: '172.31.44.1', port: 49839 },
+    ]);
+    // And the boot-banner / recurrence-guard classifier agrees it is ISOLATED,
+    // not a false PUBLIC — it consumes the same effective value.
+    expect(resolveDhtUniverseState(readEffectiveDhtBootstrapRaw())).toEqual({
+      mode: 'isolated',
+      bootstrap: [
+        { host: '172.31.44.1', port: 49838 },
+        { host: '172.31.44.1', port: 49839 },
+      ],
+    });
+  });
+
+  it('a malformed file value falls through to the misconfigured (loud) universe, never a silent public join', () => {
+    const file = path.join(tmpDir, 'dht-bootstrap');
+    fs.writeFileSync(file, 'garbage-no-port', 'utf8');
+    process.env[FILE_KEY] = file;
+    expect(swarmConstructorOpts().bootstrap).toBeUndefined();
+    expect(resolveDhtUniverseState(readEffectiveDhtBootstrapRaw())).toEqual({
+      mode: 'misconfigured',
+      envValue: 'garbage-no-port',
+    });
   });
 });
