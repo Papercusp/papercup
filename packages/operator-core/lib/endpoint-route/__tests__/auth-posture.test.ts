@@ -69,7 +69,19 @@ const RULES: ReadonlyArray<{
     ],
   },
   { prefix: '/provision/', expect: VT },
-  { prefix: '/internal/', expect: {} },
+  {
+    prefix: '/internal/',
+    expect: {},
+    exceptions: [
+      // Dependency-free watchdog self-report sink (fleet-reliability-
+      // verification-2026-07-10 P-008): the callers are plain-`node` watchdog
+      // scripts with no principal token to present, so `auth: {}` (any
+      // caller) would work but is wider than needed — `'loopback'` rejects
+      // non-loopback hosts at the route-stack auth chokepoint while still
+      // requiring no token. See the route's own doc-comment.
+      { method: 'POST', path: '/internal/runtime-vintage', auth: 'loopback' },
+    ],
+  },
   // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by
   // the host bind, owner-scoped by an explicit `owner` arg; the intent-result/
   // stream routes additionally gate on `isLoopbackRequest` inline). The

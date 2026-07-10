@@ -240,3 +240,82 @@ describe('owner sessions + fail-open (D-003)', () => {
     }
   });
 });
+
+describe('heavy-command admission control (WI-3821)', () => {
+  // Deterministic threshold so the suite never depends on the runner's core
+  // count: cap at 100 and inject the "current" load1 via PC_HEAVY_LOAD1_OVERRIDE.
+  const OVER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '200' };
+  const UNDER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '50' };
+
+  const expectHeavyDeny = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const decision = JSON.parse(out.stdout);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
+  };
+
+  it.each([
+    ['npm test', 'npm test'],
+    ['npm run test', 'npm run test'],
+    ['npm run test:affected', 'npm run test:affected'],
+    ['npm run build', 'npm run build'],
+    ['bare vitest', 'vitest run lib/x.test.ts'],
+    ['npx vitest', 'npx vitest run lib/x.test.ts'],
+    ['pnpm vitest', 'pnpm vitest'],
+    ['path-invoked vitest (.bin)', '../../node_modules/.bin/vitest run app/x.test.ts'],
+    ['compound cd && .bin/vitest', 'cd apps/operator && ../../node_modules/.bin/vitest run x.test.ts'],
+    ['tsc --noEmit', 'tsc --noEmit'],
+    ['npx tsc -p', 'npx tsc -p tsconfig.json'],
+    ['turbo run test', 'turbo run test'],
+    ['time-wrapped npm test', 'time npm test'],
+    ['nice-wrapped vitest', 'nice -n 10 vitest run x'],
+  ])('denies %s when the host is over the load threshold (agent session)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it.each([
+    ['npm run test:affected', 'npm run test:affected'],
+    ['path-invoked vitest', '../../node_modules/.bin/vitest run app/x.test.ts'],
+    ['tsc --noEmit', 'tsc --noEmit'],
+  ])('allows %s when the host is UNDER the load threshold', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...UNDER }));
+  });
+
+  it.each([
+    ['ordinary ls', 'ls -la'],
+    ['git status', 'git status'],
+    ['reading a vitest config file', 'cat vitest.config.ts'],
+    ['grep for vitest in a file', 'grep vitest package.json'],
+    ['vitest named only in a prose arg', 'echo "run vitest later"'],
+    ['a docs path containing vitest', 'ls docs/vitest-guide'],
+    ['bare tsx runs a light script (NOT heavy)', 'tsx scripts/one-shot.ts'],
+    ['npm run lint (not a heavy pattern)', 'npm run lint'],
+  ])('does NOT false-positive on %s even over the threshold', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it('is skipped when PC_HEAVY_BYPASS=1 (the pc-heavy wrapper self-limits)', () => {
+    expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_BYPASS: '1' }));
+  });
+
+  it('is disabled by the PC_HEAVY_ADMISSION=off kill-switch', () => {
+    expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_ADMISSION: 'off' }));
+  });
+
+  it('never throttles the owner (no agent marker, outside the canonical tree)', () => {
+    expectAllow(runGate(bashCmd('npm run test:affected', { cwd: '/tmp/not-canonical' }), { ...CANON_ENV, ...OVER }));
+  });
+
+  it('fires WITHOUT the agent marker inside the canonical tree (EI-7872 tree-keyed parity)', () => {
+    expectHeavyDeny(runGate(bashCmd('npm run test:affected', { cwd: CANON }), { ...CANON_ENV, ...OVER }));
+  });
+
+  it('honors the codex shell tool name (exec_command) — same wire contract', () => {
+    expectHeavyDeny(runGate(bashCmd('npm run test:affected', { tool: 'exec_command' }), { ...AGENT, ...OVER }));
+  });
+
+  it('fails open (allows) when load cannot be read', () => {
+    // A non-numeric override forces the load-read to throw → fail-open allow.
+    expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: 'not-a-number' }));
+  });
+});

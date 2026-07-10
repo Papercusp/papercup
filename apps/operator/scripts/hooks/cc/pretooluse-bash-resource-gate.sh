@@ -179,6 +179,84 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
         if re.match(_GIT + r'stash\b(?!\s+(?:pop|apply|list|show|drop|branch|clear))', _s) and ' -- ' not in _s:
             deny(_git_deny.format(op='git stash'))
 
+# ── Heavy-command admission control (WI-3821) ──────────────────────────────
+# Fleet size now organically oversubscribes the 128-core box: each agent's
+# vitest/tsc/test:affected is ALREADY per-suite worker-capped (affected-tests.mjs
+# caps at 32) and runs its workspaces sequentially, so ONE run is fine — but N
+# agents run their own simultaneously with zero cross-process coordination, and
+# ~6 concurrent capped runs = ~185 workers = the load-245→3077 meltdowns seen
+# twice this week. This hook is the only place that transparently sees EVERY raw
+# agent heavy command, but it can only allow/deny (it exits before the command
+# runs, so it cannot hold a slot) — so it DENIES a *new* heavy run when host
+# load is already past the pathological threshold, pointing the caller at
+# scripts/pc-heavy.sh (a flock counting-semaphore that WAITS for a free slot
+# instead of failing) or a retry once load drops. The green-checkpoint gate and
+# capability:inspect run server-side / as MCP tools and never reach this bash
+# hook, so they are exempt by construction; only raw, uncoordinated agent shell
+# runs get staggered.
+#
+# Safe-by-default & FAIL-OPEN: this hook lands fleet-wide via git-sync with no
+# review, so a fail-closed bug would wedge every agent's bash. The threshold is
+# 1.5x cores (catches the 1.9x=245 onset; never trips healthy 1.0-1.3x load);
+# kill-switch PC_HEAVY_ADMISSION=off; skipped when PC_HEAVY_BYPASS=1 (pc-heavy
+# sets it) or the caller is not an agent/shared-tree session (owner exempt);
+# every error path allows. PC_HEAVY_LOAD1_OVERRIDE lets tests inject a load.
+def _heavy_admission():
+    if os.environ.get('PC_HEAVY_ADMISSION', 'on').strip().lower() in ('off', '0', 'false', 'no'):
+        return
+    if os.environ.get('PC_HEAVY_BYPASS') == '1':
+        return
+    # Only throttle agent / shared-tree sessions — never the owner's own box
+    # work. Mirror the git-guard's marker-OR-tree gate so marker-less fleet
+    # sessions (EI-7872) are still covered.
+    if not (os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree()):
+        return
+    # Heavy = the batch test/build commands that spawn worker pools. Anchored at
+    # command position (start / after ;&|newline / a known wrapper / a path/) so
+    # a prose arg, a config filename, or a docs path never false-positives; the
+    # executable must be followed by whitespace or end so `vitest.config`,
+    # `vitest-guide`, `testing` etc. don't match. Bare `tsx` is intentionally
+    # NOT heavy (it runs light one-shot scripts far more often than builds).
+    anchor = (r'(?:^|[;&|\n]\s*|\bsudo\s+|\bnice\s+(?:-n\s*-?\d+\s+)?'
+              r'|\bionice\s+(?:-\S+\s*)*|\benv\s+(?:\S+=\S*\s+)+|\brtk\s+|\btime\s+|\S*/)')
+    heavy_re = re.compile(
+        anchor + r'(?:'
+        r'(?:npx\s+|pnpm\s+|bunx\s+)?vitest(?=\s|$)'
+        r'|(?:npx\s+)?tsc(?=\s|$)'
+        r'|npm\s+(?:run\s+)?test(?::[\w-]+)?(?=\s|$)'
+        r'|npm\s+run\s+build(?=\s|$)'
+        r'|turbo\s+run\s+(?:test|build|typecheck)\b'
+        r')',
+        re.IGNORECASE,
+    )
+    if not heavy_re.search(command):
+        return
+    # Local load signal — captures ALL contributors (vitest+tsc+onnx+…), more
+    # robust than counting only wrapped runs. Env overrides for tests.
+    try:
+        _ov = os.environ.get('PC_HEAVY_LOAD1_OVERRIDE')
+        load1 = float(_ov) if _ov not in (None, '') else os.getloadavg()[0]
+        cores = os.cpu_count() or 1
+        _mx = os.environ.get('PC_HEAVY_MAX_LOAD1')
+        max_load1 = float(_mx) if _mx not in (None, '') else round(1.5 * cores)
+    except Exception:
+        return  # can't read load/cores → fail-open
+    if load1 > max_load1:
+        deny(
+            f'heavy-command admission (WI-3821): host load1={load1:.0f} is over the '
+            f'{max_load1:.0f} threshold (~1.5x cores) — starting another vitest/tsc/'
+            f'test build now would pile onto an already-saturated box (this class '
+            f'melted the host to load 3000+ twice this week). Either wait ~30-60s and '
+            f're-run once load drops, or run it under `scripts/pc-heavy.sh -- <your '
+            f'command>`, which waits for a free build slot (flock counting semaphore) '
+            f'and runs niced instead of failing. Kill-switch: PC_HEAVY_ADMISSION=off.'
+        )
+
+try:
+    _heavy_admission()
+except Exception:
+    pass  # admission control must never wedge a command
+
 # Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
 # that can't touch a registered resource. Tokens mirror the seeded patterns.
 if not re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command):

@@ -34,6 +34,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../../../util/cli-entry';
 import { loadavg, cpus as osCpus } from 'node:os';
 import type { PerfArtifact } from './artifact';
 import {
@@ -439,6 +440,6 @@ async function main(): Promise<void> {
 // this guard, importing this file for its exports had the side effect of
 // kicking off a live perf run (writing real artifacts, eventually calling
 // `process.exit()`) racing against the importer's own code.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   void main();
 }

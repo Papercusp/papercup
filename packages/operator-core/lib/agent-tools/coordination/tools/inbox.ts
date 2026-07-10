@@ -213,13 +213,20 @@ export function annotateResolvedConditions<T extends Record<string, unknown>>(
 ): Array<Record<string, unknown>> {
   // Latest resolution ts per condition key (ISO ts compare lexicographically).
   const resolvedAt = new Map<string, string>();
-  for (const e of all) {
-    const key = e["resolves_condition"];
-    const ts = e["ts"];
-    if (typeof key === "string" && key && typeof ts === "string") {
+  const note = (key: unknown, ts: string): void => {
+    if (typeof key === "string" && key) {
       const prev = resolvedAt.get(key);
       if (!prev || ts > prev) resolvedAt.set(key, ts);
     }
+  };
+  for (const e of all) {
+    const ts = e["ts"];
+    if (typeof ts !== "string") continue;
+    // Singular (broadcastSevereEventResolved) + plural (broadcastSevereEventResolvedMany,
+    // EI-9030b — one message superseding many conditions at once).
+    note(e["resolves_condition"], ts);
+    const many = e["resolves_conditions"];
+    if (Array.isArray(many)) for (const k of many) note(k, ts);
   }
   if (resolvedAt.size === 0)
     return entries as unknown as Array<Record<string, unknown>>;

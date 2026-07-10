@@ -39,7 +39,7 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
+import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing.
@@ -58,6 +58,16 @@ const DEFAULT_PERSISTENT_REAP_MIN = 3;
  *  (`wd_error_sweeps`). At the 15-min sweep cadence over a 3-min git-sync, 2 sweeps ⇒ the fault
  *  survived ~10 runs — persistent, not a transient push/fetch blip. */
 const DEFAULT_ERROR_STALL_MIN_SWEEPS = 2;
+/** EI-9030b: the overall stall verdict must hold across this many CONSECUTIVE watchdog sweeps
+ *  before it BROADCASTS (`wd_stall_sweeps`). This is the missing edge-triggering half — the
+ *  per-signal thresholds above judge one sweep, but a stall that self-heals within a sweep
+ *  interval (2026-07-10: 6 hive harnesses each flapped a STALLED/RECOVERED pair for ~25min
+ *  transient stalls — pure inbox noise) still paged the whole fleet. Requiring a second
+ *  consecutive stalled sweep (~15min later) suppresses the transient; a genuine permanent
+ *  stall still surfaces promptly (~one extra sweep vs the 6h silent strand this watchdog exists
+ *  to catch). A never-confirmed transient never sets `watchdog_alerted`, so no recovery pair
+ *  fires either. */
+const DEFAULT_STALL_SUSTAIN_MIN_SWEEPS = 2;
 /** How often the watchdog sweeps. git-sync is every 3 min; 15m is ample + matches green-stall. */
 const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 
@@ -71,6 +81,8 @@ export interface GitSyncStallThresholds {
   persistentReapMin?: number;
   /** consecutive watchdog sweeps a fault must persist before error-stall alarms (default 2). */
   errorStallMinSweeps?: number;
+  /** EI-9030b: consecutive stalled sweeps required before the alarm BROADCASTS (default 2). */
+  stallSustainMinSweeps?: number;
 }
 
 /** The bits of one git-sync routine the verdict is computed from. */
@@ -198,6 +210,26 @@ export function evaluateGitSyncStall(
   return { stalled, commitStale, fireStale, errorStall, persistentReap, reason };
 }
 
+/**
+ * Pure: given the raw stall verdict and the consecutive-stalled-sweep count (INCLUDING the
+ * current sweep), decide whether the stall has SUSTAINED long enough to broadcast (EI-9030b).
+ * A first-observed stall (`stallSweeps === 1`) is held back for one more sweep so a transient
+ * that self-heals within the sweep interval never pages. Exported for the debounce-edge test.
+ */
+export function shouldAlarmSustained(
+  stalled: boolean,
+  stallSweeps: number,
+  minSweeps: number = DEFAULT_STALL_SUSTAIN_MIN_SWEEPS,
+): boolean {
+  return stalled && stallSweeps >= minSweeps;
+}
+
+/** Pure: the next consecutive-stalled-sweep counter — increment while stalled, reset to 0 on a
+ *  healthy sweep. Mirrors the `wd_error_sweeps` streak accounting (EI-9030b). */
+export function nextStallSweeps(stalled: boolean, prevStallSweeps: number): number {
+  return stalled ? prevStallSweeps + 1 : 0;
+}
+
 /** Pure: the `harness_escalations` body for a watchdog-detected git-sync stall (testable). */
 export function gitSyncStallEscalationBody(opts: {
   installSlug: string;
@@ -256,6 +288,7 @@ export async function checkGitSyncStall(
         watchdog_alerted: boolean | null;
         reaped_count: number | null;
         wd_error_sweeps: number | null;
+        wd_stall_sweeps: number | null;
       }[]
     >`
       SELECT install_slug,
@@ -268,13 +301,18 @@ export async function checkGitSyncStall(
              metadata->>'last_error' AS last_error,
              COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
              COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
-             COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps
+             COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps,
+             COALESCE((metadata->>'wd_stall_sweeps')::int, 0) AS wd_stall_sweeps
         FROM harness_shared.routines
        WHERE target_role = 'system:git-sync'
          AND active = true`;
 
     const now = Date.now();
     const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
+    const stallSustainMinSweeps = opts.stallSustainMinSweeps ?? DEFAULT_STALL_SUSTAIN_MIN_SWEEPS;
+    // EI-9030b: harnesses that recovered from OUR alarm THIS sweep — broadcast ONE
+    // coalesced all-clear after the loop instead of one message per harness.
+    const recoveredForBroadcast: string[] = [];
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const wdHeadSinceMs = row.wd_head_since_ms != null ? Number(row.wd_head_since_ms) : null;
@@ -329,8 +367,28 @@ export async function checkGitSyncStall(
         opts,
       );
 
+      // ── EI-9030b sustain streak: consecutive sweeps the verdict has been stalled (incl. this
+      // one). Persisted (like wd_error_sweeps) so it survives across the 15-min process-level
+      // sweeps and across the several hosts that run this watchdog. Reset to 0 the moment healthy.
+      const prevStallSweeps = row.wd_stall_sweeps != null ? Number(row.wd_stall_sweeps) : 0;
+      const stallSweeps = nextStallSweeps(verdict.stalled, prevStallSweeps);
+      if (stallSweeps !== prevStallSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('wd_stall_sweeps', ${stallSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'`;
+      }
+
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery
+        // EI-9030b: hold back a not-yet-SUSTAINED stall — a transient that self-heals before the
+        // next sweep confirms it never pages (and so never emits a paired recovery notice). The
+        // per-signal thresholds judged ONE sweep; this requires the verdict to persist across
+        // consecutive sweeps, the edge-triggering the fleet's 6 flapping hive stalls lacked.
+        if (!shouldAlarmSustained(verdict.stalled, stallSweeps, stallSustainMinSweeps)) continue;
         // Cross-process exactly-once: only the writer that flips watchdog_alerted false→true alarms.
         const flip = await sql`
           UPDATE harness_shared.routines
@@ -415,13 +473,12 @@ export async function checkGitSyncStall(
                    updated_at = now()
              WHERE install_slug = ${row.install_slug}
                AND target_role = 'system:git-sync'`;
-          // WI-1444: supersede the fleet alarm — coord:inbox annotates every prior
-          // `git-sync-stall:<slug>` broadcast resolved, so a late reader never
-          // investigates a condition that already cleared. Fail-soft by design.
-          await broadcastSevereEventResolved({
-            conditionKey: `git-sync-stall:${row.install_slug}`,
-            summary: `git-sync RECOVERED on ${row.install_slug} — commits are landing again; the earlier stall alarm is stale.`,
-          });
+          // WI-1444 + EI-9030b: supersede the fleet alarm, but COALESCED — collect this
+          // recovery and emit ONE all-clear after the loop (a shared root-cause, e.g. a DBOS
+          // engine wedge, recovers many harnesses in the same sweep; one message per harness
+          // was the inbox noise the retro flagged). coord:inbox still annotates every prior
+          // `git-sync-stall:<slug>` broadcast resolved via the message's `resolves_conditions`.
+          recoveredForBroadcast.push(row.install_slug);
           out.recovered.push(row.install_slug);
         } else if (cleared.count > 0) {
           console.warn(
@@ -429,6 +486,18 @@ export async function checkGitSyncStall(
           );
         }
       }
+    }
+    // EI-9030b: ONE coalesced all-clear for every harness that recovered this sweep, carrying
+    // all their condition keys so coord:inbox supersedes each prior stall alarm. (0 → no-op.)
+    if (recoveredForBroadcast.length > 0) {
+      const list = recoveredForBroadcast.join(', ');
+      await broadcastSevereEventResolvedMany({
+        conditionKeys: recoveredForBroadcast.map((slug) => `git-sync-stall:${slug}`),
+        summary:
+          recoveredForBroadcast.length === 1
+            ? `git-sync RECOVERED on ${list} — commits are landing again; the earlier stall alarm is stale.`
+            : `git-sync RECOVERED on ${recoveredForBroadcast.length} harnesses (${list}) — commits are landing again; the earlier stall alarms are stale.`,
+      });
     }
     return out;
   } catch (e) {

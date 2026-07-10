@@ -95,8 +95,51 @@ export async function broadcastSevereEventResolved(res: SevereEventResolution): 
     });
     return true;
   } catch (e) {
-     
+
     console.warn(`[severe-event-broadcast] resolve failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+export interface SevereEventResolutionMany {
+  /** The conditionKeys of EVERY alarm this ONE message supersedes. */
+  conditionKeys: string[];
+  /** One-line all-clear covering all of them (e.g. "git-sync RECOVERED on 6 harnesses …"). */
+  summary: string;
+  /** Optional detail. */
+  body?: string;
+}
+
+/**
+ * Broadcast that SEVERAL previously-alarmed conditions have cleared in ONE message
+ * (EI-9030b) — instead of one recovery notice per condition, which spams every
+ * agent's inbox when a shared root-cause (e.g. a DBOS engine wedge) recovers many
+ * harnesses at once. Carries `resolves_conditions` (plural array); coord:inbox's
+ * `annotateResolvedConditions` supersedes every listed condition's prior alarm.
+ * A single key stays byte-equivalent to `broadcastSevereEventResolved` for readers
+ * that key on the singular field (both `resolves_condition` + the plural are stamped).
+ * Inject-only, same rail as the alarm. Never throws; a 0-key call is a no-op.
+ */
+export async function broadcastSevereEventResolvedMany(res: SevereEventResolutionMany): Promise<boolean> {
+  if (res.conditionKeys.length === 0) return true;
+  try {
+    await sendMessage(SEVERE_EVENT_IDENTITY, {
+      to: ['*'],
+      summary: res.summary,
+      body: res.body,
+      category: 'severe-event-resolved',
+      extra: {
+        resolves_conditions: res.conditionKeys,
+        // Stamp the singular fields too (first key) so a reader that only knows the
+        // singular shape still supersedes at least the primary condition.
+        resolves_condition: res.conditionKeys[0],
+        condition_key: res.conditionKeys[0],
+      },
+    });
+    return true;
+  } catch (e) {
+
+    console.warn(`[severe-event-broadcast] resolve-many failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }

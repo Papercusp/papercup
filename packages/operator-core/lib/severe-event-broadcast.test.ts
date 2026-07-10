@@ -20,7 +20,11 @@ const M = vi.hoisted(() => ({
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
 
-import { broadcastSevereEvent, broadcastSevereEventResolved } from './severe-event-broadcast';
+import {
+  broadcastSevereEvent,
+  broadcastSevereEventResolved,
+  broadcastSevereEventResolvedMany,
+} from './severe-event-broadcast';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -88,6 +92,47 @@ describe('broadcastSevereEventResolved (WI-1444)', () => {
       M.sendMessage.mockRejectedValueOnce(new Error('pg down'));
       await expect(
         broadcastSevereEventResolved({ conditionKey: 'k', summary: 's' }),
+      ).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('broadcastSevereEventResolvedMany (EI-9030b — one coalesced all-clear)', () => {
+  it('sends ONE message carrying every condition key (plural) + the singular first-key stamp', async () => {
+    const keys = ['git-sync-stall:x', 'git-sync-stall:y', 'git-sync-stall:z'];
+    const ok = await broadcastSevereEventResolvedMany({
+      conditionKeys: keys,
+      summary: 'git-sync RECOVERED on 3 harnesses',
+    });
+    expect(ok).toBe(true);
+    expect(M.sendMessage).toHaveBeenCalledTimes(1); // ONE message, not one per harness
+    const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts).toMatchObject({
+      to: ['*'],
+      category: 'severe-event-resolved',
+      extra: {
+        resolves_conditions: keys,
+        resolves_condition: 'git-sync-stall:x',
+        condition_key: 'git-sync-stall:x',
+      },
+    });
+  });
+
+  it('a 0-key call is a no-op (no message sent) and returns true', async () => {
+    const ok = await broadcastSevereEventResolvedMany({ conditionKeys: [], summary: 's' });
+    expect(ok).toBe(true);
+    expect(M.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('fail-soft: a sendMessage rejection returns false, never throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      M.sendMessage.mockRejectedValueOnce(new Error('pg down'));
+      await expect(
+        broadcastSevereEventResolvedMany({ conditionKeys: ['k'], summary: 's' }),
       ).resolves.toBe(false);
       expect(warn).toHaveBeenCalledOnce();
     } finally {

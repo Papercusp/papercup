@@ -141,6 +141,30 @@ describe("annotateResolvedConditions (pure)", () => {
     const entries = [a];
     expect(annotateResolvedConditions(entries, entries)).toBe(entries);
   });
+
+  it("EI-9030b: ONE coalesced resolution (resolves_conditions[]) supersedes EVERY listed alarm", () => {
+    const aX = alarm("2026-07-01T10:00:00.000Z", "git-sync-stall:x");
+    const aY = alarm("2026-07-01T10:05:00.000Z", "git-sync-stall:y");
+    const aZ = alarm("2026-07-01T10:07:00.000Z", "git-sync-stall:z");
+    const many = {
+      ts: "2026-07-01T12:00:00.000Z",
+      msg_id: "r-many",
+      from: "system-watchdog",
+      to: ["*"],
+      kind: "message",
+      category: "severe-event-resolved",
+      summary: "git-sync RECOVERED on 3 harnesses",
+      // the plural array + the singular first-key stamp broadcastSevereEventResolvedMany emits
+      resolves_conditions: ["git-sync-stall:x", "git-sync-stall:y", "git-sync-stall:z"],
+      resolves_condition: "git-sync-stall:x",
+      condition_key: "git-sync-stall:x",
+    };
+    const all = [aX, aY, aZ, many];
+    const out = annotateResolvedConditions(all, all);
+    expect(out[0]).toMatchObject({ resolved: true, resolved_at: many.ts }); // x
+    expect(out[1]).toMatchObject({ resolved: true, resolved_at: many.ts }); // y (plural-only)
+    expect(out[2]).toMatchObject({ resolved: true, resolved_at: many.ts }); // z (plural-only)
+  });
 });
 
 describe("coord:inbox handler (end-to-end annotation)", () => {

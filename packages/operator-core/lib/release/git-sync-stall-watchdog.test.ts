@@ -5,7 +5,13 @@
  * Run: cd packages/operator-core && npx vitest run lib/release/git-sync-stall-watchdog.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateGitSyncStall, gitSyncStallEscalationBody, type GitSyncStallSnapshot } from './git-sync-stall-watchdog';
+import {
+  evaluateGitSyncStall,
+  gitSyncStallEscalationBody,
+  shouldAlarmSustained,
+  nextStallSweeps,
+  type GitSyncStallSnapshot,
+} from './git-sync-stall-watchdog';
 
 const NOW = 1_800_000_000_000;
 const H = 3_600_000;
@@ -235,5 +241,53 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
     expect(v.errorStall).toBe(false);
     expect(v.persistentReap).toBe(false);
     expect(v.reason).toBeNull();
+  });
+});
+
+describe('EI-9030b sustain debounce (edge-trigger before broadcast)', () => {
+  describe('nextStallSweeps — the consecutive-stalled-sweep streak counter', () => {
+    it('increments while stalled', () => {
+      expect(nextStallSweeps(true, 0)).toBe(1);
+      expect(nextStallSweeps(true, 1)).toBe(2);
+      expect(nextStallSweeps(true, 5)).toBe(6);
+    });
+    it('resets to 0 the moment a sweep is healthy', () => {
+      expect(nextStallSweeps(false, 3)).toBe(0);
+      expect(nextStallSweeps(false, 0)).toBe(0);
+    });
+  });
+
+  describe('shouldAlarmSustained — hold back a not-yet-confirmed stall', () => {
+    it('a FIRST-observed stall (streak 1) does NOT broadcast — the transient-flap suppressor', () => {
+      // The exact 2026-07-10 shape: a hive stalls, then self-heals before the next sweep.
+      expect(shouldAlarmSustained(true, 1)).toBe(false);
+    });
+    it('a stall confirmed on the SECOND consecutive sweep broadcasts', () => {
+      expect(shouldAlarmSustained(true, 2)).toBe(true);
+      expect(shouldAlarmSustained(true, 9)).toBe(true);
+    });
+    it('a healthy verdict never broadcasts regardless of a stale streak count', () => {
+      expect(shouldAlarmSustained(false, 5)).toBe(false);
+    });
+    it('the sustain threshold is overridable (minSweeps)', () => {
+      expect(shouldAlarmSustained(true, 1, 1)).toBe(true); // aggressive: alarm on first sweep
+      expect(shouldAlarmSustained(true, 2, 3)).toBe(false); // patient: need 3 consecutive
+      expect(shouldAlarmSustained(true, 3, 3)).toBe(true);
+    });
+    it('the full transient-then-heal trajectory never crosses the alarm bar with the default threshold', () => {
+      // sweep 1: stalled (streak→1, below bar); sweep 2: healed (streak→0). Never alarmed.
+      let streak = 0;
+      streak = nextStallSweeps(true, streak);
+      expect(shouldAlarmSustained(true, streak)).toBe(false);
+      streak = nextStallSweeps(false, streak);
+      expect(streak).toBe(0);
+    });
+    it('a genuinely-sustained stall DOES cross the bar by sweep 2', () => {
+      let streak = 0;
+      streak = nextStallSweeps(true, streak); // sweep 1 → 1
+      expect(shouldAlarmSustained(true, streak)).toBe(false);
+      streak = nextStallSweeps(true, streak); // sweep 2 → 2
+      expect(shouldAlarmSustained(true, streak)).toBe(true);
+    });
   });
 });
