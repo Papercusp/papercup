@@ -495,6 +495,25 @@ export function composeMemberLaunchContext(opts: {
 }
 
 /**
+ * EI-8985: resolve each opened member's OWN brief text, index-aligned to
+ * `perMemberBriefs` (entry 0 → member 1, …). A member beyond the array, or
+ * whose entry is empty/whitespace, falls back to `sharedBriefText` (the plain
+ * `launchContext` brief, if any) — never an error; a partially-specified
+ * roster is normal (e.g. only the 2 specialists need distinct briefs, the
+ * rest share the baseline). Pure + exported for a unit test.
+ */
+export function resolveMemberBriefText(
+  index: number,
+  perMemberBriefs: readonly (string | null | undefined)[] | undefined,
+  sharedBriefText: string | null | undefined,
+): string | null {
+  const own = perMemberBriefs?.[index]?.trim();
+  if (own) return own;
+  const shared = sharedBriefText?.trim();
+  return shared || null;
+}
+
+/**
  * EI-7671: build the FLEET-level claim spec that restricts every member's
  * scheduler:get_next self-pull to `kinds`. Pure + exported for a unit test — the
  * shape must satisfy validateClaimSpec (see scheduler:set_claim_spec's docstring
@@ -554,7 +573,7 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Pass `perMemberLaunchContext` for DISTINCT per-member briefs (EI-8985) instead of hand-rolling capability:terminal. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
   guidance: {
     when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
@@ -875,6 +894,7 @@ export default defineTool({
         claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
+        perMemberLaunchContextPaths: null,
         briefReadError: null,
         opened: [],
         failed: [],
@@ -934,6 +954,7 @@ export default defineTool({
         claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
+        perMemberLaunchContextPaths: null,
         briefReadError: null,
         opened: [],
         failed: [],
@@ -1027,6 +1048,7 @@ export default defineTool({
         claimSpecApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
+        perMemberLaunchContextPaths: null,
         briefReadError: null,
         opened: [],
         failed: [],
@@ -1045,16 +1067,16 @@ export default defineTool({
     let memberLaunchContextPath: string | null = null;
     let baselineApplied = false;
     let briefReadError: string | null = null;
+    let sharedBriefText: string | null = null;
     try {
-      let customBriefText: string | null = null;
       if (effectiveLaunchContext) {
         try {
-          customBriefText = readFileSync(effectiveLaunchContext, 'utf8');
+          sharedBriefText = readFileSync(effectiveLaunchContext, 'utf8');
         } catch (e: any) {
           briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
         }
       }
-      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText });
+      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText: sharedBriefText });
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       mkdirSync(ctxDir, { recursive: true });
       const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context.md`);
@@ -1066,6 +1088,61 @@ export default defineTool({
       // Compose/write failed — fall back to the raw launchContext (or none). The
       // launch still proceeds; the baseline just isn't prepended this time.
       baselineApplied = false;
+    }
+
+    // EI-8985: per-member DISTINCT launch-context briefs (index 0 → member 1, …).
+    // Each member gets its OWN composed file (baseline + that member's brief, falling
+    // back to the shared brief above when its entry is missing/unset) — this is the
+    // knob whose absence used to force a hand-rolled fleet:create + capability:terminal
+    // launch (EI-5835 / su.md D). Resilient: a per-member read/compose/write failure
+    // for ONE member falls that member back to the shared `effectiveLaunchContext`
+    // (never blocks the whole launch); every failure is collected + surfaced.
+    const perMemberBriefsRaw = args.perMemberLaunchContext;
+    const perMemberLaunchContextPaths: (string | null)[] | null = perMemberBriefsRaw?.length
+      ? []
+      : null;
+    const perMemberReadErrors: string[] = [];
+    let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
+    if (perMemberBriefsRaw?.length) {
+      const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
+      try {
+        mkdirSync(ctxDir, { recursive: true });
+      } catch {
+        /* best-effort — a per-member write below falls back to the shared path if this failed */
+      }
+      const resolved: (string | undefined)[] = [];
+      for (let i = 0; i < openCount; i++) {
+        const ownPath = perMemberBriefsRaw[i]?.trim();
+        let ownBriefText: string | null = null;
+        if (ownPath) {
+          try {
+            ownBriefText = readFileSync(ownPath, 'utf8');
+          } catch (e: any) {
+            perMemberReadErrors.push(
+              `member ${i + 1}: could not read perMemberLaunchContext[${i}] \`${ownPath}\` (${e?.message ?? e}) — fell back to the shared brief.`,
+            );
+          }
+        }
+        const briefText = ownBriefText ?? sharedBriefText;
+        try {
+          const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText: briefText });
+          const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${i + 1}.md`);
+          writeFileSync(ctxPath, composed, 'utf8');
+          resolved.push(ctxPath);
+          perMemberLaunchContextPaths!.push(ctxPath);
+        } catch (e: any) {
+          // Per-member compose/write failed — this member falls back to the shared file.
+          perMemberReadErrors.push(`member ${i + 1}: could not write its composed context (${e?.message ?? e}) — fell back to the shared brief.`);
+          resolved.push(effectiveLaunchContext);
+          perMemberLaunchContextPaths!.push(null);
+        }
+      }
+      memberLaunchContextPathForIndex = (i) => resolved[i] ?? effectiveLaunchContext;
+    }
+    if (perMemberReadErrors.length) {
+      briefReadError = briefReadError
+        ? `${briefReadError}\n${perMemberReadErrors.join('\n')}`
+        : perMemberReadErrors.join('\n');
     }
 
     // Base envelope (cwd/env) once — skip the superuser .mcp.json (each member's psu
@@ -1090,30 +1167,39 @@ export default defineTool({
       scheme = null;
     }
 
-    const command = memberLaunchCommand({
-      fleetSlug,
-      agent: effAgent,
-      harness,
-      plan: args.plan,
-      account: effAccount,
-      workspace: args.workspace?.trim() || undefined,
-      role: args.role?.trim() || undefined,
-      model: effModel,
-      seat: seatPin?.ref,
-      feature: args.feature?.trim() || undefined,
-      launchContext: effectiveLaunchContext,
-      profile: args.profile?.trim() || undefined,
-      contextSize: args.contextSize,
-      brain: args.brain || undefined,
-      addDir: args.addDir,
-      allowSubagents: args.allowSubagents || undefined,
-      extraArgs: args.extraArgs,
-    });
+    // EI-8985: build each member's OWN command — identical for every member unless
+    // perMemberLaunchContext gave member i its own composed context file, in which
+    // case only its `--launch-context` differs.
+    const memberCommands = Array.from({ length: openCount }, (_v, i) =>
+      memberLaunchCommand({
+        fleetSlug,
+        agent: effAgent,
+        harness,
+        plan: args.plan,
+        account: effAccount,
+        workspace: args.workspace?.trim() || undefined,
+        role: args.role?.trim() || undefined,
+        model: effModel,
+        seat: seatPin?.ref,
+        feature: args.feature?.trim() || undefined,
+        launchContext: memberLaunchContextPathForIndex(i),
+        profile: args.profile?.trim() || undefined,
+        contextSize: args.contextSize,
+        brain: args.brain || undefined,
+        addDir: args.addDir,
+        allowSubagents: args.allowSubagents || undefined,
+        extraArgs: args.extraArgs,
+      }),
+    );
+    // Back-compat: `command` (singular) is reported/reused where every member is
+    // identical (the common case — no perMemberLaunchContext).
+    const command = memberCommands[0] ?? '';
     const opened: Array<{
       terminal: string;
       pid: number | null;
       display: string | null;
       desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+      command: string;
     }> = [];
     const failed: Array<{ error: string; code: number }> = [];
     // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
@@ -1122,7 +1208,7 @@ export default defineTool({
     const results = await Promise.all(
       Array.from({ length: openCount }, (_v, i) =>
         spawnConsole({
-          envelope: { ...base, greetingCmd: command, cwd: base.cwd },
+          envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
           label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
           writeMcpJson: false,
           scheme,
@@ -1132,18 +1218,19 @@ export default defineTool({
         }),
       ),
     );
-    for (const result of results) {
+    results.forEach((result, i) => {
       if (result.status === 'ok') {
         opened.push({
           terminal: result.terminal,
           pid: result.pid,
           display: result.display,
           desktopEnvResolvedVia: result.desktopEnvResolvedVia,
+          command: memberCommands[i],
         });
       } else {
         failed.push({ error: result.error, code: result.code });
       }
-    }
+    });
 
     // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
     // (every spawn failed), release it so an immediate legitimate retry isn't suppressed for
@@ -1184,7 +1271,12 @@ export default defineTool({
     );
     for (const o of opened) {
       const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';
-      lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'})${displayNote} — ${command}`);
+      lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'})${displayNote} — ${o.command}`);
+    }
+    if (perMemberLaunchContextPaths) {
+      lines.push(
+        `  ↳ per-member launch contexts (EI-8985): ${perMemberLaunchContextPaths.filter(Boolean).length}/${openCount} members got a DISTINCT brief; the rest fell back to the shared launch context.`,
+      );
     }
     // EI-8289: a socket-scan placement means no real logged-in seat was found —
     // these windows MAY have landed on a virtual/sandbox display (a leased
@@ -1259,6 +1351,7 @@ export default defineTool({
         promotionFailsafe,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath,
+        perMemberLaunchContextPaths,
         briefReadError,
         opened,
         failed,

@@ -699,6 +699,103 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   });
 });
 
+describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context briefs', () => {
+  const tmpDir = '/tmp/fleet-launch-ctx-test-per-member';
+
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    const fs = require('node:fs');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(`${tmpDir}/member-1.md`, 'You specifically own the auth migration.');
+    fs.writeFileSync(`${tmpDir}/member-2.md`, 'You specifically own the UI polish pass.');
+  });
+
+  it('gives each listed member its OWN composed context, index-aligned', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Per-Member Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        perMemberLaunchContext: [`${tmpDir}/member-1.md`, `${tmpDir}/member-2.md`],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.perMemberLaunchContextPaths).toHaveLength(2);
+    expect(payload.perMemberLaunchContextPaths[0]).toContain('launch-context-member-1.md');
+    expect(payload.perMemberLaunchContextPaths[1]).toContain('launch-context-member-2.md');
+    // Two DISTINCT --launch-context flags were threaded, one per member.
+    const cmd1 = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
+    const cmd2 = spawnConsoleMock.mock.calls[1][0].envelope.greetingCmd as string;
+    expect(cmd1).not.toEqual(cmd2);
+    expect(cmd1).toContain('launch-context-member-1.md');
+    expect(cmd2).toContain('launch-context-member-2.md');
+    // Each composed file actually carries ITS OWN member's brief text.
+    const fs = require('node:fs');
+    const composed1 = fs.readFileSync(payload.perMemberLaunchContextPaths[0], 'utf8');
+    const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
+    expect(composed1).toContain('You specifically own the auth migration.');
+    expect(composed1).not.toContain('UI polish pass');
+    expect(composed2).toContain('You specifically own the UI polish pass.');
+    expect(composed2).not.toContain('auth migration');
+  });
+
+  it('falls back to the shared baseline for members BEYOND the perMemberLaunchContext array — never errors', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Partial Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 3,
+        perMemberLaunchContext: [`${tmpDir}/member-1.md`],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.perMemberLaunchContextPaths).toHaveLength(3);
+    expect(payload.perMemberLaunchContextPaths[0]).toContain('launch-context-member-1.md');
+    // members 2 and 3 wrote their OWN composed file too (baseline-only, no custom brief).
+    expect(payload.perMemberLaunchContextPaths[1]).toContain('launch-context-member-2.md');
+    expect(payload.perMemberLaunchContextPaths[2]).toContain('launch-context-member-3.md');
+    const fs = require('node:fs');
+    const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
+    expect(composed2).not.toContain('auth migration');
+    expect(composed2).not.toContain('UI polish pass');
+  });
+
+  it('a per-member unreadable file falls that ONE member back to the shared brief, without failing the launch', async () => {
+    let call = 0;
+    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    const res = await tool.handler(
+      {
+        name: 'Resilient Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        perMemberLaunchContext: [`${tmpDir}/does-not-exist.md`, `${tmpDir}/member-2.md`],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.opened).toHaveLength(2);
+    expect(payload.briefReadError).toMatch(/member 1:.*could not read/);
+    // member 2's own brief still landed uncorrupted.
+    const fs = require('node:fs');
+    const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
+    expect(composed2).toContain('UI polish pass');
+  });
+});
+
 describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
   beforeEach(() => {
     spawnConsoleMock.mockReset();

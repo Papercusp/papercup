@@ -74,7 +74,7 @@ import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-gi
 import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath, parseScopeRepoWireKey, scopeRepoPath } from './scope-repo';
 import { HIVE_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
-import { authorizeScopeRepoServe } from './scope-serve-gate';
+import { authorizeScopeRepoServe, type ScopeRepoServeGrant } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
 
@@ -352,6 +352,15 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
         return refuse('bad-repo-key');
       }
     }
+    // WI-3641: the grant `fetch-transport.ts`'s `assertScopeServeAuthorized`
+    // backstop DEMANDS for any scopes/-family repoPath — computed here (never
+    // skippable: every branch below fails closed) and threaded into
+    // `serveUploadPack`'s `scopeServeGrant` option below. Without passing it
+    // through, the backstop throws for EVERY scope-repo serve regardless of
+    // this gate's decision (a real gap: the gate ran but its answer never
+    // reached the enforcement point) — undefined here only for a non-scope
+    // repoPath, where the backstop is a no-op anyway.
+    let scopeServeGrant: ScopeRepoServeGrant | undefined;
     if (isScopeRepoFamilyPath(repoPath)) {
       // WI-3641: authorize via the roster serve-gate, keyed by the caller's
       // SIGNATURE-VERIFIED device identity (never the wire `req` frame's
@@ -359,7 +368,6 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       // below fails closed: no resolver, no verified device, an unresolvable
       // member, or a roster refusal all refuse rather than serve.
       const devicePubkey = cfg.resolvePeerDevicePubkey?.(state.socket);
-      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] devicePubkey=', devicePubkey, 'repoPath=', repoPath);
       if (!devicePubkey) return refuse('scope-repo-no-verified-peer');
       let githubUserId: number | null;
       try {
@@ -368,11 +376,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
           cfg.potHomeSlug,
           devicePubkey,
         );
-      } catch (e) {
-        if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] member-lookup-error', e);
+      } catch {
         return refuse('scope-repo-member-lookup-error');
       }
-      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] githubUserId=', githubUserId);
       if (githubUserId == null) return refuse('scope-repo-unknown-device');
       const roster = getScopeRoster({ workspaceId: cfg.workspaceId, potSlug: cfg.potHomeSlug });
       const decision = await authorizeScopeRepoServe({
@@ -380,10 +386,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
         peerGithubUserId: githubUserId,
         isScopeMember: roster.predicate,
       });
-      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] decision=', JSON.stringify(decision));
       if (!decision.ok) return refuse(`scope-repo:${decision.refusal.reason}`);
+      scopeServeGrant = decision.grant;
     }
-    if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] pathExists check for', join(repoPath, 'HEAD'), await pathExists(join(repoPath, 'HEAD')));
     // EI-8863/WI-3643 finding (su-95401d6d's handoff): an unknown-but-validly
     // NAMED repoKey (no traversal, no unsafe chars — so hiveGitRepoPath above
     // never throws) resolves to a path that simply doesn't exist on disk.
@@ -410,7 +415,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     );
     state.serverSessions.set(v.id, duplex);
     try {
-      await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs });
+      await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
     } finally {
       state.serverSessions.delete(v.id);
     }

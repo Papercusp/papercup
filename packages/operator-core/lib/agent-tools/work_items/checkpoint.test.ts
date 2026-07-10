@@ -90,7 +90,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
       undefined,
     );
-    expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: true, length: 0 });
+    expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: true, length: 0, contentHash: null });
+  });
+
+  it('EI-8987: returns a contentHash of the STORED text on a real write (same-call round-trip proof)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
+    const r = await one({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
+    expect(r.contentHash).toEqual(expect.stringMatching(/^[0-9a-f]{12}$/));
+    // Deterministic: the same stored text always hashes to the same value.
+    setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
+    const r2 = await one({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
+    expect(r2.contentHash).toBe(r.contentHash);
+    // Different stored text hashes differently.
+    setWorkItemCheckpoint.mockResolvedValue('a completely different checkpoint body');
+    const r3 = await one({ id: 'WI-7', checkpoint: 'a completely different checkpoint body' });
+    expect(r3.contentHash).not.toBe(r.contentHash);
+  });
+
+  it('EI-8987: contentHash is null when the write clears (nothing stored to hash)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue(null);
+    const r = await one({ id: 'WI-7', checkpoint: '' });
+    expect(r).toMatchObject({ ok: true, cleared: true, contentHash: null });
   });
 
   it('uses an explicit harness arg as the lookup hint over ctx', async () => {

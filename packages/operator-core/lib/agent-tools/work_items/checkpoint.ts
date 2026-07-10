@@ -16,10 +16,20 @@
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): checkpoint ONE item inline
  * ({ id, checkpoint?, harness? }) or MANY (items:[{ id, checkpoint?, harness? }]) →
- * { ok, results:[{ ok, id, harness, cleared, length, by | error }], counts }. Each item
- * resolves its own harness; one unresolvable item never fails the rest.
+ * { ok, results:[{ ok, id, harness, cleared, length, contentHash, by | error }], counts }.
+ * Each item resolves its own harness; one unresolvable item never fails the rest.
+ *
+ * EI-8987: `contentHash` is a short sha256 (first 12 hex chars) of the STORED text —
+ * computed from what the store actually persisted (the same trimmed string
+ * setWorkItemCheckpoint returns), not from the caller's input — so a paranoid caller
+ * can round-trip-verify a write landed byte-for-byte in the SAME call, no second
+ * work_items:get read needed. Null when cleared (nothing was stored). This is a
+ * defense-in-depth addition on top of EI-8824 (the actual silent-loss bug, already
+ * fixed) and EI-8885 (checkpointAgeMs on work_items:get) — belt-and-suspenders so a
+ * FUTURE silent-loss bug class is caught at write time, not discovered post-compaction.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
@@ -27,6 +37,12 @@ import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+
+/** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
+ *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
+function shortHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
@@ -43,7 +59,8 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. " +
-    'Returns { ok, results:[{ ok, id, harness, cleared, length, by | error }], counts } — correlate by id.',
+    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, by | error }], counts } — correlate by id. ' +
+    'contentHash (EI-8987) is a short sha256 of what was actually STORED — a same-call round-trip proof the write landed.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -121,7 +138,15 @@ export default defineTool({
           void markFeatureProgress(harness ?? '', it.id);
           void markIssueProgress(it.id);
         }
-        return { ok: true as const, id: it.id, harness, cleared: stored === null, length: stored?.length ?? 0, by: ident.ownerId };
+        return {
+          ok: true as const,
+          id: it.id,
+          harness,
+          cleared: stored === null,
+          length: stored?.length ?? 0,
+          contentHash: stored !== null ? shortHash(stored) : null,
+          by: ident.ownerId,
+        };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

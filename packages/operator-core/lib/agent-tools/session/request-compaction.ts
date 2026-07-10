@@ -27,23 +27,55 @@ const DEFAULT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.';
 
 /**
- * compaction-continuity-hardening-2026-07-07 P-003: the default focus is the
- * session's CARRY BRIEF (held work-item ids, armed loop, standing facts, awaits,
- * fleet pointer — as pointers, not copies), so an agent that names no focus still
- * hands the summarizer its real continuity anchors instead of the generic
- * preserve set. Best-effort: any failure falls back to the static DEFAULT_FOCUS.
+ * compaction-continuity-hardening-2026-07-07 P-003 + EI-8987: ONE best-effort
+ * carry-brief build, shared by the default-focus derivation AND the stale-
+ * checkpoint warning below (was two separate buildCarryBrief calls — wasteful,
+ * since both want the SAME held-items read). Any failure yields `null`; every
+ * caller treats that as "brief unavailable", never a thrown error.
  */
-async function carryBriefFocus(ownerId: string, workspaceId?: string | null): Promise<string> {
+async function loadCarryBrief(
+  ownerId: string,
+  workspaceId?: string | null,
+): Promise<import('../../carry-brief').CarryBrief | null> {
   try {
-    const { buildCarryBrief, renderCarryBriefFocus } = await import('../../carry-brief');
-    const focus = renderCarryBriefFocus(
-      await buildCarryBrief(ownerId, { workspaceId: workspaceId ?? undefined }),
-    ).trim();
+    const { buildCarryBrief } = await import('../../carry-brief');
+    return await buildCarryBrief(ownerId, { workspaceId: workspaceId ?? undefined });
+  } catch {
+    return null;
+  }
+}
+
+/** The session's CARRY BRIEF (held work-item ids, armed loop, standing facts,
+ *  awaits, fleet pointer — as pointers, not copies) rendered as a focus string,
+ *  so an agent that names no focus still hands the summarizer its real
+ *  continuity anchors instead of the generic preserve set. Falls back to the
+ *  static DEFAULT_FOCUS when the brief is empty/unavailable. */
+async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | null): Promise<string> {
+  if (!brief) return DEFAULT_FOCUS;
+  try {
+    const { renderCarryBriefFocus } = await import('../../carry-brief');
+    const focus = renderCarryBriefFocus(brief).trim();
     if (focus.length > 0) return focus;
   } catch {
     /* fall through to the static floor */
   }
   return DEFAULT_FOCUS;
+}
+
+/**
+ * EI-8987: a WARN-only (never refuse — a hard-refuse gate on the tool an agent
+ * calls BECAUSE it is at its context limit would strand it there on any gate bug,
+ * a worse failure than the one this catches) proactive check for held work-items
+ * with NO checkpoint at all — the highest-risk case, since a compacted-away
+ * transcript with zero durable carry-note is a genuine state loss, not just a
+ * staleness risk. Best-effort: an unavailable brief yields an empty list, never
+ * blocks the compaction.
+ */
+function staleCheckpointWarnings(
+  brief: import('../../carry-brief').CarryBrief | null,
+): Array<{ id: string; title: string | null }> {
+  if (!brief) return [];
+  return brief.heldItems.filter((h) => h.checkpoint === null).map((h) => ({ id: h.id, title: h.title }));
 }
 
 /**
@@ -129,8 +161,12 @@ export default defineTool({
         isError: true,
       };
     }
-    const focus =
-      (args.focus ?? '').trim() || (await carryBriefFocus(identity.ownerId, identity.workspaceId));
+    // ONE best-effort brief build feeds both the default-focus derivation AND the
+    // EI-8987 stale-checkpoint warning below (was two separate buildCarryBrief
+    // calls before this pass).
+    const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
+    const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
+    const staleCheckpoints = staleCheckpointWarnings(brief);
     const autoContinue = args.autoContinue ?? true;
     // WI-1804: when the live host understands mode:'compact', let IT drive the sequence —
     // submit /compact, wait for the compaction TURN to complete (output-idle, the only place
@@ -158,6 +194,17 @@ export default defineTool({
           focus,
         })
       : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
+    // EI-8987: the compaction is already QUEUED at this point (idle-gated — it fires
+    // after THIS turn ends), so a warning here is still actionable: the turn hasn't
+    // ended yet, so the agent reading this result can fire one more
+    // work_items:checkpoint call for the flagged item(s) before it truly stops —
+    // and the already-queued compaction will still pick up that fresh checkpoint.
+    const staleNote =
+      ok && staleCheckpoints.length > 0
+        ? ` ⚠ ${staleCheckpoints.length} held work-item(s) have NO checkpoint written (${staleCheckpoints
+            .map((s) => s.id)
+            .join(', ')}) — write one now (work_items:checkpoint) before you actually stop, or that state will not carry.`
+        : '';
     return {
       content: [
         {
@@ -166,15 +213,17 @@ export default defineTool({
             ok,
             requested: ok,
             autoContinue: ok ? canAutoContinue : false,
-            note: !ok
-              ? 'Failed to reach the session TUI host socket; try again or compact manually.'
-              : canAutoContinue
-                ? 'Compaction queued — /compact runs when this turn ends, then the fresh context opens on a continuation turn automatically (WI-1804). Wrap up now and stop.'
-                : `Compaction queued — /compact runs when this turn ends (idle-gated). Wrap up now and stop.${
-                    autoContinue
-                      ? ' (This host predates auto-continue, so it will NOT resume on its own — a loop/AUTO wake or your next turn picks the work back up.)'
-                      : ''
-                  }`,
+            staleCheckpoints,
+            note:
+              (!ok
+                ? 'Failed to reach the session TUI host socket; try again or compact manually.'
+                : canAutoContinue
+                  ? 'Compaction queued — /compact runs when this turn ends, then the fresh context opens on a continuation turn automatically (WI-1804). Wrap up now and stop.'
+                  : `Compaction queued — /compact runs when this turn ends (idle-gated). Wrap up now and stop.${
+                      autoContinue
+                        ? ' (This host predates auto-continue, so it will NOT resume on its own — a loop/AUTO wake or your next turn picks the work back up.)'
+                        : ''
+                    }`) + staleNote,
           }),
         },
       ],

@@ -3,7 +3,7 @@ title: HIVE_REKEY (C-001 read-plane re-key) flip-readiness — code-complete, ow
 description: The papercusp-pot-rekey flip is an ATTENDED security cutover, not a code task. The op-path is wired end-to-end (encrypt-on-write, decrypt-on-read, advance-on-boundary), the hermetic end-to-end content read-cut witness is green, and ~88 re-key tests pass. The ONE remaining gate is the live 2-machine K-CUT-on-content witness (WI-560, blocked on WI-559 peering). This is the exact flip surface (3 edits), the evidence, the residual risk, and the go/no-go the owner ratifies against.
 discovered: 2026-06-24
 tags: [shared-pot, pot-rekey, c-001, federation, epoch-keys, flag-flip, attended-cutover, dark-flag, WI-603, WI-560, WI-559]
-status: active
+status: superseded
 documents:
   - libs/flags/src/types.ts
   - libs/flags/src/production-defaults.test.ts
@@ -16,6 +16,26 @@ documents:
 plans:
   - shared-pot-rekey-2026-06-19
 ---
+
+## Current behavior (2026-07-09) — the flip already happened; this page is HISTORICAL
+
+The flag graduated. `FLAGS.POT_REKEY` (the flag key was renamed from `HIVE_REKEY`
+→ `POT_REKEY`; the runtime flag string is now `"papercusp-hive-rekey"`, was
+`"papercusp-pot-rekey"`) is now **DEFAULT ON** in `libs/flags/src/types.ts`, per
+the comment there: *"graduated 2026-06-29 via the P-011 flag-default inversion —
+NOT in DARK_FLAGS: the live cut-off witness (P-008 / public-release GATE-1)
+passed cross-machine on the real binary (shared-hive-public-release D-014) and
+shipped in desktop alpha.2, so the gate condition is met."* It no longer appears
+in `KNOWN_DARK_FLAGS` / `DARK_FLAG_CASE` in
+`libs/flags/src/production-defaults.test.ts` at all.
+
+So the **residual gate this page describes (the live 2-machine K-CUT witness,
+WI-560/WI-559) has since been satisfied** and the owner has already ratified
+the flip — the "3 edits" flip surface below was executed. v1 scope (new hives
+only; existing hives stay legacy-unencrypted) still applies as designed (D-003).
+The rest of this page is kept for the **historical evidence trail** (the
+witness detail, the flip mechanics, the residual-risk reasoning) — read it as
+"what got us to GO," not as a still-pending decision.
 
 ## TL;DR — what the owner is deciding
 

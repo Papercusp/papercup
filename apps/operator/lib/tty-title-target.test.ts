@@ -24,7 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { resolveOwnedTtyPath } from '../scripts/psu-launcher.mjs';
+import { resolveOwnedTtyPath, shouldSilenceClaudeTitle } from '../scripts/psu-launcher.mjs';
 
 const STATUSLINE = resolve(__dirname, '../scripts/hooks/cc/statusline-fleet.sh');
 const OBJ_TITLE = resolve(__dirname, '../scripts/hooks/cc/posttooluse-objective-title.sh');
@@ -211,6 +211,91 @@ describe('resolveOwnedTtyPath — psu names the terminal it owns, or nothing', (
         psTty: () => '??\n',
       }),
     ).toBeNull();
+  });
+});
+
+describe('shouldSilenceClaudeTitle — exactly one writer owns the title', () => {
+  const ours = JSON.stringify({ statusLine: { type: 'command', command: '/x/hooks/cc/statusline-fleet.sh' } });
+  const foreign = JSON.stringify({ statusLine: { type: 'command', command: '~/bin/my-statusline.sh' } });
+  const base = { agent: 'claude', ownsTty: true, env: {} as NodeJS.ProcessEnv, home: '/home/u' };
+
+  it('silences Claude when OUR statusline is the configured writer', () => {
+    expect(shouldSilenceClaudeTitle({ ...base, readFile: () => ours })).toBe(true);
+  });
+
+  it('leaves a FOREIGN statusline alone — silencing it would leave no title at all', () => {
+    expect(shouldSilenceClaudeTitle({ ...base, readFile: () => foreign })).toBe(false);
+  });
+
+  it('never silences when settings.json is missing or unparseable (fail open)', () => {
+    expect(
+      shouldSilenceClaudeTitle({
+        ...base,
+        readFile: () => {
+          throw new Error('ENOENT');
+        },
+      }),
+    ).toBe(false);
+    expect(shouldSilenceClaudeTitle({ ...base, readFile: () => 'not json' })).toBe(false);
+  });
+
+  it('is claude-only — codex and omp never wrote a title of their own', () => {
+    for (const agent of ['codex', 'omp']) {
+      expect(shouldSilenceClaudeTitle({ ...base, agent, readFile: () => ours })).toBe(false);
+    }
+  });
+
+  it('is a no-op for a headless launch (owns no terminal ⇒ nobody writes)', () => {
+    expect(shouldSilenceClaudeTitle({ ...base, ownsTty: false, readFile: () => ours })).toBe(false);
+  });
+
+  it('reads the per-session CLAUDE_CONFIG_DIR settings when psu pinned one (EI-155)', () => {
+    const seen: string[] = [];
+    shouldSilenceClaudeTitle({
+      ...base,
+      env: { CLAUDE_CONFIG_DIR: '/iso/su-abc' } as NodeJS.ProcessEnv,
+      readFile: (p: string) => {
+        seen.push(p);
+        return ours;
+      },
+    });
+    expect(seen).toEqual(['/iso/su-abc/settings.json']);
+  });
+
+  it('falls back to the shared ~/.claude/settings.json with no CLAUDE_CONFIG_DIR', () => {
+    const seen: string[] = [];
+    shouldSilenceClaudeTitle({
+      ...base,
+      readFile: (p: string) => {
+        seen.push(p);
+        return ours;
+      },
+    });
+    expect(seen).toEqual(['/home/u/.claude/settings.json']);
+  });
+});
+
+describe('every hook pins format=json on its LIVE glance read (EI-7029 / WI-3665)', () => {
+  // coord:glance answers in TOON by default. A hook that forgets to pin JSON cannot parse the
+  // reply, silently falls back to a bare-id title, and loses the 👑/👤 entirely. The
+  // fixture-driven parity suite CANNOT see this — fixtures never touch the network — so it is
+  // asserted here, at the request-construction site, for all three CLIs.
+  const OMP_HOOK = resolve(__dirname, '../scripts/hooks/omp/coord-hook.ts');
+
+  it('claude statusline pins format=json on the mcp url', () => {
+    expect(readFileSync(STATUSLINE, 'utf8')).toContain('format=json');
+  });
+
+  it('codex objective-title pins format=json on the mcp url', () => {
+    expect(readFileSync(OBJ_TITLE, 'utf8')).toContain('format=json');
+  });
+
+  it("omp's emitStatusDisplay passes _meta { format: 'json' } to callMcpTool", () => {
+    const src = readFileSync(OMP_HOOK, 'utf8');
+    const fn = src.slice(src.indexOf('export async function emitStatusDisplay'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain("callMcpTool(\n    'coord:glance'");
+    expect(body).toContain("meta: { format: 'json' }");
   });
 });
 

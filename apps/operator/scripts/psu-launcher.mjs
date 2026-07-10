@@ -2883,6 +2883,52 @@ function defaultPsTty(pid) {
   return execFileSync('ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
 }
 
+/** The settings.json a claude launch will actually read: the per-session isolated
+ *  CLAUDE_CONFIG_DIR when psu pinned one (EI-155), else the shared user-level dir. */
+function effectiveClaudeSettingsPath(env, home = homedir()) {
+  const dir = (env.CLAUDE_CONFIG_DIR ?? '').trim();
+  return join(dir || join(home, '.claude'), 'settings.json');
+}
+
+/**
+ * Should THIS launch silence Claude Code's own terminal-title writer?
+ *
+ * WI-3665. Claude Code writes its current topic to the OS title (`✳ Claude Code`, then
+ * `⠐ <topic>`) — verified by capturing its pty output: 1 OSC-0 write by default, 0 with
+ * CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1. Papercusp's statusline hook writes the FLEET
+ * identity to that same title (👑 leader / 👤 member + fleet + colour square + objective).
+ * Two writers on one title means last-writer-wins and the title flickers between them.
+ *
+ * The fleet identity is the one the owner asked to see, and it already carries the topic as
+ * its 🔭 objective segment — so when our statusline is in charge, Claude's writer is pure
+ * contention and we turn it off.
+ *
+ * GUARDED, because silencing the only writer would leave NO title at all:
+ *   - claude backends only (codex/omp never wrote a title of their own);
+ *   - only when this launch owns a terminal (headless ⇒ nobody writes; leave defaults);
+ *   - only when the statusLine claude will actually load IS our hook. A user with a
+ *     personal statusLine keeps Claude's title — the installer likewise refuses to clobber
+ *     a foreign statusLine, and these two refusals must agree.
+ * Fail-open: an unreadable/absent settings.json ⇒ don't silence.
+ *
+ * Pure but for the settings read; `readFile` is injected for tests.
+ */
+export function shouldSilenceClaudeTitle({
+  agent,
+  ownsTty,
+  env = process.env,
+  home = homedir(),
+  readFile = (p) => readFileSync(p, 'utf8'),
+} = {}) {
+  if (agent !== 'claude' || !ownsTty) return false;
+  try {
+    const cfg = JSON.parse(readFile(effectiveClaudeSettingsPath(env, home)));
+    return String(cfg?.statusLine?.command ?? '').includes('statusline-fleet.sh');
+  } catch {
+    return false; // absent/unreadable settings ⇒ never silence the only writer
+  }
+}
+
 /**
  * Supervisor presence beat (agent-liveness-heartbeat-hardening-2026-06-12
  * P-004): while psu is the live PARENT of the agent child — which it is in
@@ -3089,6 +3135,12 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   const ownedTty = resolveOwnedTtyPath();
   if (ownedTty) env.PAPERCUSP_TTY = ownedTty;
   else delete env.PAPERCUSP_TTY;
+  // ONE writer per title. Claude Code writes its own topic title and would otherwise fight
+  // the statusline's fleet identity (last writer wins ⇒ flicker). Silence Claude's writer,
+  // but ONLY when our statusline is the one it will actually load — see shouldSilenceClaudeTitle.
+  if (shouldSilenceClaudeTitle({ agent: env.PAPERCUSP_AGENT, ownsTty: !!ownedTty, env })) {
+    env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
+  }
   // Default-account claude inherits the single stored CLI login via
   // CLAUDE_CODE_OAUTH_TOKEN — the only cross-platform path (macOS keeps the
   // OAuth token in the Keychain keyed per CLAUDE_CONFIG_DIR, so the per-session

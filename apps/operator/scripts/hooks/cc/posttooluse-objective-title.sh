@@ -81,8 +81,14 @@ def call_glance():
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                        'params': {'name': 'coord:glance',
                                   'arguments': {'audience': 'user', 'activity_limit': 0}}}).encode()
+    # `format=json` is REQUIRED (result-format negotiation, P-009). Without it the operator
+    # answers in TOON ("format: toon\nok: true\n…"), json.loads() below throws, call_glance
+    # returns None, and the title silently degrades to the bare session id — no fleet, no 👑.
+    # That is EI-7029, fixed in statusline-fleet.sh but never here: this hook rendered a
+    # crownless title on codex/omp from the day TOON became the default (WI-3665). The
+    # fixture-driven parity test never caught it because fixtures bypass the network.
     req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&client=' + urllib.parse.quote(me, safe=''),
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client=' + urllib.parse.quote(me, safe=''),
         data=body,
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                  'Accept': 'application/json, text/event-stream'},

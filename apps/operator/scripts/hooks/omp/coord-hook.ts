@@ -1492,9 +1492,10 @@ export function ttyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 }
 
 /**
- * Write an OSC escape to the first terminal that accepts it. Resolves true on success,
- * false when every candidate fails (headless / closed terminal / no tty). Never throws —
- * a title is cosmetic and must never break a turn.
+ * Write an OSC escape to the first terminal that accepts it. Resolves true when some
+ * terminal took the write; false when there was nothing to write, or when every candidate
+ * failed (headless bee / closed terminal / no tty). Callers ignore the result — it exists
+ * for tests. Never throws: a title is cosmetic and must never break a turn.
  */
 export async function writeOscTitle(osc: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (osc.length === 0) return false;
@@ -1555,10 +1556,16 @@ export async function emitStatusDisplay(
   pi?: { sendMessage: HookApi['sendMessage'] },
   ctx?: unknown,
 ): Promise<void> {
-  const glance = (await callMcpTool('coord:glance', {
-    audience: 'user',
-    activity_limit: 0,
-  })) as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null;
+  const glance = (await callMcpTool(
+    'coord:glance',
+    { audience: 'user', activity_limit: 0 },
+    // `format: 'json'` is REQUIRED: coord:glance is TOON-encoded by default and callMcpTool's
+    // JSON.parse(content) cannot read TOON — it returned null, so the title fell back to the
+    // bare session id and the fleet 👑/👤 never rendered on OMP at all (WI-3665; the EI-7029
+    // class, fixed long ago in statusline-fleet.sh and never propagated here). The
+    // fixture-driven parity tests missed it because fixtures bypass the network entirely.
+    { meta: { format: 'json' }, timeoutMs: 5000 },
+  )) as { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null;
   const osc =
     buildDisplayTitleOsc(glance?.display?.title) ||
     buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);

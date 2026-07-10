@@ -28,6 +28,14 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
 }));
+// EI-8987: buildCarryBrief drives both the default focus AND the stale-checkpoint
+// warning. Mocked with a default empty brief; individual tests override per-case.
+const buildCarryBrief = vi.fn();
+vi.mock('../../carry-brief', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-brief')>('../../carry-brief');
+  return { ...actual, buildCarryBrief: (...a: unknown[]) => buildCarryBrief(...a) };
+});
+const emptyBrief = { ownerId: 'su-caller', loop: null, heldItems: [], walls: [], facts: [], awaits: [], fleet: null };
 
 const tool = (await import('./request-compaction')).default;
 
@@ -45,6 +53,7 @@ const oldHost = { ownerId: 'su-caller', sock: '/tmp/sock' }; // predates the 'co
 beforeEach(() => {
   vi.clearAllMocks();
   injectIntoHost.mockResolvedValue(true);
+  buildCarryBrief.mockResolvedValue(emptyBrief);
 });
 
 describe('session:request-compaction — WI-1804 auto-continuation caps gating', () => {
@@ -176,5 +185,97 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
     expect(json.properties?.focus?.type).toBe('string');
     expect(json.properties?.focus?.maxLength).toBe(600);
     expect(json.properties?.continueNote?.maxLength).toBe(1000);
+  });
+});
+
+/**
+ * EI-8987: session:request-compaction proactively surfaces held work-items with
+ * NO checkpoint at all — the highest-risk case (a compacted-away transcript with
+ * zero durable carry-note is a genuine state loss). WARN-only: never refuses the
+ * compaction (a hard-refuse gate on the tool an agent calls BECAUSE it's at its
+ * context limit would strand it on any gate bug — worse than the failure this
+ * catches). The compaction is already queued by the time the warning is read, but
+ * the calling turn hasn't ended yet, so it's still actionable: the agent can fire
+ * one more work_items:checkpoint before it truly stops.
+ */
+describe('session:request-compaction — EI-8987 stale-checkpoint warning', () => {
+  beforeEach(() => {
+    findLiveHost.mockReturnValue(compactHost);
+    injectIntoHost.mockResolvedValue(true);
+  });
+
+  it('no held items → staleCheckpoints empty, no warning text, compaction proceeds normally', async () => {
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([]);
+    expect(b.note).not.toContain('NO checkpoint');
+    expect(b.ok).toBe(true);
+  });
+
+  it('a held item WITH a checkpoint → not flagged', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-100', title: 'fix the thing', body: null, harness: 'papercup', checkpoint: 'in progress' }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([]);
+  });
+
+  it('a held item with NO checkpoint (null) → flagged in staleCheckpoints + the note, compaction STILL proceeds (warn, never refuse)', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-200', title: 'the risky one', body: null, harness: 'papercup', checkpoint: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([{ id: 'WI-200', title: 'the risky one' }]);
+    expect(b.note).toContain('WI-200');
+    expect(b.note).toContain('NO checkpoint');
+    // Never a refusal — the compaction is still queued.
+    expect(b.ok).toBe(true);
+    expect(b.requested).toBe(true);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('multiple held items, mixed → only the checkpoint-less ones are flagged', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [
+        { id: 'WI-1', title: 'has one', body: null, harness: 'papercup', checkpoint: 'ok' },
+        { id: 'WI-2', title: 'missing', body: null, harness: 'papercup', checkpoint: null },
+        { id: 'WI-3', title: 'also missing', body: null, harness: 'papercup', checkpoint: null },
+      ],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([
+      { id: 'WI-2', title: 'missing' },
+      { id: 'WI-3', title: 'also missing' },
+    ]);
+  });
+
+  it('buildCarryBrief throwing → fails soft to an empty staleCheckpoints list, never blocks the compaction', async () => {
+    buildCarryBrief.mockRejectedValue(new Error('db unavailable'));
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([]);
+    expect(b.ok).toBe(true);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('only ONE buildCarryBrief call per request (focus derivation + warning share the same brief)', async () => {
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    await call({}); // no focus → also drives the default-focus derivation
+    expect(buildCarryBrief).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed socket write still surfaces staleCheckpoints (informational regardless of injection outcome)', async () => {
+    injectIntoHost.mockResolvedValue(false);
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-9', title: null, body: null, harness: null, checkpoint: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(false);
+    // Failed injection short-circuits the stale-note suffix (nothing was actually
+    // queued), but the raw list is still returned for the caller to act on.
+    expect(b.staleCheckpoints).toEqual([{ id: 'WI-9', title: null }]);
   });
 });
