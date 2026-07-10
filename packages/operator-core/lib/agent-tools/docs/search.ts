@@ -16,6 +16,7 @@ import {
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
+import { semanticDocHits } from './semantic-leg';
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
@@ -81,6 +82,13 @@ const argsSchema = z.object({
       "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
         "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
     ),
+  semantic: z
+    .boolean()
+    .optional()
+    .describe(
+      'Merge embedding-cosine hits after the lexical results (up to 3 extras, marked semantic:true). ' +
+        'Default on (off under vitest); false = lexical-only.',
+    ),
 });
 
 export default defineTool({
@@ -139,6 +147,46 @@ export default defineTool({
       ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
       ...(ctxAny.progress && { progress: ctxAny.progress }),
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ...response, surface: resolved.surface }) }] };
+
+    // P-009 (shared-embedding-sidecar-and-enrichment-2026-07-10): recall-
+    // additive semantic leg. Cosine hits from the migration-552 section store
+    // are APPENDED after the lexical results (never displacing them — the
+    // lexical corpus already fills `limit` with weak keyword hits, so a
+    // slice-to-limit merge would hide exactly the vocabulary-mismatch hits
+    // this leg exists for), capped at 3 extras, marked semantic:true. A
+    // rephrased query ("how do I revive a dead session") now surfaces
+    // runbooks whose words never matched. Strictly fail-open; inert under
+    // vitest (WI-3792 load-scar class) unless semantic:true is forced.
+    let payload: Record<string, unknown> = { ...response, surface: resolved.surface };
+    const semanticOn = args.semantic ?? !process.env.VITEST;
+    if (semanticOn) {
+      try {
+        const sem = await semanticDocHits(args.query, resolved.adapter.name, args.limit);
+        if (sem?.length) {
+          const seen = new Set(response.hits.map((h) => h.slug));
+          const extras: Array<Record<string, unknown>> = [];
+          for (const h of sem) {
+            if (seen.has(h.slug)) continue;
+            extras.push({
+              slug: h.slug,
+              url: h.url,
+              title: h.title,
+              score: 0,
+              excerpt: h.excerpt,
+              semantic: true,
+              similarity: Math.round(h.similarity * 1000) / 1000,
+              ...(h.anchor ? { anchor: h.anchor } : {}),
+            });
+            if (extras.length >= Math.min(3, args.limit)) break;
+          }
+          if (extras.length > 0) {
+            payload = { ...payload, hits: [...response.hits, ...extras], semanticHitCount: extras.length };
+          }
+        }
+      } catch {
+        // fail-open: the lexical result stands.
+      }
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });

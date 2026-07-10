@@ -175,6 +175,11 @@ const post = defineTool({
       // plan-agent-launch P-023: when set, the new terminal resumes an
       // existing session (`<agent-cli> -r <sessionId>`) instead of opening fresh.
       resumeSessionId?: string | null;
+      // WI-3882: FORK the resumed session (claude `--fork-session`) instead of
+      // resuming it in place — used when the source session is still LIVE so the
+      // fork branches into a fresh session id and doesn't collide with the
+      // still-running original. Only meaningful with resumeSessionId.
+      fork?: boolean;
       // /adv plumbing: tag this session with the plan it was
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
@@ -199,6 +204,7 @@ const post = defineTool({
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
         resumeSessionId: body.resumeSessionId ?? undefined,
+        fork: body.fork ?? false,
         runPsu: body.runPsu ?? false,
       });
     } catch (e: any) {

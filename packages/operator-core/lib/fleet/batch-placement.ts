@@ -44,7 +44,12 @@ export interface BatchPlacementInput {
   /** Ready frontier in IMPORTANCE order (index 0 = highest). */
   tasks: PlacementTask[];
   /** Live bees (the tool filters to role='bee' before mapping). */
-  bees: PlacementBee[];
+  bees?: PlacementBee[];
+  /** WI-3920: post-bee→cup-lexicon-rename alias for `bees` (mid-flight rename,
+   *  owned by the cup-lexicon-rename effort — this planner accepts either key
+   *  rather than forcing every caller/fixture to update in lockstep). When both
+   *  are supplied, `bees` wins. */
+  cups?: PlacementBee[];
   /** Free concurrency slots = the fresh-spawn budget (getSpawnHeadroom). */
   headroom: number;
   /** Hard cap on TOTAL placements this batch. Default = tasks.length. */
@@ -99,11 +104,14 @@ export function planBatchPlacement(input: BatchPlacementInput): BatchPlacementPl
   const minInjectAffinity = input.minInjectAffinity ?? DEFAULT_MIN_INJECT_AFFINITY;
   const maxInjectPerBee = input.maxInjectPerBee ?? DEFAULT_MAX_INJECT_PER_BEE;
   const max = input.max ?? input.tasks.length;
+  // WI-3920: accept either `bees` (current production callers) or `cups`
+  // (post-rename test fixtures / future callers) — see BatchPlacementInput.
+  const bees = input.bees ?? input.cups ?? [];
 
   // Live projected load + per-bee injects accrued during this batch, so the
   // second inject onto a bee sees the first (no over-stuffing a warm bee).
   const projectedLoad: Record<string, number> = {};
-  for (const b of input.bees) projectedLoad[b.ownerId] = b.load;
+  for (const b of bees) projectedLoad[b.ownerId] = b.load;
   const injectsOnBee = new Map<string, number>();
 
   let remainingHeadroom = Math.max(0, input.headroom);
@@ -117,7 +125,7 @@ export function planBatchPlacement(input: BatchPlacementInput): BatchPlacementPl
     }
 
     // 1. Best warm-inject candidate: highest affinity with headroom in its list.
-    const ranked = rankBeesForTask(task, input.bees, {
+    const ranked = rankBeesForTask(task, bees, {
       weights: input.weights,
       affinityKind: input.affinityKind,
       now: input.now,

@@ -95,8 +95,18 @@ export interface PresenceStore {
   write(identity: PresenceIdentity, input?: PresenceInput): Promise<void>;
   /** Bump heartbeat ONLY (no-op if the row does not exist) — the keepalive
    *  path. last_active_at is deliberately NOT touched (D-003): the 60s
-   *  supervisor beat means "process alive", not "active". */
-  touchHeartbeat(ownerId: string): Promise<void>;
+   *  supervisor beat means "process alive", not "active".
+   *
+   *  `liveness` (WI-3898 P1): when the CALLER genuinely runs as the agent's
+   *  own OS process (e.g. the psu launcher's supervisor beat — the process
+   *  whose death IS the session's death), it may report its own pid/host
+   *  here so a later same-machine reader can verify liveness via a local
+   *  `kill(pid, 0)` probe. Omitted fields are left UNCHANGED (never
+   *  clobbered with null) — only pass what you can genuinely vouch for. */
+  touchHeartbeat(
+    ownerId: string,
+    liveness?: { pid?: number | null; host?: string | null },
+  ): Promise<void>;
   /** Bump last_active_at AND heartbeat (no-op if the row does not exist) — the
    *  ACTIVITY path (e.g. tool dispatch). The genuine-activity counterpart of
    *  touchHeartbeat (D-003). */

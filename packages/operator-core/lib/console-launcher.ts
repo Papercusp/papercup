@@ -98,6 +98,19 @@ export interface BuildEnvelopeOpts {
    */
   resumeSessionId?: string;
   /**
+   * WI-3882 (adv-sessions-live-roster P-012): FORK the resumed session into a
+   * fresh branch instead of resuming it in place. Only meaningful together with
+   * `resumeSessionId`. For a still-LIVE source session a plain resume would open
+   * a SECOND CLI against the same session transcript and collide with the
+   * still-running original; forking branches into a new session id (claude
+   * `--fork-session`), leaving the original's id + transcript untouched — the
+   * exact flag psu-launcher's resumeArgsFor emits for a claude fork. Honored
+   * only for claude sessions reachable via this direct-CLI `-r` path (codex is
+   * not routed here; omp has no branch command → refused rather than silently
+   * plain-resuming into a collision).
+   */
+  fork?: boolean;
+  /**
    * psu-in-desktop-builds-2026-06-23 B: when set, the console runs `psu` (a
    * superuser agent session) on open instead of just dropping to a shell. Only
    * honored when FLAGS.PSU_END_USER is on (defense-in-depth — the discoverable
@@ -302,6 +315,18 @@ export async function buildConsoleEnvelope(
     // Both `claude` and `omp` accept `-r <session-id>`. The shell
     // greeting echoes the run id so a stale terminal is identifiable.
     const id = shellSafeId(opts.resumeSessionId);
+    // WI-3882: forking a LIVE session must NOT resume it in place — that opens a
+    // second CLI on the SAME transcript and collides with the still-running
+    // original. Only claude has a native branch-the-session flag reachable via
+    // this `-r` resume path (`--fork-session` mints a fresh session id and
+    // leaves the original untouched — the exact flag psu-launcher's
+    // resumeArgsFor emits). omp has no fork command, so a fork request there is
+    // refused rather than silently degraded to a colliding plain resume.
+    if (opts.fork && backend !== 'claude-code') {
+      throw new Error(
+        `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
+      );
+    }
     // Permission mode is per-INVOCATION, not inherited from the resumed
     // session: a bare `claude -r` lands the user in default ask-per-tool
     // mode (owner-hit on the Windows app, 2026-07-07). Re-assert the same
@@ -312,7 +337,13 @@ export async function buildConsoleEnvelope(
         : backend === 'omp'
           ? '--approval-mode yolo '
           : '';
-    greetingCmd = `echo "resuming plan-run ${id}…"; exec ${bin} ${bypass}-r ${id}`;
+    // `--fork-session` goes AFTER `-r <id>` to match psu-launcher's proven claude
+    // fork argv order (`--resume <id> … --fork-session`); claude branches the
+    // resumed conversation into a fresh auto-minted id (no forced --session-id
+    // needed — this console path doesn't track forks in the psu picker).
+    const forkSuffix = opts.fork ? ' --fork-session' : '';
+    const verb = opts.fork ? 'forking' : 'resuming';
+    greetingCmd = `echo "${verb} plan-run ${id}…"; exec ${bin} ${bypass}-r ${id}${forkSuffix}`;
   }
 
   return {

@@ -24,6 +24,12 @@ export interface LaunchOpts {
    *  session resumes an existing conversation. Honored only in
    *  omp mode (launchAgent). */
   resumeSessionId?: string | null;
+  /** WI-3882: fork (branch) the resumed session instead of resuming in place —
+   *  used when the source session is still LIVE so the fork gets a fresh session
+   *  id and doesn't collide with the still-running original. Only meaningful
+   *  with `resumeSessionId`; honored server-side only for claude sessions
+   *  (console-launcher.ts's `--fork-session`). */
+  fork?: boolean | null;
   /** Optional OMP model fuzzy-match argument (`omp-su --model <value>`). */
   model?: string | null;
   /**
@@ -111,6 +117,8 @@ async function tryServerSideSpawn(
       // (console-launch.ts's `body.resumeSessionId` → buildConsoleEnvelope →
       // console-launcher.ts's `<agent-cli> -r <id>` — plan-agent-launch P-023).
       resumeSessionId: opts.resumeSessionId ?? null,
+      // WI-3882: branch a still-live session instead of resuming in place.
+      fork: opts.fork ?? false,
     }),
   });
   const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));
@@ -164,6 +172,8 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
       // WI-3882: same forwarding gap as the primary path above, for the
       // non-Linux (Tauri-command) fallback.
       resumeSessionId: opts.resumeSessionId ?? undefined,
+      // WI-3882: branch a still-live session instead of resuming in place.
+      fork: opts.fork ?? undefined,
     }),
   });
   if (!resolveR.ok) {

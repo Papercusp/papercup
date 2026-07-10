@@ -149,11 +149,12 @@ describe('runBackfillSweep (P-010)', () => {
 
   it('rotates which target leads each sweep so budget priority round-robins (WI-2905)', async () => {
     // Two sweeps, vector ext present, every column probe returns "missing" so
-    // each sweep is just its 6 ordered column probes (5 prose surfaces + the
-    // P-008 work_items ledger) — enough to observe order.
+    // each sweep is just its 7 ordered column probes (5 prose surfaces + the
+    // P-008 work_items ledger + the P-009 doc_sections store) — enough to
+    // observe order.
     unsafeResults = [
-      [{ extname: 'vector' }], [], [], [], [], [], [],
-      [{ extname: 'vector' }], [], [], [], [], [], [],
+      [{ extname: 'vector' }], [], [], [], [], [], [], [],
+      [{ extname: 'vector' }], [], [], [], [], [], [], [],
     ];
     await runBackfillSweep();
     const probesSweep1 = unsafeCalls

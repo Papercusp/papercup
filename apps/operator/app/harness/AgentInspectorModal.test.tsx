@@ -149,17 +149,31 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     expect(fetchSpy.mock.calls[0][0]).toBe('/api/agent-mcp/console/launch');
     expect(fetchSpy.mock.calls[0][1].method).toBe('POST');
+    // live:false → resume in place, so fork must be false (never branches).
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
       resumeSessionId: 'sess-abc',
+      fork: false,
       label: 'resume · worker',
     });
     vi.unstubAllGlobals();
   });
 
-  it('shows a "Fork in new terminal" button (live:true) for a still-running source session', () => {
+  it('shows a "Fork in new terminal" button (live:true) that POSTs fork:true so the still-live original is not collided with', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
+    vi.stubGlobal('fetch', fetchSpy);
     renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true } });
     const btn = screen.getByTestId('resume-terminal-btn');
     expect(btn.textContent).toContain('Fork in new terminal');
+    fireEvent.click(btn);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/agent-mcp/console/launch');
+    // live:true → fork the still-running session (branch), never resume in place.
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      resumeSessionId: 'sess-abc',
+      fork: true,
+      label: 'fork · worker',
+    });
+    vi.unstubAllGlobals();
   });
 
   it('surfaces a "resume failed" state when the launch POST fails', async () => {

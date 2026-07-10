@@ -146,16 +146,49 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
-  async touchHeartbeat(ownerId: string): Promise<void> {
+  async touchHeartbeat(
+    ownerId: string,
+    liveness?: { pid?: number | null; host?: string | null },
+  ): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // KEEPALIVE only — never bumps last_active_at (D-003): the 60s supervisor
     // beat keeps the process "alive" without implying activity.
-    await sql`
-      UPDATE harness_shared.coord_presence
-         SET heartbeat_at = now()
-       WHERE owner_id = ${ownerId}
-    `;
+    //
+    // WI-3898 P1: pid/host are set ONLY when the caller actually reported
+    // them this beat — an omitted field is left UNTOUCHED, never clobbered
+    // to null/''. (Unlike write()'s ON CONFLICT, which unconditionally
+    // EXCLUDED.host/EXCLUDED.pid — that's fine there because write() always
+    // carries a caller-resolved value; here a bare keepalive from a caller
+    // that doesn't know its own pid must not erase a value a prior liveness
+    // beat recorded.)
+    const pid = liveness?.pid;
+    const host = liveness?.host;
+    if (pid != null && host != null) {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET heartbeat_at = now(), pid = ${pid}, host = ${host}
+         WHERE owner_id = ${ownerId}
+      `;
+    } else if (pid != null) {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET heartbeat_at = now(), pid = ${pid}
+         WHERE owner_id = ${ownerId}
+      `;
+    } else if (host != null) {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET heartbeat_at = now(), host = ${host}
+         WHERE owner_id = ${ownerId}
+      `;
+    } else {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET heartbeat_at = now()
+         WHERE owner_id = ${ownerId}
+      `;
+    }
   }
 
   async touchActivity(ownerId: string): Promise<void> {

@@ -19,7 +19,7 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn() }));
 vi.mock('../../pot/contribute-upstream', () => ({ contributeUpstream: vi.fn() }));
-vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_HIVE_SLUG: 'papercusp-self' }));
+vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_POT_SLUG: 'papercusp-platform' }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
 import { contributeUpstream } from '../../pot/contribute-upstream';

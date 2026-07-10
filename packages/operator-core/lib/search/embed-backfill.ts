@@ -215,6 +215,19 @@ export const TARGETS: BackfillTarget[] = [
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)`,
     keyCols: ['harness_slug', 'feature_id'],
   },
+  // P-009 (shared-embedding-sidecar-and-enrichment-2026-07-10): documentation
+  // sections. docs:search is filesystem-backed, so doc-embed-sync.ts mirrors
+  // DocSource pages (the engineering tree incl. agent-insights runbooks,
+  // project docs, harness docs) into migration 552's doc_sections — heading-
+  // split, sha-keyed — and THIS entry vectorizes them so docs:search gains a
+  // semantic leg. title carries "Page › Heading"; content is pre-capped at
+  // sync time (the left() here is belt-and-braces).
+  {
+    table: 'harness_shared.doc_sections',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
+    keyCols: ['source_key', 'slug', 'anchor'],
+  },
 ];
 
 /**
@@ -518,6 +531,15 @@ async function _runSweepLogged(label: string): Promise<void> {
  * DBOS scheduled-workflow migration (dbos-durable-jobs-2026-05-31 Phase 2).
  */
 export async function runEmbedBackfillOnce(): Promise<void> {
+  // P-009: mirror doc sections into PG before the sweep so the doc_sections
+  // target has rows to embed (once per process — see doc-embed-sync.ts).
+  // Dynamic import keeps docs-engine out of this module's static graph.
+  try {
+    const { runDocSectionsSyncOnce } = await import('./doc-embed-sync');
+    await runDocSectionsSyncOnce();
+  } catch (err) {
+    console.warn('[embed-backfill] doc-sections sync failed:', (err as Error).message);
+  }
   await _runSweepLogged('periodic');
 }
 

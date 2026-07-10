@@ -30,6 +30,10 @@ export default defineTool({
       // dropped on this one, so a resume request on a non-Linux operator (the
       // only case that reaches this fallback) always opened a fresh session.
       resumeSessionId?: string | null;
+      // WI-3882: fork twin of console-launch.ts's `fork` — branch the resumed
+      // (still-live) session instead of resuming it in place, so the Tauri
+      // (non-Linux operator) fallback path forks identically to the primary one.
+      fork?: boolean;
     };
     const workspaceId = activeWorkspaceId();
     try {
@@ -39,6 +43,7 @@ export default defineTool({
         operatorBaseUrl: new URL(req.url).origin,
         runPsu: body.runPsu ?? false,
         resumeSessionId: body.resumeSessionId ?? undefined,
+        fork: body.fork ?? false,
       });
       return Response.json(envelope);
     } catch (e: any) {

@@ -20,7 +20,7 @@ vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn() }));
 vi.mock('../../pot/enable-platform-mode', () => ({
   enablePlatformMode: vi.fn(),
   PAPERCUSP_CANONICAL_REPO_URL: 'https://github.com/example/papercusp',
-  PLATFORM_SELF_HIVE_SLUG: 'papercusp-self',
+  PLATFORM_SELF_POT_SLUG: 'papercusp-self',
 }));
 
 import { resolveAgentIdentity } from '../coordination/identity';

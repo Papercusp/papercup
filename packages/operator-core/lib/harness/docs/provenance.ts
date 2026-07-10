@@ -76,5 +76,15 @@ export async function recordGeneratedDoc(input: RecordGeneratedDocInput): Promis
     ...(input.title ? { title: input.title } : {}),
   });
 
+  // P-009: the documenter just wrote/refreshed the doc file — queue its
+  // harness surface into the doc-section embedding store (coalesced,
+  // fire-and-forget, VITEST-inert; the record never blocks on it).
+  try {
+    const { queueHarnessDocSectionSync } = await import('../../search/doc-embed-sync');
+    queueHarnessDocSectionSync(input.harnessSlug);
+  } catch {
+    // fail-open
+  }
+
   return { ok: true, record, generatedFromSha: head, subjectRef, anchorPaths };
 }

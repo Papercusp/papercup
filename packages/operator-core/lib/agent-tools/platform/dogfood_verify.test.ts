@@ -13,7 +13,7 @@ vi.mock('../../pr-host/dogfood-roundtrip', () => ({
   verifyDogfoodRoundTrip: vi.fn(),
   defaultReadReviewReport: vi.fn(),
 }));
-vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_HIVE_SLUG: 'papercusp-platform' }));
+vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_POT_SLUG: 'papercusp-platform' }));
 
 import { verifyDogfoodRoundTrip, defaultReadReviewReport } from '../../pr-host/dogfood-roundtrip';
 const verifyM = vi.mocked(verifyDogfoodRoundTrip);

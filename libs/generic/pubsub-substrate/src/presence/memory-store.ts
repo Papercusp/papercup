@@ -63,10 +63,18 @@ export class InMemoryPresenceStore implements PresenceStore {
     });
   }
 
-  async touchHeartbeat(ownerId: string): Promise<void> {
+  async touchHeartbeat(
+    ownerId: string,
+    liveness?: { pid?: number | null; host?: string | null },
+  ): Promise<void> {
     // KEEPALIVE only — never lastActiveAt (D-003).
     const row = this.rows.get(ownerId);
-    if (row) row.heartbeatAt = this.now();
+    if (!row) return;
+    row.heartbeatAt = this.now();
+    // WI-3898 P1: mirror the PG store's "only set what was reported, never
+    // clobber with null" contract.
+    if (liveness?.pid != null) row.input.pid = liveness.pid;
+    if (liveness?.host != null) row.input.host = liveness.host;
   }
 
   async touchActivity(ownerId: string): Promise<void> {

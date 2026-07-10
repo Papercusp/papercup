@@ -37,24 +37,40 @@ const store = new PgPresenceStore({
   ensureSchema: async () => {},
 });
 
-// WI-3898 P1 (coord:presence liveness parity): `coord_presence.host`/`.pid` have
-// existed in the schema since mig 277 (coord-presence-v2-columns) and the
-// PresenceInput/PgPresenceStore write path has always accepted them — but NO
-// caller ever passed them, so every row's host/pid silently sat at their column
-// defaults ('' / null) forever (confirmed via `grep -rn 'writePresence(' `: the
-// only in-repo call site, declare-intent.ts, never sets host/pid). This is a
-// pure WRITE-PATH gap, not a schema gap — no migration needed. Cache the local
-// hostname once (stable for the process lifetime, cheap enough to skip a
-// per-write syscall) and default BOTH from the CURRENT process unless a caller
-// explicitly overrides — safe because writePresence's own ON CONFLICT clause is
-// non-coalescing (host/pid are unconditionally EXCLUDED.host/EXCLUDED.pid on
-// every write already), so this changes what gets written, never HOW it's
-// written. This is scoped to EI-9262/WI-3898 remedy #1's pid/host half only
-// (verified-process-liveness plumbing); the `suspect`/`draining` SessionState
-// and the confirmLiveness UX hint (#2/#3) are deliberately NOT touched here —
-// they are breaking/UX changes to a hot shared path that need their own
-// dedicated pass per the item's own staged-rollout note.
-const LOCAL_HOSTNAME = hostname();
+// WI-3898 P1 (coord:presence liveness parity): `coord_presence.host`/`.pid`
+// exist in the schema (baseline) and the PresenceInput/PgPresenceStore write
+// path has always accepted them, but NO caller ever passed a value that
+// actually MEANS something for liveness verification.
+//
+// CORRECTNESS NOTE (this file previously defaulted host/pid to the CURRENT
+// process's own `hostname()`/`process.pid` here — that was wrong and has been
+// removed). `writePresence` runs inside the operator's own long-lived server
+// process (`:3070`/`:3170`, node:cluster + SO_REUSEPORT) handling an MCP tool
+// call — NOT inside the calling agent's own OS process. Every agent's
+// declare-intent call funnels through the SAME shared server, so defaulting
+// to `process.pid` here stamped every single agent's row with the identical
+// operator-worker pid: plausible-looking but useless (and actively
+// misleading) as a per-agent liveness signal — probing it with
+// `kill(pid, 0)` would report "alive" for every agent for as long as the
+// operator itself is up, regardless of whether any given agent's own process
+// had crashed.
+//
+// The genuinely-verifiable half of remedy #1 is landed on the OTHER write
+// path instead: `touchHeartbeat`'s optional `liveness` param, fed by the psu
+// launcher's supervisor beat (packages: bootstrap-su.ts heartbeat route +
+// apps/operator/scripts/psu-launcher.mjs's startSupervisorBeat) — that beat
+// genuinely runs AS the agent's own parent process (the process whose death
+// IS the session's death), so its self-reported pid/host means something a
+// local `kill(pid, 0)` probe can trust. See `probeProcessLiveness` below.
+//
+// declare-intent's `writePresence` call is therefore left to pass host/pid
+// through UNCHANGED (undefined) — the store's ON CONFLICT is unconditional
+// (EXCLUDED.host/EXCLUDED.pid), so an undefined `input.host`/`input.pid` here
+// resolves to PgPresenceStore's own column defaults (''/null), never a
+// fabricated value. The `suspect`/`draining` SessionState and the
+// confirmLiveness UX hint (#2/#3) remain deliberately NOT touched here — they
+// are breaking/UX changes to a hot shared path that need their own dedicated
+// pass per the item's own staged-rollout note.
 
 /**
  * Upsert the caller's presence row — "set my presence to exactly this".
@@ -78,11 +94,11 @@ export async function writePresence(
       potSlug = null; // best-effort: presence must write even if hive lookup fails
     }
   }
-  // WI-3898 P1: stamp the CURRENT process's host/pid unless the caller passed
-  // its own (tests / a future cross-process caller may still override).
-  const host = input.host ?? LOCAL_HOSTNAME;
-  const pid = input.pid ?? process.pid;
-  await store.write(identity, { ...input, agentRole, potSlug, host, pid });
+  // WI-3898 P1: do NOT default host/pid from the operator's OWN process — see
+  // the file-header note above. Pass `input.host`/`input.pid` through exactly
+  // as given (undefined for every current in-repo caller); the store's own
+  // column defaults apply.
+  await store.write(identity, { ...input, agentRole, potSlug });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
   // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the

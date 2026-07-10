@@ -167,6 +167,11 @@ export default function AgentInspectorModal({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           resumeSessionId: resumeTarget.sessionId,
+          // WI-3882: a LIVE source session FORKS (branch into a new session —
+          // the original keeps running); an ENDED one resumes in place. Without
+          // this the Fork button would resume the still-live session in place
+          // and collide with it (a second CLI on the same transcript).
+          fork: resumeTarget.live === true,
           label: resumeTarget.label ?? `${resumeTarget.live ? 'fork' : 'resume'} · ${role}`,
         }),
       });

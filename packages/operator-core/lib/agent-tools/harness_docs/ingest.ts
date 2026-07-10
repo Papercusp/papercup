@@ -38,6 +38,16 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'harness_required' }) }], isError: true };
     }
     const res = await ingestHarnessDocs(scope.slug, args.verifyAtHead !== undefined ? { verifyAtHead: args.verifyAtHead } : {});
+    if (res.ok) {
+      // P-009: freshly ingested docs → queue the harness surface into the
+      // doc-section embedding store (coalesced, fire-and-forget, VITEST-inert).
+      try {
+        const { queueHarnessDocSectionSync } = await import('../../search/doc-embed-sync');
+        queueHarnessDocSectionSync(scope.slug);
+      } catch {
+        // fail-open
+      }
+    }
     return { content: [{ type: 'text' as const, text: JSON.stringify(res) }], ...(res.ok ? {} : { isError: true }) };
   },
 });

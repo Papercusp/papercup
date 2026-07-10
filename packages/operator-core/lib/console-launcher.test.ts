@@ -80,6 +80,55 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
     });
     expect(envelope.greetingCmd).toContain('exec omp --approval-mode yolo -r abc-123');
   });
+
+  // WI-3882: forking a LIVE session must branch into a fresh session id rather
+  // than resume in place (a second CLI on the same transcript collides with the
+  // still-running original). claude does this with `--fork-session`.
+  it('claude fork appends --fork-session after -r <id> and says "forking"', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      fork: true,
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).toContain(
+      'exec claude --dangerously-skip-permissions --permission-mode bypassPermissions -r 3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8 --fork-session',
+    );
+    expect(envelope.greetingCmd).toContain('forking plan-run');
+  });
+
+  it('claude resume WITHOUT fork never emits --fork-session (guard against a stray branch)', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).not.toContain('--fork-session');
+    expect(envelope.greetingCmd).toContain('resuming plan-run');
+  });
+
+  it('omp fork is refused (no native branch command) instead of colliding via a plain resume', async () => {
+    process.env.AGENT_CMD = 'omp';
+    delete process.env.AGENT_BACKEND;
+    await expect(
+      buildConsoleEnvelope({
+        workspaceId: 'default',
+        slug: null,
+        operatorBaseUrl: 'http://localhost:3070',
+        resumeSessionId: 'abc-123',
+        fork: true,
+        skipMcpJson: true,
+      }),
+    ).rejects.toThrow(/only claude sessions support --fork-session/);
+  });
 });
 
 describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () => {
