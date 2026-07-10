@@ -13,6 +13,8 @@ import {
   applyOmpOperatorOrigin,
   applyOmpMcpUrlParams,
   ompCoreToolNames,
+  claudeSeedToolNames,
+  CLAUDE_SEED_EXTRA_TOOL_NAMES,
   isWeakOmpModel,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
@@ -513,6 +515,25 @@ describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
 
   it('ignores names not in the spine (no-op, no error)', () => {
     expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+  });
+});
+
+describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Claude only)', () => {
+  it('is the spine plus the manual lock verbs, deduped', () => {
+    const seed = claudeSeedToolNames({});
+    for (const n of OMP_CORE_MCP_TOOL_NAMES) expect(seed).toContain(n);
+    for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(seed).toContain(n);
+    expect(new Set(seed).size).toBe(seed.length);
+  });
+
+  it('locks:* stay OUT of the weak-model OMP spine (the 2026-07-05 misuse cut holds)', () => {
+    for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(ompCoreToolNames({})).not.toContain(n);
+  });
+
+  it('honors the spine exclude escape hatch without touching the lock extras', () => {
+    const seed = claudeSeedToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'coord:glance' });
+    expect(seed).not.toContain('coord:glance');
+    expect(seed).toContain('locks:acquire');
   });
 });
 

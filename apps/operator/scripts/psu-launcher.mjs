@@ -1275,6 +1275,20 @@ export function ompCoreToolNames(env = process.env) {
   return OMP_CORE_MCP_TOOL_NAMES.filter((n) => !excluded.includes(n));
 }
 
+/** EI-9011 (fleet-retro-hardening-2026-07-10 P-002): the CLAUDE seed = the shared core
+ *  spine + the manual lock verbs. locks:* stay OUT of the weak-model OMP spine (misuse
+ *  evidence — see the spine comment above), but belong IN the claude seed: the CC
+ *  PreToolUse lock-block hook fires ONLY in Claude sessions and its refusal names
+ *  locks:acquire {wake_on_grant:true} as the sanctioned queue+sleep path, yet Claude's
+ *  native ToolSearch indexes ONLY the advertised subset — an unseeded name reads as
+ *  "doesn't exist" (the EI-9011 poll-degradation). Exported for tests. */
+export const CLAUDE_SEED_EXTRA_TOOL_NAMES = ['locks:acquire', 'locks:release', 'locks:list'];
+export function claudeSeedToolNames(env = process.env) {
+  const seen = new Set();
+  return [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
+    .filter((n) => !seen.has(n) && (seen.add(n), true));
+}
+
 // weak-model-tool-tier: a model that runs LOCALLY (ollama/local provider prefix) is small
 // and weak for tool-use relative to a hosted frontier model. Mirror of the canonical
 // packages/operator-core/lib/model-tier.ts modelCapabilityTier heuristic (kept simple here
@@ -4474,7 +4488,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // tail stays reachable via tools:find/tools:invoke (in the spine) + the capability map.
       // Only --context-size=full opts OUT (unset PAPERCUSP_TOOLS → full catalog + ToolSearch).
       ...(res.agent === 'claude' && args.contextSize !== 'full'
-        ? { PAPERCUSP_TOOLS: ompCoreToolNames().join(',') } : {}),
+        ? { PAPERCUSP_TOOLS: claudeSeedToolNames().join(',') } : {}),
       // context-trimming-tiers D-004/P-009: the session PAYLOAD tier. The claude MCP url
       // env-expands ${PAPERCUSP_CONTEXT_TIER} (buildClaudeMcpEntry `ctx_tier=`) so the
       // server shapes tool payloads (defineTool `shape` projections) per tier.
