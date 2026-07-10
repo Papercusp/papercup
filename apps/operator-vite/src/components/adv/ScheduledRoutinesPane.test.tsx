@@ -102,14 +102,34 @@ describe('<ScheduledRoutinesPane>', () => {
     expect(screen.getByText('Last: Success')).toBeTruthy();
   });
 
-  it('renders the active state and overdue label for past fires', () => {
+  it('renders the active state and emphasizes overdue past fires', () => {
     H.result = {
       data: [occ({ scheduleActive: true, occurrenceMs: Date.now() - 1 * HOUR })],
       loading: false,
     };
     render(<ScheduledRoutinesPane />);
     expect(screen.getByText('Active')).toBeTruthy();
-    expect(screen.getByText('overdue')).toBeTruthy();
+    expect(screen.getByText('Overdue')).toBeTruthy();
+    expect(screen.getByText('Overdue').getAttribute('data-tone')).toBe('overdue');
+  });
+
+  it('labels an active future fire as the next run', () => {
+    H.result = {
+      data: [occ({ scheduleActive: true, occurrenceMs: Date.now() + 2 * HOUR })],
+      loading: false,
+    };
+    render(<ScheduledRoutinesPane />);
+    expect(screen.getByText('Next in 2h').getAttribute('data-tone')).toBe('upcoming');
+  });
+
+  it('says a paused routine is not running instead of showing its stored future fire', () => {
+    H.result = {
+      data: [occ({ scheduleActive: false, occurrenceMs: Date.now() + 2 * HOUR })],
+      loading: false,
+    };
+    render(<ScheduledRoutinesPane />);
+    expect(screen.getByText('Not running').getAttribute('data-tone')).toBe('paused');
+    expect(screen.queryByText(/Next in/)).toBeNull();
   });
 
   it('calls onSelect with the templateSlug when a row is clicked', () => {
@@ -118,5 +138,6 @@ describe('<ScheduledRoutinesPane>', () => {
     render(<ScheduledRoutinesPane onSelect={onSelect} />);
     fireEvent.click(screen.getByText('Plan Z'));
     expect(onSelect).toHaveBeenCalledWith('plan-z');
+    expect(document.querySelector('.pc-routines__chevron')).toBeTruthy();
   });
 });

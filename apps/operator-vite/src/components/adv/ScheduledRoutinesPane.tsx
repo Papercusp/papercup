@@ -8,7 +8,7 @@
  */
 import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
-import { CalendarClock } from 'lucide-react';
+import { CalendarClock, ChevronRight } from 'lucide-react';
 
 interface ScheduledOccurrenceRow {
   templateSlug: string;
@@ -36,15 +36,25 @@ const OUTCOME_LABEL: Record<string, string> = {
   partial: 'Partial',
 };
 
-function relWhen(ms: number | null): string {
-  if (ms == null) return '—';
-  const d = ms - Date.now();
-  if (d < 0) return 'overdue';
+function relWhen(ms: number, nowMs = Date.now()): string {
+  const d = ms - nowMs;
   const min = Math.round(d / 60000);
   if (min < 60) return `in ${Math.max(1, min)}m`;
   const h = Math.round(min / 60);
   if (h < 48) return `in ${h}h`;
   return `in ${Math.round(h / 24)}d`;
+}
+
+type RoutineTiming = {
+  label: string;
+  tone: 'upcoming' | 'overdue' | 'paused' | 'none';
+};
+
+export function routineTiming(scheduleActive: boolean, nextFireMs: number | null, nowMs = Date.now()): RoutineTiming {
+  if (!scheduleActive) return { label: 'Not running', tone: 'paused' };
+  if (nextFireMs == null) return { label: 'No upcoming run', tone: 'none' };
+  if (nextFireMs < nowMs) return { label: 'Overdue', tone: 'overdue' };
+  return { label: `Next ${relWhen(nextFireMs, nowMs)}`, tone: 'upcoming' };
 }
 
 export default function ScheduledRoutinesPane({ onSelect }: { onSelect?: (slug: string) => void }) {
@@ -98,30 +108,36 @@ export default function ScheduledRoutinesPane({ onSelect }: { onSelect?: (slug: 
         </div>
       ) : (
         <ul className="pc-routines__list">
-          {routines.map((r) => (
-            <li key={r.templateSlug} className="pc-routines__item" data-active={r.scheduleActive}>
-              <button
-                type="button"
-                className="pc-routines__row"
-                onClick={() => onSelect?.(r.templateSlug)}
-                disabled={!onSelect}
-                aria-label={onSelect ? `Open ${r.title ?? r.templateSlug}` : undefined}
-              >
-                <span className="pc-routines__topline">
-                  <span className="pc-routines__title" title={r.templateSlug}>{r.title ?? r.templateSlug}</span>
-                  <span className="pc-routines__state" data-active={r.scheduleActive}>
-                    {r.scheduleActive ? 'Active' : 'Paused'}
+          {routines.map((r) => {
+            const timing = routineTiming(r.scheduleActive, r.nextFireMs);
+            return (
+              <li key={r.templateSlug} className="pc-routines__item" data-active={r.scheduleActive}>
+                <button
+                  type="button"
+                  className="pc-routines__row"
+                  onClick={() => onSelect?.(r.templateSlug)}
+                  disabled={!onSelect}
+                  aria-label={onSelect ? `Open ${r.title ?? r.templateSlug}` : undefined}
+                >
+                  <span className="pc-routines__topline">
+                    <span className="pc-routines__title" title={r.templateSlug}>{r.title ?? r.templateSlug}</span>
+                    <span className="pc-routines__state" data-active={r.scheduleActive}>
+                      {r.scheduleActive ? 'Active' : 'Paused'}
+                    </span>
+                    {onSelect ? <ChevronRight className="pc-routines__chevron" size={13} aria-hidden /> : null}
                   </span>
-                </span>
-                <span className="pc-routines__meta">
-                  <span className="pc-routines__next"><CalendarClock size={11} aria-hidden /> {relWhen(r.nextFireMs)}</span>
-                  <span className="pc-routines__outcome" data-outcome={r.lastOutcome ?? 'none'}>
-                    {r.lastOutcome ? `Last: ${OUTCOME_LABEL[r.lastOutcome] ?? r.lastOutcome}` : 'No runs yet'}
+                  <span className="pc-routines__meta">
+                    <span className="pc-routines__next" data-tone={timing.tone}>
+                      <CalendarClock size={11} aria-hidden /> {timing.label}
+                    </span>
+                    <span className="pc-routines__outcome" data-outcome={r.lastOutcome ?? 'none'}>
+                      {r.lastOutcome ? `Last: ${OUTCOME_LABEL[r.lastOutcome] ?? r.lastOutcome}` : 'No runs yet'}
+                    </span>
                   </span>
-                </span>
-              </button>
-            </li>
-          ))}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
       <style>{ROUTINES_CSS}</style>
@@ -143,8 +159,13 @@ const ROUTINES_CSS = `
   .pc-routines__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 700; }
   .pc-routines__state, .pc-routines__outcome { flex-shrink: 0; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); font-size: 9px; font-weight: 700; color: var(--fg-mute); }
   .pc-routines__state[data-active='true'] { color: var(--good); border-color: color-mix(in srgb, var(--good), transparent 58%); background: color-mix(in srgb, var(--good), transparent 92%); }
+  .pc-routines__chevron { flex-shrink: 0; color: var(--fg-mute, #7f9bb4); transition: color 120ms ease, transform 120ms ease; }
+  .pc-routines__row:hover:not(:disabled) .pc-routines__chevron { color: var(--accent); transform: translateX(1px); }
   .pc-routines__meta { justify-content: space-between; color: var(--fg-mute, #7f9bb4); font-size: 9.5px; }
-  .pc-routines__next { display: inline-flex; align-items: center; gap: 4px; }
+  .pc-routines__next { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; }
+  .pc-routines__next[data-tone='upcoming'] { color: var(--accent-soft, #7dd3fc); }
+  .pc-routines__next[data-tone='overdue'] { color: var(--warn); }
+  .pc-routines__next[data-tone='paused'], .pc-routines__next[data-tone='none'] { color: var(--fg-mute, #7f9bb4); font-weight: 600; }
   .pc-routines__outcome[data-outcome='success'] { color: var(--good); }
   .pc-routines__outcome[data-outcome='failed'] { color: var(--bad); }
   .pc-routines__outcome[data-outcome='partial'] { color: var(--warn); }

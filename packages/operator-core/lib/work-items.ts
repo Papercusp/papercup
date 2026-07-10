@@ -2223,12 +2223,13 @@ export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
 }
 
 /**
- * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
- * excluded from `claim_next`/`scheduler:get_next` self-selection (see
- * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
- * claimable directly BY ID. Feature-family items don't self-select the same way and already
- * have a real `blocked` status, so this is issue-family only (mirrors `setWorkItemPriority`'s
- * family gate); a feature-family id is a no-op returning `applicable:false`.
+ * Set (or clear) a work-item's self-select claim hold (WI-2797; extended to BOTH families by
+ * fleet-deltas-leader-primitives P-006). A held item is excluded from
+ * `claim_next`/`scheduler:get_next` self-selection (issue family: {@link claimHoldExclusionSql};
+ * feature family: the `_claimHold` floor in {@link claimFloorsWhereSql}) but stays otherwise
+ * normal — visible, commentable, and claimable directly BY ID. With `opts.by`, the hold is a
+ * named HOLD-OPEN: `held_open_by`/`held_open_reason` are stamped so `setWorkItemState`'s
+ * held-open guard can refuse a terminal transition by anyone else (EI-8993).
  */
 export async function setWorkItemClaimHold(
   id: string,
