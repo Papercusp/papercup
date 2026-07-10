@@ -190,7 +190,7 @@ release-critical blocker" callout further down.
   `resolveHiveSwarmBinding` returned null and the harness never swarm-bound —
   silent zero federation of the owner's own content. Root cause was three
   stacked instances of the same "missing-slug field silently dropped" bug
-  class (`packages/operator-core/lib/agent-tools/hive/_create.ts`,
+  class (`packages/operator-core/lib/agent-tools/pot/_create.ts`,
   `_create_from_repo.ts`, `harness/create.ts`). Fixed + regression-tested (53 +
   98 + 3 tests) and live-rig re-verified (content/plan/coord/concurrent-LWW/
   coord-controlplane scenarios all converge end-to-end).

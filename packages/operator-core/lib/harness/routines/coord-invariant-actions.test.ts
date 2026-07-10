@@ -196,6 +196,8 @@ describe('evaluateInvariants', () => {
     presenceGhosts: 0,
     wakeQueueDepth: 0,
     wakeQueueOldestMs: null,
+    coordLogFurnaces: [],
+    coordLogActiveOffenders: [],
   };
   const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
   const TTL_H = OPERATIONAL_ESCALATION_TTL_MS / 3_600_000;
@@ -219,6 +221,10 @@ describe('evaluateInvariants', () => {
       presenceGhosts: 3,
       wakeQueueDepth: 51,
       wakeQueueOldestMs: NOW - 1_000,
+      coordLogFurnaces: [
+        { queryid: '123', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ...', calls: 285_000, rowsPerCall: 80_000, meanExecMs: 500 },
+      ],
+      coordLogActiveOffenders: [],
     };
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations.map((v) => v.title)).toEqual([
@@ -227,6 +233,7 @@ describe('evaluateInvariants', () => {
       'coord invariant: file locks held past TTL without sweep',
       'coord invariant: presence ghosts lingering past 72h',
       'coord invariant: wake-queue depth/age growth',
+      'coord invariant: unbounded coord_event_log read pattern (furnace class)',
     ]);
     // Stability: re-evaluating yields the SAME titles (the dedup key).
     expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW).map((v) => v.title)).toEqual(
@@ -319,6 +326,67 @@ describe('evaluateInvariants', () => {
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations).toHaveLength(1);
     expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+
+  describe('WI-3959: coord_event_log furnace-class recurrence guard', () => {
+    it('does not fire under both thresholds', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [{ queryid: '1', queryPreview: 'SELECT ...', calls: 100, rowsPerCall: 200, meanExecMs: 5 }],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
+    it('fires on rows/call alone, even with a fast mean exec time', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          // The WI-3937 shape (readLines full-surface scan): huge rows/call, each
+          // individual call still fast (sub-2s) — the aggregate is the furnace, not
+          // any single slow call, which is exactly why a rows/call threshold (not
+          // just a mean-exec-time one) is needed to catch this class.
+          { queryid: 'wi3937', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ORDER BY id ASC', calls: 285_000, rowsPerCall: 80_000, meanExecMs: 500 },
+        ],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+      expect(violations[0].severity).toBe('major');
+      expect(violations[0].detail).toContain('wi3937');
+      expect(violations[0].detail).toContain('80000');
+    });
+
+    it('fires on mean exec time alone, even under the rows/call threshold', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [{ queryid: 'slow', queryPreview: 'SELECT ... coord_event_log ...', calls: 10, rowsPerCall: 5, meanExecMs: 5_000 }],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+    });
+
+    it('folds a currently-active offender pid/application_name into the detail when caught mid-scan', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [{ queryid: 'active-one', queryPreview: 'SELECT ... coord_event_log ...', calls: 1, rowsPerCall: 8_000_000_000, meanExecMs: 130_000 }],
+        coordLogActiveOffenders: [{ pid: 4242, applicationName: 'bg-host-substrate', durationSeconds: 130.4 }],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].detail).toContain('pid=4242');
+      expect(violations[0].detail).toContain('bg-host-substrate');
+    });
+
+    it('is a stable dedup title across repeated evaluation (never floods the backlog)', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [{ queryid: '1', queryPreview: 'x', calls: 1, rowsPerCall: 100_000, meanExecMs: 100 }],
+      };
+      const first = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW).map((v) => v.title);
+      const second = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW).map((v) => v.title);
+      expect(first).toEqual(second);
+    });
   });
 });
 

@@ -378,9 +378,31 @@ LIMIT ${CODE_RUN_ADOPTION_ROW_CAP}
 //     that window, so callers still see current-enough numbers.
 // Keyed by sinceDays because the query is the same logical scan of the shared table regardless of which
 // pool's runQuery routes it. All callers use the result read-only, so the shared reference is safe.
+//
+// WI-3958 (2026-07-10): this memo is IN-PROCESS (a module-level Map), so it only collapses concurrent
+// calls WITHIN one operator process — it does NOT collapse calls ACROSS the several operator processes
+// that are actually live at once in this environment (bg-host + release-worktree operators + staging/dev
+// operators each run their own `system-health` tick — see dbos/in-process-periodic.ts's 30s
+// `systemHealthCheck`, one of readCodeRunAdoption's three callers). pg_stat_statements caught this CTE at
+// 1341 calls / 38.6s mean / 863M cumulative rows during the WI-3937 PG-saturation incident — consistent
+// with N independent per-process 5-minute memos each re-scanning on their own clock. A cross-process
+// shared cache (PG-backed) is the complete fix; short of that, a MUCH longer TTL directly cuts total scan
+// volume by the same factor regardless of process count — the item's own suggested "sharply reduce
+// cadence" remedy. A 7-day rolling adoption rate does not need sub-half-hour freshness for a KPI/health
+// dashboard, so the default moves from 5 minutes to 30 minutes (env-overridable for ops flexibility,
+// mirroring PAPERCUSP_COORD_READLINES_CACHE_TTL_MS-style knobs elsewhere in this codebase).
 
-/** How long a completed adoption rollup is reused before the next call re-scans. */
-export const ADOPTION_CACHE_TTL_MS = 5 * 60_000;
+function readAdoptionCacheTtlMs(): number {
+  const raw = process.env.PAPERCUSP_ADOPTION_CACHE_TTL_MS;
+  if (!raw) return 30 * 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 30 * 60_000;
+}
+
+/** How long a completed adoption rollup is reused before the next call re-scans. Was 5 minutes
+ *  (EI-6889); raised to 30 minutes (WI-3958) — see the note above. Override via
+ *  PAPERCUSP_ADOPTION_CACHE_TTL_MS for an ops incident response without a code change. */
+export const ADOPTION_CACHE_TTL_MS = readAdoptionCacheTtlMs();
 
 interface AdoptionCacheEntry {
   at: number;

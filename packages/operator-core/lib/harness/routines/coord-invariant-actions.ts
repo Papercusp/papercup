@@ -919,6 +919,19 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
   } catch {
     /* check degraded */
   }
+  try {
+    const { sql } = getOrgPg();
+    snap.coordLogFurnaces = await gatherCoordLogFurnaceStatements(sql);
+  } catch {
+    // pg_stat_statements is superuser-only / opt-in — commonly absent (embedded-pg,
+    // a fresh/unprivileged box). Degrades to an empty list, same as every other leg.
+  }
+  try {
+    const { sql } = getOrgPg();
+    snap.coordLogActiveOffenders = await gatherCoordLogActiveOffenders(sql);
+  } catch {
+    /* check degraded */
+  }
   return snap;
 }
 
