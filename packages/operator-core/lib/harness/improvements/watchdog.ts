@@ -1514,8 +1514,14 @@ export function escalationSignalsFromRows(rows: EscalationRow[]): WatchdogSignal
 /** The two green-checkpoint-gate escalation phases (release-actions.ts's in-routine
  *  `GATE_STALL_PHASE` + green-stall-watchdog.ts's standalone `WATCHDOG_PHASE`) — the
  *  ONLY phases whose clear path keys on a LIVE `system:green-checkpoint` routine
- *  (EI-8396), so they're the only ones this dead-install guard applies to. */
-const GREEN_CHECKPOINT_ESCALATION_PHASES = ['green-checkpoint-stall', 'green-checkpoint-watchdog'];
+ *  (EI-8396), so they're the only ones this dead-install guard applies to.
+ *  EXPORTED (EI-9205): the escalation/resolve endpoint (supervisor-actions.ts) fans a
+ *  triage note out to every phase in this group when the requested phase is one of
+ *  them — the two phases represent the SAME conceptual condition but are collected
+ *  independently by collectEscalationSignals below, so annotating only one left the
+ *  other free to re-fire a near-duplicate unresolved-escalation work-item minutes
+ *  later (observed: EI-9197 → EI-9203). */
+export const GREEN_CHECKPOINT_ESCALATION_PHASES = ['green-checkpoint-stall', 'green-checkpoint-watchdog'];
 
 /** unresolved-escalation: a harness escalation with no supervisor_notes (unaddressed).
  *  EI-8396: a green-checkpoint-{stall,watchdog} escalation row is cleared by

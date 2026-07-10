@@ -172,17 +172,45 @@ export const FLAGS = {
   // on the two-machine proof. OFF = staleness-only selection, byte-identical to
   // pre-P-016. Listed in KNOWN_DARK_FLAGS.
   AUTHORITY_EVICTION_PROBE: "papercusp-authority-eviction-probe",
-  // substrate-peer-log-compaction-2026-06-13 (design A, D-005): when ON, boot
-  // (a) seeds a fresh/reset merge cursor at each log's latest `__snapshot__` index
-  // so a new joiner folds from the snapshot instead of replaying full history, and
-  // (b) periodically compacts the OWN log (appends one additive snapshot op once it
-  // grows past a threshold of ops since the last snapshot). DEFAULT OFF (dark): the
-  // mechanism + fold-correctness are proven single-box, but the real-wire
-  // replay-cost saving (Hypercore sparse-fetch from the snapshot index) and
-  // cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate
-  // as the sibling AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced, cursor
-  // seeds at 0 — byte-identical to today. Listed in KNOWN_DARK_FLAGS.
+  // substrate-peer-log-compaction-2026-06-13 (design A, D-005). WI-3370
+  // (2026-07-10): this flag used to gate BOTH the reader (seedCursorFromSnapshots)
+  // AND the producer (produceLogSnapshot) from one boolean — and despite this
+  // comment always having said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS",
+  // it was never actually added to DARK_FLAGS, so the 2026-06-29 P-011 default-
+  // inversion silently made BOTH legs live-default-ON in production (the 6th
+  // instance of that EI-7230 bug class in this file). Split: this flag now gates
+  // ONLY the PRODUCER — periodically compacts the OWN log (appends one additive
+  // snapshot op once it grows past a threshold of ops since the last snapshot) —
+  // whose real-wire replay-cost saving + cross-machine convergence are real-
+  // hardware-unverified (P-008, same D-003 gate as the sibling
+  // AUTHORITY_RPC_PROTOMUX). DEFAULT OFF (dark, see DARK_FLAGS below): OFF = no
+  // NEW snapshot ops produced (existing ones already on disk are untouched and
+  // still read normally); byte-identical to the pre-P-011 intent. The READER leg
+  // (seeding a joiner's cursor at a log's latest snapshot) is now its own flag,
+  // SUBSTRATE_LOG_SNAPSHOT_READER, immediately below — see that flag's comment for
+  // why the two needed to separate.
   SUBSTRATE_LOG_SNAPSHOT: "papercusp-substrate-log-snapshot",
+  // WI-3370 (2026-07-10) split of SUBSTRATE_LOG_SNAPSHOT (design A, D-005): gates
+  // ONLY the reader — seedCursorFromSnapshots seeds a fresh/reset merge cursor at
+  // each log's latest `__snapshot__` index so a new joiner (or a post-reset
+  // re-fold) folds from the snapshot instead of replaying full history. DEFAULT
+  // ON (not dark): the LOCAL-seed case (blocks pre-positioned by a bundled seed,
+  // e.g. seed-history-trim-public-builds-2026-07-07's sparse public-build seed,
+  // which REQUIRES this reader ON to restore) is unambiguously safe and already
+  // proven single-box. RESIDUAL, KNOWINGLY UNSCOPED: seedCursorFromSnapshots runs
+  // generically across every log in the merge pass, so it ALSO reads a __snapshot__
+  // marker on a REMOTE peer's log that reached us by replication — i.e. a
+  // reader-over-wire path riding the same P-008 cross-machine-convergence proof
+  // this flag's producer sibling stays dark for. That residual case is NOT split
+  // out at this call site (would need to distinguish "log seeded from a local
+  // bundled tarball" from "log folded from a live peer" inside boot's merge loop —
+  // left for a follow-up once someone needs to actually gate it); today it is a
+  // NON-regression (identical wire-reader exposure to before this split, since the
+  // single prior flag already defaulted this on too) but is flagged here so the
+  // next reader of this flag doesn't assume ON is fully hardware-verified end to
+  // end. OFF ⇒ cursor never seeds from a snapshot (any log, local or remote),
+  // folds from the last cursor position instead — slower but always correct.
+  SUBSTRATE_LOG_SNAPSHOT_READER: "papercusp-substrate-log-snapshot-reader",
   // operator-memory-and-psu-resilience-2026-06-14 P-009 (D-008): substrate
   // process isolation — dedicated sidecar for corestores/Hyperswarm natives.
   // When ON, bootAllHarnessesForActiveWorkspace spawns a sidecar process
@@ -1530,6 +1558,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
     [FLAGS.ACCEPT_DELEGATED_SEATS, { case: 'owner-authority', reason: 'OWNER-AUTHORITY / trust surface (agent-allocation-framework P-008, D-006) — lets a REMOTE fleet owner spawn agents on THIS host (within the host capability envelope). OFF ⇒ this host honors NO delegated-seat spawn requests (fail-closed; byte-identical to today). The contributing-host owner flips it ON per-host via /res or /admin/features to opt in. Permanently default-OFF (per-host opt-in), NOT a pending flip.' }],
     [FLAGS.WATCHDOG_AUTO_CLOSE, { case: 'owner-authority', reason: 'EI-7230: restores the flag\'s OWN documented intent (watchdog-and-exposed-systems-improvement-2026-06-18 P-009 — "DEFAULT OFF — auto-closing real improvement items autonomously is unsafe until the owner reviews"), which the P-011 flag-default-inversion migration (2026-06-29) silently flipped to effectively ON by omitting it from this allowlist — auto-close.ts\'s own live getFlag check meant the watchdog could have been silently auto-closing real improvement items in production with no owner review. OFF ⇒ escalate-only (today\'s intended, safe behavior); owner flips ON after reviewing the auto-close criteria.' }],
+    [FLAGS.SUBSTRATE_LOG_SNAPSHOT, { case: 'incomplete', reason: 'WI-3370: 6th instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class in this file — this flag\'s OWN code comment (directly above in FLAGS) has always said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so the 2026-06-29 P-011 inversion silently flipped it (and the reader leg riding the same boolean) to live default-ON. Confirmed live: flags:get(papercusp-substrate-log-snapshot)=true. Split per this fix: the flag now gates ONLY the producer (produceLogSnapshot, boot.ts) — periodic own-log compaction whose real-wire replay-cost saving + cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE). The reader leg (seedCursorFromSnapshots) is now the separate default-ON SUBSTRATE_LOG_SNAPSHOT_READER flag, since the local-seed case it serves is unambiguously safe and REQUIRED for the seed-history-trim-public-builds-2026-07-07 sparse public-build seed to restore. OFF ⇒ no NEW snapshot ops produced by this box (existing on-disk snapshot markers are untouched and still read via the reader flag) — byte-identical to the pre-P-011 intent. Owner/leader flips ON after the P-008 two-machine convergence proof.' }],
     [FLAGS.SUBSTRATE_SIDECAR, { case: 'incomplete', reason: 'WI-1994: same EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class — this flag\'s OWN code comment above has always said "DEFAULT OFF — staged on :3170 FIRST; never :3070 until integration-verified... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so post the 2026-06-29 P-011 inversion it silently derived default-ON. Live-evidenced harm (WI-1910): a fresh containerized-rig frame boots the dark substrate-sidecar path and the sidecar process dies exit 1 right after joining its topic (crash-loop respawn), the mechanism behind WI-1910\'s 0 peer_connected. WI-604 (the "complete + flip" umbrella feature) was separately deprecated 2026-07-03 — the full sidecar was never built out (stubbed replication spike only) — so there is no live plan driving this to a real default-ON graduation; it stays dark until one exists. OFF ⇒ in-process substrate boot, today\'s actually-running behavior on :3070.' }],
     [FLAGS.RECLAIM_STALLED, { case: 'owner-authority', reason: 'EI-7685: THIRD instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR bug-fix class in this same file — the flag\'s OWN code comments (work-items-stale-claims.ts, dbos/in-process-periodic.ts, plan-items/stale-claims.ts, fleet/spawn-reclaim.ts) all say "default OFF" / "DARK because freeing a LIVE agent\'s claim changes live placement on a fleet-critical hot path (D-003: land it attended)" — a deliberate agent-activity-liveness-truth-2026-06-21 P-003 design decision that this leg must ship attended — but it was never added to this allowlist, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-reclaim-stalled) = true. Live-evidenced harm (EI-7685): an agent mid an uninterrupted ~20min build (alive, no crash) had its work-item claim reclaimed by the "stalled" leg for merely not calling work_items:checkpoint in the window, wiping its in-flight checkpoint and reassigning the item to an idle peer — exactly the live-placement disruption D-003 says must never ship unattended. OFF ⇒ only the DEAD-holder + confirmed-terminal-spawn legs free claims (today\'s actually-safe behavior); owner flips ON after an attended review of the stalled-window tuning (this session\'s own checkpoint cadence — routine long builds without a checkpoint touch — is itself evidence the default stalledMs/graceMs is too aggressive to enable blind). RE-APPLIED 2026-07-05 ~21:22Z after a fleet-wide `git reset --hard` (17:12:34 local, unrelated incident under investigation by su-f0afe) wiped this uncommitted edit before git-sync could commit it.' }],
     [FLAGS.PSU_END_USER, { case: 'owner-authority', reason: 'WI-3093 (found 2026-07-05 by su-f5241 while closing the ticket for "no psu launch button visible"): FOURTH instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED bug-fix class in this same file — this flag\'s OWN code comment directly above (psu-in-desktop-builds-2026-06-23 C1) has always said "DEFAULT OFF — this is the legitimate owner-authority/SECURITY dark case... the owner must personally ratify the end-user exposure before it defaults on... KNOWN_DARK_FLAGS" but was never actually added here, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-psu-end-user) = true — and made ACTIVELY EXPLOITABLE, not just theoretically live, the moment WI-3093\'s OWN fix rendered ConsoleLauncherButton in ChromeShell (previously the button existed but was never mounted, so the dark-default bug had no user-visible surface; now it does): an end user of the shipped desktop app could see and click a button that opens a full unauthenticated superuser agent shell, with zero owner ratification. OFF ⇒ the entry is not offered; the bundled psu shim is inert (today\'s actually-intended, safe behavior — dev/internal launch via other paths is unchanged). Owner flips ON only after personally ratifying end-user psu exposure.' }],

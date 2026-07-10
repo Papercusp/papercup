@@ -1574,18 +1574,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the merge gate (top of mergeOnePass), so it never races an in-flight pass.
   let forceReFold = false;
 
-  // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED, dark.
-  // When on: (a) seed a fresh/reset cursor at each log's latest `__snapshot__`
-  // index so a new joiner folds from the snapshot instead of replaying full
-  // history (P-007), and (b) periodically compact the OWN log once it grows past
-  // SNAPSHOT_COMPACT_EVERY_OPS ops since its last snapshot (P-005). The flag is
-  // read ONCE at boot (boot-scoped, like the authority transports — a runtime
-  // flip needs a reboot to take effect). OFF ⇒ both no-ops, cursor seeds at 0,
-  // byte-identical to today. `lastSnapshotCoversUpTo` is seeded from the existing
-  // latest snapshot so a restart (the watchdog recycles ~every 12 min) does NOT
-  // re-compact a log that hasn't grown a threshold since.
-  const snapshotEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT, 'system').catch(() => false);
-  let lastSnapshotCoversUpTo = snapshotEnabled
+  // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED.
+  // WI-3370 (2026-07-10) split ONE boolean into two: (a) the READER —
+  // SUBSTRATE_LOG_SNAPSHOT_READER (default ON) — seeds a fresh/reset cursor at
+  // each log's latest `__snapshot__` index so a new joiner folds from the
+  // snapshot instead of replaying full history (P-007); and (b) the PRODUCER —
+  // SUBSTRATE_LOG_SNAPSHOT (dark, default OFF) — periodically compacts the OWN
+  // log once it grows past SNAPSHOT_COMPACT_EVERY_OPS ops since its last snapshot
+  // (P-005), whose real-wire replay-cost saving + cross-machine convergence are
+  // still P-008-unverified. Both flags are read ONCE at boot (boot-scoped, like
+  // the authority transports — a runtime flip needs a reboot to take effect).
+  // producerEnabled OFF ⇒ no NEW snapshot ops produced (no-op); readerEnabled OFF
+  // ⇒ cursor never seeds from a snapshot, folds from 0 instead — either OFF is
+  // byte-identical to pre-P-011 intent. `lastSnapshotCoversUpTo` (the producer's
+  // own compaction-cadence anchor) is seeded from the existing latest snapshot
+  // only when the PRODUCER is enabled, so a restart (the watchdog recycles ~every
+  // 12 min) does NOT re-compact a log that hasn't grown a threshold since.
+  const snapshotReaderEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER, 'system').catch(() => false);
+  const snapshotProducerEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT, 'system').catch(() => false);
+  let lastSnapshotCoversUpTo = snapshotProducerEnabled
     ? ((await findLatestSnapshotIndex(ownLog).catch(() => null)) ?? 0)
     : 0;
 
@@ -2092,7 +2099,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // snapshot, not index 0. Idempotent — only seeds logs with no cursor
       // position yet, so steady-state passes are O(logs) cheap `.has()` checks.
       // OFF ⇒ never called ⇒ cursor seeds at 0 (unchanged).
-      if (snapshotEnabled) {
+      if (snapshotReaderEnabled) {
         // WI-1544 isolation: a seed failure means "start that log at 0" (slower,
         // still correct) — it must never abort the pass via the outer catch.
         try {
@@ -2296,7 +2303,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // fires only every ~SNAPSHOT_COMPACT_EVERY_OPS ops (the O(history) own-log
       // read is amortized). Best-effort: a failed compaction must NEVER abort the
       // merge pass. OFF ⇒ never runs (no snapshot ops ever produced).
-      if (snapshotEnabled && shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo)) {
+      if (snapshotProducerEnabled && shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo)) {
         try {
           const snap = await produceLogSnapshot(ownLog, {
             now: Date.now(),

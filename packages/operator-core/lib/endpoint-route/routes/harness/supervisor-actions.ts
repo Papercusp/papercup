@@ -19,6 +19,7 @@ import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-cor
 import { phasePhaseLabel } from '../../../harness-phases';
 import { harnessPath } from '../../../harness-paths';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { GREEN_CHECKPOINT_ESCALATION_PHASES } from '../../../harness/improvements/watchdog';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const supervisor = defineTool({
@@ -86,6 +87,17 @@ const resolveEscalation = defineTool({
 
     if (block || action === 'clear') {
       const { sql } = getOrgPg();
+      // EI-9205: green-checkpoint-stall + green-checkpoint-watchdog are TWO distinct
+      // harness_escalations rows for the SAME conceptual condition (one in-routine,
+      // one standalone-watchdog), collected independently by collectEscalationSignals.
+      // Annotating only the requested phase left the sibling row's supervisor_notes
+      // empty, so the collector re-fired a near-duplicate unresolved-escalation
+      // work-item on the sibling phase minutes later (EI-9197 → EI-9203). When the
+      // requested phase is one of this pair, fan the same note/clear out to BOTH so a
+      // single triage call suppresses the collector on both rows.
+      const targetPhases = GREEN_CHECKPOINT_ESCALATION_PHASES.includes(rowPhase)
+        ? GREEN_CHECKPOINT_ESCALATION_PHASES
+        : [rowPhase];
       await sql.unsafe(
         `UPDATE harness_shared.harness_escalations
             SET supervisor_notes = CASE
@@ -99,8 +111,8 @@ const resolveEscalation = defineTool({
                 mtime_ms = $6
           WHERE workspace_id = $1
             AND harness_slug = $2
-            AND phase = $3`,
-        [activeWorkspaceId(), slug, rowPhase, block, action === 'clear', Date.now()],
+            AND phase = ANY($3)`,
+        [activeWorkspaceId(), slug, targetPhases, block, action === 'clear', Date.now()],
       );
     }
 

@@ -186,6 +186,26 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
   // Count 20 → 21; well under DARK_FLAGS_HIGH_WATERMARK (22).
   'papercusp-plan-part-federation',
+  // 2026-07-10 (WI-3370) — NOT a new post-inversion darkening: the SIXTH instance of
+  // the same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-
+  // sidecar / papercusp-reclaim-stalled / papercusp-psu-end-user / papercusp-plan-
+  // part-federation above. papercusp-substrate-log-snapshot's OWN code comment
+  // (libs/flags/src/types.ts, substrate-peer-log-compaction-2026-06-13 design A,
+  // D-005) has ALWAYS said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS" but
+  // was never actually added to DARK_FLAGS, so it silently derived default-ON both
+  // before AND after the P-011 inversion — and because ONE boolean gated both the
+  // reader (seedCursorFromSnapshots) and the producer (produceLogSnapshot), the
+  // unverified real-wire/cross-machine producer path (P-008, same D-003 gate as
+  // AUTHORITY_RPC_PROTOMUX) was silently live too. Split as part of this fix: the
+  // reader leg (unambiguously safe for the local-seed case; REQUIRED for
+  // seed-history-trim-public-builds-2026-07-07's sparse public-build seed to
+  // restore) is now its own default-ON papercusp-substrate-log-snapshot-reader flag
+  // (NOT in this snapshot); this flag now gates only the P-008-unverified producer
+  // and is restored to its always-intended default-OFF. Count 21 → 22 — AT
+  // DARK_FLAGS_HIGH_WATERMARK (22); the watermark ceiling is `<=`, so this does not
+  // breach it, but leaves ZERO headroom — see EI-9140's 2026-07-10 review (types.ts)
+  // for the standing capacity note to the owner.
+  'papercusp-substrate-log-snapshot',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -334,7 +354,12 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-10 (EI-9064 dark-flag-age sweep) — papercusp-plan-part-federation: BUG-FIX
     // correction, not a new darkening (own comment always said dark, never actually added —
     // see PRE_INVERSION_DEFAULT_OFF above). FIFTH instance of the EI-7230-class bug. Count 20 → 21.
-    expect(offCount).toBe(21);
+    // 2026-07-10 (WI-3370) — papercusp-substrate-log-snapshot: BUG-FIX correction (own
+    // comment always said dark, never actually added — see PRE_INVERSION_DEFAULT_OFF
+    // above), SIXTH instance of the EI-7230-class bug; split off a new default-ON reader
+    // sibling flag (papercusp-substrate-log-snapshot-reader, not in this count) so the
+    // producer alone goes dark. Count 21 → 22 — AT DARK_FLAGS_HIGH_WATERMARK (22).
+    expect(offCount).toBe(22);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
