@@ -12,10 +12,16 @@
  * self-select (and the matching `diagnoseClaimNextMiss` ready-count) while leaving it fully
  * visible/editable/commentable and still directly claimable BY ID.
  *
+ * fleet-deltas-leader-primitives-2026-07-10 P-006 (EI-8993) extended the hold to BOTH
+ * families: the feature claim floor (claimFloorsWhereSql) now honors _claimHold too, and
+ * `opts.by`/`opts.reason` stamp held_open_by/held_open_reason (the named HOLD-OPEN
+ * setWorkItemState's terminal guard enforces — see work-items-lifecycle.integration.test.ts).
+ *
  * Proves against real Postgres (testcontainer; Docker required):
  *   • setWorkItemClaimHold sets/clears payload._claimHold on an issue-family row;
- *   • it is a no-op (`applicable:false`, no payload mutation) on a feature-family row;
+ *   • it applies to a FEATURE-family row too (P-006), stamping held_open_by/reason;
  *   • claimNextWorkItem's issue tier SKIPS a held item and serves an unheld one instead;
+ *   • claimNextWorkItem's FEATURE tier likewise skips a held feature (P-006 floor);
  *   • a held item is STILL directly claimable by id (claimWorkItem bypasses the hold);
  *   • diagnoseClaimNextMiss reports a held-only backlog as pending-but-NOT-ready (genuinely
  *     gated — don't idle, but don't hot-retry either), never a false "drained" or a false race;
@@ -114,16 +120,31 @@ describe('setWorkItemClaimHold (WI-2797)', () => {
     expect(payload).toMatchObject({ other: 'kept' }); // sibling payload keys survive the clear
   });
 
-  it('is a no-op on a feature-family item (applicable:false, no payload mutation)', async () => {
+  it('applies to a FEATURE-family item too, stamping held_open_by/reason (P-006)', async () => {
     await seedFeature('F-hold-1');
-    const res = await wi.setWorkItemClaimHold('F-hold-1', true, { harness: H });
-    expect(res).toMatchObject({ applicable: false, hold: false });
-    const rows = await db.sql<{ payload: unknown }[]>`
-      SELECT payload FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug = ${H} AND feature_id = 'F-hold-1'`;
-    // harness_features_consolidated has no payload column in this DDL — the no-op path never
-    // even attempts the work_items UPDATE, so nothing here was touched (still todo/unclaimed).
-    expect(rows).toHaveLength(1);
+    const res = await wi.setWorkItemClaimHold('F-hold-1', true, { harness: H, by: 'leader-1', reason: 'release gate' });
+    expect(res).toMatchObject({ id: 'F-hold-1', hold: true, applicable: true });
+    // The view has no payload column — the stamp lands on the work_items BASE row.
+    expect(await readPayload('F-hold-1')).toMatchObject({
+      _claimHold: true,
+      held_open_by: 'leader-1',
+      held_open_reason: 'release gate',
+    });
+    expect(wi.readWorkItemHeldOpenBy(await readPayload('F-hold-1'))).toEqual({ by: 'leader-1', reason: 'release gate' });
+  });
+
+  it('clearing the hold removes ALL hold keys (_claimHold + held_open_by/reason/at), keeping siblings', async () => {
+    await seedIssue('WI-hold-3');
+    await wi.setWorkItemClaimHold('WI-hold-3', true, { harness: H, by: 'leader-1', reason: 'gating' });
+    const payload = await readPayload('WI-hold-3');
+    expect(payload).toMatchObject({ _claimHold: true, held_open_by: 'leader-1', held_open_reason: 'gating' });
+    expect(payload).toHaveProperty('held_open_at');
+    await wi.setWorkItemClaimHold('WI-hold-3', false, { harness: H });
+    const cleared = await readPayload('WI-hold-3');
+    for (const k of ['_claimHold', 'held_open_by', 'held_open_reason', 'held_open_at']) {
+      expect(cleared).not.toHaveProperty(k);
+    }
+    expect(wi.readWorkItemHeldOpenBy(cleared)).toBeNull();
   });
 
   it('returns null for an id that does not exist', async () => {
@@ -154,6 +175,26 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
     const claimed = await wi.claimWorkItem('WI-held-direct', 'bee-direct', { harness: H });
     expect(claimed?.id).toBe('WI-held-direct');
     expect(claimed?.assignee).toBe('bee-direct');
+  });
+
+  it('the FEATURE tier likewise skips a held feature and serves the unheld one (P-006 floor)', async () => {
+    await seedFeature('F-held', { createdTs: 100 });
+    await wi.setWorkItemClaimHold('F-held', true, { harness: H, by: 'leader-1', reason: 'release gate' });
+    await seedFeature('F-open', { createdTs: 200 });
+
+    // Oldest-first would normally serve F-held (createdTs:100) — the P-006 floor must skip it.
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-f1' });
+    expect(got?.id).toBe('F-open');
+
+    // The held feature was NEVER claimed by the self-select path…
+    const rows = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'F-held'`;
+    expect(rows[0]?.taken_by).toBeNull();
+
+    // …but clearing the hold makes it self-selectable again.
+    await wi.setWorkItemClaimHold('F-held', false, { harness: H });
+    const next = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-f2' });
+    expect(next?.id).toBe('F-held');
   });
 
   it('clearing the hold makes the item self-selectable again', async () => {

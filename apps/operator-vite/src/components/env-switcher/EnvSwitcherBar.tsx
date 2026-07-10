@@ -308,6 +308,13 @@ export function EnvSwitcherBar() {
         }
         style={{
           ...(release ? { marginLeft: 'auto' } : {}),
+          // WI-3386: a narrow viewport (mac packaged GUI — the native terminal
+          // embed reserves ~42% of the window, leaving the webview well under
+          // what this row needs) must never let the pipeline-stats text push a
+          // BUTTON out of flex-shrink range — only the stats span (below) may
+          // shrink/truncate. The release button especially is the documented
+          // escape hatch and must stay reachable.
+          flexShrink: 0,
           display: 'inline-flex',
           alignItems: 'baseline',
           gap: 4,

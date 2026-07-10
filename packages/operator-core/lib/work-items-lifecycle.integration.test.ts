@@ -241,6 +241,106 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
   });
 });
 
+// P-006 (fleet-deltas-leader-primitives-2026-07-10, EI-8993): an item HELD OPEN
+// (payload.held_open_by via setWorkItemClaimHold { by }) refuses a TERMINAL
+// transition by anyone but the holder — the dup-close guard for leader-gated items.
+describe('P-006 held-open guard — non-holder terminal transitions refuse', () => {
+  async function heldBug(holder = 'leader-1', reason = 'gating on live evidence') {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'held', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemClaimHold(bug.id, true, { harness: 'papercup', by: holder, reason });
+    return bug;
+  }
+
+  it('a NON-holder closing a held item is rejected (state unchanged)', async () => {
+    const bug = await heldBug();
+    await expect(wi.setWorkItemState(bug.id, 'resolved', { by: 'agX', completionRef: 'looks stale' })).rejects.toThrow(
+      /HELD OPEN by leader-1/,
+    );
+    const still = await wi.getWorkItem(bug.id, 'papercup');
+    expect(still?.state).toBe('open');
+  });
+
+  it('the HOLDER closing their own held item passes the guard', async () => {
+    const bug = await heldBug('leader-1');
+    const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'leader-1', completionRef: 'holder closes' });
+    expect(done?.state).toBe('resolved');
+  });
+
+  it('force:true overrides the hold (leader/reaper escape hatch)', async () => {
+    const bug = await heldBug('leader-1');
+    const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'agX', completionRef: 'forced', force: true });
+    expect(done?.state).toBe('resolved');
+  });
+
+  it('a NON-terminal transition by a non-holder is NOT gated (the hold only guards closing)', async () => {
+    const bug = await heldBug('leader-1');
+    // issue-family non-terminal move: open → open via a no-op-ish state write is the only
+    // non-settled issue state; assert the guard doesn't fire (no throw).
+    const same = await wi.setWorkItemState(bug.id, 'open', { by: 'agX' });
+    expect(same?.state).toBe('open');
+  });
+});
+
+// P-006 (EI-8973): a REOPEN clears the terminal stamps and archives them into
+// payload.reopenHistory — a reopened item must not keep reading as "terminally
+// completed by X" to every later auditor (the re-close loop EI-8973 reports).
+describe('P-006 reopen clears terminal stamps into payload.reopenHistory', () => {
+  async function stampsOf(id: string) {
+    const rows = await db.sql<
+      { terminal_owner: string | null; terminal_completion_ref: string | null; payload: Record<string, unknown> | null }[]
+    >`SELECT terminal_owner, terminal_completion_ref, payload
+        FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return rows[0];
+  }
+
+  it('self-reopen (holderless) clears terminal_owner/ref and appends the archived entry', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'agC finished it' });
+    expect((await stampsOf(bug.id))?.terminal_owner).toBe('agC');
+
+    const reopened = await wi.setWorkItemState(bug.id, 'open', { by: 'agC' });
+    // The returned row reflects the clear this turn, not just the next read.
+    expect(reopened?.terminalOwner).toBeNull();
+    expect(reopened?.terminalCompletionRef).toBeNull();
+
+    const row = await stampsOf(bug.id);
+    expect(row?.terminal_owner).toBeNull();
+    expect(row?.terminal_completion_ref).toBeNull();
+    const history = row?.payload?.reopenHistory as Array<Record<string, unknown>>;
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      by: 'agC',
+      force: false,
+      prevState: 'resolved',
+      terminalOwner: 'agC',
+      terminalCompletionRef: 'agC finished it',
+    });
+    expect(typeof history[0].at).toBe('string');
+  });
+
+  it('force-reopen by a peer archives too, and the history is BOUNDED (last 5)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    for (let i = 0; i < 6; i++) {
+      await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: `round ${i}` });
+      await wi.setWorkItemState(bug.id, 'open', { by: 'agD', force: true });
+    }
+    const row = await stampsOf(bug.id);
+    expect(row?.terminal_owner).toBeNull();
+    const history = row?.payload?.reopenHistory as Array<Record<string, unknown>>;
+    expect(history).toHaveLength(5); // slice(-4) + the new entry
+    expect(history[4]).toMatchObject({ by: 'agD', force: true, terminalCompletionRef: 'round 5' });
+    expect(history[0]).toMatchObject({ terminalCompletionRef: 'round 1' }); // round 0 aged out
+  });
+
+  it('a plain terminal transition (no reopen) never writes reopenHistory', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'done once' });
+    const row = await stampsOf(bug.id);
+    expect(row?.terminal_owner).toBe('agC');
+    expect(row?.payload?.reopenHistory).toBeUndefined();
+  });
+});
+
 describe('comment (Threadable) path — work_item[kind=bug] commentIssue', () => {
   it('creates a thread post + fires issue_commented excluding the commenter', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'needs detail', harness: 'papercup', createdBy: 'agA' });
