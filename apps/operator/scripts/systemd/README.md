@@ -288,3 +288,86 @@ DHT_RED_REFILE_H=6 bash apps/operator/scripts/papercup-dht-liveness-check.sh
 # EI (the signal itself may be dark, default 6h):
 DHT_STALE_H=3 bash apps/operator/scripts/papercup-dht-liveness-check.sh
 ```
+
+---
+
+# Fed-plane disk-health probe — installation (EI-8982)
+
+`papercup-fedplane-disk-health.{service,timer}` (Linux) /
+`com.papercusp.fedplane-disk-health.plist` (macOS, under `../launchd/`) runs
+`../papercup-fedplane-disk-health-check.sh` every 5 minutes on any fed-plane
+host and files an EI when either (a) disk usage on the papercusp data volume
+crosses a threshold (default 90%) or (b) `serve.log` carries an ENOSPC /
+crash-loop signature.
+
+**Root cause this catches:** a fed-plane machine's disk can fill silently
+until total wedge — no disk monitor, no ENOSPC alert, no health surface
+existed before this probe. 2026-07-10 (P-059 live-rig cause #9): a Mac VM's
+Data volume hit 100% (43Mi free); `~/.papercusp/operator.lock` writes failed
+ENOSPC, serve spawns crash-looped (~25s connect-cycles), and the ONLY visible
+symptom was on the PEER machine — a mysterious connect/drop cycle with zero
+local signal. Diagnosis took cross-machine correlation; the fix itself was
+trivial (freed 30G of a stale cargo target dir). This probe (and the
+companion note added to `replication-liveness.ts`'s `connected_never_replicated`
+alert body) exists so the next occurrence is caught locally within minutes,
+and a zombie-connection alert on the OTHER machine now points investigators
+at peer host-health as a likely cause.
+
+**Detection + escalation ONLY** — same posture as the DHT liveness probe
+above: this script never deletes files or restarts anything. Recovery
+(freeing space, restarting a wedged serve process) is a human/agent call made
+off the filed EI.
+
+## Install — Linux (systemd --user)
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-fedplane-disk-health.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-fedplane-disk-health.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-fedplane-disk-health.timer
+```
+
+Verify: `systemctl --user list-timers papercup-fedplane-disk-health.timer`,
+`journalctl --user -u papercup-fedplane-disk-health.service --since "5 min ago"`.
+
+## Install — macOS (launchd, e.g. the Mac VM)
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cd /path/to/papercusp/apps/operator/scripts/launchd
+# Edit the plist's ProgramArguments REPO_ROOT placeholder + the HOME env var
+# to this machine's actual checkout/home before installing:
+sed -e "s#/REPO_ROOT#$(cd ../../../.. && pwd)#" \
+    -e "s#__REPLACE_WITH_HOME__#$HOME#" \
+    com.papercusp.fedplane-disk-health.plist > ~/Library/LaunchAgents/com.papercusp.fedplane-disk-health.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.papercusp.fedplane-disk-health.plist
+launchctl enable gui/$(id -u)/com.papercusp.fedplane-disk-health
+```
+
+Verify: `launchctl print gui/$(id -u)/com.papercusp.fedplane-disk-health`,
+`tail -f /tmp/papercup-fedplane-disk-health.log`.
+
+## Manual run / dry-run (either platform)
+
+```bash
+# Log-only, no EI filed:
+DISK_NO_FILE=1 bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+
+# Point at a specific volume / serve.log (e.g. testing without installing):
+DISK_PATH=/Volumes/Data SERVE_LOG=/path/to/serve.log DISK_NO_FILE=1 \
+  bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+```
+
+## Tune thresholds
+
+```bash
+# Disk-usage warn threshold (default 90%):
+DISK_WARN_PCT=85 bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+
+# ENOSPC/crash-loop signature count in the log tail before alarming (default 5):
+CRASH_LOOP_MIN_COUNT=3 bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+
+# RED-EI dedup window (default 12h, mirrors the DHT probe's DHT_RED_REFILE_H):
+DISK_RED_REFILE_H=6 bash apps/operator/scripts/papercup-fedplane-disk-health-check.sh
+```

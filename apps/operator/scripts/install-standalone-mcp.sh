@@ -922,6 +922,15 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/lifecycle-report.sh" "$CC_LIFECYCLE_HOOK"
     chmod 755 "$CC_LIFECYCLE_HOOK"
   fi
+  # Shared python lib imported by statusline-fleet.sh + posttooluse-objective-title.sh
+  # (they resolve it off their own dirname, so it MUST land beside them). Copy it BEFORE
+  # its importers: a hook that lands without pc_tty.py raises ImportError, fails open, and
+  # silently stops setting the terminal title — the exact WI-3665 failure, reintroduced.
+  # install-hooks-parity.test.ts fails if a hooks/cc file ever stops being copied here.
+  if [ -f "${CC_HOOK_SRC_DIR}/pc_tty.py" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pc_tty.py" "${CC_HOOK_DEST_DIR}/pc_tty.py"
+    chmod 644 "${CC_HOOK_DEST_DIR}/pc_tty.py"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" "$CC_STATUSLINE"
     chmod 755 "$CC_STATUSLINE"

@@ -1050,7 +1050,7 @@ function FeatureSlideOver({
           </button>
         </header>
         <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: '0.8em', textTransform: 'uppercase', letterSpacing: '0', color: 'var(--fg-mute)' }}>Timeline</h4>
+          <h4 style={{ margin: '0 0 12px', fontSize: '0.8em', textTransform: 'uppercase', color: 'var(--fg-mute)' }}>Timeline</h4>
           {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.875em' }}>Loading…</p> : null}
           {error ? <p style={{ color: 'var(--bad)', fontSize: '0.875em' }}>{error}</p> : null}
           {!loading && !error && events.length === 0 ? (

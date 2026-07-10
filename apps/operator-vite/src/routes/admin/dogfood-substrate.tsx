@@ -127,14 +127,14 @@ function DogfoodSubstratePage() {
         )}
 
         <section style={{ marginTop: 12 }} data-testid="dogfood-substrate-boot-history-section">
-          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', letterSpacing: "0", marginBottom: 8 }}>
+          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', marginBottom: 8 }}>
             Boot history
           </h2>
           <BootHistoryTableClient limit={50} />
         </section>
 
         <section style={{ marginTop: 12 }} data-testid="dogfood-substrate-claim-attempts-section">
-          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', letterSpacing: "0", marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
             Claim attempts
             {rows.length > 0 && (
               <Select
@@ -143,7 +143,7 @@ function DogfoodSubstratePage() {
                 onChange={setPickedSlug}
                 options={rows.map((h) => ({ value: h.harnessSlug, label: h.harnessSlug }))}
                 ariaLabel="Claim-attempt harness picker"
-                triggerStyle={{ fontSize: 11, fontWeight: 400, minHeight: 24, padding: '2px 6px', textTransform: 'none', letterSpacing: 0 }}
+                triggerStyle={{ fontSize: 11, fontWeight: 400, minHeight: 24, padding: '2px 6px', textTransform: 'none' }}
               />
             )}
           </h2>

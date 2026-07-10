@@ -122,7 +122,7 @@ export default function ThemeSelector() {
         }
       >
         <div role="menu" aria-label="Theme">
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0 }}>
+          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase' }}>
             Theme
           </div>
           {themes.map((t) => {

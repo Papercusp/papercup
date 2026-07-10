@@ -64,7 +64,6 @@ export function TrustBadge(props: TrustBadgeProps) {
     borderRadius: 999,
     fontSize: 10,
     fontWeight: 700,
-    letterSpacing: 0,
     textTransform: 'uppercase',
     whiteSpace: 'nowrap',
     color: state.color,

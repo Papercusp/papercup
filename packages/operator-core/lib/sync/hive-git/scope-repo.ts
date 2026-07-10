@@ -91,6 +91,30 @@ export function parseScopeRefSegment(segment: string): ScopeId | null {
 }
 
 /**
+ * WI-3641: the wire `repoKey` a hive-git-serve requester sends
+ * (serve-wiring.ts's `ReqFrame.repoKey`) to fetch a `scopes/` repo. The wire
+ * transport's `repoKey` is a single hiveGitRepoPath-style path component (no
+ * `/`, storage.ts's `assertSafeComponent`) — reusing `scopeRefSegment`'s
+ * `fleet-<uid>--<slug>` encoding directly would collide with (and be
+ * indistinguishable from) a plain managed-repo key of that literal name, so
+ * this prefixes it `scope:` (a `:` is a legal component char, and no
+ * managed-repo key is ever minted with one) to make scope-family requests
+ * self-describing on the wire. `parseScopeRepoWireKey` is the inverse; a
+ * non-`scope:`-prefixed repoKey is a normal (non-scope) repo request.
+ */
+export function scopeRepoWireKey(scope: ScopeId): string {
+  return `scope:${scopeRefSegment(scope)}`;
+}
+
+/** Inverse of {@link scopeRepoWireKey}. Null when `repoKey` isn't a
+ *  scope-family wire key at all (caller falls back to the plain repoKey path)
+ *  OR carries a malformed scope segment (caller must refuse, never guess). */
+export function parseScopeRepoWireKey(repoKey: string): ScopeId | null {
+  if (!repoKey.startsWith('scope:')) return null;
+  return parseScopeRefSegment(repoKey.slice('scope:'.length));
+}
+
+/**
  * The foreign-marked tracking ref for a scope deliverable:
  * `refs/foreign/<segment>/<name>` — one segment after `refs/foreign/`, so the
  * landed `isForeignMarkedRef` / `foreignFleetFromRef` contract holds verbatim.

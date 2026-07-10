@@ -62,7 +62,6 @@ const EDITOR_STYLE: CSSProperties = {
 const EDITOR_HEADING_STYLE: CSSProperties = {
   fontSize: 10,
   fontWeight: 700,
-  letterSpacing: 0,
   textTransform: 'uppercase',
   color: 'var(--fg-mute, #7f9bb4)',
 };

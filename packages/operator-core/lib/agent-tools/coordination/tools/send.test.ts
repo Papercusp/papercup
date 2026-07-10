@@ -386,8 +386,9 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
     fedScopeM.mockResolvedValue({ kind: 'many', candidates: ['hive-a', 'hive-b'] } as never);
     const b = await body({ to: ['bee-1'], summary: 'hi' });
     expect(b.results[0]).toMatchObject({ ok: true, federated: false });
-    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
-    expect(opts.harnessSlug).toBeUndefined();
+    // WI-3653: an ambiguous auto-resolve also resolves to explicit-local null (see above).
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string | null };
+    expect(opts.harnessSlug).toBeNull();
   });
 
   it('per-item scope: one item local, one auto-federated, in a single items:[…] call', async () => {
@@ -401,10 +402,11 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results[0]).toMatchObject({ federated: true, federationScope: 'my-hive' });
     expect(b.results[1]).toMatchObject({ federated: false });
-    const first = sendM.mock.calls[0][1] as { harnessSlug?: string };
-    const second = sendM.mock.calls[1][1] as { harnessSlug?: string };
+    const first = sendM.mock.calls[0][1] as { harnessSlug?: string | null };
+    const second = sendM.mock.calls[1][1] as { harnessSlug?: string | null };
     expect(first.harnessSlug).toBe('my-hive');
-    expect(second.harnessSlug).toBeUndefined();
+    // WI-3653: the local item resolves to explicit null, not undefined (see above).
+    expect(second.harnessSlug).toBeNull();
   });
 });
 

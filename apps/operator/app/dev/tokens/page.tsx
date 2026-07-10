@@ -53,7 +53,7 @@ function Value({ name }: { name: string }) {
 function Section({ title, names }: { title: string; names: string[] }) {
   return (
     <section style={{ marginBottom: 16 }}>
-      <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0 }}>{title}</h2>
+      <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase' }}>{title}</h2>
       {names.map((n) => <Swatch key={n} name={n} />)}
     </section>
   );
@@ -81,11 +81,11 @@ export default function TokensGallery() {
           <Section title="Semantic — border" names={SEMANTIC_BORDER} />
           <Section title="Other surfaces" names={SEMANTIC_OTHER} />
           <section style={{ marginBottom: 16 }}>
-            <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0 }}>Motion</h2>
+            <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase' }}>Motion</h2>
             {MOTION.map((n) => <Value key={n} name={n} />)}
           </section>
           <section>
-            <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0 }}>Shadows / overlay</h2>
+            <h2 style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 6, textTransform: 'uppercase' }}>Shadows / overlay</h2>
             {SHADOWS.map((n) => <Value key={n} name={n} />)}
           </section>
         </div>

@@ -10,6 +10,7 @@ import {
   normalizeAudioFormat,
   isServerTtsEngine,
   resolveTtsEngine,
+  probeVoicemodeHealth,
   MAX_AUDIO_BYTES,
   MIN_AUDIO_BYTES,
 } from './operator-voice-proxy-helpers';
@@ -104,5 +105,38 @@ describe('resolveTtsEngine', () => {
     const probe = vi.fn(healthy);
     await resolveTtsEngine('kokoro', { ttsEngine: 'kokoro' }, probe);
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+// WI-3663: the "Re-detect engines" button probes voicemode's local Whisper via
+// /v1/models (there is no dedicated /health). A down server must read false, never throw.
+describe('probeVoicemodeHealth', () => {
+  it('returns true when /v1/models answers ok', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      expect(await probeVoicemodeHealth('http://vm.test')).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith('http://vm.test/v1/models', expect.anything());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns false on a non-ok status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
+    try {
+      expect(await probeVoicemodeHealth('http://vm.test')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns false (never throws) when the server is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+    try {
+      expect(await probeVoicemodeHealth('http://vm.test')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

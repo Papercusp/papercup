@@ -846,7 +846,7 @@ function Section(props: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {[...groupedBySlug.entries()].map(([slug, slugRows]) => (
             <div key={slug} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <h3 style={{ margin: 0, fontSize: 13, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0 }}>{slug}</h3>
+              <h3 style={{ margin: 0, fontSize: 13, color: 'var(--fg-mute)', textTransform: 'uppercase' }}>{slug}</h3>
               <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {slugRows.map(renderRow)}
               </ul>

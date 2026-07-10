@@ -4,22 +4,18 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import RouteLink from '../../_components/RouteLink';
 
 import { toast } from 'sonner';
-import { LazyDetails } from '../../_components/LazyDetails';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { Button } from '../../harness/Button';
 import { DraftInput } from '@/lib/forms';
-import { useLexicon } from '@/lib/useLexicon';
 import { NumField } from './NumField';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import {
   initVoiceMode,
   listAvailableVoices,
   getVoiceConfig,
   updateVoiceConfig,
-  assignVoiceToRole,
   speak,
 } from '@/app/_components/voice/voice-mode';
 import { setVoicePrefsClient } from '@/app/_components/voice/voice-prefs-client';
@@ -191,15 +187,6 @@ export default function VoiceSettingsPage() {
     }
   }, []);
 
-  const onAssign = useCallback((role: string, voiceName: string) => {
-    assignVoiceToRole(role, voiceName);
-    setConfig(getVoiceConfig());
-  }, []);
-
-  const onTest = useCallback((role: string) => {
-    speak(`This is the voice for ${role.replace(':', ' ')}.`, role, 'polite', { force: true });
-  }, []);
-
   const onTestVoice = useCallback(() => {
     speak('Voice mode is working.', 'system:operator', 'polite', { force: true });
   }, []);
@@ -218,14 +205,31 @@ export default function VoiceSettingsPage() {
     });
   }, [prefs?.ttsEngine, askConfirm]);
 
-  const onRedetect = useCallback(() => {
-    // The chrome's voice-engines.ts caches detection; re-fetching prefs
-    // triggers a fresh probe on next speak(). For now we just refetch
-    // prefs + spend so the UI reflects current state.
-    void fetch('/api/agent-mcp/operator-voice-prefs')
-      .then((r) => r.ok ? r.json() : null)
-      .then((p) => { if (p) setPrefs(p as VoicePrefs); });
-    toast.info('Re-detecting engines. Reload the page if engine status doesn\'t update.');
+  const onRedetect = useCallback(async () => {
+    // Actually probe engine reachability (WI-3663) instead of the old no-op that
+    // only re-fetched prefs. operator-voice-engine-health probes the LOCAL engines
+    // live (kokoro TTS :8880, voicemode Whisper :2022) and reports which cloud
+    // providers have a key configured — all server-side, no key in the browser.
+    const t = toast.loading('Re-detecting engines…');
+    try {
+      const [health, freshPrefs] = await Promise.all([
+        fetch('/api/agent-mcp/operator-voice-engine-health').then((r) => (r.ok ? r.json() : null)),
+        fetch('/api/agent-mcp/operator-voice-prefs').then((r) => (r.ok ? r.json() : null)),
+      ]);
+      if (freshPrefs) setPrefs(freshPrefs as VoicePrefs);
+      if (!health) {
+        toast.error('Engine detection failed', { id: t });
+        return;
+      }
+      const m = (b: boolean) => (b ? '✓' : '✗');
+      toast.success(
+        `Local: Kokoro ${m(health.kokoro)} · Voicemode ${m(health.voicemode)}  —  ` +
+          `Cloud keys: ElevenLabs ${m(health.elevenlabs)} · OpenAI ${m(health.openai)} · Cartesia ${m(health.cartesia)}`,
+        { id: t, duration: 8000 },
+      );
+    } catch (e) {
+      toast.error(`Engine detection failed: ${(e as Error).message}`, { id: t });
+    }
   }, []);
 
   const setSttEngine = useCallback((kind: SttEngineKind) => {
@@ -241,14 +245,31 @@ export default function VoiceSettingsPage() {
     setShowLeakWarning(false);
   }, [savePrefsPatch]);
 
+  // Populate the account's ElevenLabs voice list via the SERVER proxy
+  // (operator-elevenlabs-voices reads the key server-side). The browser only
+  // ever holds a MASKED key, so the old direct api.elevenlabs.io fetch always
+  // 401'd and the picker was stuck on the hardcoded default (WI-3662).
+  const loadElevenVoices = useCallback(async () => {
+    try {
+      const r = await fetch('/api/agent-mcp/operator-elevenlabs-voices');
+      if (!r.ok) return;
+      const body = (await r.json()) as { voices?: ElevenLabsVoice[] };
+      if (Array.isArray(body.voices) && body.voices.length) setElevenVoices(body.voices);
+    } catch {
+      /* keep the default list */
+    }
+  }, []);
+
+  // Auto-load the account voices once a key is configured, so the Default-voice
+  // picker fills in on page load (not only after clicking "Test connection").
+  useEffect(() => {
+    if (credentials.configured) void loadElevenVoices();
+  }, [credentials.configured, loadElevenVoices]);
+
   const setTtsEngine = useCallback((kind: TtsEngineKind) => {
     void savePrefsPatch({ ttsEngine: kind });
-    if (kind === 'elevenlabs' && credentials.configured) {
-      void fetch('https://api.elevenlabs.io/v1/voices', {
-        headers: { 'xi-api-key': credentials.apiKey ?? '' },
-      }).catch(() => {});
-    }
-  }, [savePrefsPatch, credentials]);
+    if (kind === 'elevenlabs' && credentials.configured) void loadElevenVoices();
+  }, [savePrefsPatch, credentials, loadElevenVoices]);
 
   const onSaveKey = useCallback(async () => {
     if (!keyDraft.trim()) return;
@@ -313,17 +334,9 @@ export default function VoiceSettingsPage() {
       const data: ElevenLabsConnTest = await r.json();
       setConnTest(data);
       if (data.ok) {
-        // Populate voice picker
-        try {
-          const vr = await fetch('https://api.elevenlabs.io/v1/voices');
-          // Note: this won't work without the API key in the request — proxy via server in production.
-          // For now, we rely on the connection-test passing and fall back to a default list.
-          if (vr.ok) {
-            const body = await vr.json();
-            const list = (body?.voices ?? []) as Array<{ voice_id: string; name: string }>;
-            setElevenVoices(list.map((v) => ({ id: v.voice_id, name: v.name })));
-          }
-        } catch { /* ignore */ }
+        // Populate the voice picker via the SERVER proxy — the browser only holds a
+        // masked key, so it must fetch /v1/voices server-side (WI-3662).
+        await loadElevenVoices();
         toast.success(`ElevenLabs connected — ${data.tier} tier`);
       } else {
         toast.error(`ElevenLabs test failed: ${data.error ?? 'unknown'}`);
@@ -331,7 +344,7 @@ export default function VoiceSettingsPage() {
     } finally {
       setTesting(false);
     }
-  }, []);
+  }, [loadElevenVoices]);
 
   const onRateUiChange = useCallback((rate: number) => {
     updateVoiceConfig({ rate });
@@ -1055,59 +1068,6 @@ export default function VoiceSettingsPage() {
         <span style={{ marginLeft: 12, fontSize: 13 }}>{config.rate.toFixed(1)}x</span>
       </section>
 
-      {/* Per-role voices — wrapped in LazyDetails so the heavy table
-          (21 roles × N voices = many <option>s) only mounts the first
-          time the user expands it. Closed by default. */}
-      <section className="pc-settings-section">
-        <LazyDetails
-          summary="Per-role voices"
-          summaryStyle={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}
-        >
-          <p style={hint}>
-            Voices are keyed on role (worker/validator/orchestrator/system:operator/etc.) — all instances
-            of a role share one voice. Per-slug voices are deferred to v1.5.
-          </p>
-          <RoleVoicesTable
-            voices={voices}
-            roleVoices={config.roleVoices}
-            onAssign={onAssign}
-            onTest={onTest}
-          />
-
-          {/* Per-slug voice overrides — show any role@slug entries that exist */}
-          <PerSlugVoiceTable
-            config={config}
-            voices={voices}
-            onAssign={(key, voice) => {
-              assignVoiceToRole(key, voice);
-              setConfig(getVoiceConfig());
-            }}
-            onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key, 'polite', { force: true })}
-          />
-        </LazyDetails>
-      </section>
-
-      {/* ── PRECEDENCE MATRIX (debugging aid, lazy-mounted) ─────────── */}
-      <section className="pc-settings-section">
-        <LazyDetails
-          summaryStyle={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}
-          summary={<>Why isn&apos;t anything speaking? (precedence matrix)</>}
-        >
-          <p style={hint}>If voice isn't working, check this top-to-bottom.</p>
-          <pre style={{ fontSize: 11, padding: 12, background: 'var(--bg-1)', borderRadius: 4, overflow: 'auto' }}>{`
-              global  per-feature  paused   tutorial   leader-tab  result
-              voice   toggle                complete   election
-              ──────  ───────────  ───────  ─────────  ──────────  ──────────
-voice off     off     any          any      any        any         silent
-toggle off    on      off          any      any        any         silent for that feature
-not leader    on      on           any      any        follower    silent (other tab speaks)
-paused        on      on           paused   any        leader      only "pause" nudge speaks
-pre-tutorial  on      on           any      false      leader      silent
-all clear     on      on           running  true       leader      speaks
-`}</pre>
-        </LazyDetails>
-      </section>
-
       {/* ── WEB SPEECH LEAK WARNING MODAL ────────────────────────── */}
       <Modal
         open={showLeakWarning}
@@ -1192,188 +1152,6 @@ function CloudKeyInline({
     </div>
   );
 }
-
-/**
- * Per-slug voice overrides. v1.5 surface for the `role@slug` lookup
- * chain in voice-mode.ts. Lists existing overrides + lets users add
- * new ones with a "role @ slug" composite key.
- */
-function PerSlugVoiceTable({
-  config, voices, onAssign, onTest,
-}: {
-  config: { roleVoices: Record<string, string> };
-  voices: Array<{ name: string; lang: string }>;
-  onAssign: (key: string, voice: string) => void;
-  onTest: (key: string) => void;
-}) {
-  const t = useLexicon();
-  const overrides = Object.keys(config.roleVoices).filter((k) => k.includes('@'));
-  const [addRole, setAddRole] = useState('worker');
-  const [addSlug, setAddSlug] = useState('');
-  const voiceOptions = React.useMemo(
-    () => [
-      { value: '_removed', label: '(removed)' },
-      ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
-    ],
-    [voices],
-  );
-  const overrideRows = React.useMemo(
-    () => overrides.map((key) => ({ key, voice: config.roleVoices[key] ?? '' })),
-    [overrides, config.roleVoices],
-  );
-  const overrideColumns: ColumnDef<{ key: string; voice: string }>[] = [
-    {
-      key: 'rolekey', header: 'Role @ Slug', width: 2,
-      toCopyText: (r) => r.key,
-      render: ({ row }) => <span style={{ fontSize: 12, fontFamily: 'monospace' }}>{row.key}</span>,
-    },
-    {
-      key: 'voice', header: 'Voice', width: 3,
-      toCopyText: (r) => r.voice,
-      render: ({ row }) => (
-        <Select
-          value={row.voice !== '' ? row.voice : '_removed'}
-          onChange={(v) => onAssign(row.key, v === '_removed' ? '' : v)}
-          ariaLabel={`Voice for ${row.key}`}
-          options={voiceOptions}
-          triggerStyle={{ padding: '4px 8px', fontSize: 12, minWidth: 220 } as React.CSSProperties}
-        />
-      ),
-    },
-    {
-      key: 'actions', header: 'Test / Remove', width: 1.5,
-      render: ({ row }) => (
-        <div style={{ display: 'flex', gap: 4 }}>
-          <button type="button" onClick={() => onTest(row.key)} style={{ padding: '4px 8px', fontSize: 11 }}>Test</button>
-          <button type="button" onClick={() => onAssign(row.key, '')} style={{ padding: '4px 8px', fontSize: 11, color: 'var(--bad)' }}>×</button>
-        </div>
-      ),
-    },
-  ];
-  return (
-    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-      <h3 style={{ fontSize: 14, marginBottom: 6 }}>Per-slug voice overrides</h3>
-      <p style={hint}>
-        Override the role voice for a specific {t('pot', { lower: true })} instance.
-        Useful when you have multiple {t('pot', { plural: true, lower: true })} from the same template
-        and want to distinguish them by ear.
-      </p>
-      {overrides.length > 0 && (
-        <div style={{ height: Math.min(360, 36 + overrideRows.length * 40 + 4), marginTop: 8, marginBottom: 12 }}>
-          <RichGrid<{ key: string; voice: string }>
-            columns={overrideColumns}
-            rows={overrideRows}
-            getRowId={(r) => r.key}
-            rowMinHeight={40}
-            headerHeight={32}
-          />
-        </div>
-      )}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 8 }}>
-        <div>
-          <label style={{ ...lbl, fontSize: 11 }}>Role</label>
-          <input
-            type="text"
-            value={addRole}
-            onChange={(e) => setAddRole(e.target.value)}
-            placeholder="worker"
-            style={{ padding: '4px 8px', fontSize: 12, width: 120 }}
-          />
-        </div>
-        <div>
-          <label style={{ ...lbl, fontSize: 11 }}>{t('pot')} slug</label>
-          <input
-            type="text"
-            value={addSlug}
-            onChange={(e) => setAddSlug(e.target.value)}
-            placeholder="papercup-coding-foo"
-            style={{ padding: '4px 8px', fontSize: 12, width: 200 }}
-          />
-        </div>
-        <button
-          type="button"
-          disabled={!addRole.trim() || !addSlug.trim() || voices.length === 0}
-          onClick={() => {
-            const key = `${addRole.trim()}@${addSlug.trim()}`;
-            onAssign(key, voices[0]?.name ?? '');
-            setAddSlug('');
-          }}
-          style={{ padding: '6px 12px', fontSize: 12 }}
-        >
-          Add override
-        </button>
-      </div>
-    </div>
-  );
-}
-
-interface RoleVoicesTableProps {
-  voices: Array<{ name: string; lang: string }>;
-  roleVoices: Record<string, string>;
-  onAssign: (role: string, voiceName: string) => void;
-  onTest: (role: string) => void;
-}
-
-const RoleVoicesTable = React.memo(function RoleVoicesTable({
-  voices,
-  roleVoices,
-  onAssign,
-  onTest,
-}: RoleVoicesTableProps) {
-  const voiceOptions = React.useMemo(
-    () => [
-      { value: '_auto', label: '(auto)' },
-      ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
-    ],
-    [voices],
-  );
-  const rows = React.useMemo(
-    () => KNOWN_ROLES.map((role) => ({ role, current: roleVoices[role] ?? '' })),
-    [roleVoices],
-  );
-  const columns: ColumnDef<{ role: string; current: string }>[] = [
-    {
-      key: 'role', header: 'Role', width: 2,
-      toCopyText: (r) => r.role,
-      render: ({ row }) => <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{row.role}</span>,
-    },
-    {
-      key: 'voice', header: 'Voice', width: 4,
-      toCopyText: (r) => r.current,
-      render: ({ row }) => (
-        <Select
-          value={row.current !== '' ? row.current : '_auto'}
-          onChange={(v) => onAssign(row.role, v === '_auto' ? '' : v)}
-          ariaLabel={`Voice for ${row.role}`}
-          options={voiceOptions}
-          triggerStyle={{ padding: '4px 8px', fontSize: 13, minWidth: 240 } as React.CSSProperties}
-        />
-      ),
-    },
-    {
-      key: 'test', header: 'Test', width: 1,
-      render: ({ row }) => (
-        <button type="button" onClick={() => onTest(row.role)} style={{ padding: '4px 8px', fontSize: 12 }}>Test</button>
-      ),
-    },
-  ];
-
-  if (voices.length === 0) {
-    return <p style={{ fontSize: 13, opacity: 0.7 }}>No voices loaded yet.</p>;
-  }
-
-  return (
-    <div style={{ height: Math.min(640, 32 + rows.length * 40 + 4) }}>
-      <RichGrid<{ role: string; current: string }>
-        columns={columns}
-        rows={rows}
-        getRowId={(r) => r.role}
-        rowMinHeight={40}
-        headerHeight={32}
-      />
-    </div>
-  );
-});
 
 function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
   type Stage =

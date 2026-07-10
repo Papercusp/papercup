@@ -59,7 +59,7 @@ function ChipPill({
       display: 'inline-flex', alignItems: 'center', gap: 4,
       padding: '1px 8px', borderRadius: 999,
       fontSize: size === 'xs' ? 10 : SIZES.xs,
-      fontWeight: 700, letterSpacing: 0, textTransform: 'uppercase',
+      fontWeight: 700, textTransform: 'uppercase',
       color: meta.text, background: meta.bg, whiteSpace: 'nowrap',
     }}>
       {Icon ? (
@@ -317,7 +317,6 @@ export function IdPill({ id, onClick }: { id: string; onClick?: () => void }) {
         borderRadius: RADIUS.sm,
         padding: '1px 6px',
         cursor: 'pointer',
-        letterSpacing: 0,
       }}
     >
       {id}
@@ -375,7 +374,6 @@ export function SectionCard({
           fontSize: SIZES.sm,
           color: COLORS.textMuted,
           fontWeight: 500,
-          letterSpacing: 0,
           textTransform: 'uppercase',
           flexShrink: 0,
         }}>

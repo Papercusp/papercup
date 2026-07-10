@@ -427,6 +427,80 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
   }
 }
 
+// ---------------------------------------------------------------------------
+// Supervised-process registry (critical-process-supervisor-2026-07-04 P-001,
+// EI-7021 design). ADDITIVE ONLY — a static metadata list describing which
+// processes a future failed-unit reconciler (P-002) / flap-state rollup
+// (P-004) should watch + whether it may auto-restart them. It does NOT wire
+// into probeAll/runServiceHealthTick/diffHealth and changes no existing
+// behavior; it is deliberately BROADER than HEALTH_ENDPOINTS (which only
+// lists the HTTP endpoints polled every tick) because several supervised
+// processes are systemd units or node-child sidecars with no HTTP probe at
+// all today (e.g. the MCP proxy, the staging API, the inference gateway).
+// `name` matches an existing ProbeResult.name where one already exists
+// (operator/desktop-shell/substrate-sidecar/bg-host); a systemd-only entry
+// with no live probe yet uses its own descriptive name. See the plan's
+// "## Design (normative) → Supervised-process registry" for the source shape.
+// ---------------------------------------------------------------------------
+
+/** Where a supervised process runs / how it would be restarted. */
+export type SupervisionLayer = 'systemd-user' | 'node-child' | 'desktop-shell';
+
+/** `important` still pages; `critical` is load-bearing for the whole fleet. */
+export type SupervisionCriticality = 'critical' | 'important';
+
+export interface SupervisionEntry {
+  /** Stable identifier — matches a ProbeResult.name when a probe already exists. */
+  name: string;
+  layer: SupervisionLayer;
+  /** systemd-user layer only: the unit name, without the `.service` suffix. */
+  unit?: string;
+  criticality: SupervisionCriticality;
+  /** false = report-only for this entry — never auto-restarted even when the
+   *  (future, P-002/D-003) `supervisorAutoRestart` flag is ON. Used for
+   *  processes systemd already restarts itself (bg-host: Restart=always) or
+   *  that must never be restart-looped (the federation test gate). */
+  autoRestart: boolean;
+}
+
+/**
+ * Initial supervised set, per the plan's Design section. Populate-only in
+ * P-001 — nothing consumes this yet; P-002 (failed-unit reconciler) and P-004
+ * (dev:service_health supervision block) are the first real readers.
+ */
+export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
+  // Already Restart=always at the systemd level (R4-1 drop-ins) — registry
+  // entry is report-only/verify per the plan, not a second restart lever.
+  { name: 'bg-host', layer: 'systemd-user', unit: 'papercup-bg-host', criticality: 'critical', autoRestart: false },
+  { name: 'operator', layer: 'systemd-user', unit: 'papercup-dev-api', criticality: 'critical', autoRestart: true }, // :3070
+  { name: 'staging-api', layer: 'systemd-user', unit: 'papercup-staging-api', criticality: 'important', autoRestart: true }, // :3170
+  // Folds the bespoke inference-gateway-watchdog's intent in; the watchdog
+  // unit itself stays running until parity with this registry is proven (D-002).
+  { name: 'inference-gateway', layer: 'systemd-user', unit: 'papercup-inference-gateway', criticality: 'critical', autoRestart: true },
+  { name: 'mcp-proxy', layer: 'systemd-user', unit: 'papercup-mcp-proxy', criticality: 'important', autoRestart: true }, // :9071
+  { name: 'substrate-sidecar', layer: 'node-child', criticality: 'important', autoRestart: true },
+  { name: 'spawner-sidecar', layer: 'node-child', criticality: 'important', autoRestart: true }, // apps/operator/bin/spawner-sidecar.ts
+  // supervised by the Tauri shell itself (P-005), not the server-side reconciler.
+  { name: 'desktop-shell', layer: 'desktop-shell', criticality: 'critical', autoRestart: true },
+  // A test gate, not a service — restarting it in a loop would re-run smokes.
+  // Alert-only, mirrors the papercup-live-federation-gate HEALTH_ENDPOINTS-adjacent note.
+  { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false },
+];
+
+/**
+ * Selector for P-002 (reconciler tick) / P-004 (service_health supervision
+ * block): the full registry, or filtered by layer/autoRestart. Pure + sync —
+ * no I/O, so it's trivially unit-testable and safe to call every tick.
+ */
+export function supervisedProcesses(filter?: { layer?: SupervisionLayer; autoRestart?: boolean }): SupervisionEntry[] {
+  if (!filter) return SUPERVISED_PROCESSES;
+  return SUPERVISED_PROCESSES.filter(
+    (e) =>
+      (filter.layer === undefined || e.layer === filter.layer) &&
+      (filter.autoRestart === undefined || e.autoRestart === filter.autoRestart),
+  );
+}
+
 export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the

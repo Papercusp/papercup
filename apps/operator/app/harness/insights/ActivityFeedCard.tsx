@@ -119,7 +119,6 @@ const TIER_PILL: CSSProperties = {
   borderRadius: 6,
   border: '1px solid currentColor',
   textTransform: 'uppercase',
-  letterSpacing: 0,
 };
 
 const EMPTY: CSSProperties = {

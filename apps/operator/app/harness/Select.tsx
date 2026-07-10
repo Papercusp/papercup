@@ -31,7 +31,6 @@ const GROUP_LABEL_STYLE: CSSProperties = {
   padding: '6px 8px 2px',
   fontSize: 10,
   fontWeight: 700,
-  letterSpacing: 0,
   textTransform: 'uppercase',
   color: 'color-mix(in oklab, var(--fg, #e7f7ff), transparent 38%)',
 };

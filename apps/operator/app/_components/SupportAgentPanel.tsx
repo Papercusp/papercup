@@ -184,7 +184,6 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
                   color: m.role === 'user' ? 'var(--accent)' : 'var(--fg-mute)',
                   textTransform: 'uppercase',
                   marginBottom: 4,
-                  letterSpacing: 0,
                 }}
               >
                 {m.role === 'user' ? 'You' : 'Papercusp AI'}

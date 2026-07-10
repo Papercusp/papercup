@@ -110,3 +110,18 @@ export async function probeKokoroHealth(baseUrl = KOKORO_URL): Promise<boolean> 
     return false;
   }
 }
+
+/**
+ * Probe voicemode's local Whisper (OpenAI-compatible) server. There is no
+ * dedicated `/health`, so we hit `/v1/models` — a cheap authenticated-free GET
+ * that only answers when the server is up. Returns false on any error/timeout.
+ * Used by the settings "Re-detect engines" button (WI-3663).
+ */
+export async function probeVoicemodeHealth(baseUrl = VOICEMODE_URL): Promise<boolean> {
+  try {
+    const r = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}

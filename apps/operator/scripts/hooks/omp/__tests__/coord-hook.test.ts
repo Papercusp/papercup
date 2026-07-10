@@ -16,6 +16,8 @@ import {
   callMcpTool,
   emitStatusDisplay,
   statusNoticeKey,
+  ttyCandidates,
+  writeOscTitle,
   _resetStatusNoticeDedup,
   resolveHookWorkspace,
   collapseDigestNotifies,
@@ -4131,6 +4133,59 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
     // Exactly one BEL (the terminator) and one ESC (the introducer).
     expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
     expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
+  });
+});
+
+describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)', () => {
+  it('orders candidates test-seam → PAPERCUSP_TTY (owned) → /dev/tty (controlling)', () => {
+    expect(
+      ttyCandidates({ PAPERCUSP_OBJECTIVE_TTY: '/tmp/seam', PAPERCUSP_TTY: '/dev/pts/24' } as NodeJS.ProcessEnv),
+    ).toEqual(['/tmp/seam', '/dev/pts/24', '/dev/tty']);
+  });
+
+  it('falls back to /dev/tty alone when nothing is exported (a plain non-psu omp run)', () => {
+    expect(ttyCandidates({} as NodeJS.ProcessEnv)).toEqual(['/dev/tty']);
+  });
+
+  it('ignores blank/whitespace env values rather than trying to open them', () => {
+    expect(ttyCandidates({ PAPERCUSP_TTY: '   ' } as NodeJS.ProcessEnv)).toEqual(['/dev/tty']);
+  });
+
+  it('writes the escape to the OWNED terminal when the controlling one is gone (the bug)', async () => {
+    // The setsid'd case: /dev/tty is unopenable, PAPERCUSP_TTY must carry the write.
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-'));
+    const owned = join(dir, 'owned.tty');
+    await fs.writeFile(owned, '');
+    const osc = buildDisplayTitleOsc('👑 windows-parity 🟦 · su-9859e');
+    await expect(writeOscTitle(osc, { PAPERCUSP_TTY: owned } as NodeJS.ProcessEnv)).resolves.toBe(true);
+    expect(await fs.readFile(owned, 'utf8')).toBe(osc);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('skips a stale candidate and lands on the next one', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'omp-tty-'));
+    const owned = join(dir, 'owned.tty');
+    await fs.writeFile(owned, '');
+    const osc = buildDisplayTitleOsc('su-9859e');
+    // The seam points at a path in a directory that does not exist → unopenable → skipped.
+    await expect(
+      writeOscTitle(osc, {
+        PAPERCUSP_OBJECTIVE_TTY: join(dir, 'no-such-dir', 'x.tty'),
+        PAPERCUSP_TTY: owned,
+      } as NodeJS.ProcessEnv),
+    ).resolves.toBe(true);
+    expect(await fs.readFile(owned, 'utf8')).toBe(osc);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('resolves false — never throws — when no terminal accepts the write (headless bee)', async () => {
+    await expect(
+      writeOscTitle('\x1b]0;x\x07', { PAPERCUSP_TTY: '/nonexistent/x.tty' } as NodeJS.ProcessEnv),
+    ).resolves.toBe(false);
+  });
+
+  it('an empty escape writes nothing at all (no title ⇒ no syscall)', async () => {
+    await expect(writeOscTitle('', { PAPERCUSP_TTY: '/nonexistent/x' } as NodeJS.ProcessEnv)).resolves.toBe(false);
   });
 });
 

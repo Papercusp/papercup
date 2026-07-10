@@ -61,12 +61,18 @@ else
   TOKEN=""
 fi
 
-python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$INPUT" <<'PYEOF' 2>/dev/null || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$INPUT" "$(dirname "$0")" <<'PYEOF' 2>/dev/null || exit 0
 import hashlib, json, os, sys, tempfile, textwrap, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture = sys.argv[1:5]
 stdin_raw = sys.argv[5] if len(sys.argv) > 5 else ''  # Claude's piped session JSON (model / cwd / …); '' in fixture/test mode
+# pc_tty lives beside this script in BOTH locations it runs from: the repo
+# (apps/operator/scripts/hooks/cc, used by the parity tests) and the installed
+# runtime dir (~/.papercusp/hooks/cc, copied together by install-standalone-mcp.sh).
+# Resolving it off $0's dirname is what makes one copy serve both.
+sys.path.insert(0, sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__)))
+from pc_tty import write_osc_title  # noqa: E402  (path must be primed first)
 HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
@@ -478,32 +484,30 @@ def term_title(g, model_tag=''):
 
 
 def set_title(title):
-    """Write the OSC-0 terminal title straight to the controlling TTY (NOT via Claude's stdout,
-    which it captures as the statusline body). Fail-open: no tty / not permitted → skip silently."""
+    """Write the OSC-0 terminal title to the terminal THIS SESSION OWNS (never via Claude's
+    stdout, which it captures as the statusline body). Fail-open: no owned terminal → skip.
+
+    WI-3665: this used to open '/dev/tty' — the CONTROLLING terminal — which Claude Code has
+    never given us. It spawns the statusLine command setsid'd (its own session, tty=?), so the
+    open raised ENXIO on every tick and the title write silently no-opped for the entire life
+    of this hook. pc_tty.write_osc_title prefers PAPERCUSP_TTY (the owning terminal, resolved
+    at launch by psu-launcher and inherited through the setsid boundary) and falls back to
+    /dev/tty for hooks that DO keep a controlling terminal. See pc_tty.py for why we resolve
+    ownership at launch instead of walking /proc ancestry."""
     if not title:
         return
-    # Strip control chars that could break out of the OSC string (defensive — the server
-    # render already strips them; this guards a buggy display.title + the legacy paths,
-    # and mirrors the codex hook so titles stay byte-identical across CLIs).
-    title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
-    if not title:
-        return
-    # Test seam: the real target (/dev/tty) is NOT captured by the fixture-mode test harness, so
-    # when PAPERCUSP_STATUSLINE_TITLE_OUT names a file we also record the computed title there —
-    # the only way to assert the title render. Unset in production → this is a no-op.
+    # Test seam: a real terminal is NOT captured by the fixture-mode test harness, so when
+    # PAPERCUSP_STATUSLINE_TITLE_OUT names a file we also record the computed title there —
+    # the only way to assert the title RENDER (vs. the write). Unset in production → no-op.
+    # Note it records the bare title; PAPERCUSP_TTY captures the wire-level OSC escape.
     title_out = os.environ.get('PAPERCUSP_STATUSLINE_TITLE_OUT')
     if title_out:
         try:
             with open(title_out, 'w') as fh:
-                fh.write(title)
+                fh.write(''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b'))
         except Exception:
             pass
-    try:
-        with open('/dev/tty', 'w') as tty:
-            tty.write(f'\033]0;{title}\a')
-            tty.flush()
-    except Exception:
-        pass
+    write_osc_title(title)
 
 
 def lead():

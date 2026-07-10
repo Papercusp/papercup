@@ -294,7 +294,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
             </span>
             {(plugin.dashboardTabs?.length ?? 0) === 0 && (
               <span className="h-plugin-card-badge" style={{
-                fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0,
+                fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
                 padding: '2px 6px', borderRadius: 4,
                 background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
               }}>action-only</span>
@@ -775,12 +775,12 @@ function renderPluginConfigInput(
 
 const pluginFieldLabel: React.CSSProperties = {
   display: 'block', fontSize: 11, fontWeight: 600,
-  textTransform: 'uppercase', letterSpacing: 0,
+  textTransform: 'uppercase',
   color: 'var(--fg-dim)', marginBottom: 3,
 };
 
 const sectionLabel: React.CSSProperties = {
-  fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0,
+  fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
   color: 'var(--fg-mute)', marginBottom: 8,
 };
 const tagStyle: React.CSSProperties = {

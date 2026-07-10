@@ -41,7 +41,6 @@
   color: var(--accent-2);
   font-size: 11px;
   font-weight: 900;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -50,7 +49,6 @@
   margin: 16px 0 0;
   font-size: 76px;
   line-height: 0.82;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -102,7 +100,6 @@
   display: block;
   margin-top: 9px;
   font-size: 20px;
-  letter-spacing: 0;
 }
 
 .systemStrip p,
@@ -135,7 +132,6 @@
 .cardTop code {
   color: var(--muted);
   font-size: 11px;
-  letter-spacing: 0;
   text-transform: none;
 }
 
@@ -176,7 +172,6 @@
   display: block;
   font-size: 22px;
   line-height: 0.9;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -189,7 +184,6 @@
   margin: 18px 0 0;
   font-size: 30px;
   line-height: 0.95;
-  letter-spacing: 0;
 }
 
 .logoCard p {

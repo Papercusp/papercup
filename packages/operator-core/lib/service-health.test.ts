@@ -13,6 +13,8 @@ import {
   evaluateBgHostCodeDrift,
   probeBgHostCodeDrift,
   BG_HOST_STALE_MS,
+  SUPERVISED_PROCESSES,
+  supervisedProcesses,
   type ProbeResult,
 } from './service-health';
 
@@ -106,6 +108,62 @@ describe('HEALTH_ENDPOINTS', () => {
   it('gives vite a more generous probe timeout than the 3000ms default', () => {
     const vite = HEALTH_ENDPOINTS.find((e) => e.name === 'vite');
     expect(vite?.timeoutMs).toBeGreaterThan(3000);
+  });
+});
+
+describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — additive registry, no behavior change)', () => {
+  it('returns the full initial supervised set from the plan Design section, unfiltered', () => {
+    expect(supervisedProcesses().map((e) => e.name).sort()).toEqual(
+      [
+        'bg-host',
+        'operator',
+        'staging-api',
+        'inference-gateway',
+        'mcp-proxy',
+        'substrate-sidecar',
+        'spawner-sidecar',
+        'desktop-shell',
+        'live-federation-gate',
+      ].sort(),
+    );
+  });
+
+  it('every entry has a layer, criticality, and boolean autoRestart; systemd-user entries carry a unit', () => {
+    for (const e of SUPERVISED_PROCESSES) {
+      expect(['systemd-user', 'node-child', 'desktop-shell']).toContain(e.layer);
+      expect(['critical', 'important']).toContain(e.criticality);
+      expect(typeof e.autoRestart).toBe('boolean');
+      if (e.layer === 'systemd-user') expect(e.unit).toBeTruthy();
+    }
+  });
+
+  it('bg-host and the federation test gate are report-only (autoRestart:false) — systemd already restarts bg-host, and a gate must never restart-loop', () => {
+    const byName = Object.fromEntries(SUPERVISED_PROCESSES.map((e) => [e.name, e]));
+    expect(byName['bg-host']?.autoRestart).toBe(false);
+    expect(byName['live-federation-gate']?.autoRestart).toBe(false);
+  });
+
+  it('filters by layer', () => {
+    expect(supervisedProcesses({ layer: 'node-child' }).map((e) => e.name).sort()).toEqual(
+      ['spawner-sidecar', 'substrate-sidecar'].sort(),
+    );
+  });
+
+  it('filters by autoRestart', () => {
+    const reportOnly = supervisedProcesses({ autoRestart: false }).map((e) => e.name).sort();
+    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate'].sort());
+  });
+
+  it('combines both filters', () => {
+    expect(supervisedProcesses({ layer: 'systemd-user', autoRestart: false }).map((e) => e.name).sort()).toEqual(
+      ['bg-host', 'live-federation-gate'].sort(),
+    );
+  });
+
+  // P-001 is additive-only: it must not change HEALTH_ENDPOINTS or any existing
+  // probe/tick behavior — the new registry is a separate, standalone export.
+  it('does not alter HEALTH_ENDPOINTS (additive-only, no behavior change)', () => {
+    expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(['operator', 'scout', 'vite'].sort());
   });
 });
 

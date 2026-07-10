@@ -75,7 +75,6 @@
 .pc-roster__head-title {
   font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0;
   color: var(--fg);
 }
 /* Summary doubles as a quick health read: live in --good, idle in --warn,
@@ -216,7 +215,6 @@
 .pc-roster__group-title {
   font-size: 12.5px;
   font-weight: 700;
-  letter-spacing: 0;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -355,7 +353,6 @@
 .pc-roster__badge {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: lowercase;
   color: var(--fg);
   background: var(--pc-roster-chip-bg);
@@ -629,7 +626,6 @@
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--pc-dossier-dim);
   display: flex;
   align-items: center;
@@ -638,7 +634,6 @@
 .pc-dossier__h-note {
   font-weight: 400;
   text-transform: none;
-  letter-spacing: 0;
   color: var(--pc-dossier-mute);
 }
 .pc-dossier__h-note--err {
@@ -663,7 +658,6 @@
   flex: 0 0 76px;
   color: var(--pc-dossier-mute);
   text-transform: uppercase;
-  letter-spacing: 0;
   font-size: 10.5px;
   line-height: 1.65;
 }

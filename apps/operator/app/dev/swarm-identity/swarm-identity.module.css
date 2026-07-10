@@ -106,7 +106,6 @@
   font-stretch: condensed;
   font-weight: 900;
   line-height: 0.88;
-  letter-spacing: 0;
   text-transform: uppercase;
   text-wrap: balance;
   overflow-wrap: break-word;
@@ -122,14 +121,12 @@
 .introLines span[data-line="3"] {
   font-size: 40px;
   line-height: 1.04;
-  letter-spacing: 0;
 }
 
 .introLines span[data-line="4"] {
   color: #fde68a;
   font-size: 48px;
   line-height: 0.94;
-  letter-spacing: 0;
 }
 
 .introSwarm {
@@ -264,7 +261,6 @@
   font-size: 44px;
   font-weight: 900;
   line-height: 0.9;
-  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow:
     0 0 34px rgba(234, 179, 8, 0.22),
@@ -424,7 +420,6 @@
   color: var(--accent-2);
   font-size: 11px;
   font-weight: 900;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -433,7 +428,6 @@
   margin: 16px 0 0;
   font-size: 96px;
   line-height: 0.78;
-  letter-spacing: 0;
   text-transform: uppercase;
   text-shadow: 0 26px 80px rgba(0, 0, 0, 0.82);
 }
@@ -479,7 +473,6 @@
   color: var(--accent-2);
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0;
   text-decoration: none;
   text-transform: uppercase;
   box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 12%, transparent);
@@ -637,7 +630,6 @@
   align-self: start;
   color: var(--muted);
   font-size: 11px;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -692,7 +684,6 @@
   margin: 8px 0 0;
   font-size: 46px;
   line-height: 0.95;
-  letter-spacing: 0;
 }
 
 .optionHeader p,
@@ -753,14 +744,12 @@
   color: var(--accent-2);
   font-size: 11px;
   font-weight: 900;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
 .cardHeader code {
   color: var(--muted);
   font-size: 11px;
-  letter-spacing: 0;
   text-transform: none;
 }
 
@@ -785,7 +774,6 @@
   display: block;
   font-size: 42px;
   line-height: 0.9;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -795,7 +783,6 @@
   color: var(--accent-2);
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -843,7 +830,6 @@
   margin: 18px 0 0;
   font-size: 54px;
   line-height: 0.84;
-  letter-spacing: 0;
 }
 
 .browserBody p {
@@ -912,7 +898,6 @@
   color: var(--text);
   font-size: 13px;
   font-weight: 900;
-  letter-spacing: 0;
 }
 
 .appBrand svg {
@@ -938,7 +923,6 @@
   color: var(--accent-2);
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1004,7 +988,6 @@
   color: var(--text);
   font-size: 46px;
   line-height: 0.9;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1060,7 +1043,6 @@
   color: var(--text);
   font-size: 23px;
   line-height: 1;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1083,7 +1065,6 @@
 .compareCard h3 {
   margin: 14px 0 0;
   font-size: 22px;
-  letter-spacing: 0;
 }
 
 .compareCard .palette {
@@ -1282,13 +1263,11 @@
     opacity: 0;
     transform: translate3d(0, 26px, 0) scale(0.94);
     filter: blur(10px);
-    letter-spacing: 0;
   }
   12% {
     opacity: 1;
     transform: translate3d(0, -3px, 0) scale(1.045);
     filter: blur(0);
-    letter-spacing: 0;
   }
   20%,
   70% {

@@ -375,7 +375,7 @@ function renderInput(
 
 const lbl: React.CSSProperties = {
   display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute)', marginBottom: 4,
-  textTransform: 'uppercase', letterSpacing: "0",
+  textTransform: 'uppercase',
 };
 const input: React.CSSProperties = {
   width: '100%', padding: '6px 8px', background: 'var(--bg-1)',
@@ -397,7 +397,7 @@ const notice: React.CSSProperties = {
 };
 const badgeBase: React.CSSProperties = {
   display: 'inline-block', marginLeft: 8, padding: '1px 6px', borderRadius: 3,
-  fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: "0",
+  fontSize: 10, fontWeight: 500, textTransform: 'uppercase',
   verticalAlign: 'middle',
 };
 const badgeMute: React.CSSProperties = {

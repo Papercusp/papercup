@@ -10,6 +10,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn(async () => []) }));
 vi.mock('./slot-parked-store', () => ({ parkSlotMessage: vi.fn(async () => ({ id: 'x' })) }));
+vi.mock('./federation-scope', () => ({
+  resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
+}));
 vi.mock('./log', () => ({
   coordLog: { appendLine: vi.fn(async () => undefined) },
   coordSql: () => ({}),

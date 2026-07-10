@@ -62,7 +62,6 @@ export function BacklinksPanel({
           border: 0,
           color: 'var(--fg-dim)',
           textTransform: 'uppercase',
-          letterSpacing: "0",
           fontSize: 11,
           cursor: 'pointer',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',

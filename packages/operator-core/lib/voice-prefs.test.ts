@@ -41,3 +41,12 @@ describe('voice-channel settings defaults (P-016)', () => {
     expect(DEFAULT_VOICE_PREFS.voiceInputMode).toBe('ptt');
   });
 });
+
+// WI-3664: "keep local the default". The default embedder is the local BGE-ONNX
+// engine, NOT 'auto' — 'auto' can pick the cloud key and thrashes on it (WI-3615),
+// and @huggingface/transformers is a hard dependency so 'local' is always usable.
+describe('embedder default (WI-3664)', () => {
+  it('defaults memoryEmbedderMode to local, not auto', () => {
+    expect(DEFAULT_VOICE_PREFS.memoryEmbedderMode).toBe('local');
+  });
+});

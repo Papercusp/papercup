@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Papercusp fed-plane disk-health probe every 5 minutes (EI-8982) — catches a disk-full wedge before it takes down federation
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+Unit=papercup-fedplane-disk-health.service
+
+[Install]
+WantedBy=timers.target

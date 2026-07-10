@@ -1,0 +1,17 @@
+[Unit]
+Description=Papercusp fed-plane disk-usage + ENOSPC crash-loop probe (EI-8982)
+# Detection + escalation ONLY — this unit never deletes files or restarts a
+# service (same EI-8901-derived posture as papercup-isolated-dht-liveness).
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow / in-process
+# operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 / EI-1622):
+# this is host-level infra health, not product state. Mirrors
+# papercup-isolated-dht-liveness.service / papercup-webkit-reaper.service.
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=60
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-disk-health-check.sh

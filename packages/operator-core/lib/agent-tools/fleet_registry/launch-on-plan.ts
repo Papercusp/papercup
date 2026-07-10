@@ -645,7 +645,16 @@ export default defineTool({
     launchContext: z
       .string()
       .optional()
-      .describe("psu --launch-context: path to a brief/markdown file injected as each member's launch context."),
+      .describe(
+        "psu --launch-context: path to a brief/markdown file injected as EVERY member's launch context (shared). Use `perMemberLaunchContext` instead when different members need DISTINCT briefs.",
+      ),
+    perMemberLaunchContext: z
+      .array(z.string())
+      .max(MAX_MEMBERS)
+      .optional()
+      .describe(
+        "EI-8985: per-member launch-context brief paths, index-aligned to member number (entry 0 → member 1, etc). Each member gets its OWN composed context (baseline + that entry's brief) instead of one shared file. Fewer entries than members opened ⇒ the remaining members fall back to `launchContext` (or the bare baseline if that's also unset) — never an error. Takes precedence over `launchContext` per-index. This is the knob that used to force a hand-rolled fleet:create + capability:terminal launch (EI-5835) — prefer this tool now.",
+      ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z
       .enum(['full', 'trimmed'])

@@ -29,7 +29,6 @@
   color: var(--fg);
   font-size: 20px;
   font-weight: 780;
-  letter-spacing: 0;
   line-height: 1.1;
 }
 
@@ -65,7 +64,6 @@
   color: var(--fg);
   font-size: 13px;
   font-weight: 760;
-  letter-spacing: 0;
 }
 
 .pc-test-card-row {
@@ -105,7 +103,6 @@
   color: var(--fg-mute);
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0;
   text-align: left;
   text-transform: uppercase;
 }
@@ -138,7 +135,6 @@
   border-radius: 999px;
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }

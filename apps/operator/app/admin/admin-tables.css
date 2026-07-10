@@ -20,7 +20,6 @@
   padding: 14px 16px 10px;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   font-weight: 600;
 }
@@ -116,7 +115,6 @@
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
@@ -202,7 +200,6 @@
 .pc-admin-field label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--fg-mute, #94a3b8);
   font-weight: 500;
 }
@@ -212,7 +209,6 @@
   font-size: 10px;
   margin-left: 6px;
   text-transform: none;
-  letter-spacing: 0;
 }
 .pc-admin-field input,
 .pc-admin-field textarea {

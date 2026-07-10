@@ -26,4 +26,11 @@ if [ -s "$HOME/.papercusp/sentinel-model" ]; then
   spec="$(tr -d ' \t\r\n' < "$HOME/.papercusp/sentinel-model" 2>/dev/null)"
   [ -n "$spec" ] && model_args+=("--model=$spec")
 fi
-exec psu --no-picker --agent=claude --role=sentinel "${model_args[@]}"
+# Role is `papercup` (sentinel→papercup rename, 2026-07: PROMPT_ROLES + the
+# papercup.persona*.md prompt set). Passing the retired `--role=sentinel` makes
+# buildRoleLaunchSpec→assembleRolePrompt fail to resolve the (renamed) prompt
+# files, so the pane's psu agent errors out "about the sentinel". The launcher
+# SCRIPT name + the ~/.papercusp/sentinel-pane registration file keep their old
+# names on purpose (the dock layout invokes this shim by name; the pane-input
+# reader agrees on that path) — only the ROLE flag moved.
+exec psu --no-picker --agent=claude --role=papercup "${model_args[@]}"

@@ -190,8 +190,7 @@ const projectHeader: React.CSSProperties = {
   marginBottom: 10,
 };
 const dirHeader: React.CSSProperties = {
-  padding: '8px 16px 5px', fontSize: 10.5, textTransform: 'uppercase',
-  letterSpacing: '0', color: 'var(--fg-mute, #999)',
+  padding: '8px 16px 5px', fontSize: 10.5, textTransform: 'uppercase', color: 'var(--fg-mute, #999)',
 };
 const list: React.CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
 const listItem: React.CSSProperties = { margin: 0 };

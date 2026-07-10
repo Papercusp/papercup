@@ -128,7 +128,6 @@ export default function NotFound() {
                 color: 'var(--accent-strong)',
                 fontSize: 12,
                 fontWeight: 850,
-                letterSpacing: '0',
                 textTransform: 'uppercase',
               }}
             >
@@ -142,7 +141,6 @@ export default function NotFound() {
                 fontSize: 44,
                 lineHeight: 0.98,
                 fontWeight: 900,
-                letterSpacing: '0',
                 textShadow: '0 0 26px color-mix(in srgb, var(--accent-strong), transparent 86%)',
               }}
             >

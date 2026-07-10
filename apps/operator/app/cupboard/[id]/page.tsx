@@ -607,7 +607,7 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, marginBottom: 2, textTransform: 'uppercase', letterSpacing: "0" }}>
+      <div style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, marginBottom: 2, textTransform: 'uppercase' }}>
         {label}
       </div>
       {children}

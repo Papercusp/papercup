@@ -132,7 +132,7 @@ export default function BrandSwitcher() {
         }
       >
         <div role="menu" aria-label="Branding">
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0 }}>
+          <div style={{ padding: '4px 8px', color: 'var(--fg-mute)', fontSize: 11, textTransform: 'uppercase' }}>
             Branding
           </div>
           {BRANDS.map((b) => {

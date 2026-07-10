@@ -104,7 +104,6 @@ const STAT_LABEL: CSSProperties = {
   color: 'var(--fg-dim)',
   marginTop: 2,
   textTransform: 'uppercase',
-  letterSpacing: 0,
 };
 
 const CTA: CSSProperties = {

@@ -64,12 +64,16 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 # substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
 model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
+# Shared tty resolution (WI-3665) — see pc_tty.py. Sits beside this script in both the
+# repo and the installed runtime dir, so $0's dirname resolves it either way.
+sys.path.insert(0, sys.argv[7] if len(sys.argv) > 7 else os.path.dirname(os.path.abspath(__file__)))
+from pc_tty import write_osc_title  # noqa: E402  (path must be primed first)
 HTTP_TIMEOUT = 1.5
 
 
@@ -302,18 +306,11 @@ try:
         title = dtitle.strip()
     else:
         title = term_title(glance)
-    # Strip control chars that could break out of the OSC string (defensive).
-    title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
-    if title:
-        # OSC 0 sets BOTH the icon name and the window title: ESC ] 0 ; <text> BEL.
-        osc = '\033]0;' + title + '\007'
-        # Write straight to the tty (the client owns it). A piped/headless session
-        # has no controlling tty → the open fails and we fail open (no title set).
-        try:
-            with open(title_tty, 'w') as tty:
-                tty.write(osc)
-        except Exception:
-            pass
+    # Shared write (WI-3665): PAPERCUSP_OBJECTIVE_TTY (this hook's test seam) →
+    # PAPERCUSP_TTY (the owning terminal, survives a setsid'd spawn) → /dev/tty (the
+    # controlling terminal, which Codex's child hooks still have). Control chars are
+    # stripped inside. A piped/headless session matches nothing → fail open, no title.
+    write_osc_title(title, extra_first=('PAPERCUSP_OBJECTIVE_TTY',))
     # 💡 tip notice — stdout is reserved for this additionalContext JSON.
     emit_notice(disp)
 except Exception:

@@ -63,7 +63,6 @@ const GRID_HEADER = {
   color: 'var(--fg-dim, #888)',
   fontSize: 11,
   textTransform: 'uppercase' as const,
-  letterSpacing: "0",
 };
 
 const GRID_CELL = {
@@ -242,7 +241,6 @@ export default async function DogfoodSubstratePage() {
             fontWeight: 600,
             color: 'var(--fg-dim, #888)',
             textTransform: 'uppercase',
-            letterSpacing: "0",
             marginBottom: 8,
           }}
         >

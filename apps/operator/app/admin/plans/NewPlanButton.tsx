@@ -120,7 +120,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
       }
     >
         <div role="menu" aria-label={`New plan in ${potLabel}`} style={{ display: 'flex', flexDirection: 'column' }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: "0", color: 'var(--fg-mute)', padding: '4px 8px' }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--fg-mute)', padding: '4px 8px' }}>
             New plan in…
           </div>
           {hiveOptions.map((h) => (

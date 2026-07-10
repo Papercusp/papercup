@@ -454,7 +454,6 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
               borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
               fontSize: 10,
               textTransform: 'uppercase',
-              letterSpacing: "0",
             }}
             empty={<div className="pc-adv-gitgrid__empty">No commits match this view.</div>}
           />

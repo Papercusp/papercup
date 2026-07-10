@@ -56,7 +56,6 @@
   color: var(--fg, #e7f7ff);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0;
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease;
 }
@@ -89,7 +88,6 @@
   color: var(--fg, #e7f7ff);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0;
   cursor: pointer;
   position: relative;
   transition: background-color 120ms ease, border-color 120ms ease;
@@ -111,7 +109,6 @@
   color: var(--fg, #e7f7ff);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0;
   cursor: pointer;
   position: relative;
   transition: background-color 120ms ease, border-color 120ms ease;
@@ -136,7 +133,6 @@
   color: var(--fg, #e7f7ff);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0;
   cursor: pointer;
   position: relative;
   transition: background-color 120ms ease, border-color 120ms ease;
@@ -315,7 +311,6 @@
   margin-right: 4px;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute);
 }
@@ -723,7 +718,6 @@
 .pc-plans__harness-filter-label {
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in oklab, var(--fg, #e7f7ff), transparent 38%);
 }
@@ -743,7 +737,6 @@
 .pc-filters__kicker {
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-soft), transparent 38%);
@@ -763,7 +756,6 @@
   font-size: 21px;
   font-weight: 780;
   line-height: 1;
-  letter-spacing: 0;
   color: var(--pc-plans-fg-strong);
 }
 
@@ -828,7 +820,6 @@
   text-align: center;
   font-size: 12.5px;
   font-weight: 800;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--pc-plans-fg-strong, var(--fg));
   cursor: help;
@@ -920,7 +911,6 @@
   white-space: nowrap;
   font-size: 11px;
   font-weight: 760;
-  letter-spacing: 0;
 }
 
 .pc-plans__view-count {
@@ -1438,7 +1428,6 @@
   color: color-mix(in srgb, var(--accent), transparent 26%);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -1455,7 +1444,6 @@
   border-radius: 999px;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1510,7 +1498,6 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9.5px;
   line-height: 16px;
-  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -1527,7 +1514,6 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9.5px;
   line-height: 16px;
-  letter-spacing: 0;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.05);
   color: color-mix(in srgb, var(--fg), transparent 30%);
@@ -1608,7 +1594,6 @@
   color: color-mix(in srgb, var(--accent-soft), transparent 45%);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -1621,7 +1606,6 @@
   font-size: 20px;
   font-weight: 760;
   line-height: 1.1;
-  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -1777,7 +1761,6 @@
 .pc-now-hero__kicker {
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-strong), transparent 22%);
 }
@@ -1792,7 +1775,6 @@
 .pc-now-hero__label {
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-soft), transparent 40%);
 }
@@ -1843,7 +1825,6 @@
   color: var(--pc-items-accent);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -1852,7 +1833,6 @@
   margin: 0;
   font-size: 18px;
   font-weight: 740;
-  letter-spacing: 0;
   line-height: 1.05;
   color: var(--fg);
 }
@@ -1940,7 +1920,6 @@
   margin: 0;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   line-height: 1;
   text-transform: uppercase;
   color: var(--pc-items-accent);
@@ -2299,7 +2278,6 @@
   margin: 0;
   font-size: 18px;
   font-weight: 760;
-  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -2402,7 +2380,6 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0;
   background: rgba(255, 255, 255, 0.05);
   color: color-mix(in srgb, var(--accent-soft), transparent 30%);
   text-align: center;
@@ -2461,7 +2438,6 @@
   color: color-mix(in srgb, var(--accent), transparent 26%);
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -2469,7 +2445,6 @@
   margin: 0 0 10px;
   font-size: 24px;
   font-weight: 780;
-  letter-spacing: 0;
   color: var(--fg);
 }
 
@@ -2687,7 +2662,6 @@
   padding: 8px 20px 4px;
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-soft), transparent 40%);
 }
@@ -2751,7 +2725,6 @@
   margin: 0;
   font-size: 18px;
   font-weight: 760;
-  letter-spacing: 0;
   color: var(--fg);
 }
 .pc-triage__head p {
@@ -2797,7 +2770,6 @@
   padding: 6px 8px;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-soft), transparent 45%);
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
@@ -2906,7 +2878,6 @@
   color: var(--fg-dim, #b9d4e8);
   font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: 0;
   cursor: pointer;
   transition: background-color 100ms, border-color 100ms, color 100ms;
 }
@@ -3021,7 +2992,6 @@
 .pc-plan-dialog__field > span {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-soft), transparent 30%);
 }
@@ -3029,7 +2999,6 @@
   font-style: italic;
   font-weight: 500;
   text-transform: none;
-  letter-spacing: 0;
   color: color-mix(in srgb, var(--accent-soft), transparent 58%);
   margin-left: 4px;
 }
@@ -3150,7 +3119,6 @@
 .pc-revisions-panel__kicker {
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent-strong), transparent 22%);
 }
@@ -3421,7 +3389,6 @@
 .pc-rev-convo-turn__role {
   text-transform: uppercase;
   font-weight: 600;
-  letter-spacing: 0;
   color: var(--accent-soft);
 }
 
@@ -3593,7 +3560,6 @@
   border-radius: 999px;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3701,7 +3667,6 @@
   margin-bottom: 4px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -3737,7 +3702,6 @@
   min-width: 140px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
-  letter-spacing: 0;
   opacity: 0.85;
 }
 
@@ -3897,7 +3861,6 @@
   border-radius: 999px;
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0;
   text-transform: uppercase;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.05);
@@ -3926,7 +3889,6 @@
   font-weight: 600;
   vertical-align: middle;
   text-transform: lowercase;
-  letter-spacing: 0;
   border: 1px dashed currentColor;
   opacity: 0.9;
   cursor: help;
@@ -3997,7 +3959,6 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   color: color-mix(in srgb, var(--accent-soft), transparent 14%);
-  letter-spacing: 0;
 }
 .pc-plan-status-popover__current {
   flex: 1;
@@ -4164,7 +4125,6 @@
   font-weight: 500;
   color: var(--accent-soft);
   text-transform: uppercase;
-  letter-spacing: 0;
 }
 
 .pc-agents-panel__count {
@@ -4236,7 +4196,6 @@
 .pc-agents-origin__kicker {
   color: var(--accent-soft);
   text-transform: uppercase;
-  letter-spacing: 0;
   font-size: 10.5px;
 }
 
@@ -4320,7 +4279,6 @@
 .pc-agent-row__status {
   font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0;
   padding: 1px 8px;
   border-radius: 999px;
   border: 1px solid currentColor;
@@ -4577,7 +4535,6 @@
   color: var(--pc-plans-fg-muted);
   font-size: 11px;
   font-weight: 650;
-  letter-spacing: 0;
   text-transform: uppercase;
 }
 .pc-plan-fm__val {
@@ -4727,7 +4684,6 @@
   border-radius: 999px;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--pc-plans-fg-muted);
   background: color-mix(in oklab, var(--pc-plans-fg-muted, #94a3b8), transparent 86%);
 }

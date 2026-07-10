@@ -55,7 +55,6 @@ const TIER_PILL: CSSProperties = {
   border: '1px solid var(--border)',
   color: 'var(--fg-dim)',
   textTransform: 'uppercase',
-  letterSpacing: 0,
 };
 
 const STATS: CSSProperties = {

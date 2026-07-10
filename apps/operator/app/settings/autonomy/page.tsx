@@ -338,7 +338,6 @@ export default function AutonomySettingsPage() {
               padding: '0 13px 6px',
               fontSize: 10,
               fontWeight: 700,
-              letterSpacing: '0',
               textTransform: 'uppercase',
               color: 'var(--fg-mute)',
             }}

@@ -19,8 +19,8 @@
  * Interactive:   psu
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync } from 'node:fs';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
@@ -2800,6 +2800,90 @@ export function usePtyHost({ env = process.env, stdin = process.stdin, stdout = 
 }
 
 /**
+ * The terminal THIS psu launch owns, as a device path — or null when there isn't one
+ * (headless bee, brain dock pane, `--no-picker` script, piped stdio).
+ *
+ * WI-3665. Every agent CLI renders its fleet identity (👑 leader / 👤 member + fleet name
+ * + colour square) into the OS title with an OSC-0 escape, written from a hook. Those hooks
+ * used to open `/dev/tty` — the CONTROLLING terminal — and Claude Code never gives them one:
+ * it spawns the statusLine command setsid'd, so the open raised ENXIO on every tick and the
+ * title silently never appeared. Exporting the answer as PAPERCUSP_TTY fixes it for good,
+ * because ENV crosses the setsid boundary that a controlling terminal does not.
+ *
+ * Resolved HERE, at launch, on purpose: psu is the process that attaches the agent to the
+ * terminal, so it is the only one that knows — authoritatively — which terminal the session
+ * owns. The tempting alternative (have the hook walk /proc ancestry to the nearest tty)
+ * works but is unsafe: ancestry crosses ownership boundaries, so a headless bee whose
+ * ancestor chain reaches a dev terminal would retitle a window it doesn't own. Measured on
+ * the dev box while diagnosing this: a bash under one agent walks up to another agent's
+ * `claude` and resolves to that agent's /dev/pts/65.
+ *
+ * Correct under the managed-pty host too. We export psu's OUTER tty (the real terminal),
+ * not the inner pty slave: a write there lands on the terminal directly, and the inner pty
+ * doesn't exist yet at env-assembly time anyway.
+ *
+ * @param {object} [o]
+ * @param {NodeJS.ReadStream} [o.stdin]
+ * @param {NodeJS.WriteStream} [o.stdout]
+ * @param {string} [o.platform]  process.platform (injected for tests)
+ * @param {(p: string) => string} [o.readLink]  readlinkSync (injected for tests)
+ * @param {(pid: number) => string} [o.psTty]   `ps -o tty=` reader (injected for tests)
+ * @param {(p: string) => boolean} [o.exists]   existsSync (injected for tests)
+ * @returns {string | null} an absolute device path, or null when no terminal is owned
+ */
+export function resolveOwnedTtyPath({
+  stdin = process.stdin,
+  stdout = process.stdout,
+  platform = process.platform,
+  readLink = readlinkSync,
+  psTty = defaultPsTty,
+  exists = existsSync,
+} = {}) {
+  // No tty on either end ⇒ this launch owns no terminal. Say so; never guess.
+  if (!stdout.isTTY && !stdin.isTTY) return null;
+
+  // Linux: /proc/self/fd/<n> is a symlink to the device. Prefer stdout, then stdin —
+  // a launch may have one redirected. (fd 2 is deliberately NOT consulted: stderr is
+  // routinely redirected to a log while the session still owns a terminal.)
+  if (platform === 'linux') {
+    for (const fd of [1, 0]) {
+      try {
+        const p = readLink(`/proc/self/fd/${fd}`);
+        if (p.startsWith('/dev/pts/') || p.startsWith('/dev/tty')) return p;
+      } catch {
+        /* fd redirected / proc unavailable — try the next */
+      }
+    }
+  }
+
+  // macOS/BSD have no /proc and node exposes no ttyname(3). `ps -o tty=` reports the
+  // controlling terminal by NAME, and the spelling varies by platform and device:
+  //   linux  'pts/24'          → /dev/pts/24
+  //   darwin 's003'            → /dev/ttys003   (the short form drops the 'tty')
+  //   darwin 'ttys003'         → /dev/ttys003
+  //   either 'console'         → /dev/console   (NOT /dev/ttyconsole)
+  // Rather than guess the prefix from the spelling, probe: the device that exists is the
+  // device we own. Only ever return a path that is really there.
+  try {
+    const name = psTty(process.pid).trim();
+    if (name && name !== '?' && name !== '??' && name !== '-') {
+      const candidates = name.startsWith('/dev/') ? [name] : [`/dev/${name}`, `/dev/tty${name}`];
+      for (const path of candidates) {
+        if (exists(path)) return path;
+      }
+    }
+  } catch {
+    /* no ps / unexpected output — fall through */
+  }
+  return null;
+}
+
+/** `ps -o tty= -p <pid>` — split out so resolveOwnedTtyPath stays unit-testable. */
+function defaultPsTty(pid) {
+  return execFileSync('ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
+}
+
+/**
  * Supervisor presence beat (agent-liveness-heartbeat-hardening-2026-06-12
  * P-004): while psu is the live PARENT of the agent child — which it is in
  * BOTH launch paths (spawnInherit waits + forwards exit; the pty host owns
@@ -2992,6 +3076,19 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // baked url would go stale; env-interpolation + this export self-heal it.
   // OPERATOR_URL already honors an explicit PAPERCUSP_OPERATOR_URL override.
   env.PAPERCUSP_OPERATOR_URL = OPERATOR_URL;
+  // WI-3665: hand every descendant the terminal this launch OWNS, so the fleet-identity
+  // title (👑/👤 + fleet + colour square) can be written even from a hook that has been
+  // setsid'd away from its controlling terminal — which is exactly how Claude Code spawns
+  // its statusLine command, and why that title silently never appeared.
+  //
+  // ALWAYS RE-DERIVED, NEVER INHERITED. sanitizeInheritedEnv keeps PAPERCUSP_*, so an
+  // agent session that owns a terminal and then spawns a HEADLESS psu child (a bee) would
+  // otherwise leak its own PAPERCUSP_TTY down — and the bee's every tool call would retitle
+  // the human's window. Terminal ownership is a property of THIS launch and nothing else:
+  // recompute it, and delete it outright when this launch owns no terminal.
+  const ownedTty = resolveOwnedTtyPath();
+  if (ownedTty) env.PAPERCUSP_TTY = ownedTty;
+  else delete env.PAPERCUSP_TTY;
   // Default-account claude inherits the single stored CLI login via
   // CLAUDE_CODE_OAUTH_TOKEN — the only cross-platform path (macOS keeps the
   // OAuth token in the Keychain keyed per CLAUDE_CONFIG_DIR, so the per-session

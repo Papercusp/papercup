@@ -86,7 +86,6 @@ export default function VersionBadge() {
           padding: '4px 9px',
           borderRadius: 8,
           font: '600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace',
-          letterSpacing: 0,
           cursor: stale ? 'pointer' : 'default',
           border: `1px solid ${stale ? 'color-mix(in oklab, var(--warn), transparent 45%)' : 'var(--border)'}`,
           background: stale

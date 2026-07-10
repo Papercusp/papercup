@@ -38,7 +38,11 @@
  * SERVER side ({@link wireHiveGitServe}): on `req`, re-checks `hiveGit.mode`
  * (S-5: NEVER cached, so a mode flip needs no re-seed — mirrors
  * git-sync-action's per-tick re-consult of the same setting) and resolves the
- * repo path for `(potHomeSlug, repoKey)`. A legacy-mode hive always REFUSEs —
+ * repo path for `(potHomeSlug, repoKey)` — a `scope:`-prefixed repoKey
+ * (`scope-repo.ts`'s `scopeRepoWireKey`/`parseScopeRepoWireKey`) resolves via
+ * `scopeRepoPath` instead of the plain `hiveGitRepoPath` join, since a
+ * `scopes/<owner>/<slug>.git` path has more path components than a single
+ * wire repoKey token can address otherwise. A legacy-mode hive always REFUSEs —
  * no bytes are ever served, so legacy hives are byte-for-byte unchanged. Scope
  * (`scopes/`) repos call `authorizeScopeRepoServe` (scope-serve-gate.ts),
  * which needs a roster-VERIFIED peer identity — never the wire `req` frame's
@@ -68,7 +72,7 @@ import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding, type CompactEncodingState } from 'compact-encoding';
 import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-git-mode';
 import { hiveGitRepoPath, pathExists } from './storage';
-import { isScopeRepoFamilyPath } from './scope-repo';
+import { isScopeRepoFamilyPath, parseScopeRepoWireKey, scopeRepoPath } from './scope-repo';
 import { HIVE_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
 import { authorizeScopeRepoServe } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
@@ -331,11 +335,22 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       mode = 'legacy';
     }
     if (mode === 'legacy') return refuse('mode-legacy');
+    // WI-3641: a `scope:`-prefixed wire repoKey (scopeRepoWireKey) addresses a
+    // `scopes/` family repo — hiveGitRepoPath's single-path-component join can
+    // never itself PRODUCE a `scopes/<owner>/<slug>.git` path (that's 2
+    // components below potHomeSlug), so scope-family requests are resolved via
+    // scopeRepoPath directly instead. A malformed scope segment refuses
+    // (fail-closed) rather than falling through to the plain-repo path.
     let repoPath: string;
-    try {
-      repoPath = hiveGitRepoPath(cfg.potHomeSlug, v.repoKey);
-    } catch {
-      return refuse('bad-repo-key');
+    const wireScopeId = parseScopeRepoWireKey(v.repoKey);
+    if (wireScopeId) {
+      repoPath = scopeRepoPath(cfg.potHomeSlug, wireScopeId);
+    } else {
+      try {
+        repoPath = hiveGitRepoPath(cfg.potHomeSlug, v.repoKey);
+      } catch {
+        return refuse('bad-repo-key');
+      }
     }
     if (isScopeRepoFamilyPath(repoPath)) {
       // WI-3641: authorize via the roster serve-gate, keyed by the caller's
@@ -344,6 +359,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       // below fails closed: no resolver, no verified device, an unresolvable
       // member, or a roster refusal all refuse rather than serve.
       const devicePubkey = cfg.resolvePeerDevicePubkey?.(state.socket);
+      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] devicePubkey=', devicePubkey, 'repoPath=', repoPath);
       if (!devicePubkey) return refuse('scope-repo-no-verified-peer');
       let githubUserId: number | null;
       try {
@@ -352,9 +368,11 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
           cfg.potHomeSlug,
           devicePubkey,
         );
-      } catch {
+      } catch (e) {
+        if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] member-lookup-error', e);
         return refuse('scope-repo-member-lookup-error');
       }
+      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] githubUserId=', githubUserId);
       if (githubUserId == null) return refuse('scope-repo-unknown-device');
       const roster = getScopeRoster({ workspaceId: cfg.workspaceId, potSlug: cfg.potHomeSlug });
       const decision = await authorizeScopeRepoServe({
@@ -362,8 +380,10 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
         peerGithubUserId: githubUserId,
         isScopeMember: roster.predicate,
       });
+      if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] decision=', JSON.stringify(decision));
       if (!decision.ok) return refuse(`scope-repo:${decision.refusal.reason}`);
     }
+    if (process.env.PCUSP_DEBUG_SCOPE_SERVE) console.error('[scope-serve-debug] pathExists check for', join(repoPath, 'HEAD'), await pathExists(join(repoPath, 'HEAD')));
     // EI-8863/WI-3643 finding (su-95401d6d's handoff): an unknown-but-validly
     // NAMED repoKey (no traversal, no unsafe chars — so hiveGitRepoPath above
     // never throws) resolves to a path that simply doesn't exist on disk.

@@ -37,3 +37,32 @@ export async function testElevenLabsConnection(apiKey: string): Promise<
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+export interface ElevenLabsVoiceSummary { id: string; name: string; lang?: string }
+
+/**
+ * Fetch the account's voice library server-side (the API key never reaches the
+ * browser — the settings page used to fetch `/v1/voices` DIRECTLY from the
+ * client with a MASKED key, so it always 401'd and the picker was stuck on the
+ * single hardcoded default; WI-3662). Returns [] on any error so the caller can
+ * fall back to its default list without a hard failure.
+ */
+export async function fetchElevenLabsVoices(apiKey: string): Promise<ElevenLabsVoiceSummary[]> {
+  try {
+    const r = await fetch(`${BASE}/voices`, {
+      headers: { 'xi-api-key': apiKey },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return [];
+    const body = await r.json();
+    const list = (body?.voices ?? []) as Array<{ voice_id?: string; name?: string; labels?: { language?: string }; fine_tuning?: { language?: string } }>;
+    return list
+      .filter((v): v is { voice_id: string; name: string } => typeof v?.voice_id === 'string' && typeof v?.name === 'string')
+      .map((v) => {
+        const lang = (v as { labels?: { language?: string } }).labels?.language;
+        return lang ? { id: v.voice_id, name: v.name, lang } : { id: v.voice_id, name: v.name };
+      });
+  } catch {
+    return [];
+  }
+}

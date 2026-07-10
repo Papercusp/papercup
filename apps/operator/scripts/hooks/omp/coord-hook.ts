@@ -1465,6 +1465,55 @@ export function buildObjectiveTitleOsc(
 //     (ctx.ui.notify) AND the model (pi.sendMessage system-reminder), deduped
 //     by notice key so a standing tip doesn't spam every turn.
 
+/**
+ * Ordered terminal paths an OSC-0 title write should try, most authoritative first.
+ * The TS twin of pc_tty.py's `tty_candidates` (read that file for the full WI-3665
+ * rationale); objective-title-parity.test.ts holds the two in lockstep.
+ *
+ *   1. PAPERCUSP_OBJECTIVE_TTY — this hook's test seam (capture the escape in a file).
+ *   2. PAPERCUSP_TTY          — the terminal this session OWNS, resolved once at launch
+ *                               by psu-launcher. The only entry that survives a setsid'd
+ *                               spawn, which is how Claude runs its statusline child.
+ *   3. /dev/tty               — the controlling terminal. OMP's hook runs in-process so it
+ *                               still has one; kept as the fallback for non-psu launches.
+ *
+ * A list, not a single answer: terminals close, and a stale seam must be skipped rather
+ * than throw. We deliberately do NOT walk /proc ancestry to find a tty — ancestry crosses
+ * ownership boundaries and would let a headless bee retitle a window it does not own.
+ */
+export function ttyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const out: string[] = [];
+  for (const name of ['PAPERCUSP_OBJECTIVE_TTY', 'PAPERCUSP_TTY']) {
+    const val = (env[name] ?? '').trim();
+    if (val) out.push(val);
+  }
+  out.push('/dev/tty');
+  return out;
+}
+
+/**
+ * Write an OSC escape to the first terminal that accepts it. Resolves true on success,
+ * false when every candidate fails (headless / closed terminal / no tty). Never throws —
+ * a title is cosmetic and must never break a turn.
+ */
+export async function writeOscTitle(osc: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (osc.length === 0) return false;
+  for (const path of ttyCandidates(env)) {
+    try {
+      const fh = await fsp.open(path, 'w');
+      try {
+        await fh.write(osc);
+      } finally {
+        await fh.close();
+      }
+      return true;
+    } catch {
+      /* stale seam / closed terminal / no tty — try the next candidate */
+    }
+  }
+  return false;
+}
+
 /** Pure: wrap a server-rendered display title in the OSC-0 escape, stripping
  *  control chars that could break out of the OSC string. '' when empty. */
 export function buildDisplayTitleOsc(title: string | null | undefined): string {
@@ -1513,20 +1562,7 @@ export async function emitStatusDisplay(
   const osc =
     buildDisplayTitleOsc(glance?.display?.title) ||
     buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
-  if (osc.length > 0) {
-    try {
-      // PAPERCUSP_OBJECTIVE_TTY: test seam (mirrors the codex hook) — production leaves it
-      // unset and writes the controlling tty.
-      const fh = await fsp.open(process.env.PAPERCUSP_OBJECTIVE_TTY || '/dev/tty', 'w');
-      try {
-        await fh.write(osc);
-      } finally {
-        await fh.close();
-      }
-    } catch {
-      /* no controlling tty / not writable → fail open, the title just isn't set */
-    }
-  }
+  await writeOscTitle(osc);
   // 💡 status notice — deliver ON CHANGE only (a standing tip must not spam every turn).
   const key = statusNoticeKey(glance?.display?.notice);
   if (key.length > 0 && key !== _lastStatusNoticeKey) {

@@ -62,7 +62,6 @@ const SECTION_TITLE: CSSProperties = {
   fontWeight: 600,
   color: 'var(--fg-dim)',
   textTransform: 'uppercase',
-  letterSpacing: 0,
   marginBottom: 12,
 };
 

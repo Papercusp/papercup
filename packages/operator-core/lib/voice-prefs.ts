@@ -393,7 +393,12 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
   agentLanguage: 'en',
-  memoryEmbedderMode: 'auto',
+  // Local (BGE-ONNX) by default — owner directive "keep local the default", and
+  // it sidesteps the 'auto' cascade's key-thrash (WI-3615). Safe as a hard default
+  // because @huggingface/transformers is a real dependency (apps/operator
+  // package.json), so the local embedder is always installed; 'local' never falls
+  // through to 'disabled' here the way it would if the package were optional.
+  memoryEmbedderMode: 'local',
   audienceMode: 'engineer',
   humanFacingRole: 'operator',
   webSpeechLeakAcked: false,
