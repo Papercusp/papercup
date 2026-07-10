@@ -90,13 +90,13 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
       traceRef: 'trace://x',
     });
 
-    const [row] = await sql`SELECT * FROM harness_shared.hive_eval_runs WHERE run_id = ${runRow(0).runId}`;
+    const [row] = await sql`SELECT * FROM harness_shared.pot_eval_runs WHERE run_id = ${runRow(0).runId}`;
     expect(row.terminal_state).toBe('drained');
     expect(Number(row.wall_clock_ms)).toBe(1234);
     expect(row.frontier_drained).toBe(true);
     expect(coerceJson<{ costUsd: number }>(row.observations)?.costUsd).toBe(0.5);
-    const [sc] = await sql`SELECT * FROM harness_shared.hive_eval_scenarios WHERE scenario_id = 'serial-pipeline'`;
-    expect(sc.ideal_bee_count).toBe(1);
+    const [sc] = await sql`SELECT * FROM harness_shared.pot_eval_scenarios WHERE scenario_id = 'serial-pipeline'`;
+    expect(sc.ideal_cup_count).toBe(1);
     expect(coerceJson(sc.critical_path)).toEqual(['w1', 'w2', 'w3', 'w4']);
   });
 
@@ -104,7 +104,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     const store = createPgHiveEvalStore(sql);
     await store.upsertInstance(instance);
     for (let r = 0; r < 3; r++) await store.startRun(runRow(r));
-    const rows = await sql`SELECT run_id FROM harness_shared.hive_eval_runs WHERE scenario_id = 'serial-pipeline' AND instance_id = ${instance.instanceId} ORDER BY repeat`;
+    const rows = await sql`SELECT run_id FROM harness_shared.pot_eval_runs WHERE scenario_id = 'serial-pipeline' AND instance_id = ${instance.instanceId} ORDER BY repeat`;
     expect(rows.map((x) => x.run_id)).toEqual([
       `${instance.instanceId}::serial-pipeline::r0`,
       `${instance.instanceId}::serial-pipeline::r1`,
@@ -122,7 +122,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     });
     // re-run the same key
     await store.startRun(runRow(0));
-    const [row] = await sql`SELECT terminal_state, finished_at FROM harness_shared.hive_eval_runs WHERE run_id = ${runRow(0).runId}`;
+    const [row] = await sql`SELECT terminal_state, finished_at FROM harness_shared.pot_eval_runs WHERE run_id = ${runRow(0).runId}`;
     expect(row.terminal_state).toBeNull(); // reset
     expect(row.finished_at).toBeNull();
   });
@@ -164,7 +164,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     const re = await store.getScore(runRow(0).runId, 'rubric-abc');
     expect(re?.composite).toBe(2.0);
     expect(re?.regressions).toBe(true);
-    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.hive_eval_scores WHERE run_id = ${runRow(0).runId}`;
+    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.pot_eval_scores WHERE run_id = ${runRow(0).runId}`;
     expect(count).toBe(1);
   });
 
@@ -175,7 +175,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     await store.startRun(runRow(0));
     await store.upsertScore(scoreRow({ rubricHash: 'rubric-abc', composite: 8.8 }));
     await store.upsertScore(scoreRow({ rubricHash: 'rubric-xyz', composite: 4.4 }));
-    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.hive_eval_scores WHERE run_id = ${runRow(0).runId}`;
+    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.pot_eval_scores WHERE run_id = ${runRow(0).runId}`;
     expect(count).toBe(2);
     expect((await store.getScore(runRow(0).runId, 'rubric-xyz'))?.composite).toBe(4.4);
   });
@@ -186,7 +186,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     await store.upsertScenario(scenario);
     await store.startRun(runRow(0));
     await store.upsertScore(scoreRow());
-    await sql`DELETE FROM harness_shared.hive_eval_runs WHERE run_id = ${runRow(0).runId}`;
+    await sql`DELETE FROM harness_shared.pot_eval_runs WHERE run_id = ${runRow(0).runId}`;
     expect(await store.getScore(runRow(0).runId, 'rubric-abc')).toBeNull();
   });
 });

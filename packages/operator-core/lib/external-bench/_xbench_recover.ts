@@ -128,7 +128,7 @@ async function main() {
     console.log(`[recover] ${r.instanceId}: diffBytes=${diffBytes} cost=$${(cost.costUsd || 0).toFixed(2)}${generationError ? ` (${generationError})` : ''}`);
   }
 
-  // Reconstruct the REAL-Queen coordination trace from hive_placements if the install_slug is recoverable
+  // Reconstruct the REAL-Queen coordination trace from pot_placements if the install_slug is recoverable
   // (the homePrefix is the member slug's leading `xbq…` segment before the first `m`).
   let coordEvents: unknown[] = [];
   try {
@@ -141,14 +141,14 @@ async function main() {
       const placements = await sql<{
         work_item_id: string;
         harness_slug: string | null;
-        bee_spawn_id: string | null;
+        cup_spawn_id: string | null;
         status: string;
         fail_count: number;
         last_disposition: string | null;
         placed_at: string | Date;
       }[]>`
-        SELECT work_item_id, harness_slug, bee_spawn_id, status, fail_count, last_disposition, placed_at
-          FROM harness_shared.hive_placements
+        SELECT work_item_id, harness_slug, cup_spawn_id, status, fail_count, last_disposition, placed_at
+          FROM harness_shared.pot_placements
          WHERE workspace_id = ${WORKSPACE_ID} AND install_slug = ${installSlug}
          ORDER BY placed_at ASC`;
       for (const p of placements) {
@@ -156,7 +156,7 @@ async function main() {
         if (inst) featureToInstance.set(p.work_item_id, inst);
       }
       coordEvents = buildRealQueenCoordEvents(placements, featureToInstance);
-      console.log(`[recover] reconstructed ${coordEvents.length} coordEvents from hive_placements (install_slug=${installSlug}, rows=${placements.length})`);
+      console.log(`[recover] reconstructed ${coordEvents.length} coordEvents from pot_placements (install_slug=${installSlug}, rows=${placements.length})`);
     }
   } catch (e) {
     console.warn(`[recover] coordEvents reconstruction skipped: ${e instanceof Error ? e.message : String(e)}`);

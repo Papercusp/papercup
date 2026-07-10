@@ -4,7 +4,7 @@
  *
  * The Mug pot loop places ranked work onto cups; this module measures how
  * WELL it runs and records a durable per-tick snapshot in
- * `harness_shared.hive_throughput_ticks` (migration 261), surfaced on the
+ * `harness_shared.pot_throughput_ticks` (migration 261), surfaced on the
  * Learning tab's "Throughput" sub-view (resolver `learning.potThroughput`).
  *
  * Two layers, mirroring the scout tick-ledger split:
@@ -335,7 +335,7 @@ export async function recordPotThroughputTick(opts: {
          WHERE workspace_id = ${ws} AND child_role = 'cup'
            AND started_at > ${windowStart}`.catch(() => [] as SpawnRow[]),
       sql<Array<{ tick_at: string | Date }>>`
-        SELECT tick_at FROM harness_shared.hive_throughput_ticks
+        SELECT tick_at FROM harness_shared.pot_throughput_ticks
          WHERE workspace_id = ${ws} AND pot_slug = ${opts.potSlug}
          ORDER BY tick_at DESC LIMIT 1`.catch(() => [] as Array<{ tick_at: string | Date }>),
       // WI-267: the pot's REAL placeable-frontier depth (member-scoped; feature-kind,
@@ -379,8 +379,8 @@ export async function recordPotThroughputTick(opts: {
     const breaches = detectThroughputBreaches(metrics, opts.potSlug, { ownerMaxCups, systemCeiling });
 
     await sql`
-      INSERT INTO harness_shared.hive_throughput_ticks
-        (workspace_id, pot_slug, frontier_depth, placements, bees_busy, bees_cap,
+      INSERT INTO harness_shared.pot_throughput_ticks
+        (workspace_id, pot_slug, frontier_depth, placements, cups_busy, cups_cap,
          stuck_count, completed, mttc_ms, question_rungs, detail)
       VALUES
         (${ws}, ${opts.potSlug}, ${metrics.frontierDepth}, ${metrics.placements},
@@ -444,8 +444,8 @@ export interface RawThroughputTickRow {
   tick_at: string | Date;
   frontier_depth: number | null;
   placements: number | null;
-  bees_busy: number | null;
-  bees_cap: number | null;
+  cups_busy: number | null;
+  cups_cap: number | null;
   stuck_count: number | null;
   completed: number | null;
   mttc_ms: string | number | null;
@@ -460,8 +460,8 @@ export interface RawThroughputTickRow {
  * else re-derives from busy/cap (resilient to a detail-less row).
  */
 export function normalizeThroughputRow(r: RawThroughputTickRow): PotThroughputTickRow {
-  const cupsBusy = Number(r.bees_busy ?? 0);
-  const cupsCap = Number(r.bees_cap ?? 0);
+  const cupsBusy = Number(r.cups_busy ?? 0);
+  const cupsCap = Number(r.cups_cap ?? 0);
   const mttc = r.mttc_ms == null ? null : Number(r.mttc_ms);
   const detailUtil = asJsonObject(r.detail)?.utilization;
   const rungs = asJsonObject(r.question_rungs);

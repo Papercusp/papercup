@@ -172,6 +172,34 @@ describe('recordAccountPenalty + window rolling', () => {
     expect(r.utilization7d).toBe(0.55);
     expect(r.utilizationAt).toBe(T0);
   });
+
+  it('recordAccountReset default (no opts / resetWindows:false) is byte-identical to pre-WI-3553 behavior', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.91, windowResetAt: T0 + 300 * MIN, utilization7d: 0.55, windowResetAt7d: T0 + 9999 * MIN }, T0);
+    const withNoOpts = getAccount(recordAccountReset(p, 'a'), 'a')!.rate;
+    const withExplicitFalse = getAccount(recordAccountReset(p, 'a', { resetWindows: false }), 'a')!.rate;
+    expect(withNoOpts).toEqual(withExplicitFalse);
+    expect(withNoOpts.utilization).toBe(0.91);
+    expect(withNoOpts.windowResetAt).toBe(T0 + 300 * MIN);
+    expect(withNoOpts.utilization7d).toBe(0.55);
+    expect(withNoOpts.windowResetAt7d).toBe(T0 + 9999 * MIN);
+  });
+
+  it('recordAccountReset { resetWindows: true } (WI-3553) ALSO zeroes the observed-budget projection', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.91, windowResetAt: T0 + 300 * MIN, utilization7d: 0.55, windowResetAt7d: T0 + 9999 * MIN }, T0);
+    p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 10 * MIN });
+    p = recordAccountReset(p, 'a', { resetWindows: true });
+    const r = getAccount(p, 'a')!.rate;
+    // pause/penalty cleared exactly as the default path does
+    expect(r.pausedUntil).toBe(0);
+    expect(r.penaltyCount).toBe(0);
+    expect(r.windowStartedAt).toBe(0);
+    // the deliberate additional override: the observed-budget projection is gone too
+    expect(r.utilization).toBeUndefined();
+    expect(r.windowResetAt).toBeUndefined();
+    expect(r.utilization7d).toBeUndefined();
+    expect(r.windowResetAt7d).toBeUndefined();
+    expect(r.utilizationAt).toBeUndefined();
+  });
 });
 
 describe('isAvailable / isSustainedlyLimited', () => {

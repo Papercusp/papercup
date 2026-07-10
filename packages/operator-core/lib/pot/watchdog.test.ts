@@ -63,7 +63,7 @@ let midTurnRows: unknown[] = [];
 let pendingWakeRows: unknown[] = []; // EI-312 leg 1: pre-staged watchdog wakes
 const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
   const text = Array.isArray(strings) ? strings.join('?') : String(strings);
-  if (/INSERT INTO harness_shared\.hive_watchdog_fires/i.test(text)) {
+  if (/INSERT INTO harness_shared\.pot_watchdog_fires/i.test(text)) {
     fires.push(values);
     return Promise.resolve([]);
   }

@@ -32,9 +32,9 @@
  * bites. The scripted driver's one-hive-per-task topology could never produce contention.
  *
  * COORDINATION CAPTURE (the MAST-non-zero fix): for the real-Queen arm coordEvents are reconstructed
- * from the REAL `hive_placements` ledger (placed/recovering/cursed/stranded + fail_count + the
+ * from the REAL `pot_placements` ledger (placed/recovering/cursed/stranded + fail_count + the
  * watchdog's last_disposition) — so re-placements show as `rework`, stranded/cursed as breakdown, etc.
- * The FIFO arm writes NO hive_placements rows (the scripted path doesn't), so its coordination trace
+ * The FIFO arm writes NO pot_placements rows (the scripted path doesn't), so its coordination trace
  * stays at the synthetic-placement floor — the MAST delta is real, not manufactured.
  *
  * OPUS: the bee role-model floor is haiku and the queen floor is sonnet (orchestrator/role-models.ts),
@@ -126,7 +126,7 @@ export interface RealQueenEnrolled {
   clonePath: string;
   workItemId: string;
   checkout: TaskCheckout;
-  /** The bee spawn id that served it (filled at collect from spawned_agents / hive_placements). */
+  /** The bee spawn id that served it (filled at collect from spawned_agents / pot_placements). */
   cupId: string | null;
   placedAtMs: number | null;
   disposition: 'spawn' | 'warm-inject' | null;
@@ -171,7 +171,7 @@ export interface RealQueenBacklogOps {
   reconcileWatchdog(input: { hiveHome: string; workspaceId: string }): Promise<void>;
   /** surveyPot's ready-frontier + started-plan counts (the drained inputs) across all members. */
   survey(input: { hiveHome: string; workspaceId: string }): Promise<{ frontierLen: number; plansLen: number }>;
-  /** Placements still in flight = the drain terminator. For the hive arm: hive_placements non-terminal.
+  /** Placements still in flight = the drain terminator. For the hive arm: pot_placements non-terminal.
    *  For the FIFO arm: members placed (cupId set) whose feature is non-terminal & bee not terminal. */
   countInFlight(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<number>;
   /** Count live bees (for the peak-concurrency metric — sampled every poll, the fixed counter). */
@@ -197,7 +197,7 @@ export interface RealQueenBacklogOps {
   pauseFleet(input: { hiveHome: string; workspaceId: string }): Promise<void>;
   /** Per enrolled task: the diff + cost/timing → FleetTaskResult (cost summed from agent_usage_samples). */
   collectTask(input: { enrolled: RealQueenEnrolled; arm: string; seed: string; workspaceId: string }): Promise<FleetTaskResult>;
-  /** The REAL coordination trace for the run (hive_placements ledger for the Queen arm; empty for FIFO). */
+  /** The REAL coordination trace for the run (pot_placements ledger for the Queen arm; empty for FIFO). */
   collectCoordEvents(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<CoordEvent[]>;
   /** Drop every member + dissolve the shared hive + rm the clones. */
   teardown(input: { hiveHome: string; members: RealQueenEnrolled[]; workspaceId: string }): Promise<void>;
@@ -421,7 +421,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
       await ops.pauseFleet({ hiveHome, workspaceId: ws }).catch(() => {});
       const taskResults = await collectAll(ops, members, req, ws, opts.onTaskCollected);
       const realCoord = await ops.collectCoordEvents({ hiveHome, members, arm: req.arm, workspaceId: ws }).catch(() => [] as CoordEvent[]);
-      // Real-Queen arm: the hive_placements-derived trace IS the coordination signal. FIFO arm: keep the
+      // Real-Queen arm: the pot_placements-derived trace IS the coordination signal. FIFO arm: keep the
       // synthetic per-placement events the loop pushed (no Queen ledger to read).
       coordEvents = isRealQueen ? realCoord : coordEvents;
       const finishedAtMs = ops.now();
@@ -487,7 +487,7 @@ export async function dissolveBenchHive(hiveHome: string, workspaceId: string): 
 }
 
 /* -------------------------------------------------------------------------- */
-/* The REAL binding — ONE shared hive, real-Queen wake + the hive_placements trace. */
+/* The REAL binding — ONE shared hive, real-Queen wake + the pot_placements trace. */
 /* -------------------------------------------------------------------------- */
 
 function scratchSlug(prefix: string): string {
@@ -519,7 +519,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   // GAIA seam (plan benchmark-suite-gaia-2026-06-17): when engaged, swap clone → GAIA scratch dir, member
   // blueprint → `gaia-agent`, the feature spec → the question + answer.txt instruction, and the work-product
   // readout → `answer.txt` (the THREE SWAPS, mirroring suIndependentBacklogOps). Everything else — the Queen
-  // wake/place/evict/re-place/adaptive-wake drive, the hive_placements coord trace, the readMemberUsage cost
+  // wake/place/evict/re-place/adaptive-wake drive, the pot_placements coord trace, the readMemberUsage cost
   // read, the never-throw contract — is unchanged. Per-task briefs are stored by instanceId so the Queen's
   // situational placement still rides the right per-task directive (she ALSO attaches her own overlay).
   const gaiaMode = opts.gaia?.enabled === true;
@@ -697,10 +697,10 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
     async countInFlight({ members, arm }) {
       const sql = await sqlClient();
       if (arm === HIVE_REALQUEEN_ARM) {
-        // The Queen places via the real flow → hive_placements rows. In-flight = non-terminal placements
+        // The Queen places via the real flow → pot_placements rows. In-flight = non-terminal placements
         // PLUS any member whose feature is still non-terminal with no terminal-bee yet (startup window).
         const placed = await sql<{ status: string }[]>`
-          SELECT status FROM harness_shared.hive_placements
+          SELECT status FROM harness_shared.pot_placements
            WHERE workspace_id = ${ws} AND install_slug = ${homePrefix}
              AND status IN ('working','recovering')`;
         if (placed.length > 0) return placed.length;
@@ -929,14 +929,14 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       const rows = await sql<{
         work_item_id: string;
         harness_slug: string | null;
-        bee_spawn_id: string | null;
+        cup_spawn_id: string | null;
         status: string;
         fail_count: number;
         last_disposition: string | null;
         placed_at: string | Date;
       }[]>`
-        SELECT work_item_id, harness_slug, bee_spawn_id, status, fail_count, last_disposition, placed_at
-          FROM harness_shared.hive_placements
+        SELECT work_item_id, harness_slug, cup_spawn_id, status, fail_count, last_disposition, placed_at
+          FROM harness_shared.pot_placements
          WHERE workspace_id = ${ws} AND install_slug = ${homePrefix}
          ORDER BY placed_at ASC`;
       return buildRealQueenCoordEvents(rows, featureToInstance);
@@ -953,11 +953,11 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   };
 }
 
-/** A `hive_placements` ledger row (the real-Queen coordination source). Exported for the test. */
+/** A `pot_placements` ledger row (the real-Queen coordination source). Exported for the test. */
 export interface HivePlacementRow {
   work_item_id: string;
   harness_slug: string | null;
-  bee_spawn_id: string | null;
+  cup_spawn_id: string | null;
   status: string;
   fail_count: number;
   last_disposition: string | null;
@@ -965,7 +965,7 @@ export interface HivePlacementRow {
 }
 
 /**
- * Reconstruct the REAL-Queen coordination trace from the `hive_placements` ledger — pure, so the test
+ * Reconstruct the REAL-Queen coordination trace from the `pot_placements` ledger — pure, so the test
  * exercises the mapping with no PG. Each row → a `placement` event; a row whose Queen RE-PLACED it
  * (fail_count>0 / last_disposition='recover') → an additional `rework` event (the watchdog evicted a
  * stuck bee and the Queen re-placed — coordination WORK that FIFO never does); 'stranded'/'cursed' →
@@ -981,7 +981,7 @@ export function buildRealQueenCoordEvents(
   for (const r of rows) {
     const ts = new Date(r.placed_at).getTime();
     const taskId = featureToInstance.get(r.work_item_id) ?? r.work_item_id;
-    const agent = r.bee_spawn_id ?? 'mug';
+    const agent = r.cup_spawn_id ?? 'mug';
     events.push({ ts, kind: 'placement', agent, taskId, detail: `placed (${r.status})` });
     if ((r.fail_count ?? 0) > 0 || r.last_disposition === 'recover') {
       // The watchdog surfaced a stuck/dead bee and the Queen re-placed — re-work the FIFO arm can't do.

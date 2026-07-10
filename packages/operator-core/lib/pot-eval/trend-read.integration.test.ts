@@ -76,8 +76,8 @@ describe('readHiveEvalInstanceSummaries (HE-07 trend, migrations 264 + 268)', ()
     const newer: InstanceManifest = { instanceId: 'gen-new', workspaceId: WS, codeSha: 'bbbb', createdAt: new Date('2026-06-10T00:00:00Z') };
     await store.upsertInstance(older);
     await store.upsertInstance(newer);
-    await sql`UPDATE harness_shared.hive_eval_instances SET created_at = '2026-06-01T00:00:00Z' WHERE instance_id = 'gen-old'`;
-    await sql`UPDATE harness_shared.hive_eval_instances SET created_at = '2026-06-10T00:00:00Z' WHERE instance_id = 'gen-new'`;
+    await sql`UPDATE harness_shared.pot_eval_instances SET created_at = '2026-06-01T00:00:00Z' WHERE instance_id = 'gen-old'`;
+    await sql`UPDATE harness_shared.pot_eval_instances SET created_at = '2026-06-10T00:00:00Z' WHERE instance_id = 'gen-new'`;
 
     // OLDER generation: 2 runs, both scored (composite 6 + 8 → mean 7), one gate-fail.
     for (const r of [0, 1]) await store.startRun(runRow('gen-old', r));

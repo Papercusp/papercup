@@ -4,13 +4,13 @@
  *
  * Validates the schema + every sweep query end-to-end: the migration applies (a
  * broken 263 throws in beforeAll), and reconcileOnePot's real SQL — the cup-spawn
- * join, the candidate fetch, the hive_placements upsert, and the stranded-blocker
+ * join, the candidate fetch, the pot_placements upsert, and the stranded-blocker
  * coord_links/split_part query — round-trips against live rows, producing the
  * right P-020 (recover/completed), P-021 (cursed) and P-022 (stranded) decisions.
  *
  * The two side-effect modules (recovery wake, owner escalation) are mocked so the
  * test asserts they fire WITHOUT touching the coord substrate — the durable proof
- * is the hive_placements row state, the same way the system reads it.
+ * is the pot_placements row state, the same way the system reads it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
@@ -96,7 +96,7 @@ async function readPlacement(
 ): Promise<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null } | null> {
   const rows = await sql<{ status: string; fail_count: number; infra_loss_count: number; escalation_msg_id: string | null }[]>`
     SELECT status, fail_count, infra_loss_count, escalation_msg_id
-      FROM harness_shared.hive_placements
+      FROM harness_shared.pot_placements
      WHERE workspace_id = ${WS} AND install_slug = ${POT} AND work_item_id = ${id}`;
   return rows[0] ?? null;
 }
@@ -110,7 +110,7 @@ async function seedToolCall(owner: string): Promise<void> {
     VALUES (${WS}, ${owner}, 'tool', 'capability:bash', now())`;
 }
 
-describe('hive_placements completion sweep (real PG, migration 263)', () => {
+describe('pot_placements completion sweep (real PG, migration 263)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     sql = db.adminSql;
@@ -139,7 +139,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
     mocks.resolveEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
     await seedMugSession();
   });
 
@@ -191,9 +191,9 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('F-FIX-043: summarizeOpenPlacements does not count a stale working row once the unit is terminal', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-SUMMARY-DONE', ${POT}, ${MUG},
               'cup-1', 'working', 0, now(), now(), now())`;
     await seedUnit({ id: 'F-SUMMARY-DONE', status: 'passed', takenBy: 'cup-1' });
@@ -206,9 +206,9 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('F-FIX-043: summarizeOpenPlacements does not count a stale working row after dead-holder cleanup clears the claim', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-SUMMARY-CLEARED', ${POT}, ${MUG},
               'cup-dead', 'working', 0, now(), now(), now())`;
     await seedUnit({ id: 'F-SUMMARY-CLEARED', status: 'todo', takenBy: null });
@@ -219,7 +219,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(summary.items).toEqual([]);
   });
 
-  it('mig 529: hive_placements accepts the watchdog parked status `blocked` (EI-6563 write path)', async () => {
+  it('mig 529: pot_placements accepts the watchdog parked status `blocked` (EI-6563 write path)', async () => {
     // The parked decision (WI-1439/EI-6563) upserts status 'blocked'. Migration 263's
     // check constraint did not allow it, so ONE parked unit aborted its pot's WHOLE
     // reconcile sweep with a constraint violation and reclaimed items were never
@@ -227,9 +227,9 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // 529 extends the enum; this guards the constraint against drifting out from
     // under the code's status vocabulary again.
     await expect(sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-PARKED-BLOCKED-STATUS', ${POT}, ${MUG},
               'cup-1', 'blocked', 0, now(), now(), now())`).resolves.toBeDefined();
   });
@@ -240,17 +240,17 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // fresh cup-spawn event), whose underlying unit has since been parked `blocked`
     // by an owner/human gate. The Mug brief must stop telling her to re-place it.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-SUMMARY-PARKED-BLOCKED', ${POT}, ${MUG},
               'cup-1', 'recovering', 0, now(), now(), now())`;
     await seedUnit({ id: 'F-SUMMARY-PARKED-BLOCKED', status: 'blocked', takenBy: null });
 
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-SUMMARY-PARKED-NEEDSHUMAN', ${POT}, ${MUG},
               'cup-1', 'recovering', 0, now(), now(), now())`;
     await seedUnit({ id: 'F-SUMMARY-PARKED-NEEDSHUMAN', status: 'needs-human', takenBy: null });
@@ -263,9 +263,9 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-6650: summarizeOpenPlacements still surfaces a genuinely-active recovering placement (not parked)', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+         cup_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-SUMMARY-STILL-RECOVERING', ${POT}, ${MUG},
               'cup-1', 'recovering', 0, now(), now(), now())`;
     await seedUnit({ id: 'F-SUMMARY-STILL-RECOVERING', status: 'in_progress', takenBy: null });
@@ -281,8 +281,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
   it('P-021: a unit at the breaker threshold → cursed + an owner escalation, no further wake', async () => {
     // Pre-seed two prior failed placements, past the debounce window.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-200', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
@@ -307,8 +307,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // call within the activity window (a slow-but-alive false reclaim, the papercup
     // owner-focus cascade). It must re-place WITHOUT counting toward the curse.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-ALIVE', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
@@ -336,8 +336,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // counts toward the curse as before. Proves the relaxation is liveness-gated, not a
     // blanket "reclaims never curse" (which would let a truly cup-wedging item retry forever).
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-DEAD', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
@@ -367,8 +367,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // between and this "lost" placement is infra-induced, not item-pathology. The grace re-places
     // it with fail_count held FLAT (the overnight false-curse of tractable items, fixed).
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-DORMANT', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 30 * 60_000)}, now(), ${new Date(NOW - 30 * 60_000)}, now())`;
@@ -400,8 +400,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // dormancy GAP that grants the grace (item-independent), and a healthy operator's losses
     // still curse — the breaker is not weakened in normal operation.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-HEALTHY', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW - 60_000)}, now())`;
@@ -422,8 +422,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // EI-1758 zombie / booted without MCP tools) — a no-fair-attempt loss. fail_count 2 would
     // curse a pathology loss; a zombie loss routes to the bounded infra counter instead.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-ZOMBIE', ${POT}, ${MUG},
               'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
@@ -450,8 +450,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // breaker trips, so even an all-infra (or mis-attributed) item eventually halts — the
     // safety property that makes the per-cup zombie signal safe.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, infra_loss_count, last_recovery_at, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-INFRA-MAX', ${POT}, ${MUG},
               'recovering', 0, ${CFG.infraBreakerThreshold - 1}, ${new Date(NOW - 6 * 60_000)}, now(), ${new Date(NOW)}, now())`;
@@ -479,8 +479,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // prior sweep). The bug: every later sweep re-entered the breaker, re-escalated,
     // and bumped fail_count without bound (356→460). The latch must HALT all of that.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-CURSED', ${POT}, ${MUG},
               'cursed', 3, 'esc-prior', now(), now(), now())`;
@@ -500,8 +500,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-865: the curse CLEARS when the cursed unit finally reaches terminal (completed)', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-CURED', ${POT}, ${MUG},
               'cursed', 3, 'esc-prior', now(), now(), now())`;
@@ -528,8 +528,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // escalation should be suppressed since the item is now terminal and no longer needs
     // the cursed advisory.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-CURED-2', ${POT}, ${MUG},
               'cursed', 3, 'esc-cursed', now(), now(), now())`;
@@ -561,8 +561,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     // placement candidate this sweep. Without the backstop its escalation leaks forever
     // (the ~13k stale residue). NO cup is seeded here — the per-candidate path can't run.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-STALE', ${POT}, ${MUG},
               'cursed', 3, 'esc-stale', now(), now(), now())`;
@@ -583,8 +583,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-1524: backstop GC also closes a STRANDED escalation once its blocker reaches terminal', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-STRAND', ${POT}, ${MUG},
               'stranded', 0, 'esc-strand', now(), now(), now())`;
@@ -600,8 +600,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-1524: backstop GC abandons a cursed escalation whose unit no longer exists', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-GONE', ${POT}, ${MUG},
               'cursed', 3, 'esc-gone', now(), now(), now())`;
@@ -618,8 +618,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-1524: backstop GC LEAVES a genuinely-open cursed escalation (unit non-terminal) untouched', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-OPEN', ${POT}, ${MUG},
               'cursed', 3, 'esc-open', now(), now(), now())`;
@@ -632,14 +632,14 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
   });
 
   it('EI-6109: a stale WORKING placement (no escalation, no live cup) whose unit went terminal converges to completed', async () => {
-    // The exact reported drift: hive_placements kept a WORKING lane whose work-item had
+    // The exact reported drift: pot_placements kept a WORKING lane whose work-item had
     // long since completed, because the per-candidate sweep never revisits a row once its
     // serving cup dies / ages out (nothing re-anchors it) AND the EI-1524 escalation-only
     // GC skipped it (escalation_msg_id IS NULL). NO cup + NO escalation here — only the
     // EI-6109 completion-reconcile GC can converge it.
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-DRIFT-WORKING', ${POT}, ${MUG},
               'working', 0, NULL, now(), now(), now())`;
@@ -656,8 +656,8 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
   it('EI-6109: a stale RECOVERING placement (no escalation, no live cup) whose unit was retired converges to abandoned', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_placements
-        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+      INSERT INTO harness_shared.pot_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${POT}, 'F-DRIFT-GONE', ${POT}, ${MUG},
               'recovering', 1, NULL, now(), now(), now())`;

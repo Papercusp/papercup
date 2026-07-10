@@ -34,8 +34,8 @@ async function insertTick(
   },
 ): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_throughput_ticks
-      (workspace_id, pot_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
+    INSERT INTO harness_shared.pot_throughput_ticks
+      (workspace_id, pot_slug, tick_at, frontier_depth, placements, cups_busy, cups_cap,
        stuck_count, completed, mttc_ms, question_rungs, detail)
     VALUES
       (${WS}, ${row.potSlug}, ${row.tickAt}, ${row.frontierDepth}, ${row.placements},
@@ -43,7 +43,7 @@ async function insertTick(
        ${JSON.stringify(row.questionRungs)}::text::jsonb, ${JSON.stringify(row.detail)}::text::jsonb)`;
 }
 
-describe('hive_throughput_ticks (real PG, migration 261)', () => {
+describe('pot_throughput_ticks (real PG, migration 261)', () => {
   let db: OrgTestDb;
   let sql: Sql;
   beforeAll(async () => {
@@ -116,8 +116,8 @@ describe('hive_throughput_ticks (real PG, migration 261)', () => {
 
   it('scopes by workspace — another workspace\'s ticks are invisible', async () => {
     await sql`
-      INSERT INTO harness_shared.hive_throughput_ticks
-        (workspace_id, pot_slug, frontier_depth, bees_busy, bees_cap)
+      INSERT INTO harness_shared.pot_throughput_ticks
+        (workspace_id, pot_slug, frontier_depth, cups_busy, cups_cap)
       VALUES ('ws-other', 'papercup', 1, 1, 16)`;
     const snap = await readHiveThroughputSnapshot(sql, WS);
     // Only WS hives — 'papercup' + 'busypot', never ws-other's row.

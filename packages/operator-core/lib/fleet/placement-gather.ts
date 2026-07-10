@@ -95,7 +95,7 @@ export async function loadCursedWorkItemIds(workspaceId: string): Promise<Set<st
     const breakerThreshold = placementConfig().breakerThreshold;
     const rows = await sql<{ work_item_id: string; fail_count: number }[]>`
       SELECT work_item_id, max(fail_count)::int AS fail_count
-        FROM harness_shared.hive_placements
+        FROM harness_shared.pot_placements
        WHERE workspace_id = ${workspaceId}
          AND status = 'cursed'
        GROUP BY work_item_id`;

@@ -3,7 +3,7 @@
  * p2p-git-live-activation-2026-07-09) end-to-end chain against REAL
  * Postgres + a REAL bare pot-git repo: the integrator (P-203) computes +
  * publishes canonical staging from real member namespace heads, a below-steer
- * head lands in the REAL `harness_shared.hive_integration_requests` queue
+ * head lands in the REAL `harness_shared.pot_integration_requests` queue
  * with a visible (queryable) receipt, and the resulting signed staging-advance
  * drives the worktree-bridge (P-204) on a SEPARATE worktree — standing in for
  * "the OTHER machine" (see worktree-bridge.integration.test.ts's own
@@ -90,7 +90,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     db = await createFreshPgDb('legd');
     await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
     // mig 523 pot-rename predates a hand-applied 441 replay — align column name.
-    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.pot_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
 
     root = await mkdtemp(join(tmpdir(), 'legd-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;

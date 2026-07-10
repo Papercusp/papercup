@@ -185,15 +185,16 @@ describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
     expect(ROW_QUARANTINE_THRESHOLD).toBe(3);
   });
 
-  it('WI-3896 follow-up: a HUNG fan-out (never settles) no longer wedges the pass for the full 120s pass-level watchdog — it gives up after rowTimeoutMs and the row still drains', async () => {
+  it('WI-3896 follow-up: a HUNG fan-out (never settles) no longer wedges the pass for the full 120s pass-level watchdog — it gives up after fanoutTimeoutMs and the row still drains', async () => {
     // Live incident this pins: [outbox-drain] PASS TIMEOUT fired 17x in a row, every
     // time on the SAME 'fanout (row id=...)' stage — because fan-out was previously
     // bounded ONLY by logIfStageStalls (observability-only, never times out), a
     // genuinely-hung fanout() blocked the row (and the whole pass) forever, so the
     // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog was the ONLY thing that ever
     // un-wedged it — and since the row is re-selected first every retry, it repeated
-    // forever with zero net progress. Racing fan-out against rowTimeoutMs (same as
-    // epoch-encrypt/append) lets it give up in well under 120s instead.
+    // forever with zero net progress. Racing fan-out against its own fanoutTimeoutMs
+    // (SEPARATE from epoch-encrypt/append's rowTimeoutMs — see follow-up-2 test below
+    // for why they must NOT share a budget) lets it give up in well under 120s instead.
     vi.useFakeTimers();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -208,6 +209,7 @@ describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
         _passTimeoutMs: 0, // isolate the per-row detector from the pass-level watchdog
         _backlogStallMs: 0,
         _rowTimeoutMs: 100,
+        _fanoutTimeoutMs: 100,
       });
 
       // The append lands immediately; fan-out hangs — but bounded at 100ms, so the
@@ -223,6 +225,65 @@ describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
         expect.stringContaining('[outbox-drain] fan-out failed'),
         expect.stringContaining('row id=1'),
       );
+
+      await drain.stop();
+    } finally {
+      errSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('WI-3896 fanout-follow-up-2: a SYSTEMICALLY-degraded fan-out (every DIFFERENT row hangs, not one poison id) no longer exhausts the 120s pass watchdog after only ~2-3 rows — a tight fanoutTimeoutMs (separate from the 45s rowTimeoutMs) lets many more rows drain per pass', async () => {
+    // Live incident this pins (post-deploy of the FIRST fanout fix): PASS TIMEOUT
+    // recurred every ~2min (18:03:33, 18:05:34, 18:07:35) with ZERO quarantine
+    // lines ever firing — journalctl showed the STALLING ROW ID ADVANCING between
+    // consecutive stage-stall logs (6012522 -> 6012523, different tables), proving
+    // this was NOT a single poison row (which the row-level quarantine already
+    // handled) but a systemically-slow fan-out path (getOrgPg()'s pool) where
+    // EVERY row's fan-out hangs. At the shared 45s rowTimeoutMs, only 120s/45s ~=
+    // 2 rows fit in a pass before DRAIN_PASS_TIMEOUT_MS fires anyway — so the
+    // per-row quarantine (needs 3 CONSECUTIVE timeouts on the SAME id) never gets
+    // a chance to engage, and the pass just re-wedges forever with near-zero
+    // throughput. A tight, SEPARATE fanoutTimeoutMs fixes the THROUGHPUT, not just
+    // the single-row-forever case the first fix already covered.
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const append = vi.fn(async () => {});
+      // EVERY row's fan-out hangs (systemic degradation, not one poison id).
+      const fanout = vi.fn(() => new Promise<void>(() => {}));
+      const updated: unknown[][] = [];
+      // 5 distinct undrained rows returned every SELECT (mirrors the live
+      // incident's growing undrained backlog across different row ids/tables).
+      const rows5 = [row(1, 'k1'), row(2, 'k2'), row(3, 'k3'), row(4, 'k4'), row(5, 'k5')];
+      const pg = fakePg(() => rows5, { onUpdate: (vals) => updated.push(vals) });
+
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 100_000, // isolate this pass — no second poll during the assertion window
+        fanout,
+        _passTimeoutMs: 0, // isolate fan-out throughput from the pass-level watchdog itself
+        _backlogStallMs: 0,
+        _rowTimeoutMs: 45_000, // production magnitude — NOT what bounds fan-out anymore
+        _fanoutTimeoutMs: 8_000, // production magnitude (FANOUT_ROW_TIMEOUT_MS)
+      });
+
+      // All 5 rows' fan-out hangs get bounded at 8s each = 40s total — comfortably
+      // under the 120s pass budget (proving throughput, not just single-row escape).
+      await vi.advanceTimersByTimeAsync(41_000);
+
+      expect(fanout).toHaveBeenCalledTimes(5); // every row's fan-out was attempted
+      expect(updated.length).toBe(5); // ALL 5 rows drained despite every fan-out hanging
+      // Count only the "fan-out failed" lines, not console.error overall — an
+      // ABANDONED per-row race's logIfStageStalls wrapper keeps its own internal
+      // 15s stall-log timer armed even after raceRowStage gives up at 8s (a
+      // pre-existing, harmless artifact of the shared raceRowStage+
+      // logIfStageStalls combo, unrelated to this fix): a zombie
+      // "[stage-stall] STAGE STALL ... fanout ..." line can still fire later for
+      // an already-abandoned row, which would over-count a bare toHaveBeenCalledTimes.
+      const fanoutFailedCalls = errSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('[outbox-drain] fan-out failed'),
+      );
+      expect(fanoutFailedCalls).toHaveLength(5); // 5 distinct fan-out-failed logs, one per row
 
       await drain.stop();
     } finally {

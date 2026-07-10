@@ -138,9 +138,9 @@ defineSignal({
 defineSignal({
   id: 'hive-watchdog-fires',
   description:
-    'The shared `harness_shared.hive_watchdog_fires` ledger every *-watchdog.ts source writes a row ' +
+    'The shared `harness_shared.pot_watchdog_fires` ledger every *-watchdog.ts source writes a row ' +
     'to on each fire (scorecard-pulse, overwatch, hive queen, scout draft-review, release-deploy-staleness, …).',
-  source: 'harness_shared.hive_watchdog_fires (mig 212)',
+  source: 'harness_shared.pot_watchdog_fires (mig 212)',
   actingConsumer:
     'Each watchdog reads its OWN recent fire count from this ledger to self-debounce re-firing — the ' +
     "ledger is a durable per-source cooldown gate, not a passive log nobody reads. Not the same trap " +

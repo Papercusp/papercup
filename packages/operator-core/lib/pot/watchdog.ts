@@ -21,7 +21,7 @@
  * When she forgot, arm a default SLEEP — never an immediate re-invoke (D-004):
  * a broken-prompt Mug must fail toward "sleeps too long" (cheap), never
  * toward "runs continuously" (expensive). Every fire is recorded in
- * `harness_shared.hive_watchdog_fires` (mig 212) — frequent fires are a Mug
+ * `harness_shared.pot_watchdog_fires` (mig 212) — frequent fires are a Mug
  * prompt bug to FIX, not a mechanism to lean on.
  *
  * Wake-mode composition (P-013): in global `manual` mode the fallback is not a
@@ -224,7 +224,7 @@ export async function recordFire(opts: {
   try {
     const { sql } = getOrgPg();
     await sql`
-      INSERT INTO harness_shared.hive_watchdog_fires
+      INSERT INTO harness_shared.pot_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (
         ${opts.workspaceId}, ${opts.installSlug}, ${opts.source}, ${opts.reason},
@@ -247,7 +247,7 @@ export async function recentWatchdogFires(
   try {
     const { sql } = getOrgPg();
     const rows = await sql`
-      SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
+      SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
         AND fired_at > now() - make_interval(hours => ${windowHours})
         AND ${source ? sql`source = ${source}` : sql`TRUE`}`;
@@ -310,13 +310,13 @@ export async function claimWatchdogFire(opts: {
       // debounce key; `0` (the salt arg) keeps it deterministic across calls.
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspaceId}::${installSlug}::${source}`}, 0))`;
       const rows = await tx<Array<{ n: number }>>`
-        SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
+        SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
         WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
           AND fired_at > now() - make_interval(hours => ${windowHours})
           AND source = ${source}`;
       if (Number(rows[0]?.n ?? 0) > 0) return false;
       await tx`
-        INSERT INTO harness_shared.hive_watchdog_fires
+        INSERT INTO harness_shared.pot_watchdog_fires
           (workspace_id, install_slug, source, reason, wake_at, demand)
         VALUES (
           ${workspaceId}, ${installSlug}, ${source}, ${opts.reason},

@@ -33,12 +33,13 @@ vi.mock('../../deployment/account-pool', () => ({
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 import { loadAccountPool, saveAccountPool, handleAccountExhausted, accountStatus } from '../../deployment/account-pool-store';
-import { getAccount } from '../../deployment/account-pool';
+import { getAccount, recordAccountReset } from '../../deployment/account-pool';
 const loadM = vi.mocked(loadAccountPool);
 const saveM = vi.mocked(saveAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
 const getAcct = vi.mocked(getAccount);
 const statusM = vi.mocked(accountStatus);
+const resetM = vi.mocked(recordAccountReset);
 
 const mod = await import('./accounts');
 const registerTool = mod.default;
@@ -128,6 +129,22 @@ describe('accounts:reset-rate (bulk keyed-array, P-006)', () => {
     ]);
     expect(b.results[1]).toMatchObject({ error: 'unknown_account' });
     expect(saveM).toHaveBeenCalledTimes(2); // only the two known accounts saved
+  });
+
+  // WI-3553: resetWindows is the deliberate owner override that also zeroes the observed-budget
+  // projection. Default-off must stay byte-identical to pre-WI-3553 behavior (no resetWindows arg
+  // reaches the pure op at all — undefined, not false, so an old mock/snapshot notices no change).
+  it('default (no resetWindows arg) passes resetWindows:undefined through — byte-identical to pre-WI-3553', async () => {
+    getAcct.mockReturnValue({ id: 'A1' } as never);
+    await resetTool.handler({ id: 'A1' } as never, {} as never);
+    expect(resetM).toHaveBeenCalledWith(expect.anything(), 'A1', { resetWindows: undefined });
+  });
+
+  it('resetWindows:true is threaded through to recordAccountReset for every id in the batch', async () => {
+    getAcct.mockImplementation((_pool: unknown, id: string) => ({ id }) as never);
+    await resetTool.handler({ ids: ['A1', 'A2'], resetWindows: true } as never, {} as never);
+    expect(resetM).toHaveBeenCalledWith(expect.anything(), 'A1', { resetWindows: true });
+    expect(resetM).toHaveBeenCalledWith(expect.anything(), 'A2', { resetWindows: true });
   });
 });
 

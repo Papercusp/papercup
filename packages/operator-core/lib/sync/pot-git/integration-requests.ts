@@ -1,7 +1,7 @@
 /**
  * pot-git/integration-requests.ts — the multi-owner integration-requests queue
  * (Phase 7 G-5c, cross-machine-coord-parity-and-trust-2026-07-01 / P-035;
- * D-010/D-011). Writer/reader for `harness_shared.hive_integration_requests`
+ * D-010/D-011). Writer/reader for `harness_shared.pot_integration_requests`
  * (mig 441) + the tier GATE the integrator calls before merging member heads.
  *
  * QUEUE, DON'T INTEGRATE (the code-plane twin of P-013's coord_quarantine):
@@ -82,7 +82,7 @@ export async function queueIntegrationRequest(
   const now = input.nowMs ?? Date.now();
   const cap = Math.max(1, input.cap ?? DEFAULT_INTEGRATION_REQUESTS_PER_AUTHOR_CAP);
   await sql`
-    INSERT INTO harness_shared.hive_integration_requests
+    INSERT INTO harness_shared.pot_integration_requests
       (workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
        author_github_user_id, reason, state, created_ts)
     VALUES
@@ -95,10 +95,10 @@ export async function queueIntegrationRequest(
   // preferring to keep RATIFIED ones (an author's junk flood must not evict
   // their own approved head — in this queue or any other).
   await sql`
-    DELETE FROM harness_shared.hive_integration_requests d
+    DELETE FROM harness_shared.pot_integration_requests d
     USING (
       SELECT workspace_id, pot_slug, repo_key, device_pubkey, head_sha
-      FROM harness_shared.hive_integration_requests
+      FROM harness_shared.pot_integration_requests
       WHERE workspace_id = ${input.workspaceId}
         AND pot_slug = ${input.potSlug}
         AND repo_key = ${input.repoKey}
@@ -154,7 +154,7 @@ export async function listIntegrationRequests(
   >`
     SELECT workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
            author_github_user_id, reason, state, created_ts, ratified_ts
-    FROM harness_shared.hive_integration_requests
+    FROM harness_shared.pot_integration_requests
     WHERE workspace_id = ${opts.workspaceId}
       ${opts.potSlug !== undefined ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
       ${opts.repoKey !== undefined ? sql`AND repo_key = ${opts.repoKey}` : sql``}
@@ -189,7 +189,7 @@ export async function ratifyIntegrationRequest(
   const sql = sqlIn ?? getOrgPg().sql;
   const now = key.nowMs ?? Date.now();
   const rows = await sql`
-    UPDATE harness_shared.hive_integration_requests
+    UPDATE harness_shared.pot_integration_requests
     SET state = 'ratified', ratified_ts = COALESCE(ratified_ts, ${now})
     WHERE workspace_id = ${key.workspaceId}
       AND pot_slug = ${key.potSlug}
@@ -225,7 +225,7 @@ export async function listRatifiedStates(
   const headShas = keys.map((k) => k.headSha);
   const rows = await sql<Array<{ device_pubkey: string; head_sha: string }>>`
     SELECT device_pubkey, head_sha
-    FROM harness_shared.hive_integration_requests
+    FROM harness_shared.pot_integration_requests
     WHERE workspace_id = ${scope.workspaceId}
       AND pot_slug = ${scope.potSlug}
       AND repo_key = ${scope.repoKey}

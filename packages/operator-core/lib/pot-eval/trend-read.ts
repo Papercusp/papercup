@@ -77,9 +77,9 @@ export async function readHiveEvalInstanceSummaries(
       -- a CASE WHEN NULL would score 0 and wrongly drag the rate down over unscored runs.
       avg(s.outcome_gate_passed::int)                                     AS gate_pass_rate,
       avg(s.fabrication_detected::int)                                    AS fabrication_rate
-    FROM harness_shared.hive_eval_instances i
-    JOIN harness_shared.hive_eval_runs r       ON r.instance_id = i.instance_id
-    LEFT JOIN harness_shared.hive_eval_scores s ON s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
+    FROM harness_shared.pot_eval_instances i
+    JOIN harness_shared.pot_eval_runs r       ON r.instance_id = i.instance_id
+    LEFT JOIN harness_shared.pot_eval_scores s ON s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
     WHERE i.workspace_id = ${q.workspaceId}
     GROUP BY i.instance_id, i.code_sha, i.created_at
     ORDER BY i.created_at DESC

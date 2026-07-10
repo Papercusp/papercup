@@ -87,11 +87,11 @@ export async function readMemberRunStats(sql: postgres.Sql, member: string, work
   return { costUsd: 0, workItemsTotal: rows[0]?.total ?? 0, workItemsCompleted: rows[0]?.completed ?? 0 };
 }
 
-/** Placements still in flight for a hive home: `hive_placements` rows in a non-terminal status (the
+/** Placements still in flight for a hive home: `pot_placements` rows in a non-terminal status (the
  *  drained predicate's "a bee is still working" input). Exported for the integration test. */
 export async function countHivePlacementsInFlight(sql: postgres.Sql, hiveHome: string, workspaceId: string): Promise<number> {
   const rows = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM harness_shared.hive_placements
+    SELECT count(*)::int AS n FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveHome}
        AND status = ANY(${[...IN_FLIGHT_PLACEMENT_STATUSES]})`;
   return rows[0]?.n ?? 0;

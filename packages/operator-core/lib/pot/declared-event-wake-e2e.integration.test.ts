@@ -4,7 +4,7 @@
  * a real Postgres (testcontainer) and the REAL dispatcher + reaction registry:
  *
  *   pot:declare-wake { events:[{on:'plans:start'}] } (the Pot's own surface)
- *     → persisted subscription (harness_shared.hive_wake) + live reaction rule
+ *     → persisted subscription (harness_shared.pot_wake) + live reaction rule
  *     → a BURST of 3 matched tool-events
  *     → pot:wake ×3 → floor-debounce collapses to ONE pot launch
  *       (fireLaunchBlueprint, mocked at the loopback boundary).
@@ -137,7 +137,7 @@ const insertPlan = async (slug: string) =>
 const launches = () => fireLaunchBlueprint.mock.calls.length;
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 const clearWakeFloor = () =>
-  rootSql`UPDATE harness_shared.hive_wake SET payload = payload - 'lastWakeAt' WHERE workspace_id = ${WS}`;
+  rootSql`UPDATE harness_shared.pot_wake SET payload = payload - 'lastWakeAt' WHERE workspace_id = ${WS}`;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();

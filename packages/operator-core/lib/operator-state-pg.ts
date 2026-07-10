@@ -59,7 +59,7 @@ type StateTable =
   | 'setup_wizard_state'
   | 'telemetry_reports'
   // Migration 158 — the Pot's self-declared-wake state (autoloop-pot-operator-rebuild P0):
-  | 'hive_wake'
+  | 'pot_wake'
   // Migration 161 — the live-editable fleet rate-limit knobs (rate-limit-layer-v2 D-004):
   | 'operator_rate_limit_config'
   // Migration 164 — P2P voice-channel registry (holepunch-voice-channels P-007/D-011):
@@ -94,7 +94,7 @@ type StateTable =
   // Migration 348 — coordination liveness/reclaim config (live-configurability-audit P-014):
   | 'operator_coord_liveness_config'
   // Migration 350 — hive placement-watchdog control policy (live-configurability-audit P-015):
-  | 'operator_hive_control_policy'
+  | 'operator_pot_control_policy'
   // Migration 351 — green-checkpoint / release thresholds (live-configurability-audit P-016):
   | 'operator_release_checkpoint_config'
   // Migration 352 — runtime per-role capability-envelope overrides (live-configurability-audit P-009):

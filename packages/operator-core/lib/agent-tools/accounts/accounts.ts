@@ -177,13 +177,15 @@ export const accountsStatusTool = defineTool({
 export const accountsResetRateTool = defineTool({
   name: 'accounts:reset-rate',
   description:
-    "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. Returns {ok, account}.",
+    "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. `resetWindows:true` (WI-3553) is the DELIBERATE further override that ALSO zeroes the observed-budget projection (`utilization`/`windowResetAt`/`utilization7d`/`windowResetAt7d`) for when that probe-derived reading itself is wrong or can't be re-probed — default `false` is byte-identical to today (the budget reading survives the reset). Returns {ok, account}.",
   guidance: {
     when: "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
-    notWhen: 'Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status.',
+    notWhen:
+      'Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status. The observed-budget projection is wrong AND the probe can actually run — prefer accounts:probe-capacity (asks upstream for real evidence) over resetWindows (which only asserts).',
     seeAlso: [
       'accounts:status (see the rate-limit penalty before clearing it)',
       'accounts:scale_out (move work off the account NOW instead)',
+      'accounts:probe-capacity (evidence-based utilization refresh — prefer this over resetWindows when the probe can run)',
     ],
   },
   capability: 'harness:write',
@@ -193,6 +195,12 @@ export const accountsResetRateTool = defineTool({
     .object({
       id: z.string().min(1).optional().describe('Account id to reset (n=1 shorthand for ids:[id])'),
       ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Account ids to reset (1–100)'),
+      resetWindows: z
+        .boolean()
+        .optional()
+        .describe(
+          'Also zero the observed-budget projection (utilization/windowResetAt/utilization7d/windowResetAt7d) — the deliberate owner override for when that reading is wrong or the probe cannot run. Default false preserves it (byte-identical to pre-WI-3553 behavior).',
+        ),
       workspace: wsArg,
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
@@ -210,7 +218,7 @@ export const accountsResetRateTool = defineTool({
       async (id) => {
         const pool = await loadAccountPool(ws);
         if (!getAccount(pool, id)) return { ok: false as const, id, error: 'unknown_account' };
-        const next = recordAccountReset(pool, id);
+        const next = recordAccountReset(pool, id, { resetWindows: args.resetWindows });
         await saveAccountPool(next, ws);
         anyReset = true;
         return { ok: true as const, id, account: getAccount(next, id) };

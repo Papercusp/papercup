@@ -2,7 +2,7 @@
  * learning-hive-throughput-read.ts — the read behind the Learning tab's
  * "Throughput" sub-view (queen-autonomous-execution-2026-06-13, B-11 / P-050).
  *
- * Reads `harness_shared.hive_throughput_ticks` (migration 261), grouped by hive:
+ * Reads `harness_shared.pot_throughput_ticks` (migration 261), grouped by hive:
  * the latest tick (the live metric cards) + a recent trend window (sparkline)
  * + the operating-well verdict (the health tone). Pure SQL over an injected
  * `Sql` (mirrors learning-scout-read.ts) so the resolver test stubs the seam.
@@ -52,9 +52,9 @@ export async function readHiveThroughputSnapshot(
   try {
     // Cap the scan generously; per-hive trend slicing happens in memory below.
     rows = (await sql`
-      SELECT pot_slug, tick_at, frontier_depth, placements, bees_busy, bees_cap,
+      SELECT pot_slug, tick_at, frontier_depth, placements, cups_busy, cups_cap,
              stuck_count, completed, mttc_ms, question_rungs, detail
-        FROM harness_shared.hive_throughput_ticks
+        FROM harness_shared.pot_throughput_ticks
        WHERE workspace_id = ${workspaceId}
          ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
        ORDER BY tick_at DESC

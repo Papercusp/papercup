@@ -23,7 +23,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
   async upsertInstance(m: InstanceManifest): Promise<void> {
     // Deterministic instanceId → a re-run at the same code is a no-op, not a crash.
     await this.sql`
-      INSERT INTO harness_shared.hive_eval_instances
+      INSERT INTO harness_shared.pot_eval_instances
         (instance_id, workspace_id, code_sha, genome_id, battery_slice_id)
       VALUES
         (${m.instanceId}, ${m.workspaceId}, ${m.codeSha}, ${m.genomeId || null}, ${m.batterySliceId || null})
@@ -33,8 +33,8 @@ export class HiveEvalStorePg implements HiveEvalStore {
 
   async upsertScenario(s: HiveEvalScenarioRow): Promise<void> {
     await this.sql`
-      INSERT INTO harness_shared.hive_eval_scenarios
-        (scenario_id, title, shape, ideal_wall_clock_units, ideal_bee_count, total_units,
+      INSERT INTO harness_shared.pot_eval_scenarios
+        (scenario_id, title, shape, ideal_wall_clock_units, ideal_cup_count, total_units,
          critical_path, work_item_count, planted_bug_location)
       VALUES
         (${s.scenarioId}, ${s.title}, ${s.shape}, ${s.idealWallClockUnits}, ${s.idealBeeCount},
@@ -43,7 +43,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         title = EXCLUDED.title,
         shape = EXCLUDED.shape,
         ideal_wall_clock_units = EXCLUDED.ideal_wall_clock_units,
-        ideal_bee_count = EXCLUDED.ideal_bee_count,
+        ideal_cup_count = EXCLUDED.ideal_cup_count,
         total_units = EXCLUDED.total_units,
         critical_path = EXCLUDED.critical_path,
         work_item_count = EXCLUDED.work_item_count,
@@ -56,8 +56,8 @@ export class HiveEvalStorePg implements HiveEvalStore {
     // fresh attempt (clear the terminal fields finishRun repopulates) rather than colliding.
     // NOTE: the org PG client rejects a raw JS Date param — bind timestamptz as an ISO string.
     await this.sql`
-      INSERT INTO harness_shared.hive_eval_runs
-        (run_id, instance_id, scenario_id, shape, repeat, seed, budget_usd_cap, bee_cap, started_at)
+      INSERT INTO harness_shared.pot_eval_runs
+        (run_id, instance_id, scenario_id, shape, repeat, seed, budget_usd_cap, cup_cap, started_at)
       VALUES
         (${r.runId}, ${r.instanceId}, ${r.scenarioId}, ${r.shape}, ${r.repeat}, ${r.seed},
          ${r.budgetUsdCap}, ${r.beeCap}, ${r.startedAt.toISOString()})
@@ -68,7 +68,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         repeat = EXCLUDED.repeat,
         seed = EXCLUDED.seed,
         budget_usd_cap = EXCLUDED.budget_usd_cap,
-        bee_cap = EXCLUDED.bee_cap,
+        cup_cap = EXCLUDED.cup_cap,
         started_at = EXCLUDED.started_at,
         finished_at = NULL,
         terminal_state = NULL,
@@ -85,7 +85,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
   async finishRun(runId: string, fields: HiveEvalRunFinish): Promise<void> {
     const o = fields.observations;
     await this.sql`
-      UPDATE harness_shared.hive_eval_runs
+      UPDATE harness_shared.pot_eval_runs
       SET
         finished_at = ${fields.finishedAt.toISOString()},
         terminal_state = ${o.terminalState},
@@ -105,7 +105,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
     // under the same rubric OVERWRITES; a rubric change writes a distinct row, so scores under
     // different rubrics never mix (migration 267).
     await this.sql`
-      INSERT INTO harness_shared.hive_eval_scores
+      INSERT INTO harness_shared.pot_eval_scores
         (run_id, rubric_hash, rubric_version, outcome_gate_passed, efficiency_score, speed_score,
          composite, judge_composite, regressions, planted_bug_caught, fabrication_detected,
          critical_path_ratio, floor_ceiling, detail)
@@ -154,7 +154,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
       SELECT run_id, rubric_hash, rubric_version, outcome_gate_passed, efficiency_score, speed_score,
              composite, judge_composite, regressions, planted_bug_caught, fabrication_detected,
              critical_path_ratio, floor_ceiling, detail, scored_at
-      FROM harness_shared.hive_eval_scores
+      FROM harness_shared.pot_eval_scores
       WHERE run_id = ${runId} AND rubric_hash = ${rubricHash}
     `;
     const r = rows[0];

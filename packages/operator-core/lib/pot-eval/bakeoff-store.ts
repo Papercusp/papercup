@@ -18,7 +18,7 @@ export async function persistBakeoffDelta(
 ): Promise<void> {
   const { workspaceId, result, atMs } = input;
   await sql`
-    INSERT INTO harness_shared.hive_eval_bakeoff_deltas
+    INSERT INTO harness_shared.pot_eval_bakeoff_deltas
       (workspace_id, flag_key, delta_mean_composite, delta_gate_pass_rate, verdict, run_at_ms)
     VALUES
       (${workspaceId}, ${result.flagKey}, ${result.delta.deltaMeanComposite},
@@ -42,7 +42,7 @@ export async function readBakeoffTrendRows(
     }>
   >`
     SELECT flag_key, verdict, delta_mean_composite, delta_gate_pass_rate, run_at_ms
-    FROM harness_shared.hive_eval_bakeoff_deltas
+    FROM harness_shared.pot_eval_bakeoff_deltas
     WHERE workspace_id = ${input.workspaceId}
     ORDER BY run_at_ms DESC
     LIMIT ${limit}

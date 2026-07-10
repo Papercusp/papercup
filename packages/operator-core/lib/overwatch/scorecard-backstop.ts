@@ -26,7 +26,7 @@
  *     compute.ts `collectOverwatch`, the trend, the staleness signal, and Scout's
  *     digest all stay AGENT-ONLY — the floor never satisfies the agent's mandate
  *     nor pollutes the trend), and
- *   - every synthesis records a `hive_watchdog_fires` row (source
+ *   - every synthesis records a `pot_watchdog_fires` row (source
  *     `overwatch-scorecard`) — a countable "the agent skipped its scorecard" signal.
  *
  * Gated on the `papercusp-overwatch` flag (via `overwatchEnabled`) — fully inert
@@ -290,7 +290,7 @@ async function recordScorecardFire(workspaceId: string, installSlug: string, rea
   try {
     const { sql } = getOrgPg();
     await sql`
-      INSERT INTO harness_shared.hive_watchdog_fires
+      INSERT INTO harness_shared.pot_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (${workspaceId}, ${installSlug}, ${'overwatch-scorecard'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
   } catch (e) {

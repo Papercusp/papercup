@@ -45,7 +45,7 @@ async function seed(
 beforeAll(async () => {
   db = await createFreshPgDb('pot-survey');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  // EI-865 — the frontier anti-joins hive_placements to exclude cursed items, so the
+  // EI-865 — the frontier anti-joins pot_placements to exclude cursed items, so the
   // table must exist. The migration's trailing GRANT / DO-block is stripped by
   // readMigration's line filter (breaking the DO body); the CREATE TABLE + INDEX is
   // all the anti-join needs, so apply just that (mirrors HARNESS_FEATURES_CONSOLIDATED_DDL).
@@ -58,16 +58,16 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
 }, 90_000);
 
-/** The hive_placements table (migration 263), table + index only — see beforeAll. */
+/** The pot_placements table (migration 263), table + index only — see beforeAll. */
 const POT_PLACEMENTS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_placements (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_placements (
     workspace_id      text NOT NULL,
     install_slug      text NOT NULL,
     work_item_id      text NOT NULL,
     harness_slug      text,
-    queen_owner_id    text,
-    bee_spawn_id      text,
-    bee_owner_id      text,
+    mug_owner_id    text,
+    cup_spawn_id      text,
+    cup_owner_id      text,
     status            text NOT NULL DEFAULT 'working',
     fail_count        integer NOT NULL DEFAULT 0,
     last_disposition  text,
@@ -81,12 +81,12 @@ const POT_PLACEMENTS_DDL = `
       ('working', 'recovering', 'cursed', 'stranded', 'completed', 'abandoned'))
   );
   CREATE INDEX IF NOT EXISTS hive_placements_open_idx
-    ON harness_shared.hive_placements (workspace_id, install_slug, status);`;
+    ON harness_shared.pot_placements (workspace_id, install_slug, status);`;
 
-/** Seed a hive_placements row (the breaker ledger) for the cursed-exclusion test. */
+/** Seed a pot_placements row (the breaker ledger) for the cursed-exclusion test. */
 async function seedPlacement(id: string, status: string, opts: { harness?: string; failCount?: number } = {}) {
   await db.sql`
-    INSERT INTO harness_shared.hive_placements
+    INSERT INTO harness_shared.pot_placements
       (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count)
     VALUES ('default', ${opts.harness ?? MEMBER_A}, ${id}, ${opts.harness ?? MEMBER_A}, ${status}, ${opts.failCount ?? 0})`;
 }
@@ -96,7 +96,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.hive_placements, harness_shared.user_trust_list`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.pot_placements, harness_shared.user_trust_list`;
 });
 
 const HOME = 'papercup-pot';

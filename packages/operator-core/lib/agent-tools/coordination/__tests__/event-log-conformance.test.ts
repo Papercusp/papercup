@@ -269,3 +269,90 @@ describeCoordEventLogConformance(
     expect(row?.msg_id).toBe('well-formed');
   });
 });
+
+// WI-3937: readLines used to be an unbounded full-surface read on EVERY call
+// (~28k bodies/call fleet-wide) — the PG furnace that starved the bg-host
+// substrate drain (P-059 RED). It now keeps an incremental per-(ws,surface)
+// cache: one full read per instance, then `id > watermark - overlap` deltas
+// with a recent-id dedupe, and a TTL'd full refresh so out-of-band GC deletes
+// eventually fold out. These tests pin the delta path, the dedupe (contiguous
+// test ids land INSIDE the overlap window, so any dedupe bug shows as
+// duplicates), the TTL refresh, the copy-per-call contract, and the kill
+// switch.
+(pgOk ? describe : describe.skip)('readLines incremental cache (WI-3937)', () => {
+  const envelope = (msgId: string): Parameters<PgCoordLog['appendLine']>[2] => ({
+    ts: '2026-01-01T00:00:00.000Z', msg_id: msgId, kind: 'message', from: 'agent', to: ['*'],
+  });
+  const clear = async (): Promise<void> => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  };
+  const savedEnv = {
+    cache: process.env.PAPERCUSP_COORD_READLINES_CACHE,
+    ttl: process.env.PAPERCUSP_COORD_READLINES_CACHE_TTL_MS,
+  };
+  const restoreEnv = (): void => {
+    if (savedEnv.cache === undefined) delete process.env.PAPERCUSP_COORD_READLINES_CACHE;
+    else process.env.PAPERCUSP_COORD_READLINES_CACHE = savedEnv.cache;
+    if (savedEnv.ttl === undefined) delete process.env.PAPERCUSP_COORD_READLINES_CACHE_TTL_MS;
+    else process.env.PAPERCUSP_COORD_READLINES_CACHE_TTL_MS = savedEnv.ttl;
+  };
+  afterAll(async () => {
+    restoreEnv();
+    await clear();
+  });
+
+  it('delta path: rows appended AFTER the first read appear, in order, without duplicates', async () => {
+    restoreEnv(); // cache ON (default)
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.appendLine('messages', 'a', envelope('c1'));
+    await log.appendLine('messages', 'a', envelope('c2'));
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['c1', 'c2']); // full read
+    await log.appendLine('messages', 'a', envelope('c3'));
+    // Delta read — c1/c2's ids are within the overlap window, so the dedupe
+    // set is what keeps them from appearing twice.
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['c1', 'c2', 'c3']);
+    // A read with nothing new is stable (and still a fresh array copy).
+    const again = await log.readLines('messages');
+    expect(again.map((l) => l.msg_id)).toEqual(['c1', 'c2', 'c3']);
+  });
+
+  it('returns a fresh array copy per call (mutating a result never corrupts the cache)', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.appendLine('messages', 'a', envelope('m1'));
+    const first = await log.readLines('messages');
+    first.length = 0; // caller mangles its copy
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['m1']);
+  });
+
+  it('serves from cache between refreshes (an out-of-band DELETE is not seen yet), then the TTL full refresh folds it out', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.appendLine('messages', 'a', envelope('keep'));
+    await log.appendLine('messages', 'a', envelope('gc-me'));
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['keep', 'gc-me']);
+    // Out-of-band delete (what escalation GC does — bypasses this instance).
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS} AND msg_id = 'gc-me'`;
+    // Within the TTL the cache still serves the deleted row — the documented
+    // (and deliberate) staleness bound. This also PROVES the cache is in play.
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['keep', 'gc-me']);
+    // Force the TTL refresh: 1ms TTL + a beat → next read is a FULL read.
+    process.env.PAPERCUSP_COORD_READLINES_CACHE_TTL_MS = '1';
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['keep']);
+  });
+
+  it('kill switch PAPERCUSP_COORD_READLINES_CACHE=0 restores the always-fresh full read', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.appendLine('messages', 'a', envelope('k1'));
+    expect((await log.readLines('messages')).map((l) => l.msg_id)).toEqual(['k1']); // primes the cache
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS} AND msg_id = 'k1'`;
+    process.env.PAPERCUSP_COORD_READLINES_CACHE = '0';
+    expect(await log.readLines('messages')).toEqual([]); // bypasses the (stale) cache entirely
+  });
+});

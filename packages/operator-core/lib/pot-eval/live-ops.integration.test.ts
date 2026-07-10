@@ -2,7 +2,7 @@
  * Integration test for the LIVE-ops DB READS (P-063 / D-011) — proves the SQL the live binding runs
  * against a throwaway hive's real tables is correct: the spawn-row mapping (bigint duration +
  * timestamptz → epoch ms + null handling), the HFC run-stats (total + `passed` completion count), and
- * the in-flight placement predicate (only non-terminal `hive_placements`). No LLM, no hive boot:
+ * the in-flight placement predicate (only non-terminal `pot_placements`). No LLM, no hive boot:
  * synthetic rows in minimal stub tables (the exact columns the reads query, verified against
  * 000-baseline.sql / 263-hive-placements.sql) — the same boundary b459e's ground-truth-live test drew.
  *
@@ -47,7 +47,7 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
         finished_at timestamptz,
         duration_ms bigint
       );
-      CREATE TABLE harness_shared.hive_placements (
+      CREATE TABLE harness_shared.pot_placements (
         workspace_id text NOT NULL,
         install_slug text NOT NULL,
         work_item_id text NOT NULL,
@@ -103,7 +103,7 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
 
   it('countHivePlacementsInFlight: only non-terminal (working/recovering) rows for the home', async () => {
     const home = 'heval-home1';
-    await sql`INSERT INTO harness_shared.hive_placements (workspace_id, install_slug, work_item_id, status) VALUES
+    await sql`INSERT INTO harness_shared.pot_placements (workspace_id, install_slug, work_item_id, status) VALUES
       (${ws}, ${home}, 'w0', 'working'),
       (${ws}, ${home}, 'w1', 'recovering'),
       (${ws}, ${home}, 'w2', 'completed'),

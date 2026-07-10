@@ -122,7 +122,7 @@ async function blocksEdge(blocker: string, blocked: string): Promise<void> {
  *  `infraLossCount` to seed an INFRA false-curse (the WI-677 deadlock signature). */
 async function seedCursed(id: string, failCount = 3, infraLossCount = 0): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_placements
+    INSERT INTO harness_shared.pot_placements
       (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count, infra_loss_count)
     VALUES (${WS}, ${POT}, ${id}, ${POT}, 'cursed', ${failCount}, ${infraLossCount})`;
 }
@@ -137,7 +137,7 @@ async function completeLane(id: string, cup: string): Promise<void> {
 
 async function readPlacementStatus(id: string): Promise<string | null> {
   const rows = await sql<{ status: string }[]>`
-    SELECT status FROM harness_shared.hive_placements
+    SELECT status FROM harness_shared.pot_placements
      WHERE workspace_id = ${WS} AND install_slug = ${POT} AND work_item_id = ${id}`;
   return rows[0]?.status ?? null;
 }
@@ -154,7 +154,7 @@ describe('mug wave dispatch — wave ordering through cup placement (real PG, P-
   beforeEach(async () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
     await seedMugSession();
   });
 

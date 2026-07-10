@@ -5,7 +5,7 @@
  *
  * QUEUE, DON'T INTEGRATE: a namespace work head published by a member device
  * whose verified author sits BELOW the 'steer' comms tier is not auto-merged
- * by the integrator — it lands in `harness_shared.hive_integration_requests`
+ * by the integrator — it lands in `harness_shared.pot_integration_requests`
  * instead (see `lib/sync/pot-git/integration-requests.ts`). Until this tool,
  * `ratifyIntegrationRequest` / `listIntegrationRequests` had NO exposed verb
  * (grep showed only the module + its tests calling them), so a queued head

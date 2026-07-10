@@ -18,7 +18,7 @@ type Handler = () => Promise<Array<Record<string, unknown>>>;
 function fakeSql(ticks: Handler): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
-    if (text.includes('hive_throughput_ticks')) return ticks();
+    if (text.includes('pot_throughput_ticks')) return ticks();
     return Promise.resolve([]); // nested conditional sql`` fragments
   };
   return fn as unknown as Sql;
@@ -30,8 +30,8 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
     tick_at: new Date('2026-06-13T08:00:00Z'),
     frontier_depth: 3,
     placements: 2,
-    bees_busy: 4,
-    bees_cap: 16,
+    cups_busy: 4,
+    cups_cap: 16,
     stuck_count: 0,
     completed: 1,
     mttc_ms: 120000,
@@ -63,9 +63,9 @@ describe('readHiveThroughputSnapshot', () => {
   it('separates multiple hives and orders attention-first (stuck/starved before healthy)', async () => {
     const sql = fakeSql(async () => [
       // healthy hive
-      row({ pot_slug: 'alpha', stuck_count: 0, bees_busy: 2, bees_cap: 16, frontier_depth: 0 }),
+      row({ pot_slug: 'alpha', stuck_count: 0, cups_busy: 2, cups_cap: 16, frontier_depth: 0 }),
       // starved hive (busy == cap, work queued) → utilization derives to 1
-      row({ pot_slug: 'zeta', stuck_count: 0, bees_busy: 8, bees_cap: 8, frontier_depth: 5, detail: null }),
+      row({ pot_slug: 'zeta', stuck_count: 0, cups_busy: 8, cups_cap: 8, frontier_depth: 5, detail: null }),
     ]);
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap.hives.map((h) => h.potSlug)).toEqual(['zeta', 'alpha']); // attention-first
@@ -87,7 +87,7 @@ describe('readHiveThroughputSnapshot', () => {
   it('degrades to the empty snapshot SILENTLY when the table does not exist yet (42P01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql(async () => {
-      throw Object.assign(new Error('relation "harness_shared.hive_throughput_ticks" does not exist'), { code: '42P01' });
+      throw Object.assign(new Error('relation "harness_shared.pot_throughput_ticks" does not exist'), { code: '42P01' });
     });
     const snap = await readHiveThroughputSnapshot(sql, 'ws-1');
     expect(snap).toEqual({ hives: [] });

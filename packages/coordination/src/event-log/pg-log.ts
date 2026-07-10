@@ -263,10 +263,20 @@ interface ReadLinesCacheEntry {
  *  1000 is orders of magnitude of headroom at ~1000× less cost than the old
  *  full-surface read. */
 const READLINES_CACHE_OVERLAP_IDS = 1_000;
+/** How many trailing row ids the dedupe set retains (≥ the overlap window, with
+ *  headroom for interleaved concurrent delta reads); rebuilt from the tail when
+ *  it doubles past this target so it never grows unbounded. */
+const READLINES_CACHE_RECENT_IDS = 2_000;
 /** Full re-read cadence — bounds how long a GC-DELETED row can linger in the
  *  cache (deletes don't advance the id watermark). LINE surfaces are GC'd
  *  rarely (escalation GC targets EVENT surfaces), so 5 min is conservative. */
 const READLINES_CACHE_FULL_REFRESH_MS = 5 * 60_000;
+/** The refresh TTL, env-overridable (PAPERCUSP_COORD_READLINES_CACHE_TTL_MS)
+ *  so tests can force the full-refresh path without waiting 5 minutes. */
+function readLinesCacheRefreshMs(): number {
+  const env = Number(process.env.PAPERCUSP_COORD_READLINES_CACHE_TTL_MS);
+  return Number.isFinite(env) && env > 0 ? env : READLINES_CACHE_FULL_REFRESH_MS;
+}
 /** Kill switch: PAPERCUSP_COORD_READLINES_CACHE=0 restores the always-full read. */
 function readLinesCacheEnabled(): boolean {
   return process.env.PAPERCUSP_COORD_READLINES_CACHE !== '0';
@@ -351,12 +361,82 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     // `filesBack` is an fs-rotation hint; a single table has no rotation, so
     // we read everything (the interface explicitly allows ignoring it).
-    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+    //
+    // WI-3937: this used to be an UNBOUNDED full-surface read on EVERY call
+    // (~28k bodies/call; 285k calls / 8.04B rows / 48h of DB time in
+    // pg_stat_statements) — the furnace that saturated the shared embedded PG
+    // and starved the bg-host substrate drain into its 120s PASS TIMEOUT
+    // (P-059 RED). LINE surfaces are append-only with a monotonic bigserial
+    // `id`, so we now do ONE full read per (workspace, surface) per process —
+    // plus a TTL'd full refresh (READLINES_CACHE_FULL_REFRESH_MS) so rare GC
+    // deletions fold out — and afterwards only the `id > watermark - overlap`
+    // delta. The overlap window re-reads the last READLINES_CACHE_OVERLAP_IDS
+    // ids to catch a row whose bigserial id was assigned before our snapshot
+    // but whose transaction committed after it; `recentIds` dedupes the
+    // overlap (and any interleaved concurrent delta read — new rows are always
+    // added to the set before a later reader processes the same delta).
+    //
+    // CONTRACT: the returned ARRAY is a fresh copy per call, but the envelope
+    // OBJECTS are shared across calls — callers must treat envelopes as
+    // read-only (they always received fresh parses before and never mutated
+    // them). Kill switch: PAPERCUSP_COORD_READLINES_CACHE=0.
+    if (!readLinesCacheEnabled()) {
+      const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+        SELECT body, ts, msg_id FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ORDER BY id ASC
+      `;
+      return rows.map((r) => parseBody(r.body, r));
+    }
+
+    const ws = this.resolveWs();
+    const key = `${ws}::${surface}`;
+    const now = Date.now();
+    const entry = this.readLinesCache.get(key);
+
+    if (!entry || now - entry.fullReadAtMs > readLinesCacheRefreshMs()) {
+      // Full (re)read — first call for this key, or the refresh TTL elapsed.
+      // int8 `id` arrives as a STRING from postgres-js — Number() everywhere.
+      const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
+        SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${ws} AND surface = ${surface}
+         ORDER BY id ASC
+      `;
+      const recentIds = new Set<number>();
+      for (let i = Math.max(0, rows.length - READLINES_CACHE_RECENT_IDS); i < rows.length; i++) {
+        recentIds.add(Number(rows[i].id));
+      }
+      const fresh: ReadLinesCacheEntry = {
+        maxId: rows.length > 0 ? Number(rows[rows.length - 1].id) : 0,
+        rows: rows.map((r) => parseBody(r.body, r)),
+        recentIds,
+        fullReadAtMs: now,
+      };
+      this.readLinesCache.set(key, fresh);
+      return fresh.rows.slice();
+    }
+
+    // Delta read: only rows past the watermark, minus the overlap window.
+    const sinceId = Math.max(0, entry.maxId - READLINES_CACHE_OVERLAP_IDS);
+    const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${ws} AND surface = ${surface} AND id > ${sinceId}
        ORDER BY id ASC
     `;
-    return rows.map((r) => parseBody(r.body, r));
+    for (const r of rows) {
+      const idNum = Number(r.id);
+      if (entry.recentIds.has(idNum)) continue; // already folded (overlap / concurrent delta)
+      entry.rows.push(parseBody(r.body, r));
+      entry.recentIds.add(idNum);
+      if (idNum > entry.maxId) entry.maxId = idNum;
+    }
+    // Bound the dedupe set: rebuild from the newest ids once it doubles past
+    // target. Kept ids ≫ the overlap window, so dedupe coverage never lapses.
+    if (entry.recentIds.size > READLINES_CACHE_RECENT_IDS * 2) {
+      const keep = [...entry.recentIds].sort((a, b) => a - b).slice(-READLINES_CACHE_RECENT_IDS);
+      entry.recentIds = new Set(keep);
+    }
+    return entry.rows.slice();
   }
 
   async putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void> {

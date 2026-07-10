@@ -380,7 +380,7 @@ export async function readPotSoakReport(
                  AND COALESCE(fail_count, 0) = 0
                  AND COALESCE(infra_loss_count, 0) > 0
              )::int AS infra_curses
-        FROM harness_shared.hive_placements
+        FROM harness_shared.pot_placements
        WHERE workspace_id = ${workspaceId}
          AND install_slug = ${potSlug}
          AND updated_at >= now() - make_interval(hours => ${windowHours})

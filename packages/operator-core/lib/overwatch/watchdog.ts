@@ -25,7 +25,7 @@
  *
  * Re-arm goes through `declareOverwatchTimeWake` (./liveness — the shared seam
  * B-04's declare-next-wake also uses). Fires are recorded in the existing
- * `harness_shared.hive_watchdog_fires` table with an `overwatch-*` source (no
+ * `harness_shared.pot_watchdog_fires` table with an `overwatch-*` source (no
  * new migration; `source` has no CHECK constraint).
  */
 import { getOrgPg } from "@papercusp/db-org";
@@ -137,7 +137,7 @@ async function recordOverwatchFire(opts: {
   try {
     const { sql } = getOrgPg();
     await sql`
-      INSERT INTO harness_shared.hive_watchdog_fires
+      INSERT INTO harness_shared.pot_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (
         ${opts.workspaceId}, ${opts.installSlug}, ${"overwatch-" + opts.source}, ${opts.reason},
@@ -162,7 +162,7 @@ export async function recentOverwatchWatchdogFires(
   try {
     const { sql } = getOrgPg();
     const rows = await sql`
-      SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
+      SELECT count(*)::int AS n FROM harness_shared.pot_watchdog_fires
       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
         AND source LIKE ${"overwatch-%"}
         AND fired_at > now() - make_interval(hours => ${windowHours})`;

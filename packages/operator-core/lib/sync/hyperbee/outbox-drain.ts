@@ -178,6 +178,33 @@ export class DrainPassTimeoutError extends Error {
  */
 export const ROW_STAGE_TIMEOUT_MS = 45_000;
 
+/**
+ * WI-3896 fanout-follow-up-2 (live incident: PASS TIMEOUT recurring every ~2min
+ * post-deploy, 18:03/18:05/18:07, zero quarantine lines — journal shows the
+ * *stalling row id advancing* between consecutive 15s stage-stall logs, e.g.
+ * 6012522 → 6012523, across DIFFERENT tables, ruling out a single poison row).
+ *
+ * `fanout()` is NOT a correctness-blocking stage like epoch-encrypt/append —
+ * `fanoutOutboxRow` reads through the SEPARATE `getOrgPg()` org pool (not the
+ * harness admin pool epoch-encrypt/append use), and its own sibling local-object
+ * fan-out path (`fanoutForObject`) already treats a *systemically* slow org-pool
+ * query as expected-possible and bounds it at a mere `FANOUT_DEADLINE_MS`
+ * (10s default) — reusing `ROW_STAGE_TIMEOUT_MS` (45s, sized for a rare single
+ * poison row) here was the gap: when the org pool itself is degraded, EVERY
+ * row's fan-out hangs, and at 45s/row only ~2-3 rows fit before
+ * `DRAIN_PASS_TIMEOUT_MS` (120s) fires anyway — so the row-level quarantine
+ * (which only trips after 3 CONSECUTIVE timeouts on the SAME id) never even
+ * gets a chance to engage before the pass-level watchdog re-wedges the loop.
+ *
+ * A MUCH tighter, separate bound for fan-out specifically — mirroring the
+ * sibling path's philosophy that fan-out is best-effort/non-blocking (a
+ * timeout here already falls into the existing catch, never blocking
+ * `drained_at`) — lets 120s/8s ≈ 15 rows fit even if EVERY one's fan-out hangs,
+ * so `drained_at`/merge-cursor progress (the correctness-critical path) keeps
+ * moving even while the fan-out side-channel is broadly degraded.
+ */
+export const FANOUT_ROW_TIMEOUT_MS = 8_000;
+
 /** How many CONSECUTIVE same-row stage timeouts before that row is quarantined
  *  (skipped from then on). Mirrors WI-255's `MAX_APPLY_THROWS` in read-merge.ts. */
 export const ROW_QUARANTINE_THRESHOLD = 3;
@@ -320,6 +347,14 @@ export interface DrainOptions {
    *  timeout. Default `ROW_STAGE_TIMEOUT_MS`; `<= 0` disables the bound (today's
    *  pre-WI-3896 behavior — only the pass-level watchdog applies). */
   rowTimeoutMs?: number;
+  /** WI-3896 fanout-follow-up-2: SEPARATE, much tighter per-row timeout (ms) for
+   *  fan-out specifically — it is best-effort/non-blocking (unlike
+   *  epoch-encrypt/append, a timeout here is already caught + never blocks
+   *  `drained_at`), so it must not eat into the same 45s-per-row budget those
+   *  correctness-blocking stages need; a systemically-degraded fan-out path
+   *  would otherwise still exhaust the pass-level watchdog after only ~2-3 rows.
+   *  Default `FANOUT_ROW_TIMEOUT_MS`; `<= 0` disables the bound. */
+  fanoutTimeoutMs?: number;
 }
 
 interface OutboxDbRow {
@@ -403,6 +438,7 @@ export async function drainOutboxOnce(
      LIMIT ${batch}`);
 
   const rowTimeoutMs = opts.rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
+  const fanoutTimeoutMs = opts.fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
   let drained = 0;
   for (const r of rows) {
     // WI-3896: a row the caller's consecutive-stage-timeout counter has already
@@ -532,15 +568,21 @@ export async function drainOutboxOnce(
         // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
         // (observability-only — logs at 15s but never times out), so a genuinely-hung
         // fanout() blocked this row FOREVER, wedging the whole pass until the
-        // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog fired — and since the row
-        // is re-selected first on every retry (`ORDER BY id`), it repeats the SAME
-        // 120s pass-timeout every pass (the live incident: 17x on the same fanout
-        // row). Racing it against rowTimeoutMs, same as epoch-encrypt/append, lets a
-        // hung fan-out give up after ROW_STAGE_TIMEOUT_MS instead of forever — the
-        // existing catch below already treats any fan-out failure as best-effort/
-        // non-blocking (federation-safe: only this row's local subscribe→inject
-        // fan-out is skipped, never the append/drained_at path), so a timeout here
-        // needs no new quarantine bookkeeping — it just stops re-wedging the pass.
+        // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog fired.
+        //
+        // WI-3896 fanout-follow-up-2: the FIRST fix (racing against the shared
+        // 45s `rowTimeoutMs`) was insufficient — live post-deploy evidence showed
+        // the PASS TIMEOUT still recurring every ~2min with ZERO quarantine lines,
+        // because the stalling row id kept ADVANCING (6012522 → 6012523 → …,
+        // across different tables) — this is a systemically-degraded fan-out path
+        // (getOrgPg()'s pool, separate from the harness admin pool epoch-encrypt/
+        // append use), not one poison row. At 45s/row only ~2-3 rows fit before the
+        // 120s pass watchdog fires anyway, so the per-row quarantine (which needs 3
+        // CONSECUTIVE timeouts on the SAME id) never gets a chance to engage. Using
+        // the much tighter, SEPARATE `fanoutTimeoutMs` (default 8s — fan-out is
+        // best-effort/non-blocking, unlike epoch-encrypt/append) lets ~15 rows fit
+        // per pass even if every one's fan-out hangs, so `drained_at`/merge-cursor
+        // progress keeps moving while fan-out itself degrades independently.
         const fanoutStage = `fanout (row id=${r.id} table=${r.table_name})`;
         await raceRowStage(
           r.id,
@@ -550,7 +592,7 @@ export async function drainOutboxOnce(
             fanoutStage,
             opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
           ),
-          rowTimeoutMs,
+          fanoutTimeoutMs,
         );
       } catch (e) {
 
@@ -608,6 +650,10 @@ export interface StartDrainOptions {
    *  pass-level watchdog applies — today's pre-WI-3896 behavior). Production
    *  omits it. */
   _rowTimeoutMs?: number;
+  /** WI-3896 fanout-follow-up-2: override the SEPARATE fan-out-only timeout
+   *  (`FANOUT_ROW_TIMEOUT_MS`). `<= 0` disables the fan-out bound. Production
+   *  omits it. */
+  _fanoutTimeoutMs?: number;
   /** WI-3896: override how many CONSECUTIVE same-row stage timeouts before that
    *  row is quarantined (`ROW_QUARANTINE_THRESHOLD`). Production omits it. */
   _rowQuarantineThreshold?: number;
@@ -727,6 +773,7 @@ export function startOutboxDrain(
   const rowTimeoutCounts = new Map<string, number>();
   const quarantinedIds = new Set<string>();
   const rowTimeoutMs = opts._rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
+  const fanoutTimeoutMs = opts._fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
   const rowQuarantineThreshold = opts._rowQuarantineThreshold ?? ROW_QUARANTINE_THRESHOLD;
 
   /** WI-2009 stall escalation for BOTH detectors: loud console line (grep-able,
@@ -895,6 +942,7 @@ export function startOutboxDrain(
         // set into every pass, so a previously-quarantined row stays skipped and
         // any row currently hanging is bounded well under `passTimeoutMs`.
         drainOpts.rowTimeoutMs = rowTimeoutMs;
+        drainOpts.fanoutTimeoutMs = fanoutTimeoutMs;
         drainOpts.quarantinedIds = quarantinedIds;
         // WI-2009 watchdog: race the pass against the timeout so ONE hung await
         // can never wedge the serialized loop forever (the live-VM permanence

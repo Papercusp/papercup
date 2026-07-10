@@ -322,7 +322,7 @@ describe('the missing link, end to end (P-003)', () => {
 
   it("the idempotent RE-start never wakes (transitioned:false), while a fresh start outside the floor does", async () => {
     // Clear the floor (simulate the window passing) so a real wake COULD fire.
-    await rootSql`UPDATE harness_shared.hive_wake SET payload = payload - 'lastWakeAt' WHERE workspace_id = ${WS}`;
+    await rootSql`UPDATE harness_shared.pot_wake SET payload = payload - 'lastWakeAt' WHERE workspace_id = ${WS}`;
 
     // Re-start an already-started plan: no transition → the rule's when rejects.
     const again = await dispatch('plans:start', { slug: 'plan-a', harness: 'papercup' });

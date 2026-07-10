@@ -47,7 +47,7 @@ beforeAll(async () => {
   // The 212-pot-watchdog-fires.sql shape, minus RLS/grants (not needed —
   // this connects as the DB owner, not the RLS-scoped harness_app role).
   await rootSql.unsafe(`
-    CREATE TABLE harness_shared.hive_watchdog_fires (
+    CREATE TABLE harness_shared.pot_watchdog_fires (
       id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       workspace_id  text NOT NULL,
       install_slug  text NOT NULL,
@@ -127,7 +127,7 @@ describe('claimWatchdogFire (EI-6777)', () => {
     const installSlug = `windowed::${randomBytes(4).toString('hex')}`;
     // Backdate a fire to 25h ago — outside the default 24h window.
     await rootSql`
-      INSERT INTO harness_shared.hive_watchdog_fires (workspace_id, install_slug, source, reason, fired_at)
+      INSERT INTO harness_shared.pot_watchdog_fires (workspace_id, install_slug, source, reason, fired_at)
       VALUES (${WS}, ${installSlug}, ${'tick'}, ${'old'}, now() - interval '25 hours')
     `;
     const claimed = await claimWatchdogFire({ workspaceId: WS, installSlug, source: 'tick', reason: 'fresh', wakeAt: null });

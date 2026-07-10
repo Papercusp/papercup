@@ -25,7 +25,7 @@
  *     ≥1 non-terminal downstream unit is escalated ONCE so the owner can resolve /
  *     deprecate it and un-gate the downstream.
  *
- * Durable state is `harness_shared.hive_placements` (mig 263) — the per-(pot,
+ * Durable state is `harness_shared.pot_placements` (mig 263) — the per-(pot,
  * work-item) completion ledger holding ONLY the failed-placement counter, the
  * disposition, and the debounce timers. Liveness itself is never mirrored (it is
  * re-derived every sweep — storage policy).
@@ -69,7 +69,7 @@ const TERMINAL_SPAWN_STATES = new Set(['done', 'failed', 'cancelled', 'reaped'])
 const UNIT_PARKED_STATES = new Set(['blocked', 'needs-human']);
 /** EI-6650 — the brief-facing "open placements" summary independently re-derives
  *  "is this unit still active" from `harness_features_consolidated.status`, rather
- *  than trusting `hive_placements.status` (which the reconcile-side isUnitParked fix
+ *  than trusting `pot_placements.status` (which the reconcile-side isUnitParked fix
  *  above already stops re-flagging as `recovering`). Existing rows placed BEFORE that
  *  fix — or ones reconcileOnePot simply hasn't revisited since (it only reconciles
  *  units with a recent cup-spawn event, not a periodic full sweep) — sit frozen at
@@ -81,7 +81,7 @@ const UNIT_PARKED_STATES = new Set(['blocked', 'needs-human']);
  *  underlying placement row has caught up yet. */
 // EI-7641: also consumed by wake-frontier-guard.ts's listNonTerminalPlacements,
 // which hit the exact same staleness this comment describes — the P-030
-// "non-terminal placements" guard trusted hive_placements.status alone (never
+// "non-terminal placements" guard trusted pot_placements.status alone (never
 // joining the live unit), so a wake-frontier refusal listed ids whose WORK ITEM
 // had long since gone terminal/deprecated or been parked blocked/needs-human,
 // forcing every no-time Mug wake to force:true past a stale placement list.
@@ -577,7 +577,7 @@ export interface TerminalPlacementObs {
  *     ages out of the candidate set (nothing re-anchors it), and
  *   • an infra-attributed `cursed`/`stranded` row carries NO escalation_msg_id, so the
  *     escalation-only GC (which required escalation_msg_id IS NOT NULL) skipped it.
- * Both left the durable hive_placements accounting DRIFTING after the work completed
+ * Both left the durable pot_placements accounting DRIFTING after the work completed
  * or the cup died — pot:status reporting cursed/working lanes long since done.
  *
  *   OPEN + unit GONE      → resolve-abandoned
@@ -714,9 +714,9 @@ async function upsertPlacement(
   // it must receive an ISO string (cf. store-pg.ts; org-pg-client-rejects-raw-date).
   const recoveryAt = p.bumpRecovery ? new Date(p.now).toISOString() : null;
   await sql`
-    INSERT INTO harness_shared.hive_placements
-      (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-       bee_spawn_id, bee_owner_id, status, fail_count, infra_loss_count, last_loss_spawn_id, last_disposition,
+    INSERT INTO harness_shared.pot_placements
+      (workspace_id, install_slug, work_item_id, harness_slug, mug_owner_id,
+       cup_spawn_id, cup_owner_id, status, fail_count, infra_loss_count, last_loss_spawn_id, last_disposition,
        escalation_msg_id, last_recovery_at, last_seen_at, updated_at)
     VALUES (
       ${p.workspaceId}, ${p.installSlug}, ${p.workItemId}, ${p.harnessSlug}, ${p.mugOwnerId},
@@ -724,17 +724,17 @@ async function upsertPlacement(
       ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
     )
     ON CONFLICT (workspace_id, install_slug, work_item_id) DO UPDATE SET
-      harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.hive_placements.harness_slug),
-      queen_owner_id    = COALESCE(EXCLUDED.queen_owner_id, harness_shared.hive_placements.queen_owner_id),
-      bee_spawn_id      = COALESCE(EXCLUDED.bee_spawn_id, harness_shared.hive_placements.bee_spawn_id),
-      bee_owner_id      = COALESCE(EXCLUDED.bee_owner_id, harness_shared.hive_placements.bee_owner_id),
+      harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.pot_placements.harness_slug),
+      mug_owner_id    = COALESCE(EXCLUDED.mug_owner_id, harness_shared.pot_placements.mug_owner_id),
+      cup_spawn_id      = COALESCE(EXCLUDED.cup_spawn_id, harness_shared.pot_placements.cup_spawn_id),
+      cup_owner_id      = COALESCE(EXCLUDED.cup_owner_id, harness_shared.pot_placements.cup_owner_id),
       status            = EXCLUDED.status,
       fail_count        = EXCLUDED.fail_count,
       infra_loss_count  = EXCLUDED.infra_loss_count,
       last_loss_spawn_id = EXCLUDED.last_loss_spawn_id,
       last_disposition  = EXCLUDED.last_disposition,
-      escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.hive_placements.escalation_msg_id),
-      last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.hive_placements.last_recovery_at),
+      escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.pot_placements.escalation_msg_id),
+      last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.pot_placements.last_recovery_at),
       last_seen_at      = EXCLUDED.last_seen_at,
       updated_at        = EXCLUDED.updated_at`;
 }
@@ -930,7 +930,7 @@ export async function reconcileOnePot(
            last_loss_spawn_id,
            escalation_msg_id,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms
-      FROM harness_shared.hive_placements
+      FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`;
   const placeById = new Map<string, PlacementRow>(placeRows.map((p) => [p.work_item_id, p]));
 
@@ -1328,7 +1328,7 @@ async function suppressCursedEscalation(escalationMsgId: string, unitId: string)
  *   • an infra-attributed `cursed`/`stranded` row carries NO escalation_msg_id, so the
  *     ORIGINAL escalation-only GC (which required escalation_msg_id IS NOT NULL) skipped
  *     it as well.
- * The result is the placement-accounting DRIFT (EI-6109): hive_placements reports
+ * The result is the placement-accounting DRIFT (EI-6109): pot_placements reports
  * cursed/working lanes whose work-items have long since completed, and
  * loadCursedWorkItemIds (raw status='cursed') holds their ids out of the frontier.
  *
@@ -1352,7 +1352,7 @@ async function reconcileTerminalPlacements(
     { work_item_id: string; status: string; escalation_msg_id: string | null; harness_slug: string | null; fail_count: number }[]
   >`
     SELECT work_item_id, status, escalation_msg_id, harness_slug, fail_count
-      FROM harness_shared.hive_placements
+      FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId}
        AND install_slug = ${installSlug}
        AND status IN ('working', 'recovering', 'cursed', 'stranded')`;
@@ -1420,7 +1420,7 @@ async function reconcileTerminalPlacements(
 /**
  * P-022 — a `failing`/`failed` feature blocker that gates ≥1 non-terminal
  * downstream feature is escalated ONCE so the owner can resolve/deprecate it and
- * un-gate the downstream. Dedupe: a hive_placements row for the blocker in
+ * un-gate the downstream. Dedupe: a pot_placements row for the blocker in
  * `stranded`/`cursed` with an escalation already recorded suppresses re-escalation
  * (the breaker escalation also covers a stuck blocker that is itself cursed).
  * v1 covers feature→feature block edges (the primary case); issue-blocker
@@ -1614,7 +1614,7 @@ export async function summarizeOpenPlacements(
       WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
       live_open AS (
         SELECT p.status
-          FROM harness_shared.hive_placements p
+          FROM harness_shared.pot_placements p
           LEFT JOIN harness_shared.harness_features_consolidated f
             ON f.workspace_id = p.workspace_id
            AND f.feature_id = p.work_item_id
@@ -1640,7 +1640,7 @@ export async function summarizeOpenPlacements(
       live_open AS (
         SELECT p.work_item_id, p.status, p.fail_count, p.harness_slug, p.updated_at,
                f.source_plan_slug, f.source_plan_item_ids
-          FROM harness_shared.hive_placements p
+          FROM harness_shared.pot_placements p
           LEFT JOIN harness_shared.harness_features_consolidated f
             ON f.workspace_id = p.workspace_id
            AND f.feature_id = p.work_item_id

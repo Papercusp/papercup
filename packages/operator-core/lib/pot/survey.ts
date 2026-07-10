@@ -412,7 +412,7 @@ export async function fetchFrontierRows(
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.hive_placements p
+         SELECT 1 FROM harness_shared.pot_placements p
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'
@@ -464,7 +464,7 @@ export async function countPlaceableFrontier(
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.hive_placements p
+         SELECT 1 FROM harness_shared.pot_placements p
           WHERE p.workspace_id = f.workspace_id
             AND p.work_item_id = f.feature_id
             AND p.status = 'cursed'

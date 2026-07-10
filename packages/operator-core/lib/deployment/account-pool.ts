@@ -396,25 +396,35 @@ export function recordAccountPenalty(
 
 /**
  * Clear an account's pause + penalty window (e.g. on a confirmed reset). Pure.
- * Preserves the last-known observed budget (utilization / windowResetAt / utilizationAt) — the reset
- * clears the false-exhaustion pause/penalty, not the real usage reading, so the Accounts tab can
- * still show "~X% used · as of …". Staleness is carried by `utilizationAt`, and the drain selector
- * already discounts a stale reading, so keeping it is safe.
+ * By DEFAULT preserves the last-known observed budget (utilization / windowResetAt /
+ * utilizationAt) — the reset clears the false-exhaustion pause/penalty, not the real usage
+ * reading, so the Accounts tab can still show "~X% used · as of …". Staleness is carried by
+ * `utilizationAt`, and the drain selector already discounts a stale reading, so keeping it is
+ * safe.
+ *
+ * `resetWindows: true` (WI-3553) is the DELIBERATE owner override for when the projected
+ * utilization/windowResetAt reading itself is wrong or can't be re-probed (accounts:probe-capacity
+ * is the preferred, evidence-based path when the probe CAN run — see its own guidance): it also
+ * zeroes `utilization`/`windowResetAt`/`utilization7d`/`windowResetAt7d`/`utilizationAt`, i.e. a
+ * plain `{ ...freshRate() }` with none of the observed-budget fields carried forward. Default
+ * `false` is byte-identical to the pre-WI-3553 behavior.
  */
-export function recordAccountReset(pool: AccountPool, id: string): AccountPool {
+export function recordAccountReset(pool: AccountPool, id: string, opts: { resetWindows?: boolean } = {}): AccountPool {
   return {
     accounts: pool.accounts.map((a) =>
       a.id === id
         ? {
             ...a,
-            rate: {
-              ...freshRate(),
-              utilization: a.rate.utilization,
-              windowResetAt: a.rate.windowResetAt,
-              utilization7d: a.rate.utilization7d,
-              windowResetAt7d: a.rate.windowResetAt7d,
-              utilizationAt: a.rate.utilizationAt,
-            },
+            rate: opts.resetWindows
+              ? { ...freshRate() }
+              : {
+                  ...freshRate(),
+                  utilization: a.rate.utilization,
+                  windowResetAt: a.rate.windowResetAt,
+                  utilization7d: a.rate.utilization7d,
+                  windowResetAt7d: a.rate.windowResetAt7d,
+                  utilizationAt: a.rate.utilizationAt,
+                },
           }
         : a,
     ),

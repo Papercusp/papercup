@@ -121,7 +121,7 @@ export async function runHiveEvalGen(
     (async (codeSha: string) => {
       const { sql } = getOrgPg();
       const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM harness_shared.hive_eval_instances
+        SELECT 1 AS one FROM harness_shared.pot_eval_instances
          WHERE workspace_id = ${input.workspaceId} AND code_sha = ${codeSha} AND genome_id IS NULL
          LIMIT 1`;
       return rows.length > 0;

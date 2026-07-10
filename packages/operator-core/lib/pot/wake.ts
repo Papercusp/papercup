@@ -12,7 +12,7 @@
  *     which launches the pot blueprint's decider (the operator role) via the
  *     launch-blueprint primitive. Durable: a host restart never loses the wake.
  *
- *   - **Event wake** — persisted subscriptions (`operator-state key hive_wake`, one
+ *   - **Event wake** — persisted subscriptions (`operator-state key pot_wake`, one
  *     row per workspace) projected into LIVE event-reaction rules
  *     (`registerReactionRule`) that fire the `pot:wake` tool when the subscribed
  *     tool-event matches. Re-registered at boot (`registerPotWakeRules`) since
@@ -67,7 +67,7 @@ export interface PotEventSubscription {
   note?: string;
 }
 
-/** The per-workspace hive_wake state row payload. */
+/** The per-workspace pot_wake state row payload. */
 export interface PotWakeState {
   subscriptions: PotEventSubscription[];
   /** ms epoch of the last pot launch fire — the pot:wake floor-debounce input. */
@@ -181,7 +181,7 @@ export async function declarePotTimeWake(
   // instead of per-pot — collapsing N per-pot wake routines (the carry-note /
   // subscription clobber the plan names) to one. OFF (the dark default) ⇒ the
   // legacy per-pot install slug, byte-identical to today. (Event-state — the
-  // hive_wake operator-state row — is already workspace-keyed; untouched.)
+  // pot_wake operator-state row — is already workspace-keyed; untouched.)
   const scopeSlug = workspaceBrainScopeKey(
     opts.workspaceId,
     opts.installSlug,
@@ -302,7 +302,7 @@ const ruleId = (workspaceId: string, i: number): string => `${RULE_PREFIX}:${wor
 
 /** Read the persisted pot wake state for a workspace. */
 export async function readPotWakeState(workspaceId?: string): Promise<PotWakeState> {
-  return (await readOperatorState<PotWakeState>('hive_wake', workspaceId)) ?? EMPTY_STATE;
+  return (await readOperatorState<PotWakeState>('pot_wake', workspaceId)) ?? EMPTY_STATE;
 }
 
 /**
@@ -346,7 +346,7 @@ export async function setPotEventSubscriptions(
   workspaceId: string,
   subs: PotEventSubscription[],
 ): Promise<number> {
-  await updateOperatorState<PotWakeState>('hive_wake', EMPTY_STATE, (cur) => ({
+  await updateOperatorState<PotWakeState>('pot_wake', EMPTY_STATE, (cur) => ({
     ...cur,
     subscriptions: subs,
     declaredAt: Date.now(),
@@ -453,7 +453,7 @@ export async function claimPotWakeFire(
   const now = opts.now ?? Date.now();
   let admission: PotWakeAdmission = { fired: false, floorSec: opts.floorSec };
   await updateOperatorState<PotWakeState>(
-    'hive_wake',
+    'pot_wake',
     EMPTY_STATE,
     (cur) => {
       admission = decidePotWakeAdmission(cur, { now, floorSec: opts.floorSec, force: opts.force });
@@ -467,7 +467,7 @@ export async function claimPotWakeFire(
 /** Record a pot launch fire (the debounce input for the next one). */
 export async function recordPotWake(workspaceId?: string): Promise<void> {
   await updateOperatorState<PotWakeState>(
-    'hive_wake',
+    'pot_wake',
     EMPTY_STATE,
     (cur) => ({ ...cur, lastWakeAt: Date.now() }),
     workspaceId,

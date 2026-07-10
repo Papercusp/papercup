@@ -65,9 +65,9 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('intreq');
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
-  // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug; mig 523 renamed
+  // D-007 pot-rename: mig 441 creates pot_integration_requests.hive_slug; mig 523 renamed
   // it → pot_slug. Replaying only 441 predates the rename, so apply it in-place.
-  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.pot_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
 }, 120_000);
 
 afterAll(async () => {
@@ -75,10 +75,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.hive_integration_requests`;
+  await db.sql`DELETE FROM harness_shared.pot_integration_requests`;
 });
 
-describe('hive_integration_requests (G-5c P-035 — queue, don’t integrate)', () => {
+describe('pot_integration_requests (G-5c P-035 — queue, don’t integrate)', () => {
   it('a below-steer head is QUEUED (visible, pending), not integrated; steer passes through', async () => {
     const trusted = device();
     const untrusted = device();

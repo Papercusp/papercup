@@ -24,7 +24,7 @@
  * Floors stay marked `synthesized: true` (excluded by default from
  * agent-freshness and the trend, same contract as the backstop) with a distinct
  * `synthSource: 'scheduled-pulse'`, and every filing records a
- * hive_watchdog_fires row (source `scorecard-pulse`) — the countable "the data
+ * pot_watchdog_fires row (source `scorecard-pulse`) — the countable "the data
  * layer is running on the floor pulse" signal. Fail-soft by contract: never
  * throws into the periodic scheduler.
  *
@@ -137,7 +137,7 @@ async function recordPulseFire(workspaceId: string, installSlug: string, reason:
   try {
     const { sql } = getOrgPg();
     await sql`
-      INSERT INTO harness_shared.hive_watchdog_fires
+      INSERT INTO harness_shared.pot_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (${workspaceId}, ${installSlug}, ${'scorecard-pulse'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
   } catch (e) {
@@ -342,7 +342,7 @@ async function recordWedgeFire(workspaceId: string, installSlug: string, reason:
   try {
     const { sql } = getOrgPg();
     await sql`
-      INSERT INTO harness_shared.hive_watchdog_fires
+      INSERT INTO harness_shared.pot_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (${workspaceId}, ${installSlug}, ${'scorecard-emission-wedge'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
   } catch (e) {

@@ -121,11 +121,11 @@ export async function listUnplacedPotFrontier(
 }
 
 /**
- * The Mug's non-terminal placements (P-030 drive-to-empty): hive_placements
+ * The Mug's non-terminal placements (P-030 drive-to-empty): pot_placements
  * rows in `working`/`recovering` (NOT cursed/stranded — those are escalated to the
  * owner, no longer the Mug's to drive) WHOSE SUBJECT WORK-ITEM IS STILL LIVE.
  *
- * EI-7641: a `hive_placements` row does not always converge when its subject unit
+ * EI-7641: a `pot_placements` row does not always converge when its subject unit
  * reaches terminal (passed/deprecated/resolved/closed) or gets deliberately parked
  * (blocked/needs-human) — the completion-reconcile GC (evaluateTerminalPlacementReconcile,
  * `reconcileOnePot`) only revisits units that still have a recent cup-spawn candidate,
@@ -150,7 +150,7 @@ export async function listNonTerminalPlacements(
   try {
     const rows = await sql<{ work_item_id: string }[]>`
       SELECT p.work_item_id
-        FROM harness_shared.hive_placements p
+        FROM harness_shared.pot_placements p
         LEFT JOIN harness_shared.harness_features_consolidated f
           ON f.workspace_id = p.workspace_id
          AND f.feature_id = p.work_item_id

@@ -52,7 +52,7 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.agent_activity',
   'harness_shared.coord_event_log',
   'harness_shared.operator_turns',
-  'harness_shared.hive_throughput_ticks',
+  'harness_shared.pot_throughput_ticks',
   'harness_shared.substrate_outbox',
   'harness_shared.pipeline_events',
   'harness_shared.operator_curation_log',
