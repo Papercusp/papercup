@@ -60,11 +60,34 @@ export interface AcquireOpts {
 
 export type AcquireResult =
   | { ok: true; claim: PlanItemClaim }
-  | { ok: false; conflict: PlanItemClaim };
+  | {
+      ok: false;
+      conflict: PlanItemClaim;
+      /** EI-8997: the steal was refused because the EXPIRED incumbent shows fresh
+       *  tool activity — its lease was auto-renewed; do NOT treat it as reclaimable. */
+      reason?: 'holder-active-lease-renewed';
+    };
 
 export const DEFAULT_AVAILABILITY_TTL_SEC = 1200; // 20m — LOCAL, session keeps it alive
 export const DEFAULT_ACTIVITY_TTL_SEC = 1800; // 30m — SHARED, generous; renewed by a completed turn
 export const MAX_TTL_SEC = 7200; // 2h hard cap (an explicit extend for a long op)
+
+/**
+ * EI-8997 (lapse = holder DEAD, not holder BUSY): before an acquire STEALS an
+ * expired claim — and before the GC sweep deletes one — the incumbent gets this
+ * activity grace: a holder with a recorded tool call (harness_shared.agent_activity,
+ * the per-tool-call PostToolUse bridge) within the window is BUSY, not dead. The two
+ * real lapse-while-working shapes this closes: (a) ONE long turn outlasting the TTL
+ * (renewals fire per activity event, but the bus consumer throttles/misses), and
+ * (b) the renewal CONSUMER being down — it runs only on the bg-host, so bg-host
+ * churn used to lapse every busy holder's claim fleet-wide (the 2026-07-10 WI-1729
+ * incident). On refusal the incumbent's lease AUTO-RENEWS (self-healing), so a
+ * lapsed-but-alive claim can no longer invite the double-placement the claim system
+ * exists to prevent. Env-tunable; capped at 1h.
+ */
+const rawLapseGrace = Number(process.env.PAPERCUSP_CLAIM_LAPSE_ACTIVITY_GRACE_SEC ?? 600);
+export const CLAIM_LAPSE_ACTIVITY_GRACE_SEC =
+  Number.isFinite(rawLapseGrace) && rawLapseGrace >= 0 ? Math.min(Math.floor(rawLapseGrace), 3600) : 600;
 
 /**
  * The authority-RPC op kinds for the three mutating claim ops (D-002). A claim op
@@ -124,8 +147,16 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
       acquired_ts      = clock_timestamp(),
       expires_ts       = clock_timestamp() + make_interval(secs => ${ttlSec}),
       last_activity_ts = clock_timestamp()
-    WHERE harness_shared.plan_item_claims.expires_ts <= clock_timestamp()
-       OR harness_shared.plan_item_claims.owner = EXCLUDED.owner
+    WHERE harness_shared.plan_item_claims.owner = EXCLUDED.owner
+       -- EI-8997: steal an EXPIRED claim only when its holder has been quiet past the
+       -- activity grace. A lapsed-but-ACTIVE holder is busy, not dead (one long turn
+       -- outlasting the TTL / the bg-host renewal consumer down) — the held-branch
+       -- below auto-renews its lease instead of handing the item to a second agent.
+       OR (harness_shared.plan_item_claims.expires_ts <= clock_timestamp()
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.agent_activity aa
+              WHERE aa.owner_id = harness_shared.plan_item_claims.owner
+                AND aa.created_at > clock_timestamp() - make_interval(secs => ${CLAIM_LAPSE_ACTIVITY_GRACE_SEC})))
     RETURNING workspace_id, harness_slug, plan_slug, item_id, claim_id, owner,
            owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
@@ -144,7 +175,36 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
        AND plan_slug = ${opts.planSlug} AND item_id = ${opts.itemId}
       FOR UPDATE
   `;
-  if (held[0]) return { ok: false, conflict: claimFromDb(held[0]) };
+  if (held[0]) {
+    const conflict = claimFromDb(held[0]);
+    // EI-8997: the steal above was REFUSED for an expired claim because its holder
+    // shows fresh tool activity (busy, not dead). Auto-renew the incumbent's lease
+    // here — self-healing, so the next reader sees a LIVE claim — and report the
+    // refusal with a reason instead of a phantom "held by another owner". The UPDATE
+    // re-checks claim_id + owner + expired + fresh-activity, so a holder that went
+    // quiet between the two statements is NOT resurrected (the caller just retries).
+    if (conflict.expired) {
+      const renewed = await sql<ClaimDbRow[]>`
+        UPDATE harness_shared.plan_item_claims
+           SET expires_ts = clock_timestamp() + make_interval(secs => ttl_sec)
+         WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+           AND plan_slug = ${opts.planSlug} AND item_id = ${opts.itemId}
+           AND claim_id = ${conflict.claimId}::uuid AND owner = ${conflict.owner}
+           AND expires_ts <= clock_timestamp()
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.agent_activity aa
+              WHERE aa.owner_id = ${conflict.owner}
+                AND aa.created_at > clock_timestamp() - make_interval(secs => ${CLAIM_LAPSE_ACTIVITY_GRACE_SEC}))
+        RETURNING workspace_id, harness_slug, plan_slug, item_id, claim_id, owner,
+               owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
+               last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
+      `;
+      if (renewed[0]) {
+        return { ok: false, conflict: claimFromDb(renewed[0]), reason: 'holder-active-lease-renewed' };
+      }
+    }
+    return { ok: false, conflict };
+  }
   // Lost a race (the holder released between INSERT and SELECT) — retry once.
   const retry = await sql<ClaimDbRow[]>`
     INSERT INTO harness_shared.plan_item_claims
@@ -387,7 +447,10 @@ export async function listClaimsForPlan(
   return rows.map(claimFromDb);
 }
 
-/** Delete lapsed claims (a GC convenience — acquire already steals them lazily). Returns count. */
+/** Delete lapsed claims (a GC convenience — acquire already steals them lazily). Returns count.
+ *  EI-8997: a lapsed claim whose holder shows fresh tool activity is BUSY, not dead —
+ *  the sweep skips it (same grace as the acquire steal-guard), so a GC pass can never
+ *  free a live holder's item out from under a long turn. */
 export async function sweepLapsedClaims(workspaceId: string, harnessSlug?: string): Promise<number> {
   const { sql } = getOrgPg();
   const rows = await sql<{ item_id: string }[]>`
@@ -395,6 +458,10 @@ export async function sweepLapsedClaims(workspaceId: string, harnessSlug?: strin
      WHERE workspace_id = ${workspaceId}
        AND ${harnessSlug ? sql`harness_slug = ${harnessSlug}` : sql`TRUE`}
        AND expires_ts <= clock_timestamp()
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.agent_activity aa
+          WHERE aa.owner_id = harness_shared.plan_item_claims.owner
+            AND aa.created_at > clock_timestamp() - make_interval(secs => ${CLAIM_LAPSE_ACTIVITY_GRACE_SEC}))
     RETURNING item_id
   `;
   return rows.length;

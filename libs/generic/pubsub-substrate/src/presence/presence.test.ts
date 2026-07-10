@@ -47,6 +47,33 @@ describe('InMemoryPresenceStore — clock-controlled extras', () => {
     expect(rec?.heartbeatAt).toBe(new Date(9000).toISOString());
   });
 
+  it('intentDeclaredAt (EI-8988) advances only when the intent TEXT changes, not on every write/heartbeat', async () => {
+    let t = 1000;
+    const store = new InMemoryPresenceStore({ now: () => t });
+    await store.write(ident('A'), { intent: 'first' });
+    const first = await store.get('A');
+    expect(first?.intentDeclaredAt).toBe(new Date(1000).toISOString());
+
+    // Re-write with the SAME intent text: heartbeat/lastActiveAt move, intentDeclaredAt does not.
+    t = 5000;
+    await store.write(ident('A'), { intent: 'first', currentFiles: ['x.ts'] });
+    const same = await store.get('A');
+    expect(same?.heartbeatAt).toBe(new Date(5000).toISOString());
+    expect(same?.intentDeclaredAt).toBe(new Date(1000).toISOString()); // unchanged
+
+    // touchActivity / touchHeartbeat never touch it either.
+    t = 6000;
+    await store.touchActivity('A');
+    expect((await store.get('A'))?.intentDeclaredAt).toBe(new Date(1000).toISOString());
+
+    // A genuinely NEW intent string advances it.
+    t = 9000;
+    await store.write(ident('A'), { intent: 'second' });
+    const second = await store.get('A');
+    expect(second?.intent).toBe('second');
+    expect(second?.intentDeclaredAt).toBe(new Date(9000).toISOString());
+  });
+
   it('marks stale exactly when heartbeat is older than PRESENCE_STALE_MS', async () => {
     let t = 1_000_000;
     const store = new InMemoryPresenceStore({ now: () => t });

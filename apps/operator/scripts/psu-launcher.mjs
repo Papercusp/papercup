@@ -247,7 +247,7 @@ function fmtAgo(ms) {
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null, kickoffPromptText: null, label: null, headless: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -278,6 +278,12 @@ export function parseArgs(argv) {
     else if (a.startsWith('--set-claude-token=')) { out.setClaudeToken = true; out.setClaudeTokenValue = a.slice('--set-claude-token='.length) || null; continue; }
     else if (a === '--clear-claude-token') { out.clearClaudeToken = true; continue; }
     if (a === '--no-picker') out.picker = false;
+    // headless-fleet-launch (P-001): run with NO desktop window + no TTY, but STILL
+    // through the managed-pty host so the session keeps its control socket and stays
+    // injectable (warm `loop:arm` wakes land as `psu-socket-inject`, not a Channel-3
+    // park). Sets PAPERCUSP_PSU_HEADLESS=1 for usePtyHost + the child env. Implies
+    // --no-picker: there is no terminal to prompt at.
+    else if (a === '--headless') { out.headless = true; out.picker = false; }
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
     // brain session exactly (no picker); when none is pinned (or it no longer
     // resolves) launch a fresh claude SU session and pin it server-side.
@@ -2781,6 +2787,23 @@ async function pickFeature(workspace, harness, need) {
  * edit hits every agent's next launch). Needs a real TTY on both ends (we bridge
  * raw mode); a non-TTY launch (the brain dock pane, --no-picker scripts) keeps
  * the plain inherit spawn, which is correct — there's no terminal to bridge.
+ *
+ * HEADLESS (headless-fleet-launch-and-carry-knob-2026-07-10 P-001, D-004): a
+ * headless FLEET MEMBER has no terminal either, but unlike the dock pane it MUST
+ * still be injectable — its whole lifecycle is warm `loop:arm` wakes delivered by
+ * the wake-executor. Without a managed pty there is no control socket and no
+ * `~/.papercusp/psu-pty/<ownerId>.json` discovery file, so wake-executor Channel 1b
+ * can't find it, Channel 3 fires instead ("session pid alive but not an injectable
+ * managed pty") and the member PARKS FOREVER after one turn. So `--headless` /
+ * `PAPERCUSP_PSU_HEADLESS=1` bypasses EXACTLY ONE thing: the isTTY check. It does
+ * NOT override the kill switch and does NOT override an explicit `PAPERCUSP_PSU_PTY=0`.
+ *
+ * This is sound because `hostThroughPty` is TTY-optional by construction: the pty
+ * itself comes from node-pty (the child still sees a real pty), `bridgeTty` defaults
+ * to `stdin.isTTY` → false here, and the pty is sized from `sanePtyDim(stdout.columns,
+ * 80, …)` which falls back to 80x24 for a non-TTY stdout. Only the bridge to a HUMAN's
+ * terminal needs a TTY, and a headless member has no human. Keep the pty, drop the
+ * terminal emulator.
  */
 // P-012/P-015: managed-pty IS the interactive launch path (D-006). Flipped on
 // 2026-06-08 after the mechanical feel-check passed end-to-end (a real bash
@@ -2796,6 +2819,8 @@ export function usePtyHost({ env = process.env, stdin = process.stdin, stdout = 
   const enabled =
     env.PAPERCUSP_PSU_PTY === '1' ? true : env.PAPERCUSP_PSU_PTY === '0' ? false : PTY_DEFAULT_ON;
   if (!enabled) return false;
+  // A headless launch has no TTY BY DESIGN, but still needs the injectable pty.
+  if (env.PAPERCUSP_PSU_HEADLESS === '1') return true;
   return !!(stdin.isTTY && stdout.isTTY);
 }
 
@@ -3184,6 +3209,12 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
         cwd,
         env,
         ownerId,
+        // headless-fleet-launch P-001/D-004: never bridge a human TTY for a headless
+        // member. It resolves false anyway when stdio is detached (stdin.isTTY undefined),
+        // but pinning it makes `psu --headless` run FROM a real terminal (the debugging
+        // case) deterministic — no setRawMode on the operator's own stdin, no SIGWINCH
+        // coupling. The pty (and therefore the control socket + discovery file) still spawns.
+        bridgeTty: env.PAPERCUSP_PSU_HEADLESS === '1' ? false : undefined,
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
         // WI-1980: a cold-loop RECYCLE must respawn with a FRESH --session-id
         // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
@@ -4066,6 +4097,13 @@ async function ensureBackendInstalled(agent, { interactive = Boolean(process.std
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // headless-fleet-launch P-001: publish the headless posture into the env BEFORE any
+  // launch flow. runWrapper builds its child env from sanitizeInheritedEnv(process.env)
+  // (which preserves PAPERCUSP_*), so this single assignment is what (a) makes
+  // usePtyHost({ env }) keep the managed pty despite no TTY, and (b) hands the posture
+  // down to the agent child. `--headless` is the CLI face of PAPERCUSP_PSU_HEADLESS=1;
+  // setting the env var directly (a headless spawner) works identically.
+  if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = '1';
   // One-time credential maintenance commands run before any launch flow.
   if (args.setClaudeToken) {
     await setClaudeTokenFlow(args.setClaudeTokenValue);

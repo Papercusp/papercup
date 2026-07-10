@@ -93,6 +93,20 @@ export const CompletionRecordSchema = z.object({
   planSlug: z.string().min(1).optional(),
   /** Who completed it (display only; defaults from the firing agent's identity). */
   agent: z.string().min(1).optional(),
+  /**
+   * EI-8993 (dup-close accountability): the SURVIVING work-item id when this
+   * completion closes the item as a duplicate. WI-3646 was wrongly dup-closed
+   * THREE times by three different agents, each only saying "dup of WI-3543" in
+   * free-text `summary` — no structured link, no notification, so the mistake
+   * was undetectable by tooling and kept recurring. Setting this makes
+   * `work_items:complete` auto-create a `duplicates` coord_links edge (this
+   * item → duplicateOf) and auto-subscribe the item's current assignee (if any,
+   * and not the closer) so the completion's existing watcher fan-out reaches
+   * them even if they weren't already following it. The target must exist and
+   * differ from the item being closed — validated at complete time, not
+   * rendered here.
+   */
+  duplicateOf: z.string().min(1).optional(),
 });
 export type CompletionRecord = z.infer<typeof CompletionRecordSchema>;
 

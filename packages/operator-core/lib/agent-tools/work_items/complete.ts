@@ -32,7 +32,15 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
-import { getWorkItem, setWorkItemStateWithAliasInfo, workItemObjectRef, mergeWorkItemOutputPayload } from '../../work-items';
+import {
+  getWorkItem,
+  setWorkItemStateWithAliasInfo,
+  workItemObjectRef,
+  mergeWorkItemOutputPayload,
+  resolveWorkItemRef,
+  linkWorkItem,
+  subscribeWorkItem,
+} from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -234,6 +242,43 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     planSlug: it.completion.planSlug,
   };
 
+  // EI-8993 (dup-close accountability): a completion that names `duplicateOf`
+  // auto-creates the structured `duplicates` coord_links edge (so dup-scanners
+  // and future readers see the graph, not just free-text prose) and
+  // auto-subscribes the item's PRIOR assignee (the WI-3646 gap — a leader who
+  // force-reopened + re-claimed it wasn't watching, so the wrong dup-close
+  // reached no one who could catch it) so the existing per-completion watcher
+  // fan-out (the `emits` block below, `@object:<kind>:<ref>`) reaches them even
+  // if they never explicitly subscribed. Best-effort + record-and-warn (EI-24,
+  // same discipline as every other check in this file) — a bad/missing target
+  // must never lose an otherwise-good completion.
+  let duplicateOfWarning: string | undefined;
+  const duplicateOf = it.completion.duplicateOf;
+  if (duplicateOf) {
+    if (duplicateOf === it.id) {
+      duplicateOfWarning = `completion.duplicateOf ('${duplicateOf}') is the same id as the item being closed — ignored; a duplicate must name a DIFFERENT surviving item.`;
+    } else {
+      const dst = await resolveWorkItemRef(duplicateOf, it.harness).catch(() => null);
+      if (!dst) {
+        duplicateOfWarning = `completion.duplicateOf ('${duplicateOf}') was not found — no \`duplicates\` link was created. Double-check the surviving id.`;
+      } else {
+        const linkRes = await linkWorkItem(it.id, dst, 'duplicates', { harness: it.harness, by: ident.ownerId }).catch(
+          (e) => ({ error: e instanceof Error ? e.message : String(e) }),
+        );
+        if ('error' in linkRes) duplicateOfWarning = `failed to record the \`duplicates\` link to '${duplicateOf}': ${linkRes.error}`;
+      }
+    }
+  } else if (/\b(?:is\s+a\s+)?dup(?:e|licate)?s?\s+of\b/i.test(`${it.completion.summary} ${it.completion.status ?? ''}`)) {
+    // The exact free-text pattern that let WI-3646 get dup-closed 3× with no structured
+    // trace ("dup of WI-3543" in prose, nothing a scanner could follow). Nudge toward the
+    // structured field without blocking — this completion's prose may be about something
+    // else entirely (a false positive costs nothing; a silent miss is the WI-3646 failure).
+    duplicateOfWarning = `this completion's summary/status mentions a duplicate but \`completion.duplicateOf\` was not set — pass the SURVIVING item's id there so a \`duplicates\` link + assignee notification are recorded, not just free text.`;
+  }
+  if (duplicateOf && duplicateOf !== it.id && existing.assignee && existing.assignee !== ident.ownerId) {
+    await subscribeWorkItem(existing.assignee, it.id, 'full', { harness: it.harness }).catch(() => {});
+  }
+
   // EI-7214: persist outputPayload onto the item row (payload.out) so it's a
   // self-serve, queryable read surface for a harness sidecar pulling completed
   // outputs over HTTP — not just a transient field on this call's own result /
@@ -260,6 +305,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     ...(stateWarning ? { stateWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
+    ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
   };
 }
 
@@ -269,7 +315,7 @@ export default defineTool({
   description:
     'Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts } — act on each returned `reflect` step once, now.',
   guidance: {
-    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Finish several at once via items:[…].',
+    when: 'You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Closing as a duplicate? Set `completion.duplicateOf` to the SURVIVING id — auto-creates a `duplicates` link + notifies the prior assignee, instead of just prose (EI-8993). Finish several at once via items:[…].',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing.',
     seeAlso: [

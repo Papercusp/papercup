@@ -31,12 +31,16 @@ describe('fetchElevenLabsVoices', () => {
   });
 
   it('sends the key in the xi-api-key header (server-side only)', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ voices: [] }), { status: 200 }));
+    // Type the mock's params (url, init) so mock.calls[0] is a 2-tuple, not the
+    // zero-arg `[]` vi.fn infers from a no-param impl (which has no index 1 and
+    // makes the `as RequestInit` cast on `undefined` a tsc error).
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ voices: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     try {
       await fetchElevenLabsVoices('sk_secret');
-      const [, init] = fetchMock.mock.calls[0]!;
-      expect((init as RequestInit).headers).toMatchObject({ 'xi-api-key': 'sk_secret' });
+      const init = fetchMock.mock.calls[0]?.[1];
+      expect(init?.headers).toMatchObject({ 'xi-api-key': 'sk_secret' });
     } finally {
       vi.unstubAllGlobals();
     }

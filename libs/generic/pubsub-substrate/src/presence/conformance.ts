@@ -118,6 +118,37 @@ export function describePresenceConformance(
       expect(ms(second!.heartbeatAt)).toBeGreaterThanOrEqual(ms(first!.heartbeatAt));
     });
 
+    it('intent_declared_at (EI-8988) advances only when the intent TEXT changes', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'a');
+      await store.write(id, { intent: 'first' });
+      const first = await store.get(id.ownerId);
+      expect(first!.intentDeclaredAt).not.toBeNull();
+
+      // Re-write with the SAME intent text: heartbeat/lastActiveAt may move,
+      // intentDeclaredAt must NOT (no injectable clock on PG, so assert equality
+      // rather than "didn't move forward").
+      await delay(8);
+      await store.write(id, { intent: 'first', currentFiles: ['x.ts'] });
+      const same = await store.get(id.ownerId);
+      expect(ms(same!.heartbeatAt)).toBeGreaterThanOrEqual(ms(first!.heartbeatAt));
+      expect(ms(same!.intentDeclaredAt!)).toBe(ms(first!.intentDeclaredAt!));
+
+      // touchActivity never touches it either.
+      await delay(8);
+      await store.touchActivity(id.ownerId);
+      const afterActivity = await store.get(id.ownerId);
+      expect(ms(afterActivity!.intentDeclaredAt!)).toBe(ms(first!.intentDeclaredAt!));
+
+      // A genuinely new intent string advances it.
+      await delay(8);
+      await store.write(id, { intent: 'second' });
+      const second = await store.get(id.ownerId);
+      expect(second!.intent).toBe('second');
+      expect(ms(second!.intentDeclaredAt!)).toBeGreaterThan(ms(first!.intentDeclaredAt!));
+    });
+
     it('touchHeartbeat bumps heartbeat and is a no-op on a missing owner', async () => {
       if (skip) return;
       const store = makeStore();

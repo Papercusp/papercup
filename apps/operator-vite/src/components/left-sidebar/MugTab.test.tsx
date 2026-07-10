@@ -221,6 +221,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     vi.stubGlobal('fetch', H.fetchMock);
     render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Capacity');
+    fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
 
     const std = await screen.findByLabelText('std model spec') as HTMLInputElement;
     fireEvent.change(std, { target: { value: 'opus:xhigh' } });
@@ -233,6 +234,6 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       { name: 'std', spec: 'opus:xhigh' },
     ]);
     expect((screen.getByLabelText('std model spec') as HTMLInputElement).disabled).toBe(false);
-    expect(screen.getByText('session override')).toBeTruthy();
+    expect(screen.getAllByText('1 custom')).toHaveLength(2);
   });
 });

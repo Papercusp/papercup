@@ -16,11 +16,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const getWorkItem = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
+const resolveWorkItemRef = vi.fn();
+const linkWorkItem = vi.fn();
+const subscribeWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
+  resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
+  linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
+  subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
 }));
 
 // TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
@@ -73,6 +79,11 @@ beforeEach(() => {
   getFlag.mockResolvedValue(false);
   itemTestGate.mockReset();
   itemTestGate.mockResolvedValue({ ok: true });
+  resolveWorkItemRef.mockReset();
+  linkWorkItem.mockReset();
+  linkWorkItem.mockResolvedValue({ ok: true });
+  subscribeWorkItem.mockReset();
+  subscribeWorkItem.mockResolvedValue({ ok: true });
 });
 
 describe('work_items:complete (keyed-array)', () => {
@@ -362,6 +373,54 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'landed; bad vocab' } });
       expect(r.stateError).toBeTruthy();
       expect(r.stateWarning).toMatch(/NOT closed/); // the failed transition left it claimable
+    });
+  });
+
+  // ── duplicateOfWarning: dup-close accountability (EI-8993) ───────────────────────────────
+  describe('duplicateOfWarning — dup-close accountability (EI-8993)', () => {
+    it('creates a `duplicates` link + subscribes the prior assignee when duplicateOf is set', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-holder' });
+      resolveWorkItemRef.mockResolvedValue({ kind: 'feature', ref: 'papercup#F-1' });
+      const r = await one({ id: 'F-12', completion: { summary: 'closing this out', duplicateOf: 'F-1' } });
+      expect(r.duplicateOfWarning).toBeUndefined();
+      expect(resolveWorkItemRef).toHaveBeenCalledWith('F-1', undefined);
+      expect(linkWorkItem).toHaveBeenCalledWith('F-12', { kind: 'feature', ref: 'papercup#F-1' }, 'duplicates', { harness: undefined, by: 'su-tester' });
+      expect(subscribeWorkItem).toHaveBeenCalledWith('su-holder', 'F-12', 'full', { harness: undefined });
+    });
+
+    it('does NOT subscribe when the prior assignee IS the closer', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-tester' });
+      resolveWorkItemRef.mockResolvedValue({ kind: 'feature', ref: 'papercup#F-1' });
+      await one({ id: 'F-12', completion: { summary: 'closing this out', duplicateOf: 'F-1' } });
+      expect(subscribeWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('warns (never blocks) a self-referential duplicateOf', async () => {
+      getWorkItem.mockResolvedValue({ ...item });
+      const r = await one({ id: 'F-12', completion: { summary: 'closing this out', duplicateOf: 'F-12' } });
+      expect(r.duplicateOfWarning).toMatch(/same id/i);
+      expect(linkWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('warns (never blocks) when the duplicateOf target is not found', async () => {
+      getWorkItem.mockResolvedValue({ ...item });
+      resolveWorkItemRef.mockResolvedValue(null);
+      const r = await one({ id: 'F-12', completion: { summary: 'closing this out', duplicateOf: 'F-999' } });
+      expect(r.duplicateOfWarning).toMatch(/not found/i);
+      expect(linkWorkItem).not.toHaveBeenCalled();
+    });
+
+    it("nudges toward duplicateOf when the summary says 'dup of X' but the field was omitted (the exact WI-3646 pattern)", async () => {
+      getWorkItem.mockResolvedValue({ ...item });
+      const r = await one({ id: 'F-12', completion: { summary: 'Re-closing: dup of WI-3543, deferring to its investigation' } });
+      expect(r.duplicateOfWarning).toMatch(/duplicateOf.*was not set/i);
+      expect(linkWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('does not nudge on an unrelated completion (no false positive)', async () => {
+      getWorkItem.mockResolvedValue({ ...item });
+      const r = await one({ id: 'F-12', completion: { summary: 'landed the feature, all tests green' } });
+      expect(r.duplicateOfWarning).toBeUndefined();
     });
   });
 

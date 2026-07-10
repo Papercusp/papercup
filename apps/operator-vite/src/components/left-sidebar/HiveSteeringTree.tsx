@@ -261,8 +261,8 @@ function TreeStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
       .pc-queen__tree-hive--on .pc-queen__tree-hiverow {
-        border-color: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 56%);
-        background: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 92%);
+        border-color: color-mix(in srgb, var(--accent), transparent 56%);
+        background: color-mix(in srgb, var(--accent), transparent 93%);
       }
       .pc-queen__tree-caret {
         display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;

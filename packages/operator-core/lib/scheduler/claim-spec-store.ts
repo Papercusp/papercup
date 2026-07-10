@@ -16,7 +16,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { getNextWorkItem, type GetNextResult } from './get-next';
-import type { OrgSql } from '../work-items';
+import { releaseWorkItem, type OrgSql } from '../work-items';
+import { planItemLaneBlockReason } from './plan-item-lane-guard';
 
 export interface SetClaimSpecResult {
   ok: boolean;
@@ -223,14 +224,38 @@ export async function getNextForBee(args: {
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
     : await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId });
-  const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
-    harness: args.harness,
-    ...(args.swarmId ? { swarmId: args.swarmId } : {}),
-    ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
-    ...(args.states ? { states: args.states } : {}),
-    ...(args.rigAvailable ? { rigAvailable: true } : {}),
-  });
-  return result ? { ...result, specSource: record.source } : null;
+
+  // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
+  // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked
+  // plan-item's own resolved effectiveStatus (blocked-by graph / cycles / the
+  // `blocked` stored token) — that computation is JS-side (plan-parser), not a SQL
+  // predicate the claim query can enforce inline. Loop the atomic claim: on a hit,
+  // check the linked plan-item lane; if it's blocked/needs-human, release (never
+  // surfaced to the caller — the claim/release round-trip is invisible) and try the
+  // next row. Bounded so a pathological run of blocked plan-linked rows can't spin
+  // forever; on exhaustion this degrades to serving the LAST (still-blocked) claim
+  // rather than silently starving the caller — a peer's plan-item lane check
+  // (`plans:items`) remains the authoritative backstop.
+  const MAX_PLAN_LANE_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
+    const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
+      harness: args.harness,
+      ...(args.swarmId ? { swarmId: args.swarmId } : {}),
+      ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
+      ...(args.states ? { states: args.states } : {}),
+      ...(args.rigAvailable ? { rigAvailable: true } : {}),
+    });
+    if (!result) return null;
+    const blocked = await planItemLaneBlockReason(result.workItem);
+    if (!blocked) return { ...result, specSource: record.source };
+    if (attempt === MAX_PLAN_LANE_ATTEMPTS - 1) {
+      // Exhausted the retry budget — serve it rather than starve the caller; the
+      // guard is a best-effort courtesy, not a hard floor (fail-open by design).
+      return { ...result, specSource: record.source };
+    }
+    await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId });
+  }
+  return null;
 }
 
 /**

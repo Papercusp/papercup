@@ -8,6 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 import ModelTiersOverride, { effectiveSpec, isOverridden, withTierSpec } from './ModelTiersOverride';
 
@@ -31,6 +33,8 @@ const BASELINE = [
   { name: 'fast', spec: 'haiku' },
   { name: 'std', spec: 'sonnet' },
 ];
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter searchParams="?qModels=true">{children}</NuqsTestingAdapter>;
+const ClosedWrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
 
 describe('override math', () => {
   it('effectiveSpec prefers the override, falls back to baseline', () => {
@@ -66,8 +70,15 @@ describe('ModelTiersOverride render', () => {
     H.useSyncQuery.mockReset();
   });
 
+  it('defaults to a compact Models summary', () => {
+    render(<ModelTiersOverride override={null} onWrite={vi.fn()} busy={false} />, { wrapper: ClosedWrap });
+    expect(screen.getByText('Models')).toBeTruthy();
+    expect(screen.getByText('Workspace')).toBeTruthy();
+    expect(screen.queryByLabelText('fast model spec')).toBeNull();
+  });
+
   it('renders the baseline tiers with default badges in the compact Models section', async () => {
-    render(<ModelTiersOverride override={null} onWrite={vi.fn()} busy={false} />);
+    render(<ModelTiersOverride override={null} onWrite={vi.fn()} busy={false} />, { wrapper: Wrap });
     expect(H.useSyncQuery).toHaveBeenCalledWith({
       queryName: 'agentConfig.modelTiersBaseline',
       args: {},
@@ -76,22 +87,22 @@ describe('ModelTiersOverride render', () => {
     await waitFor(() => expect(screen.getByText('fast')).toBeTruthy());
     expect(screen.getByText('std')).toBeTruthy();
     expect(screen.getAllByText('default').length).toBe(2);
-    expect(screen.getByText('workspace default')).toBeTruthy();
+    expect(screen.getByText('Workspace')).toBeTruthy();
     expect(screen.getByText('Models')).toBeTruthy();
     expect(screen.queryByText(/Session override of the workspace model tiers/)).toBeNull();
   });
 
   it('shows the override badge + value when a tier is overridden', async () => {
-    render(<ModelTiersOverride override={[{ name: 'fast', spec: 'opus:xhigh' }]} onWrite={vi.fn()} busy={false} />);
+    render(<ModelTiersOverride override={[{ name: 'fast', spec: 'opus:xhigh' }]} onWrite={vi.fn()} busy={false} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByText('fast')).toBeTruthy());
     expect(screen.getByText('override')).toBeTruthy();
     expect((screen.getByLabelText('fast model spec') as HTMLInputElement).value).toBe('opus:xhigh');
-    expect(screen.getByText('session override')).toBeTruthy();
+    expect(screen.getByText('1 custom')).toBeTruthy();
   });
 
   it('editing a tier spec + blurring writes the computed override', async () => {
     const onWrite = vi.fn();
-    render(<ModelTiersOverride override={null} onWrite={onWrite} busy={false} />);
+    render(<ModelTiersOverride override={null} onWrite={onWrite} busy={false} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByLabelText('std model spec')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('std model spec'), { target: { value: 'opus' } });
     fireEvent.blur(screen.getByLabelText('std model spec'));

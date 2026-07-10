@@ -556,3 +556,44 @@ describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
     expect(r).toEqual({ ok: false, error: 'harness:create returned an unparseable response' });
   });
 });
+
+/**
+ * WI-3646 FOLLOW-UP regression pin: `harness:create`'s real Zod field for
+ * create-time Hive membership is `pot` (harness/create.ts's schema + its
+ * `args.pot` D-010 handling), NOT `hive`. `defaultCreateMember` must translate
+ * its own `{ hive }` argument into the tool's `{ pot }` field — every OTHER
+ * test in this file mocks `harness/create`'s handler wholesale (or fakes
+ * `createMember` entirely), so none of them ever asserted on the actual arg
+ * name reaching the real tool, which is exactly how this shipped broken: a
+ * fresh (non-linkExisting) `createHiveFromRepo` call silently never stamped
+ * `hive_slug` on the new member harness, reproduced live on a fresh-deb rig
+ * (content_bidir/planpart_bidir still probe=0 post the linkExisting-branch
+ * fix in `_create.ts`, which is a distinct branch this bug bypasses entirely).
+ */
+describe('defaultCreateMember translates `hive` to harness:create’s real `pot` field (WI-3646 follow-up)', () => {
+  it('passes pot (not hive) through to harness:create, so hive_slug actually gets stamped', async () => {
+    vi.resetModules();
+    let capturedArgs: Record<string, unknown> | undefined;
+    vi.doMock('../harness/create', () => ({
+      default: {
+        handler: async (args: Record<string, unknown>) => {
+          capturedArgs = args;
+          return { content: [{ text: JSON.stringify({ ok: true }) }] };
+        },
+      },
+    }));
+    const { defaultCreateMember } = await import('./_create_from_repo');
+    const r = await defaultCreateMember({
+      slug: 'hello-world',
+      path: '/clones/hello-world',
+      blueprint: { id: 'hello-world' },
+      hive: 'hello-world-hive',
+      workspaceId: 'ws-test',
+    });
+    expect(r).toEqual({ ok: true });
+    expect(capturedArgs).toBeDefined();
+    expect(capturedArgs?.pot).toBe('hello-world-hive');
+    expect(capturedArgs?.hive).toBeUndefined();
+    expect(capturedArgs?.slug).toBe('hello-world');
+  });
+});

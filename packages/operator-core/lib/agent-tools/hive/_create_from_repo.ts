@@ -239,7 +239,22 @@ export async function defaultCreateMember(args: {
   workspaceId: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const { default: createTool } = await import('../harness/create');
-  const { workspaceId, ...createArgs } = args;
+  const { workspaceId, hive, ...rest } = args;
+  // WI-3646 FOLLOW-UP (found live via a fresh-deb rig re-verify, 4834d):
+  // `harness:create`'s actual Zod field for create-time Hive membership is
+  // `pot` (see harness/create.ts's schema + its D-010 handling of `args.pot`),
+  // NOT `hive` — but this call site was built (and every test here mocks)
+  // passing `hive`. Zod silently drops the unrecognized `hive` key (no
+  // `.strict()`), so `args.pot` was always undefined here and NO member
+  // harness ever got born with `hive_slug` stamped via this path — the
+  // create-from-repo composition (used by e.g. a fresh `pot:create_from_repo`
+  // publish, not just `intoHive` adds) has been silently non-federating since
+  // this call site was written. This is DISTINCT from (and upstream of) the
+  // linkExisting-branch backfill fix in `_create.ts`: that fix only helps when
+  // a PRE-EXISTING sibling harness is being linked into a hive; a genuinely
+  // FRESH create-from-repo (no pre-existing harness at the clone path) never
+  // took that branch at all and relied on this (broken) call instead.
+  const createArgs = { ...rest, pot: hive };
   const res = (await createTool.handler(createArgs as never, { workspaceId } as never)) as {
     content: { text: string }[];
   };

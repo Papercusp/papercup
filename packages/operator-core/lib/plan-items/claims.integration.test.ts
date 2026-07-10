@@ -58,14 +58,18 @@ beforeAll(async () => {
     DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
     DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
   `).simple();
-  // Apply the REAL migration — we test the shipped schema, not a hand-rolled
+  // Apply the REAL migrations — we test the shipped schema, not a hand-rolled
   // copy. Strip psql meta-commands + the BEGIN/COMMIT wrapper (postgres-js
-  // rejects script-level transactions on a pooled connection).
-  const ddl = readFileSync(resolve(SQL_DIR, '141-plan-item-claims.sql'), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
-  await db.sql.unsafe(ddl).simple();
+  // rejects script-level transactions on a pooled connection). 143
+  // (agent_activity) rides along because the EI-8997 steal-guard/sweep SQL
+  // joins it for the holder-activity grace check.
+  for (const file of ['141-plan-item-claims.sql', '143-agent-activity.sql']) {
+    const ddl = readFileSync(resolve(SQL_DIR, file), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
+      .join('\n');
+    await db.sql.unsafe(ddl).simple();
+  }
 });
 
 afterAll(async () => {
@@ -74,7 +78,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.plan_item_claims`;
+  await db.sql`DELETE FROM harness_shared.agent_activity`;
 });
+
+/** Record a holder tool-activity event `ageSec` seconds in the past (EI-8997 grace). */
+async function activity(ownerId: string, ageSec = 0) {
+  await db.sql`
+    INSERT INTO harness_shared.agent_activity (owner_id, kind, created_at)
+    VALUES (${ownerId}, 'tool_call', clock_timestamp() - make_interval(secs => ${ageSec}))
+  `;
+}
 
 /** Force a claim's lease into the past (a lapsed claim). */
 async function lapse(itemId: string) {

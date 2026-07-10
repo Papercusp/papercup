@@ -22,6 +22,8 @@
  */
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { parseAsBoolean, useQueryState } from 'nuqs';
+import { ChevronDown, ChevronRight, Cpu } from 'lucide-react';
 import OverridableSetting from '../override/OverridableSetting';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
@@ -73,8 +75,10 @@ export default function ModelTiersOverride({
   const baselineQ = useSyncQuery<ModelTier>({ queryName: 'agentConfig.modelTiersBaseline', args: {}, staleTime: 60_000 });
   const baseline = baselineQ.data ?? [];
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [open, setOpen] = useQueryState('qModels', parseAsBoolean.withDefault(false));
 
   const overriding = (override?.length ?? 0) > 0;
+  const customCount = baseline.filter((tier) => isOverridden(baseline, override, tier.name)).length;
 
   const commit = (name: string) => {
     const spec = drafts[name] ?? effectiveSpec(baseline, override, name);
@@ -97,48 +101,62 @@ export default function ModelTiersOverride({
 
   return (
     <section className="pc-queen__section">
-      <div className="pc-queen__section-head">
+      <button
+        type="button"
+        className="pc-queen__collapse"
+        onClick={() => void setOpen(!open)}
+        aria-expanded={open}
+        aria-label={open ? 'Collapse models' : 'Expand models'}
+      >
+        {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+        <Cpu size={12} aria-hidden />
         <span className="pc-queen__section-title">Models</span>
-        <span className="pc-queen__count">{overriding ? 'session override' : 'workspace default'}</span>
-      </div>
-      {baseline.length === 0 ? (
-        <div className="pc-queen__placeholder">Loading tiers…</div>
-      ) : (
-        <ul className="pc-mt">
-          {baseline.map((t) => {
-            const over = isOverridden(baseline, override, t.name);
-            const draft = drafts[t.name] ?? effectiveSpec(baseline, override, t.name);
-            return (
-              <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}`}>
-                <OverridableSetting
-                  label={t.name}
-                  isOverridden={over}
-                  onReset={() => resetTier(t.name)}
-                  busy={busy}
-                  badgeStyle="chip"
-                >
-                  <input
-                    className="pc-mt__spec"
-                    value={draft}
-                    disabled={busy}
-                    aria-label={`${t.name} model spec`}
-                    placeholder="model[:effort]"
-                    onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
-                    onBlur={() => commit(t.name)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                    }}
-                  />
-                </OverridableSetting>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {overriding && (
-        <button type="button" className="pc-queen__chip" onClick={() => onWrite(null)} disabled={busy}>
-          reset all to workspace default
-        </button>
+        <span className={`pc-queen__count${customCount > 0 ? ' pc-queen__count--on' : ''}`}>
+          {customCount > 0 ? `${customCount} custom` : 'Workspace'}
+        </span>
+      </button>
+      {open && (
+        <>
+          {baseline.length === 0 ? (
+            <div className="pc-queen__placeholder">Loading tiers…</div>
+          ) : (
+            <ul className="pc-mt">
+              {baseline.map((t) => {
+                const over = isOverridden(baseline, override, t.name);
+                const draft = drafts[t.name] ?? effectiveSpec(baseline, override, t.name);
+                return (
+                  <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}`}>
+                    <OverridableSetting
+                      label={t.name}
+                      isOverridden={over}
+                      onReset={() => resetTier(t.name)}
+                      busy={busy}
+                      badgeStyle="chip"
+                    >
+                      <input
+                        className="pc-mt__spec"
+                        value={draft}
+                        disabled={busy}
+                        aria-label={`${t.name} model spec`}
+                        placeholder="model[:effort]"
+                        onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
+                        onBlur={() => commit(t.name)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                        }}
+                      />
+                    </OverridableSetting>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {overriding && (
+            <button type="button" className="pc-queen__chip" onClick={() => onWrite(null)} disabled={busy}>
+              Use workspace models
+            </button>
+          )}
+        </>
       )}
     </section>
   );
