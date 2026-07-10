@@ -52,13 +52,14 @@ vi.mock('../../events/await/store', () => ({
     timeoutBehavior: 'wake',
   })),
   findAnnouncementsForKey: vi.fn(async () => []),
+  findNearMissKeys: vi.fn(async () => []),
 }));
 
 import emit from './emit';
 import awaitTool from './await';
-import { buildAnnouncedKey, defaultAnnounceScope, announcementVisibleTo } from '../../events/await/announce-key';
+import { buildAnnouncedKey, defaultAnnounceScope, announcementVisibleTo, normalizeEventKey } from '../../events/await/announce-key';
 import { emitAwaitedEvent } from '../../events/await/engine';
-import { registerAnnouncement, registerAwait, findAnnouncementsForKey } from '../../events/await/store';
+import { registerAnnouncement, registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
 
 const emitHandler = (emit as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler;
 const awaitHandler = (awaitTool as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler;
@@ -147,5 +148,81 @@ describe('events:await — the announced-gate latch', () => {
     const out = parse(await awaitHandler({ event: 'work-item:done:*' }, {}));
     expect(findAnnouncementsForKey).not.toHaveBeenCalled();
     expect(out.pattern).toBe(true);
+  });
+});
+
+describe('normalizeEventKey (pure) — event-key-nearmiss-guard P-003', () => {
+  it('equates separator/case drift', () => {
+    const n = normalizeEventKey;
+    expect(n('phase-3-ready')).toBe(n('phase3-ready'));
+    expect(n('Phase3_Ready')).toBe(n('phase3-ready'));
+    expect(n('phase.3.ready')).toBe(n('phase3-ready'));
+    expect(n('fleet:p2p-git:phase3-open')).toBe(n('fleet:p2pgit:phase-3-open'));
+  });
+  it('does not equate genuinely different keys', () => {
+    expect(normalizeEventKey('phase4-ready')).not.toBe(normalizeEventKey('phase3-ready'));
+  });
+});
+
+describe('events:emit — near-miss advisory (P-004)', () => {
+  const emitResult = (waiters: number) => ({ key: 'k', woken: 0, notified: [], waiters, msgId: 'm1' });
+
+  it('surfaces near_misses when the emit reached no one', async () => {
+    (emitAwaitedEvent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(emitResult(0));
+    (findNearMissKeys as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { eventKey: 'fleet:p2p-git:phase3-ready', kind: 'await', holders: 1 },
+    ]);
+    const out = parse(await emitHandler({ event: 'phase-3-ready' }, {}));
+    expect(out.near_misses).toEqual([{ key: 'fleet:p2p-git:phase3-ready', kind: 'await', holders: 1 }]);
+    expect(out.advice).toMatch(/near-identical/);
+    expect(findNearMissKeys).toHaveBeenCalledWith('phase-3-ready');
+  });
+  it('does NOT scan when waiters > 0', async () => {
+    (emitAwaitedEvent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(emitResult(2));
+    const out = parse(await emitHandler({ event: 'phase-3-ready' }, {}));
+    expect(out.near_misses).toBeUndefined();
+    expect(findNearMissKeys).not.toHaveBeenCalled();
+  });
+  it('does NOT scan when a `to` audience was named', async () => {
+    (emitAwaitedEvent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(emitResult(0));
+    const out = parse(await emitHandler({ event: 'phase-3-ready', to: ['su-x'] }, {}));
+    expect(out.near_misses).toBeUndefined();
+    expect(findNearMissKeys).not.toHaveBeenCalled();
+  });
+  it('does NOT scan on the announce path', async () => {
+    await emitHandler({ event: 'g', announce: true }, {});
+    expect(findNearMissKeys).not.toHaveBeenCalled();
+  });
+  it('fail-soft: a scan error changes nothing', async () => {
+    (emitAwaitedEvent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(emitResult(0));
+    (findNearMissKeys as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('pg down'));
+    const out = parse(await emitHandler({ event: 'phase-3-ready' }, {}));
+    expect(out.ok).toBe(true);
+    expect(out.near_misses).toBeUndefined();
+  });
+});
+
+describe('events:await — near-miss advisory (P-005)', () => {
+  it('annotates the registration when only a near-identical key is active', async () => {
+    (findNearMissKeys as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { eventKey: 'fleet:p2p-git:phase3-open', kind: 'announce', holders: 1 },
+    ]);
+    const out = parse(await awaitHandler({ event: 'phase3open' }, {}));
+    expect(out.await_id).toBe(9); // registration still proceeds — advisory only
+    expect(out.near_miss).toEqual([{ key: 'fleet:p2p-git:phase3-open', kind: 'announce', holders: 1 }]);
+    expect(out.near_miss_advice).toMatch(/events:cancel/);
+    expect(findNearMissKeys).toHaveBeenCalledWith('phase3open', { excludeOwner: 'su-leader' });
+  });
+  it('does NOT scan when an exact announcement matches', async () => {
+    (findAnnouncementsForKey as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { firedAt: null, firedReason: null, note: 'n', subscriberId: 'su-leader' },
+    ]);
+    const out = parse(await awaitHandler({ event: 'fleet:p2p-git:phase3-open' }, {}));
+    expect(out.announced_gate).toBeTruthy();
+    expect(findNearMissKeys).not.toHaveBeenCalled();
+  });
+  it('skips the scan for pattern awaits', async () => {
+    await awaitHandler({ event: 'work-item:done:*' }, {});
+    expect(findNearMissKeys).not.toHaveBeenCalled();
   });
 });

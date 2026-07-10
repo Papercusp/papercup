@@ -136,59 +136,93 @@ export async function wakeRecipients(
   // it must hold regardless of a UI flag — a flipped-off flag silently unmaking
   // Pause would fire wakes into a frozen hive. Behavior-neutral otherwise:
   // everything resolves `auto` by default, and auto fires immediately as before.
-  const keys: string[] = [];
-  let woken = 0;
-  let staged = 0;
-  const stagedTargets: string[] = [];
+  //
+  // EI-9322 (coord:send repeated 60s-timeout watchdog fires): each target's
+  // {resolveWakeMode → stagePendingWake|emitAwaitedEvent} chain used to run in
+  // a sequential `for` loop — up to MAX_WAKE_FANOUT (64) recipients × 2 DB
+  // round-trips each. Under this fleet's write contention, per-call latency of
+  // even a couple hundred ms compounds into minutes (confirmed via
+  // tool_invocations: coord:send durations up to 360s against a nominal 60s
+  // timeout, ~4% of calls over a 6h window). Each target's work is fully
+  // independent (no shared mutable state read-then-written across
+  // iterations), so fan it out with Promise.all instead of awaiting one at a
+  // time — same total DB work, but issued concurrently instead of serially.
   // A self-loop wake bypasses the manual gate entirely (staging it deadlocks — see
   // isLoopWakeSource). The source is per-CALL, so compute once. Everything else still honors
   // the per-agent manual pause/edit gate exactly as before (default-preserving).
   const bypassManualGate = isLoopWakeSource(opts.source);
-  for (const ownerId of targets) {
-    // Manual mode → STAGE instead of fire; the agent is not re-invoked (EXCEPT a self-loop wake).
-    if (!bypassManualGate) {
-      let manual = false;
-      try {
-        manual = (await resolveWakeMode(ownerId)) === 'manual';
-      } catch {
-        manual = false; // mode store unreadable → default auto (fire)
-      }
-      if (manual) {
+  type TargetOutcome =
+    | { kind: 'staged'; ownerId: string }
+    | { kind: 'fired'; key: string; woken: number }
+    | { kind: 'fire-failed'; key: string }
+    | { kind: 'skipped' };
+  const outcomes = await Promise.all(
+    targets.map(async (ownerId): Promise<TargetOutcome> => {
+      // Manual mode → STAGE instead of fire; the agent is not re-invoked (EXCEPT a self-loop wake).
+      if (!bypassManualGate) {
+        let manual = false;
         try {
-          await stagePendingWake({
-            ownerId,
-            summary: opts.summary,
-            payload: opts.payload,
-            source: opts.source,
-            workspaceId: opts.workspaceId,
-          });
-          staged += 1;
-          stagedTargets.push(ownerId);
-        } catch (e) {
-          console.warn(
-            `[inbox-wake] stage for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
-          );
+          manual = (await resolveWakeMode(ownerId)) === 'manual';
+        } catch {
+          manual = false; // mode store unreadable → default auto (fire)
         }
-        continue;
+        if (manual) {
+          try {
+            await stagePendingWake({
+              ownerId,
+              summary: opts.summary,
+              payload: opts.payload,
+              source: opts.source,
+              workspaceId: opts.workspaceId,
+            });
+            return { kind: 'staged', ownerId };
+          } catch (e) {
+            console.warn(
+              `[inbox-wake] stage for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
+            );
+            return { kind: 'skipped' };
+          }
+        }
       }
-    }
-    const key = inboxWakeKey(ownerId);
-    keys.push(key);
-    try {
-      const res = await emitAwaitedEvent({
-        key,
-        summary: opts.summary,
-        payload: opts.payload,
-        source: opts.source,
-        workspaceId: opts.workspaceId,
-      });
-      woken += res.woken;
-    } catch (e) {
-      // Best-effort: the message already persisted to the inbox; a wake-fan
-      // hiccup degrades to "seen on the recipient's next natural turn".
-      console.warn(
-        `[inbox-wake] wake fire for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
-      );
+      const key = inboxWakeKey(ownerId);
+      try {
+        const res = await emitAwaitedEvent({
+          key,
+          summary: opts.summary,
+          payload: opts.payload,
+          source: opts.source,
+          workspaceId: opts.workspaceId,
+        });
+        return { kind: 'fired', key, woken: res.woken };
+      } catch (e) {
+        // Best-effort: the message already persisted to the inbox; a wake-fan
+        // hiccup degrades to "seen on the recipient's next natural turn".
+        console.warn(
+          `[inbox-wake] wake fire for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
+        );
+        return { kind: 'fire-failed', key };
+      }
+    }),
+  );
+  const keys: string[] = [];
+  let woken = 0;
+  let staged = 0;
+  const stagedTargets: string[] = [];
+  for (const o of outcomes) {
+    switch (o.kind) {
+      case 'staged':
+        staged += 1;
+        stagedTargets.push(o.ownerId);
+        break;
+      case 'fired':
+        keys.push(o.key);
+        woken += o.woken;
+        break;
+      case 'fire-failed':
+        keys.push(o.key);
+        break;
+      case 'skipped':
+        break;
     }
   }
   return { targets, keys, woken, staged, stagedTargets, fanoutCapped };
@@ -325,19 +359,28 @@ export async function reportIdleRecipients(
     return EMPTY_IDLE_REPORT;
   }
 
-  const idle: string[] = [];
-  const live: string[] = [];
-  const unknown: string[] = [];
-  for (const ownerId of concrete) {
-    const inRoster = rosterIds.has(ownerId);
-    let activeWatchers = 0;
-    if (inRoster) {
+  // EI-9322: probe every recipient's watcher count CONCURRENTLY rather than one
+  // at a time in a sequential loop — this path can run against the same
+  // env.to set the (already-parallelized, see wakeRecipients above) wake fan
+  // does, and a sequential per-recipient DB round-trip was part of the same
+  // compounding-latency shape behind the coord:send 60s-timeout watchdog
+  // fires. Each recipient's probe is independent; a single hiccup must still
+  // degrade the WHOLE report (invariant c) — preserved below by scanning the
+  // settled outcomes for any 'error' disposition before deciding.
+  type Disposition = RecipientLiveness | 'error';
+  const probed = await Promise.all(
+    concrete.map(async (ownerId): Promise<{ ownerId: string; disposition: Disposition }> => {
+      const inRoster = rosterIds.has(ownerId);
+      if (!inRoster) return { ownerId, disposition: 'unknown' };
       // NON-FIRING probe (invariant a): listActiveAwaitsForKey READS the active
       // watchers without firing/waking any of them — the deliberate report-only
       // peek the store documents for "is anyone waiting at all?".
       try {
         const watchers = await listActiveAwaitsForKey(inboxWakeKey(ownerId));
-        activeWatchers = watchers.length;
+        return {
+          ownerId,
+          disposition: classifyRecipientLiveness({ ownerId, inRoster, activeWatchers: watchers.length }),
+        };
       } catch (e) {
         // A per-recipient await-store hiccup degrades the WHOLE report (invariant
         // c): a missing watcher count would otherwise mis-classify this concrete
@@ -345,18 +388,25 @@ export async function reportIdleRecipients(
         console.warn(
           `[inbox-wake] idle-probe await read for ${ownerId} failed, reporting no idle recipients: ${e instanceof Error ? e.message : e}`,
         );
-        return EMPTY_IDLE_REPORT;
+        return { ownerId, disposition: 'error' };
       }
-    }
-    switch (classifyRecipientLiveness({ ownerId, inRoster, activeWatchers })) {
+    }),
+  );
+  if (probed.some((p) => p.disposition === 'error')) return EMPTY_IDLE_REPORT;
+
+  const idle: string[] = [];
+  const live: string[] = [];
+  const unknown: string[] = [];
+  for (const p of probed) {
+    switch (p.disposition) {
       case 'idle':
-        idle.push(ownerId);
+        idle.push(p.ownerId);
         break;
       case 'live':
-        live.push(ownerId);
+        live.push(p.ownerId);
         break;
       case 'unknown':
-        unknown.push(ownerId);
+        unknown.push(p.ownerId);
         break;
     }
   }

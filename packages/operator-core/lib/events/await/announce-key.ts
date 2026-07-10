@@ -46,6 +46,17 @@ export function defaultAnnounceScope(input: {
   return { kind: 'global', ref: null };
 }
 
+/**
+ * Normalize an event key for NEAR-MISS comparison (event-key-nearmiss-guard
+ * P-003): lowercase + strip the separator characters agents drift on
+ * (`-`, `_`, `:`, `.`), so `phase3-ready` ≡ `phase-3-ready` ≡ `Phase3_Ready`.
+ * Deliberately normalized-EXACT, not edit-distance (D-003): catches the real
+ * drift class with zero false-positive noise.
+ */
+export function normalizeEventKey(key: string): string {
+  return key.trim().toLowerCase().replace(/[-_:.]/g, '');
+}
+
 /** Does an announcement's discovery scope match a reader's contexts? Global
  *  announcements are visible to everyone. */
 export function announcementVisibleTo(

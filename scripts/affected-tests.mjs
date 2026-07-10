@@ -473,6 +473,30 @@ for (const t of tasks) {
   }
 }
 
+// ── P-009: Wire cargo tests into the same cadence as vitest/playwright ────────
+// Run the Rust/cargo native suite reporter after all vitest tasks complete.
+// The reporter records test results in harness_shared.test_runs (framework='cargo')
+// so the Tests tab covers the desktop shell. Fail-soft per D-007: never affects
+// the overall exit code, only the ledger write.
+console.log(`\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`);
+try {
+  const cargoReporter = resolve(ROOT, 'scripts', 'report-cargo-tests.mjs');
+  const cargoManifest = resolve(ROOT, 'papercusp-desktop', 'src-tauri', 'Cargo.toml');
+  const cargoRun = spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
+  if (cargoRun.status !== 0) {
+    console.error(`>>> cargo test suite exited with code ${cargoRun.status}`);
+    if (!quarantined.has('papercusp-desktop')) {
+      failed++;
+    }
+  }
+} catch (err) {
+  console.error(`>>> cargo test runner error: ${err.message}`);
+  failed++;
+}
+
 if (quarantinedFailed) {
   console.warn(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
 }

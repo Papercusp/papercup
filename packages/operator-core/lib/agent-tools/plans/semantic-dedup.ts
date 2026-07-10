@@ -27,8 +27,17 @@ import { resolvePlanScope, type PlanSourceOpts } from './source';
 /** Width of the migration-553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
 const EMBED_DIM = 384;
 /** Below this cosine similarity a token-flagged candidate is considered a
- *  DIFFERENT effort and cleared from the similar_exists refusal. Calibrated
- *  against the live corpus (P-010 live verify); override via env. */
+ *  DIFFERENT effort and cleared from the similar_exists refusal.
+ *
+ *  Calibrated live (P-010, 2026-07-10, doc↔doc gemma over the 765-plan
+ *  corpus): the reproduced false positive that forced this very plan's
+ *  force:true — shared-hive-p2p-release-readiness, token-flagged on the
+ *  generic words shared/local/only — measured 0.488, indistinguishable from
+ *  unrelated controls (0.46–0.49); the genuinely-related predecessor plan
+ *  (embeddinggemma-300m-default-embedder) measured 0.721 and SHOULD stay
+ *  flagged (it's the "continue that instead?" signal). 0.6 sits in the gap:
+ *  clears the false-positive class, keeps real topical overlap. Override via
+ *  PAPERCUSP_PLAN_DUPE_CONFIRM. */
 const DEFAULT_CONFIRM = 0.6;
 
 export function planDupeConfirmThreshold(): number {
@@ -109,10 +118,23 @@ async function queryTopPlansReal(
   }));
 }
 
-const realDeps: PlanSemanticDeps = {
-  // QUERY-side resolver (gemma query prompt) for search; the stored side is
-  // the backfill sweep's document prompt.
+// SEARCH pairing: a query ranks against stored documents, so the QUERY-side
+// resolver (gemma query prompt) — its vectors are trained to match the
+// backfill sweep's document-prompt vectors.
+const searchDeps: PlanSemanticDeps = {
   resolveEmbedder: async () => (await import('../search/embedder')).buildQueryEmbedderResolved(),
+  querySimilarities: querySimilaritiesReal,
+  queryTopPlans: queryTopPlansReal,
+};
+
+// CONFIRM pairing: the proposed plan will itself be STORED, so doc↔doc cosine
+// (the backfill sweep's document-side resolver) — same choice P-008's
+// work-item dupe guard made, and the pairing the threshold is calibrated in.
+const confirmDeps: PlanSemanticDeps = {
+  resolveEmbedder: async () => {
+    const r = await (await import('../../search/embed-backfill')).resolveBackfillEmbedder();
+    return r.mode === 'disabled' || !('embed' in r) ? null : r;
+  },
   querySimilarities: querySimilaritiesReal,
   queryTopPlans: queryTopPlansReal,
 };
@@ -129,7 +151,7 @@ export async function semanticPlanHits(
 ): Promise<PlanSemanticHit[] | null> {
   if (process.env.VITEST && !deps) return null;
   try {
-    const d = deps ?? realDeps;
+    const d = deps ?? searchDeps;
     const resolved = await d.resolveEmbedder();
     if (!resolved || resolved.dims !== EMBED_DIM) return null;
     const vec = await resolved.embed(query);
@@ -165,7 +187,7 @@ export async function confirmSimilarPlans<T extends { slug: string }>(
   if (candidates.length === 0) return { verdict: false, kept: [], dropped: [] };
   if (process.env.VITEST && !deps) return noVerdict;
   try {
-    const d = deps ?? realDeps;
+    const d = deps ?? confirmDeps;
     const resolved = await d.resolveEmbedder();
     if (!resolved || resolved.dims !== EMBED_DIM) return noVerdict;
     const vec = await resolved.embed(`${proposed.title}\n${(proposed.body ?? '').slice(0, 2000)}`);

@@ -18,6 +18,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { normalizeEventKey } from './announce-key';
 import { keyMatchesPattern, payloadMatchesFilter } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import type {
@@ -859,6 +860,58 @@ export async function findAnnouncementsForKey(eventKey: string): Promise<AwaitRo
      LIMIT 5
   `;
   return rows.map(mapAwait);
+}
+
+/** A key that nearly matches one being emitted/awaited — the advisory
+ *  near-miss read (event-key-nearmiss-guard-2026-07-10 P-003). */
+export interface NearMissKey {
+  eventKey: string;
+  kind: 'await' | 'announce';
+  /** Distinct subscribers holding active rows on that key. */
+  holders: number;
+}
+
+/**
+ * Advisory near-miss scan: ACTIVE rows (unfired, uncancelled, non-pattern)
+ * whose NORMALIZED key equals the target's but whose raw key differs — the
+ * `phase3-ready` vs `phase-3-ready` drift that never rendezvouses. Bounded
+ * candidate read + in-process normalize compare; callers treat any failure
+ * as "no near misses" (D-001: advisory, never blocking).
+ */
+export async function findNearMissKeys(
+  eventKey: string,
+  opts?: { excludeOwner?: string },
+): Promise<NearMissKey[]> {
+  const target = normalizeEventKey(eventKey);
+  if (!target) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT event_key, policy, subscriber_id FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND cancelled_at IS NULL AND fired_at IS NULL
+       AND event_key <> ${eventKey}
+       AND position('*' in event_key) = 0
+     ORDER BY created_at DESC
+     LIMIT 200
+  `;
+  const byKey = new Map<string, { kind: 'await' | 'announce'; holders: Set<string> }>();
+  for (const r of rows) {
+    const key = String(r.event_key);
+    const sub = String(r.subscriber_id);
+    if (opts?.excludeOwner && sub === opts.excludeOwner) continue;
+    if (normalizeEventKey(key) !== target) continue;
+    const kind: 'await' | 'announce' = String(r.policy) === 'announce' ? 'announce' : 'await';
+    const cur = byKey.get(key);
+    if (cur) {
+      cur.holders.add(sub);
+      if (kind === 'announce') cur.kind = 'announce';
+    } else {
+      byKey.set(key, { kind, holders: new Set([sub]) });
+    }
+  }
+  return [...byKey.entries()]
+    .slice(0, 5)
+    .map(([key, v]) => ({ eventKey: key, kind: v.kind, holders: v.holders.size }));
 }
 
 /** Emit-time latch: stamp fired_at on the key's unfired announcement rows (kept,

@@ -48,7 +48,7 @@ const CONTEXT_LOUD_PCT = 80;
 const SLASH_TOOL_PREFIX = '/mcp__papercusp-su__tool:';
 
 export interface StatusDisplayGlance {
-  wake?: { default?: string | null; stagedTotal?: number | null } | null;
+  wake?: { default?: string | null; stagedTotal?: number | null; stagedOwners?: number | null } | null;
   bees?: { running?: number | null } | null;
   governor?: { anyPaused?: boolean | null; paused?: Array<{ key?: string | null }> | null } | null;
   activity?: Array<{ owner_id?: string | null; summary?: string | null }> | null;
@@ -57,7 +57,10 @@ export interface StatusDisplayGlance {
     objective?: string | null;
     loop?: { active?: boolean; intervalSec?: number | null; reachable?: boolean | null } | null;
     fleets?: Array<{ slug?: string | null; label?: string | null; role?: string | null; square?: string | null }> | null;
-    context?: { pct?: number | null } | null;
+    /** `pct` is what the renderer consumes; `tokens`/`limit` are carried for
+     *  callers building the coord-inject `context: N/LIMIT (X%)` line (see
+     *  inbox-context-usage.ts / fleet-monitor-delta.ts) and test fixtures. */
+    context?: { pct?: number | null; tokens?: number | null; limit?: number | null } | null;
     modes?: string[] | null;
   } | null;
 }

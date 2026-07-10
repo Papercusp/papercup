@@ -17,7 +17,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { sendMessage } from '../coordination/messages';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
-import { registerAnnouncement, countActiveAwaitsByPrefixes } from '../../events/await/store';
+import { registerAnnouncement, countActiveAwaitsByPrefixes, findNearMissKeys, type NearMissKey } from '../../events/await/store';
 import { buildAnnouncedKey, defaultAnnounceScope, type AnnounceScopeKind } from '../../events/await/announce-key';
 import { getPresence } from '../coordination/presence';
 import { softText, clampText, LIMITS } from '../limits';
@@ -30,7 +30,7 @@ export default defineTool({
     when: 'Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT — re-invoke its turn — the key is `coord:inbox-wake:<ownerId>`, but prefer the higher-level verbs that hide the key: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:\'required\'} to message+wake.)',
     notWhen:
       'General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. Waking a specific agent — use coord:wake / coord:dispatch (they fire the inbox-wake key for you + report woken/dead). If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).',
-    chaining: 'Peer: events:await { event: K } → you: do the work → events:emit { event: K, summary } → peer wakes.',
+    chaining: 'Machine-derived/catalogued key: peer events:await { event: K } → you do the work → events:emit { event: K, summary } → peer wakes. HAND-MINTED pair key: DECLARE-FIRST — you: events:emit { event: K, announce: true } → peer awaits the RETURNED key (copied, never re-typed: hand-typed drift never rendezvouses, and the declaration LATCHES for late registrants) → you: events:emit the returned key on completion.',
     seeAlso: [
       'events:await (a peer waits with this before you emit)',
       'events:status (see pending awaits for the event)',
@@ -149,6 +149,16 @@ export default defineTool({
       source: identity.ownerId,
       workspaceId: identity.workspaceId ?? undefined,
     });
+    // ── event-key-nearmiss-guard P-004: an emit that reached NO ONE (waiters:0,
+    // no `to`) is the key-mismatch failure moment — advisory scan for a
+    // near-identical active key. Fail-soft; zero cost on the happy path. ──
+    let nearMisses: NearMissKey[] | undefined;
+    if (result.waiters === 0 && (!args.to || args.to.length === 0)) {
+      try {
+        const found = await findNearMissKeys(args.event);
+        if (found.length > 0) nearMisses = found;
+      } catch { /* advisory only — never fail the emit */ }
+    }
     // ── P-009 (cross-machine-coord-parity-and-trust-2026-07-01): federate the
     // event. The fed-event rides a NO-RECIPIENT hive-scoped coord row (persists
     // + federates via the mig-150 gate; empty `to` = zero inbox noise, audience
@@ -218,6 +228,12 @@ export default defineTool({
             msg_id: result.msgId,
             ...(federated !== undefined ? { federated } : {}),
             ...(federationError ? { federation_error: federationError } : {}),
+            ...(nearMisses
+              ? {
+                  near_misses: nearMisses.map((m) => ({ key: m.eventKey, kind: m.kind, holders: m.holders })),
+                  advice: `This emit reached no one (waiters:0) — but a near-identical key is active: "${nearMisses[0].eventKey}" (${nearMisses[0].kind === 'announce' ? 'a DECLARED gate' : `awaited by ${nearMisses[0].holders}`}). If you meant that key, re-emit it EXACTLY — normalized-near keys never rendezvous.`,
+                }
+              : {}),
           }),
         },
       ],
