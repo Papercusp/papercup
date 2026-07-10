@@ -28,13 +28,14 @@ export default defineTool({
   name: 'work_items:release',
   profile: 'engineer',
   description:
-    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim: a non-holder caller gets `{ ok:false, error:"not_holder", holder }` per item — `force:true` (leader/reaper override only, NOT routine members) releases it anyway. A voluntary release records a short re-claim cooldown. `claimHold:true` (issue-family only) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) — it stays directly claimable by id; `claimHold:false` clears the hold.',
+    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim: a non-holder caller gets `{ ok:false, error:"not_holder", holder }` per item — `force:true` (leader/reaper override only, NOT routine members) releases it anyway. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and stamps you as holder — it stays directly claimable by id; `claimHold:false` clears the hold. To hold WITHOUT releasing your claim, use work_items:hold_open.',
   guidance: {
     when: 'You claimed work-item(s) but are no longer working them. Release several at once via ids:[…]. Add claimHold:true when the item must NOT be opportunistically re-claimed by the next self-selecting agent (a recurring do-not-pick-up ticket) — plain release lets it re-surface immediately.',
     notWhen: 'A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force. `force:true` exists for the legitimate leader/reaper override path (reclaiming a dead/stuck agent\'s item), not for routine members clearing a peer\'s in-flight claim.',
     chaining: 'work_items:claim → … → work_items:release.',
     seeAlso: [
-      'work_items:set_state { state:"blocked" } (feature-family park with a reason; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion for issue-family)',
+      'work_items:set_state { state:"blocked" } (feature-family park with a reason; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion)',
+      'work_items:hold_open (hold the item open — stamps held_open_by + blocks non-holder terminal transitions — WITHOUT releasing your claim)',
       'work_items:claim (re-take it later, or claim a held item directly by id — a hold only excludes self-select)',
     ],
   },
@@ -51,7 +52,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'default claim-hold for the inline id / every id in `ids` (issue-family only): true excludes the item from claim_next/scheduler:get_next self-select until cleared; false clears a prior hold.',
+          'default claim-hold for the inline id / every id in `ids` (both families): true excludes the item from claim_next/scheduler:get_next self-select until cleared; false clears a prior hold.',
         ),
       force: z
         .boolean()
@@ -101,7 +102,7 @@ export default defineTool({
         }
         const claimHold = it.claimHold ?? args.claimHold;
         if (claimHold === undefined) return { ok: true as const, id: it.id, workItem };
-        const held = await setWorkItemClaimHold(it.id, claimHold, { harness });
+        const held = await setWorkItemClaimHold(it.id, claimHold, { harness, by: ident.ownerId });
         return {
           ok: true as const,
           id: it.id,

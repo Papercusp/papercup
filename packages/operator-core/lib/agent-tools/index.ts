@@ -744,6 +744,10 @@ import './work_items/release';
 // (modes-and-intake-ux-2026-07-05 P-004 — the named form of "parked with a
 // complete resume checkpoint").
 import './work_items/park';
+// Hold a work-item OPEN without releasing the claim: held_open_by stamp gates
+// non-holder terminal transitions + excludes self-select
+// (fleet-deltas-leader-primitives-2026-07-10 P-006; EI-8993/EI-8973).
+import './work_items/hold_open';
 // (work_items:batch RETIRED — bulk-endpoint-standardization-2026-06-21 P-002: every
 // verb it multiplexed — claim/release/set_state/set_priority/tag/subscribe — is now
 // itself dual-arity (items[]/ids[] via _bulk), so the op-multiplexer is redundant.)
