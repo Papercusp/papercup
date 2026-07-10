@@ -8,13 +8,18 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { deriveProbeVerdict, formatProbeVerdict, PROBE_HOPS } from '../../sync/pot-git/federation-probe';
+import {
+  deriveProbeVerdict,
+  formatProbeVerdict,
+  hopTrackingCaveat,
+  PROBE_HOPS,
+} from '../../sync/pot-git/federation-probe';
 import { getProbe, markProbeAcked } from '../../sync/pot-git/federation-probe-store';
 
 export default defineTool({
   name: 'probe:get',
   description:
-    'Read a probe:emit-created federation probe: its per-hop receipts (captured/drained/replicated/merged/member_guard/projected) and a derived verdict that NAMES the exact hop it is stalled at, rather than just "still red". Auto-marks the probe acked once every expected hop has landed.',
+    'Read a probe:emit-created federation probe: its per-hop receipts (captured/drained/replicated/merged/member_guard/projected) and a derived verdict that NAMES the exact hop it is stalled at, rather than just "still red". Auto-marks the probe acked once every expected hop has landed. ⚠ WI-3962: no pipeline stage calls probe:record-hop yet, so a default (unnarrowed) verdict WILL read "stalled" past capture for every probe, forever — that reflects a missing observation, not a broken pipeline (response carries an instrumentationCaveat saying so). Pass expectedHops:["captured"] to get the real, trustworthy signal today; check substrate_outbox/merge-cursor state for actual federation health.',
   guidance: {
     when: 'Checking whether a probe:emit\'d probe has round-tripped the federation pipeline, or diagnosing exactly which hop a stalled one is stuck at.',
     notWhen: 'You never called probe:emit for this key — there is nothing to read.',
@@ -61,6 +66,11 @@ export default defineTool({
         // correct regardless of whether the row's status column caught up.
       }
     }
+    // WI-3962: no pipeline stage anywhere calls probe:record-hop yet, so a
+    // 'stalled' verdict past 'captured' is a missing observation, not proof
+    // of a broken pipeline — surface that distinction explicitly rather than
+    // let a caller (agent or gate) misread it as a data-flow defect.
+    const caveat = hopTrackingCaveat(verdict, { expectedHopsWasNarrowed: args.expectedHops !== undefined });
     return {
       content: [
         {
@@ -81,6 +91,7 @@ export default defineTool({
             stalledAtHop: verdict.stalledAtHop,
             detail: verdict.detail,
             summary: formatProbeVerdict(receipt, verdict),
+            ...(caveat ? { instrumentationCaveat: caveat } : {}),
           }),
         },
       ],

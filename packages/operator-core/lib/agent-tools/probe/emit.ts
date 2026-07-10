@@ -21,7 +21,7 @@ import { insertProbe, insertRefusedProbe } from '../../sync/pot-git/federation-p
 export default defineTool({
   name: 'probe:emit',
   description:
-    'Emit a self-verifying federation probe: stamps required federation keys (workspace_id, harness_slug) and REFUSES LOUDLY (never silently) when the target harness cannot federate — fixes 2026-07-10 cause #10, where every prior ad-hoc "v2t" marker probe was unstamped and green was unreachable for ~6h with nothing saying so. Tracked durably with a `captured` hop stamped; later hops (drain/replicate/merge/member_guard/project) land via probe:record-hop. Read with probe:get — its verdict NAMES the exact stalled hop.',
+    'Emit a self-verifying federation probe: stamps required federation keys (workspace_id, harness_slug) and REFUSES LOUDLY (never silently) when the target harness cannot federate — fixes 2026-07-10 cause #10, where every prior ad-hoc "v2t" marker probe was unstamped and green was unreachable for ~6h with nothing saying so. Tracked durably with a `captured` hop stamped; later hops (drain/replicate/merge/member_guard/project) are DESIGNED to land via probe:record-hop but no pipeline stage calls it yet (WI-3962) — read with probe:get { expectedHops:["captured"] } for a trustworthy verdict today.',
   guidance: {
     when:
       'Proving a federation/replication claim is REAL, not just "looks green" — verifying a fresh 2-machine rig federates content, diagnosing a "rosters but no content" stall, or replacing an ad-hoc marker write (the v2t convention) with something that cannot be emitted unstamped.',

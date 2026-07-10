@@ -107,6 +107,14 @@ export interface RoutedIdeaProvenance {
   gradedBy?: 'owner' | 'Queen';
   /** ISO timestamp of the grade (ledger `graded_at`). */
   gradedAt?: string;
+  /**
+   * The ORIGINATING AGENT's ownerId (ledger `created_by`, migration 558 —
+   * su-ideate-learning-substrate P-001). Present on origin='su-ideate' rows stamped
+   * by the su capture bridge; absent on Scout-origin rows and pre-558 history (P-016
+   * backfills best-effort). Join key for the grade→revise wake and scope:'mine'
+   * feedback reads; the weight math ignores it.
+   */
+  createdBy?: string;
 }
 
 /** Per-lens outcome tally + the weight P-004 reads back. */

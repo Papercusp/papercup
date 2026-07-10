@@ -12,7 +12,10 @@
  *  - readRoutedIdeas({ origin:'su-ideate' }) reads them back (the SU-priming path);
  *    { origin:'all' } reads both;
  *  - a su-ideate row is gradeable (the blender:grade-idea seam is origin-blind) and reads
- *    back with the grade — so an SU-originated idea earns a grade slot + priming.
+ *    back with the grade — so an SU-originated idea earns a grade slot + priming;
+ *  - created_by (migration 558, su-ideate-learning-substrate P-001): persisted for the
+ *    su-ideate writer, NULL for scout writers, mapped to RoutedIdeaProvenance.createdBy,
+ *    and NEVER erased by a provenance-less upsert (a re-route keeps the originator).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -46,7 +49,7 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
     await recordRoutedIdea({
       origin: 'su-ideate', ideaId: 'EI-su-1', lens: 'analogical', rail: 'improvement',
       routedRef: 'wi:EI-su-1', harnessSlug: HARNESS, title: 'an su superuser feature idea',
-      workspaceId: WS, routedAt: T + 1000,
+      workspaceId: WS, routedAt: T + 1000, createdBy: 'su-test-owner-1',
     });
   });
 
@@ -90,5 +93,31 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
     const [row] = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'su-ideate' });
     expect(row.humanGrade).toBe(4);
     expect(row.gradedBy).toBe('owner');
+  });
+
+  it('persists created_by for the su-ideate writer + leaves scout rows NULL (migration 558)', async () => {
+    const rows = await db.adminSql<{ idea_id: string; created_by: string | null }[]>`
+      SELECT idea_id, created_by FROM harness_shared.scout_routed_ideas
+       WHERE idea_id IN ('scout-1', 'EI-su-1')`;
+    expect(rows.find((r) => r.idea_id === 'EI-su-1')?.created_by).toBe('su-test-owner-1');
+    expect(rows.find((r) => r.idea_id === 'scout-1')?.created_by).toBeNull();
+  });
+
+  it('readRoutedIdeas maps created_by → createdBy, omitting it when NULL', async () => {
+    const [su] = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'su-ideate' });
+    expect(su.createdBy).toBe('su-test-owner-1');
+    const [scout] = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS });
+    expect(scout.createdBy).toBeUndefined();
+  });
+
+  it('a provenance-less upsert NEVER erases created_by (a re-route keeps the originator)', async () => {
+    await recordRoutedIdea({
+      origin: 'su-ideate', ideaId: 'EI-su-1', lens: 'analogical', rail: 'improvement',
+      routedRef: 'wi:EI-su-1', harnessSlug: HARNESS, title: 'an su superuser feature idea (re-routed)',
+      workspaceId: WS, routedAt: T + 2000,
+    });
+    const rows = await db.adminSql<{ created_by: string | null }[]>`
+      SELECT created_by FROM harness_shared.scout_routed_ideas WHERE idea_id = 'EI-su-1'`;
+    expect(rows[0]?.created_by).toBe('su-test-owner-1');
   });
 });

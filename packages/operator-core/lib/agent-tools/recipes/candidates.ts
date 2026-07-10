@@ -49,7 +49,7 @@ export default defineTool({
       'recipes:get (read a candidate\'s script before acting)',
     ],
   },
-  capability: 'intel:read',
+  capability: 'recipes:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({

@@ -83,7 +83,7 @@ describe('recipes:* registration (P-005, P-013)', () => {
   it('recipes:candidates is a READ-only graduation worklist (P-013 / D-017)', () => {
     const tool = findTool('recipes:candidates');
     expect(tool.effect).toBe('read');
-    expect(tool.capabilities).toContain('intel:read');
+    expect(tool.capabilities).toContain('recipes:read');
   });
 
   // Phase 4 hygiene tools (P-010 / D-015): curation actions, SU-only (no bee), write-effect.

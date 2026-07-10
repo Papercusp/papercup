@@ -16,7 +16,7 @@
  * session cookie).
  */
 import { getSessionUserOrDefault } from '../../../auth';
-import { getMemoryBackend } from '../../../memory/backend';
+import { getMemoryBackend, type MemoryEntry } from '../../../memory/backend';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -91,10 +91,25 @@ async function searchMemories(q: string, userId: string, limit: number) {
   try {
     if (!(await backend.available()).ok) return [];
     const ws = activeWorkspaceId();
-    const hits = await backend.search(q, {
+    // Bound the mem0 recall leg. backend.search() runs its OWN query embed (the
+    // cosine leg) — a SECOND unbounded embed NOT covered by the buildQueryEmbedder
+    // acquisition bound on the prose leg (WI-3922, same hang class as WI-3860).
+    // Under an exhausted OpenAI embed the local ONNX cold-start (15-30s) would
+    // otherwise hang /api/user/search well past the interactive budget. Race the
+    // whole recall against the same interactive deadline → degrade to no memories
+    // (the prose half still returns) rather than block the response. budgetMs ≤ 0
+    // keeps it unbounded (the codebase-wide "0 disables the bound" convention).
+    const budgetMs = interactiveEmbedAcquireBudgetMs();
+    const recall = backend.search(q, {
       scope: [userId, `workspace:${ws}`],
       limit,
     });
+    const hits: MemoryEntry[] = budgetMs > 0
+      ? await Promise.race([
+          recall,
+          new Promise<MemoryEntry[]>((resolve) => setTimeout(() => resolve([]), budgetMs)),
+        ])
+      : await recall;
     return hits.slice(0, limit).map((e) => ({
       id: e.id,
       text: e.text,

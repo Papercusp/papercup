@@ -75,6 +75,14 @@ export interface RecordRoutedIdeaInput {
    * the diversity floor). NOT a pseudo-lens.
    */
   origin?: 'scout' | 'su-ideate';
+  /**
+   * The ORIGINATING AGENT's ownerId (migration 558, su-ideate-learning-substrate P-001) —
+   * persisted as `created_by`. Stamped by the su capture bridge for origin='su-ideate'
+   * rows; Scout writers never set it (NULL is a legitimate value forever — pre-558 rows
+   * are backfilled best-effort by P-016). The join key for the grade→revise wake (P-005),
+   * scope:'mine' feedback reads (D-014), and per-agent ideation analytics (P-013).
+   */
+  createdBy?: string;
 }
 
 /** Read/scope options shared by the ledger read paths. */
@@ -115,6 +123,7 @@ interface LedgerRow {
   human_feedback: string | null;
   graded_by: string | null;
   graded_at: Date | string | null;
+  created_by: string | null;
 }
 
 function epochMsToIso(v: string | number | null): string {
@@ -188,13 +197,13 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
-       routed_ref, title, addresses_pattern_refs, routed_at, origin)
+       routed_ref, title, addresses_pattern_refs, routed_at, origin, created_by)
     VALUES
       (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${targetHive},
        ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
        ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,
-       ${routedAt}, ${origin})
+       ${routedAt}, ${origin}, ${input.createdBy ?? null})
     ON CONFLICT (idea_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
       source_hive = EXCLUDED.source_hive,
@@ -206,7 +215,8 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       title = EXCLUDED.title,
       addresses_pattern_refs = EXCLUDED.addresses_pattern_refs,
       routed_at = EXCLUDED.routed_at,
-      origin = EXCLUDED.origin`;
+      origin = EXCLUDED.origin,
+      created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by)`;
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
@@ -374,7 +384,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const rows = await sql<LedgerRow[]>`
     SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
            addresses_pattern_refs, routed_at,
-           human_grade, human_feedback, graded_by, graded_at
+           human_grade, human_feedback, graded_by, graded_at, created_by
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${originClause(sql, opts.origin)}
@@ -402,6 +412,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       ...(r.human_feedback ? { humanFeedback: r.human_feedback } : {}),
       ...(r.graded_by === 'owner' || r.graded_by === 'Queen' ? { gradedBy: r.graded_by } : {}),
       ...(gradedAt ? { gradedAt } : {}),
+      ...(r.created_by ? { createdBy: r.created_by } : {}),
     };
   });
 }

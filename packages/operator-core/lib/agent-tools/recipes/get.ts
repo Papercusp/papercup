@@ -43,7 +43,7 @@ export default defineTool({
       'recipes:list (browse the recipe library)',
     ],
   },
-  capability: 'intel:read',
+  capability: 'recipes:read',
   requirePrincipal: false,
   // ALL ROLES (owner directive 2026-06-25) — in lockstep with code:run's audience.
   agentRoles: [...AGENT_ROLES],

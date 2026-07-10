@@ -27,6 +27,7 @@ const EXACT_ROWS: Array<[string, 'low' | 'medium' | 'high']> = [
   ['docs:read', 'low'],
   ['messages:read', 'low'],
   ['plans:read', 'low'],
+  ['recipes:read', 'low'],
   ['locks:read', 'low'],
   ['coord:read', 'low'],
   ['pending_events:read', 'low'],

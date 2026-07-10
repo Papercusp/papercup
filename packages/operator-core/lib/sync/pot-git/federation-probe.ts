@@ -243,3 +243,41 @@ export function deriveProbeVerdict(receipt: ProbeReceipt, opts: DeriveProbeVerdi
 export function formatProbeVerdict(receipt: ProbeReceipt, verdict: ProbeVerdict): string {
   return `probe ${receipt.probeKey} [${receipt.harnessSlug}] ${verdict.verdict}: ${verdict.detail}`;
 }
+
+/**
+ * True once P-012 wires `probe:record-hop` into real pipeline stages
+ * (drain/replicate/merge/member_guard/project). Currently `false` — a
+ * repo-wide grep (WI-3962, 2026-07-10) found ZERO callers of
+ * `probe:record-hop`/`recordProbeHop` anywhere in real pipeline-stage code;
+ * every post-`captured` hop is therefore permanently unstamped, for every
+ * probe, regardless of actual federation health. Flip this the moment a
+ * pipeline stage lands a real `probe:record-hop` call.
+ */
+export const HOP_TRACKING_WIRED = false;
+
+/**
+ * WI-3962: while hop-tracking isn't wired (see {@link HOP_TRACKING_WIRED}), a
+ * verdict reading `'stalled'` at any hop AFTER `'captured'` reflects a
+ * MISSING OBSERVATION, not a proven pipeline failure — every probe stalls
+ * this way, forever, by construction, regardless of real health. Returns an
+ * explicit caveat string for that specific case (for a consumer like
+ * `probe:get` to surface next to the raw verdict); returns `undefined` when
+ * the verdict is trustworthy as-is (refused/acked/pending, stalled at
+ * `'captured'` itself — that DOES indicate emit-time trouble — or the caller
+ * explicitly narrowed `expectedHops` and already knows what they're asking).
+ */
+export function hopTrackingCaveat(
+  verdict: ProbeVerdict,
+  opts: { expectedHopsWasNarrowed: boolean },
+): string | undefined {
+  if (HOP_TRACKING_WIRED) return undefined;
+  if (opts.expectedHopsWasNarrowed) return undefined;
+  if (verdict.verdict !== 'stalled') return undefined;
+  if (verdict.stalledAtHop === null || verdict.stalledAtHop === 'captured') return undefined;
+  return (
+    `hop-advancement instrumentation ('${verdict.stalledAtHop}' onward) is not yet wired into real ` +
+    `pipeline stages (WI-3962) — this 'stalled' verdict means the hop was never OBSERVED, not that the ` +
+    `pipeline is broken. Check real signals (substrate_outbox drain state, substrate_merge_cursor ` +
+    `advancement) for actual federation health, or pass expectedHops:['captured'] to avoid this false signal.`
+  );
+}

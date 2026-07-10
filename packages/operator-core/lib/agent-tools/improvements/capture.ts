@@ -181,6 +181,7 @@ export default defineTool({
         try {
           await recordRoutedIdea({
             origin: 'su-ideate',
+            createdBy: id.ownerId, // originator join key: grade→revise wakes + scope:'mine' reads (migration 558)
             ideaId: featureId,
             lens: 'su-ideate', // sentinel — su-ideate rows are EXCLUDED from lens learning (D-009)
             rail: 'improvement',

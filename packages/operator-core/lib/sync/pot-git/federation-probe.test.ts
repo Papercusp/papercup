@@ -3,9 +3,12 @@ import {
   buildProbeKey,
   deriveProbeVerdict,
   formatProbeVerdict,
+  HOP_TRACKING_WIRED,
+  hopTrackingCaveat,
   PROBE_HOPS,
   stampProbe,
   type ProbeReceipt,
+  type ProbeVerdict,
 } from './federation-probe';
 
 describe('stampProbe', () => {
@@ -148,6 +151,50 @@ describe('deriveProbeVerdict', () => {
 
   it('walks hops in the canonical pipeline order', () => {
     expect(PROBE_HOPS).toEqual(['captured', 'drained', 'replicated', 'merged', 'memberGuard', 'projected']);
+  });
+});
+
+describe('hopTrackingCaveat (WI-3962)', () => {
+  const stalledPastCapture: ProbeVerdict = {
+    verdict: 'stalled',
+    lastHopReached: 'replicated',
+    stalledAtHop: 'merged',
+    detail: "stalled at 'merged'",
+  };
+
+  it('documents the current unwired reality via HOP_TRACKING_WIRED', () => {
+    // If this ever flips true, every branch below needs re-deriving —
+    // the flip itself is the trigger to revisit this whole caveat mechanism.
+    expect(HOP_TRACKING_WIRED).toBe(false);
+  });
+
+  it('surfaces a caveat when a DEFAULT (unnarrowed) call reads stalled past capture', () => {
+    const caveat = hopTrackingCaveat(stalledPastCapture, { expectedHopsWasNarrowed: false });
+    expect(caveat).toBeDefined();
+    expect(caveat).toContain('WI-3962');
+    expect(caveat).toContain("'merged'");
+  });
+
+  it('stays silent when the caller explicitly narrowed expectedHops (they know what they asked)', () => {
+    const caveat = hopTrackingCaveat(stalledPastCapture, { expectedHopsWasNarrowed: true });
+    expect(caveat).toBeUndefined();
+  });
+
+  it('stays silent when stalled AT capture itself (that is a real emit-time signal)', () => {
+    const caveat = hopTrackingCaveat(
+      { verdict: 'stalled', lastHopReached: null, stalledAtHop: 'captured', detail: "stalled at 'captured'" },
+      { expectedHopsWasNarrowed: false },
+    );
+    expect(caveat).toBeUndefined();
+  });
+
+  it('stays silent for non-stalled verdicts (acked/pending/refused)', () => {
+    const acked: ProbeVerdict = { verdict: 'acked', lastHopReached: 'projected', stalledAtHop: null, detail: 'ok' };
+    const pending: ProbeVerdict = { verdict: 'pending', lastHopReached: 'captured', stalledAtHop: null, detail: 'ok' };
+    const refused: ProbeVerdict = { verdict: 'refused', lastHopReached: null, stalledAtHop: null, detail: 'refused' };
+    for (const v of [acked, pending, refused]) {
+      expect(hopTrackingCaveat(v, { expectedHopsWasNarrowed: false })).toBeUndefined();
+    }
   });
 });
 

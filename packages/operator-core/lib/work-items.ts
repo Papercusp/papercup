@@ -1524,28 +1524,36 @@ export interface LifecycleAliasInfo {
 }
 
 /**
- * EI-9360: issue-family lifecycle requests that mean "durably gated" (owner-authority-only
- * or an external blocker) — the issue-family CHECK has no native representation for these
- * (ISSUE_STATE_ALIASES collapses them to 'open'), so without this fix a caller who correctly
- * marked an item needs_human/blocked got back ok:true with the item STILL in the default
- * claimable pool: `scheduler:get_next`/`claim_next` would keep offering it to any fleet whose
- * claim spec didn't defensively exclude it (observed live in the M4 DRAIN battery — a foreign
- * fleet's fallback claim-spec picked up an owner-gated "rotate the production credential" item).
- * The only prior mitigation was a caller manually chaining `work_items:release{claimHold:true}`
- * — correct, but non-discoverable and easy to forget. Auto-applying the EXISTING WI-2797
- * self-select claim hold here makes the gate durable + harness-wide by DEFAULT: the item is
- * excluded from `claim_next`/`scheduler:get_next` self-selection but stays otherwise normal
- * (visible, commentable, directly claimable by id — e.g. by the owner or whoever resolves the
- * gate). Scoped to the issue family only (the family this alias-collapse affects).
+ * EI-9360: issue-family lifecycle requests that mean "durably gated" — the issue-family CHECK
+ * has no native representation for these (ISSUE_STATE_ALIASES collapses them to 'open'), so
+ * without this fix a caller who correctly marked an item needs_human/blocked got back ok:true
+ * with the item STILL in the default claimable pool: `scheduler:get_next`/`claim_next` would
+ * keep offering it to any fleet whose claim spec didn't defensively exclude it (observed live
+ * in the M4 DRAIN battery — a foreign fleet's fallback claim-spec picked up an owner-gated
+ * "rotate the production credential" item). The only prior mitigation was a caller manually
+ * chaining a second call — correct, but non-discoverable and easy to forget.
+ *
+ * Two EXISTING self-select exclusion floors already cover this (both wired into the same
+ * issue-claim query, work-items.ts's issue-claim SQL) — reused here rather than inventing a
+ * third, matched to which one's REPORTING semantics fit the request:
+ *   - needs-human dialect → `payload.needsHuman:true` ({@link needsHumanExclusionSql}, EI-7776,
+ *     already set by improvements:resolve's `needs-human` outcome). Reports as fully DRAINED
+ *     in {@link diagnoseClaimNextMiss} — correct here: an owner-authority-only item is not
+ *     queue material AT ALL, no agent will ever complete it by retrying.
+ *   - 'blocked' dialect → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql}).
+ *     Reports as pending-BUT-gated (drained:false) — correct here: "blocked" more often means
+ *     blocked-on-a-dependency, which may clear on its own, not "route to a human forever".
+ * Both: excluded from self-select, but still directly claimable BY ID. Best-effort — never
+ * fails/blocks the primary lifecycle write.
  */
-const OWNER_GATE_ALIAS_REQUESTS = new Set([
-  'blocked',
+const NEEDS_HUMAN_ALIAS_REQUESTS = new Set([
   'needs-human',
   'needs_human',
   'needshuman',
   'needs human',
   'need-human',
 ]);
+const BLOCKED_ALIAS_REQUESTS = new Set(['blocked']);
 
 /**
  * setWorkItemState wrapped to ALWAYS report the alias/no-op discriminator (EI-7712,
@@ -1576,28 +1584,28 @@ export async function setWorkItemStateWithAliasInfo(
   });
   const appliedState = workItem ? workItem.state : null;
   const aliased = appliedState !== null && appliedState !== requestedState;
-  // EI-9360: a caller who asked for an owner-gate dialect state (blocked/needs-human/…)
-  // that collapsed to 'open' gets the gate made durable automatically — see
-  // OWNER_GATE_ALIAS_REQUESTS above. Best-effort: never fails/blocks the primary write.
-  let autoHeld = false;
-  if (
-    workItem &&
-    workItem.family === 'issue' &&
-    onAliasInfo &&
-    onAliasInfo.resolved === 'open' &&
-    OWNER_GATE_ALIAS_REQUESTS.has(onAliasInfo.requested.trim().toLowerCase())
-  ) {
+  // EI-9360: a caller who asked for an owner-gate dialect state (blocked/needs-human/…) that
+  // collapsed to 'open' gets the matching exclusion floor applied automatically — see the
+  // NEEDS_HUMAN_ALIAS_REQUESTS / BLOCKED_ALIAS_REQUESTS doc comment above.
+  let autoGateNote: string | null = null;
+  if (workItem && workItem.family === 'issue' && onAliasInfo && onAliasInfo.resolved === 'open') {
+    const req = onAliasInfo.requested.trim().toLowerCase();
     // Awaited (not fire-and-forget): callers rely on `aliased:true` meaning the item is
     // ALREADY durably parked by the time this resolves, not eventually.
     try {
-      const held = await setWorkItemClaimHold(id, true, {
-        harness: opts.harness,
-        by: opts.by,
-        reason: onAliasInfo.requested,
-      });
-      autoHeld = held?.applicable === true;
+      if (NEEDS_HUMAN_ALIAS_REQUESTS.has(req)) {
+        await mergeIssuePayload(id, { needsHuman: true });
+        autoGateNote =
+          ' It has been auto-routed to a human (payload.needsHuman) — excluded from claim_next/scheduler:get_next self-selection (reads as drained, not pending) until cleared.';
+      } else if (BLOCKED_ALIAS_REQUESTS.has(req)) {
+        const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: req });
+        if (held?.applicable) {
+          autoGateNote =
+            ' It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.';
+        }
+      }
     } catch {
-      /* best-effort — never fail the primary lifecycle write over the hold */
+      /* best-effort — never fail the primary lifecycle write over the auto-gate */
     }
   }
   return {
@@ -1608,7 +1616,7 @@ export async function setWorkItemStateWithAliasInfo(
     ...(aliased
       ? {
           aliasNote: onAliasInfo
-            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoHeld ? ` It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.` : ''}`
+            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
             : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`,
         }
       : {}),

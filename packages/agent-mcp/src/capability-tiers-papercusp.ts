@@ -51,7 +51,6 @@ const EXACT: Record<string, CapabilityTier> = {
   // in the capability palette (toolDefinitionToCapability: tier==='high' ⇒ destructive).
   // Split into its own low-tier capability, same fix shape as EI-99/EI-111.
   'recipes:read': 'low',
-  'plans:write': 'medium',
   // SU file-lock coordination (su-agent-coordination-v3-2026-05-14.md)
   'locks:read': 'low',
   'locks:write': 'medium',
