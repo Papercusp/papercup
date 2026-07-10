@@ -12,11 +12,27 @@ import { createPgHiveEvalStore } from './store-pg';
 import { readHiveEvalInstanceSummaries } from './trend-read';
 import type { HiveEvalRunRow, HiveEvalScoreRow, InstanceManifest } from './store';
 
-const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql'];
+// 554 (Slice H Phase 1, cup-lexicon rename) renames hive_eval_* -> pot_eval_* so the store's
+// queries (now against the new names) resolve against this fixture.
+const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql', '554-cup-lexicon-db-rename-phase1.sql'];
 
 function readMigration(name: string): string {
   // Depth-/machine-proof walk-up (DG-6 P-049) — no hardcoded checkout paths.
   return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`);
+}
+
+/** Strip psql meta (\set …) + the file's own top-level BEGIN/COMMIT so sql.unsafe()
+ *  can apply it standalone (264/268 have neither, so this is a safe no-op for them). */
+function stripMigrationMeta(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      if (t.startsWith('\\')) return false;
+      if (/^(begin|commit);$/i.test(t)) return false;
+      return true;
+    })
+    .join('\n');
 }
 
 const WS = 'ws-trend';
@@ -68,7 +84,7 @@ describe('readHiveEvalInstanceSummaries (HE-07 trend, migrations 264 + 268)', ()
     u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-    for (const m of MIGRATIONS) await sql.unsafe(readMigration(m));
+    for (const m of MIGRATIONS) await sql.unsafe(stripMigrationMeta(readMigration(m)));
 
     const store = createPgHiveEvalStore(sql);
     // Two generations with explicit created_at so the trend order is deterministic.

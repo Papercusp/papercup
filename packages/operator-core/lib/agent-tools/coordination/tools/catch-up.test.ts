@@ -63,6 +63,15 @@ vi.mock('../fleet-delivery', () => ({
   getFleetDeliveryOverrides: async () => new Map(),
 }));
 
+// WI-3653: sendMessage's AUTO harness_slug stamp (undefined harnessSlug → resolve
+// the workspace's single shared hive) unconditionally calls resolveWorkspaceHiveScope,
+// which reaches real PG (listHives) when unmocked — this in-memory test must never hit
+// live infra. Same pattern as send.test.ts / messages.test.ts. Default 'none' = today's
+// local-only behavior for the seeding sendMessage calls below (byte-identical envelopes).
+vi.mock('../federation-scope', () => ({
+  resolveWorkspaceHiveScope: async () => ({ kind: 'none' }),
+}));
+
 import catchUp from './catch-up';
 import { sendMessage } from '../messages';
 

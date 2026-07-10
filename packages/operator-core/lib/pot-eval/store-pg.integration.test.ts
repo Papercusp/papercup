@@ -12,12 +12,28 @@ import { createPgHiveEvalStore } from './store-pg';
 import { coerceJson } from '../pg-jsonb';
 import type { HiveEvalRunRow, HiveEvalScenarioRow, HiveEvalScoreRow, InstanceManifest } from './store';
 
-// 264 records the runs; 268 (HE-06) adds the scores table that FK-references the runs.
-const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql'];
+// 264 records the runs; 268 (HE-06) adds the scores table that FK-references the runs;
+// 554 (Slice H Phase 1, cup-lexicon rename) renames hive_eval_* -> pot_eval_* + bee_cap ->
+// cup_cap so the store's queries (now against the new names) resolve against this fixture.
+const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql', '554-cup-lexicon-db-rename-phase1.sql'];
 
 function readMigration(name: string): string {
   // Depth-/machine-proof walk-up (DG-6 P-049) — no hardcoded checkout paths.
   return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`);
+}
+
+/** Strip psql meta (\set …) + the file's own top-level BEGIN/COMMIT so sql.unsafe()
+ *  can apply it standalone (264/268 have neither, so this is a safe no-op for them). */
+function stripMigrationMeta(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      if (t.startsWith('\\')) return false;
+      if (/^(begin|commit);$/i.test(t)) return false;
+      return true;
+    })
+    .join('\n');
 }
 
 describe('hive-eval PG store (migrations 264 + 268)', () => {
@@ -36,7 +52,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-    for (const m of MIGRATIONS) await sql.unsafe(readMigration(m));
+    for (const m of MIGRATIONS) await sql.unsafe(stripMigrationMeta(readMigration(m)));
   }, 60_000);
 
   afterAll(async () => {

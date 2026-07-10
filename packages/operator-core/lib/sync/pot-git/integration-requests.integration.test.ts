@@ -34,6 +34,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/441-hive-integration-requests.sql');
+const MIGRATION_554 = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/554-cup-lexicon-db-rename-phase1.sql');
 
 /** Strip psql meta + txn wrappers so sql.unsafe() can apply the file (§0 rule). */
 function stripMeta(sql: string): string {
@@ -65,9 +66,14 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('intreq');
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
-  // D-007 pot-rename: mig 441 creates pot_integration_requests.hive_slug; mig 523 renamed
-  // it → pot_slug. Replaying only 441 predates the rename, so apply it in-place.
-  await db.sql.unsafe(`ALTER TABLE harness_shared.pot_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
+  // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug; mig 523 renamed
+  // it → pot_slug (dual-write, table still hive_integration_requests); mig 554 (Slice H
+  // Phase 1) renames the TABLE itself to pot_integration_requests. Replaying only 441
+  // predates all of that, so apply 523's column patch + 554's table rename in-place.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
+  await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
+  await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 }, 120_000);
 
 afterAll(async () => {

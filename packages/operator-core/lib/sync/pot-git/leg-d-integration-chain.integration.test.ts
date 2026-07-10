@@ -40,6 +40,7 @@ import { listIntegrationRequests } from './integration-requests';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/441-hive-integration-requests.sql');
+const MIGRATION_554 = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/554-cup-lexicon-db-rename-phase1.sql');
 
 /** Strip psql meta + txn wrappers so sql.unsafe() can apply the file (§0 rule),
  *  mirroring integration-requests.integration.test.ts. */
@@ -89,8 +90,12 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
   beforeAll(async () => {
     db = await createFreshPgDb('legd');
     await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
-    // mig 523 pot-rename predates a hand-applied 441 replay — align column name.
-    await db.sql.unsafe(`ALTER TABLE harness_shared.pot_integration_requests RENAME COLUMN hive_slug TO pot_slug`);
+    // mig 506/523 pot-rename + mig 554 (Slice H Phase 1) table rename predate a
+    // hand-applied 441 replay — align column shape + table name in-place.
+    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
+    await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
+    await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 
     root = await mkdtemp(join(tmpdir(), 'legd-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
