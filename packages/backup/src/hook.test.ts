@@ -23,16 +23,28 @@ const h = vi.hoisted(() => ({
   stdinWrites: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
   logLines: [] as string[],
+  // When true, the gzip child's stdin emits an EPIPE 'error' before close —
+  // the mid-dump broken-pipe crash regression (gz dies while pg_dump streams).
+  gzipStdinError: false,
 }));
 
-// Fake child: a piped stdout/stderr + stdin, kill, and EventEmitter for
-// 'error'/'close'/'exit'. We drive 'close' to settle the dumpPg promise.
+// Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
+// `dump.stdout.pipe(gz.stdin)` wiring, the stderr 'data' reads, AND the pipe-
+// socket 'error' handlers all attach to real emitters), plus kill + the child
+// EventEmitter for 'error'/'close'/'exit'. We drive 'close' (and, for the
+// regression case, a stdin 'error') to settle the dumpPg promise.
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
-  const mkStream = () => ({ pipe: vi.fn(), on: vi.fn() });
+  const mkStream = () => {
+    const s = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    s.pipe = vi.fn();
+    return s;
+  };
   child.stdout = mkStream();
   child.stderr = mkStream();
-  child.stdin = { write: vi.fn((chunk: string) => { h.stdinWrites.push(String(chunk)); }) };
+  const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  stdin.write = vi.fn((chunk: string) => { h.stdinWrites.push(String(chunk)); });
+  child.stdin = stdin;
   child.kill = vi.fn();
   return child as unknown as import('node:child_process').ChildProcess & EventEmitter;
 }
@@ -43,8 +55,15 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn((cmd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
     const child = fakeChild();
     h.spawnCalls.push({ cmd, args, env: opts?.env });
-    // Settle on next tick: each child closes with the configured code.
-    queueMicrotask(() => child.emit('close', h.closeCodes[cmd] ?? 0));
+    // Settle on next tick: each child closes with the configured code. For the
+    // broken-pipe regression, the gzip stdin socket errors first (mid-stream).
+    queueMicrotask(() => {
+      if (cmd === 'gzip' && h.gzipStdinError) {
+        const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write', errno: -32 });
+        (child.stdin as unknown as EventEmitter).emit('error', err);
+      }
+      child.emit('close', h.closeCodes[cmd] ?? 0);
+    });
     return child;
   }),
 }));
@@ -82,6 +101,7 @@ beforeEach(() => {
   h.stdinWrites = [];
   h.renameCalls = [];
   h.logLines = [];
+  h.gzipStdinError = false;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -180,5 +200,27 @@ describe('runPreSnapshotHook outcome logging', () => {
     h.adminUrl = { url: 'postgres://postgres:pw@host:5432/db', source: 'PAPERCUSP_PG_PORT' };
     await runPreSnapshotHook(ctx);
     expect(h.logLines.join('')).toMatch(/URL source: PAPERCUSP_PG_PORT/);
+  });
+});
+
+describe('runPreSnapshotHook broken-pipe resilience (deploy-crash regression 2026-07-10)', () => {
+  // The pg_dump→gzip pipe (`dump.stdout.pipe(gz.stdin)`) is a socket. When gzip
+  // dies mid-stream (SIGKILL from the 60s timeout, OOM under load, a crash),
+  // gz.stdin becomes a broken pipe and pg_dump's next write throws `write
+  // EPIPE`, surfaced as an 'error' EVENT on the gz.stdin Socket — NOT a promise
+  // rejection. Without a listener that escaped the resolve-only finalize() +
+  // the caller's `.catch()` and crashed the whole DETACHED deploy process at the
+  // pre-deploy snapshot step, blocking every green-pin ship. The hook must
+  // instead degrade: abandon the dump, resolve, let the snapshot proceed.
+  it('does NOT crash (resolves) when the gzip stdin pipe emits EPIPE mid-dump', async () => {
+    h.gzipStdinError = true;
+    await expect(runPreSnapshotHook(ctx)).resolves.toBeUndefined();
+  });
+
+  it('degrades to no-rename and logs the pipe failure on a stdin EPIPE', async () => {
+    h.gzipStdinError = true;
+    await runPreSnapshotHook(ctx);
+    expect(h.renameCalls).toHaveLength(0);
+    expect(h.logLines.join('')).toMatch(/gzip stdin pipe failed: write EPIPE/);
   });
 });

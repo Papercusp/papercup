@@ -207,6 +207,31 @@ async function dumpPg(opts: {
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
+    // The pg_dump→gzip pipe (`dump.stdout.pipe(gz.stdin)`) is the OTHER
+    // unguarded socket. If gzip dies mid-stream — SIGKILL from the 60s
+    // timeout above, an OOM kill under host load, or a plain crash — gz.stdin
+    // becomes a broken pipe and pg_dump's next write throws `write EPIPE`.
+    // That EPIPE surfaces as an 'error' event on the gz.stdin Socket (and, in
+    // some Node versions, on dump.stdout), NOT as a promise rejection — so it
+    // bypasses BOTH finalize()'s resolve-only contract and the caller's
+    // `.catch()`, and (as seen 2026-07-10) crashes the whole DETACHED deploy
+    // process right at the pre-deploy snapshot step, blocking every green-pin
+    // ship. The child-`on('error')` handlers above only cover SPAWN failures,
+    // not the stdin/stdout stream sockets, so add explicit handlers here that
+    // degrade exactly like every other dump failure: abandon the dump, let the
+    // snapshot proceed.
+    gz.stdin.on('error', (e) => {
+      stderr += `gzip stdin pipe failed: ${e.message}\n`;
+      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+      void finalize(false);
+    });
+    dump.stdout.on('error', (e) => {
+      stderr += `pg_dump stdout pipe failed: ${e.message}\n`;
+      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+      void finalize(false);
+    });
 
     let dumpClosed = false;
     let gzipClosed = false;
