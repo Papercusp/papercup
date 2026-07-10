@@ -22,7 +22,7 @@
  * federated.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from './workspace-registry';
+import { resolveConcreteWorkspaceId } from './workspace-registry';
 import { setCarryNote, getCarryNote, workItemScope } from './carry-note';
 
 export interface WorkItemCheckpointRef {
@@ -64,7 +64,12 @@ export async function setWorkItemCheckpoint(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
 ): Promise<string | null> {
-  const ws = ref.workspaceId ?? activeWorkspaceId();
+  // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
+  // the unscoped-session wildcard '*' (or nothing) must never key a row under a
+  // literal '*' workspace (the EI-8824 class) or read from one. Fixing this here
+  // (not per-caller) means NO write/read seam — the tool, the orient recovery
+  // fold, carry-brief, park — can strand or miss a checkpoint via the wildcard.
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
   if (!ws || !ref.workItemId) {
     throw new Error('setWorkItemCheckpoint — workspaceId and workItemId are required');
   }
@@ -118,7 +123,10 @@ export async function setWorkItemCheckpoint(
  * Workspace-scoped.
  */
 export async function getWorkItemCheckpoint(ref: WorkItemCheckpointRef): Promise<string | null> {
-  const ws = ref.workspaceId ?? activeWorkspaceId();
+  // EI-9013: same wildcard canonicalization as the write side — a read scoped by
+  // the session's '*' must resolve to the concrete active workspace or it can
+  // never see a row the (fixed) write path stored concretely.
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
   if (!ws || !ref.workItemId) return null;
   // EI-8805: canonicalize the scope harness so a harness-null item reads back the
   // checkpoint it was written under (previously a null harness short-circuited to null).
@@ -140,7 +148,7 @@ export interface WorkItemCheckpointWithMeta {
 /** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
  *  as {@link getWorkItemCheckpoint}; one query. */
 export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef): Promise<WorkItemCheckpointWithMeta> {
-  const ws = ref.workspaceId ?? activeWorkspaceId();
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId); // EI-9013 — see getWorkItemCheckpoint
   if (!ws || !ref.workItemId) return { checkpoint: null, updatedAtMs: null };
   const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
   try {

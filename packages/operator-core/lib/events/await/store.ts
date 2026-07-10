@@ -18,7 +18,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { keyMatchesPattern } from './pattern';
+import { keyMatchesPattern, payloadMatchesFilter } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import type {
   AwaitPolicy,
@@ -89,6 +89,7 @@ function mapAwait(r: any): AwaitRow {
     once: r.once ?? true,
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     urgency: r.urgency ?? false,
+    payloadFilter: parseJsonb(r.payload_filter),
   };
 }
 
@@ -138,6 +139,10 @@ export async function registerAwait(input: {
   minSleepSec?: number | null;
   /** This watch's wakes always bypass the floor (a human-message / escalation watch). */
   urgency?: boolean;
+  /** EI-8998: optional predicate (a @papercusp/rules DataCondition) tested against the
+   *  emitted payload at fire time, IN ADDITION to the key/pattern match. null/undefined =
+   *  no payload predicate (today's fast-path behavior, unchanged). */
+  payloadFilter?: unknown | null;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -150,7 +155,7 @@ export async function registerAwait(input: {
   const timeoutBehavior: TimeoutBehavior = input.timeoutBehavior ?? 'wake';
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
@@ -160,7 +165,8 @@ export async function registerAwait(input: {
          // Date binding (the repo's known quirk); PG casts text→timestamptz.
          input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
        },
-       ${input.once ?? true}, ${input.minSleepSec ?? null}, ${input.urgency ?? false})
+       ${input.once ?? true}, ${input.minSleepSec ?? null}, ${input.urgency ?? false},
+       ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb)
     RETURNING *
   `;
   return mapAwait(rows[0]);
@@ -294,32 +300,69 @@ export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow
 export async function fireAwaitsForKey(input: {
   eventKey: string;
   reason?: 'event' | 'timeout';
+  /** EI-8998: the emitted payload — tested against any active payload_filter before a
+   *  matching row is allowed to fire. Rows with no payload_filter are unaffected. */
+  payload?: unknown;
 }): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  // One-shot watches: atomic claim (exactly-once, D-002).
+
+  // One-shot, EXACT KEY, NO payload_filter: today's single-atomic-UPDATE fast path,
+  // unchanged (D-002) — the overwhelmingly common case pays zero extra cost for EI-8998.
   const onceRows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+       AND payload_filter IS NULL
     RETURNING *
   `;
-  // Standing watches: match without consuming (still active after this fire).
-  const standingRows = await sql`
+
+  // One-shot, EXACT KEY, WITH a payload_filter: can't be tested in SQL (it's an
+  // arbitrary mingo DataCondition evaluated in JS), so this can't be one atomic
+  // UPDATE — select the (tiny) candidate set, filter in JS, then atomic-claim by id
+  // (mirrors the pattern-claim two-step below; a concurrent emit racing the SAME row
+  // still can't double-fire it — the final UPDATE's `fired_at IS NULL` guard holds).
+  const onceFilterCandidates = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
+       AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+       AND payload_filter IS NOT NULL
+  `;
+  const onceFilterMatchedIds = onceFilterCandidates
+    .filter((r: any) => payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload))
+    .map((r: any) => Number(r.id));
+  const claimedOnceFilterRows =
+    onceFilterMatchedIds.length > 0
+      ? await sql`
+          UPDATE harness_shared.event_awaits
+             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
+           WHERE id = ANY(${onceFilterMatchedIds})
+             AND fired_at IS NULL AND cancelled_at IS NULL
+          RETURNING *
+        `
+      : [];
+
+  // Standing watches (exact key): match without consuming (still active after this
+  // fire), then apply any payload_filter in JS before including in the result.
+  const standingCandidates = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = false AND cancelled_at IS NULL
        AND (expires_ts IS NULL OR expires_ts > now())
   `;
+  const standingRows = standingCandidates.filter((r: any) =>
+    payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload),
+  );
 
   // Pattern awaits (P-201): a stored event_key containing a literal `*` is a glob
   // (`work-item:done:*`, `fleet:*:<slug>`). Fetch the ACTIVE pattern rows — a tiny
   // set, index-backed by event_awaits_pattern_active (migration 480) — and fire the
   // ones whose pattern matches THIS exact fired key, reusing @papercusp/rules' mingo
-  // matcher (keyMatchesPattern). One-shots keep the atomic exactly-once claim; standing
-  // pattern watches match without consuming. `*` is a literal in SQL LIKE (% and _ are
-  // the wildcards), so `LIKE '%*%'` = "event_key contains an asterisk".
+  // matcher (keyMatchesPattern), THEN (EI-8998) any payload_filter on the same row.
+  // One-shots keep the atomic exactly-once claim; standing pattern watches match
+  // without consuming. `*` is a literal in SQL LIKE (% and _ are the wildcards), so
+  // `LIKE '%*%'` = "event_key contains an asterisk".
   const patternCandidates = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
@@ -335,7 +378,10 @@ export async function fireAwaitsForKey(input: {
   // which escaped as a console.warn via the emit's fire-and-forget .catch). A malformed
   // row can never usefully match a pattern, so skip it instead of crashing the emit.
   const matched = patternCandidates.filter(
-    (r: any) => typeof r.event_key === 'string' && keyMatchesPattern(r.event_key, input.eventKey),
+    (r: any) =>
+      typeof r.event_key === 'string' &&
+      keyMatchesPattern(r.event_key, input.eventKey) &&
+      payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload),
   );
   const matchedOnceIds = matched.filter((r: any) => (r.once ?? true) === true).map((r: any) => Number(r.id));
   const matchedStanding = matched.filter((r: any) => (r.once ?? true) === false);
@@ -352,7 +398,13 @@ export async function fireAwaitsForKey(input: {
         `
       : [];
 
-  return [...onceRows, ...standingRows, ...claimedPatternRows, ...matchedStanding].map(mapAwait);
+  return [
+    ...onceRows,
+    ...claimedOnceFilterRows,
+    ...standingRows,
+    ...claimedPatternRows,
+    ...matchedStanding,
+  ].map(mapAwait);
 }
 
 /** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the

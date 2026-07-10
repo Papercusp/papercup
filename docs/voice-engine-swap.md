@@ -70,6 +70,11 @@ POSTs to the OpenAI-compatible `/v1/audio/transcriptions` (local whisper on
 1. **Fund + save the EL key** (server-side, never in the tree): the key is read by
    `voice-credentials.readElevenLabsKey()`. Save it via the /settings voice panel
    (validated by the `operator-elevenlabs-test` route) or the credential store.
+   Once the key is saved, the panel's voice dropdown **auto-populates from your EL
+   account library** via `GET /api/agent-mcp/operator-elevenlabs-voices` (a
+   loopback route that reads the key server-side — the browser holds only a masked
+   key, so it can't call `/v1/voices` itself). Pick a voice there instead of
+   hand-typing an id.
 2. **Flip the pref.** For per-utterance TTS (recommended):
 
    ```
@@ -116,6 +121,12 @@ provider — so the `no-key` contract stays unambiguous.
 
 ## Verify a swap
 
+- **"Re-detect engines"** (the /settings voice button) live-probes the local
+  engines and reports real per-engine status:
+  `GET /api/agent-mcp/operator-voice-engine-health` runs `Promise.all` over a
+  kokoro health probe, a voicemode `/v1/models` probe (`probeVoicemodeHealth`),
+  and key-presence for elevenlabs/openai/cartesia — so the button reflects what's
+  actually reachable, not just the saved prefs (its pre-2026-07-09 behaviour).
 - Preview endpoint proves wiring without touching the live speak path:
   `POST /api/agent-mcp/operator-tts-preview { "engine": "kokoro" }` → `200` + WAV.
   `{ "engine": "elevenlabs" }` → `200` with a funded key; `404 no-key` with no key

@@ -903,7 +903,7 @@ body.has-left-sidebar .pc-header {
 .pc-queen__plan--on { border-color: color-mix(in srgb, var(--accent), transparent 58%); background: color-mix(in srgb, var(--accent), transparent 93%); }
 .pc-queen__planlabel { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .pc-queen__selection-label { cursor: pointer; min-height: 24px; }
-.pc-queen__check { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; color: var(--accent-ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: 4px; flex-shrink: 0; }
+.pc-queen__check { width: 14px; height: 14px; min-height: 14px; max-height: 14px; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; color: var(--accent-ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: 4px; flex-shrink: 0; }
 .pc-queen__check[data-state='checked'], .pc-queen__check[data-state='indeterminate'] { background: var(--accent); border-color: var(--accent); }
 .pc-queen__check:disabled { cursor: default; opacity: 0.5; }
 .pc-queen__check svg { width: 10px; height: 10px; }

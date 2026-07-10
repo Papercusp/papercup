@@ -115,7 +115,17 @@ describe('harness:create { hive } — B-01 git-sync seeding', () => {
         pot: 'my-hive',
       });
       expect(payload.ok).toBe(true);
-      expect(payload.hive).toBe('my-hive');
+      // WI-3646 class-bug, instance #3 (found live while validating the .strict()
+      // schema fix on harness/create.ts): this assertion pinned the WRONG output
+      // key — the handler's success payload names the field `pot` (create.ts
+      // ~L516: `...(hiveMembership ? { pot: hiveMembership } : {})`), never
+      // `hive`. The test's own `hive` name was a copy of the same naming
+      // confusion that broke `_create_from_repo.ts`'s `defaultCreateMember` —
+      // it was PRE-EXISTING and unrelated to `.strict()` (confirmed by reverting
+      // just that change and re-running: same failure either way), just never
+      // caught because this integration test isn't in the default
+      // `test:affected` (unit-only) sweep.
+      expect(payload.pot).toBe('my-hive');
       expect(seedCalls).toEqual([
         {
           workspaceId: 'ws-test',

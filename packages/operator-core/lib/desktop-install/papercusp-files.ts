@@ -470,6 +470,7 @@ const CC_HOOK_FILES = [
   'posttooluse-locks-release.sh',
   'posttooluse-coord-inbox.sh',
   'posttooluse-activity-report.sh',
+  'pretooluse-activity-report.sh',
   'lifecycle-report.sh',
   'statusline-fleet.sh',
   'posttooluse-objective-title.sh',
@@ -1149,6 +1150,13 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-activity-report.sh'), {
       matcher: '*',
       hooks: cmd('posttooluse-activity-report.sh'),
+    });
+  // merge_activity_pre_hook — PreToolUse, matcher '*' (EI-8997: a renewal signal
+  // at dispatch time too, not just completion — see the script's own header).
+  if (has('pretooluse-activity-report.sh'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-activity-report.sh'), {
+      matcher: '*',
+      hooks: cmd('pretooluse-activity-report.sh'),
     });
   // merge_lifecycle_hooks — SessionStart + SessionEnd, no matcher.
   if (has('lifecycle-report.sh'))

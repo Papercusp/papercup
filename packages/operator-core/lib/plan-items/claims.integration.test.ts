@@ -296,3 +296,61 @@ describe('reads + sweep', () => {
     expect(await claims.getClaim(WS, 'other', PLAN, 'P-003')).toBeNull();
   });
 });
+
+describe('EI-8997 lapse grace — lapse means holder DEAD, not holder BUSY', () => {
+  it('a different owner CANNOT steal a lapsed claim whose holder has fresh activity — the incumbent lease auto-renews under the SAME claim_id', async () => {
+    const first = await acquire({ owner: 'su-alice' });
+    expect(first.ok).toBe(true);
+    const aliceClaimId = first.ok ? first.claim.claimId : '';
+    await lapse('P-001');
+    await activity('su-alice'); // alice is mid-long-turn: fresh tool call, no renewal landed
+    const steal = await acquire({ owner: 'su-bob' });
+    expect(steal.ok).toBe(false);
+    if (steal.ok) return;
+    expect(steal.reason).toBe('holder-active-lease-renewed');
+    expect(steal.conflict.owner).toBe('su-alice');
+    expect(steal.conflict.expired).toBe(false); // self-healed: the lease is LIVE again
+    expect(steal.conflict.claimId).toBe(aliceClaimId); // renewed, not re-issued
+    const now = await claims.getClaim(WS, HARNESS, PLAN, 'P-001');
+    expect(now?.owner).toBe('su-alice');
+    expect(now?.expired).toBe(false);
+  });
+
+  it('activity OLDER than the grace does not protect the claim — the steal proceeds (D-004 lazy reclaim preserved)', async () => {
+    await acquire({ owner: 'su-alice' });
+    await lapse('P-001');
+    await activity('su-alice', claims.CLAIM_LAPSE_ACTIVITY_GRACE_SEC + 60);
+    const steal = await acquire({ owner: 'su-bob' });
+    expect(steal.ok).toBe(true);
+    expect(steal.ok && steal.claim.owner).toBe('su-bob');
+  });
+
+  it("another agent's fresh activity does not protect the holder (grace keys on the HOLDER's owner_id)", async () => {
+    await acquire({ owner: 'su-alice' });
+    await lapse('P-001');
+    await activity('su-someone-else');
+    const steal = await acquire({ owner: 'su-bob' });
+    expect(steal.ok).toBe(true);
+    expect(steal.ok && steal.claim.owner).toBe('su-bob');
+  });
+
+  it('sweepLapsedClaims skips a lapsed claim with fresh holder activity, sweeps it once the activity ages out', async () => {
+    await acquire({ owner: 'su-alice' });
+    await lapse('P-001');
+    await activity('su-alice');
+    expect(await claims.sweepLapsedClaims(WS, HARNESS)).toBe(0); // busy holder — spared
+    await db.sql`DELETE FROM harness_shared.agent_activity`;
+    await activity('su-alice', claims.CLAIM_LAPSE_ACTIVITY_GRACE_SEC + 60);
+    expect(await claims.sweepLapsedClaims(WS, HARNESS)).toBe(1); // quiet holder — reclaimed
+  });
+
+  it('a LIVE (unexpired) claim is untouched by the grace path — plain conflict, no reason', async () => {
+    await acquire({ owner: 'su-alice' });
+    await activity('su-alice');
+    const steal = await acquire({ owner: 'su-bob' });
+    expect(steal.ok).toBe(false);
+    if (steal.ok) return;
+    expect(steal.reason).toBeUndefined();
+    expect(steal.conflict.owner).toBe('su-alice');
+  });
+});

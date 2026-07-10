@@ -84,6 +84,11 @@ export interface AwaitRow {
   /** A watch whose wakes ALWAYS bypass the floor (a human-message / escalation watch).
    *  OR'd with the emit-time urgent flag onto each delivery. */
   urgency: boolean;
+  /** EI-8998: optional predicate evaluated against the emitted PAYLOAD (a
+   *  @papercusp/rules DataCondition — the same MatchMap vocabulary as an ECA
+   *  rule's `when`), in ADDITION to the key/pattern match. null = no payload
+   *  predicate (today's behavior, unchanged fast path). */
+  payloadFilter: unknown | null;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';

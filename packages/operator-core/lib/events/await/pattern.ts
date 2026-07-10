@@ -21,7 +21,7 @@
  * `expandPatternMacro` / `assertUsablePattern` at registration.
  */
 
-import { evaluateOperatorTest, type OperatorTest } from '@papercusp/rules';
+import { evaluateOperatorTest, evaluateDataCondition, type OperatorTest, type DataCondition } from '@papercusp/rules';
 
 /**
  * A registered event key is a PATTERN (not an exact key) iff it contains a glob
@@ -86,6 +86,27 @@ export function keyMatchesPattern(pattern: string, firedKey: string): boolean {
   const glob = expandPatternMacro(pattern);
   if (!glob.includes('*')) return glob === firedKey;
   return evaluateOperatorTest(patternToOperatorTest(glob), firedKey);
+}
+
+/**
+ * Does an emitted PAYLOAD satisfy a watch's payload_filter (EI-8998)? Reuses
+ * `evaluateDataCondition` — the SAME MatchMap/`all`/`any`/`not` vocabulary an
+ * ECA rule's `when` evaluates — so predicate-watch semantics stay consistent
+ * with rule conditions, same as keyMatchesPattern does for key globs above. A
+ * null/undefined filter always matches (no predicate registered). A malformed
+ * filter (author bug, e.g. not stored as a plain object) degrades to `false`
+ * rather than throwing — mirrors keyMatchesPattern's malformed-candidate
+ * guard: a best-effort emit path (fireAwaitsForKey) must never crash on bad
+ * candidate data, and a filter that can't be evaluated can never usefully
+ * match.
+ */
+export function payloadMatchesFilter(filter: unknown, payload: unknown): boolean {
+  if (filter == null) return true;
+  try {
+    return evaluateDataCondition(filter as DataCondition, payload);
+  } catch {
+    return false;
+  }
 }
 
 /**

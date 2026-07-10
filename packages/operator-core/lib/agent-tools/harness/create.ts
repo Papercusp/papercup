@@ -111,6 +111,16 @@ export default defineTool({
         .optional()
         .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of pot:add-member (which adds an EXISTING harness).'),
     })
+    // WI-3646 class fix (finding #7, instance #3 of "missing-slug → silent
+    // zero-federation"): a caller sending `hive` instead of the real `pot`
+    // field (`_create_from_repo.ts`'s `defaultCreateMember`, live-repro'd on a
+    // fresh-deb rig) had the extra key silently DROPPED by the default
+    // (non-strict) zod object — `args.pot` stayed undefined and the new
+    // harness never got `hive_slug` stamped, with NO error surfaced anywhere.
+    // `.strict()` turns any future field-name typo/drift on this schema into a
+    // loud validation error instead of a silent, undetectable no-op — closing
+    // the whole class, not just this one instance.
+    .strict()
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
       message: 'pass `path`, or both `parentDir` and `folderName`',
     })

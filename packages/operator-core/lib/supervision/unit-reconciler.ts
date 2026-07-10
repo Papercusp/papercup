@@ -118,10 +118,43 @@ export interface UnitFlapState {
    *  (mirrors service-health.ts's diffHealth pattern) so a persistent down state doesn't
    *  re-notify every 60s tick. */
   wasDown: boolean;
+  /** P-003(b) config-drift guard: has the one-time "systemd Restart= is 'no'" warning already
+   *  fired for this unit? Reset to false once the drift is observed fixed, so a re-drift warns
+   *  again (mirrors `wasDown`'s transition-only notify shape, but tracked independently — a
+   *  unit can be UP the whole time yet still have drifted Restart= policy). */
+  restartDriftWarned: boolean;
 }
 
 export function initialFlapState(unit: string): UnitFlapState {
-  return { unit, restarts: [], backoffIndex: 0, lastRestartAt: null, healthySince: null, gaveUp: false, wasDown: false };
+  return {
+    unit,
+    restarts: [],
+    backoffIndex: 0,
+    lastRestartAt: null,
+    healthySince: null,
+    gaveUp: false,
+    wasDown: false,
+    restartDriftWarned: false,
+  };
+}
+
+/**
+ * P-003(b): a supervised `autoRestart:true` unit whose LIVE systemd `Restart=` policy has
+ * drifted to `'no'` (someone/something removed or never applied the damping drop-in) silently
+ * stops being restart-managed by systemd itself — our reconciler's OWN restart action still
+ * fires, but the belt-and-suspenders systemd-level supervision is gone. PURE: given the current
+ * `Restart` property value + whether we already warned, returns whether to warn THIS tick and
+ * the next `restartDriftWarned` state (one-time until the drift is observed fixed).
+ */
+export function checkRestartPolicyDrift(
+  entry: SupervisionEntry,
+  restartProp: string | undefined,
+  alreadyWarned: boolean,
+): { warn: boolean; nextWarned: boolean } {
+  if (!entry.autoRestart) return { warn: false, nextWarned: alreadyWarned };
+  const drifted = restartProp === 'no';
+  if (drifted) return { warn: !alreadyWarned, nextWarned: true };
+  return { warn: false, nextWarned: false }; // fixed (or unknown) — clear the latch so a future re-drift warns again.
 }
 
 export type ReconcileAction =
@@ -298,21 +331,43 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     const status = byUnit.get(entry.unit);
     const state = flapStateByUnit.get(entry.unit) ?? initialFlapState(entry.unit);
 
-    // Only fetch `systemctl show` (an extra shell-out) when the unit is actually down AND we'd
-    // otherwise consider restarting it — skip the call entirely for a healthy unit or a
-    // report-only entry (autoRestart:false / flag off).
-    let show: { result?: string } | undefined;
-    if (isUnitDown(status) && autoRestartFlagOn && entry.autoRestart && !state.gaveUp) {
+    // Fetch `systemctl show` for every autoRestart:true entry — needed for BOTH the
+    // start-limit-hit check (down-path only) and the P-003(b) Restart=drift guard (every tick,
+    // healthy or not — a unit can be UP the whole time yet have drifted Restart= policy). A
+    // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
+    // check applies to it).
+    let show: { result?: string; restart?: string } | undefined;
+    if (entry.autoRestart) {
       try {
-        const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts']);
+        const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts,Restart']);
         const props = parseSystemctlShowProperties(raw);
-        show = { result: props.Result };
+        show = { result: props.Result, restart: props.Restart };
       } catch {
-        /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal" */
+        /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
+         *  the drift check below just skips this tick when `show` is unavailable. */
       }
     }
 
-    const { action, nextState } = decideReconcile({ entry, status, show, state, autoRestartFlagOn, now });
+    // P-003(b): config-drift guard, independent of up/down state.
+    const drift = checkRestartPolicyDrift(entry, show?.restart, state.restartDriftWarned);
+    if (drift.warn) {
+      await deps
+        .notify({
+          summary: `⚠ supervision: \`${entry.unit}\` systemd Restart= policy has drifted to 'no' — the unit is no longer systemd-restart-managed (config drift; re-apply the supervision drop-in)`,
+          kind: 'escalation',
+        })
+        .catch(() => {});
+    }
+    state.restartDriftWarned = drift.nextWarned;
+
+    const { action, nextState } = decideReconcile({
+      entry,
+      status,
+      show: autoRestartFlagOn && !state.gaveUp ? show : undefined,
+      state: { ...state, restartDriftWarned: drift.nextWarned },
+      autoRestartFlagOn,
+      now,
+    });
     flapStateByUnit.set(entry.unit, nextState);
     actions.push(action);
 

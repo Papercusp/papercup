@@ -121,8 +121,10 @@ export interface EmitResult {
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
 
-  // 1. One-shot fire the awaits on this key (atomic — D-002).
-  const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event' });
+  // 1. One-shot fire the awaits on this key (atomic — D-002). EI-8998: the payload is
+  // threaded through so a row carrying a payload_filter is only fired when the
+  // emitted payload actually satisfies it (rows with no filter are unaffected).
+  const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event', payload: opts.payload });
   const wakes = fired.filter((a) => a.policy === 'wake');
   const notifyAwaits = fired.filter((a) => a.policy === 'notify');
 
