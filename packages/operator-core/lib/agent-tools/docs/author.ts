@@ -176,7 +176,7 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Harness whose docs to write into. Pass 'all' (or omit in a papercusp-su session) for the Papercusp engineering reference (apps/operator-docs/...). Omit only when the session is already scoped to a harness.",
+      "Harness whose docs to write into. In a workspace-scoped papercusp-su session, omit this for the Papercusp engineering reference (apps/operator-docs/...), or pass its concrete harness slug (for example, 'papercusp'). 'all' is only valid in an unscoped (--all-workspaces) session. Omit only when the session is already scoped to a harness.",
     ),
 });
 

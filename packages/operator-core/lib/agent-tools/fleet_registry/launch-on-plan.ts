@@ -134,6 +134,36 @@ export function isOmpLocalModel(model: string | undefined): boolean {
   return /^ollama(-cc)?\//i.test(model.trim()) || /\bornith\b/i.test(model);
 }
 
+/**
+ * Return the native cloud backend for model families whose ownership is
+ * unambiguous. The cloud model-id set remains open: unknown ids return null and
+ * keep the existing caller-inheritance/fallback behavior.
+ *
+ * OMP remains allowed to run either cloud family when selected explicitly
+ * because it is a multi-provider backend.
+ */
+export function cloudModelBackendHint(model: string | undefined): 'claude' | 'codex' | null {
+  if (!model || isOmpLocalModel(model)) return null;
+  const withoutEffort = model.trim().replace(/:(low|medium|high|xhigh|max)$/i, '');
+  const base = withoutEffort.replace(/\[[^\]]+\]$/, '');
+  if (
+    /^(luna|terra|sol)$/i.test(base) ||
+    /^gpt(?:[-_.]|\d)/i.test(base) ||
+    /^o\d(?:[-_.]|$)/i.test(base) ||
+    /(?:^|[-_.\/])codex(?:[-_.\/]|$)/i.test(base)
+  ) {
+    return 'codex';
+  }
+  if (
+    /^(opus|sonnet|haiku|fable)$/i.test(base) ||
+    /^claude(?:[-_.\/]|$)/i.test(base) ||
+    /^anthropic[.\/]claude(?:[-_.\/]|$)/i.test(base)
+  ) {
+    return 'claude';
+  }
+  return null;
+}
+
 /** The three fleet-member backends (psu `--agent`). Guards an inherited caller backend. */
 const FLEET_BACKENDS = new Set(['claude', 'omp', 'codex']);
 
@@ -144,12 +174,12 @@ export type FleetAgentResolution =
 /**
  * PURE (fleet-launch-agent-inheritance-2026-07-03): resolve a fleet member's backend + model from
  * the launch args and the CURRENT calling agent's stamped backend/model. Precedence:
- *   agent = explicit `args.agent` → omp (inferred from a local/ollama model) → the CALLER's own
+ *   agent = explicit `args.agent` → backend inferred from a known model family → the CALLER's own
  *           backend (`ctx.callerAgent`, so an omp/ornith leader that omits `agent` spawns omp
  *           members, not the historical claude default) → 'claude' (last-resort fallback).
  *   model = explicit `args.model` → the CALLER's model, but ONLY when the backend was ALSO
  *           inherited (never cross a claude model onto an omp member) → the backend default.
- * Rejects an explicit claude/codex + local-model pairing (the "thought ornith, got claude" trap).
+ * Rejects explicit native-backend/model-family mismatches (the "thought X, got Y" trap).
  * Unit-tested without PG.
  */
 export function resolveFleetAgent(opts: {
@@ -167,11 +197,20 @@ export function resolveFleetAgent(opts: {
         `pass \`agent: "omp"\` (not \`agent: "${opts.argAgent}"\`). The claude/codex CLIs cannot load an ollama model id.`,
     };
   }
+  const cloudBackend = cloudModelBackendHint(argModel);
+  if (opts.argAgent && opts.argAgent !== 'omp' && cloudBackend && opts.argAgent !== cloudBackend) {
+    return {
+      error:
+        `model \`${argModel}\` belongs to the \`${cloudBackend}\` backend, but this launch requested ` +
+        `\`agent: "${opts.argAgent}"\`. Pass \`agent: "${cloudBackend}"\`, or omit \`agent\` and let ` +
+        `fleet:launch-on-plan infer it from the model family.`,
+    };
+  }
   const inherited =
     opts.callerAgent && FLEET_BACKENDS.has(opts.callerAgent)
       ? (opts.callerAgent as 'claude' | 'omp' | 'codex')
       : null;
-  const agent = opts.argAgent ?? (localModel ? 'omp' : inherited ?? 'claude');
+  const agent = opts.argAgent ?? (localModel ? 'omp' : cloudBackend ?? inherited ?? 'claude');
   // Inherit the caller's model ONLY when we also inherited its backend (no explicit agent) — else
   // an omp member would launch on omp's default, not the ornith the leader is actually running.
   const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
@@ -632,7 +671,7 @@ export default defineTool({
       .enum(['claude', 'omp', 'codex'])
       .optional()
       .describe(
-        'Backend each member runs. Default `claude` — EXCEPT it auto-becomes `omp` when `model` is a local/gateway model (ollama-cc/…, ornith), which only omp can run. To launch an ORNITH fleet, set `agent: "omp"` (with or without an ornith `model`); passing only `model: ollama-cc/…ornith` also works. An explicit `claude`/`codex` + a local model is REJECTED (that pairing silently launches the wrong backend labelled with the ornith model).',
+        'Backend each member runs. When omitted, a known model family selects its native backend (`luna`/`terra`/`sol`/`gpt-*` → `codex`; `opus`/`sonnet`/`haiku`/`fable`/`claude-*` → `claude`; local `ollama-cc/…`/ornith → `omp`), then the caller backend is inherited, with `claude` only as the final fallback. Explicit native-backend/model-family mismatches are REJECTED before terminals open; `omp` may still be selected explicitly for supported cloud providers.',
       ),
     count: z
       .number()

@@ -34,7 +34,8 @@ export const HARNESS_ALL = '*';
  * (`args: z.object({ harness: harnessArg, … })`).
  *
  * OPTIONAL at the schema level: harness-scoped sessions can omit it
- * (it's in ctx); operator-scoped calls must pass 'all' or a concrete slug.
+ * (it's in ctx); operator-scoped calls must pass a concrete slug. The `all`
+ * sentinel is available only to an unscoped (--all-workspaces) session.
  * The runtime check (harnessScopedCtx) enforces this and throws a proper
  * error message when a harness cannot be resolved.
  */
@@ -43,9 +44,10 @@ export const harnessArg = z
   .min(1)
   .optional()
   .describe(
-    "Harness slug to operate on. Pass 'all' for operator / cross-harness scope " +
-      "(e.g. Papercusp's own plans). Requires a concrete slug for that harness, or 'all' " +
-      "when operating across harnesses. (A harness-scoped session supplies this automatically.)",
+    "Harness slug to operate on. In a workspace-scoped operator/superuser session, " +
+      "pass the concrete in-scope harness slug (for example, 'papercusp' for " +
+      "Papercusp's own plans). 'all' is only valid in an unscoped (--all-workspaces) " +
+      "session. A harness-scoped session supplies this automatically.",
   );
 
 /** True when a value is the explicit all/operator-scope sentinel. */

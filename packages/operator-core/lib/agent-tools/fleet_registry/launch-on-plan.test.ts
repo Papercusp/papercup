@@ -14,6 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import launchOnPlan, {
+  cloudModelBackendHint,
   memberLaunchCommand,
   isOmpLocalModel,
   resolveFleetAgent,
@@ -179,6 +180,22 @@ describe('isOmpLocalModel (agent/model coupling — "thought ornith, got claude"
   });
 });
 
+describe('cloudModelBackendHint (native cloud model-family/backend guard)', () => {
+  it('recognizes ChatGPT/Codex families, including the owner-reported Luna spec', () => {
+    for (const model of ['gpt-5.6-luna:high', 'luna:high', 'gpt-5.6-sol', 'o3', 'gpt-5.3-codex-spark']) {
+      expect(cloudModelBackendHint(model), model).toBe('codex');
+    }
+  });
+
+  it('recognizes Claude families and leaves unknown/open-set ids unclassified', () => {
+    for (const model of ['opus:high', 'sonnet[1m]', 'claude-fable-5:xhigh', 'anthropic.claude-3-5-sonnet-v2:0']) {
+      expect(cloudModelBackendHint(model), model).toBe('claude');
+    }
+    expect(cloudModelBackendHint('future-provider/model-1')).toBeNull();
+    expect(cloudModelBackendHint('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBeNull();
+  });
+});
+
 describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
   it('an explicit `agent` arg wins over an inferred/inherited backend', () => {
     expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
@@ -192,6 +209,13 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     expect(resolveFleetAgent({ argModel: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' })).toEqual({
       agent: 'omp',
       model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+    });
+  });
+
+  it('infers codex from the exact Luna model when no agent is given (owner incident 2026-07-10)', () => {
+    expect(resolveFleetAgent({ argModel: 'gpt-5.6-luna:high', callerAgent: 'claude' })).toEqual({
+      agent: 'codex',
+      model: 'gpt-5.6-luna:high',
     });
   });
 
@@ -231,6 +255,21 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     const r = resolveFleetAgent({ argAgent: 'claude', argModel: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' });
     expect('error' in r).toBe(true);
     expect('error' in r && r.error).toMatch(/only the `omp` backend can run/);
+  });
+
+  it('rejects an explicit native cloud-backend mismatch before terminals open', () => {
+    const claudeLuna = resolveFleetAgent({ argAgent: 'claude', argModel: 'gpt-5.6-luna:high' });
+    expect('error' in claudeLuna && claudeLuna.error).toMatch(/belongs to the `codex` backend/);
+
+    const codexOpus = resolveFleetAgent({ argAgent: 'codex', argModel: 'opus:high' });
+    expect('error' in codexOpus && codexOpus.error).toMatch(/belongs to the `claude` backend/);
+  });
+
+  it('allows explicit omp for either cloud family because omp is multi-provider', () => {
+    expect(resolveFleetAgent({ argAgent: 'omp', argModel: 'gpt-5.6-luna:high' })).toEqual({
+      agent: 'omp',
+      model: 'gpt-5.6-luna:high',
+    });
   });
 });
 

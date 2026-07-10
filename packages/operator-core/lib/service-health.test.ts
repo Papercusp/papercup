@@ -122,6 +122,7 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         'mcp-proxy',
         'substrate-sidecar',
         'spawner-sidecar',
+        'embed-sidecar',
         'desktop-shell',
         'live-federation-gate',
       ].sort(),
@@ -145,7 +146,7 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
 
   it('filters by layer', () => {
     expect(supervisedProcesses({ layer: 'node-child' }).map((e) => e.name).sort()).toEqual(
-      ['spawner-sidecar', 'substrate-sidecar'].sort(),
+      ['embed-sidecar', 'spawner-sidecar', 'substrate-sidecar'].sort(),
     );
   });
 

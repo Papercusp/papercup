@@ -2,7 +2,8 @@
  * Embedder-quality gate CLI (shared-embedding-sidecar-and-enrichment-2026-07-10, P-001).
  *
  *   npx tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts \
- *     [--legs gemma,local,openai] [--sidecar http://127.0.0.1:PORT] \
+ *     [--legs gemma,local,openai,harrier,harrier384,sidecar[:model],ollama:<model>] \
+ *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
  *     [--dims 384] [--out <path.json>]
  *
  * Scores embedders head-to-head on the FROZEN gold-set fixture (corpus.v1 +
@@ -39,7 +40,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { buildGemmaEmbedder, buildLocalEmbedder } from '@papercusp/memory';
+import {
+  buildGemmaEmbedder,
+  buildHarrierEmbedder,
+  buildLocalEmbedder,
+  gemmaPrompt,
+  harrierPrompt,
+  mrlTruncate,
+  GEMMA_TARGET_DIMS,
+} from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
@@ -88,7 +97,36 @@ function sidecarLeg(url: string, model: string): Leg {
   return { name: `sidecar:${model}`, doc: call('document'), query: call('query') };
 }
 
-async function buildLegs(names: string[], sidecarUrl?: string): Promise<Array<Leg | { name: string; error: string }>> {
+/**
+ * A leg that calls a local Ollama server's native embed API (GGUF runtime — a
+ * DIFFERENT space from the ONNX build of the same weights, so it is its own
+ * leg). Prompts + dims mirror what production would do with that model
+ * family: gemma gets the asymmetric task prompts + MRL truncate-to-384;
+ * harrier gets the instruct query prefix at native dims; anything else is
+ * embedded raw at native dims.
+ */
+function ollamaLeg(url: string, model: string): Leg {
+  const family = model.includes('gemma') ? 'gemma' : model.includes('harrier') ? 'harrier' : 'raw';
+  const call = (kind: 'document' | 'query'): EmbedFn => async (text: string) => {
+    const prompted =
+      family === 'gemma' ? gemmaPrompt(kind, text) : family === 'harrier' ? harrierPrompt(kind, text) : text;
+    const res = await fetch(`${url.replace(/\/$/, '')}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input: prompted }),
+    });
+    if (!res.ok) throw new Error(`ollama_embed_${res.status}: ${await res.text().catch(() => '')}`);
+    const j = (await res.json()) as { embeddings: number[][] };
+    return family === 'gemma' ? mrlTruncate(j.embeddings[0], GEMMA_TARGET_DIMS) : j.embeddings[0];
+  };
+  return { name: `ollama:${model}`, doc: call('document'), query: call('query') };
+}
+
+async function buildLegs(
+  names: string[],
+  sidecarUrl?: string,
+  ollamaUrl = 'http://127.0.0.1:11434',
+): Promise<Array<Leg | { name: string; error: string }>> {
   const out: Array<Leg | { name: string; error: string }> = [];
   for (const name of names) {
     try {
@@ -98,6 +136,21 @@ async function buildLegs(names: string[], sidecarUrl?: string): Promise<Array<Le
           doc: buildGemmaEmbedder({ kind: 'document' }),
           query: buildGemmaEmbedder({ kind: 'query' }),
         });
+      } else if (name === 'harrier') {
+        out.push({
+          name,
+          doc: buildHarrierEmbedder({ kind: 'document' }),
+          query: buildHarrierEmbedder({ kind: 'query' }),
+        });
+      } else if (name === 'harrier384') {
+        // Exploratory truncation — harrier has NO documented MRL (P-013).
+        out.push({
+          name,
+          doc: buildHarrierEmbedder({ kind: 'document', dims: 384 }),
+          query: buildHarrierEmbedder({ kind: 'query', dims: 384 }),
+        });
+      } else if (name.startsWith('ollama:')) {
+        out.push(ollamaLeg(ollamaUrl, name.slice('ollama:'.length)));
       } else if (name === 'local') {
         const fn = await buildLocalEmbedder();
         out.push({ name, doc: fn, query: fn });
@@ -201,6 +254,7 @@ function scoreLeg(
 async function main(): Promise<void> {
   const legNames = argValue('--legs')?.split(',') ?? ['gemma', 'local'];
   const sidecarUrl = argValue('--sidecar');
+  const ollamaUrl = argValue('--ollama') ?? 'http://127.0.0.1:11434';
   const outPath =
     argValue('--out') ??
     path.join(
@@ -218,7 +272,7 @@ async function main(): Promise<void> {
   console.log(`corpus=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`);
 
   const results: Record<string, unknown> = {};
-  for (const leg of await buildLegs(legNames, sidecarUrl)) {
+  for (const leg of await buildLegs(legNames, sidecarUrl, ollamaUrl)) {
     if ('error' in leg) {
       console.log(`\n== ${leg.name}: BLOCKED (${leg.error})`);
       results[leg.name] = { blocked: leg.error };
