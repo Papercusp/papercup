@@ -593,7 +593,7 @@ describe('defaultCreateMember translates `hive` to harness:create’s real `pot`
     expect(r).toEqual({ ok: true });
     expect(capturedArgs).toBeDefined();
     expect(capturedArgs?.pot).toBe('hello-world-pot');
-    expect(capturedArgs?.pot).toBeUndefined();
+    expect(capturedArgs?.hive).toBeUndefined();
     expect(capturedArgs?.slug).toBe('hello-world');
   });
 });

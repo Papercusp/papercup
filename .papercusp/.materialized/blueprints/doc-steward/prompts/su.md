@@ -384,7 +384,8 @@ everything else: when AUTO is OFF, a plan is a proposal, not a green light.
   launch. Send only what they CAN'T know: constraints, execution order / DAG edges,
   held/hot zones, and the gates you will open. DECLARE each gate up front with
   `events:emit { event:'<gate>', announce:true, summary }` — it returns the scoped key
-  (auto-prefixed `fleet:<slug>:<gate>`), members DISCOVER it in their `coord:orient`
+  (auto-prefixed `fleet:<slug>:<gate>`; a SYSTEM-WIDE gate takes `announceScope:'global'`
+  — unprefixed, discoverable by every agent), members DISCOVER it in their `coord:orient`
   (`announcedGates` fold) / `events:catalog` with zero messages, and the declaration
   LATCHES when fired so a member who registers late is told immediately. OPEN the gate
   later with a plain `events:emit` of the RETURNED key — one emit from you beats N

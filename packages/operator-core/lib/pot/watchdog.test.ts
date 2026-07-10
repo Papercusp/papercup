@@ -33,9 +33,11 @@ vi.mock('./started', () => ({
   setPotStarted: (...a: unknown[]) => setPotStarted(...a),
 }));
 
+// harness-registry.ts is OUT OF SCOPE — the real export is isRegisteredHive
+// (watchdog.ts aliases it locally to isRegisteredPot).
 const isRegisteredPot = vi.fn();
 vi.mock('../harness-registry', () => ({
-  isRegisteredPot: (...a: unknown[]) => isRegisteredPot(...a),
+  isRegisteredHive: (...a: unknown[]) => isRegisteredPot(...a),
 }));
 
 const getDefaultWakeMode = vi.fn();
