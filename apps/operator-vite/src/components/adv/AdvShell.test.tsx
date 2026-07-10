@@ -24,9 +24,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 // nuqs: stable [value, setter] per key. State is plain module data the tests
 // seed before render; setters are spies that DON'T write back (assert-only).
+// Parsers come from the shared complete mock (EI-8821) — a bare local `{}`
+// stub here previously broke the moment a new parseAsX call was wired into
+// an always-rendered path elsewhere in the component.
 const nuqsState: Record<string, unknown> = {
   tab: 'overview',
   slug: null,
@@ -36,13 +40,11 @@ const nuqsState: Record<string, unknown> = {
 };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];
   },
-  parseAsString: {},
-  parseAsBoolean: { withDefault: () => ({}) },
-  parseAsStringEnum: () => ({ withDefault: () => ({}) }),
 }));
 
 // Live harnessProjects.lite registry list (P-010). The tests seed `projectRows`

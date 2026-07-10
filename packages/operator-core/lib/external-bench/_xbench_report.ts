@@ -12,9 +12,9 @@ import { isScoredStopReason } from './types';
 
 const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-compare-out';
 // The two arms to compare. Defaults to the P-033 real-Queen pair (hive-realqueen vs fifo-noqueen);
-// override to the P-032 pair (hive vs queen-ablated) via XBENCH_HIVE_ARM/XBENCH_ABL_ARM. Same JSON
+// override to the P-032 pair (hive vs queen-ablated) via XBENCH_POT_ARM/XBENCH_ABL_ARM. Same JSON
 // shape either way (_xbench_realqueen_compare.ts / _xbench_recover.ts emit the identical format).
-const HIVE_ARM = process.env.XBENCH_HIVE_ARM ?? 'hive-realqueen';
+const HIVE_ARM = process.env.XBENCH_POT_ARM ?? process.env.XBENCH_HIVE_ARM /* legacy env name — dual-accept until callers migrate */ ?? 'hive-realqueen';
 const ABL_ARM = process.env.XBENCH_ABL_ARM ?? 'fifo-noqueen';
 
 interface ArmRun {

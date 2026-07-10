@@ -141,6 +141,29 @@ export interface ProjectEntry {
    * fires silently).
    */
   localEndpoint?: HarnessLocalEndpoint;
+  /**
+   * WI-1937 (D-001 `launchSession`, option B — leader steer, msg mre5tvu2
+   * 2026-07-09): this project row is an EPHEMERAL registry entry for a P-104
+   * foreign-work clone (`provisionForeignClone`, p2p/foreign-clone.ts) — NOT a
+   * real harness a human registered. It exists solely so
+   * `resolveProject`/`spawnAgentInHarness` (fleet/operator-spawn.ts) can cwd a
+   * `foreign-session` spawn into the SANDBOXED clone path via the exact same
+   * registry-resolution chokepoint every other spawn uses — zero core
+   * spawn-path changes, the invariant "every spawn resolves via the registry"
+   * stays intact. Deregistered (`deregisterEphemeralForeignHarness`) when its
+   * `p2p_foreign_workspaces` row transitions to `reaped` (foreign-workspaces.ts
+   * / revocation-reaper.ts) or by `sweepOrphanedEphemeralForeignHarnesses` if
+   * that call was missed. Consumers that ENUMERATE all projects for
+   * listing/selection/default-inference MUST filter these out
+   * (`isEphemeralForeignProject`) — a slug-scoped `.find(p => p.slug === X)`
+   * lookup is unaffected and SHOULD still resolve it (that's how the spawn leg
+   * finds its clone).
+   */
+  ephemeral_foreign?: boolean;
+  /** The `p2p_foreign_workspaces` offer id this ephemeral row was registered
+   *  for (WI-1937) — the join key `deregisterEphemeralForeignHarness` /
+   *  `sweepOrphanedEphemeralForeignHarnesses` use to find/remove it. */
+  foreign_offer_id?: string;
 }
 
 /** A harness sidecar's advertised local HTTP endpoint (P-005). */
@@ -500,4 +523,101 @@ export async function mutateHarnessRegistry(
   }
   notifyRegistryChanged();
   return next;
+}
+
+// ── WI-1937 D-001 (option B): ephemeral foreign-clone registry rows ──
+// No SQL migration needed for any of this — `ProjectEntry` lives in a single
+// JSONB blob per workspace (see the module doc comment), so the two new
+// optional fields above are just a TS interface change, read/written through
+// the existing `mutateHarnessRegistry`/`loadHarnessRegistry` machinery.
+
+/** True for an ephemeral P-104 foreign-clone registry row (see
+ *  `ProjectEntry.ephemeral_foreign`). Enumeration/listing/default-inference
+ *  call-sites should filter these out; a slug-scoped lookup should not —
+ *  it's how the foreign-session spawn leg resolves its sandboxed clone. */
+export function isEphemeralForeignProject(p: Pick<ProjectEntry, 'ephemeral_foreign'>): boolean {
+  return p.ephemeral_foreign === true;
+}
+
+/** The registry slug an ephemeral foreign-clone row uses — one row per offer,
+ *  so `slug` uniqueness (the registry's PK) doubles as the per-offer claim. */
+export function ephemeralForeignHarnessSlug(offerId: string): string {
+  return `foreign-${offerId}`;
+}
+
+/**
+ * WI-1937 D-001 option B: register an EPHEMERAL harness_registry row for a
+ * P-104 foreign-work clone so `resolveProject`/`spawnAgentInHarness` can cwd a
+ * `foreign-session` spawn into the sandboxed clone path via the same
+ * registry-resolution chokepoint every other spawn uses. Upsert-by-slug
+ * (idempotent on the offer id — `mutateHarnessRegistry`'s dedupe collapses a
+ * re-register to the latest row).
+ */
+export async function registerEphemeralForeignHarness(
+  offerId: string,
+  clonePath: string,
+  workspaceId?: string,
+): Promise<ProjectEntry> {
+  const slug = ephemeralForeignHarnessSlug(offerId);
+  const entry: ProjectEntry = {
+    slug,
+    path: clonePath,
+    ephemeral_foreign: true,
+    foreign_offer_id: offerId,
+  };
+  await mutateHarnessRegistry(
+    (reg) => ({ ...reg, projects: [...reg.projects.filter((p) => p.slug !== slug), entry] }),
+    workspaceId,
+  );
+  return entry;
+}
+
+/**
+ * WI-1937: deregister the ephemeral harness row for a reaped/parked foreign
+ * clone. Idempotent and never throws on a missing row — "already gone" is a
+ * success, not an error (a raced double-deregister, e.g. reap path + orphan
+ * sweep both firing, must not blow up either caller).
+ */
+export async function deregisterEphemeralForeignHarness(
+  offerId: string,
+  workspaceId?: string,
+): Promise<boolean> {
+  const slug = ephemeralForeignHarnessSlug(offerId);
+  let removed = false;
+  await mutateHarnessRegistry((reg) => {
+    const next = reg.projects.filter((p) => p.slug !== slug);
+    removed = next.length !== reg.projects.length;
+    return { ...reg, projects: next };
+  }, workspaceId);
+  return removed;
+}
+
+/**
+ * WI-1937 orphan sweep: an ephemeral foreign-harness row whose
+ * `p2p_foreign_workspaces` row is gone or already `reaped` is a LEAK (the
+ * reap path's deregister call was missed, e.g. a crash between the state
+ * transition and the deregister) — remove it. `checkLive` is injected
+ * (production callers wire `getForeignWorkspaceByOffer`, p2p/foreign-workspaces.ts
+ * — kept out of THIS module's import graph so harness-registry.ts, a
+ * generic/foundational lib, never depends on the p2p package) so this stays
+ * unit-testable without PG. Run it on the same schedule as the P-106
+ * supervision sweep (`superviseForeignSessions`, foreign-supervision.ts).
+ */
+export async function sweepOrphanedEphemeralForeignHarnesses(
+  workspaceId: string | undefined,
+  checkLive: (offerId: string) => Promise<{ state: string } | null>,
+): Promise<{ swept: number; removed: string[] }> {
+  const reg = await loadHarnessRegistry(workspaceId, { fresh: true });
+  const ephemeral = reg.projects.filter(isEphemeralForeignProject);
+  const removed: string[] = [];
+  for (const p of ephemeral) {
+    const offerId = p.foreign_offer_id;
+    if (!offerId) continue; // malformed row — leave for manual inspection, don't guess
+    const ws = await checkLive(offerId).catch(() => null);
+    if (!ws || ws.state === 'reaped') {
+      const didRemove = await deregisterEphemeralForeignHarness(offerId, workspaceId);
+      if (didRemove) removed.push(offerId);
+    }
+  }
+  return { swept: ephemeral.length, removed };
 }

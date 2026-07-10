@@ -278,11 +278,17 @@ lives in the wrapper script; this recipe needs **no cluster env var at
 all**. Verify after boot: `ss -tlnp | grep 3370` must show exactly **ONE**
 listener PID.
 
-Separately, if you ever DO need to pass this var directly to `hono-host.ts`
-(bypassing the Tauri wrapper), know that `'1'` does **not** mean "one
-worker" — `resolveClusterWorkers` treats `'1'` the same as `'auto'`/`'on'`/`'true'`
-(clustering **ON** at the host's recommended, often worker-per-core, count).
-Only `'0'`/`'off'`/`'false'` force single-process.
+(EI-8817, fixed 2026-07-09: `'1'` used to alias `'auto'`/`'on'`/`'true'`
+— clustering **ON** at the host's recommended, often worker-per-core, count
+— instead of "one worker", and that mismatch is what turned an earlier
+`PAPERCUSP_CLUSTER_WORKERS=1` fix attempt into the same-day recurrence
+above. `resolveClusterWorkers` now treats `'1'` as exactly one worker, same
+as any other explicit positive number; only `'auto'`/`'on'`/`'true'` mean
+"use the host's recommended count". The **shadowing** hazard above is
+unaffected by this fix — any nonzero `PAPERCUSP_CLUSTER_WORKERS` in your
+shell still bypasses the wrapper's `PAPERCUSP_CLUSTER=0` pin regardless of
+its value — so the advice stands: pass **no** cluster env var to this
+recipe at all.)
 </Aside>
 
 ### 1.4 Stale Vite cache

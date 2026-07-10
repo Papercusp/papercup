@@ -18,7 +18,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
-import { writeToSentinelPane, isExitedPaneScreen } from '../../../sentinel/sentinel-pane-input';
+import { writeToSentinelPane, isExitedPaneScreen } from '../../../papercup/papercup-pane-input';
 
 // Re-exported so existing consumers/tests of the route module keep working.
 export { isExitedPaneScreen };

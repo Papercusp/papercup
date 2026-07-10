@@ -71,7 +71,7 @@ export async function resetHiveControlPolicy(): Promise<void> {
 }
 
 registerOverrideConcern({
-  name: 'hive-control-policy',
+  name: 'pot-control-policy',
   description: 'hive placement-watchdog thresholds (breaker / recovery-debounce / dormancy-grace / infra-breaker)',
   auditAction: 'pot:control_policy',
   diff: async () => {

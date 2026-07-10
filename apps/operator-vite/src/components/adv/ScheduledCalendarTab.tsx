@@ -104,7 +104,7 @@ export default function ScheduledCalendarTab() {
   // picker — pick an unscheduled plan to give it a first schedule.
   // Workspace-wide plan picker (D-020 item 3): fan plans.list across every harness
   // so an unscheduled plan in a NON-primary pot is schedulable too (the same
-  // projects/lite source QueenTab uses). LIVE-queried lazily — `enabled: pickerOpen`
+  // projects/lite source MugTab uses). LIVE-queried lazily — `enabled: pickerOpen`
   // keeps the cross-harness fan-out off until the picker opens, and the registry
   // list now auto-updates on create/delete/rename/fork (EI-206, data-sync-push
   // P-010) instead of the old one-shot fetch.

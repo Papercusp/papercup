@@ -136,10 +136,16 @@ export interface PlacementConfig {
 }
 
 export function placementConfig(): PlacementConfig {
-  const threshold = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_BREAKER ?? 3);
-  const debounce = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DEBOUNCE_MS ?? 5 * 60_000);
-  const dormancy = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_DORMANCY_MS ?? 10 * 60_000);
-  const infra = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_INFRA_BREAKER ?? 12);
+  const threshold = Number(process.env.PAPERCUSP_POT_PLACEMENT_BREAKER ?? process.env.PAPERCUSP_HIVE_PLACEMENT_BREAKER ?? 3);
+  const debounce = Number(
+    process.env.PAPERCUSP_POT_PLACEMENT_DEBOUNCE_MS ?? process.env.PAPERCUSP_HIVE_PLACEMENT_DEBOUNCE_MS ?? 5 * 60_000,
+  );
+  const dormancy = Number(
+    process.env.PAPERCUSP_POT_PLACEMENT_DORMANCY_MS ?? process.env.PAPERCUSP_HIVE_PLACEMENT_DORMANCY_MS ?? 10 * 60_000,
+  );
+  const infra = Number(
+    process.env.PAPERCUSP_POT_PLACEMENT_INFRA_BREAKER ?? process.env.PAPERCUSP_HIVE_PLACEMENT_INFRA_BREAKER ?? 12,
+  );
   return {
     breakerThreshold: Number.isFinite(threshold) && threshold >= 1 ? threshold : 3,
     recoveryDebounceMs: Number.isFinite(debounce) && debounce >= 0 ? debounce : 5 * 60_000,
@@ -161,7 +167,9 @@ export function placementConfig(): PlacementConfig {
  * model call) is. The reclaim of such a bee re-places the unit but does NOT count
  * toward the placement curse. Env-overridable like the other watchdog tunables. */
 export const ACTIVE_RECLAIM_WINDOW_MS = (() => {
-  const v = Number(process.env.PAPERCUSP_HIVE_ACTIVE_RECLAIM_WINDOW_MS ?? 15 * 60_000);
+  const v = Number(
+    process.env.PAPERCUSP_POT_ACTIVE_RECLAIM_WINDOW_MS ?? process.env.PAPERCUSP_HIVE_ACTIVE_RECLAIM_WINDOW_MS ?? 15 * 60_000,
+  );
   return Number.isFinite(v) && v >= 0 ? v : 15 * 60_000;
 })();
 
@@ -1503,7 +1511,9 @@ async function reconcileStrandedWork(
  *  overdue instead of making every reader re-derive the staleness by hand.
  *  Env-overridable like the other watchdog tunables. */
 export const DEFAULT_STALE_RECOVERING_MS = (() => {
-  const v = Number(process.env.PAPERCUSP_HIVE_PLACEMENT_STALE_MS ?? 24 * 60 * 60_000);
+  const v = Number(
+    process.env.PAPERCUSP_POT_PLACEMENT_STALE_MS ?? process.env.PAPERCUSP_HIVE_PLACEMENT_STALE_MS ?? 24 * 60 * 60_000,
+  );
   return Number.isFinite(v) && v >= 0 ? v : 24 * 60 * 60_000;
 })();
 

@@ -11,7 +11,7 @@
  *    what she may auto-decide.
  *  - Cursed-item breaker — READ-ONLY display of the live placement-watchdog breaker
  *    threshold (failed placements before a work-item is cursed; default 3,
- *    PAPERCUSP_HIVE_PLACEMENT_BREAKER). Arrives on the `hive.steering` row as
+ *    PAPERCUSP_POT_PLACEMENT_BREAKER). Arrives on the `hive.steering` row as
  *    `throttleDefaults.breakerThreshold` (P-006) so it's the live value, not a guess.
  *  - Decomposition aggressiveness — the one writable lever (serial ↔ parallel), an
  *    ADVISORY steering knob written through `pot:set-steering { decomposition }`
@@ -152,7 +152,7 @@ export default function AutonomySurfacing({
             <div className="pc-queen__scope">
               A work-item is <strong>cursed</strong> (dropped from the frontier) after <strong>{breaker}</strong> failed placements.
             </div>
-            <span className="pc-queen__hint">System value (PAPERCUSP_HIVE_PLACEMENT_BREAKER, default 3). A reaper-reclaim of a still-alive bee no longer counts (F-FIX-038).</span>
+            <span className="pc-queen__hint">System value (PAPERCUSP_POT_PLACEMENT_BREAKER, default 3). A reaper-reclaim of a still-alive bee no longer counts (F-FIX-038).</span>
           </div>
 
           {/* Decomposition aggressiveness (advisory, writable) */}

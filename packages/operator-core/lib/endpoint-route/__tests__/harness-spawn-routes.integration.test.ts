@@ -283,9 +283,9 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
 
   // P-071 smoke regression (local-hive-orchestration, 2026-06-10): the route
   // silently dropped fireLaunchBlueprint's `kickoff`, so the Queen woke with no
-  // idea why. It now threads to the child as QUEEN_BRIEF (the same channel
+  // idea why. It now threads to the child as MUG_BRIEF (the same channel
   // cup:spawn uses for the Queen brief → buildPrompt's situational overlay).
-  it('threads body.kickoff to the child as extraEnv.QUEEN_BRIEF', async () => {
+  it('threads body.kickoff to the child as extraEnv.MUG_BRIEF', async () => {
     const res = await appWith(invoke).request(
       '/harness/papercup/invoke?role=worker',
       post({ kickoff: 'Wake (manual): run the placement smoke.' }),
@@ -293,16 +293,16 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200);
     expect(buildInvokeOnce).toHaveBeenCalledWith(
       expect.objectContaining({
-        extraEnv: expect.objectContaining({ QUEEN_BRIEF: 'Wake (manual): run the placement smoke.' }),
+        extraEnv: expect.objectContaining({ MUG_BRIEF: 'Wake (manual): run the placement smoke.' }),
       }),
     );
   });
 
-  it('omits QUEEN_BRIEF when no kickoff is sent', async () => {
+  it('omits MUG_BRIEF when no kickoff is sent', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
     expect(res.status).toBe(200);
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF');
   });
 
   // EI-7871 (WI-3082 follow-up): this route is the one chokepoint every
@@ -328,19 +328,19 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv).toMatchObject({ PAPERCUSP_TURN_TRIGGER: 'coord-wake' });
   });
 
-  // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay. For the QUEEN's own
+  // EI-506: MUG_BRIEF is the Queen→BEE situational overlay. For the QUEEN's own
   // wake the kickoff is a terse wake-reason that would render as a misleading
   // self-addressed overlay — and her wake reason is already in the wake brief's
-  // "Woke by:" line. So when she HAS a wake brief, QUEEN_BRIEF is suppressed.
-  it('EI-506: suppresses QUEEN_BRIEF for a queen wake that carries a wake brief', async () => {
+  // "Woke by:" line. So when she HAS a wake brief, MUG_BRIEF is suppressed.
+  it('EI-506: suppresses MUG_BRIEF for a queen wake that carries a wake brief', async () => {
     const res = await appWith(invoke).request(
       '/harness/papercup/invoke?role=queen',
       post({ kickoff: 'timer', queenBrief: '## Your wake brief\n**Woke by:** timer\n### Frontier — ready' }),
     );
     expect(res.status).toBe(200);
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
-    expect(arg?.extraEnv).toMatchObject({ QUEEN_WAKE_BRIEF: expect.stringContaining('Woke by') });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF');
+    expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
     // WI-682: a pre-supplied body.queenBrief is respected verbatim — no recompute.
     expect(computeQueenWakeBrief).not.toHaveBeenCalled();
   });
@@ -356,8 +356,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200);
     expect(computeQueenWakeBrief).toHaveBeenCalledWith(expect.any(String), 'papercup', { wokeBy: 'timer' });
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
-    expect(arg?.extraEnv).toMatchObject({ QUEEN_WAKE_BRIEF: expect.stringContaining('Woke by') });
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF'); // EI-506 suppression applies to the computed brief too
+    expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF'); // EI-506 suppression applies to the computed brief too
   });
 
   it('WI-682: a non-queen invoke never computes a Queen wake brief', async () => {
@@ -368,15 +368,15 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
 
   // EI-506 fallback: if the wake brief is absent (best-effort compute failed — the
   // computeQueenWakeBrief mock defaults to null here), the kickoff is still threaded
-  // as QUEEN_BRIEF so the queen isn't left with no idea why she woke (preserves the
+  // as MUG_BRIEF so the queen isn't left with no idea why she woke (preserves the
   // P-071 "why you woke" signal).
-  it('EI-506: keeps QUEEN_BRIEF for a queen wake whose brief compute degrades to null', async () => {
+  it('EI-506: keeps MUG_BRIEF for a queen wake whose brief compute degrades to null', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
     expect(res.status).toBe(200);
     expect(computeQueenWakeBrief).toHaveBeenCalledTimes(1); // it tried — the route-side seam is live
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
-    expect(arg?.extraEnv).toMatchObject({ QUEEN_BRIEF: 'timer' });
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_WAKE_BRIEF');
+    expect(arg?.extraEnv).toMatchObject({ MUG_BRIEF: 'timer' });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_WAKE_BRIEF');
   });
 
   // 2026-07-01 (the gpt-5.4 switch): codex hive launches now ALSO mint a uuid —

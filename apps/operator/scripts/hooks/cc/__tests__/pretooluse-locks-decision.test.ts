@@ -225,4 +225,42 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     // coordinated — the guard passes them through without acquiring a lock.
     expect(fs.existsSync(join(cache, 'tu-iso.lock'))).toBe(false);
   });
+
+  it('worktree guard (EI-8820): refuses an edit in a LINKED WORKTREE of the canonical tree registered ANYWHERE on disk', async () => {
+    // Reproduces the live strand: a per-workspace ephemeral checkout
+    // (`~/.papercusp-workspaces/<ws>/.papercusp/env-trees/<name>`) is a
+    // linked worktree of the canonical tree, but its parent dir is NEITHER
+    // the workspace root NOR inside the canonical tree — so the old
+    // sibling-of-workspace-root check missed it entirely and it fell
+    // through as an unrelated "foreign" repo (silently allowed, never
+    // git-sync committed). Simulate the linked-worktree structure via the
+    // gitdir/commondir pointer files git itself uses — no real `git
+    // worktree add` needed.
+    const wtGitDir = join(ws, 'sim-git-worktrees', 'staging');
+    fs.mkdirSync(wtGitDir, { recursive: true });
+    // commondir points back at the canonical tree's `.git` — the same
+    // pointer `git worktree add` writes for a real linked worktree.
+    fs.writeFileSync(join(wtGitDir, 'commondir'), `${join(repo, '.git')}\n`);
+
+    const elsewhere = join(ws, 'unrelated-parent', '.papercusp', 'env-trees', 'staging');
+    fs.mkdirSync(join(elsewhere, 'sub'), { recursive: true });
+    fs.writeFileSync(join(elsewhere, '.git'), `gitdir: ${wtGitDir}\n`);
+
+    nextInner = { ok: true, lock_id: 'should-not-be-acquired' }; // operator would grant…
+    const r = await run({
+      tool_name: 'Edit',
+      tool_input: { file_path: join(elsewhere, 'sub/x.ts') },
+      tool_use_id: 'tu-linked-elsewhere',
+      session_id: 's',
+      cwd: elsewhere,
+    });
+    expect(r.status).toBe(0); // deny emits JSON then exits 0
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('worktree guard');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('LINKED WORKTREE');
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('canonical staging tree');
+    // …but the guard fired first, so no lock was acquired/cached.
+    expect(fs.existsSync(join(cache, 'tu-linked-elsewhere.lock'))).toBe(false);
+  });
 });

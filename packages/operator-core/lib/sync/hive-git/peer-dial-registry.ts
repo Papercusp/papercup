@@ -38,9 +38,24 @@
  * `wireHiveGitServe` (swarm.ts's connection handler).
  */
 import { Duplex } from 'node:stream';
+import { appendFileSync } from 'node:fs';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding } from 'compact-encoding';
 import { openHiveGitFetchDuplex } from './serve-wiring';
+
+// TEMP debug trace (WI-3583 diagnosis) — writes to a file, NOT console.error,
+// because this repo's vitest setup (vitest-fail-on-console) fails any test
+// that calls console.error, which a raw debug log would trip. Gated on
+// HGDEBUG like serve-wiring.ts's own tracing; to be removed once the root
+// cause is confirmed & the fix lands.
+function dbg(...args: unknown[]): void {
+  if (!process.env.HGDEBUG) return;
+  try {
+    appendFileSync('/tmp/hgdial-trace.log', `${new Date().toISOString()} ${JSON.stringify(args)}\n`);
+  } catch {
+    /* best-effort */
+  }
+}
 
 export const HIVE_GIT_HELLO_PROTOCOL = 'papercusp/hive-git-hello';
 
@@ -135,12 +150,20 @@ function newState(): ChannelState {
 }
 
 function maybeSendHello(state: ChannelState): void {
+  dbg('maybeSendHello', {
+    opened: state.opened,
+    helloSent: state.helloSent,
+    hasSelf: !!state.selfDevicePubkeyBase64,
+    hasHello: !!state.hello,
+    self: state.selfDevicePubkeyBase64?.slice(0, 8),
+  });
   if (!state.opened || state.helloSent || !state.selfDevicePubkeyBase64 || !state.hello) return;
   try {
     state.hello.send({ device_pubkey: state.selfDevicePubkeyBase64 });
     state.helloSent = true;
-  } catch {
-    /* best-effort */
+    dbg('hello sent OK', { self: state.selfDevicePubkeyBase64.slice(0, 8) });
+  } catch (e) {
+    dbg('hello send THREW', { err: String(e) });
   }
 }
 
@@ -154,19 +177,23 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
+  dbg('[HGDEBUG-dial] ensureChannel: calling createChannel', { topicHex });
   const channel: ProtomuxChannel | null = mux.createChannel({
     protocol: HIVE_GIT_HELLO_PROTOCOL,
     id: topic,
     onopen: () => {
+      dbg('[HGDEBUG-dial] onopen fired', { topicHex });
       state!.opened = true;
       const waiters = state!.openedWaiters.splice(0);
       for (const w of waiters) w();
       maybeSendHello(state!);
     },
     onclose: () => {
+      dbg('[HGDEBUG-dial] onclose fired', { topicHex });
       if (state!.remoteDevicePubkey) registryFor(topicHex).delete(state!.remoteDevicePubkey);
     },
   });
+  dbg('[HGDEBUG-dial] createChannel returned', { topicHex, channel: !!channel });
   if (!channel) {
     // Defensive: a (protocol,id) collision on this muxer (shouldn't happen —
     // HIVE_GIT_HELLO_PROTOCOL is private to this module). Fail soft rather
@@ -177,6 +204,7 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   state.hello = channel.addMessage<HelloFrame>({
     encoding: helloEncoding,
     onmessage: (v) => {
+      dbg('[HGDEBUG-dial] hello received', { topicHex, from: v.device_pubkey.slice(0, 8), hasLocalSocket: !!state!.localSocket });
       state!.remoteDevicePubkey = v.device_pubkey;
       // `localSocket` is set by `wireHiveGitDial`'s register() — normally
       // already populated by the time a peer's hello arrives (both run at
@@ -188,6 +216,7 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     },
   });
   channel.open();
+  dbg('[HGDEBUG-dial] channel.open() called', { topicHex });
   return state;
 }
 
@@ -244,9 +273,12 @@ function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<un
  */
 export function wireHiveGitDial(socket: unknown, topic: Buffer, selfDevicePubkeyBase64: string): void {
   try {
+    dbg('[HGDEBUG-dial] wireHiveGitDial called', { self: selfDevicePubkeyBase64.slice(0, 8) });
     const { mux, opened } = resolveMuxStream(socket);
+    dbg('[HGDEBUG-dial] resolved mux', { hasOpened: !!opened });
     const register = (): void => {
       try {
+        dbg('[HGDEBUG-dial] register() running');
         const state = ensureChannel(mux, topic);
         state.selfDevicePubkeyBase64 = selfDevicePubkeyBase64;
         state.localSocket = socket;
@@ -255,13 +287,16 @@ export function wireHiveGitDial(socket: unknown, topic: Buffer, selfDevicePubkey
         // this register() ran) — send now if so; otherwise `onopen` itself
         // calls `maybeSendHello` once it fires.
         maybeSendHello(state);
-      } catch {
+        dbg('[HGDEBUG-dial] register() done', { opened: state.opened, helloSent: state.helloSent });
+      } catch (e) {
+        dbg('[HGDEBUG-dial] register() threw', e);
         /* best-effort */
       }
     };
     if (opened && typeof opened.then === 'function') void opened.then(register, register);
     else register();
-  } catch {
+  } catch (e) {
+    dbg('[HGDEBUG-dial] wireHiveGitDial threw', e);
     /* best-effort — dial registration is additive, never breaks the swarm connection */
   }
 }

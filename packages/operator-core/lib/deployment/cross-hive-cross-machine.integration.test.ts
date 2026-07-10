@@ -56,7 +56,7 @@ afterEach(async () => {
 function spawnFrameLocal(cfg: unknown): { proc: ChildProcess; lines: string[] } {
   const lines: string[] = [];
   const proc = spawn('node', ['--import', 'tsx', FRAME_PATH], {
-    env: { ...process.env, XHIVE_FRAME: JSON.stringify(cfg), NODE_ENV: 'test' },
+    env: { ...process.env, XPOT_FRAME: JSON.stringify(cfg), NODE_ENV: 'test' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let buf = '';
@@ -161,7 +161,7 @@ describe.skipIf(!haveHetzner)(
           const launchRemote = (frameIdx: number, cfg: unknown) => {
             const lines: string[] = [];
             const remoteCommand =
-              `cd ${shq(benchRuntimeDir())} && XHIVE_FRAME=${shq(JSON.stringify(cfg))} NODE_ENV=test ` +
+              `cd ${shq(benchRuntimeDir())} && XPOT_FRAME=${shq(JSON.stringify(cfg))} NODE_ENV=test ` +
               `exec node --import tsx ${shq(framePath)}`;
             const target = { ...fleet.frames[frameIdx].target, sudo: false };
             const { cmd, args } = buildSshStreamArgs(target, remoteCommand);

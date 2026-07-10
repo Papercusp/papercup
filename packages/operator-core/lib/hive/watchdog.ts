@@ -38,7 +38,7 @@ import { getHiveStarted, listStartedWorkspaceLoops } from './started';
 /** The fallback sleep the watchdog arms when the Queen forgot to declare
  *  (D-004 / OQ-3: default 30 min — failing toward "sleeps too long" is cheap). */
 export function watchdogFallbackSleepSec(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_WATCHDOG_SLEEP_SEC ?? 1800);
+  const n = Number(process.env.PAPERCUSP_POT_WATCHDOG_SLEEP_SEC ?? process.env.PAPERCUSP_HIVE_WATCHDOG_SLEEP_SEC ?? 1800);
   return Number.isFinite(n) && n >= 60 ? n : 1800;
 }
 
@@ -49,7 +49,9 @@ export function watchdogFallbackSleepSec(): number {
  *  ~30 min per gap; there was no fast crash re-wake). Floored at the wake floor (60s). The demand GATE (never
  *  wake an empty frontier) still applies, so an IDLE hive keeps the long sleep and isn't hammered. */
 export function watchdogDemandSleepSec(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_WATCHDOG_DEMAND_SLEEP_SEC ?? 120);
+  const n = Number(
+    process.env.PAPERCUSP_POT_WATCHDOG_DEMAND_SLEEP_SEC ?? process.env.PAPERCUSP_HIVE_WATCHDOG_DEMAND_SLEEP_SEC ?? 120,
+  );
   return Number.isFinite(n) && n >= 60 ? n : 120;
 }
 
@@ -57,7 +59,7 @@ export function watchdogDemandSleepSec(): number {
  *  routinesTick sweep fires (OQ-3: default 15 min). The turn-end + boot seams
  *  don't wait this out — they KNOW the turn just ended / the host just booted. */
 export function watchdogStaleSec(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_WATCHDOG_STALE_SEC ?? 900);
+  const n = Number(process.env.PAPERCUSP_POT_WATCHDOG_STALE_SEC ?? process.env.PAPERCUSP_HIVE_WATCHDOG_STALE_SEC ?? 900);
   return Number.isFinite(n) && n >= 30 ? n : 900;
 }
 
@@ -509,15 +511,22 @@ export async function hiveWatchdogSweep(opts: { now?: number } = {}): Promise<Fa
  *  a deliberate brief pause. Default 24h; env-tunable; <= 0 DISABLES the whole
  *  paused-recovery sweep (kill switch). */
 export function pausedRecoveryStaleSec(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC ?? 86_400);
+  const n = Number(process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC ?? process.env.PAPERCUSP_HIVE_PAUSED_RECOVERY_SEC ?? 86_400);
   return Number.isFinite(n) ? n : 86_400;
 }
 
 /** Whether a detected silent-paused-outage is AUTO-RESUMED (default) or only
- *  ALERTED. Set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off to alert-without-resuming
- *  (respect a deliberate long pause while still surfacing it loudly). */
+ *  ALERTED. Set PAPERCUSP_POT_PAUSED_AUTO_RESUME=off to alert-without-resuming
+ *  (respect a deliberate long pause while still surfacing it loudly; legacy
+ *  PAPERCUSP_HIVE_PAUSED_AUTO_RESUME still accepted). */
 export function pausedRecoveryAutoResume(): boolean {
-  const v = (process.env.PAPERCUSP_HIVE_PAUSED_AUTO_RESUME ?? 'on').trim().toLowerCase();
+  const v = (
+    process.env.PAPERCUSP_POT_PAUSED_AUTO_RESUME ??
+    process.env.PAPERCUSP_HIVE_PAUSED_AUTO_RESUME ??
+    'on'
+  )
+    .trim()
+    .toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false');
 }
 
@@ -546,7 +555,7 @@ export function shouldActOnPausedHive(args: {
 /** Whether a paused hive should actually be AUTO-RESUMED this sweep (vs
  *  alert-only) — the global knob AND-ed with "this pause wasn't deliberate"
  *  (WI-3261: an owner-initiated pause, e.g. via pot:pause, is never
- *  auto-resumed regardless of the global PAPERCUSP_HIVE_PAUSED_AUTO_RESUME
+ *  auto-resumed regardless of the global PAPERCUSP_POT_PAUSED_AUTO_RESUME
  *  knob — "paused past threshold + demand queued" is exactly what an
  *  intentional pause with queued work looks like, so demand can't be the
  *  resume signal for it). Pure so it's testable without the DB. */
@@ -568,7 +577,7 @@ async function alertOwnerPausedOutage(opts: {
     if (!owner) return;
     const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
     const tail = opts.autoResume
-      ? 'Auto-resuming it now. If the pause was intentional, pot:pause again or set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off.'
+      ? 'Auto-resuming it now. If the pause was intentional, pot:pause again or set PAPERCUSP_POT_PAUSED_AUTO_RESUME=off.'
       : 'Left paused (auto-resume disabled). pot:start to resume.';
     await wakeRecipients([owner], {
       summary: `⚠️ Hive "${opts.installSlug}" ${opts.reason}. ${tail}`,

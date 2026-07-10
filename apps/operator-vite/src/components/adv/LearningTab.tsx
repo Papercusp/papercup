@@ -51,7 +51,7 @@ import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-r
 import type { HiveSoakReportSnapshot } from '@papercusp/operator-core/lib/hive/soak-report';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
-import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/hive-eval/bakeoff-trend';
+import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/pot-eval/bakeoff-trend';
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
 import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';

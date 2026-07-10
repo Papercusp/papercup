@@ -5,7 +5,7 @@
  * PostHog/defaults. The store is injected (Papercusp wires a PG-backed one
  * in operator-core's flag-bus); here a fake in-memory store stands in.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearAllFlagOverrides,
@@ -14,6 +14,7 @@ import {
   initFlagBackend,
   initFlagOverrideStore,
   isOverrideStoreConfigured,
+  resetOverrideStoreWarningForTest,
   setFlagOverride,
   type FlagOverrideStore,
 } from './server';
@@ -193,5 +194,88 @@ describe('flag override store', () => {
     expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]);
     const r = await setFlagOverride(KEY, true);
     expect(r.ok).toBe(false);
+  });
+});
+
+/**
+ * EI-8867 — the read path must be as honest as the write path.
+ *
+ * Root cause recap: `setFlagOverride()` reports `override-store-not-configured`, but
+ * `loadStoredOverrides()` silently returned `{}` — so a process with no store served
+ * FLAG_DEFAULTS while `flags:set` (run in the operator process, which HAS a store) reported
+ * success. No single process saw the contradiction. The inference gateway sat in exactly this
+ * state and a dark flag "wouldn't turn on" with nothing logged.
+ */
+describe('EI-8867: missing override store is announced, once', () => {
+  // The warn is suppressed under test runners by design, so exercise it the way a real
+  // process sees it: with the runner env stubbed off.
+  function asRealProcess(fn: () => Promise<void> | void) {
+    return async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('VITEST', '');
+      vi.stubEnv('PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN', '');
+      try {
+        await fn();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+  }
+
+  beforeEach(() => {
+    initFlagOverrideStore(null); // the buggy state: no store
+    resetOverrideStoreWarningForTest();
+  });
+  afterEach(() => {
+    initFlagOverrideStore(null);
+    vi.restoreAllMocks();
+  });
+
+  it('warns exactly ONCE per process even across many getFlag() reads', asRealProcess(async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getFlag(KEY, 'u');
+    await getFlag(KEY, 'u');
+    await getAllFlags('u');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/serving FLAG_DEFAULTS/);
+  }));
+
+  it('still fails SOFT — a missing store degrades to defaults, never throws', asRealProcess(async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(getFlag(KEY, 'u')).resolves.toBe(FLAG_DEFAULTS[KEY]);
+  }));
+
+  it('does NOT warn once a store is installed (the fixed state)', asRealProcess(async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    initFlagOverrideStore(makeFakeStore({ [KEY]: true }).store);
+    expect(await getFlag(KEY, 'u')).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  }));
+
+  it('re-arms after a LATE install so an early read never permanently mutes it', asRealProcess(async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getFlag(KEY, 'u'); // warns (no store)
+    expect(warn).toHaveBeenCalledTimes(1);
+    initFlagOverrideStore(makeFakeStore().store); // late install re-arms the latch
+    initFlagOverrideStore(null); // ...and the store is torn down again
+    await getFlag(KEY, 'u');
+    expect(warn).toHaveBeenCalledTimes(2);
+  }));
+
+  it('is silent under the env opt-out, and the opt-out does not consume the one shot', asRealProcess(async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubEnv('PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN', '1');
+    await getFlag(KEY, 'u');
+    expect(warn).not.toHaveBeenCalled();
+    // Un-silence: the latch must NOT have been burned by the suppressed call.
+    vi.stubEnv('PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN', '');
+    await getFlag(KEY, 'u');
+    expect(warn).toHaveBeenCalledTimes(1);
+  }));
+
+  it('is silent under a test runner (why this suite stubs the env at all)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getFlag(KEY, 'u');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

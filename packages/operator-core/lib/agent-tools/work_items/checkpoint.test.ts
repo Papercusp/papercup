@@ -11,7 +11,7 @@
  * { ok, results:[{ ok, id, … | error }], counts } — assertions read results[0], not
  * the top level.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 const setWorkItemCheckpoint = vi.fn();
 const getWorkItem = vi.fn();
@@ -29,8 +29,21 @@ vi.mock('../../work-items', () => ({
   markFeatureProgress: () => Promise.resolve(true),
   markIssueProgress: () => Promise.resolve(true),
 }));
-
 import checkpoint from './checkpoint';
+
+// EI-8824: force activeWorkspaceId()'s deterministic env-pin precedence (workspace-registry.ts
+// precedence #2) instead of mocking the workspace-registry module — resolveConcreteWorkspaceId
+// and activeWorkspaceId are same-module internal calls, so overriding the module's exports via
+// vi.mock does NOT intercept the internal call resolveConcreteWorkspaceId makes to
+// activeWorkspaceId(); only an out-of-module signal (the env var) actually steers it.
+const PRIOR_WS_ENV = process.env.PAPERCUSP_WORKSPACE_ID;
+beforeEach(() => {
+  process.env.PAPERCUSP_WORKSPACE_ID = 'resolved-concrete-ws';
+});
+afterAll(() => {
+  if (PRIOR_WS_ENV === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = PRIOR_WS_ENV;
+});
 
 const baseCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' } as never;
 const noHarnessCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default' };
@@ -139,6 +152,23 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(r.ok).toBe(false);
     expect(r.id).toBe('WI-404');
     expect(r.error).toContain('could not resolve a harness');
+  });
+
+  it('EI-8824: an unscoped superuser session (ctx.workspaceId "*") never persists the literal wildcard — resolves to the concrete active workspace instead', async () => {
+    // Repro: work_items:checkpoint from a `?superuser=1` session with no chosen
+    // workspace passes ctx.workspaceId='*' (the read-scoping sentinel). Previously
+    // `c.workspaceId ?? undefined` let the truthy '*' win and stored the checkpoint
+    // under a literal workspace_id='*' row that work_items:get's checkpoint read
+    // (which resolves via activeWorkspaceId(), and NEVER returns '*') could never see
+    // — the checkpoint silently vanished on the next (especially post-compaction) read.
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue('state');
+    const superuserCtx = { uiClientId: 'su-1', sigVerifiedSpawn: true, workspaceId: '*', harnessSlug: 'papercup' } as never;
+    await one({ id: 'WI-7', checkpoint: 'state' }, superuserCtx);
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'resolved-concrete-ws' },
+      'state',
+    );
   });
 
   it('surfaces a store error cleanly via runBulk keyOf (batch survives)', async () => {

@@ -94,7 +94,7 @@ If two federated cells end a converge() with DIFFERENT values for the same key
 (and `fixedPoint=true`), suspect an ordering-key mismatch between the merge fold
 and a projection's PG LWW guard — they must use the SAME key.
 
-## REOPENED (D-001, 2026-06-19, shared-pot-release-testing Brief D)
+## REOPENED (D-001, 2026-06-19, shared-hive-release-testing Brief D)
 
 The 2026-06-14 fix closed the **drain-interleave** trigger but NOT the root
 cause: the merge fold orders by **HLC** and the PG guard orders by **fed_ts =

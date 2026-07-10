@@ -28,7 +28,7 @@ vi.mock('../../../voice-prefs', () => ({
 // catches + console.warns "[sentinel-context] … failed" — which vitest-fail-on-console
 // turns into a test failure. This suite tests PERSONA LOADING, not the context block,
 // so stub the gathering PG-free (renderSentinelContext → '' ⇒ the section is skipped).
-vi.mock('../../../sentinel/sentinel-context', () => ({
+vi.mock('../../../papercup/papercup-context', () => ({
   buildSentinelContextDeps: vi.fn(() => ({})),
   sentinelScopeLabel: vi.fn(() => 'test-hive'),
   gatherSentinelContext: vi.fn(async () => ({})),

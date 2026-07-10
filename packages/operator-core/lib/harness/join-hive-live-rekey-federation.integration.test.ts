@@ -87,6 +87,14 @@ const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 
 const WORKSPACE_ID = 'ws-wi971-live-rekey';
 const HIVE_HOME = 'owner-hive-live';
+// The joiner's home-VIEW slug (== `potId` below — no existing view + no slug
+// collision, so `freeSlug` picks it verbatim). `rekeyHarness` fires the SAME
+// global `bootHarness` factory for BOTH the home-view (2c′) AND the joined
+// MEMBER `widgets-live` (2c) — a plain `handleJoiner = h` in that closure gets
+// clobbered by whichever finishes last, silently swapping in the member's
+// handle instead of the home-view's. Gate the assignment on this slug so
+// `handleJoiner` always ends up the home-view handle the proofs below need.
+const HOME_VIEW_POT_ID = 'owner-hive-live-discovered';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -407,7 +415,7 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
             announceIdentityOverride: idJoiner.override,
             workspaceRoot: rootJoiner,
           }).then((h) => {
-            handleJoiner = h;
+            if (o.harnessSlug === HOME_VIEW_POT_ID) handleJoiner = h;
             cleanups.push(async () => {
               await h.close();
               await closeHarnessStore({ workspaceRoot: rootJoiner, harnessSlug: o.harnessSlug });
@@ -446,7 +454,7 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
       };
       const joinRes = await joinHiveAsView(
         {
-          potId: 'owner-hive-live-discovered',
+          potId: HOME_VIEW_POT_ID,
           hivePubkey: hivePubkeyB64,
           memberLinks: [
             `papercusp://harness?topic=${'c'.repeat(64)}&github=acme%2Fwidgets-live&repo_id=9001`,
@@ -457,7 +465,18 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
           joinLink: joinLinkStub,
           ensureDir: async () => {},
           seedGitSync: async () => ({ seeded: false, reason: 'ineligible' }),
-          resolveOwnerDevicePubkey: async () => null,
+          // WI-787/WI-780 owner-log BOOTSTRAP admission (boot.ts
+          // resolveSameHiveMember) is the keystone that lets a FRESH joiner
+          // (empty hive_members) admit the owner's hive-home log at all: it
+          // trusts the ONE device the signed, gh-verified hive-announce binds to
+          // this joined hive — `owner_device_pubkey`, stamped on the registry
+          // view from THIS resolver (or the member link's embedded coord, absent
+          // here). Returning null here (as this test originally did) leaves the
+          // view with no owner-device coord, so the joiner's home-view can never
+          // admit the owner's announce and the join→rekey→boot chain stalls
+          // forever waiting on `admitted` — supply the REAL owner device pubkey
+          // (the same identity `idOwner.override`/the owner's real announce use).
+          resolveOwnerDevicePubkey: async () => idOwner.devicePubkey,
           getLocalHive: async () => null,
           // loadRegistry/mutateRegistry/rekeyHarness/resolveHivePubkey/
           // upsertHiveIdentity: all REAL defaults (omitted).
@@ -482,6 +501,38 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
         SELECT home_slug FROM harness_shared.hives WHERE workspace_id = ${WORKSPACE_ID} AND home_slug = ${potSlug}
       `;
       expect(hiveRow.length, 'upsertHiveIdentity never materialized the joiner`s hives row').toBe(1);
+
+      // ── Seed the OWNER's hive_members row on the JOINER's PG, standing in for
+      //    hive_members FEDERATION (out of THIS test's scope — WI-971/2c′ is about
+      //    the join→rekey→boot wiring draining the outbox, not about proving
+      //    hive_members itself federates, which is covered elsewhere). In real
+      //    production the owner self-registers into `hive_members` at Hive create
+      //    (WI-280, agent-tools/hive/_create.ts) under `hive_home_slug=HIVE_HOME`
+      //    (the OWNER's own local slug), and that row federates to every joiner —
+      //    but on THIS joiner's home-view boot, `hiveHomeProjectionSlug` resolves to
+      //    `potSlug` (this booted harness's OWN local view slug, since
+      //    `joinerPotHomeSlug` treats a `kind:'hive'` home as its own home — see
+      //    hive-federation.ts), so the wire row's `hive_home_slug=HIVE_HOME` would
+      //    be DROPPED by the hive_members projection's own-slug guard
+      //    (`row.hive_home_slug !== opts.harnessSlug`, boot.ts/hive-members.ts) even
+      //    if it were federated live. Seeding it directly under `hive_home_slug =
+      //    potSlug` is what a landed federation would produce locally, and is what
+      //    `decideMemberContentOp` (member-content-guard.ts) needs to resolve the
+      //    owner's device into the CURRENT member set — without it every piece of
+      //    hive-home content the owner authors defers forever (no member row to
+      //    confirm the author against), which is exactly the failure PROOF 3 below
+      //    was hitting. ──
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.hive_members
+          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations)
+        VALUES (
+          ${WORKSPACE_ID}, ${potSlug}, ${idOwner.userId}, 'owner',
+          ${JSON.stringify([{ device_pubkey: idOwner.devicePubkey }])}::jsonb
+        )
+        ON CONFLICT (workspace_id, hive_home_slug, github_user_id) DO UPDATE
+          SET device_attestations = EXCLUDED.device_attestations
+      `;
+      _clearHiveMemberDeviceSetCacheForTest();
 
       // ── PROOF 3 (the actual WI-971 regression): AFTER the join has fully completed
       //    (no restart from here on), the OWNER authors NEW hive-home content, and it

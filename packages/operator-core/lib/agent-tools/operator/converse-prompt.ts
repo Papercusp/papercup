@@ -215,7 +215,7 @@ export async function buildOperatorPrompt(
   if (role === 'papercup') {
     try {
       const { gatherSentinelContext, renderSentinelContext, buildSentinelContextDeps, sentinelScopeLabel } =
-        await import('../../sentinel/sentinel-context');
+        await import('../../papercup/papercup-context');
       const { isWorkspaceCoordinationOn } = await import('../../workspace-brain-scope');
       const wsId = activeWorkspaceId();
       // The primary hive the anomalies leg addresses: the first registered harness

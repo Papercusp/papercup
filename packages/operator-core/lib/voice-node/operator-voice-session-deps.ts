@@ -30,7 +30,7 @@ import { claimVoiceLease, releaseVoiceLease } from '../voice-lease';
 import { activeWorkspaceId } from '../workspace-registry';
 import { getOrCreateActiveConversation, appendTurn, type TurnRole } from '../operator-conversations';
 import { parseOperatorTurn } from '../operator-converse-tags';
-import { writeToSentinelPane } from '../sentinel/sentinel-pane-input';
+import { writeToSentinelPane } from '../papercup/papercup-pane-input';
 import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayResult } from './operator-voice-session';
 
 /**

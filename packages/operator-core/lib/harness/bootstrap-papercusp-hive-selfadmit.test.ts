@@ -42,6 +42,7 @@ vi.mock('../hive-store', async (importOriginal) => ({
 }));
 
 import {
+  backfillCanonicalCloneGitSync,
   defaultSelfAdmitCanonical,
   seedCanonicalCloneGitSyncRoutine,
   seedTargetDirs,
@@ -158,5 +159,82 @@ describe('seedCanonicalCloneGitSyncRoutine — first-boot loop activation (EI-87
       seedMember,
     });
     expect(record).not.toHaveBeenCalled();
+  });
+});
+
+describe('backfillCanonicalCloneGitSync — EXISTING-install heal via the step-1 already-present path (EI-8793)', () => {
+  type Mutate = typeof import('../harness-registry').mutateHarnessRegistry;
+  const canonical = () =>
+    ({
+      slug: PAPERCUSP_HIVE_SLUG,
+      path: '/installs/clones/papercusp',
+      harness_kind: 'hive',
+      remote_hive: true,
+    }) as Parameters<typeof backfillCanonicalCloneGitSync>[0];
+
+  it('stamps self_repo on the un-stamped canonical entry, then seeds the routine', async () => {
+    const mutate = vi.fn(async (mutator: Parameters<Mutate>[0], ws?: string) => {
+      // Replay the mutator against a registry holding the stale entry + a bystander.
+      const out = mutator({
+        projects: [
+          { slug: PAPERCUSP_HIVE_SLUG, path: '/installs/clones/papercusp', remote_hive: true },
+          { slug: 'bystander', path: '/repos/bystander' },
+        ],
+      } as never);
+      expect(ws).toBe(PAPERCUSP_WORKSPACE_ID);
+      expect(out.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG)).toMatchObject({
+        self_repo: true,
+        remote_hive: true,
+      });
+      expect(out.projects.find((p) => p.slug === 'bystander')).not.toHaveProperty('self_repo');
+      return out;
+    }) as unknown as Mutate;
+    const seedRoutine = vi.fn(async () => undefined);
+    const record = vi.fn();
+    const entry = canonical();
+    await backfillCanonicalCloneGitSync(entry, record as BootstrapPapercuspHiveDeps['recordProgress'], {
+      mutate,
+      seedRoutine,
+    });
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(entry.self_repo).toBe(true); // the caller's snapshot is kept honest
+    expect(seedRoutine).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith('clone', 'running', {
+      detail: 'EI-8793: self_repo backfilled on the existing canonical entry',
+    });
+  });
+
+  it.each([
+    ['already stamped', { self_repo: true }],
+    ['not a remote-hive entry', { remote_hive: undefined }],
+    ['not the canonical slug', { slug: 'some-other-hive' }],
+  ])('no-ops when %s', async (_name, over) => {
+    const mutate = vi.fn() as unknown as Mutate;
+    const seedRoutine = vi.fn(async () => undefined);
+    await backfillCanonicalCloneGitSync({ ...canonical(), ...over }, undefined, {
+      mutate,
+      seedRoutine,
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(seedRoutine).not.toHaveBeenCalled();
+  });
+
+  it('NEVER throws — a failed stamp warns, does NOT seed (the entry still reads as a view), and retries next boot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const mutate = vi.fn(async () => {
+        throw new Error('pg down');
+      }) as unknown as Mutate;
+      const seedRoutine = vi.fn(async () => undefined);
+      const entry = canonical();
+      await expect(
+        backfillCanonicalCloneGitSync(entry, undefined, { mutate, seedRoutine }),
+      ).resolves.toBeUndefined();
+      expect(seedRoutine).not.toHaveBeenCalled();
+      expect(entry.self_repo).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('next boot retries'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

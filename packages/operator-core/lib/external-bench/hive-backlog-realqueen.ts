@@ -102,7 +102,7 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
  * arm avoids this precisely because EVERY bee it spawns (`executeBatch`) carries THIS directive (proven:
  * the xbh* haiku run produced 10/11 non-empty diffs, features → `passed`, with the feature left
  * `taken_by` NULL — the bee SELF-claims off the directive). The fix threads this directive to the
- * Queen-placed bee too: the bench launcher exports it as `PAPERCUSP_XBENCH_BEE_DIRECTIVE` on the host that
+ * Queen-placed bee too: the bench launcher exports it as `PAPERCUSP_XBENCH_CUP_DIRECTIVE` on the host that
  * services the Queen's `cup:spawn` (the long-running :3170 operator), and `spawnAgentInHarness`
  * (operator-spawn.ts) APPENDS it to every placed bee's brief + pins the claude-code backend per-spawn. The
  * Queen's placement / eviction / re-placement / adaptive-wake treatment is entirely unchanged — she still
@@ -482,7 +482,7 @@ export function bindRealQueenBacklogDriver(opts: RealQueenBacklogOpts, ops?: Rea
  * the exit). Lazy import keeps the fake-driven test from loading PG/registry.
  */
 export async function dissolveBenchHive(hiveHome: string, workspaceId: string): Promise<void> {
-  const { liveHiveOps } = await import('../hive-eval/live-ops');
+  const { liveHiveOps } = await import('../pot-eval/live-ops');
   await liveHiveOps({ workspaceId }).dissolveHive({ hiveHome, workspaceId });
 }
 
@@ -537,7 +537,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   // real-Queen arm this var MUST also be on :3170's env (set in apps/operator/.env.local). We set it here so
   // the FIFO arm's IN-PROCESS executeBatch spawns (which run in this launcher) also carry it, and as the
   // single source of the directive text.
-  // The STANDING directive every placed bee inherits (spawnAgentInHarness appends PAPERCUSP_XBENCH_BEE_DIRECTIVE
+  // The STANDING directive every placed bee inherits (spawnAgentInHarness appends PAPERCUSP_XBENCH_CUP_DIRECTIVE
   // to each bee's brief). The default is the coding directive ("produce a working unified diff"); for the GAIA
   // arm that is WRONG — the GAIA bee researches + writes answer.txt, NOT code. So in gaiaMode set the standing
   // directive to the GAIA self-sufficiency instruction (claim your lone feature → research → write answer.txt →
@@ -560,9 +560,9 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   if (gaiaMode) {
     // Override unconditionally for GAIA — the default coding directive would mis-instruct the bee. (Set on this
     // launcher process AND, load-bearing, on the :3170 host env that services the Queen's cup:spawn.)
-    process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = GAIA_BENCH_BEE_DIRECTIVE;
-  } else if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) {
-    process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
+    process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE = GAIA_BENCH_BEE_DIRECTIVE;
+  } else if (process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE == null) {
+    process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE = BENCH_BEE_DIRECTIVE;
   }
 
   let homePrefix = scratchSlug('xbq');
@@ -573,7 +573,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
     return getOrgPg().sql;
   };
   const liveOps = async () => {
-    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    const { liveHiveOps } = await import('../pot-eval/live-ops');
     return liveHiveOps({ workspaceId: ws });
   };
 
@@ -809,7 +809,9 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
             // In gaiaMode the standing env directive was overridden to the GAIA self-sufficiency instruction
             // (research → write answer.txt); the per-task question rides the seeded feature spec. For the
             // SWE-bench path this is the coding BENCH_BEE_DIRECTIVE (env == constant). FIFO arm only.
-            brief: gaiaMode ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '') : BENCH_BEE_DIRECTIVE,
+            brief: gaiaMode
+              ? (process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE ?? process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE /* legacy env name — dual-accept until callers migrate */ ?? '')
+              : BENCH_BEE_DIRECTIVE,
             tier: 'max', // Enforce opus-strict per brief (max tier = opus:xhigh)
             workspace: ws,
             dry_run: false,

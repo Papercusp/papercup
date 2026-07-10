@@ -235,3 +235,34 @@ test('sampleGateway — captures the minimal rolling sample for the next tick', 
   const s = sampleGateway(m, NOW);
   assert.deepEqual(s, { totalRequests: 77, shed429: 3, shedAllThrottled: 1, upstreamErrors: 0, at: NOW });
 });
+
+// ── admissionStarvationRisk (WI-3565, 2026-07-09 admission-starvation incident) ─────────────────
+// The wedge/saturated signature requires inFlight AT the ceiling — but the incident's actual
+// reading (running:1, maxConcurrent:2, queued:24) sits BELOW the ceiling the whole time (paced by a
+// lower per-account/provider floor), so `saturated` never fires. This is the distinct spatial
+// signal that catches it: a deep backlog vs the LIVE ceiling, regardless of how full inFlight is.
+
+test('detectGatewayWedge — a deep backlog vs a low ceiling is an admission-starvation RISK even though inFlight sits BELOW the ceiling (the 2026-07-09 incident shape)', () => {
+  const stats = healthyStats({ admission: { running: 1, queued: 24, maxConcurrent: 2 }, aimd: { effective: 24, cap: 24, floor: 4, decreases: 0 } });
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), undefined, NOW);
+  assert.equal(v.saturated, false, 'inFlight (1) is below maxConcurrent (2) — the existing saturated signal misses this');
+  assert.equal(v.admissionStarvationRisk, true);
+  assert.equal(v.admissionStarved, false, 'the pure detector never confirms sustain — that is gateway-sample-cache.ts');
+  assert.ok(v.reasons.some((r) => r.includes('starvation risk')));
+});
+
+test('detectGatewayWedge — a queue AT (not over) the starvation ratio is not yet a risk', () => {
+  const stats = healthyStats({ admission: { running: 2, queued: 8, maxConcurrent: 2 } }); // exactly 4x, not > 4x
+  const v = detectGatewayWedge(summarizeGatewayMetrics(stats), undefined, NOW);
+  assert.equal(v.admissionStarvationRisk, false);
+});
+
+test('detectGatewayWedge — a healthy queue depth relative to a high ceiling is never a starvation risk', () => {
+  const v = detectGatewayWedge(summarizeGatewayMetrics(healthyStats({ admission: { running: 3, queued: 6, maxConcurrent: 24 } })), undefined, NOW);
+  assert.equal(v.admissionStarvationRisk, false);
+});
+
+test('detectGatewayWedge — zero maxConcurrent never flags starvation (avoid a div/mul-by-zero false fire)', () => {
+  const v = detectGatewayWedge(summarizeGatewayMetrics(healthyStats({ admission: { running: 0, queued: 50, maxConcurrent: 0 } })), undefined, NOW);
+  assert.equal(v.admissionStarvationRisk, false);
+});

@@ -15,7 +15,7 @@ const { registerCoordOp, runHiveEvalGen } = vi.hoisted(() => ({
   runHiveEvalGen: vi.fn(),
 }));
 vi.mock('../../coord-ops/registry.js', () => ({ registerCoordOp }));
-vi.mock('../../hive-eval/gen-loop.js', () => ({ runHiveEvalGen }));
+vi.mock('../../pot-eval/gen-loop.js', () => ({ runHiveEvalGen }));
 
 import { hiveEvalGenOp, setHiveEvalGenDeps } from './hive-eval-gen';
 

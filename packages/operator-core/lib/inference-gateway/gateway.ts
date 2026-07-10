@@ -380,7 +380,9 @@ const PINNED_FAILOVER_WAIT_MS = 10_000;
  *  but that's a ROUTING horizon (keep the account parked), NOT how long the bee should sleep: telling a bee
  *  "retry after 1800s" strands it (owner-reported 2026-06-21). Forward a short retry-after so the bee re-asks
  *  soon — by then routing has walked to a healthy account, or the stall-waker resumes it. Env-tunable. */
-const BEE_RETRY_AFTER_CAP_S = Number(process.env.PAPERCUSP_GATEWAY_BEE_RETRY_AFTER_CAP_S) || 60;
+const BEE_RETRY_AFTER_CAP_S =
+  Number(process.env.PAPERCUSP_GATEWAY_CUP_RETRY_AFTER_CAP_S ?? process.env.PAPERCUSP_GATEWAY_BEE_RETRY_AFTER_CAP_S) ||
+  60; // legacy env name — dual-accept until callers migrate
 /** Grace before a shutdown FORCE-destroys still-streaming connections (2026-06-22 audit). server.close()
  *  alone waits for every long-lived SSE stream to end → it hung past systemd's TimeoutStopSec and got
  *  force-killed (orphaned process). Drop idle keep-alives immediately, let near-done requests finish within

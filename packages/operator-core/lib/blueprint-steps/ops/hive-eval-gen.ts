@@ -16,7 +16,7 @@
 import { z } from 'zod';
 import type { CoordOp } from '../../coord-ops/types.js';
 import { registerCoordOp } from '../../coord-ops/registry.js';
-import { runHiveEvalGen, type HiveEvalGenDeps } from '../../hive-eval/gen-loop.js';
+import { runHiveEvalGen, type HiveEvalGenDeps } from '../../pot-eval/gen-loop.js';
 
 /** Declared input I/O — the cadence knobs (the routine's payload). budgetUsd is REQUIRED to run
  *  (absent ⇒ a `refused` outcome — never a defaulted whole-Hive spend). */

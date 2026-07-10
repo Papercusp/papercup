@@ -9,7 +9,8 @@ const ALLOWED = [
   'email',
   'display_name',
   'default_project_dir',
-  'preferred_models',
+  // 'preferred_models' removed (settings-audit 2026-07-09) — write-only key,
+  // no reader anywhere. See /settings/agent for per-role model selection.
   'auto_scan',
   'auto_accept',
   'toast_last_seen_ms',

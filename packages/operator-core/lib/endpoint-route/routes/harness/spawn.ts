@@ -207,7 +207,7 @@ function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isLoopLaunch: boolean): 
  * The launcher's kickoff ("why this wake fired") — fireLaunchBlueprint sends
  * it, but this route used to silently DROP it, so the Queen woke with no idea
  * why (P-071 smoke). It is threaded to the child the same way cup:spawn
- * threads its Queen brief: via QUEEN_BRIEF, which invoke.ts hands to
+ * threads its Queen brief: via MUG_BRIEF, which invoke.ts hands to
  * buildPrompt as the situational-overlay `brief` section.
  */
 function extractKickoff(bodyKickoff: unknown): string {
@@ -459,13 +459,13 @@ const invoke = defineTool({
     // (respected verbatim); absent that, compute fail-soft — a brief failure never
     // blocks the wake, she falls back to the survey tools. invoke.ts hands it to
     // buildPrompt({ queenBrief }) → a <system-reminder> in the volatile tail
-    // (D-006). Distinct from QUEEN_BRIEF (the kickoff / Queen→bee overlay).
+    // (D-006). Distinct from MUG_BRIEF (the kickoff / Queen→bee overlay).
     let queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (canonicalRole === 'mug' && !queenWakeBrief.trim()) {
       const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
       queenWakeBrief = (await computeQueenWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
     }
-    if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
+    if (queenWakeBrief.trim()) env.MUG_WAKE_BRIEF = queenWakeBrief;
     // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). A per-invocation model spec threaded by
     // fireLaunchBlueprint (bodyExtra.spawnModel) for a BENCH-hive Queen wake → PAPERCUSP_SPAWN_MODEL,
     // the highest-precedence model channel (invoke.ts resolveModel reads it FIRST, above AGENT_MODELS +
@@ -477,21 +477,21 @@ const invoke = defineTool({
     // overwatch-role-2026-06-15 B-04 (C-3): the overwatch's precomputed
     // OverwatchBrief (assembled by the system:overwatch-launch action). invoke.ts
     // hands it to buildPrompt({ overwatchBrief }), which renders it as a
-    // <system-reminder> tail block — the same mechanism as QUEEN_WAKE_BRIEF, a
+    // <system-reminder> tail block — the same mechanism as MUG_WAKE_BRIEF, a
     // distinct env for a distinct role's brief.
     const overwatchWakeBrief = typeof (body as any)?.overwatchBrief === 'string' ? ((body as any).overwatchBrief as string) : '';
     if (overwatchWakeBrief.trim()) env.OVERWATCH_WAKE_BRIEF = overwatchWakeBrief;
-    // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay (invoke.ts → the
+    // EI-506: MUG_BRIEF is the Queen→BEE situational overlay (invoke.ts → the
     // "## Queen brief" section). For the QUEEN's OWN wake the kickoff is a terse
     // wake-reason ('timer', 'coord:escalate'), which would render as a self-addressed
     // bee-overlay — misleading. Her wake reason is already carried in the wake brief's
-    // "Woke by:" line, so set QUEEN_BRIEF from the kickoff for the queen ONLY when she
+    // "Woke by:" line, so set MUG_BRIEF from the kickoff for the queen ONLY when she
     // has no wake brief (degraded fallback — preserves the P-071 "why you woke" signal
     // the kickoff threading was added for). Non-queen roles always get the real overlay.
     // overwatch (B-04): its wake reason rides the OverwatchBrief's `wokeBy`, so
-    // setting QUEEN_BRIEF would render a misleading "## Queen brief" overlay (the
+    // setting MUG_BRIEF would render a misleading "## Queen brief" overlay (the
     // EI-506 reasoning, applied to the overwatch) — exclude it like the briefed Queen.
-    if (kickoff && canonicalRole !== 'kettle' && (canonicalRole !== 'mug' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
+    if (kickoff && canonicalRole !== 'kettle' && (canonicalRole !== 'mug' || !queenWakeBrief.trim())) env.MUG_BRIEF = kickoff;
     // hive-inference-gateway routing (D-011 fix): the /invoke spawn path is the SECOND spawn
     // chokepoint and had DRIFTED from the bee chokepoint (operator-spawn.ts:1045-1063) — it never
     // routed Queen/overwatch/blueprint-run agents through the localhost pacing gateway, so they

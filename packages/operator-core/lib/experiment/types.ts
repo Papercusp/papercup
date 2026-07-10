@@ -88,7 +88,7 @@ export interface ExperimentRunCtx {
   /** Live hive-eval ports (the whole-Hive runner) — present only when the whole-Hive
    *  tier is armed by its own infra/loop. Absent ⇒ the hive descriptor stays staged
    *  (run refuses) — its hive-eval loop drives it (D-002/D-017). */
-  hive?: { ports?: import('../hive-eval/run-harness').HiveRunPorts };
+  hive?: { ports?: import('../pot-eval/run-harness').HiveRunPorts };
   /** Injected for the rate-pause wait (defaults to real setTimeout in the runner). */
   sleep?(ms: number): Promise<void>;
 }

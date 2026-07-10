@@ -903,7 +903,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
           modelSpec: spawnModelSpec,
           modelTier: spawnModelTier,
           // Persist the brief (mig 230): the dock's brief-pane shows "what
-          // started this agent" long after the QUEEN_BRIEF env is gone.
+          // started this agent" long after the MUG_BRIEF env is gone.
           brief: input.brief ?? null,
           // The child's coord/lock owner is its spawnId — the link
           // fleet:cancel uses to release its locks/claims transitively.
@@ -1089,7 +1089,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // `omp -p` (a local/self model → no usage sample, no real diff). (b) the claude-code spawn path is
   // sandbox-default-ON, and bubblewrap's loopback needs CAP_NET_ADMIN the host lacks → rc=1, no diff.
   //
-  // FIX (gated, bench-scoped, arm-neutral): when PAPERCUSP_XBENCH_BEE_DIRECTIVE is set (the bench launcher
+  // FIX (gated, bench-scoped, arm-neutral): when PAPERCUSP_XBENCH_CUP_DIRECTIVE is set (the bench launcher
   // sets it on the SHARED env both hosts read), every placed `bee` (a) gets that directive APPENDED to its
   // brief so — whatever situational overlay the Queen attaches — it claims + implements its lone seeded
   // feature, and (b) gets PAPERCUSP_SPAWN_BACKEND/PAPERCUSP_FLEET_SANDBOX pinned PER-SPAWN (the exact
@@ -1097,7 +1097,14 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // regardless of which process built the spawn command. Only ever active under the bench env flag — normal
   // hive/operator spawns are untouched. The Queen's placement/eviction/re-placement/adaptive-wake treatment
   // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
-  const benchBeeDirective = role === 'cup' ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
+  const benchBeeDirective =
+    role === 'cup'
+      ? (
+          process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE ??
+          process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE /* legacy env name — dual-accept until callers migrate */ ??
+          ''
+        ).trim()
+      : '';
   if (benchBeeDirective) {
     // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
     // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so
@@ -1156,12 +1163,12 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   if (input.turnTrigger) extraEnv.PAPERCUSP_TURN_TRIGGER = input.turnTrigger;
   // P-050/P-060: thread the Queen brief through the invocation so the invoke-once
   // prompt path (invoke.ts → buildPrompt's `## Queen brief` section) injects it into
-  // the bee's prompt. The brief rides in extraEnv as QUEEN_BRIEF; the child reads
-  // process.env.QUEEN_BRIEF. (NOTE: the cup:spawn child does NOT use
+  // the bee's prompt. The brief rides in extraEnv as MUG_BRIEF; the child reads
+  // process.env.MUG_BRIEF. (NOTE: the cup:spawn child does NOT use
   // assembleRolePrompt — it goes through invoke-once → buildPrompt; an earlier
   // comment naming assembleRolePrompt was the mis-wiring the plan flagged.)
   if (input.brief) {
-    extraEnv.QUEEN_BRIEF = input.brief;
+    extraEnv.MUG_BRIEF = input.brief;
   }
   // Named-fleet placement (fleet-color-schemes): thread the fleet label + scheme
   // colors so the bee auto-joins (PAPERCUSP_FLEET_SLUG/ROLE → its presence fold)

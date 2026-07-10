@@ -701,7 +701,11 @@ export async function fireLaunchBlueprint(
   if (
     target.role === 'mug' &&
     fireInput.bodyExtra?.spawnModel == null &&
-    (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() &&
+    (
+      process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE ??
+      process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE /* legacy env name — dual-accept until callers migrate */ ??
+      ''
+    ).trim() &&
     /^xbq/.test(input.installSlug)
   ) {
     const benchModel = (process.env.PAPERCUSP_XBENCH_MODEL ?? 'opus:xhigh').trim();

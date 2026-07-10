@@ -338,12 +338,67 @@ for p in raw_paths:
     # parent is NOT the workspace root, so they pass through; foreign repos
     # outside the workspace are likewise unaffected. See plan
     # worktree-discipline-single-tree-enforcement-2026-06-30.
+    #
+    # EI-8820: the sibling-of-workspace-root check above only catches a
+    # linked worktree that lives as a DIRECT CHILD of workspace_root. A
+    # linked worktree of the canonical repo can be registered ANYWHERE
+    # (e.g. ~/.papercusp-workspaces/<ws>/.papercusp/env-trees/<name> — a
+    # per-workspace ephemeral checkout `git worktree add`-ed from the
+    # canonical tree) and that shape slips past the parent-dir test
+    # entirely, then hits the `continue` below as an unrelated "foreign"
+    # repo — so edits there were silently ALLOWED and never git-sync
+    # committed (a live repro stranded 6 edits + 1 write for 4+ ticks).
+    # Catch it structurally instead of by location: a linked worktree's
+    # `.git` is a FILE (`gitdir: .../worktrees/<name>`), not a directory;
+    # resolve it through `commondir` to the real main repo's `.git`, and
+    # if THAT main repo is the canonical tree, this worktree is exactly
+    # as off-limits as a sibling one — no matter where on disk it sits.
+    def _resolve_worktree_main_root(repo_root):
+        """None if repo_root is an ordinary repo (its `.git` is a dir) or
+        resolution fails for any reason (fail-open); else the main repo's
+        working-tree root that this LINKED worktree belongs to."""
+        try:
+            git_entry = os.path.join(repo_root, '.git')
+            if not os.path.isfile(git_entry):
+                return None  # ordinary repo dir, or no .git at all
+            with open(git_entry) as f:
+                m = re.match(r'gitdir:\s*(.+)$', f.read().strip())
+            if not m:
+                return None
+            wt_gitdir = m.group(1).strip()
+            if not os.path.isabs(wt_gitdir):
+                wt_gitdir = os.path.join(repo_root, wt_gitdir)
+            wt_gitdir = os.path.realpath(wt_gitdir)
+            commondir_path = os.path.join(wt_gitdir, 'commondir')
+            if not os.path.exists(commondir_path):
+                return None
+            with open(commondir_path) as f:
+                commondir = f.read().strip()
+            if not os.path.isabs(commondir):
+                commondir = os.path.join(wt_gitdir, commondir)
+            main_git_dir = os.path.realpath(commondir)
+            return os.path.dirname(main_git_dir)
+        except Exception:
+            return None  # fail-open — never wedge an edit on a parse error
+
     try:
         _canonical_tree = os.path.realpath(
             os.environ.get('PAPERCUSP_CANONICAL_TREE')
             or os.path.join(workspace_root, 'papercusp'))
-        if (os.path.realpath(os.path.dirname(root)) == workspace_root
-                and os.path.realpath(root) != _canonical_tree):
+        _real_root = os.path.realpath(root)
+        _wt_main = _resolve_worktree_main_root(root)
+        if _wt_main is not None and os.path.realpath(_wt_main) == _canonical_tree:
+            if _real_root != _canonical_tree:
+                deny(
+                    f"worktree guard: refused — '{root}' is a LINKED WORKTREE of "
+                    f"the canonical staging tree ({_canonical_tree}), registered "
+                    f"outside it. Agents edit ONLY the canonical tree itself; work "
+                    f"left in any of its linked worktrees is never committed by "
+                    f"git-sync (it silently strands). cd into the canonical tree "
+                    f"and make this edit there."
+                )
+        elif (os.path.realpath(os.path.dirname(root)) == workspace_root
+                and _real_root != _canonical_tree):
             deny(
                 f"worktree guard: refused — you are editing in '{root}', which "
                 f"is not the canonical staging tree. Agents edit ONLY the shared "

@@ -114,8 +114,14 @@ site), the standalone operator webapp path, `libs/zero-harness` (migrate off),
 `libs/papercusp-db`, `libs/holepunch-spike` (NOT zero-importers — shim implemented
 by live orchestrator files), `libs/papercusp-shared/**/*View.tsx`, the legacy
 orchestrator run-loop + orchestrator-spawn plugin
-(`libs/papercusp/_retired/…`), and the harness-snapshot system
-(`_retired/snapshot-system/`). `lint:no-retired` guards re-imports.
+(`libs/papercusp/_retired/…`), the harness-snapshot system
+(`_retired/snapshot-system/`), the legacy web chats
+(`_retired/legacy-web-chats/` — OracleDock/OperatorChatSidebar; the pui chat
+pane is the only chat surface), and the legacy per-slug harness dashboard
+(`_retired/harness-dashboard/` — `/harness/$slug` shell/pages/Real-panels; the
+design-system primitives AND the dock engine in `apps/operator/app/harness/`
+stay LIVE — `/adv`+`/workbench` are built on them). `lint:no-retired` guards
+re-imports.
 
 Full table with restore points + the retiring-a-surface convention:
 [repo-conventions § retired surfaces](/internal/docs/system/repo-conventions).

@@ -76,6 +76,7 @@ import {
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
   MCP_PROXY_HARD_FAIL_CRIT,
+  ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
 } from './thresholds';
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
@@ -510,7 +511,9 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
             concurrencyCap: gm.concurrencyCap, shed429: gm.shed429, shedAllThrottled: gm.shedAllThrottled,
             failovers: gm.failovers, upstream429: gm.upstream429, utilizationPct: gm.utilizationPct,
             aimdEffective: gm.aimdEffective, aimdCap: gm.aimdCap,
-            wedge: v.wedge, saturated: v.saturated, sustainedThrottle: v.sustainedThrottle, slotLeak: v.slotLeak, reasons: v.reasons,
+            wedge: v.wedge, saturated: v.saturated, sustainedThrottle: v.sustainedThrottle, slotLeak: v.slotLeak,
+            admissionStarvationRisk: v.admissionStarvationRisk, admissionStarved: v.admissionStarved,
+            reasons: v.reasons,
           };
         }
       } catch { /* /stats unreadable — leave gateway null (greyed), panel still renders */ }
@@ -527,19 +530,28 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
     const status = tokensStatus(data);
     const spend = `$${data.spendUsd.toFixed(2)}`;
     // The gateway wedge/throttle takes the headline summary when present (the loud signal).
+    const starvationCrit = gateway?.admissionStarved && accountsAvailable > ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN;
     const gwSummary = gateway?.wedge
       ? `GATEWAY WEDGED — ${gateway.reasons[0] ?? `inFlight ${gateway.inFlight}/${gateway.maxConcurrent}`} (watchdog auto-restarts)`
+      : starvationCrit
+      // WI-3565: name the exact lever (matches the manual mitigation that resolved the 2026-07-09 incident)
+      // so an agent reading this panel doesn't have to re-derive it.
+      ? `ADMISSION STARVED — ${gateway!.queueDepth} queued at ceiling ${gateway!.maxConcurrent} for ≥5min with ${accountsAvailable} idle healthy account(s) — raise the floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } }`
       : gateway?.slotLeak
       ? `gateway SLOT LEAK — ${gateway.reasons.find((r) => r.includes('slot-leak')) ?? 'a held admission slot the self-heal valve cannot reclaim'}`
       : gateway?.sustainedThrottle
         ? `gateway throttling — ${gateway.reasons.find((r) => r.includes('AIMD') || r.includes('throttled')) ?? gateway.reasons[0] ?? 'sustained upstream 429s'}`
         : gateway?.saturated
           ? `gateway saturated — inFlight ${gateway.inFlight}/${gateway.maxConcurrent}, ${gateway.queueDepth} queued`
-          : null;
+          : gateway?.admissionStarvationRisk
+            ? `gateway admission backlog deep vs ceiling — ${gateway.reasons.find((r) => r.includes('starvation risk')) ?? `${gateway.queueDepth} queued at ${gateway.maxConcurrent}`} (watching for sustain)`
+            : null;
     return {
       status,
       summary: status === 'crit'
-        ? (gateway?.wedge ? gwSummary! : (accountsTotal > 0 && accountsAvailable === 0 ? 'all accounts paused — starved' : 'gateway unreachable'))
+        ? (gateway?.wedge || starvationCrit
+            ? gwSummary!
+            : (accountsTotal > 0 && accountsAvailable === 0 ? 'all accounts paused — starved' : 'gateway unreachable'))
         : gwSummary
           ?? `${data.fleetInFlight}/${data.fleetCap} in flight, ${spend}/${Math.round(data.windowMs / 60000)}m${pausedBuckets > 0 ? `, ${pausedBuckets} paused bucket(s)` : ''}`,
       data,
@@ -553,6 +565,8 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
           ...(gateway.wedge ? [m('WEDGE', 'yes', 'crit')]
             : gateway.sustainedThrottle ? [m('throttle', 'sustained', 'warn')] : []),
           ...(gateway.slotLeak ? [m('slot leak', 'yes', 'warn')] : []),
+          ...(gateway.admissionStarved ? [m('starved', 'yes', starvationCrit ? 'crit' : 'warn')]
+            : gateway.admissionStarvationRisk ? [m('starving?', 'watching', 'warn')] : []),
           ...(gateway.shed429 + gateway.shedAllThrottled > 0 ? [m('shed', gateway.shed429 + gateway.shedAllThrottled, 'warn')] : []),
           ...(gateway.failovers > 0 ? [m('failovers', gateway.failovers)] : []),
         ] : []),
@@ -1172,7 +1186,7 @@ async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEf
 }
 
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
-  return panelSafe<OverwatchPanelHealth>('kettle', async () => {
+  return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
     const { ws, now, potSlug } = ctx;
     // Reuse B-08's read surface (D-006 — never a second aggregation): the persisted
     // started bit + cadence (B-07) + the wake liveness (B-09) + the activation flag.

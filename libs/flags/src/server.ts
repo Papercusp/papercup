@@ -94,14 +94,58 @@ async function withFlagBackendTimeout<T>(op: Promise<T>): Promise<T> {
 export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
   overrideStore = store;
   overrideCache.clear();
+  // Re-arm the missing-store warning: a process that installs a store LATE (after some
+  // early getFlag()) must not be permanently muted, and each test gets a clean latch.
+  warnedNoOverrideStore = false;
 }
 
 export function isOverrideStoreConfigured(): boolean {
   return overrideStore !== null;
 }
 
+let warnedNoOverrideStore = false;
+
+/** Test seam: re-arm the one-time latch without swapping the store. */
+export function resetOverrideStoreWarningForTest(): void {
+  warnedNoOverrideStore = false;
+}
+
+/**
+ * ONE-TIME, per-process warning that this process cannot see runtime flag overrides.
+ *
+ * WHY (EI-8867): the WRITE path is honest — `setFlagOverride()` returns
+ * `{ ok:false, reason:'override-store-not-configured' }` when no store is installed. The READ
+ * path was SILENT: `loadStoredOverrides()` returned `{}` and `getFlag()` fell through to
+ * `FLAG_DEFAULTS`. Because the write happens in the operator process (which HAS a store) and
+ * the read happens in a standalone process (which may not), NO single process ever observed
+ * the discrepancy: `flags:set` reported success while the consumer never saw the flip. That is
+ * how the inference gateway silently ignored every override — a dark flag that simply "would
+ * not turn on", with nothing logged and nothing failing.
+ *
+ * Making the read path as loud as the write path turns that whole class from silent-wrong into
+ * one obvious line in the process's own log.
+ */
+function warnOverrideStoreMissingOnce(): void {
+  // Suppression is checked BEFORE the latch so a suppressed call never consumes the one shot
+  // (otherwise a single early test import would mute the warning for the real process).
+  if (process.env.PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN === '1') return;
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+  if (warnedNoOverrideStore) return;
+  warnedNoOverrideStore = true;
+  console.warn(
+    '[flags] No override store installed in this process: runtime overrides (flags:set / ' +
+      'POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. ' +
+      'If this process is expected to observe runtime flag flips, call initFlagOverrideStore() ' +
+      'during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). ' +
+      'Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.',
+  );
+}
+
 async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
-  if (!overrideStore) return {};
+  if (!overrideStore) {
+    warnOverrideStoreMissingOnce();
+    return {};
+  }
   const ck = currentCacheKey();
   const t = Date.now();
   const hit = overrideCache.get(ck);

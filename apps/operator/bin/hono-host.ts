@@ -56,6 +56,7 @@ import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-ss
 import {
   startCluster,
   resolveClusterWorkers,
+  describeClusterWorkersSource,
   resolveExpectedOperatorProcs,
 } from '@papercusp/operator-core/lib/cluster-fork';
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
@@ -354,6 +355,11 @@ function startRequestServers(): void {
 // ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
 // and it should be validated under the Tauri shell / a staging restart first.
 const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
+// EI-8817/EI-8818: name the exact env var + value that drove this so a wrong
+// resolution (e.g. an unintended multi-worker fork storm) is one-glance diagnosable
+// from the boot log instead of ~30min of forensics re-deriving CLUSTER_WORKERS'
+// precedence over CLUSTER by hand.
+console.log(`[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(process.env)})`);
 // PG-pool budget (R1 — infra-perf-robustness-audit-2026-06-18 conn-saturation). Every
 // process sizes its org pools so `pool·procs ≤ max_connections`; the divisor is the
 // count of operator processes sharing this PG. The bug it fixes: on an EMBEDDED-PG host

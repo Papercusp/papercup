@@ -31,14 +31,14 @@ import { activeWorkspaceId } from '../workspace-registry';
 /** A running bee is "stuck" once its heartbeat is older than this (mirrors the
  *  nursery alias-liveness 10-min window, mig 225). Env-overridable. */
 export function stuckThresholdMs(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_STUCK_SEC ?? 600);
+  const n = Number(process.env.PAPERCUSP_POT_STUCK_SEC ?? process.env.PAPERCUSP_HIVE_STUCK_SEC ?? 600);
   return (Number.isFinite(n) && n >= 60 ? n : 600) * 1_000;
 }
 
 /** How far back the tick reads spawn rows to compute MTTC / placements (the
  *  per-tick window is then carved from this by `lastTickAtMs`). Default 6h. */
 export function throughputReadWindowMs(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_THROUGHPUT_WINDOW_SEC ?? 21_600);
+  const n = Number(process.env.PAPERCUSP_POT_THROUGHPUT_WINDOW_SEC ?? process.env.PAPERCUSP_HIVE_THROUGHPUT_WINDOW_SEC ?? 21_600);
   return (Number.isFinite(n) && n >= 300 ? n : 21_600) * 1_000;
 }
 
@@ -410,7 +410,7 @@ export async function recordHiveThroughputTick(opts: {
           dedupScope: 'open',
           evidenceAt: new Date(nowMs).toISOString(),
           findingClass: `hive-throughput:${b.kind}`,
-          foundDuring: 'hive-throughput-tick',
+          foundDuring: 'pot-throughput-tick',
         }).catch((e) => {
           console.warn(`[hive-throughput] breach capture failed (${b.kind}): ${e instanceof Error ? e.message : e}`);
         });

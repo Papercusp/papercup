@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { commentWorkItem } from '../../work-items';
+import { commentWorkItem, getWorkItem, isSettledWorkItemState } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 
@@ -22,6 +22,24 @@ const itemSpec = z.object({
   body: hardText(LIMITS.BODY),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
 });
+
+/**
+ * EI-8837: a completion-shaped thread post ("DONE + GREEN", "VM-VERIFIED", …)
+ * left on a work-item whose `state` never actually transitioned is exactly
+ * how a fully-fixed item gets handed back out by scheduler:get_next 24h
+ * later — completion evidence lived only in prose, not the terminal-state
+ * field claim_next actually gates on. This is a narrow, conservative match
+ * (multi-word completion phrases, not bare "done"/"green") so it nudges on
+ * genuine completion-sounding posts without flagging routine status chatter.
+ */
+const COMPLETION_LIKE_RE =
+  /\b(done\s*(?:\+|and)?\s*green|vm[- ]?verified|fully\s+(?:fixed|implemented|resolved|done)|ready\s+to\s+close|closing\s+this\s+(?:out|item)|complete(?:d)?\s+(?:and|&)\s+(?:verified|tested|green)|all\s+tests?\s+(?:green|passing).{0,40}\bdone\b)/i;
+
+/** A soft, non-blocking reminder attached to a result when a completion-shaped
+ *  post lands on a still-open item — never fails the comment itself. */
+const COMPLETION_STATE_HINT =
+  'This reads like a completion, but the item is still non-terminal — if the work is actually done, ' +
+  'also call work_items:set_state (or work_items:complete) so scheduler:get_next stops handing it back out.';
 
 export default defineTool({
   name: 'work_items:comment',
@@ -60,7 +78,19 @@ export default defineTool({
       items,
       async (it) => {
         const post = await commentWorkItem(it.id, it.body, ident.ownerId, { harness: it.harness ?? args.harness });
-        return post ? { ok: true as const, id: it.id, post } : { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
+        if (!post) return { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
+        let hint: string | undefined;
+        if (COMPLETION_LIKE_RE.test(it.body)) {
+          // Best-effort only: never let the state re-lookup fail the comment
+          // that already landed.
+          try {
+            const wi = await getWorkItem(it.id, it.harness ?? args.harness);
+            if (wi && !isSettledWorkItemState(wi.state)) hint = COMPLETION_STATE_HINT;
+          } catch {
+            /* the comment already succeeded — swallow */
+          }
+        }
+        return { ok: true as const, id: it.id, post, ...(hint ? { hint } : {}) };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

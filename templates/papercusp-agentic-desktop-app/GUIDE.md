@@ -10,7 +10,7 @@ this template."* This is the **app-scope** template, and it is a LAYER
    shell → Node/Hono sidecar → embedded PG → release kit),
    [`papercusp-data-layer`](../papercusp-data-layer/GUIDE.md), and
    [`papercusp-ui`](../papercusp-ui/GUIDE.md), and
-2. [`papercusp-ops-hives`](../papercusp-ops-hives/GUIDE.md) — the judgment
+2. [`papercusp-ops-pots`](../papercusp-ops-pots/GUIDE.md) — the judgment
    plane (domain hive + -ops hive + the ONE work_items⇄contract seam),
 
 into ONE two-plane app — the proven two-plane ops shape. A
@@ -62,8 +62,8 @@ seam convention, a release step — do NOT guess:
 3. Design the seam (ops-hives GUIDE walk 1–2): work-item kind + contract
    package. The contract is the app's most durable artifact — spend judgment
    here.
-4. Materialize the blueprints + wire `@papercusp/hive-app-seam` (ops-hives
-   walk 3–4; the package is vendored in the mirror as `hive-app-seam/` —
+4. Materialize the blueprints + wire `@papercusp/pot-app-seam` (ops-hives
+   walk 3–4; the package is vendored in the mirror as `pot-app-seam/` —
    README § Supply chain).
 5. Deterministic domain plane: tables, ingest, read model, UI (`ui-shape`,
    `app-tables`).

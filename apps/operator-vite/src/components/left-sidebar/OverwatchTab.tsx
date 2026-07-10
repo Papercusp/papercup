@@ -9,12 +9,12 @@
  * cross-monitor, via its Queen + Overwatch liveness cards). What's left here is
  * the overwatch's UNIQUE value, which can't live in a read-only dashboard:
  *   - the loop CONTROL/status (running / paused / pre-armed · cadence · liveness)
- *     incl. a START / PAUSE toggle (mirrors QueenTab) → kettle:start/pause
+ *     incl. a START / PAUSE toggle (mirrors MugTab) → kettle:start/pause
  *   - the ANOMALY → ACTION list (each detected anomaly + the NUDGE / OBSERVE /
  *     ESCALATE it would take — the D-001 nudge-not-replace boundary, straight off
  *     `anomaly.suggestedAction`).
  *
- * Narrow-rail idiom (mirrors QueenTab): vertical sections, `{ active }`-gated,
+ * Narrow-rail idiom (mirrors MugTab): vertical sections, `{ active }`-gated,
  * rendered only while the tab is open. Data: `overwatch.snapshot` (the brief,
  * SSE-live on the ~30s tick) + `overwatch.controlState`. Flag-gated by OVERWATCH
  * at the sidebar (LeftSidebar hides the tab when off); this also renders a clear
@@ -183,7 +183,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
       <div className="pc-owsb">
-        {/* Control / status header — status + START/PAUSE toggle (mirrors QueenTab) */}
+        {/* Control / status header — status + START/PAUSE toggle (mirrors MugTab) */}
         <header className="pc-owsb__bar" data-tone={tone}>
           <div className="pc-owsb__identity">
             <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />

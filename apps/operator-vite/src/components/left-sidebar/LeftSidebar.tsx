@@ -38,7 +38,7 @@ import SentinelVoiceBar from '../voice-bar/SentinelVoiceBar';
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
-const HivesTab = lazy(() => import('./HivesTab'));
+const PotsTab = lazy(() => import('./PotsTab'));
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
 // may use right now), beside Queen as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
@@ -46,7 +46,7 @@ const AccountsTab = lazy(() => import('./AccountsTab'));
 // 👑 Queen steering — the owner's focus/pause controls for the autonomous Queen.
 // Moved here from the /adv top tab strip as an owner-steering tab (owner
 // review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
-const QueenTab = lazy(() => import('./QueenTab'));
+const MugTab = lazy(() => import('./MugTab'));
 // 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
 // anomaly→action list). Moved here from the /adv strip next to Queen (owner ask
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
@@ -56,7 +56,7 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // quick live-override settings (audience mode, voice, proactive nudges, DND). The
 // sidebar is the quick live-override surface; full workspace settings hold the
 // defaults. Flag-gated (PAPERCUP); hidden until the role is live.
-const SentinelTab = lazy(() => import('./SentinelTab'));
+const PapercupTab = lazy(() => import('./PapercupTab'));
 
 // `tip` is the hover tooltip (owner ask 2026-06-23) — a one-line "what is this
 // tab for", surfaced via the button's native `title` on hover.
@@ -70,12 +70,12 @@ const TABS = [
   // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
   // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
-  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
-  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <SentinelTab active={a} /> },
+  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
-  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <HivesTab active={a} /> },
+  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

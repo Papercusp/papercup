@@ -848,7 +848,7 @@ body.has-left-sidebar .pc-header {
 .pc-owsb__footnote { font-size: 10px; line-height: 1.4; color: var(--fg-mute, #7f9bb4); padding: 0 2px; }
 .pc-owsb__footnote strong { color: var(--fg-dim, #b9d4e8); font-weight: 700; }
 
-/* QueenTab (steering panel) + QueenHeartbeat + ModelTiersOverride */
+/* MugTab (steering panel) + QueenHeartbeat + ModelTiersOverride */
 .pc-queen { --queen-accent: var(--warn, #fbbf24); display: flex; flex-direction: column; gap: 8px; padding: 9px 9px 14px; min-height: 0; }
 .pc-queen__placeholder { color: var(--fg-mute, #7f9bb4); font-size: 11px; padding: 7px 2px; }
 /* Flex row (was a 4-col grid that wrapped the 5th child — Crown/identity/hive/

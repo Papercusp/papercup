@@ -9,11 +9,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../work-items', () => ({ commentWorkItem: vi.fn() }));
+vi.mock('../../work-items', () => ({
+  commentWorkItem: vi.fn(),
+  getWorkItem: vi.fn(),
+  isSettledWorkItemState: (s: string | null | undefined) => !!s && ['resolved', 'closed', 'done', 'passed', 'deprecated'].includes(s),
+}));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 
-import { commentWorkItem } from '../../work-items';
+import { commentWorkItem, getWorkItem } from '../../work-items';
 const cmtM = vi.mocked(commentWorkItem);
+const getM = vi.mocked(getWorkItem);
 const tool = (await import('./comment')).default;
 
 type Out = { data: any };
@@ -59,5 +64,39 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     await body({ harness: 'def', items: [{ id: 'WI-1', body: 'a' }, { id: 'WI-2', body: 'b', harness: 'web' }] });
     expect(cmtM).toHaveBeenNthCalledWith(1, 'WI-1', 'a', 'me', { harness: 'def' });
     expect(cmtM).toHaveBeenNthCalledWith(2, 'WI-2', 'b', 'me', { harness: 'web' });
+  });
+
+  describe('EI-8837: completion-shaped post on a still-open item gets a nudge hint', () => {
+    it('a "DONE + GREEN" post on a non-terminal item carries `hint`', async () => {
+      cmtM.mockResolvedValue({ id: 'post-1' } as never);
+      getM.mockResolvedValue({ id: 'WI-1', state: 'open' } as never);
+      const b = await body({ id: 'WI-1', body: '✅ DONE + GREEN, all tests pass.' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', hint: expect.stringContaining('work_items:set_state') });
+      expect(getM).toHaveBeenCalledWith('WI-1', undefined);
+    });
+
+    it('the SAME post on an ALREADY-terminal item carries no hint', async () => {
+      cmtM.mockResolvedValue({ id: 'post-1' } as never);
+      getM.mockResolvedValue({ id: 'WI-1', state: 'resolved' } as never);
+      const b = await body({ id: 'WI-1', body: 'VM-verified, fully fixed.' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
+      expect(b.results[0].hint).toBeUndefined();
+    });
+
+    it('routine, non-completion-shaped chatter never triggers the getWorkItem lookup at all', async () => {
+      cmtM.mockResolvedValue({ id: 'post-1' } as never);
+      const b = await body({ id: 'WI-1', body: 'still investigating, no conclusion yet' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
+      expect(b.results[0].hint).toBeUndefined();
+      expect(getM).not.toHaveBeenCalled();
+    });
+
+    it('a getWorkItem failure never fails the already-landed comment', async () => {
+      cmtM.mockResolvedValue({ id: 'post-1' } as never);
+      getM.mockRejectedValue(new Error('lookup boom'));
+      const b = await body({ id: 'WI-1', body: 'fully fixed and verified.' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
+      expect(b.results[0].hint).toBeUndefined();
+    });
   });
 });

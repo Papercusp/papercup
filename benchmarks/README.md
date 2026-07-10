@@ -293,7 +293,7 @@ raw tokens at a pinned `price_table_version`.
 - **Overview:** `/internal/docs/benchmarks/`.
 - **Feasibility spikes:** L1 grader interface — D-008 /
   `apps/operator/docs/external-bench-grader-feasibility-2026-06-15.md`; fleet instruments
-  — D-011 / `apps/operator/docs/hive-instrument-feasibility-2026-06-15.md`.
+  — D-011 / `apps/operator/docs/pot-instrument-feasibility-2026-06-15.md`.
 - **Plan:** `impartial-benchmark-suite-2026-06-15` (decisions D-001 … D-011).
 - **Ownership:** `external-bench` blueprint (`P-019`), grader adapter (`P-005`),
   Baseline A (`P-006`), Baseline B (`P-007`), Baseline C (`P-008`), cost/scoring +

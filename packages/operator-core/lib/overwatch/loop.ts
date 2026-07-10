@@ -15,7 +15,7 @@
  *      persona resolves at `blueprints/coding/prompts/overwatch.md`, B-05/D-010).
  *      The brief rides the /invoke body as `overwatchBrief`; the route sets
  *      `OVERWATCH_WAKE_BRIEF`; invoke.ts hands it to buildPrompt as a
- *      `<system-reminder>` tail block (mirrors the Queen's QUEEN_WAKE_BRIEF).
+ *      `<system-reminder>` tail block (mirrors the Queen's MUG_WAKE_BRIEF).
  *
  *   2. **The waker** (`registerOverwatchWaker`, wake-bridge.ts) — the B-07 ↔ B-04
  *      seam: `kettle:start` requests an immediate wake / `kettle:pause`

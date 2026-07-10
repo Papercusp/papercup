@@ -3,11 +3,11 @@
  * (P-013, D-007). Design + the pure decision/sweep live in
  * `../../hive/bee-transcript-cap.ts`.
  *
- * Per tick: gather live bees + their transcript metrics, flag the ones over the cap
+ * Per tick: gather live cups + their transcript metrics, flag the ones over the cap
  * (too many carried tasks / too large a per-turn carry / a ballooned on-disk
- * transcript), and — when ARMED — recycle each over-cap IDLE bee with a graceful
+ * transcript), and — when ARMED — recycle each over-cap IDLE cup with a graceful
  * checkpoint-and-recycle nudge so its NEXT task starts fresh (the keystone P-005 fork
- * then spawns it fresh; the work-item checkpoint carries continuity, D-002). A bee
+ * then spawns it fresh; the work-item checkpoint carries continuity, D-002). A cup
  * mid-task is never touched (D-005). The over-cap cohort is LOGGED every tick for
  * visibility, even flag-off / dry-run.
  *
@@ -19,12 +19,12 @@ import { join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import {
-  runBeeTranscriptCapSweep,
-  type BeeTranscriptCaps,
-  type BeeTranscriptMetrics,
+  runCupTranscriptCapSweep,
+  type CupTranscriptCaps,
+  type CupTranscriptMetrics,
 } from '../../hive/bee-transcript-cap';
 
-/** Fail-soft on-disk transcript size: count JSONL entries in the bee's session file
+/** Fail-soft on-disk transcript size: count JSONL entries in the cup's session file
  *  (`<sessionClaudeConfigDir(owner)>/projects/**\/<sessionId>.jsonl`). 0 on any miss —
  *  so an unreadable transcript can never falsely trip a recycle (D-011 read path). */
 function transcriptEntryCount(ownerId: string, sessionId: string | null): number {
@@ -46,9 +46,9 @@ function transcriptEntryCount(ownerId: string, sessionId: string | null): number
   return 0;
 }
 
-/** Production metric gather: live bee rows (spawned_agents) × presence (idle) × the
- *  per-session carry (bee-wake-efficiency) × the on-disk transcript size. Fail-soft. */
-async function listBeesProd(workspaceId: string): Promise<BeeTranscriptMetrics[]> {
+/** Production metric gather: live cup rows (spawned_agents) × presence (idle) × the
+ *  per-session carry (cup-wake-efficiency) × the on-disk transcript size. Fail-soft. */
+async function listCupsProd(workspaceId: string): Promise<CupTranscriptMetrics[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = await sql<{ spawn_id: string; session_id: string | null; harness_slug: string | null }[]>`
@@ -58,7 +58,7 @@ async function listBeesProd(workspaceId: string): Promise<BeeTranscriptMetrics[]
        AND child_role = 'cup'
        AND status IN ('running', 'restarting')`;
 
-  // Idle signal: a bee parked on an inbox-wake (awaitingEvent) is drained/between-tasks.
+  // Idle signal: a cup parked on an inbox-wake (awaitingEvent) is drained/between-tasks.
   const { listPresence } = await import('../../agent-tools/coordination/presence');
   const presence = await listPresence({ workspaceId }).catch(() => []);
   const idleByOwner = new Map<string, boolean>();
@@ -80,7 +80,7 @@ async function listBeesProd(workspaceId: string): Promise<BeeTranscriptMetrics[]
       ownerId: r.spawn_id,
       sessionId: r.session_id,
       harness: r.harness_slug,
-      // Default to NOT idle (safe — a bee absent from presence is never recycled, D-005).
+      // Default to NOT idle (safe — a cup absent from presence is never recycled, D-005).
       idle: idleByOwner.get(r.spawn_id) === true,
       tasks: carry?.tasks ?? 0,
       carriedReadTokens: carry?.carried ?? 0,
@@ -89,10 +89,10 @@ async function listBeesProd(workspaceId: string): Promise<BeeTranscriptMetrics[]
   });
 }
 
-/** Recycle = a graceful checkpoint-and-recycle nudge (inject, never wake). The bee
- *  (taught by bee.md, P-012) writes its work_items:checkpoint and ends its turn; its
+/** Recycle = a graceful checkpoint-and-recycle nudge (inject, never wake). The cup
+ *  (taught by cup.md, P-012) writes its work_items:checkpoint and ends its turn; its
  *  next warm-inject then spawns FRESH (P-005). Safe + non-destructive (D-005). */
-async function nudgeRecycle(workspaceId: string, m: BeeTranscriptMetrics): Promise<void> {
+async function nudgeRecycle(workspaceId: string, m: CupTranscriptMetrics): Promise<void> {
   const { sendMessage } = await import('../../agent-tools/coordination/messages');
   await sendMessage(
     { ownerId: 'system:bee-transcript-cap', workspaceId } as never,
@@ -110,23 +110,23 @@ async function nudgeRecycle(workspaceId: string, m: BeeTranscriptMetrics): Promi
 registerSystemAction('bee-transcript-cap', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
-  const caps: Partial<BeeTranscriptCaps> = {};
+  const caps: Partial<CupTranscriptCaps> = {};
   if (typeof cfg.max_tasks === 'number') caps.maxTasks = cfg.max_tasks;
   if (typeof cfg.max_carried_read_tokens === 'number') caps.maxCarriedReadTokens = cfg.max_carried_read_tokens;
   if (typeof cfg.max_transcript_entries === 'number') caps.maxTranscriptEntries = cfg.max_transcript_entries;
 
-  const report = await runBeeTranscriptCapSweep({
+  const report = await runCupTranscriptCapSweep({
     dryRun,
     caps,
     deps: {
-      listBees: () => listBeesProd(ctx.workspaceId),
+      listCups: () => listCupsProd(ctx.workspaceId),
       recycle: (m) => nudgeRecycle(ctx.workspaceId, m),
     },
     log: (m) => console.log(`[bee-transcript-cap] ${m}`),
   });
 
   console.log(
-    `[bee-transcript-cap] scanned ${report.scanned} live bee(s) → ${report.overCap} over-cap` +
+    `[bee-transcript-cap] scanned ${report.scanned} live cup(s) → ${report.overCap} over-cap` +
       (report.targets.length
         ? ` [${report.targets.slice(0, 20).map((t) => `${t.ownerId}(${t.reason})`).join(', ')}${report.targets.length > 20 ? ',…' : ''}]`
         : '') +

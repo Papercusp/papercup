@@ -54,6 +54,7 @@ import {
 import { resolveP2pGrantWorkspace } from './grant-store';
 import { emitP2pReceipt } from './receipts';
 import { setLocalOfferDisposition, type LocalDispositionPredicate } from './offer-store';
+import { deregisterEphemeralForeignHarness } from '../harness-registry';
 
 /**
  * States where a foreign session is still LIVE and therefore reapable. The
@@ -145,6 +146,12 @@ export interface ReaperDeps {
   setForeignWorkspaceState: typeof setForeignWorkspaceState;
   emitP2pReceipt: typeof emitP2pReceipt;
   setLocalOfferDisposition: typeof setLocalOfferDisposition;
+  /** WI-1937 step 5: deregister the ephemeral harness_registry row (if any)
+   *  once a session actually transitions to 'reaped' here — this is the ONLY
+   *  production path that reaches 'reaped' (foreign-supervision.ts's sweep
+   *  only ever reaches 'winding-down'; the P-105 sandbox mechanical kill is
+   *  unbuilt), so this is the correct — and only — place to clean up the row. */
+  deregisterEphemeralForeignHarness: typeof deregisterEphemeralForeignHarness;
 }
 
 const defaultDeps: ReaperDeps = {
@@ -152,6 +159,7 @@ const defaultDeps: ReaperDeps = {
   setForeignWorkspaceState,
   emitP2pReceipt,
   setLocalOfferDisposition,
+  deregisterEphemeralForeignHarness,
 };
 
 /**

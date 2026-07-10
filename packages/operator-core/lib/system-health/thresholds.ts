@@ -40,6 +40,11 @@ export const DEPLOY_BEHIND_WARN = 80;
 /** Open escalation older than this = warn (aging). */
 export const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 
+/** WI-3565: idle healthy accounts strictly above this count, ALONGSIDE a confirmed
+ *  `admissionStarved`, is what makes the starvation a crit (real spare capacity sitting unused
+ *  behind an under-recovered admission ceiling) rather than routine full-pool pressure. */
+export const ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN = 2;
+
 // ── per-panel status deciders ────────────────────────────────────────────────
 
 /**
@@ -188,17 +193,25 @@ export function workFeedStatus(d: WorkFeedHealth): PanelStatus {
 /**
  * Tokens / gateway. crit = full starvation (no account available), the gateway is in the egress
  * path but unreachable, OR the gateway is WEDGED (B-GW-5: the watchdog auto-restart signature —
- * every slot pinned + a growing queue + frozen totalRequests). warn = the gateway is saturated or
- * sustained-throttling (wedge-RISK / capacity pressure), a paused bucket (RPM-pacing), or a paused
- * account. ok otherwise.
+ * every slot pinned + a growing queue + frozen totalRequests), OR a CONFIRMED sustained admission
+ * backlog with idle healthy accounts sitting unused (WI-3565: the deep-queue-below-ceiling starvation
+ * mode `saturated` cannot see — > ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN idle accounts + a queue
+ * persisted > ADMISSION_STARVATION_QUEUE_RATIO x the live ceiling for ≥5min). warn = the gateway is
+ * saturated, sustained-throttling, or admission-starvation-AT-RISK (not yet 5min-confirmed), a paused
+ * bucket (RPM-pacing), or a paused account. ok otherwise.
  */
 export function tokensStatus(d: TokensHealth): PanelStatus {
   if (d.accountsTotal > 0 && d.accountsAvailable === 0) return 'crit';
   if (d.gatewayEnabled && d.gatewayReachable === false) return 'crit';
   if (d.gateway?.wedge) return 'crit';
+  // WI-3565: a confirmed, sustained starvation WITH idle healthy accounts sitting unused is crit —
+  // it is exactly the "queue deep, pool idle, nothing alarmed" incident this detector exists to catch.
+  // Without idle headroom the same deep queue is just normal full-pool pressure (the warn branch below).
+  if (d.gateway?.admissionStarved && d.accountsAvailable > ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN) return 'crit';
   // P-005/W3 (D-001): a leaked admission slot the valve can't reclaim is an early warn — the root-cause
   // signal that PRECEDES the wedge it would otherwise silently ride to (the wedge itself stays crit above).
   if (d.gateway?.saturated || d.gateway?.sustainedThrottle || d.gateway?.slotLeak) return 'warn';
+  if (d.gateway?.admissionStarvationRisk) return 'warn';
   if (d.pausedBuckets > 0 || d.accountsPaused > 0) return 'warn';
   return 'ok';
 }

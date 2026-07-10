@@ -38,16 +38,19 @@ export interface CanonicalHiveInvite {
 
 /**
  * Resolve the canonical invite. Precedence: `explicit` (tests) → `--define`'d env
- * (PAPERCUP_DOGFOOD_HIVE_PUBKEY + PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET — a build-time
+ * (PAPERCUP_DOGFOOD_POT_PUBKEY + PAPERCUP_DOGFOOD_POT_INVITE_SECRET — a build-time
  * OVERRIDE, e.g. pointing a staging build at a different canonical hive) → the COMMITTED
  * canonical constant (canonical-hive-invite.ts — the version-tracked default that ships
  * on every platform; the invite is a discovery token, not an access grant, per D-001).
  * Returns null when none are set (dev builds before activation → per-owner create fallback).
+ * (Legacy PAPERCUP_DOGFOOD_HIVE_* env names still accepted — dual-accept until callers migrate.)
  */
 export function bakedCanonicalHiveInvite(explicit?: CanonicalHiveInvite | null): CanonicalHiveInvite | null {
   if (explicit) return explicit;
-  const pubkeyBase64 = process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY?.trim();
-  const inviteSecret = process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET?.trim();
+  const pubkeyBase64 = (process.env.PAPERCUP_DOGFOOD_POT_PUBKEY ?? process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY)?.trim();
+  const inviteSecret = (
+    process.env.PAPERCUP_DOGFOOD_POT_INVITE_SECRET ?? process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET
+  )?.trim();
   if (pubkeyBase64 && inviteSecret) return { pubkeyBase64, inviteSecret };
   return CANONICAL_PAPERCUSP_HIVE_INVITE;
 }

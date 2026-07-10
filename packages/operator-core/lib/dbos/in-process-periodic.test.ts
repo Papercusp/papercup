@@ -142,7 +142,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'connection-pressure',
         'federation-drain-reconcile',
         'harness-status-sweep',
-        'hive-epoch-key-reconcile',
+        'pot-epoch-key-reconcile',
         'learning-infra-health',
         'poll-suspect-scan',
         'scorecard-emission-pulse',
@@ -167,7 +167,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('learning-infra-health')!.intervalMs).toBe(120_000);
     expect(byName.get('steering-churn-sweep')!.intervalMs).toBe(300_000);
     expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);
-    expect(byName.get('hive-epoch-key-reconcile')!.intervalMs).toBe(600_000);
+    expect(byName.get('pot-epoch-key-reconcile')!.intervalMs).toBe(600_000);
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
     expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
@@ -177,7 +177,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     const shedders = checks.filter((c) => c.shed).map((c) => c.name).sort();
     // federation-drain-reconcile sheds: it group-scans substrate_outbox, and a real
     // stall persists, so a shed tick is caught next interval (WI-254).
-    // hive-epoch-key-reconcile does NOT shed: it is GAP-AWARE (no crypto on an intact hive), so it
+    // pot-epoch-key-reconcile does NOT shed: it is GAP-AWARE (no crypto on an intact hive), so it
     // stays cheap under load AND its fireOnArm heal-on-startup must run even during the busy boot.
     // scorecard-emission-pulse sheds: it computes SystemHealth when it fires, and a shed
     // cycle just delays the deterministic floor one 10min interval.

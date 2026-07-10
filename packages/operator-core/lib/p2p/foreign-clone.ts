@@ -31,6 +31,7 @@ import {
   setForeignWorkspaceBaseSha,
   setForeignWorkspaceState,
 } from './foreign-workspaces';
+import { registerEphemeralForeignHarness, type ProjectEntry } from '../harness-registry';
 
 export interface ProvisionInput {
   /** The host repo to clone FROM (the canonical tree or a bare mirror). */
@@ -54,11 +55,26 @@ export interface ProvisionInput {
   register?: (input: Parameters<typeof registerForeignWorkspace>[0]) => Promise<RegisterResult>;
   park?: (offerId: string, reason: string) => Promise<unknown>;
   recordBaseSha?: (workspaceId: string, offerId: string, baseSha: string) => Promise<void>;
+  /**
+   * WI-1937 D-001 option B (leader steer, msg mre5tvu2 2026-07-09): register an
+   * EPHEMERAL harness_registry row for the clone so `resolveProject` /
+   * `spawnAgentInHarness` can cwd the eventual `foreign-session` spawn into
+   * this sandboxed clone via the SAME registry-resolution chokepoint every
+   * other spawn uses — zero core-spawn-path changes. Default: the real
+   * harness-registry write (harness-registry.ts); tests inject a stub.
+   */
+  registerHarness?: (offerId: string, clonePath: string, workspaceId: string) => Promise<ProjectEntry>;
 }
 
 export type ProvisionResult =
   | { ok: true; workspace: ForeignWorkspace; clonePath: string }
-  | { ok: false; refusal: { code: 'invariant' | 'conflict' | 'clone-failed' | 'odb-not-private'; detail: string } };
+  | {
+      ok: false;
+      refusal: {
+        code: 'invariant' | 'conflict' | 'clone-failed' | 'odb-not-private' | 'harness-register-failed';
+        detail: string;
+      };
+    };
 
 /** X4 post-clone verification: the clone's ODB is PRIVATE — no alternates
  *  file, a real objects directory. Returns null when private, else why not. */
@@ -124,6 +140,20 @@ export async function provisionForeignClone(input: ProvisionInput): Promise<Prov
     const detail = `offer ${input.offerId}: ${odb}`;
     await park(input.offerId, detail);
     return { ok: false, refusal: { code: 'odb-not-private', detail } };
+  }
+
+  // WI-1937 step 4: register the ephemeral harness_registry row NOW — the
+  // clone is fully provisioned + ODB-verified, so this is the earliest safe
+  // point. A registration failure means the eventual spawn leg could never
+  // resolve this clone (resolveProject would 404 it), so this is a hard
+  // refusal, not best-effort — park like the other provisioning failures.
+  const registerHarness = input.registerHarness ?? registerEphemeralForeignHarness;
+  try {
+    await registerHarness(input.offerId, clonePath, input.workspaceId);
+  } catch (e) {
+    const detail = `offer ${input.offerId}: ephemeral harness_registry registration failed: ${e instanceof Error ? e.message : String(e)}`;
+    await park(input.offerId, detail);
+    return { ok: false, refusal: { code: 'harness-register-failed', detail } };
   }
 
   // Leg iii range anchor (mig 470): record the canonical sha this clone

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
+import { TONE } from './theme';
 import {
   useAgentThinkingStream,
   Entry,
@@ -144,10 +145,10 @@ export default function AgentInspectorModal({
   // "stalled?" instead of a reassuring green "live" (shared waitingMessage logic).
   const stalledNow = events.length === 0 && status === 'live' && waiting.stalled;
   const statusLabel = stalledNow ? 'stalled?' : status === 'connecting' ? 'connecting…' : status;
-  const statusColor = stalledNow ? '#d97757'
-    : status === 'live' ? '#6aa84f'
-    : status === 'error' ? '#d97757'
-    : '#9a9a9a';
+  const statusColor = stalledNow ? TONE.warn
+    : status === 'live' ? TONE.good
+    : status === 'error' ? TONE.bad
+    : TONE.neutral;
 
   return (
     <Modal
@@ -191,7 +192,7 @@ export default function AgentInspectorModal({
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 font: 'inherit', fontSize: 11, cursor: focusState === 'busy' ? 'default' : 'pointer',
-                color: focusState === 'err' ? '#d97757' : 'var(--fg)',
+                color: focusState === 'err' ? TONE.bad : 'var(--fg)',
                 background: 'var(--bg-1)', border: '1px solid var(--border)',
                 borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
               }}
@@ -204,12 +205,12 @@ export default function AgentInspectorModal({
             {thinking ? <ThinkingDot size={7} /> : (
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
             )}
-            <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
+            <span style={{ color: thinking ? TONE.good : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
             <span style={{ color: 'var(--fg-mute)' }}>· {turns.length} turn{turns.length === 1 ? '' : 's'} · {events.length} event{events.length === 1 ? '' : 's'}</span>
             {highlightTerm && anchor ? (
               <span
                 data-testid="anchor-status"
-                style={{ color: anchor.found ? 'var(--accent-strong, #7dd3fc)' : '#d97757' }}
+                style={{ color: anchor.found ? 'var(--accent-strong, #7dd3fc)' : TONE.warn }}
               >
                 {anchor.found
                   ? `· ⚓ jumped to match`
@@ -235,7 +236,7 @@ export default function AgentInspectorModal({
         }}
       >
         {events.length === 0 ? (
-          <div style={{ color: waiting.stalled ? '#d97757' : 'var(--fg-mute)', fontStyle: 'italic' }}>
+          <div style={{ color: waiting.stalled ? TONE.warn : 'var(--fg-mute)', fontStyle: 'italic' }}>
             {waiting.text}
           </div>
         ) : (

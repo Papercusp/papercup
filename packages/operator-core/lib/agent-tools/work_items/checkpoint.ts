@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
@@ -98,8 +99,14 @@ export default defineTool({
         // store canonicalizes it). Fall back to the hint only when the item can't be
         // resolved (e.g. a not-yet-persisted id).
         const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
+        // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
+        // read-scoping wildcard) — passing it straight through as `?? undefined`
+        // let the truthy '*' win and persisted the checkpoint under a literal
+        // workspace_id='*' row that no concrete-workspace read (work_items:get's
+        // getWorkItemCheckpoint, which never resolves to '*') can ever see. Same
+        // bug class as EI-3409/WI-892; resolveConcreteWorkspaceId is the fix.
         const stored = await setWorkItemCheckpoint(
-          { harness, workItemId: it.id, workspaceId: c.workspaceId ?? undefined },
+          { harness, workItemId: it.id, workspaceId: resolveConcreteWorkspaceId(c.workspaceId) },
           it.checkpoint,
         );
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write

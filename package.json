@@ -74,7 +74,7 @@
     "libs/generic/audio-dsp",
     "libs/generic/deployment-driver",
     "libs/generic/tauri-release-kit",
-    "libs/generic/hive-app-seam",
+    "libs/generic/pot-app-seam",
     "libs/generic/lexicon",
     "libs/generic/eval-battery",
     "libs/generic/bench-metrics",

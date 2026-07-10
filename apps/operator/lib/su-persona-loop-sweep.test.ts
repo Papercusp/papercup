@@ -16,7 +16,7 @@ const read = (rel: string) => readFileSync(join(PROMPTS, rel), 'utf8');
 
 /** The su/interactive persona sources swept in B-LOOP-FIN-1. */
 const SU_PERSONAS = [
-  'hive-instances/papercup-hive.su.md', // the live instance override (SU_BLUEPRINT_PERSONA path)
+  'pot-instances/papercup-pot.su.md', // the live instance override (SU_BLUEPRINT_PERSONA path)
   'papercusp-su-engineer.tools.md', // the legacy engineer playbook
   'papercusp-su-power.tools.md', // the legacy power playbook
   'papercusp-su.claude.md', // the Claude client overlay (where /loop natively lives)

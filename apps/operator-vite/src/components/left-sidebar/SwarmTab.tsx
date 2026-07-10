@@ -98,7 +98,7 @@ function planTotals(p: PlanRow): { done: number; total: number } {
  * updater below), never a plain object — because the Colony rail's own state
  * (`?lsb`/`lst`/`lsa`) rides in the same search string, so a wholesale replace
  * would collapse/reset the sidebar on every click. (Same convention as
- * QueenTab's navigate() in this directory.) Empty values are dropped.
+ * MugTab's navigate() in this directory.) Empty values are dropped.
  */
 type RowSearch = Record<string, string | number | null | undefined>;
 

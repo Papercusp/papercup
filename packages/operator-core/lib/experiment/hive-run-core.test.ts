@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BASELINE_ID, type BatteryCellResult, type BatteryRubric, type BatteryScore, type JudgeLlmCall } from '@papercusp/eval-battery';
-import type { HiveRunHandle, HiveRunPorts, HiveScenarioCell } from '../hive-eval/run-harness';
-import type { HiveScenario } from '../hive-eval/scenario';
+import type { HiveRunHandle, HiveRunPorts, HiveScenarioCell } from '../pot-eval/run-harness';
+import type { HiveScenario } from '../pot-eval/scenario';
 import {
   armToHiveCells,
   hiveResultsToExperimentResult,

@@ -18,13 +18,9 @@ export interface Profile {
   email?: string;
   display_name?: string;
   default_project_dir?: string;
-  preferred_models?: {
-    scoper?: string;
-    worker?: string;
-    validator?: string;
-    reviewer?: string;
-    orchestrator?: string;
-  };
+  // `preferred_models` removed (settings-audit 2026-07-09): the /settings/profile
+  // form wrote it but nothing ever read it. Per-role model selection is
+  // /settings/agent → agent-config (models / roleBackends).
   /** Auto-scan toggle. Was previously localStorage 'papercusp.autoScan'. */
   auto_scan?: boolean;
   auto_accept?: 'off' | 'low' | 'medium' | 'high';

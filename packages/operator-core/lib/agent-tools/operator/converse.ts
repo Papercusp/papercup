@@ -530,8 +530,8 @@ export default defineTool({
       }
       if (isSentinel && parsed.deepDelegations.length > 0) {
         const [{ delegateDeep }, { defaultDeepDelegateDeps }] = await Promise.all([
-          import('../../sentinel/sentinel-deep-delegate'),
-          import('../../sentinel/sentinel-deep-delegate-deps'),
+          import('../../papercup/papercup-deep-delegate'),
+          import('../../papercup/papercup-deep-delegate-deps'),
         ]);
         const deps = defaultDeepDelegateDeps();
         for (const deep of parsed.deepDelegations) {

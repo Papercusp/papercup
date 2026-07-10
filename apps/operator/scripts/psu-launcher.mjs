@@ -2913,6 +2913,46 @@ export async function reportSessionResumed(
   }
 }
 
+/** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
+ *  reaches an agent child. This box's long-lived gnome-terminal-server (every
+ *  terminal window is forked from ONE persistent daemon, inheriting whatever
+ *  env it had at ITS OWN startup) was activated with `npm_config_local_prefix`
+ *  / `INIT_CWD` / `npm_package_json` pinned to `papercup-release` and its
+ *  node_modules/.bin dirs PREPENDED to PATH — so every su/agent session on
+ *  this box inherits it identically. Effect: `npx <tool>` / bare `vitest`
+ *  resolve the STALE release-tree copy instead of the staging tree's, making
+ *  every test in a run fail identically ("Vitest failed to find the runner")
+ *  and poisoning `harness_shared.test_runs`, which then feeds FALSE "red-test"
+ *  watchdog EIs fleet-wide (confirmed via EI-8828/EI-8840 — both proved green
+ *  when re-run through a clean env). Root cause lives upstream of this
+ *  process (the terminal daemon's own frozen env) and isn't fixable here, but
+ *  THIS is the one choke point every psu-launched agent session passes
+ *  through — sanitizing here fixes it fleet-wide regardless of what garbage
+ *  the launching shell carried in. Non-destructive: only strips `npm_*`
+ *  lifecycle vars (never touches PAPERCUSP_*/PATH entries the caller
+ *  explicitly set after this runs) and PATH segments naming the release
+ *  checkout, which an interactive agent session never legitimately needs. */
+function sanitizeInheritedEnv(env) {
+  const out = { ...env };
+  for (const key of Object.keys(out)) {
+    if (
+      key === 'INIT_CWD' ||
+      key.startsWith('npm_config_local_prefix') ||
+      key.startsWith('npm_package_') ||
+      key.startsWith('npm_lifecycle_')
+    ) {
+      delete out[key];
+    }
+  }
+  if (typeof out.PATH === 'string' && out.PATH.includes('papercup-release')) {
+    out.PATH = out.PATH
+      .split(delimiter)
+      .filter((seg) => !seg.includes('/papercup-release/'))
+      .join(delimiter);
+  }
+  return out;
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -2943,7 +2983,7 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
 }
 
 function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
-  const env = { ...process.env, ...envelopeEnv };
+  const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
   // Export the RESOLVED operator url to every agent child so claude's user-level
   // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by
   // desktop-install/claude-integration) resolves to the LIVE operator on each
@@ -3803,7 +3843,7 @@ function runInstallerInherit(spec) {
   return new Promise((resolve) => {
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd || process.cwd(),
-      env: { ...process.env, ...(spec.env ?? {}) },
+      env: { ...sanitizeInheritedEnv(process.env), ...(spec.env ?? {}) },
       stdio: 'inherit',
     });
     child.on('exit', (code) => resolve(code ?? 1));

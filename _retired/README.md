@@ -29,3 +29,15 @@ convention.
   2026-06-09 (`retire-snapshots-instance-spec`); the reproducible clone re-homed onto
   the lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`).
   Restore: `snapshot-system/RESTORE.md` (git tag `snapshot-system-retired-2026-06-09`).
+- `legacy-web-chats/` — the in-webview chat surfaces (OracleDock,
+  OperatorChatSidebar, OperatorChat, TutorialButton); the terminal-native pui
+  chat pane is the only chat surface. Retired 2026-07-09
+  (design-simplification-2026-07-09 P-003, owner decision D1). Restore:
+  `legacy-web-chats/RESTORE.md`.
+- `harness-dashboard/` — the legacy per-slug harness dashboard (`/harness/$slug`
+  dock shell + insights/projects pages, the Real*/Pinned* dock panels +
+  `sample-panels` registration set, orphaned dashboard tabs, the legacy vite
+  routes, `e2e/dock.spec.ts`). Retired 2026-07-09
+  (design-simplification-2026-07-09 P-008, owner decision D2). The design-system
+  primitives + the dock ENGINE in `apps/operator/app/harness/` stay live — `/adv`
+  and `/workbench` are built on them. Restore: `harness-dashboard/RESTORE.md`.

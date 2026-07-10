@@ -21,6 +21,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getWorkItem, releaseWorkItem } from '../../work-items';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'work_items:park',
@@ -72,8 +73,10 @@ export default defineTool({
       };
     }
     const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
+    // EI-8824: same wildcard-workspace bug as work_items:checkpoint — c.workspaceId
+    // is '*' for an unscoped superuser session and must never be persisted literally.
     const stored = await setWorkItemCheckpoint(
-      { harness, workItemId: args.id, workspaceId: c.workspaceId ?? undefined },
+      { harness, workItemId: args.id, workspaceId: resolveConcreteWorkspaceId(c.workspaceId) },
       args.checkpoint,
     );
     const released = await releaseWorkItem(args.id, { harness: harness ?? undefined });

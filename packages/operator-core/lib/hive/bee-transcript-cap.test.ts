@@ -8,14 +8,14 @@ const getFlag = vi.fn();
 vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => getFlag(...a) }));
 
 import {
-  shouldRecycleBeeTranscript,
-  runBeeTranscriptCapSweep,
-  DEFAULT_BEE_TRANSCRIPT_CAPS,
-  type BeeTranscriptMetrics,
+  shouldRecycleCupTranscript,
+  runCupTranscriptCapSweep,
+  DEFAULT_CUP_TRANSCRIPT_CAPS,
+  type CupTranscriptMetrics,
 } from './bee-transcript-cap';
 
-const bee = (over: Partial<BeeTranscriptMetrics> = {}): BeeTranscriptMetrics => ({
-  ownerId: 's-bee-1',
+const cup = (over: Partial<CupTranscriptMetrics> = {}): CupTranscriptMetrics => ({
+  ownerId: 's-cup-1',
   sessionId: 'sess-1',
   harness: 'acme',
   idle: true,
@@ -27,65 +27,65 @@ const bee = (over: Partial<BeeTranscriptMetrics> = {}): BeeTranscriptMetrics => 
 
 beforeEach(() => getFlag.mockReset());
 
-describe('shouldRecycleBeeTranscript (pure)', () => {
-  it('recycles an idle bee over the task cap', () => {
-    expect(shouldRecycleBeeTranscript(bee({ tasks: DEFAULT_BEE_TRANSCRIPT_CAPS.maxTasks })).recycle).toBe(true);
+describe('shouldRecycleCupTranscript (pure)', () => {
+  it('recycles an idle cup over the task cap', () => {
+    expect(shouldRecycleCupTranscript(cup({ tasks: DEFAULT_CUP_TRANSCRIPT_CAPS.maxTasks })).recycle).toBe(true);
   });
-  it('recycles an idle bee over the carried-token cap', () => {
+  it('recycles an idle cup over the carried-token cap', () => {
     expect(
-      shouldRecycleBeeTranscript(bee({ carriedReadTokens: DEFAULT_BEE_TRANSCRIPT_CAPS.maxCarriedReadTokens })).recycle,
+      shouldRecycleCupTranscript(cup({ carriedReadTokens: DEFAULT_CUP_TRANSCRIPT_CAPS.maxCarriedReadTokens })).recycle,
     ).toBe(true);
   });
-  it('recycles an idle bee over the transcript-entry cap', () => {
+  it('recycles an idle cup over the transcript-entry cap', () => {
     expect(
-      shouldRecycleBeeTranscript(bee({ transcriptEntries: DEFAULT_BEE_TRANSCRIPT_CAPS.maxTranscriptEntries })).recycle,
+      shouldRecycleCupTranscript(cup({ transcriptEntries: DEFAULT_CUP_TRANSCRIPT_CAPS.maxTranscriptEntries })).recycle,
     ).toBe(true);
   });
-  it('NEVER recycles a mid-task bee, even far over every cap (D-005)', () => {
-    const d = shouldRecycleBeeTranscript(bee({ idle: false, tasks: 9999, carriedReadTokens: 9e9, transcriptEntries: 9e9 }));
+  it('NEVER recycles a mid-task cup, even far over every cap (D-005)', () => {
+    const d = shouldRecycleCupTranscript(cup({ idle: false, tasks: 9999, carriedReadTokens: 9e9, transcriptEntries: 9e9 }));
     expect(d.recycle).toBe(false);
     expect(d.reason).toBeNull();
   });
-  it('keeps an idle bee under every cap', () => {
-    expect(shouldRecycleBeeTranscript(bee({ tasks: 1, carriedReadTokens: 1000, transcriptEntries: 10 })).recycle).toBe(
+  it('keeps an idle cup under every cap', () => {
+    expect(shouldRecycleCupTranscript(cup({ tasks: 1, carriedReadTokens: 1000, transcriptEntries: 10 })).recycle).toBe(
       false,
     );
   });
 });
 
-describe('runBeeTranscriptCapSweep (flag-gated)', () => {
+describe('runCupTranscriptCapSweep (flag-gated)', () => {
   it('flag OFF: reports the over-cap cohort but recycles NOTHING', async () => {
     getFlag.mockResolvedValue(false);
     const recycle = vi.fn(async () => {});
-    const report = await runBeeTranscriptCapSweep({
-      deps: { listBees: async () => [bee({ tasks: 99 })], recycle },
+    const report = await runCupTranscriptCapSweep({
+      deps: { listCups: async () => [cup({ tasks: 99 })], recycle },
     });
     expect(report.enabled).toBe(false);
     expect(report.overCap).toBe(1);
     expect(report.recycled).toBe(0);
     expect(recycle).not.toHaveBeenCalled();
-    expect(report.targets[0].ownerId).toBe('s-bee-1');
+    expect(report.targets[0].ownerId).toBe('s-cup-1');
   });
 
-  it('flag ON: recycles the over-cap idle bee', async () => {
+  it('flag ON: recycles the over-cap idle cup', async () => {
     getFlag.mockResolvedValue(true);
-    const recycle = vi.fn(async (_m: BeeTranscriptMetrics) => {});
-    const report = await runBeeTranscriptCapSweep({
-      deps: { listBees: async () => [bee({ tasks: 99 }), bee({ ownerId: 's-ok', tasks: 1 })], recycle },
+    const recycle = vi.fn(async (_m: CupTranscriptMetrics) => {});
+    const report = await runCupTranscriptCapSweep({
+      deps: { listCups: async () => [cup({ tasks: 99 }), cup({ ownerId: 's-ok', tasks: 1 })], recycle },
     });
     expect(report.enabled).toBe(true);
     expect(report.overCap).toBe(1);
     expect(report.recycled).toBe(1);
     expect(recycle).toHaveBeenCalledTimes(1);
-    expect(recycle.mock.calls[0][0].ownerId).toBe('s-bee-1');
+    expect(recycle.mock.calls[0][0].ownerId).toBe('s-cup-1');
   });
 
   it('flag ON + dry_run: reports the cohort, recycles nothing', async () => {
     getFlag.mockResolvedValue(true);
     const recycle = vi.fn(async () => {});
-    const report = await runBeeTranscriptCapSweep({
+    const report = await runCupTranscriptCapSweep({
       dryRun: true,
-      deps: { listBees: async () => [bee({ tasks: 99 })], recycle },
+      deps: { listCups: async () => [cup({ tasks: 99 })], recycle },
     });
     expect(report.dryRun).toBe(true);
     expect(report.overCap).toBe(1);
@@ -93,25 +93,25 @@ describe('runBeeTranscriptCapSweep (flag-gated)', () => {
     expect(recycle).not.toHaveBeenCalled();
   });
 
-  it('never recycles a mid-task bee even when armed (D-005)', async () => {
+  it('never recycles a mid-task cup even when armed (D-005)', async () => {
     getFlag.mockResolvedValue(true);
     const recycle = vi.fn(async () => {});
-    const report = await runBeeTranscriptCapSweep({
-      deps: { listBees: async () => [bee({ idle: false, tasks: 99 })], recycle },
+    const report = await runCupTranscriptCapSweep({
+      deps: { listCups: async () => [cup({ idle: false, tasks: 99 })], recycle },
     });
     expect(report.overCap).toBe(0);
     expect(recycle).not.toHaveBeenCalled();
   });
 
-  it('is fail-soft per bee: a recycle throw is counted, the sweep continues', async () => {
+  it('is fail-soft per cup: a recycle throw is counted, the sweep continues', async () => {
     getFlag.mockResolvedValue(true);
     const recycle = vi
       .fn()
       .mockRejectedValueOnce(new Error('nudge failed'))
       .mockResolvedValueOnce(undefined);
-    const report = await runBeeTranscriptCapSweep({
+    const report = await runCupTranscriptCapSweep({
       deps: {
-        listBees: async () => [bee({ ownerId: 's-a', tasks: 99 }), bee({ ownerId: 's-b', tasks: 99 })],
+        listCups: async () => [cup({ ownerId: 's-a', tasks: 99 }), cup({ ownerId: 's-b', tasks: 99 })],
         recycle,
       },
     });
@@ -120,11 +120,11 @@ describe('runBeeTranscriptCapSweep (flag-gated)', () => {
     expect(report.failed).toBe(1);
   });
 
-  it('degrades to empty when listBees throws', async () => {
+  it('degrades to empty when listCups throws', async () => {
     getFlag.mockResolvedValue(true);
-    const report = await runBeeTranscriptCapSweep({
+    const report = await runCupTranscriptCapSweep({
       deps: {
-        listBees: async () => {
+        listCups: async () => {
           throw new Error('pg down');
         },
         recycle: async () => {},

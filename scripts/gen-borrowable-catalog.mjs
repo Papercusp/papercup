@@ -42,7 +42,7 @@ const BORROWABLE = [
   ['libs/generic/linkable-edges',             'Pure utilities & infra'],
   ['libs/generic/plan-parser',                'Pure utilities & infra'],
   ['libs/generic/seed-bundle',                'Pure utilities & infra'],
-  ['libs/generic/hive-app-seam',              'Pure utilities & infra'],
+  ['libs/generic/pot-app-seam',              'Pure utilities & infra'],
   ['libs/generic/rate-limit',                 'Pure utilities & infra'],
   ['libs/generic/artifact-registry',          'Pure utilities & infra'],
   ['libs/generic/papergrid/kv-persist',           'Pure utilities & infra'],

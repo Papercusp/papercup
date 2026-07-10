@@ -22,13 +22,13 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (QueenTab / OverwatchTab / SwarmTab / VoiceTab / HivesTab).
+// separately (MugTab / OverwatchTab / SwarmTab / VoiceTab / PotsTab).
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
-vi.mock('./QueenTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
+vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
 vi.mock('./SwarmTab', () => ({ default: () => <div data-testid="panel-swarm" /> }));
 vi.mock('./VoiceTab', () => ({ default: () => <div data-testid="panel-voice" /> }));
-vi.mock('./HivesTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
+vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
 
 import LeftSidebar from './LeftSidebar';
 

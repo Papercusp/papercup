@@ -11,7 +11,7 @@
  *
  * Purely presentational: it renders a {@link SteeringTree} (built by
  * buildSteeringTree from the unchanged persisted pair) and reports clicks back as
- * the pure toggle intents. QueenTab owns the (eligibleHives, eligiblePlans) state
+ * the pure toggle intents. MugTab owns the (eligibleHives, eligiblePlans) state
  * + the serialized optimistic write. Reuses the parent's `.pc-queen__*` tokens.
  */
 import { useMemo, useState } from 'react';

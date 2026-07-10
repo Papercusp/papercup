@@ -19,7 +19,7 @@
  *
  * ── THE PER-TASK SPINE-DRIVE (the spawn primitive — D-001 / D-004-B) ──────────────────────────────────
  * CRITICAL FIX (D-004-B): control bees MUST route through :3170 so they receive proper environment
- * variables (AGENT_MODELS, PAPERCUSP_XBENCH_BEE_DIRECTIVE) and wire to work-item claims (fleet coordination).
+ * variables (AGENT_MODELS, PAPERCUSP_XBENCH_CUP_DIRECTIVE) and wire to work-item claims (fleet coordination).
  * Each independent agent is: (1) enrolled as a temporary member harness with a seeded feature, (2) spawned
  * via FIFO batch through the shared hive (placeFifoBatch), (3) collected when finished. This maintains
  * independence (per-task isolation, no Queen placement) while routing through hive infrastructure so bees
@@ -492,7 +492,7 @@ export function bindSuIndependentBacklogDriver(
  * (same harness/feature infrastructure; just no Queen orchestration). Lazy dynamic imports keep the
  * module import-light so the fake-driven test never loads git/PG/the hive/fleet ops.
  *
- * KEY ENVIRONMENTAL: control bees receive PAPERCUSP_XBENCH_BEE_DIRECTIVE + AGENT_MODELS (the opus
+ * KEY ENVIRONMENTAL: control bees receive PAPERCUSP_XBENCH_CUP_DIRECTIVE + AGENT_MODELS (the opus
  * override) set on :3170's env (.env.local), so they self-claim work-items + use the correct models.
  * This binding sets both in THIS launcher's env so in-process operations see them (though the actual
  * bees spawn via :3170 loopback, so the :3170 env is what matters for the bees).
@@ -518,7 +518,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
     'validator/reviewer downstream; you own the fix end to end.',
   ].join(' ');
 
-  if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
+  if (process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE == null) process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE = BENCH_BEE_DIRECTIVE;
   if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
   if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
   if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
@@ -534,7 +534,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
   };
 
   const liveOps = async () => {
-    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    const { liveHiveOps } = await import('../pot-eval/live-ops');
     return liveHiveOps({ workspaceId: ws });
   };
 
@@ -655,7 +655,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const instanceId = instanceByFeatureId.get(featureId);
       const brief = gaiaMode
         ? (instanceId ? gaiaBriefByInstance.get(instanceId) : undefined) ?? ''
-        : process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '';
+        : process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE ?? process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE /* legacy env name — dual-accept until callers migrate */ ?? '';
 
       const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
       // RETRY (2026-06-17): under concurrent enrollment (cap>1), place_batch can fire before :3170's

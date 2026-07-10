@@ -430,7 +430,7 @@ needed. This limitation is closed.
 
 The post-min-bar backlog was given explicit verdicts under
 `shared-pot-p2p-release-readiness-2026-07-03` P-011 (full table:
-`shared-pot-release-testing/RELEASE-READINESS.md`). The standing
+`shared-hive-release-testing/RELEASE-READINESS.md`). The standing
 ship-with-limitation rows, each with an accountable tracker:
 
 - **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation
@@ -438,25 +438,25 @@ ship-with-limitation rows, each with an accountable tracker:
   criteria (a built un-revoke flow OR this owner-ratified permanent-limitation row)
   is satisfied by this row, hence its `resolved` tracker state — no code shipped for
   un-revoke itself, this is a documented-and-accepted gap, not a fix.
-  ⚠️ **CORRECTION (2026-07-09, P-003 rest-lanes audit):** this row previously stated
-  the sanctioned workaround (re-invite as a fresh device/epoch) "must NOT retro-grant
-  cut epochs" — **verified FALSE against the actual implementation.**
+  ⚠️ **CORRECTED + RATIFIED (2026-07-09, WI-3566, closing the P-003 rest-lanes audit
+  finding):** this row previously stated the sanctioned workaround (re-invite as a
+  fresh device/epoch) "must NOT retro-grant cut epochs" — **verified FALSE against
+  the actual implementation, and that old caveat is now removed as simply wrong.**
   `grantEpochKeysToMembers` (`pot-epoch-boundary-wiring.ts`) is a ratified v1
   correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member —
   including a re-invited fresh device for a previously-revoked identity — is granted
   wrapped keys for **every** epoch `[0..current]`, by design (pinned by
   `seed-past-epoch-key-guarantee.test.ts`; a current-epoch-only policy is explicitly
-  a *deferred future forward-secrecy policy*, not implemented). So the re-invite
-  workaround **does** hand the returning member every epoch key minted during their
-  ban, including the K-cut boundary epoch that revoked them — it restores full
-  history access, same as any brand-new member. There is currently no guard that
-  distinguishes "returning previously-revoked identity" from "genuinely new member"
-  at grant time. Tracked for an owner design decision: WI-3566 (build a per-identity
-  epoch-floor exclusion) OR explicitly ratify that un-revoke-via-reinvite is, and is
-  meant to be, a full history restore (making the old "must not retro-grant" caveat
-  simply wrong and removable). Until decided, treat un-revoke-via-reinvite as
-  **equivalent to inviting a brand-new member with full history access** — NOT as a
-  partial/forward-only restore.
+  a *deferred future forward-secrecy policy*, not implemented, and not currently
+  planned work). **Ratified (WI-3566, superseding the earlier "owner design
+  decision needed" framing): un-revoke-via-reinvite IS, and is meant to be, a full
+  history restore** — the returning member gets every epoch key minted during their
+  ban, including the K-cut boundary epoch that revoked them, identically to any
+  brand-new member. There is no guard distinguishing "returning previously-revoked
+  identity" from "genuinely new member" at grant time, and none is planned — this
+  is the accepted v1 behavior, not a gap awaiting a fix. Treat un-revoke-via-reinvite
+  as **equivalent to inviting a brand-new member with full history access** — NOT as
+  a partial/forward-only restore.
 - **Membership teardown doesn't federate (G24/G27, WI-1857) — SHIP-WITH-LIMITATION, ratified.**
   Dissolve publishes no membership tombstone (peers' rows orphan out by TTL) and a
   leaver's `hive_members` row persists on peers. Pinned by

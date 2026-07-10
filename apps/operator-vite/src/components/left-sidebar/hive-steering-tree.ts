@@ -34,7 +34,7 @@
  *    is never produced, avoiding the empty-eligiblePlans-means-all collision).
  *
  * Pure (no React / fetch / PG) so each edge is unit-tested directly — the
- * sibling of QueenTab.derivation.ts.
+ * sibling of MugTab.derivation.ts.
  */
 
 /** Minimal plan shape the tree needs (mapped from PlanListRow / stale slugs). */

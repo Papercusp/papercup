@@ -29,8 +29,8 @@ import {
   type HiveRunPorts,
   type HiveRunSignals,
   type HiveScenarioCell,
-} from '../hive-eval/run-harness';
-import type { HiveScenario } from '../hive-eval/scenario';
+} from '../pot-eval/run-harness';
+import type { HiveScenario } from '../pot-eval/scenario';
 import { mergeGenome, type Genome } from '../instance-spec/genome';
 import { partitionArm, type KnobArm } from './knob-space';
 import type { ExperimentArmResult, ExperimentRunResult } from './types';

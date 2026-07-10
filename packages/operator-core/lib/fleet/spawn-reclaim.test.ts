@@ -14,6 +14,7 @@ import {
   shouldRelaunchReclaimedSpawn,
   isFirstOutputStalled,
   FIRST_OUTPUT_STALL_MS,
+  classifyCeilingJamRow,
 } from './spawn-reclaim';
 
 const NOW = Date.parse('2026-06-14T02:00:00.000Z');
@@ -169,5 +170,80 @@ describe('shouldRelaunchReclaimedSpawn — boot-reconcile relaunch branch (EI-85
     for (const role of ['worker', 'scoper', 'doc-steward', 'release-fixer', 'operator', 'architect']) {
       expect(shouldRelaunchReclaimedSpawn({ childRole: role, workItemId: 'F-1', workItemStatus: 'in_progress' })).toBe(false);
     }
+  });
+});
+
+/**
+ * classifyCeilingJamRow — the pure verdict behind reclaimCeilingJamDebits.
+ *
+ * EI-8839 regression: an ORPHANED admission debit (a never-streamed `running` row
+ * whose recorded child process actually DIED) jammed the spawn-admission ceiling
+ * full until the next operator restart's boot reconcile cleared it — the periodic
+ * ceiling-jam sweep reclaimed NOTHING for a never-streamed row (the streaming-wiring
+ * gap means every real cup here has last_output_at NULL), and the orphan sweep
+ * missed it (a reused-pid false-alive keeps its heartbeat fresh). The fix adds a
+ * SECOND, unfakeable signal for a same-host row: is its recorded child process
+ * /proc-confirmed dead? A dead child ⇒ 'proc-dead' (reclaim now); a LIVE child ⇒
+ * 'skip' (the EI-8528 protection for a genuinely-working cup is preserved).
+ */
+describe('classifyCeilingJamRow — never-streamed proc-dead verdict (EI-8839) + EI-8528 preservation', () => {
+  const NOW3 = Date.parse('2026-07-09T20:00:00.000Z');
+  const ME = 'this-host';
+  // Injected liveness: only pids in this set read as alive (no real /proc dependency).
+  const aliveSet = new Set<number>([4242]);
+  const isAlive = (pid: number) => aliveSet.has(pid);
+  const base = { now: NOW3, minAgeMs: 15 * 60_000, silentMs: 15 * 60_000, me: ME, isAlive };
+  const started20mAgo = '2026-07-09T19:40:00.000Z'; // 20 min old (> 15m min-age)
+  const started1mAgo = '2026-07-09T19:59:00.000Z'; // 1 min old (< 15m min-age)
+  const streamed20mAgo = '2026-07-09T19:40:00.000Z'; // last output 20m ago (> 15m silent)
+  const streamed30sAgo = '2026-07-09T19:59:30.000Z'; // last output 30s ago (< 15m silent)
+  const row = (over: Partial<Parameters<typeof classifyCeilingJamRow>[0]>) => ({
+    spawnId: 's-jam',
+    runId: 'r-jam',
+    startedAt: started20mAgo,
+    lastOutputAt: null,
+    launcherHost: ME,
+    pid: 9999, // not in aliveSet → dead by default
+    ...over,
+  });
+
+  it("EI-8839: 'proc-dead' — a never-streamed, old-enough, same-host row whose child pid is DEAD", () => {
+    expect(classifyCeilingJamRow(row({}), base)).toBe('proc-dead');
+  });
+
+  it("EI-8528 preserved: 'skip' — a never-streamed row whose child is still ALIVE (a working cup)", () => {
+    expect(classifyCeilingJamRow(row({ pid: 4242 }), base)).toBe('skip');
+  });
+
+  it("'skip' — a never-streamed DEAD-pid row on a DIFFERENT host (can't liveness-check locally)", () => {
+    expect(classifyCeilingJamRow(row({ launcherHost: 'other-box' }), base)).toBe('skip');
+  });
+
+  it("'skip' — a never-streamed same-host row with NO recorded pid (unprovable — no guessing)", () => {
+    expect(classifyCeilingJamRow(row({ pid: null }), base)).toBe('skip');
+  });
+
+  it("'skip' — a never-streamed dead-pid row still under the min-age window", () => {
+    expect(classifyCeilingJamRow(row({ startedAt: started1mAgo }), base)).toBe('skip');
+  });
+
+  it("'stream-silent' — DID stream then went silent past the threshold, even with a fresh heartbeat", () => {
+    expect(classifyCeilingJamRow(row({ lastOutputAt: streamed20mAgo, pid: 4242 }), base)).toBe('stream-silent');
+  });
+
+  it("'skip' — streamed recently, however old the spawn", () => {
+    expect(classifyCeilingJamRow(row({ lastOutputAt: streamed30sAgo }), base)).toBe('skip');
+  });
+
+  it("'skip' — an in-process loopback launch (durable-spawn / launch-* run_id) is never judged by this signal", () => {
+    expect(classifyCeilingJamRow(row({ spawnId: 'durable-spawn:implement:EI-1' }), base)).toBe('skip');
+    expect(classifyCeilingJamRow(row({ runId: 'launch-queen-wake' }), base)).toBe('skip');
+  });
+
+  it('normalizes Date | string timestamps identically (raw-PG-read parity)', () => {
+    const asString = classifyCeilingJamRow(row({}), base);
+    const asDate = classifyCeilingJamRow(row({ startedAt: new Date(started20mAgo) }), base);
+    expect(asString).toBe(asDate);
+    expect(asDate).toBe('proc-dead');
   });
 });

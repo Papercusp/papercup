@@ -438,21 +438,21 @@ export async function reconcileOwnedHiveEpochKeys(
         reconciled += 1;
          
         console.info(
-          `[hive-epoch-key-reconcile] backfilled ${potHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
+          `[pot-epoch-key-reconcile] backfilled ${potHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
         );
       } else {
         // A gap was found but the grant did NOT run — name the cause (no-author = not the owner
         // box; flag-disabled; no-fresh-members). This is the queryable signal a stuck hive needs.
          
         console.info(
-          `[hive-epoch-key-reconcile] gap in ${potHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
+          `[pot-epoch-key-reconcile] gap in ${potHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
         );
       }
     } catch (e) {
       // best-effort per hive — one hive's failure must not abort the sweep
        
       console.info(
-        `[hive-epoch-key-reconcile] ${potHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
+        `[pot-epoch-key-reconcile] ${potHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
@@ -460,7 +460,7 @@ export async function reconcileOwnedHiveEpochKeys(
   if (gapsFound > 0) {
      
     console.info(
-      `[hive-epoch-key-reconcile] sweep: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
+      `[pot-epoch-key-reconcile] sweep: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
     );
   }
   return { scanned: hives.length, reconciled };

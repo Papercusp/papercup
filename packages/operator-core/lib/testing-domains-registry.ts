@@ -243,9 +243,10 @@ defineTestDomain({
         'packages/operator-core/lib/harness-state/**/*.test.ts',
       ] },
     { id: 'app', label: 'App UI', globs: ['apps/operator/app/harness/**/*.test.*'] },
+    // dock.spec.ts retired with the /harness/$slug dashboard
+    // (_retired/harness-dashboard/, design-simplification-2026-07-09 P-008).
     { id: 'e2e', label: 'E2E', globs: [
         'apps/operator/e2e/harness-*.spec.ts',
-        'apps/operator/e2e/dock.spec.ts',
       ] },
     // Tauri desktop sidecar harness-path resolution (promptHarnessRoot / harnessRoot).
     // papercusp-desktop/src-tauri/sidecar is NOT an npm workspace, so this vitest test

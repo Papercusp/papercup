@@ -61,7 +61,7 @@ const DEFAULT_FLEET_TIMEOUT_MS = 60 * 60 * 1000; // 1h — a bounded smoke is fa
 const DEFAULT_POLL_MS = 10_000;
 
 /**
- * The Queen-brief a placed bench bee receives (extraEnv.QUEEN_BRIEF → the bee's `## Queen brief`). The
+ * The Queen-brief a placed bench bee receives (extraEnv.MUG_BRIEF → the bee's `## Queen brief`). The
  * scripted hive loop has no real Queen to assign+drive, so this is the standing directive that turns a
  * placed bee from taskless-exit into a benchmark worker: its member holds exactly ONE seeded feature
  * (the benchmark task's problem_statement); the bee claims + implements it to a real code diff in the
@@ -376,7 +376,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
     return getOrgPg().sql;
   };
   const liveOps = async () => {
-    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    const { liveHiveOps } = await import('../pot-eval/live-ops');
     return liveHiveOps({ workspaceId: ws });
   };
 
@@ -545,7 +545,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         // claimed work, exited rc=0 $0 empty-diff, and the drain loop re-placed it every poll forever). The
         // bee is placed onto a member that holds EXACTLY ONE seeded feature whose problem_statement IS the
         // benchmark task — so the brief names that explicitly and tells the bee to claim+implement it. This
-        // is direction (a named task), not freelancing. It rides extraEnv.QUEEN_BRIEF → the bee's
+        // is direction (a named task), not freelancing. It rides extraEnv.MUG_BRIEF → the bee's
         // `## Queen brief` (invoke.ts:8.11), read on boot before the lane check.
         brief: BENCH_BEE_DIRECTIVE,
         tier: null,

@@ -40,7 +40,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
-import { CombBlueprintForm } from './CombBlueprintForm';
+import { CupboardBlueprintForm } from './CupboardBlueprintForm';
 import { PublishHiveCard } from './PublishHiveCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 
@@ -1163,7 +1163,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {/* P-006: instantiate a published Comb blueprint — install it (installed
             tier) then create a hive running it. Always a NEW top-level hive. */}
         {step === 'comb-blueprint' && (
-          <CombBlueprintForm onBack={goBack} onCreated={handleNewHiveSuccess} hiveLabel={hiveLabel} />
+          <CupboardBlueprintForm onBack={goBack} onCreated={handleNewHiveSuccess} hiveLabel={hiveLabel} />
         )}
         {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'github-url' && githubUrlEnabled && (

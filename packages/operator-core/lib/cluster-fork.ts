@@ -106,24 +106,54 @@ export interface ClusterHandle {
 
 /**
  * Resolve the request-worker count from env + the host's recommendation. DEFAULT-OFF
- * (1 = single process): `'auto'`/`'on'`/`'true'`/`'1'` ⇒ `recommendedWorkers`
+ * (1 = single process): `'auto'`/`'on'`/`'true'` ⇒ `recommendedWorkers`
  * (resource-profile.httpWorkers — itself 1 on a laptop/workstation/embedded-PG host);
- * a positive number ⇒ exactly that many; unset / `'0'` / `'off'` / `'false'` / junk ⇒
- * 1. A process-MODEL boot switch (infra), not a runtime feature flag — hence env, not
- * a FLAG (cf. PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_UTILITY_HOST). Pure + exported
+ * any positive number, INCLUDING the literal string `'1'`, ⇒ exactly that many workers
+ * (so `'1'` means "run exactly one worker", matching what every caller who writes it
+ * actually means — see below); unset / `'0'` / `'off'` / `'false'` / junk ⇒ 1. A
+ * process-MODEL boot switch (infra), not a runtime feature flag — hence env, not a
+ * FLAG (cf. PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_UTILITY_HOST). Pure + exported
  * for tests; the caller reads `process.env` + the profile.
+ *
+ * EI-8817/EI-8818 (2026-07-09): `'1'` used to alias `'auto'`/`'on'`/`'true'` and
+ * resolve to `recommendedWorkers` (often the profile's per-core count — 15 on a
+ * 128-core box) instead of "one worker". Two different agents independently set
+ * `PAPERCUSP_CLUSTER_WORKERS=1` intending a single-process pin and instead triggered a
+ * multi-worker fork storm that knocked over the shared dev host twice in one day. No
+ * caller in this repo ever set the literal `'1'` intending "auto" (production configs
+ * that want the profile recommendation write `'auto'`; the ones that want an explicit
+ * worker count write that number, e.g. `'2'`/`'16'`) — so `'1'` now means what it looks
+ * like it means, and `'auto'`/`'on'`/`'true'` remain the only spellings of "use the
+ * host's recommended worker count".
  */
+/**
+ * Diagnosability companion to `resolveClusterWorkers` (EI-8818 proposal (c)): names
+ * WHICH env var actually drove the resolution (CLUSTER_WORKERS takes precedence over
+ * CLUSTER when both are set — the exact thing that made the 2026-07-09 incidents take
+ * ~30min of forensics, since a `CLUSTER=0` pin can be silently shadowed) so a boot log
+ * line can show it at a glance instead of a responder re-deriving it from source. Pure
+ * + exported for tests; call alongside `resolveClusterWorkers` with the same `env`.
+ */
+export function describeClusterWorkersSource(env: {
+  PAPERCUSP_CLUSTER_WORKERS?: string;
+  PAPERCUSP_CLUSTER?: string;
+}): string {
+  if (env.PAPERCUSP_CLUSTER_WORKERS != null) return `PAPERCUSP_CLUSTER_WORKERS=${env.PAPERCUSP_CLUSTER_WORKERS}`;
+  if (env.PAPERCUSP_CLUSTER != null) return `PAPERCUSP_CLUSTER=${env.PAPERCUSP_CLUSTER}`;
+  return 'unset (default: 1 worker)';
+}
+
 export function resolveClusterWorkers(
   env: { PAPERCUSP_CLUSTER_WORKERS?: string; PAPERCUSP_CLUSTER?: string },
   recommendedWorkers: number,
 ): number {
   const raw = env.PAPERCUSP_CLUSTER_WORKERS ?? env.PAPERCUSP_CLUSTER;
   if (!raw || raw === '0' || raw === 'off' || raw === 'false') return 1;
-  if (raw === 'auto' || raw === 'on' || raw === 'true' || raw === '1') {
+  if (raw === 'auto' || raw === 'on' || raw === 'true') {
     return Math.max(1, Math.floor(Number.isFinite(recommendedWorkers) ? recommendedWorkers : 1));
   }
   const n = Math.floor(Number(raw));
-  return Number.isFinite(n) && n >= 1 ? n : 1; // 0<x<1 floors to 0 ⇒ fall back to 1
+  return Number.isFinite(n) && n >= 1 ? n : 1; // 0<x<1 floors to 0 ⇒ fall back to 1 ('1' ⇒ 1 worker, exactly
 }
 
 /**

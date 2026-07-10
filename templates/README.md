@@ -28,8 +28,8 @@ construction** — the design of record is
 |---|---|---|---|
 | [`papercusp-desktop-app`](papercusp-desktop-app/) | app | app | a WHOLE desktop app, no agents — hard-requires the shell + data-layer + ui closure; start here for a plain app |
 | [`papercusp-webapp`](papercusp-webapp/) | app | app | a WHOLE web app, no agents — the browser twin of `papercusp-desktop-app`: hard-requires the web-host + data-layer + ui closure (P-030; extracted from the first papercusp webapp) |
-| [`papercusp-agentic-desktop-app`](papercusp-agentic-desktop-app/) | app | app | the app WITH agents: `papercusp-ops-hives` layered onto the `papercusp-desktop-app` BASE (P-022 — an app template may require another as its base) |
-| [`papercusp-ops-hives`](papercusp-ops-hives/) | aspect | agentic | the judgment plane: domain hive + -ops hive + the ONE work_items⇄contract seam |
+| [`papercusp-agentic-desktop-app`](papercusp-agentic-desktop-app/) | app | app | the app WITH agents: `papercusp-ops-pots` layered onto the `papercusp-desktop-app` BASE (P-022 — an app template may require another as its base) |
+| [`papercusp-ops-pots`](papercusp-ops-pots/) | aspect | agentic | the judgment plane: domain hive + -ops hive + the ONE work_items⇄contract seam |
 | [`papercusp-tauri-desktop-shell`](papercusp-tauri-desktop-shell/) | aspect | shell | the deterministic chassis: Tauri shell → Node/Hono sidecar → embedded Postgres + release kit |
 | [`papercusp-web-host`](papercusp-web-host/) | aspect | shell | the web chassis: Next.js standalone host (tracing root + workspace transpile), operator.json discovery, auth seam, Dockerfile builder (P-029) |
 | [`papercusp-data-layer`](papercusp-data-layer/) | aspect | data | app-owned embedded Postgres + connection discovery + typed-contract write gates |
@@ -115,19 +115,19 @@ official v1 mechanism that closes them:
   `composition-integrity` runs after a plain `npm install`. The kit is NOT
   on npm; this monorepo (`libs/generic/template-kit/`) stays canonical and
   the vendored copy rides the mirror sync (below).
-- **`@papercusp/hive-app-seam`** — the papercusp-ops-hives Tier-B MUST
-  component — is vendored the same way as `hive-app-seam/` (WI-2891: the
+- **`@papercusp/pot-app-seam`** — the papercusp-ops-pots Tier-B MUST
+  component — is vendored the same way as `pot-app-seam/` (WI-2891: the
   round-3 build proved the catalog's source repo is not reachable from
   outside papercusp, so the seam MUST ride the mirror). Zero runtime deps,
   `main: ./src/index.ts`; the mirror root `package.json` wires
-  `"@papercusp/hive-app-seam": "file:./hive-app-seam"`, and an app repo
+  `"@papercusp/pot-app-seam": "file:./pot-app-seam"`, and an app repo
   links it as
-  `"@papercusp/hive-app-seam": "file:../<mirror-clone>/hive-app-seam"`.
-  Canonical: `libs/generic/hive-app-seam` in the monorepo.
+  `"@papercusp/pot-app-seam": "file:../<mirror-clone>/pot-app-seam"`.
+  Canonical: `libs/generic/pot-app-seam` in the monorepo.
 - **Mirror sync is guarded** (P-027): the canonical monorepo carries
   `scripts/templates-mirror-sync.mjs`, which diffs the canonical tree —
   every template dir, this README, and the vendored packages
-  (`template-kit/`, `hive-app-seam/`) — against a local
+  (`template-kit/`, `pot-app-seam/`) — against a local
   mirror clone. Check mode (`npm run mirror:check` in the monorepo's
   `templates/`) exits non-zero on ANY drift, and the publish tooling
   refuses to publish official listings while red; `--push`

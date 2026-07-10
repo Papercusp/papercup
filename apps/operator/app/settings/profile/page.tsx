@@ -3,15 +3,20 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 
+/**
+ * The `preferred_models` block (scoper/worker/validator/reviewer/orchestrator)
+ * was removed in the settings-audit 2026-07-09: nothing in the repo ever READ
+ * it — the only occurrences were this form, the POST allowlist, and the type
+ * decl. Per-role model selection lives on /settings/agent (models / roleModels
+ * → AGENT_ROLE_BACKENDS), and 'orchestrator' is itself a retired role.
+ */
 interface Profile {
   email?: string;
   display_name?: string;
   default_project_dir?: string;
-  preferred_models?: Record<string, string>;
   theme?: 'dark' | 'light' | 'auto';
   updated_at?: string;
 }
@@ -20,11 +25,6 @@ const ProfileSchema = z.object({
   email: z.string().optional().default(''),
   display_name: z.string().optional().default(''),
   default_project_dir: z.string().optional().default(''),
-  scoper: z.string().optional().default(''),
-  worker: z.string().optional().default(''),
-  validator: z.string().optional().default(''),
-  reviewer: z.string().optional().default(''),
-  orchestrator: z.string().optional().default(''),
 });
 type ProfileFormData = z.infer<typeof ProfileSchema>;
 
@@ -36,7 +36,6 @@ export default function ProfilePage() {
   const { register, submit, reset, errors, isSubmitting } = useFormWith(ProfileSchema, {
     defaultValues: {
       email: '', display_name: '', default_project_dir: '',
-      scoper: '', worker: '', validator: '', reviewer: '', orchestrator: '',
     },
   });
 
@@ -46,16 +45,10 @@ export default function ProfilePage() {
       .then((r) => r.json())
       .then((d: Profile) => {
         if (cancelled) return;
-        const m = d.preferred_models ?? {};
         reset({
           email: d.email ?? '',
           display_name: d.display_name ?? '',
           default_project_dir: d.default_project_dir ?? '',
-          scoper: m.scoper ?? '',
-          worker: m.worker ?? '',
-          validator: m.validator ?? '',
-          reviewer: m.reviewer ?? '',
-          orchestrator: m.orchestrator ?? '',
         });
         setUpdatedAt(d.updated_at ?? null);
       })
@@ -70,13 +63,6 @@ export default function ProfilePage() {
         email: data.email || undefined,
         display_name: data.display_name || undefined,
         default_project_dir: data.default_project_dir || undefined,
-        preferred_models: {
-          ...(data.scoper && { scoper: data.scoper }),
-          ...(data.worker && { worker: data.worker }),
-          ...(data.validator && { validator: data.validator }),
-          ...(data.reviewer && { reviewer: data.reviewer }),
-          ...(data.orchestrator && { orchestrator: data.orchestrator }),
-        },
       };
       const r = await fetch('/api/profile', {
         method: 'POST',
@@ -105,7 +91,8 @@ export default function ProfilePage() {
     <div>
       <h1>Profile</h1>
       <p className="pc-settings-intro">
-        Your identity (email + display name) and the model preferences used by each agent role.
+        Your identity (email + display name) and where new projects are created.
+        Per-role model selection lives in <strong>Settings → AI backend</strong>.
       </p>
 
       <form onSubmit={submit(onSubmit)} className="pc-card">
@@ -123,14 +110,6 @@ export default function ProfilePage() {
           <input type="text" className="pc-input" placeholder="~/papercusp-projects" {...register('default_project_dir')} />
         </FormField>
 
-        <h3 style={{ marginTop: 24, marginBottom: 8 }}>Preferred models</h3>
-
-        <ModelField label="scoper" help="Plans missions and reviews proposals. Bigger model = better plans." register={register('scoper')} error={errors.scoper?.message} />
-        <ModelField label="worker" help="Implements features. The high-volume role; pick something fast." register={register('worker')} error={errors.worker?.message} />
-        <ModelField label="validator" help="Verifies workers. Bigger model = catches more bugs." register={register('validator')} error={errors.validator?.message} />
-        <ModelField label="reviewer" help="Gates plans and proposals. Should be at least as smart as scoper." register={register('reviewer')} error={errors.reviewer?.message} />
-        <ModelField label="orchestrator" help="Coordinates the loop. Tiny model is fine — it's mostly routing." register={register('orchestrator')} error={errors.orchestrator?.message} />
-
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
           <SubmitButton pending={isSubmitting}>Save</SubmitButton>
           {updatedAt && (
@@ -141,13 +120,5 @@ export default function ProfilePage() {
         </div>
       </form>
     </div>
-  );
-}
-
-function ModelField({ label, help, register, error }: { label: string; help: string; register: UseFormRegisterReturn; error?: string }) {
-  return (
-    <FormField label={label} error={error} description={help}>
-      <input type="text" className="pc-input" placeholder="claude-sonnet-4-6" {...register} />
-    </FormField>
   );
 }

@@ -465,7 +465,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
  * every other hive keeps its sonnet floor and no GLOBAL AGENT_MODELS opus is needed.
  */
 describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () => {
-  const KEY = 'PAPERCUSP_XBENCH_BEE_DIRECTIVE';
+  const KEY = 'PAPERCUSP_XBENCH_CUP_DIRECTIVE';
   const MODEL = 'PAPERCUSP_XBENCH_MODEL';
   let savedKey: string | undefined;
   let savedModel: string | undefined;

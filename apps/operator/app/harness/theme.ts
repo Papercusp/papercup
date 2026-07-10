@@ -228,6 +228,45 @@ export const MEMORY_KIND_COLOR: Record<string, string> = {
 };
 export const MEMORY_KIND_FALLBACK = '#6b7280';
 
+// Hyperbee boot-history event-kind hues (admin/dogfood-substrate →
+// insights/BootHistoryTable). Categorical over the BootHistoryKind union
+// (operator-core lib/sync/hyperbee/boot-history) — keyed as strings here so
+// theme.ts stays free of domain-type imports; unknown/new kinds fall back to
+// BOOT_HISTORY_KIND_FALLBACK.
+export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
+  boot_start: 'var(--fg-dim)',
+  boot_ok: 'var(--good)',
+  boot_fail: 'var(--bad)',
+  close: 'var(--fg-dim)',
+  peer_connected: 'var(--accent)',
+  join_started: 'var(--fg-dim)',
+  join_succeeded: 'var(--good)',
+  swarm_join_failed: 'var(--warn)',
+  peer_rejected: 'var(--warn)',
+  peer_rate_limited: 'var(--bad)',
+  peer_cap_near: 'var(--warn)',
+  peer_capped: 'var(--warn)',
+  peer_revoked: 'var(--bad)',
+  peer_unrevoked: 'var(--good)',
+  replication_stalled: 'var(--bad)',
+  replication_frozen: 'var(--bad)',
+  announce_admitted: 'var(--good)',
+  announce_pending: 'var(--warn)',
+  announce_rejected: 'var(--warn)',
+  announce_clock_skew: 'var(--warn)',
+  announce_error: 'var(--bad)',
+  merge_error: 'var(--bad)',
+  rekey_grant_failed: 'var(--bad)',
+  rekey_grant_skipped: 'var(--warn)',
+  rekey_boundary_skipped: 'var(--warn)',
+  epoch_gate_built: 'var(--accent)',
+  epoch_gate_seen: 'var(--accent)',
+  epoch_defer: 'var(--warn)',
+  epoch_decrypt_fail: 'var(--bad)',
+  epoch_applied: 'var(--good)',
+};
+export const BOOT_HISTORY_KIND_FALLBACK = 'var(--fg-dim)';
+
 /**
  * Canonical role color/label overrides. Roles not listed here get a
  * stable color derived from their name (see getRoleStyle below) — adding

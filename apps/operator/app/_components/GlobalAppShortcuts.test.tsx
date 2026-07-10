@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
  * GlobalAppShortcuts.test.tsx — render-tier coverage for the app-level
- * navigation shortcuts. The component renders nothing; it registers three
- * actions (settings.open / goto.inbox / harness.create) against the shortcut
- * bus via useShortcutAction. We mock that hook to capture the handlers and the
- * router-compat useRouter to spy on push(), then invoke each handler and assert
- * the navigation target.
+ * navigation shortcuts. The component renders nothing; it registers five
+ * actions (settings.open / goto.inbox / harness.create / goto.brainstorm /
+ * goto.insights) against the shortcut bus via useShortcutAction. We mock that
+ * hook to capture the handlers and the router-compat useRouter to spy on
+ * push(), then invoke each handler and assert the navigation target.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
@@ -45,6 +45,27 @@ describe('GlobalAppShortcuts', () => {
     expect(handlerFor('settings.open')).toBeTruthy();
     expect(handlerFor('goto.inbox')).toBeTruthy();
     expect(handlerFor('harness.create')).toBeTruthy();
+  });
+
+  // settings-audit 2026-07-09: goto.brainstorm / goto.insights shipped in the
+  // shortcut registry with no handler in ANY component, so the /settings/shortcuts
+  // row let a user rebind a key that fired nothing. These lock in the root fallback.
+  it('registers goto.brainstorm and goto.insights', () => {
+    render(<GlobalAppShortcuts />);
+    expect(handlerFor('goto.brainstorm')).toBeTruthy();
+    expect(handlerFor('goto.insights')).toBeTruthy();
+  });
+
+  it('goto.brainstorm navigates to /adv?tab=brainstorm', () => {
+    render(<GlobalAppShortcuts />);
+    handlerFor('goto.brainstorm')!.run(new KeyboardEvent('keydown'));
+    expect(push).toHaveBeenCalledWith('/adv?tab=brainstorm');
+  });
+
+  it('goto.insights navigates to /adv?tab=insights', () => {
+    render(<GlobalAppShortcuts />);
+    handlerFor('goto.insights')!.run(new KeyboardEvent('keydown'));
+    expect(push).toHaveBeenCalledWith('/adv?tab=insights');
   });
 
   it('settings.open navigates to /settings', () => {

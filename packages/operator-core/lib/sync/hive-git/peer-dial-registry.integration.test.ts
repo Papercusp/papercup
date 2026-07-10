@@ -112,6 +112,17 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
       s.once('error', reject);
     });
     clientSocket.on('error', () => {});
+    // Symmetric wiring — matches REAL production usage: swarm.ts's connection
+    // handler calls wireHiveGitServe + wireHiveGitDial unconditionally on
+    // EVERY peer connection (both the dialer and the acceptor side), never
+    // just one. A client that wires wireHiveGitDial WITHOUT wireHiveGitServe
+    // (this test's earlier, asymmetric fixture) has no `pair()` notifier
+    // registered for HIVE_GIT_PROTOCOL — so the server's own hive-git-serve
+    // channel's incoming "open" control frame (also on this shared muxer)
+    // hits protomux's unregistered-protocol fallback and gets REJECTED,
+    // which was starving the SEPARATE hello channel's own pairing on the
+    // same connection (WI-3583 diagnosis).
+    wireHiveGitServe(clientSocket, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
     wireHiveGitDial(clientSocket, TOPIC, CLIENT_DEVICE);
   });
 

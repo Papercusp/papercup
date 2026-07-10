@@ -29,7 +29,7 @@ import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine }
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { detectPapercupRoot } from './register-papercusp';
 import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
-import { loadHarnessRegistry } from '../harness-registry';
+import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
 import { ensureWorkspaceEntry, writeRegistry, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
 import {
@@ -499,6 +499,57 @@ export async function seedCanonicalCloneGitSyncRoutine(
   }
 }
 
+/** Test seams for {@link backfillCanonicalCloneGitSync} (defaults: the real verbs, lazy). */
+export interface BackfillCanonicalCloneGitSyncDeps {
+  mutate?: typeof import('../harness-registry').mutateHarnessRegistry;
+  seedRoutine?: typeof seedCanonicalCloneGitSyncRoutine;
+}
+
+/**
+ * EI-8793 EXISTING-install backfill: an install admitted BEFORE self-admit
+ * stamped `self_repo` (≤0.0.3) carries a canonical-clone entry that reads as a
+ * repo-less remote_hive VIEW — git-sync eligibility rejects it and the boot
+ * reconcile's member walk (`remote_hive && self_repo`) never visits it, so the
+ * self-improvement loop's commit leg is dead and agent edits strand
+ * uncommitted. Self-admit itself can't heal this: the bootstrap's step-1
+ * short-circuits `already-present` on the existing entry long before the
+ * self-admit path runs. So the step-1 path calls THIS: stamp `self_repo:true`
+ * on the existing canonical entry (it IS its own seeded checkout by
+ * construction), then seed the routine directly — idempotent (`routine_exists`
+ * no-ops), never-throws, and the seed only fires once the stamp landed (a
+ * routine whose registry entry still reads as a view would just fail the
+ * runtime eligibility gate every tick).
+ */
+export async function backfillCanonicalCloneGitSync(
+  existing: ProjectEntry,
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+  deps: BackfillCanonicalCloneGitSyncDeps = {},
+): Promise<void> {
+  if (existing.slug !== PAPERCUSP_HIVE_SLUG || !existing.remote_hive || existing.self_repo) return;
+  try {
+    const mutate = deps.mutate ?? (await import('../harness-registry')).mutateHarnessRegistry;
+    await mutate(
+      (cur) => ({
+        ...cur,
+        projects: cur.projects.map((p) =>
+          p.slug === PAPERCUSP_HIVE_SLUG ? { ...p, self_repo: true } : p,
+        ),
+      }),
+      PAPERCUSP_WORKSPACE_ID,
+    );
+    existing.self_repo = true; // keep the caller's snapshot honest
+    record?.('clone', 'running', {
+      detail: 'EI-8793: self_repo backfilled on the existing canonical entry',
+    });
+  } catch (e) {
+    console.warn(
+      `[papercusp-hive] self_repo backfill failed (non-fatal; next boot retries): ${(e as Error)?.message ?? e}`,
+    );
+    return; // don't seed against an un-stamped entry
+  }
+  await (deps.seedRoutine ?? seedCanonicalCloneGitSyncRoutine)(record);
+}
+
 /** WI-3070: bounded backoff schedule (ms) for the post-admission deferred-git retry —
  *  5 attempts over ~2 minutes. The epoch-key row for a fresh member's device federates
  *  ASYNCHRONOUSLY after admission (a separate hyperbee row from the join itself, replicated
@@ -789,6 +840,13 @@ export async function bootstrapPapercuspHive(
       // without listing it → the pot stayed invisible). ensurePapercuspWorkspace is idempotent.
       ensureWorkspaceListed();
       setHome(PAPERCUSP_WORKSPACE_ID);
+      // EI-8793 EXISTING-install heal: a ≤0.0.3 release install's canonical entry
+      // lacks `self_repo`, so git-sync reads it as a repo-less view and the
+      // self-improvement loop's commit leg is dead. This step-1 short-circuit is
+      // the ONE boot path an already-admitted install always takes (self-admit
+      // below never re-runs), so the backfill lives here: stamp the flag + seed
+      // the routine. Idempotent + never-throws.
+      await backfillCanonicalCloneGitSync(existing, record);
       record('clone', 'done', { detail: 'already present' });
       if (existing.path && (await submodulesNeedUpdate(existing.path))) {
         startSubmodulePhase(existing.path);

@@ -8,8 +8,8 @@ import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
 import { SuTarget } from './su';
-import { makeQueenTarget } from './mug';
-import { makeBeeTarget } from './cup';
+import { makeMugTarget } from './mug';
+import { makeCupTarget } from './cup';
 import { makeOverwatchTarget } from './overwatch';
 import { onboardingTutorTarget } from './onboarding-tutor';
 
@@ -17,12 +17,12 @@ export type TargetFactory = () => ChatTarget;
 
 const TARGETS: Record<string, TargetFactory> = {
   operator: () => new OperatorTarget(),
-  // sentinel — the SAME converse brain loaded with role='sentinel' (the
-  // Sentinel-as-Herald persona). The agent-mcp/operator-converse route honors
-  // the explicit body.role, so this exercises Sentinel-only behavior the
-  // operator role can't reach — notably the `<handoff_to_queen>` routing
+  // papercup — the SAME converse brain loaded with role='papercup' (the
+  // Papercup-as-Herald persona). The agent-mcp/operator-converse route honors
+  // the explicit body.role, so this exercises Papercup-only behavior the
+  // operator role can't reach — notably the `<handoff_to_mug>` routing
   // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
-  // role==='sentinel'). Same HTTP transport as `operator`.
+  // role==='papercup'). Same HTTP transport as `operator`.
   papercup: () => new OperatorTarget({ role: 'papercup' }),
   oracle: () => new OracleTarget(),
   // Architect is harness-scoped; the chat route returns a 400 without
@@ -35,13 +35,13 @@ const TARGETS: Record<string, TargetFactory> = {
   // runs a hand-rolled Anthropic tool loop in-process (playbook-as-system-
   // prompt + the papercusp-su catalog); see ./su.
   su: () => new SuTarget(),
-  // queen — the hive Queen's blueprint prompt on the same in-process loop
+  // mug — the pot Mug's blueprint prompt on the same in-process loop
   // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
-  mug: () => makeQueenTarget(),
-  // bee — the hive bee's base prompt on the same in-process loop
-  // (hybrid-bee-scheduler P-003: does the bee PULL its next item via scheduler:get_next
+  mug: () => makeMugTarget(),
+  // cup — the pot cup's base prompt on the same in-process loop
+  // (hybrid-bee-scheduler P-003: does the cup PULL its next item via scheduler:get_next
   // rather than self-scanning work_items:list and picking itself?).
-  cup: () => makeBeeTarget(),
+  cup: () => makeCupTarget(),
   // overwatch — the system-health supervisor's blueprint persona on the same loop
   // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
   kettle: () => makeOverwatchTarget(),

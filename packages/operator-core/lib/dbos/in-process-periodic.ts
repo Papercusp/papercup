@@ -628,7 +628,7 @@ const federationDrainReconcileCheck: PeriodicCheck = {
 // GAP-AWARE: it does NO crypto on an intact hive (only reconciles a hive with a member missing the
 // current key), owner-gated (reconcile no-ops where this box lacks the hive key), and flag-gated.
 const hiveEpochKeyReconcileCheck: PeriodicCheck = {
-  name: 'hive-epoch-key-reconcile',
+  name: 'pot-epoch-key-reconcile',
   intervalMs: 600_000,
   // NOT shed: gap-aware (does no crypto on an intact hive), so it stays cheap under load and the
   // fireOnArm heal-on-startup runs even during the busy boot window (a shed tick would skip it).

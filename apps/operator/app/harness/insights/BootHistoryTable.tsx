@@ -15,10 +15,12 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { BOOT_HISTORY_KIND_COLOR, BOOT_HISTORY_KIND_FALLBACK } from '../theme';
 
 // Keep in sync with the canonical union in
-// `lib/sync/hyperbee/boot-history.ts`. The KIND_COLOR / KIND_MARK maps below
-// must stay exhaustive over every kind.
+// `lib/sync/hyperbee/boot-history.ts`. The KIND_MARK map below must stay
+// exhaustive over every kind; kind hues live centrally in harness/theme.ts
+// (BOOT_HISTORY_KIND_COLOR — the status-map lint's one home for these).
 export type BootHistoryKind =
   | 'boot_start'
   | 'boot_ok'
@@ -61,7 +63,12 @@ export type BootHistoryKind =
   | 'epoch_gate_seen'
   | 'epoch_defer'
   | 'epoch_decrypt_fail'
-  | 'epoch_applied';
+  | 'epoch_applied'
+  // WI-3604 (split-DHT-universe recurrence guard): recorded once per harness
+  // join, right after this process's shared swarm resolves its DHT
+  // bootstrap. See boot-history.ts for the full incident rationale.
+  | 'dht_universe_ok'
+  | 'dht_universe_mismatch';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -76,39 +83,6 @@ export interface BootHistoryTableProps {
   /** Optional: override now-millis used for relative-time labels (test). */
   nowMs?: number;
 }
-
-const KIND_COLOR: Record<BootHistoryKind, string> = {
-  boot_start: 'var(--fg-dim)',
-  boot_ok: 'var(--good)',
-  boot_fail: 'var(--bad)',
-  close: 'var(--fg-dim)',
-  peer_connected: 'var(--accent)',
-  join_started: 'var(--fg-dim)',
-  join_succeeded: 'var(--good)',
-  swarm_join_failed: 'var(--warn)',
-  peer_rejected: 'var(--warn)',
-  peer_rate_limited: 'var(--bad)',
-  peer_cap_near: 'var(--warn)',
-  peer_capped: 'var(--warn)',
-  peer_revoked: 'var(--bad)',
-  peer_unrevoked: 'var(--good)',
-  replication_stalled: 'var(--bad)',
-  replication_frozen: 'var(--bad)',
-  announce_admitted: 'var(--good)',
-  announce_pending: 'var(--warn)',
-  announce_rejected: 'var(--warn)',
-  announce_clock_skew: 'var(--warn)',
-  announce_error: 'var(--bad)',
-  merge_error: 'var(--bad)',
-  rekey_grant_failed: 'var(--bad)',
-  rekey_grant_skipped: 'var(--warn)',
-  rekey_boundary_skipped: 'var(--warn)',
-  epoch_gate_built: 'var(--accent)',
-  epoch_gate_seen: 'var(--accent)',
-  epoch_defer: 'var(--warn)',
-  epoch_decrypt_fail: 'var(--bad)',
-  epoch_applied: 'var(--good)',
-};
 
 const KIND_MARK: Record<BootHistoryKind, string> = {
   boot_start: '·',
@@ -141,6 +115,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   epoch_defer: '⏸',
   epoch_decrypt_fail: '🔓',
   epoch_applied: '✓',
+  dht_universe_ok: '🌐',
+  dht_universe_mismatch: '🌐⚠',
 };
 
 const EMPTY: CSSProperties = {
@@ -190,7 +166,7 @@ function columns(now: number): ColumnDef<BootHistoryEntry>[] {
       header: 'Kind',
       width: 1.4,
       toCopyText: (e) => e.kind,
-      render: ({ row }) => <span style={{ color: KIND_COLOR[row.kind], whiteSpace: 'nowrap' }}>{KIND_MARK[row.kind]} {row.kind}</span>,
+      render: ({ row }) => <span style={{ color: BOOT_HISTORY_KIND_COLOR[row.kind] ?? BOOT_HISTORY_KIND_FALLBACK, whiteSpace: 'nowrap' }}>{KIND_MARK[row.kind]} {row.kind}</span>,
     },
     {
       key: 'message',

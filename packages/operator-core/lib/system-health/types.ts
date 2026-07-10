@@ -243,6 +243,14 @@ export interface GatewayPanelMetrics {
   /** P-005/W3 (D-001): a leaked admission slot the self-heal valve could NOT reclaim (the gateway's own
    *  reconcile guard counted a mismatch) — surfaces the leak as a signal instead of a silent wedge/restart. */
   slotLeak: boolean;
+  /** WI-3565: instantaneous risk — the admission backlog is deep vs the LIVE ceiling (distinct from
+   *  `saturated`, which needs every slot pinned; a starved queue can sit below the ceiling). */
+  admissionStarvationRisk: boolean;
+  /** WI-3565: `admissionStarvationRisk` CONFIRMED sustained ≥5min — the alert-worthy signal (mirrors
+   *  `wedge` confirming `saturated`). Combined with idle-account headroom in `tokensStatus` /
+   *  `collectTokens` to produce the crit alert (a deep queue with NO idle capacity is just normal
+   *  pressure; a deep queue WITH idle healthy accounts sitting unused is the starvation bug). */
+  admissionStarved: boolean;
   /** Human reasons for any non-ok signal (surfaced on the panel + the overwatch anomaly). */
   reasons: string[];
 }

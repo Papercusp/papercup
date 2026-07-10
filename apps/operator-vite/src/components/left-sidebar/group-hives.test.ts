@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupHives } from './HivesTab';
+import { groupHives } from './PotsTab';
 
 const row = (
   host: string,

@@ -203,7 +203,8 @@ describe('tokensStatus', () => {
   const gw = (o: Partial<NonNullable<TokensHealth['gateway']>> = {}): NonNullable<TokensHealth['gateway']> => ({
     inFlight: 3, queueDepth: 0, maxConcurrent: 24, concurrencyCap: 24, shed429: 0, shedAllThrottled: 0,
     failovers: 0, upstream429: 0, utilizationPct: 40, aimdEffective: 24, aimdCap: 24,
-    wedge: false, saturated: false, sustainedThrottle: false, slotLeak: false, reasons: [], ...o,
+    wedge: false, saturated: false, sustainedThrottle: false, slotLeak: false,
+    admissionStarvationRisk: false, admissionStarved: false, reasons: [], ...o,
   });
   it('crit when the gateway is WEDGED', () => {
     expect(tokensStatus(tk({ gateway: gw({ wedge: true, saturated: true }) }))).toBe('crit');
@@ -219,6 +220,20 @@ describe('tokensStatus', () => {
   });
   it('ok with a healthy gateway sub-panel', () => {
     expect(tokensStatus(tk({ gateway: gw() }))).toBe('ok');
+  });
+  // ── WI-3565: admission starvation (deep queue BELOW the ceiling, idle healthy accounts unused) ──
+  it('crit when admission is confirmed-starved AND idle accounts exceed the threshold', () => {
+    expect(
+      tokensStatus(tk({ accountsAvailable: 5, gateway: gw({ admissionStarved: true, queueDepth: 24, maxConcurrent: 2 }) })),
+    ).toBe('crit');
+  });
+  it('NOT crit when confirmed-starved but idle accounts are at/below the threshold (no spare capacity to use)', () => {
+    expect(
+      tokensStatus(tk({ accountsAvailable: 2, gateway: gw({ admissionStarved: true, queueDepth: 24, maxConcurrent: 2 }) })),
+    ).not.toBe('crit');
+  });
+  it('warn on an unconfirmed starvation RISK (not yet sustained 5min)', () => {
+    expect(tokensStatus(tk({ gateway: gw({ admissionStarvationRisk: true }) }))).toBe('warn');
   });
   it('ok when healthy', () => {
     expect(tokensStatus(tk())).toBe('ok');

@@ -23,6 +23,7 @@ import {
   mapChecksToRubricRatings,
   buildBehaviourScorecard,
   emitBehaviourScorecard,
+  resolveSuAgentBehaviorCriteriaKeys,
 } from './scorecard';
 
 const mk = (id: BehaviourCheck['id'], passed: boolean, extra: Partial<BehaviourCheck> = {}): BehaviourCheck => ({
@@ -130,4 +131,31 @@ test('emitter is gated OFF under vitest (suites never file observations)', async
   const report = buildReport(CLEAN, { sessionId: '9870' });
   const r = await emitBehaviourScorecard(report, { sessionId: '9870' }, {});
   assert.deepEqual(r, { emitted: false, reason: 'vitest' });
+});
+
+// EI-8814 recurrence guard: the emitted key set must always equal the CALLER-SUPPLIED
+// criteria keys (what emitBehaviourScorecard resolves live from the rubric store), never a
+// hardcoded snapshot baked into this module — so a future rubric version bump can never
+// silently desync the emitted ratings map from what capture-core's completeness gate
+// actually requires.
+test('mapChecksToRubricRatings honors an ARBITRARY criteriaKeys set, not just the static snapshot', () => {
+  const liveKeys = ['tool-discipline', 'a-brand-new-future-criterion', 'another-new-one'];
+  const ratings = mapChecksToRubricRatings(CLEAN, liveKeys);
+  assert.deepEqual(Object.keys(ratings).sort(), [...liveKeys].sort());
+  // A mapped key still resolves its check normally even off the static list.
+  assert.equal(ratings['tool-discipline']!.rating, 'pass');
+  // An unmapped (unrecognized-to-CRITERION_TO_CHECK) key rates 'unknown', never omitted/crash.
+  assert.equal(ratings['a-brand-new-future-criterion']!.rating, 'unknown');
+  assert.equal(ratings['another-new-one']!.rating, 'unknown');
+});
+
+test('buildBehaviourScorecard threads criteriaKeys through to the emitted ratings', () => {
+  const report = buildReport(CLEAN, { sessionId: '9870' });
+  const f = buildBehaviourScorecard(report, { sessionId: '9870' }, ['tool-discipline', 'only-this-one']);
+  assert.deepEqual(Object.keys(f.ratings).sort(), ['only-this-one', 'tool-discipline']);
+});
+
+test('resolveSuAgentBehaviorCriteriaKeys falls back to the static snapshot when the live rubric read fails (no DB in this unit test)', async () => {
+  const keys = await resolveSuAgentBehaviorCriteriaKeys();
+  assert.deepEqual([...keys].sort(), [...SU_AGENT_BEHAVIOR_CRITERIA].sort());
 });

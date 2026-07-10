@@ -6,7 +6,7 @@ tags: [prompts, persona, su, blueprint, pot-settings, projections, source-of-tru
 status: current
 documents:
   - libs/papercusp/packages/harness/blueprints/base/prompts/su.md
-  - apps/operator/prompts/hive-instances/papercup-hive.su.md
+  - apps/operator/prompts/pot-instances/papercup-pot.su.md
   - packages/operator-core/lib/role-launch-spec.ts
   - packages/operator-core/lib/hive-settings-store.ts
   - packages/operator-core/lib/endpoint-route/routes/agent-mcp/hive-override-set.ts
@@ -28,7 +28,7 @@ to edit. Changing a projection is silently overwritten the next time the source 
 | Prompt | Canonical source |
 | --- | --- |
 | **su base persona** (domain-neutral, all clients/pots) | `libs/papercusp/packages/harness/blueprints/base/prompts/su.md` |
-| **papercup-pot su instance overlay** (papercusp-specific su ops) | `apps/operator/prompts/hive-instances/papercup-hive.su.md` |
+| **papercup-pot su instance overlay** (papercusp-specific su ops) | `apps/operator/prompts/pot-instances/papercup-pot.su.md` |
 | psu playbooks | `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md` |
 | chat-surface roles (operator/oracle/…) | `apps/operator/prompts/<role>.{persona,tools}.md` |
 | harness spawn roles (scoper/worker/…) | `libs/papercusp/packages/harness/blueprints/<bp>/prompts/<role>.md` |
@@ -48,7 +48,7 @@ papercup `CLAUDE.md` (the Project guide) + the **instance overlay** — concaten
    `papercup-pot.su.md` does nothing live until you **re-seed**:
 
    ```bash
-   FILE=apps/operator/prompts/hive-instances/papercup-hive.su.md
+   FILE=apps/operator/prompts/pot-instances/papercup-pot.su.md
    curl -s -X POST http://127.0.0.1:3070/api/agent-mcp/pot-override-set \
      -H 'Content-Type: application/json' \
      --data "$(jq -Rs '{hiveSlug:"papercusp",kind:"prompt",name:"su",value:.}' < "$FILE")"

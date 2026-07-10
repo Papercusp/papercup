@@ -74,6 +74,18 @@ Open `https://mesh.papercuspai.com` — Defguard admin UI. Log in with `admin` /
 5. **Mint an API token** for `bin/mesh-enroll-desktop`: Settings → API tokens →
    create one, and put it in `apps/operator/.env.local` as `DEFGUARD_API_TOKEN`.
    Without it the enrollment script exits before generating any config.
+   > ⚠ **EI-8815 (verified live 2026-07-09):** on this instance, Bearer-token
+   > auth with `DEFGUARD_API_TOKEN` against `/api/v1/me` and
+   > `/api/v1/device/network/ip/1` currently returns `401 {"msg":"Session is
+   > required"}` — i.e. `bin/mesh-enroll-desktop` does NOT currently work
+   > end-to-end as written, even with a freshly-minted token in place. The
+   > WI-3454 re-enroll worked around this with **browser-session auth**
+   > (logged into the admin UI, used the session cookie) instead of the API
+   > token. Root cause not yet isolated — could be a missing token scope, or
+   > these device-network endpoints may not accept API-token auth at all in
+   > this Defguard version. Don't assume the token path works; verify live
+   > before relying on it, and prefer the browser-session workaround until
+   > this is root-caused.
 
 ## What runs on this box
 

@@ -120,7 +120,7 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Cross-plan item query. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded.',
+    'Cross-plan item query. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. ALWAYS pass `harness` on an operator/superuser-scoped call (a concrete slug, or \'all\' for cross-harness/Papercusp\'s-own-plans) — omitting it throws harness_required (a harness-scoped session supplies it automatically, so this only applies when calling from operator scope; EI-8823).',
   guidance: {
     when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one plan\'s items.',
     notWhen:

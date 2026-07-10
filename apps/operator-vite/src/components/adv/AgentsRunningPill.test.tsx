@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 const H = vi.hoisted(() => ({
   active: [] as unknown[],
@@ -27,11 +28,15 @@ vi.mock('@/app/harness/AgentThinkingStream', () => ({
   ThinkingDot: ({ title }: { title?: string }) => <span data-testid="thinking-dot" aria-label={title ?? 'thinking'} />,
 }));
 
+// EI-8821: this suite's own bare `parseAsString: {}` stub is exactly what let
+// AgentsRunningPill.tsx wiring `parseAsString.withDefault('')` into an
+// always-rendered path throw here (and 40 other tests) before the component
+// switched to a plain `useQueryState(key)`. Parsers now come from the shared
+// complete mock so that class of break can't recur.
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => [nuqs.open, nuqs.set],
-  parseAsBoolean: { withDefault: () => ({}) },
-  parseAsString: {},
 }));
 
 import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, type RosterAgent } from './AgentsRunningPill';

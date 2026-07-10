@@ -478,15 +478,29 @@ status: draft
     expect(miss.createdPhase).toBe(true); // "Phase 1" must NOT match "Phase 1b"
   });
 
-  it('argsSchema rejects a phase the parser would not recognize as a phase section', () => {
+  it('argsSchema auto-prefixes a phase the parser would not otherwise recognize as a phase section (EI-8811)', () => {
+    // Pre-EI-8811 this hard-REJECTED — and because plans:add-item's bulk items
+    // share one `phase` arg, that failed the WHOLE batch on a naming-convention
+    // mismatch alone. PHASE now z.preprocess-normalizes (auto-prefixing
+    // "Phase — ") before the regex validates, so a natural, non-"Phase"-led
+    // name succeeds instead of failing.
     const args = { slug: 's', harness: 'all', phase: 'Implementation (2026-06-05)', text: 'x', importance: 'normal' };
-    const bad = addItemArgsSchema.safeParse(args);
-    expect(bad.success).toBe(false);
-    if (!bad.success) {
-      expect(bad.error.issues.map((i) => i.message).join('\n')).toMatch(/must start with "Phase"/i);
+    const result = addItemArgsSchema.safeParse(args);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.phase).toBe('Phase — Implementation (2026-06-05)');
     }
     const good = addItemArgsSchema.safeParse({ ...args, phase: 'Phase 1 — Implementation (2026-06-05)' });
     expect(good.success).toBe(true);
+    if (good.success) {
+      // Already starts with "Phase" — left unchanged, not double-prefixed.
+      expect(good.data.phase).toBe('Phase 1 — Implementation (2026-06-05)');
+    }
+  });
+
+  it('argsSchema still rejects an empty phase (min(1) on the inner schema still applies)', () => {
+    const args = { slug: 's', harness: 'all', phase: '', text: 'x', importance: 'normal' };
+    expect(addItemArgsSchema.safeParse(args).success).toBe(false);
   });
 
   it('omits the importance keyword for the default (normal)', () => {

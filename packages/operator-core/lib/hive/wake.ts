@@ -101,7 +101,7 @@ const EMPTY_STATE: HiveWakeState = { subscriptions: [] };
 
 /** The self-wake floor in seconds (D-002's clamp). Env-tunable, hard min 5s. */
 export function hiveWakeFloorSec(): number {
-  const n = Number(process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC ?? 60);
+  const n = Number(process.env.PAPERCUSP_POT_WAKE_FLOOR_SEC ?? process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC ?? 60);
   return Number.isFinite(n) && n >= 5 ? n : 60;
 }
 

@@ -581,6 +581,66 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null }): b
 }
 
 /**
+ * The ceiling-jam verdict for ONE candidate row — pure, so {@link
+ * reclaimCeilingJamDebits}'s decision logic (and its EI-8528/EI-8839 guards) is
+ * unit-testable without a live PG:
+ *   • 'stream-silent' — a supervised bee that DID stream once then went silent
+ *     past `silentMs` (the original EI-7204 signal; a fresh heartbeat, e.g. a
+ *     reused-pid false-alive, can't hide it).
+ *   • 'proc-dead' — a supervised bee that NEVER streamed, but is SAME-HOST with a
+ *     recorded pid whose child process is /proc-confirmed DEAD (EI-8839: an
+ *     orphaned admission debit — reclaim it now instead of waiting for the next
+ *     operator restart's boot reconcile).
+ *   • 'skip' — everything else: not a supervised bee (an in-process loopback
+ *     launch), too young to judge, a genuine recent stream, a NULL-output row we
+ *     cannot liveness-check locally (a different host, no recorded pid, or a still-
+ *     ALIVE child — the EI-8528 protection for a genuinely-working cup), or bad
+ *     timestamp data (never guess).
+ */
+export type CeilingJamVerdict = 'stream-silent' | 'proc-dead' | 'skip';
+
+export function classifyCeilingJamRow(
+  row: {
+    spawnId: string;
+    runId: string | null;
+    startedAt: Date | string | null;
+    lastOutputAt: Date | string | null;
+    launcherHost: string | null;
+    pid: number | null;
+  },
+  opts: {
+    now: number;
+    minAgeMs: number;
+    silentMs: number;
+    me: string;
+    isAlive: (pid: number, kind?: 'spawn' | 'launch') => boolean;
+  },
+): CeilingJamVerdict {
+  if (!isSupervisedBeeRow({ spawn_id: row.spawnId, run_id: row.runId })) return 'skip';
+  const getMs = (v: Date | string | null): number => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === 'string') return new Date(v).getTime();
+    return NaN;
+  };
+  const startedMs = getMs(row.startedAt);
+  if (isNaN(startedMs) || opts.now - startedMs <= opts.minAgeMs) return 'skip'; // not old enough to judge
+  const outAt = row.lastOutputAt ? getMs(row.lastOutputAt) : null;
+  if (outAt == null) {
+    // EI-8839 second signal (see reclaimCeilingJamDebits doc): a never-streamed row
+    // is jam evidence ONLY when its recorded child process is /proc-confirmed DEAD
+    // on THIS host. A live child (a genuinely-working cup — the EI-8528 case) reads
+    // alive and is left alone; a row we cannot liveness-check locally (different
+    // host, or no recorded pid) is deferred to the orphan sweep / boot reconcile,
+    // never reclaimed on a guess.
+    if (row.launcherHost === opts.me && row.pid != null && !opts.isAlive(row.pid, 'spawn')) return 'proc-dead';
+    return 'skip';
+  }
+  if (isNaN(outAt)) return 'skip'; // unparseable timestamp — never trust a jam call to bad data
+  if (opts.now - outAt <= opts.silentMs) return 'skip'; // genuinely live — proved by real stream output
+  return 'stream-silent';
+}
+
+/**
  * Reclaim spawn-ADMISSION debits stuck by the spawn-ceiling-jam class
  * (EI-2186/EI-7204/EI-7197) — the periodic (not just boot-time) half of the
  * recurrence guard. {@link reclaimOrphanedSpawns}'s pid-liveness check can be
@@ -708,36 +768,19 @@ export async function reclaimCeilingJamDebits(
   const streamSilent: string[] = []; // DID stream then went silent (the original EI-7204 signal)
   const procDead: string[] = []; // never streamed, but /proc-confirmed dead on THIS host (EI-8839)
   for (const c of candidates) {
-    if (!isSupervisedBeeRow({ spawn_id: c.spawn_id, run_id: c.run_id })) continue;
-    const startedMs = new Date(c.started_at).getTime();
-    if (isNaN(startedMs) || now - startedMs <= minAgeMs) continue; // not old enough to judge
-    const outAt = c.last_output_at ? new Date(c.last_output_at).getTime() : null;
-    if (outAt == null) {
-      // EI-8528: absence of a stream signal is NOT jam evidence on its own — every
-      // supervised cup in this deployment currently has NULL last_output_at (a
-      // separate stdout-stream-wiring gap), so an age-only reclaim here would kill
-      // genuinely-alive, mid-task cups. But there is a SECOND, unfakeable signal for
-      // a SAME-HOST row: whether its recorded child process is actually still alive.
-      // EI-8839 — an ORPHANED admission debit whose child DIED (host/process restart,
-      // or the child simply exited) leaves a `running` row that reads full against the
-      // ceiling forever: reclaimOrphanedSpawns can't see it (a reused-pid false-alive
-      // keeps its heartbeat fresh on a long-lived operator), and the boot reconcile
-      // only clears it at the NEXT operator restart — the exact "no bee can be placed"
-      // jam this reclaims. A /proc-confirmed-DEAD child proves the debit is stale
-      // REGARDLESS of the missing stream, so reclaim it now instead of waiting for a
-      // restart. A LIVE child (the EI-8528 case — its 'invoke-once' process still
-      // exists) reads alive → left untouched, no regression. A row we can't
-      // liveness-check locally (a different host, or no recorded pid) is left to the
-      // orphan sweep / boot reconcile exactly as before — never reclaimed on a guess.
-      if (c.launcher_host === me && c.pid != null && !isAlive(c.pid, 'spawn')) {
-        procDead.push(c.spawn_id);
-      }
-      continue;
-    }
-    if (isNaN(outAt)) continue; // unparseable timestamp — never trust a jam call to bad data
-    const streamedRecently = now - outAt <= silentMs;
-    if (streamedRecently) continue; // genuinely live — proved by real stream output
-    streamSilent.push(c.spawn_id);
+    const verdict = classifyCeilingJamRow(
+      {
+        spawnId: c.spawn_id,
+        runId: c.run_id,
+        startedAt: c.started_at,
+        lastOutputAt: c.last_output_at,
+        launcherHost: c.launcher_host,
+        pid: c.pid,
+      },
+      { now, minAgeMs, silentMs, me, isAlive },
+    );
+    if (verdict === 'stream-silent') streamSilent.push(c.spawn_id);
+    else if (verdict === 'proc-dead') procDead.push(c.spawn_id);
   }
   const jammed = [...streamSilent, ...procDead];
   if (jammed.length === 0) return { reclaimed: 0, spawnIds: [], workspaces: [] };

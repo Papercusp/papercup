@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { PANEL_ORDER, type HealthPanel, type PanelKey, type PanelStatus, type SystemHealth } from '@papercusp/operator-core/lib/system-health/types';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 // ── @papercusp/sync: reassign a single result object per test (sibling pattern). ──
 let syncResult: Record<string, unknown> = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
@@ -17,11 +18,13 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => syncResult,
 }));
 
-// ── nuqs: useQueryState('tab', …) → [null, setTabSpy]; capture the spy via a hoisted ref. ──
+// ── nuqs: useQueryState('tab', …) → [null, setTabSpy]; capture the spy via a hoisted ref.
+// Parsers from the shared complete mock (EI-8821) so a new parseAsX call
+// elsewhere can't silently red this suite. ──
 const nuqs = vi.hoisted(() => ({ setTab: vi.fn() }));
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => [null, nuqs.setTab],
-  parseAsString: {},
 }));
 
 import HealthTab from './HealthTab';

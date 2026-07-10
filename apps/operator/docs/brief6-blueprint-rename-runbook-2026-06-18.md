@@ -1,7 +1,7 @@
 # Brief 6 — blueprint rename runbook (P-001..P-004)
 
 > Owner: su-b258e7b7. Plan `domain-generic-pot-architecture-2026-06-18` (harness `all`).
-> Brief 6 of `apps/operator/docs/domain-generic-hive-handoff-briefs-2026-06-18.md`.
+> Brief 6 of `apps/operator/docs/domain-generic-pot-handoff-briefs-2026-06-18.md`.
 > **Status: COMPLETE + GREEN (2026-06-18, su-b258e).** All 4 plan items P-001..P-004 → done.
 
 ## ✅ COMPLETION RECORD (2026-06-18)

@@ -13,6 +13,14 @@
 # Reads from $PAPERCUSP_REPO/apps/operator/.env.local:
 #   DEFGUARD_URL          (default: https://mesh.papercuspai.com)
 #   DEFGUARD_API_TOKEN    (required)
+#
+# EI-8815 (verified live 2026-07-09): on the current instance, Bearer-token
+# auth with DEFGUARD_API_TOKEN against /api/v1/me and
+# /api/v1/device/network/ip/1 returns `401 {"msg":"Session is required"}` —
+# this script does NOT currently work end-to-end even with a valid token. The
+# WI-3454 re-enroll worked around it via browser-session auth instead. If you
+# hit the same "could not fetch available IP" error below, see
+# infra/defguard/README.md's EI-8815 note before assuming your token is bad.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

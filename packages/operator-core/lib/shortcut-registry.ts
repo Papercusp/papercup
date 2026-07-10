@@ -25,7 +25,7 @@ import type { ActionOptions } from './shortcut-bus';
 import { wsLocalKey } from './browser-workspace';
 import { reconcileProfilePref, shallowJsonEquals, writeProfileField } from './profile-pref';
 
-export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'feature-list' | 'editor' | 'palette' | 'voice';
+export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'editor' | 'palette' | 'voice';
 
 export interface ShortcutDef {
   /** Stable id used for storage + the settings UI. Dotted convention. */
@@ -35,13 +35,6 @@ export interface ShortcutDef {
   /** Default combo (or comma-separated alternates). */
   defaultCombo: string;
   category: ShortcutCategory;
-  /**
-   * Whether this shortcut shows up on the settings page as user-editable.
-   * Default true. Set to false for plumbing/glue shortcuts (e.g. an
-   * Escape handler that's part of an internal flow, not a real binding
-   * a user would want to remap). Mirrors Notion's `customizable` flag.
-   */
-  customizable?: boolean;
   /**
    * Per-shortcut option defaults (merged before per-call options on
    * `useShortcutAction`). Most relevant for `enableOnFormTags`.
@@ -171,35 +164,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
   },
 
-  // ── Tab navigation (Linear-style 2-stroke `g d` / `g s` / …) ────
-  {
-    id: 'goto.dashboard',
-    description: 'Go to Dashboard tab',
-    defaultCombo: 'g>d',
-    category: 'navigation',
-  },
-  {
-    id: 'goto.summary',
-    description: 'Go to Summary tab',
-    defaultCombo: 'g>s',
-    category: 'navigation',
-  },
-  {
-    id: 'goto.config',
-    description: 'Go to Config tab',
-    defaultCombo: 'g>c',
-    category: 'navigation',
-  },
+  // ── Tab navigation (Linear-style 2-stroke `g b` / `g i`) ────────
+  // The dashboard/summary/config/proposals bindings were removed with their
+  // /adv tabs (settings-audit 2026-07-09) — their tab ids are long gone from
+  // ADV_TAB_IDS, so the settings rows let a user rebind a dead key.
   {
     id: 'goto.brainstorm',
     description: 'Go to Brainstorm tab',
     defaultCombo: 'g>b',
-    category: 'navigation',
-  },
-  {
-    id: 'goto.proposals',
-    description: 'Go to Proposals tab',
-    defaultCombo: 'g>p',
     category: 'navigation',
   },
   {
@@ -274,47 +246,12 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     category: 'global',
   },
 
-  // ── Feature list ────────────────────────────────────────────────
-  {
-    id: 'feature.move-down',
-    description: 'Move selection down',
-    defaultCombo: 'j, ArrowDown',
-    category: 'feature-list',
-    options: { preventDefault: true },
-  },
-  {
-    id: 'feature.move-up',
-    description: 'Move selection up',
-    defaultCombo: 'k, ArrowUp',
-    category: 'feature-list',
-    options: { preventDefault: true },
-  },
-  {
-    id: 'feature.next',
-    description: 'Next feature (without focusing the list)',
-    defaultCombo: 'bracketright',
-    category: 'feature-list',
-  },
-  {
-    id: 'feature.prev',
-    description: 'Previous feature (without focusing the list)',
-    defaultCombo: 'bracketleft',
-    category: 'feature-list',
-  },
-  {
-    id: 'feature.open',
-    description: 'Open the selected feature',
-    defaultCombo: 'Enter, Space',
-    category: 'feature-list',
-    options: { preventDefault: true },
-  },
-  {
-    id: 'feature.search',
-    description: 'Focus the feature search input',
-    defaultCombo: 'slash',
-    category: 'feature-list',
-    options: { preventDefault: true },
-  },
+  // (The 'feature-list' category — feature.move-down/up/next/prev/open/search/
+  // reset/toggle-select/cycle-status/search-blur — was removed in the
+  // settings-audit 2026-07-09: no FeatureList component with keyboard
+  // navigation exists any more, so all ten ids were unregistered rows the
+  // settings page still offered to rebind. `find.open` below is 'navigation',
+  // not feature-list, and stays.)
   {
     id: 'find.open',
     description: 'Find in page (highlight + scroll matches)',
@@ -330,32 +267,6 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     defaultCombo: 'mod+f',
     category: 'navigation',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
-  },
-  {
-    id: 'feature.reset',
-    description: 'Reset the selected feature',
-    defaultCombo: 'r',
-    category: 'feature-list',
-  },
-  {
-    id: 'feature.toggle-select',
-    description: 'Toggle selection of the focused feature',
-    defaultCombo: 'x',
-    category: 'feature-list',
-  },
-  {
-    id: 'feature.cycle-status',
-    description: 'Cycle status of the focused feature (todo → in-progress → passed)',
-    defaultCombo: 'mod+Enter',
-    category: 'feature-list',
-  },
-  {
-    id: 'feature.search-blur',
-    description: 'Blur the search input when typing',
-    defaultCombo: 'Escape',
-    category: 'feature-list',
-    customizable: false, // glue, not a real binding
-    options: { enableOnFormTags: ['INPUT'] },
   },
 ] as const;
 

@@ -50,8 +50,8 @@ export default defineTool({
     // reason fleet/spawn.ts dynamic-imports operator-spawn).
     const [{ delegateDeep }, { defaultDeepDelegateDeps }, { activeWorkspaceId }] =
       await Promise.all([
-        import('../../sentinel/sentinel-deep-delegate'),
-        import('../../sentinel/sentinel-deep-delegate-deps'),
+        import('../../papercup/papercup-deep-delegate'),
+        import('../../papercup/papercup-deep-delegate-deps'),
         import('../../workspace-registry'),
       ]);
     const workspaceId =

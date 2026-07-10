@@ -85,17 +85,17 @@ vi.mock('../../../operator-sentinel-handoff', () => ({
 vi.mock('../../../operator-sentinel-handoff-deps', () => ({
   defaultSentinelHandoffDeps: vi.fn(() => ({})),
 }));
-vi.mock('../../../sentinel/sentinel-deep-delegate', () => ({
+vi.mock('../../../papercup/papercup-deep-delegate', () => ({
   delegateDeep: vi.fn(async () => ({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true })),
 }));
-vi.mock('../../../sentinel/sentinel-deep-delegate-deps', () => ({
+vi.mock('../../../papercup/papercup-deep-delegate-deps', () => ({
   defaultDeepDelegateDeps: vi.fn(() => ({})),
 }));
 
 import { runAgentChat } from '../../../agent-chat-stream';
 import { spawnAgentInHarness } from '../../../fleet/operator-spawn';
 import { dispatchSentinelHandoff } from '../../../operator-sentinel-handoff';
-import { delegateDeep } from '../../../sentinel/sentinel-deep-delegate';
+import { delegateDeep } from '../../../papercup/papercup-deep-delegate';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
 import tool from '../converse';

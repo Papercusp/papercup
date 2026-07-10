@@ -138,7 +138,7 @@ function defaultClonePath(deps: OpenRunSandboxDeps, potSlug: string): string {
  */
 export function liveSandboxHiveOps(workspaceId: string): SandboxHiveOps {
   const liveOps = async () => {
-    const { liveHiveOps } = await import('../../hive-eval/live-ops');
+    const { liveHiveOps } = await import('../../pot-eval/live-ops');
     return liveHiveOps({ workspaceId });
   };
   return {

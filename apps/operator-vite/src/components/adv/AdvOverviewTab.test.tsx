@@ -14,18 +14,20 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 // nuqs: writers (tab / inboxTier) + the `slug` reader (the selected harness,
 // which scopes the activity query). Stable per-key setter spies so the
-// click-through wiring is assertable.
+// click-through wiring is assertable. Parsers from the shared complete mock
+// (EI-8821) so a new parseAsX call elsewhere can't silently red this suite.
 const nuqsState: Record<string, unknown> = { tab: null, inboxTier: null, slug: null };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];
   },
-  parseAsString: {},
 }));
 
 // Brief 20's control has its own test file — stub it out so this one only

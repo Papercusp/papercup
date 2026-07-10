@@ -17,7 +17,7 @@ hard `requires` pull in the web chassis + data + UI closure:
   papergrid data-grid stack, the dock-workbench panel shell, and
   brand-lexicon terminology.
 
-Need agents? Do NOT bolt them on here — layer `papercusp-ops-hives` onto
+Need agents? Do NOT bolt them on here — layer `papercusp-ops-pots` onto
 this composition the way `papercusp-agentic-desktop-app` layers onto `papercusp-desktop-app`.
 
 ## MUST — consult the live papercusp docs when this GUIDE is not enough
@@ -63,7 +63,7 @@ seam convention, a deploy step — do NOT guess:
   plane), and `composition-integrity` (the set itself).
 - No agent-orchestration surfaces in an app built from THIS template — no
   hives, no seam. If the requirement appears mid-build, add
-  `papercusp-ops-hives` to the composition explicitly instead of hand-rolling
+  `papercusp-ops-pots` to the composition explicitly instead of hand-rolling
   agents.
 - Replace the web-host auth placeholders before any non-local exposure.
 

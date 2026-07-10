@@ -8,7 +8,7 @@
  * (CLAUDE.md). `--inactive` seeds it off for an explicit dark launch.
  *
  * The routine's install_slug IS the canary harness (default 'hive-canary';
- * override via HIVE_CANARY_HARNESS). payload_template tunables:
+ * override via POT_CANARY_HARNESS). payload_template tunables:
  * `deadlineHours` (default 6), `title` (the trivial feature's title).
  *
  *   tsx seed-hive-canary-routine.ts              # seed ACTIVE
@@ -17,7 +17,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const SLUG = process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
+const SLUG = process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary'; // legacy env name — dual-accept until callers migrate
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

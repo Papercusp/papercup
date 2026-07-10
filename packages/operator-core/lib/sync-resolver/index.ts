@@ -2875,7 +2875,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { readHiveEvalInstanceSummaries } = await import('../hive-eval/trend-read');
+      const { readHiveEvalInstanceSummaries } = await import('../pot-eval/trend-read');
       try {
         const ws = activeWorkspaceId();
         return await routeWithWorkspace(async (tx) => {
@@ -2912,7 +2912,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { readBakeoffTrendRows } = await import('../hive-eval/bakeoff-store');
+      const { readBakeoffTrendRows } = await import('../pot-eval/bakeoff-store');
       try {
         const ws = activeWorkspaceId();
         return await routeWithWorkspace(async (tx) => {
@@ -4130,7 +4130,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             cadenceFloorSec: hiveWakeFloorSec(),
             maxBees: getCachedRateLimitConfig().maxSimultaneousAgents,
             // P-009 read-through (su-4d71b): the live cursed-item breaker threshold
-            // the autonomy-surfacing UI shows read-only (PAPERCUSP_HIVE_PLACEMENT_BREAKER).
+            // the autonomy-surfacing UI shows read-only (PAPERCUSP_POT_PLACEMENT_BREAKER).
             breakerThreshold: placementConfig().breakerThreshold,
           };
         } catch {

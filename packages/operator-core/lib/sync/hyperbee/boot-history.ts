@@ -152,7 +152,22 @@ export type BootHistoryKind =
   | 'epoch_gate_seen'
   | 'epoch_defer'
   | 'epoch_decrypt_fail'
-  | 'epoch_applied';
+  | 'epoch_applied'
+  // WI-3604 (recurrence guard for the split-DHT-universe outage class): recorded
+  // once per harness join, right after this process's shared swarm resolves its
+  // DHT bootstrap. 'dht_universe_ok' = either no expectation is configured
+  // (PAPERCUSP_EXPECTED_DHT_BOOTSTRAP[_FILE] unset) or the resolved bootstrap
+  // matches it. 'dht_universe_mismatch' = an expectation IS configured but this
+  // process resolved to a DIFFERENT universe (public DHT, a different isolated
+  // bootstrap, or a malformed env value) — the exact 2026-07-09 Mac VM incident
+  // (a LaunchAgent's EnvironmentVariables not inherited by a manual app
+  // relaunch, so PAPERCUSP_DHT_BOOTSTRAP silently read empty and the process
+  // joined the PUBLIC DHT while every peer expected the isolated rig DHT). See
+  // `resolveDhtUniverseState`/`assertDhtUniverse` in swarm.ts and the
+  // `dhtUniverseMismatch` axis in replication-liveness.ts, which reads any
+  // subsequent per-log stall as THIS cause instead of connected-but-dead.
+  | 'dht_universe_ok'
+  | 'dht_universe_mismatch';
 
 export interface BootHistoryEntry {
   ts: number;

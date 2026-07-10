@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   startCluster,
   resolveClusterWorkers,
+  describeClusterWorkersSource,
   resolveExpectedOperatorProcs,
   type ClusterLike,
   type ClusterWorkerLike,
@@ -214,8 +215,8 @@ describe('resolveClusterWorkers (P3-2 gate)', () => {
     }
   });
 
-  it('auto/on/true/1 ⇒ the host recommendation', () => {
-    for (const v of ['auto', 'on', 'true', '1']) {
+  it('auto/on/true ⇒ the host recommendation', () => {
+    for (const v of ['auto', 'on', 'true']) {
       expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: v }, REC)).toBe(REC);
     }
   });
@@ -223,6 +224,13 @@ describe('resolveClusterWorkers (P3-2 gate)', () => {
   it('a positive number ⇒ exactly that many workers', () => {
     expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '4' }, REC)).toBe(4);
     expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '16' }, REC)).toBe(16);
+  });
+
+  it("EI-8817: '1' means exactly ONE worker, NOT the host recommendation (it used to alias 'auto' and fork a per-core storm)", () => {
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '1' }, REC)).toBe(1);
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER_WORKERS: '1' }, REC)).toBe(1);
+    // A recommendation of 1 (e.g. a laptop) still round-trips correctly either way.
+    expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: '1' }, 1)).toBe(1);
   });
 
   it('PAPERCUSP_CLUSTER_WORKERS takes precedence over PAPERCUSP_CLUSTER', () => {
@@ -237,6 +245,22 @@ describe('resolveClusterWorkers (P3-2 gate)', () => {
 
   it('auto with a non-finite recommendation falls back to 1', () => {
     expect(resolveClusterWorkers({ PAPERCUSP_CLUSTER: 'auto' }, Number.NaN)).toBe(1);
+  });
+});
+
+describe('describeClusterWorkersSource (EI-8818 proposal (c) — boot-log diagnosability)', () => {
+  it('names PAPERCUSP_CLUSTER_WORKERS when set, even if PAPERCUSP_CLUSTER is also set (precedence)', () => {
+    expect(
+      describeClusterWorkersSource({ PAPERCUSP_CLUSTER_WORKERS: '3', PAPERCUSP_CLUSTER: 'off' }),
+    ).toBe('PAPERCUSP_CLUSTER_WORKERS=3');
+  });
+
+  it('falls back to naming PAPERCUSP_CLUSTER when only it is set', () => {
+    expect(describeClusterWorkersSource({ PAPERCUSP_CLUSTER: '16' })).toBe('PAPERCUSP_CLUSTER=16');
+  });
+
+  it('reports the unset default when neither is set', () => {
+    expect(describeClusterWorkersSource({})).toBe('unset (default: 1 worker)');
   });
 });
 

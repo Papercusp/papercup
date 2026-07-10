@@ -1,7 +1,7 @@
 /**
  * cross-hive-frame.ts — the per-frame program for the LIVE cross-machine cross-Hive
  * E2E (cross-hive-boundary-2026-06-08 P-005). Run on each Hetzner frame via
- * `node --import tsx`, configured by the `XHIVE_FRAME` env (JSON). It stands up a
+ * `node --import tsx`, configured by the `XPOT_FRAME` env (JSON). It stands up a
  * real Hyperswarm on the PUBLIC DHT, wires a cross-Hive boundary for THIS frame's
  * Hive identity, and plays one of two roles:
  *
@@ -49,7 +49,9 @@ function out(line: string): void {
 }
 
 async function main(): Promise<void> {
-  const cfg = JSON.parse(process.env.XHIVE_FRAME ?? '{}') as FrameCfg;
+  const cfg = JSON.parse(
+    process.env.XPOT_FRAME ?? process.env.XHIVE_FRAME /* legacy env name — dual-accept until callers migrate */ ?? '{}',
+  ) as FrameCfg;
   if (!cfg.role || !cfg.selfPubkey || !cfg.selfPrivPkcs8B64 || !cfg.peerPubkey) {
     out('XHIVE_ERROR missing config');
     process.exit(2);

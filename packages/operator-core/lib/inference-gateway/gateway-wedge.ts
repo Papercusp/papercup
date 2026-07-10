@@ -103,9 +103,29 @@ export interface GatewayWedgeVerdict {
    *  own slot-reconcile guard counted a mismatch. Surfaces the leak as a signal BEFORE/ALONGSIDE the
    *  wedge it would otherwise silently ride to (watchdog restart). */
   slotLeak: boolean;
+  /** WI-3565 (2026-07-09 admission-starvation incident): instantaneous risk that the admission
+   *  backlog is deep relative to the LIVE ceiling — `queueDepth > ADMISSION_STARVATION_QUEUE_RATIO x
+   *  maxConcurrent`. Deliberately DISTINCT from `saturated`: saturated requires `inFlight >=
+   *  maxConcurrent` (every live slot pinned), but a starved queue can sit BELOW the ceiling the whole
+   *  time (paced by a per-account/governor floor below the admission cap) — exactly the 2026-07-09
+   *  incident (`running:1` against `maxConcurrent:2` with 24 queued for 50 unalarmed minutes). A lone
+   *  reading can be a normal burst; the caller (gateway-sample-cache.ts) confirms SUSTAINED persistence
+   *  before treating it as an alert. */
+  admissionStarvationRisk: boolean;
+  /** WI-3565: `admissionStarvationRisk` CONFIRMED sustained (persisted ≥
+   *  `ADMISSION_STARVATION_MIN_PERSIST_MS` continuously) — the alert-worthy signal, mirroring how
+   *  `wedge` confirms `saturated`. Always `false` from the pure `detectGatewayWedge()` call (it has
+   *  no cross-tick history); only `gateway-sample-cache.ts#readGatewayWedge` (which tracks the
+   *  streak) ever sets it `true`. */
+  admissionStarved: boolean;
   /** Human reasons (each surfaced on the panel / overwatch anomaly). */
   reasons: string[];
 }
+
+/** WI-3565: the admission backlog must exceed this multiple of the live ceiling to count as a
+ *  starvation RISK (a normal, brief queue bump is not itself a signal). Env-tunable. */
+export const ADMISSION_STARVATION_QUEUE_RATIO =
+  Number(process.env.PAPERCUSP_GATEWAY_ADMISSION_STARVATION_RATIO) || 4;
 
 /** A prior older than this can no longer CONFIRM a freeze (a long-quiet gateway legitimately has a
  *  flat `totalRequests`; only a RECENT flat-while-saturated reading is the wedge). */
@@ -242,5 +262,17 @@ export function detectGatewayWedge(
     );
   }
 
-  return { saturated, wedge, sustainedThrottle, slotLeak, reasons };
+  // ── Admission starvation (WI-3565, spatial half): a deep backlog vs the LIVE ceiling — distinct
+  //    from `saturated` above, which requires inFlight AT the ceiling. A starved queue can sit BELOW
+  //    the ceiling the whole time (paced by a lower per-account/provider floor), so `saturated` alone
+  //    never fires and the queue silently deepens. Confirmed into a sustained alert by the caller. ──
+  const admissionStarvationRisk =
+    metrics.maxConcurrent > 0 && metrics.queueDepth > ADMISSION_STARVATION_QUEUE_RATIO * metrics.maxConcurrent;
+  if (admissionStarvationRisk) {
+    reasons.push(
+      `admission backlog ${metrics.queueDepth} deep vs live ceiling ${metrics.maxConcurrent} (>${ADMISSION_STARVATION_QUEUE_RATIO}x) — starvation risk if sustained`,
+    );
+  }
+
+  return { saturated, wedge, sustainedThrottle, slotLeak, admissionStarvationRisk, admissionStarved: false, reasons };
 }

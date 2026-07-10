@@ -13,8 +13,8 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { OperatorVoiceSession } from './operator-voice-session';
 import { createOperatorVoiceSessionDeps } from './operator-voice-session-deps';
 import { startSentinelSaysPump } from './sentinel-says-pump';
-import { runSentinelProactiveSweep, type SentinelSweepDeps } from '../sentinel/sentinel-proactive-sweep';
-import { buildSentinelSweepDeps, speakIntoSession } from '../sentinel/sentinel-proactive-sweep-deps';
+import { runSentinelProactiveSweep, type SentinelSweepDeps } from '../papercup/papercup-proactive-sweep';
+import { buildSentinelSweepDeps, speakIntoSession } from '../papercup/papercup-proactive-sweep-deps';
 
 /** Re-claim the elected player's lease well under its 12s TTL. */
 const LEASE_HEARTBEAT_MS = 5_000;
@@ -24,7 +24,11 @@ const LEASE_HEARTBEAT_MS = 5_000;
  *  single-owner + an internal throttle), so a frequent tick is cheap — most ticks
  *  are a single flag read and a no-op. Env-tunable, hard min 5s. */
 function sentinelSweepTickMs(): number {
-  const n = Number(process.env.PAPERCUSP_SENTINEL_SWEEP_TICK_MS ?? 30_000);
+  const n = Number(
+    process.env.PAPERCUSP_PAPERCUP_SWEEP_TICK_MS ??
+      process.env.PAPERCUSP_SENTINEL_SWEEP_TICK_MS ?? // legacy env name — dual-accept until callers migrate
+      30_000,
+  );
   return Number.isFinite(n) && n >= 5_000 ? n : 30_000;
 }
 

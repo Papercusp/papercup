@@ -11,10 +11,10 @@ import { createFileRoute, redirect } from '@tanstack/react-router';
  *     /adv tabs; panels with no top-level /adv tab (proposals/experts/summary/
  *     design) land on `harnesses` (they remain reachable via the harness UI).
  *
- * NOTE: the per-slug routes (`/harness/$slug` + its sub-routes) are
- * intentionally NOT redirected yet — they render org/department dashboards and
- * the dock shell, which /adv does not have parity for. They stay functional
- * until /adv covers those surfaces.
+ * The per-slug routes (`/harness/<slug>[/...]`) are gone too
+ * (design-simplification-2026-07-09 P-008): the dock shell / insights /
+ * projects pages moved to `_retired/harness-dashboard/`, and the sibling
+ * `$.tsx` splat translates those deep links to /adv.
  */
 const PANEL_TO_TAB: Record<string, string> = {
   dashboard: 'harnesses',

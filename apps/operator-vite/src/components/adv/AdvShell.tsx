@@ -431,6 +431,16 @@ export default function AdvShell({
   useShortcutAction('goto.inbox', () => void setActiveTab('conversations'));
   useShortcutAction('harness.create', () => void setCreateOpen(true));
 
+  // Two-stroke tab jumps (`g b` / `g i`). Both ids shipped in the registry with
+  // NO handler anywhere, so the settings row let a user rebind a key that fired
+  // nothing (settings-audit 2026-07-09). Unlike goto.inbox these are PER-POT
+  // tabs, so under "All Pots" they're absent from the base strip — the
+  // pin-the-active-tab branch above appends + highlights the tab and its body
+  // renders the pick-a-pot prompt (owner ask 2026-06-17). That is the designed
+  // empty-state, so no scope guard here.
+  useShortcutAction('goto.brainstorm', () => void setActiveTab('brainstorm'));
+  useShortcutAction('goto.insights', () => void setActiveTab('insights'));
+
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">

@@ -1302,7 +1302,7 @@ export async function setWorkItemState(
     // summary back into the Sentinel pane as `[deep-answer WI-NNN] …` so the
     // answer is presented + spoken through the one pipeline. Same fire-and-forget
     // + lazy-import shape; the watch gates on the topic and no-ops otherwise.
-    void import('./sentinel/sentinel-deep-watch')
+    void import('./papercup/papercup-deep-watch')
       .then((m) =>
         m.injectDeepAnswerIfTracked(
           {

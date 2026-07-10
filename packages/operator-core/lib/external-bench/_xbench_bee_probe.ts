@@ -35,12 +35,14 @@ async function main() {
     ...buildPipelineExtraEnv({ harnessSlug: enrolled.member, workspaceId: WS }),
     PAPERCUSP_FLEET_SANDBOX: '0',
     PAPERCUSP_SPAWN_BACKEND: 'claude-code',
-    QUEEN_BRIEF:
+    MUG_BRIEF:
       'You are placed on a single-task benchmark harness. This member holds EXACTLY ONE feature work-item. Claim it (work_items:claim_next for this harness) and IMPLEMENT it as real code edits to a working diff. Do not exit taskless.',
   };
   console.log('[probe] spawning bee directly with FEATURE_ID=' + enrolled.workItemId);
   const res = await spawnInvokeOnce(enrolled.clonePath, 'cup', [`FEATURE_ID=${enrolled.workItemId}`], extraEnv, {
-    timeoutMs: Number(process.env.XBENCH_BEE_TIMEOUT_MS ?? 8 * 60 * 1000),
+    timeoutMs: Number(
+      process.env.XBENCH_CUP_TIMEOUT_MS ?? process.env.XBENCH_BEE_TIMEOUT_MS /* legacy env name — dual-accept until callers migrate */ ?? 8 * 60 * 1000,
+    ),
   });
   console.log('\n===== BEE INVOKE RESULT =====');
   console.log('exitCode', res.exitCode, 'timedOut', res.timedOut);

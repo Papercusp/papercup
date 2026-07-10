@@ -719,8 +719,8 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(role).toBe('cup');
   });
 
-  it('threads the Queen brief into the child env as QUEEN_BRIEF (P-060 — the real delivery channel, not `extras`)', async () => {
-    // P-060: the brief reaches the bee via extraEnv.QUEEN_BRIEF (which buildInvokeOnce
+  it('threads the Queen brief into the child env as MUG_BRIEF (P-060 — the real delivery channel, not `extras`)', async () => {
+    // P-060: the brief reaches the bee via extraEnv.MUG_BRIEF (which buildInvokeOnce
     // sets on the child env, and invoke-once's buildPrompt renders as `## Queen brief`),
     // NOT as a generic `extras` positional. Assert the real channel.
     const brief = 'watch for the migration race; this connects to bee-2; priority: unblock CI';
@@ -729,7 +729,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    expect(env.QUEEN_BRIEF).toBe(brief);
+    expect(env.MUG_BRIEF).toBe(brief);
   });
 
   it('threads the operator `s-…` spawnId into the child env as PAPERCUSP_SPAWN_ID (THE UMBILICAL — bee coord identity)', async () => {
@@ -864,7 +864,7 @@ describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stamp
     });
     expect(res.ok).toBe(true);
     const [, , , env] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
-    expect(env.QUEEN_BRIEF).toBe('Implement the reviews handler');
+    expect(env.MUG_BRIEF).toBe('Implement the reviews handler');
   });
 });
 

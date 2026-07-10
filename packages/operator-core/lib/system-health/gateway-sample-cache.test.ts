@@ -5,7 +5,12 @@
  */
 import { test, beforeEach } from 'vitest';
 import assert from 'node:assert/strict';
-import { readGatewayWedge, WEDGE_MIN_FREEZE_MS, __resetGatewaySampleCacheForTests } from './gateway-sample-cache';
+import {
+  readGatewayWedge,
+  WEDGE_MIN_FREEZE_MS,
+  ADMISSION_STARVATION_MIN_PERSIST_MS,
+  __resetGatewaySampleCacheForTests,
+} from './gateway-sample-cache';
 import { summarizeGatewayMetrics, type RawGatewayStats } from '../inference-gateway/gateway-wedge';
 
 const T0 = 1_750_000_000_000;
@@ -74,4 +79,47 @@ test('sustainedThrottle is reported instantly (no freeze history needed)', () =>
   const r = readGatewayWedge(summarizeGatewayMetrics(stats({ aimd: { effective: 6, cap: 24, floor: 4, decreases: 5 } })), T0);
   assert.equal(r.sustainedThrottle, true);
   assert.equal(r.wedge, false);
+});
+
+// ── WI-3565: admission starvation persistence (deep queue vs a LOW ceiling, distinct from saturated) ──
+const starved = (total = 1000) => stats({ totalRequests: total, admission: { running: 1, queued: 24, maxConcurrent: 2 } });
+
+test('a starvation-risk reading is only CONFIRMED once it persists ≥ ADMISSION_STARVATION_MIN_PERSIST_MS', () => {
+  const r0 = readGatewayWedge(summarizeGatewayMetrics(starved()), T0);
+  assert.equal(r0.admissionStarvationRisk, true);
+  assert.equal(r0.admissionStarved, false, 'just started — not yet sustained');
+
+  const r1 = readGatewayWedge(summarizeGatewayMetrics(starved()), T0 + 60_000);
+  assert.equal(r1.admissionStarved, false, '1 minute in — still short of the 5min gate');
+
+  const r2 = readGatewayWedge(summarizeGatewayMetrics(starved()), T0 + ADMISSION_STARVATION_MIN_PERSIST_MS + 1_000);
+  assert.equal(r2.admissionStarved, true, 'persisted past the gate → confirmed');
+});
+
+test('the queue draining (no longer over the ratio) clears the starvation streak', () => {
+  readGatewayWedge(summarizeGatewayMetrics(starved()), T0);
+  readGatewayWedge(summarizeGatewayMetrics(starved()), T0 + ADMISSION_STARVATION_MIN_PERSIST_MS - 1_000);
+  // Queue drains back under the ratio right before confirmation would land.
+  const drained = readGatewayWedge(
+    summarizeGatewayMetrics(stats({ admission: { running: 2, queued: 2, maxConcurrent: 2 } })),
+    T0 + ADMISSION_STARVATION_MIN_PERSIST_MS,
+  );
+  assert.equal(drained.admissionStarvationRisk, false);
+  assert.equal(drained.admissionStarved, false);
+  // A fresh starvation episode right after must re-accumulate from here, not from T0.
+  const reStarved = readGatewayWedge(summarizeGatewayMetrics(starved()), T0 + ADMISSION_STARVATION_MIN_PERSIST_MS + 10_000);
+  assert.equal(reStarved.admissionStarved, false, 'the new episode is only 10s old');
+});
+
+test('raising the live ceiling (the manual mitigation lever) clears a confirmed starvation on the next tick', () => {
+  readGatewayWedge(summarizeGatewayMetrics(starved()), T0);
+  readGatewayWedge(summarizeGatewayMetrics(starved()), T0 + ADMISSION_STARVATION_MIN_PERSIST_MS + 1_000);
+  // maxConcurrent lifted 2 -> 8 (operator:rate_limit_config providerFloors.anthropic.maxConcurrent) —
+  // the same queue depth is now well under the ratio against the new ceiling.
+  const lifted = readGatewayWedge(
+    summarizeGatewayMetrics(stats({ admission: { running: 6, queued: 24, maxConcurrent: 8 } })),
+    T0 + ADMISSION_STARVATION_MIN_PERSIST_MS + 2_000,
+  );
+  assert.equal(lifted.admissionStarvationRisk, false);
+  assert.equal(lifted.admissionStarved, false);
 });

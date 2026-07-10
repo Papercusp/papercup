@@ -15,16 +15,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
+// Parsers from the shared complete mock (EI-8821) so a new parseAsX call
+// elsewhere can't silently red this suite.
 const nuqsState: Record<string, unknown> = { frame: null, live: false, drive: false };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];
   },
-  parseAsString: {},
-  parseAsBoolean: { withDefault: () => ({}) },
 }));
 
 // @papercusp/sse: capture each per-slug stream's handlers so tests can fire

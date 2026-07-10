@@ -240,4 +240,4 @@ the owner made the call — option (d), honest copy landed (see the disposition 
 the dimension verdict is now **YELLOW** (documented limitation). GREEN remains gated on
 the read-cutoff fix (b/c/a), tracked as roadmap, not a v1 blocker.
 
-Full release-notes threat model: **`shared-pot-release-testing/threat-model-C.md`**.
+Full release-notes threat model: **`shared-hive-release-testing/threat-model-C.md`**.

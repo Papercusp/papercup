@@ -17,10 +17,17 @@ import type { ObservationRatings } from '../../harness/improvements/observation-
 
 export const SU_AGENT_BEHAVIOR_RUBRIC_ID = 'su-agent-behavior';
 
-/** The rubric's 12 criterion keys (store-ratified 2026-07-06; bundled at
- *  rubrics/su-agent-behavior/rubric.json). The scorecard completeness gate
- *  (validateScorecardCompleteness) requires EVERY key on every emit — a
- *  not-exercised criterion is rated 'unknown' with a why, never omitted. */
+/**
+ * EI-8814: the rubric's criterion keys DRIFT (v0.2.1 has 21; this list is a snapshot from
+ * an earlier version) — the rubric store (rubrics/su-agent-behavior/rubric.json, mirrored
+ * into harness_plans) is the SOURCE OF TRUTH. Do NOT add criteria here to "fix" a mismatch;
+ * the completeness gate reads the LIVE rubric (capture-core's `deps.loadRubric`), and this
+ * const is now ONLY: (a) the FALLBACK used by {@link resolveSuAgentBehaviorCriteriaKeys}
+ * when the live rubric read fails (best-effort — never blocks emission), and (b) the
+ * default for pure, no-DB unit tests of {@link mapChecksToRubricRatings}. Kept reasonably
+ * fresh so the fallback isn't badly stale, but a future rubric bump does NOT require
+ * touching this file — {@link emitBehaviourScorecard} always prefers the live key set.
+ */
 export const SU_AGENT_BEHAVIOR_CRITERIA = [
   'tool-discipline',
   'orientation-and-task-reach',
@@ -34,8 +41,38 @@ export const SU_AGENT_BEHAVIOR_CRITERIA = [
   'reporting-integrity',
   'resource-discipline',
   'constraint-compliance',
+  'mode-compliance',
+  'authorization-gate-discipline',
+  'fleet-stewardship',
+  'blocker-and-gate-ownership',
+  'peer-responsiveness',
+  'knowledge-capture-and-memory-routing',
+  'continuity-discipline',
+  'platform-mechanism-execution',
+  'system-enablement',
 ] as const;
 export type SuAgentBehaviorCriterion = (typeof SU_AGENT_BEHAVIOR_CRITERIA)[number];
+
+/**
+ * Resolve the LIVE criterion key set from the rubric store (EI-8814) — the SAME read
+ * capture-core's completeness gate performs (`getRubric` → `rubric.criteria.map(c =>
+ * c.key)`), so a dual-emit scorecard can never desync from what the gate actually
+ * requires, regardless of future rubric version bumps. Falls back to the static
+ * {@link SU_AGENT_BEHAVIOR_CRITERIA} snapshot on any read failure (no store connection,
+ * rubric not found, etc.) — best-effort, never throws, never blocks emission. Dynamic
+ * import keeps the rubrics store (and its DB graph) out of the pure-mapping unit tests'
+ * module graph.
+ */
+export async function resolveSuAgentBehaviorCriteriaKeys(): Promise<readonly string[]> {
+  try {
+    const { getRubric } = await import('../../rubrics');
+    const rubric = await getRubric(SU_AGENT_BEHAVIOR_RUBRIC_ID);
+    if (rubric && rubric.criteria.length > 0) return rubric.criteria.map((c) => c.key);
+  } catch {
+    // fall through to the static snapshot
+  }
+  return SU_AGENT_BEHAVIOR_CRITERIA;
+}
 
 /**
  * criterion → the behaviour check that exercises it (the WI-3340 audit mapping).
@@ -57,17 +94,27 @@ const CRITERION_TO_CHECK: Partial<Record<SuAgentBehaviorCriterion, BehaviourChec
 const clip = (s: string, n = 300) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /**
- * PURE: behaviour check results → a full su-agent-behavior ratings record (all 12
- * criterion keys, evidence on every entry — the shape validateObservationRatings +
+ * PURE: behaviour check results → a full su-agent-behavior ratings record (EVERY key in
+ * `criteriaKeys`, evidence on every entry — the shape validateObservationRatings +
  * validateScorecardCompleteness accept). Scale: pass/partial/fail/unknown; a
  * deterministic binary check rates pass|fail, an n/a or unexercised criterion rates
  * 'unknown' with a one-line why. Evidence is the check's deterministic result string.
+ *
+ * `criteriaKeys` defaults to the static {@link SU_AGENT_BEHAVIOR_CRITERIA} snapshot (so
+ * existing pure/no-DB callers and unit tests are unaffected) — a live caller (
+ * {@link emitBehaviourScorecard}) passes the rubric-store-resolved set (EI-8814) so the
+ * emitted ratings map can never desync from what the completeness gate actually requires.
+ * A key with no `CRITERION_TO_CHECK` mapping (any criterion not yet in that table, whether
+ * from the static snapshot or a newer live rubric) rates 'unknown' — never omitted.
  */
-export function mapChecksToRubricRatings(checks: BehaviourCheck[]): ObservationRatings {
+export function mapChecksToRubricRatings(
+  checks: BehaviourCheck[],
+  criteriaKeys: readonly string[] = SU_AGENT_BEHAVIOR_CRITERIA,
+): ObservationRatings {
   const byId = new Map(checks.map((c) => [c.id, c]));
   const ratings: ObservationRatings = {};
-  for (const key of SU_AGENT_BEHAVIOR_CRITERIA) {
-    const checkId = CRITERION_TO_CHECK[key];
+  for (const key of criteriaKeys) {
+    const checkId = CRITERION_TO_CHECK[key as SuAgentBehaviorCriterion];
     const check = checkId ? byId.get(checkId) : undefined;
     if (!checkId) {
       ratings[key] = {
@@ -98,10 +145,12 @@ export interface BehaviourScorecardFields {
 }
 
 /** PURE: report + run metadata → the capture fields (title names the SUBJECT run;
- *  the emitter is the check harness — grader-independence). */
+ *  the emitter is the check harness — grader-independence). `criteriaKeys` (EI-8814)
+ *  defaults to the static snapshot; a live caller passes the rubric-store-resolved set. */
 export function buildBehaviourScorecard(
   report: BehaviourReport,
   meta: BehaviourScorecardMeta,
+  criteriaKeys: readonly string[] = SU_AGENT_BEHAVIOR_CRITERIA,
 ): BehaviourScorecardFields {
   const subject = meta.sessionId
     ? `session ${meta.sessionId}`
@@ -114,7 +163,12 @@ export function buildBehaviourScorecard(
   const refs = ['tool:behaviour:run'];
   if (meta.sessionId) refs.push(clip(`session:${meta.sessionId}`, 200));
   if (meta.transcriptPath) refs.push(clip(`file:${meta.transcriptPath}`, 200));
-  return { title, body: clip(report.summary, 2000), refs, ratings: mapChecksToRubricRatings(report.checks) };
+  return {
+    title,
+    body: clip(report.summary, 2000),
+    refs,
+    ratings: mapChecksToRubricRatings(report.checks, criteriaKeys),
+  };
 }
 
 export interface ScorecardEmitResult {
@@ -149,7 +203,10 @@ export async function emitBehaviourScorecard(
       (await presence.getPresence(id.ownerId).catch(() => null))?.agentRole ??
       identity.deriveAgentRole(id) ??
       undefined;
-    const fields = buildBehaviourScorecard(report, meta);
+    // EI-8814: resolve the LIVE rubric key set so the emitted ratings map can never desync
+    // from what the completeness gate (capture-core's own loadRubric read) requires.
+    const criteriaKeys = await resolveSuAgentBehaviorCriteriaKeys();
+    const fields = buildBehaviourScorecard(report, meta, criteriaKeys);
     const result = await captureImprovement({
       title: fields.title,
       kind: 'change', // ignored for lane:observation (stored as a non-bug nit)
