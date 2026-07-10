@@ -16,12 +16,15 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../pot-policy-store', () => ({ getPotPolicy: h.getPotPolicy }));
+// hive-policy-store / hive-reports-store / hive-membership-store are OUT OF SCOPE for the
+// cup-lexicon rename (persisted-store identifiers) — mock the REAL module paths + export
+// names; only the local test-side aliases (h.getPotPolicy etc.) are renamed.
+vi.mock('../../hive-policy-store', () => ({ getHivePolicy: h.getPotPolicy }));
 vi.mock('../../identity/resolve-local-github-identity', () => ({
   resolveLocalGithubIdentity: h.resolveLocalGithubIdentity,
 }));
-vi.mock('../../pot-reports-store', () => ({ fileReport: h.fileReport, countReportsSince: h.countReportsSince }));
-vi.mock('../../pot-membership-store', () => ({ getPotMember: h.getPotMember }));
+vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport, countReportsSince: h.countReportsSince }));
+vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getPotMember }));
 
 import tool from './report';
 

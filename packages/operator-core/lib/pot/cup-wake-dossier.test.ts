@@ -83,7 +83,7 @@ describe('renderCupDossier (pure)', () => {
     expect(s).toContain('### Blocks downstream');
     expect(s).toContain('WI-9');
     expect(s).toContain('### Topics');
-    expect(s).toContain('pot, cache');
+    expect(s).toContain('hive, cache');
     expect(s).toContain('### Pot peers');
     expect(s).toContain('su · a');
     expect(s).toContain('(cup)');

@@ -184,4 +184,50 @@ describe('outbox-drain per-row poison quarantine (WI-3896)', () => {
     expect(ROW_STAGE_TIMEOUT_MS).toBe(45_000);
     expect(ROW_QUARANTINE_THRESHOLD).toBe(3);
   });
+
+  it('WI-3896 follow-up: a HUNG fan-out (never settles) no longer wedges the pass for the full 120s pass-level watchdog — it gives up after rowTimeoutMs and the row still drains', async () => {
+    // Live incident this pins: [outbox-drain] PASS TIMEOUT fired 17x in a row, every
+    // time on the SAME 'fanout (row id=...)' stage — because fan-out was previously
+    // bounded ONLY by logIfStageStalls (observability-only, never times out), a
+    // genuinely-hung fanout() blocked the row (and the whole pass) forever, so the
+    // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog was the ONLY thing that ever
+    // un-wedged it — and since the row is re-selected first every retry, it repeated
+    // forever with zero net progress. Racing fan-out against rowTimeoutMs (same as
+    // epoch-encrypt/append) lets it give up in well under 120s instead.
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const append = vi.fn(async () => {});
+      const fanout = vi.fn(() => new Promise<void>(() => {})); // never settles
+      const updated: unknown[][] = [];
+      const pg = fakePg(() => [row(1, 'k1')], { onUpdate: (vals) => updated.push(vals) });
+
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        fanout,
+        _passTimeoutMs: 0, // isolate the per-row detector from the pass-level watchdog
+        _backlogStallMs: 0,
+        _rowTimeoutMs: 100,
+      });
+
+      // The append lands immediately; fan-out hangs — but bounded at 100ms, so the
+      // row still reaches mark-drained in THIS same pass rather than wedging it.
+      await vi.advanceTimersByTimeAsync(150);
+
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(fanout).toHaveBeenCalledTimes(1);
+      expect(updated.length).toBeGreaterThanOrEqual(1); // drained despite the hung fan-out
+      // Fan-out's timeout is caught by the EXISTING best-effort catch (non-blocking) —
+      // logged as a fan-out failure, not a new "WI-3896 quarantine" class.
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[outbox-drain] fan-out failed'),
+        expect.stringContaining('row id=1'),
+      );
+
+      await drain.stop();
+    } finally {
+      errSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });

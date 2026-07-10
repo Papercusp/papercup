@@ -58,13 +58,13 @@ describe("shapePotSurvey (P-024)", () => {
       scope: "workspace",
       hives: ["a", "b"],
       counts: { hives: 2, plans: 25, frontier: 30, frontierBlocked: 0 },
-      crossHive: {
+      crossPot: {
         plans: Array.from({ length: 15 }, (_, i) => ranked(i)),
         frontier: Array.from({ length: 15 }, (_, i) => ranked(50 + i)),
       },
-      perHive: [
+      perPot: [
         {
-          hive: "a",
+          pot: "a",
           home: "a-hive",
           members: ["a"],
           scope: "hive",
@@ -76,11 +76,11 @@ describe("shapePotSurvey (P-024)", () => {
       ranker: { features: [] },
     };
     const out = shapePotSurvey(ws, "trimmed") as Record<string, unknown>;
-    const cross = out.crossHive as { plans: unknown[] };
+    const cross = out.crossPot as { plans: unknown[] };
     expect(cross.plans).toHaveLength(SURVEY_TIER_CAPS.trimmed.rows + 1);
-    const per = (out.perHive as Record<string, unknown>[])[0];
+    const per = (out.perPot as Record<string, unknown>[])[0];
     expect(per.plans as unknown[]).toHaveLength(SURVEY_TIER_CAPS.trimmed.rows + 1);
-    expect(per.hive).toBe("a");
+    expect(per.pot).toBe("a");
   });
 
   it("error envelopes pass through untouched", () => {

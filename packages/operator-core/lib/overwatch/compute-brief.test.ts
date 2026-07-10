@@ -23,11 +23,11 @@ vi.mock('../system-health', async () => {
 
 // computeOverwatchBrief resolves the Queen's coord owner (the nudge address) AND
 // pre-folds the overwatch's own coord inbox, via dynamic imports — mock the DB +
-// the readInbox/workspace-als/resolveQueenOwner deps so the wrapper test drives
+// the readInbox/workspace-als/resolveMugOwner deps so the wrapper test drives
 // both without a real DB. `ownerRows` backs the inbox-owner SELECT (a tagged-
 // template call); `readInbox` backs the inbox read.
 const owner = vi.hoisted(() => ({
-  resolveQueenOwner: vi.fn(),
+  resolveMugOwner: vi.fn(),
   readInbox: vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>),
   ownerRows: [] as Array<{ coord_owner_id: string }>,
   getOwnerSteering: vi.fn(async () => ({
@@ -41,7 +41,7 @@ vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: () => Promise.resolve(owner.ownerRows) }),
 }));
 vi.mock('../pot/placement-watchdog', () => ({
-  resolveQueenOwner: owner.resolveQueenOwner,
+  resolveMugOwner: owner.resolveMugOwner,
 }));
 vi.mock('../agent-tools/coordination/messages', () => ({
   readInbox: (...a: unknown[]) => owner.readInbox(...a),
@@ -819,7 +819,7 @@ test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + a
 
 test('computeOverwatchBrief — resolves the Queen coord owner into the brief (the nudge address)', async () => {
   vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
-  owner.resolveQueenOwner.mockResolvedValue('s-queen-1781-abc');
+  owner.resolveMugOwner.mockResolvedValue('s-queen-1781-abc');
   const b = await computeOverwatchBrief('ws', 'papercup-hive');
   assert.equal(b.queen.coordOwner, 's-queen-1781-abc'); // the overwatch can now coord:send the Queen here
 });
@@ -857,7 +857,7 @@ test('computeOverwatchBrief — folds owner steering before anomaly detection (E
 
 test('computeOverwatchBrief — Queen-owner resolution is fail-soft → coordOwner null (persona escalates instead)', async () => {
   vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
-  owner.resolveQueenOwner.mockRejectedValue(new Error('no db'));
+  owner.resolveMugOwner.mockRejectedValue(new Error('no db'));
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   try {
     const b = await computeOverwatchBrief('ws', 'papercup-hive');
@@ -869,7 +869,7 @@ test('computeOverwatchBrief — Queen-owner resolution is fail-soft → coordOwn
 
 test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping ambient rows (Queen-parity)', async () => {
   vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
-  owner.resolveQueenOwner.mockResolvedValue('s-queen-x');
+  owner.resolveMugOwner.mockResolvedValue('s-queen-x');
   owner.ownerRows = [{ coord_owner_id: 's-overwatch-1' }]; // the inbox-owner SELECT resolves
   owner.readInbox.mockResolvedValue([
     { kind: 'message', from: 'mug', summary: 're: nudge — re-opened' },
@@ -894,7 +894,7 @@ test('computeOverwatchBrief — pre-folds the overwatch coord inbox, dropping am
 
 test('computeOverwatchBrief — no resolvable overwatch session ⇒ no inbox folded (fail-soft)', async () => {
   vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
-  owner.resolveQueenOwner.mockResolvedValue('s-queen-x');
+  owner.resolveMugOwner.mockResolvedValue('s-queen-x');
   owner.ownerRows = []; // no overwatch session row
   const b = await computeOverwatchBrief('ws', 'papercup-hive');
   assert.equal(b.inbox, undefined); // brief still coherent; inbox simply absent

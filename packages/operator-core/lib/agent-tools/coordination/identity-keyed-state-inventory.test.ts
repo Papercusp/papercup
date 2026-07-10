@@ -204,6 +204,15 @@ const ALLOWLIST: Record<string, Classification> = {
       'already ended (migration 539) — never read by a reaper keyed on a DIFFERENT session\'s presence, same ' +
       'class as session_turns.owner.',
   },
+  'event_awaits.scope_ref': {
+    status: 'exempt',
+    reason:
+      "EI-9270 (announced gate events): the DISCOVERY-scope slug (fleet/plan/harness) that gates who sees a " +
+      "policy='announce' row in events:catalog/coord:orient — NOT an ownerId/sid (contrast agent_facts.scope_ref, " +
+      "which IS one). scope_ref is only 'identity-shaped' by column-name pattern; its actual value is a " +
+      "fleet/plan/harness slug (or null for scopeKind='global'), never a current-holder claim a presence-tied " +
+      'reaper/reader keys on — no rebind needed.',
+  },
 };
 
 /** Column-name patterns that mean "this stores a CURRENT holder/owner

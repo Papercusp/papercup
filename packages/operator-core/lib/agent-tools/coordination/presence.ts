@@ -71,6 +71,14 @@ const store = new PgPresenceStore({
 // confirmLiveness UX hint (#2/#3) remain deliberately NOT touched here — they
 // are breaking/UX changes to a hot shared path that need their own dedicated
 // pass per the item's own staged-rollout note.
+//
+// `LOCAL_HOSTNAME` below is still legitimate: it is the OPERATOR's own
+// hostname, used only as the comparison target in `probeProcessLiveness` (the
+// psu launcher and the operator it beats are loopback-paired on the same
+// physical machine, so this correctly answers "is this recorded row's
+// process on THIS machine, i.e. probe-able" — a different use from the
+// removed per-agent write-default above).
+const LOCAL_HOSTNAME = hostname();
 
 /**
  * Upsert the caller's presence row — "set my presence to exactly this".
@@ -199,9 +207,52 @@ export async function setPresenceFleet(
 // per-worker map for cross-request hand-offs — write the durable fact.)
 
 /** Bump heartbeat_at ONLY — the keepalive path (the 60s supervisor beat). No-op
- *  if the row does not exist. NEVER bumps last_active_at (D-003). */
-export async function touchHeartbeat(ownerId: string): Promise<void> {
-  await store.touchHeartbeat(ownerId);
+ *  if the row does not exist. NEVER bumps last_active_at (D-003).
+ *
+ *  `liveness` (WI-3898 P1): the psu supervisor beat's self-reported
+ *  { pid, host } — see the file-header note. Omitted/undefined fields leave
+ *  the stored value UNTOUCHED (never clobbered to null). */
+export async function touchHeartbeat(
+  ownerId: string,
+  liveness?: { pid?: number | null; host?: string | null },
+): Promise<void> {
+  await store.touchHeartbeat(ownerId, liveness);
+}
+
+/**
+ * Local-only process-liveness probe (WI-3898 P1 remedy #1's third leg).
+ * `kill(pid, 0)` only means something on the SAME machine the caller is
+ * running on — a federated/remote row's pid lives in a different machine's
+ * pid namespace, and a coincidental pid match there would be actively
+ * misleading, not liveness. So this ONLY probes when `record.host` matches
+ * the CALLING process's own hostname; anything else (remote host, or no
+ * pid/host ever recorded — declare-intent-only rows) comes back `null`
+ * ("cannot be determined here"), never a guess.
+ *
+ * Returns:
+ *  - `true`  — kill(pid, 0) succeeded: the process exists and is ours to see.
+ *  - `false` — ESRCH: the process is confirmed gone.
+ *  - `null`  — inconclusive (remote/unknown host, no pid, or EPERM — a pid
+ *    reused by a different-UID process would also read EPERM, which must
+ *    NOT be reported as "dead").
+ *
+ * Deliberately NOT wired into SessionState/coord:presence reads here — that
+ * `suspect`/`draining` state-shape change is remedy #2, scoped out per the
+ * item's own staged-rollout note. This is the tested primitive #2 will call.
+ */
+export function probeProcessLiveness(record: {
+  host: string | null | undefined;
+  pid: number | null | undefined;
+}): boolean | null {
+  if (!record.pid || !record.host || record.host !== LOCAL_HOSTNAME) return null;
+  try {
+    process.kill(record.pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ESRCH') return false;
+    return null; // EPERM (pid reused by another user) or anything else: inconclusive
+  }
 }
 
 /** Bump last_active_at AND heartbeat_at — the ACTIVITY path (tool dispatch via

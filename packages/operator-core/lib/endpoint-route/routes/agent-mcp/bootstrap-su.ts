@@ -1423,7 +1423,7 @@ const post = defineTool({
 });
 
 /**
- * POST /api/agent-mcp/console/bootstrap-su/heartbeat  { ownerId }
+ * POST /api/agent-mcp/console/bootstrap-su/heartbeat  { ownerId, pid?, host? }
  *
  * The psu SUPERVISOR beat (agent-liveness-heartbeat-hardening-2026-06-12
  * P-003): the launcher process — which stays alive as the agent's parent —
@@ -1433,6 +1433,17 @@ const post = defineTool({
  *
  * touchHeartbeat is a no-op when no presence row exists (D-003 — the beat
  * never mints roster rows; declare-intent at session start does that).
+ *
+ * `pid`/`host` (WI-3898 P1, coord:presence liveness parity): optional —
+ * when the launcher includes its OWN pid/hostname, they're forwarded to
+ * touchHeartbeat's `liveness` param so a later same-machine reader can
+ * verify liveness via `probeProcessLiveness`'s local `kill(pid, 0)` check.
+ * This is the ONE call site that may legitimately report a real pid, since
+ * the launcher genuinely runs as the agent's own parent process (unlike
+ * writePresence's declare-intent path, which runs inside this shared
+ * operator server — see presence.ts's file-header note). Loosely validated
+ * (a positive integer pid, a short string host) and best-effort: a bad
+ * value is just omitted rather than failing the whole beat.
  *
  * Deliberately NO audit/adv-session write: high-frequency + zero
  * information. Trust: principal-gated like the sibling console routes;
@@ -1447,9 +1458,17 @@ const heartbeat = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     let ownerId = '';
+    let pid: number | undefined;
+    let host: string | undefined;
     try {
-      const body = (await req.json()) as { ownerId?: unknown };
+      const body = (await req.json()) as { ownerId?: unknown; pid?: unknown; host?: unknown };
       if (typeof body.ownerId === 'string') ownerId = body.ownerId.trim();
+      if (typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0) {
+        pid = body.pid;
+      }
+      if (typeof body.host === 'string' && body.host.trim() && body.host.length <= 255) {
+        host = body.host.trim();
+      }
     } catch {
       /* fall through to the 400 */
     }
@@ -1458,7 +1477,7 @@ const heartbeat = defineTool({
     }
     try {
       const { touchHeartbeat } = await import('../../../agent-tools/coordination/presence');
-      await touchHeartbeat(ownerId);
+      await touchHeartbeat(ownerId, pid != null || host != null ? { pid, host } : undefined);
       return jsonRes({ ok: true });
     } catch (err) {
       // Best-effort contract: the launcher treats any failure as a missed

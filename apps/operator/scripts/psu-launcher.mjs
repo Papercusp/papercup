@@ -22,7 +22,7 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
@@ -3186,6 +3186,15 @@ export function shouldSilenceClaudeTitle({
  * no-op when no presence row exists (D-003) — declare-intent at session
  * start mints the row, this only keeps it warm.
  *
+ * pid/host (WI-3898 P1, coord:presence liveness parity): this beat genuinely
+ * runs AS this session's own parent process — "the beat dies with this
+ * process" above is exactly the invariant a liveness probe needs — so it is
+ * the one call site that can honestly report its own `process.pid`/
+ * `hostname()`. The server stores them on the presence row (never defaults
+ * them itself — see presence.ts's file-header note) so a same-machine reader
+ * can later verify liveness via a local `kill(pid, 0)` probe instead of
+ * trusting heartbeat_at recency alone.
+ *
  * Exported with injectables for tests (scripts/__tests__).
  */
 export const SUPERVISOR_BEAT_MS = 60_000;
@@ -3204,7 +3213,7 @@ export function startSupervisorBeat(
           'content-type': 'application/json',
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
-        body: JSON.stringify({ ownerId }),
+        body: JSON.stringify({ ownerId, pid: process.pid, host: hostname() }),
       });
     } catch {
       /* missed beat — the next tick retries; never surface */

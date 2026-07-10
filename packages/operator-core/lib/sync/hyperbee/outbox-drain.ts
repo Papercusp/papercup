@@ -529,13 +529,31 @@ export async function drainOutboxOnce(
     // tables are a no-op inside the fan-out.
     if (opts.fanout) {
       try {
-        await logIfStageStalls(
-          scope,
-          `fanout (row id=${r.id} table=${r.table_name})`,
-          opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
+        // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
+        // (observability-only — logs at 15s but never times out), so a genuinely-hung
+        // fanout() blocked this row FOREVER, wedging the whole pass until the
+        // pass-level DRAIN_PASS_TIMEOUT_MS (120s) watchdog fired — and since the row
+        // is re-selected first on every retry (`ORDER BY id`), it repeats the SAME
+        // 120s pass-timeout every pass (the live incident: 17x on the same fanout
+        // row). Racing it against rowTimeoutMs, same as epoch-encrypt/append, lets a
+        // hung fan-out give up after ROW_STAGE_TIMEOUT_MS instead of forever — the
+        // existing catch below already treats any fan-out failure as best-effort/
+        // non-blocking (federation-safe: only this row's local subscribe→inject
+        // fan-out is skipped, never the append/drained_at path), so a timeout here
+        // needs no new quarantine bookkeeping — it just stops re-wedging the pass.
+        const fanoutStage = `fanout (row id=${r.id} table=${r.table_name})`;
+        await raceRowStage(
+          r.id,
+          fanoutStage,
+          logIfStageStalls(
+            scope,
+            fanoutStage,
+            opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
+          ),
+          rowTimeoutMs,
         );
       } catch (e) {
-         
+
         console.error(
           `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
           e instanceof Error ? e.message : String(e),

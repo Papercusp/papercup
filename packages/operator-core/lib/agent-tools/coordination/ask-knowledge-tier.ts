@@ -20,7 +20,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../search/sources';
-import { buildQueryEmbedder } from '../search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { getMemoryBackend, type MemoryBackend } from '../../memory/backend';
 import { activeWorkspaceId } from '../../workspace-registry';
 
@@ -75,7 +75,11 @@ export async function runKnowledgeTier(
 
   // 1. search:semantic (hybrid) over the indexed prose surfaces.
   try {
-    const embedder = await buildQueryEmbedder();
+    // WI-3929 (same class as EI-9312): bound both the embedder ACQUISITION
+    // (previously fully unbounded here — worse than the other 3 call sites
+    // this WI fixes, which at least bounded acquisition via WI-3922) and the
+    // ACTUAL per-query embed call inside runHybridSearch.
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
     const { results, embedderAvailable: ea } = await runHybridSearch(SEARCH_SOURCES, {
       sql,
       query: input.query,
@@ -84,6 +88,7 @@ export async function runKnowledgeTier(
       limit,
       mode: 'hybrid',
       embedder,
+      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
     embedderAvailable = ea;
     searched.push('search:semantic');

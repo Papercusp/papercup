@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseArgs,
@@ -99,6 +99,7 @@ import {
   AGENT_LABELS,
   whichBin,
   wellKnownBackendBin,
+  startSupervisorBeat,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -2636,6 +2637,49 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     await expect(
       reportSessionEnded(17, 1, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/host)', () => {
+  it('the immediate first beat POSTs { ownerId, pid: process.pid, host: hostname() }', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    const fakeTimer = { unref: () => {} };
+    startSupervisorBeat('su-abc', {
+      fetchImpl,
+      operatorUrl: 'http://op:1',
+      token: 't',
+      setIntervalImpl: () => fakeTimer,
+    });
+    // startSupervisorBeat fires an immediate `void beat()` (fire-and-forget)
+    // before returning — flush a microtask so it lands before we assert.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/heartbeat');
+    const body = JSON.parse(calls[0].opts.body);
+    expect(body).toEqual({ ownerId: 'su-abc', pid: process.pid, host: hostname() });
+  });
+
+  it('returns null and never beats when ownerId is falsy', () => {
+    const calls = [];
+    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
+    const timer = startSupervisorBeat('', { fetchImpl, setIntervalImpl: () => ({ unref: () => {} }) });
+    expect(timer).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('schedules the recurring beat on the injected interval (same pid/host body each tick)', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    let tickFn;
+    const setIntervalImpl = (fn) => { tickFn = fn; return { unref: () => {} }; };
+    startSupervisorBeat('su-abc', { fetchImpl, operatorUrl: 'http://op:1', token: 't', setIntervalImpl });
+    await new Promise((r) => setTimeout(r, 0)); // the immediate beat
+    expect(calls).toHaveLength(1);
+    tickFn(); // simulate one interval tick
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[1].opts.body)).toEqual(JSON.parse(calls[0].opts.body));
   });
 });
 

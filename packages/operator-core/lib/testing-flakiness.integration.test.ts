@@ -106,3 +106,83 @@ describe('computeFlakiness workspace scoping (regression)', () => {
     expect(byFile.has('c-other-ws.test.ts')).toBe(false);
   });
 });
+
+describe('computeFlakiness harness scoping (regression, WI-3925)', () => {
+  let hdb: FreshPgDb;
+
+  beforeAll(async () => {
+    hdb = await createFreshPgDb('flakytest-harness');
+
+    await hdb.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.test_runs (
+        id bigint generated always as identity primary key,
+        file_path text NOT NULL,
+        framework text,
+        status text NOT NULL,
+        duration_ms bigint,
+        started_at timestamptz,
+        finished_at timestamptz,
+        output_tail text,
+        run_group_id text,
+        source text,
+        branch text,
+        commit_sha text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        harness_slug text,
+        workspace_id text
+      )
+    `);
+
+    const rowsToInsert: Array<{ filePath: string; status: string; harnessSlug: string | null }> = [
+      // Real-world common case: a "plain operator self-test run" — harness_slug NULL.
+      { filePath: 'a-null-harness.test.ts', status: 'pass', harnessSlug: null },
+      { filePath: 'a-null-harness.test.ts', status: 'fail', harnessSlug: null },
+      { filePath: 'a-null-harness.test.ts', status: 'pass', harnessSlug: null },
+      { filePath: 'a-null-harness.test.ts', status: 'fail', harnessSlug: null },
+      // Explicitly tagged as THIS harness.
+      { filePath: 'b-this-harness.test.ts', status: 'pass', harnessSlug: 'papercusp' },
+      { filePath: 'b-this-harness.test.ts', status: 'fail', harnessSlug: 'papercusp' },
+      { filePath: 'b-this-harness.test.ts', status: 'pass', harnessSlug: 'papercusp' },
+      { filePath: 'b-this-harness.test.ts', status: 'fail', harnessSlug: 'papercusp' },
+      // Explicitly tagged as ANOTHER harness — must stay excluded.
+      { filePath: 'c-other-harness.test.ts', status: 'pass', harnessSlug: 'some-other-harness' },
+      { filePath: 'c-other-harness.test.ts', status: 'fail', harnessSlug: 'some-other-harness' },
+      { filePath: 'c-other-harness.test.ts', status: 'pass', harnessSlug: 'some-other-harness' },
+      { filePath: 'c-other-harness.test.ts', status: 'fail', harnessSlug: 'some-other-harness' },
+    ];
+
+    const now = Date.now();
+    for (let i = 0; i < rowsToInsert.length; i++) {
+      const r = rowsToInsert[i];
+      const finishedAt = new Date(now - (rowsToInsert.length - i) * 60_000);
+      await hdb.sql`
+        INSERT INTO harness_shared.test_runs
+          (file_path, framework, status, duration_ms, started_at, finished_at, harness_slug)
+        VALUES
+          (${r.filePath}, 'vitest', ${r.status}, 100, ${finishedAt}, ${finishedAt}, ${r.harnessSlug})
+      `;
+    }
+  });
+
+  afterAll(async () => {
+    await hdb.cleanup();
+  });
+
+  it("includes NULL-harness_slug rows alongside this harness's own rows, excludes another harness's rows", async () => {
+    const rows = await computeFlakiness({
+      harnessSlug: 'papercusp',
+      minRuns: 2,
+      lookbackDays: 90,
+      sql: hdb.sql as unknown as Parameters<typeof computeFlakiness>[0] extends { sql?: infer S } ? S : never,
+    });
+    const byFile = new Map(rows.map((r) => [r.filePath, r]));
+
+    expect(byFile.has('a-null-harness.test.ts')).toBe(true);
+    expect(byFile.get('a-null-harness.test.ts')?.totalRuns).toBe(4);
+
+    expect(byFile.has('b-this-harness.test.ts')).toBe(true);
+    expect(byFile.get('b-this-harness.test.ts')?.totalRuns).toBe(4);
+
+    expect(byFile.has('c-other-harness.test.ts')).toBe(false);
+  });
+});

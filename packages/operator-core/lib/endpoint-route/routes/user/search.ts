@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch, runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../../../agent-tools/search/sources';
-import { buildQueryEmbedder } from '../../../agent-tools/search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../../../agent-tools/search/embedder';
 import { rerankProseHits } from '../../../agent-tools/search/rerank';
 
 interface ProseHit {
@@ -62,8 +62,18 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
   };
   let results: SearchHit[];
   if (mode === 'hybrid') {
-    const embedder = await buildQueryEmbedder();
-    ({ results } = await runHybridSearch(SEARCH_SOURCES, { ...ctx, mode: 'hybrid', embedder }));
+    // Interactive user-facing search — bound the embedder acquisition so a cold
+    // local pipeline (OpenAI embed exhausted) degrades to BM25 instead of hanging
+    // the request (WI-3922, same class as WI-3860).
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+    // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed call
+    // too, not just the acquisition above.
+    ({ results } = await runHybridSearch(SEARCH_SOURCES, {
+      ...ctx,
+      mode: 'hybrid',
+      embedder,
+      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
+    }));
   } else {
     ({ results } = await runFullTextSearch(SEARCH_SOURCES, ctx));
   }

@@ -163,6 +163,35 @@ export function describePresenceConformance(
       expect(ms(after!.heartbeatAt)).toBeGreaterThanOrEqual(ms(before!.heartbeatAt));
     });
 
+    it('touchHeartbeat liveness (WI-3898 P1): sets pid/host only when reported, never clobbers an omitted field', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'live');
+      await store.write(id, { intent: 'keep' });
+
+      // First beat reports both.
+      await store.touchHeartbeat(id.ownerId, { pid: 4242, host: 'box-a' });
+      let rec = await store.get(id.ownerId);
+      expect(rec!.pid).toBe(4242);
+      expect(rec!.host).toBe('box-a');
+
+      // A later beat that reports NEITHER must leave both untouched (never
+      // clobbered to null/'').
+      await store.touchHeartbeat(id.ownerId);
+      rec = await store.get(id.ownerId);
+      expect(rec!.pid).toBe(4242);
+      expect(rec!.host).toBe('box-a');
+
+      // Reporting only one field updates just that one.
+      await store.touchHeartbeat(id.ownerId, { pid: 5555 });
+      rec = await store.get(id.ownerId);
+      expect(rec!.pid).toBe(5555);
+      expect(rec!.host).toBe('box-a'); // untouched
+
+      // A missing owner with liveness passed must still no-op, not throw.
+      await store.touchHeartbeat(`${runPrefix}-nobody-live`, { pid: 1, host: 'x' });
+    });
+
     it('heartbeat creates a row if absent (empty intent) and never clobbers a declared intent', async () => {
       if (skip) return;
       const store = makeStore();

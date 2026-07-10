@@ -23,9 +23,12 @@ vi.mock('../../workspace-registry', () => ({
   resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
     c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'default',
 }));
-vi.mock('../../pot-identity', () => ({ isCanonicalPotOwner: h.isCanonicalPotOwner }));
+// hive-identity.ts / hive-membership-admission.ts are OUT OF SCOPE for the
+// cup-lexicon rename (persisted-store modules) — mock the REAL module paths +
+// export names.
+vi.mock('../../hive-identity', () => ({ isCanonicalHiveOwner: h.isCanonicalPotOwner }));
 vi.mock('../../identity/resolve-local-github-identity', () => ({ resolveLocalGithubIdentity: h.resolveIdentity }));
-vi.mock('../../pot-membership-admission', () => ({ approvePendingJoin: h.approve, denyPendingJoin: h.deny }));
+vi.mock('../../hive-membership-admission', () => ({ approvePendingJoin: h.approve, denyPendingJoin: h.deny }));
 
 import tool from './membership_decide';
 

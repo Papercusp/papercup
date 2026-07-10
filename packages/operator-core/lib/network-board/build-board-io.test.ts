@@ -26,7 +26,7 @@ const FOREIGN = {
 
 function mockSources(directed: { in: unknown[]; out: unknown[] }) {
   vi.doMock('../agent-tools/pot/_resolve', () => ({
-    listHives: vi.fn(async () => []),
+    listPots: vi.fn(async () => []),
     liveAgentCountByHarness: vi.fn(() => new Map()),
   }));
   vi.doMock('../fleet/assignments', () => ({ listFleetAssignments: vi.fn(async () => []) }));
@@ -98,7 +98,7 @@ function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
   // Two foreign peers so per-peer aggregation (not a global tally) is observable.
   const foreign = (pubkey: string) => ({ ...FOREIGN, potId: `hid-${pubkey}`, hivePubkey: pubkey });
   vi.doMock('../agent-tools/pot/_resolve', () => ({
-    listHives: vi.fn(async () => []),
+    listPots: vi.fn(async () => []),
     liveAgentCountByHarness: vi.fn(() => new Map()),
   }));
   vi.doMock('../fleet/assignments', () => ({ listFleetAssignments: vi.fn(async () => []) }));

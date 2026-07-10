@@ -27,7 +27,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
 vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn() }));
 
-import { buildQueryEmbedder } from './embedder';
+import { buildQueryEmbedder, withAcquireBudget } from './embedder';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs } from '../../voice-prefs';
 
@@ -186,5 +186,30 @@ describe('buildQueryEmbedder — local / null fallback', () => {
     expect(await embedder!('x')).toEqual([3]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-env');
+  });
+});
+
+describe('withAcquireBudget — bounds the query-embedder acquisition (WI-3922)', () => {
+  // The acquisition itself resolves fast in this test env (the local transformers
+  // import is unavailable → null immediately), so the race logic that guards a
+  // slow cold-pipeline acquisition is exercised directly against a controllable
+  // slow promise here.
+  const slow = <T>(v: T, ms: number): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
+  const sentinel = { tag: 'embedder' as const };
+
+  it('returns the acquisition value when it settles within budget', async () => {
+    await expect(withAcquireBudget(slow(sentinel, 10), 200)).resolves.toBe(sentinel);
+  });
+
+  it('returns null when the acquisition exceeds the budget (cold pipeline → BM25 degrade)', async () => {
+    await expect(withAcquireBudget(slow(sentinel, 200), 20)).resolves.toBeNull();
+  });
+
+  it('budget ≤ 0 ⇒ unbounded — awaits the acquisition however slow (background/batch callers)', async () => {
+    await expect(withAcquireBudget(slow(sentinel, 30), 0)).resolves.toBe(sentinel);
+  });
+
+  it('a rejected acquisition within budget degrades to null, never throws', async () => {
+    await expect(withAcquireBudget(Promise.reject(new Error('cold pipeline boom')), 200)).resolves.toBeNull();
   });
 });

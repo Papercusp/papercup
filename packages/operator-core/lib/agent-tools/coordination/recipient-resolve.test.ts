@@ -8,6 +8,7 @@ import {
   resolveRecipientsAgainst,
   resolveRecipients,
   resolveBestEffortAgainstRoster,
+  resetKnownOwnerIdsCache,
 } from './recipient-resolve';
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
@@ -132,6 +133,7 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
 // ── Host wrappers (depth pass, su-7f3e0376) — the fail-open / fail-soft semantics ──
 describe('resolveRecipients (host wrapper — fail-open against the live roster)', () => {
   beforeEach(() => {
+    resetKnownOwnerIdsCache();
     mockedList.mockReset();
     mockedRecorded.mockReset();
     mockedRecorded.mockResolvedValue([]);
@@ -165,6 +167,7 @@ describe('resolveRecipients (host wrapper — fail-open against the live roster)
 
 describe('H1 (audit D-013) — remote session presence never shadows a LOCAL identity', () => {
   beforeEach(() => {
+    resetKnownOwnerIdsCache();
     mockedList.mockReset();
     mockedRecorded.mockReset();
     mockedRemote.mockReset();
@@ -195,6 +198,7 @@ describe('H1 (audit D-013) — remote session presence never shadows a LOCAL ide
 
 describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circuit + fail-soft)', () => {
   beforeEach(() => {
+    resetKnownOwnerIdsCache();
     mockedList.mockReset();
     mockedRecorded.mockReset();
     mockedRecorded.mockResolvedValue([]);
@@ -219,5 +223,68 @@ describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circu
     expect(await resolveBestEffortAgainstRoster(['s-1782352639138'])).toEqual([
       's-1782352639138-43ed80c0',
     ]);
+  });
+});
+
+// EI-9299: a short in-process TTL memo on the roster read collapses a burst of
+// near-simultaneous coord writes (each resolving recipients) into ONE shared
+// fetch instead of one per call — the fix for the measured "coord write path
+// slow, DB baseline fine" probe-canary breach (3 parallel roster reads fired
+// on every send/ack with a concrete recipient).
+describe('readKnownOwnerIds roster memoization (EI-9299)', () => {
+  beforeEach(() => {
+    resetKnownOwnerIdsCache();
+    mockedList.mockReset();
+    mockedRecorded.mockReset();
+    mockedRecorded.mockResolvedValue([]);
+  });
+
+  it('shares ONE underlying roster fetch across concurrent/rapid calls within the TTL window', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    await Promise.all([
+      resolveBestEffortAgainstRoster(['su-df00939e']),
+      resolveBestEffortAgainstRoster(['su-fc2fd592']),
+      resolveBestEffortAgainstRoster(['su-df00939e']),
+    ]);
+    expect(mockedList).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT cross-contaminate different workspaces (separate cache key per workspaceId)', async () => {
+    mockedList.mockResolvedValueOnce(roster(['su-ws1-only']));
+    mockedList.mockResolvedValueOnce(roster(['su-ws2-only']));
+    const [a, b] = await Promise.all([
+      resolveBestEffortAgainstRoster(['su-ws1-o'], 'ws-1'),
+      resolveBestEffortAgainstRoster(['su-ws2-o'], 'ws-2'),
+    ]);
+    expect(a).toEqual(['su-ws1-only']);
+    expect(b).toEqual(['su-ws2-only']);
+    expect(mockedList).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-fetches after resetKnownOwnerIdsCache (a fresh mock takes effect immediately, no stale carry-over)', async () => {
+    mockedList.mockResolvedValueOnce(roster(['su-old-agent12']));
+    await resolveBestEffortAgainstRoster(['su-old-age']);
+    resetKnownOwnerIdsCache();
+    mockedList.mockResolvedValueOnce(roster(['su-new-agent12']));
+    const out = await resolveBestEffortAgainstRoster(['su-new-age']);
+    expect(out).toEqual(['su-new-agent12']);
+    expect(mockedList).toHaveBeenCalledTimes(2);
+  });
+
+  it('a degraded roster (one source failing) resolves fail-soft and is memoized like any other result within the TTL window', async () => {
+    // readKnownOwnerIds aggregates via Promise.allSettled — one leg rejecting
+    // never rejects the aggregate; it just contributes no ids from that leg.
+    // So this is NOT a "poisoned cache" scenario to guard against; it's the
+    // existing fail-soft behavior, now also memoized for the TTL window like
+    // any successful fetch (a fresh call still gets it via resetKnownOwnerIdsCache
+    // — see the preceding test).
+    mockedList.mockRejectedValueOnce(new Error('transient PG error'));
+    mockedRecorded.mockResolvedValue([]);
+    const first = await resolveBestEffortAgainstRoster(['su-df00939e']);
+    expect(first).toEqual(['su-df00939e']);
+    const second = await resolveBestEffortAgainstRoster(['su-df00939e']);
+    expect(second).toEqual(['su-df00939e']);
+    // Both calls served from the ONE memoized fetch — no re-fetch within the TTL window.
+    expect(mockedList).toHaveBeenCalledTimes(1);
   });
 });

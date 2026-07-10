@@ -46,6 +46,7 @@ import {
 } from './offer-budget';
 import { emitP2pReceipt } from './receipts';
 import { resolveP2pGrantWorkspace } from './grant-store';
+import { enforceForeignWorkspaceQuota } from './sandbox/quota-volume';
 
 /** States the sweep supervises. 'winding-down' is already decided (grace is
  *  P-105's kill tier); 'parked'/'reaped' are terminal. */
@@ -296,6 +297,50 @@ export async function superviseForeignSessions(
     });
     if (res.receiptEmitted) receiptsEmitted += 1;
     else receiptFailures += 1;
+  }
+
+  // P-105 §1: periodic quota enforcement sweep.
+  // Poll quota on 'active' foreign workspaces; wind down those that exceed.
+  // Default quota cap: 10GB per foreign workspace.
+  const quotaCapBytes = 10 * 1024 * 1024 * 1024; // 10GB default
+  const activeWorkspaces = all.filter((w) => w.state === 'active');
+  for (const w of activeWorkspaces) {
+    try {
+      const quota = await enforceForeignWorkspaceQuota(w.rootPath, quotaCapBytes);
+      if (quota.decision.exceeded) {
+        const decision = decideWindDown('quota_exceeded', {
+          detail: `foreign workspace exceeds quota (used ${quota.usedBytes} bytes > cap ${quota.capBytes} bytes)`,
+        });
+        const res = await windDownForeignSession(
+          {
+            workspaceId: ws,
+            potSlug: hive,
+            responderGithubUserId: args.responderGithubUserId,
+            responderDevicePubkey: args.responderDevicePubkey,
+            offerId: w.offerId,
+            fleetSlug: w.fleetSlug,
+            originGithubUserId: w.originGithubUserId,
+            decision,
+            actor: 'p2p:foreign-supervision-quota-sweep',
+          },
+          deps,
+          sqlOverride,
+        );
+        if (res.ok && res.transitioned) {
+          woundDown.push({
+            offerId: w.offerId,
+            fleetSlug: w.fleetSlug,
+            cause: decision.cause,
+            receiptKind: decision.receiptKind,
+          });
+          if (res.receiptEmitted) receiptsEmitted += 1;
+          else receiptFailures += 1;
+        }
+      }
+    } catch (e) {
+      // Log but don't abort sweep — quota enforcement is defensive, not fatal
+      console.warn(`quota sweep error for offer ${w.offerId}:`, e);
+    }
   }
 
   return { ok: true, swept: candidates.length, woundDown, receiptsEmitted, receiptFailures };

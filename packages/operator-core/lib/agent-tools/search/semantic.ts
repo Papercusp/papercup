@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
-import { buildQueryEmbedder } from './embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from './embedder';
 import { rerankProseHits } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -89,7 +89,12 @@ export default defineTool({
       { workspaceId: ctx.workspaceId ?? '' },
     );
 
-    const embedder = await buildQueryEmbedder();
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+    // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed call
+    // inside runHybridSearch, not just the embedder ACQUISITION above — a
+    // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI
+    // fetch which has no client-side timeout) could otherwise run unbounded
+    // and blow this tool's own budget. Reuses the same interactive default.
     const { results, totalHits, embedderAvailable } = await runHybridSearch(sources, {
       sql: ctx.tx,
       query: args.query,
@@ -98,6 +103,7 @@ export default defineTool({
       limit,
       mode,
       embedder,
+      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
       filters,
       log: ctx.log,
     });

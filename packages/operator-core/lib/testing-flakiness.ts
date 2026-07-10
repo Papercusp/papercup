@@ -86,6 +86,16 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
   // for workspace-wide" promise. A NULL workspace_id row can't leak another
   // tenant's data (it belongs to no tenant), so it's always safe to include
   // alongside this workspace's own explicitly-tagged rows.
+  //
+  // WI-3925: the SAME bug existed for harness_slug and was never fixed
+  // alongside workspace_id above — a strict `harness_slug = opts.harnessSlug`
+  // filter excludes ~100% of real rows (confirmed live: every test_runs row
+  // in the last 14 days has harness_slug IS NULL), so ANY harness-scoped call
+  // — including the `testing:flakiness` MCP tool's own default fallback to
+  // `ctx.harnessSlug` when the caller omits `harness` — silently saw zero
+  // rows. Same fix, same reasoning: a NULL harness_slug row belongs to no
+  // harness, so it can't leak another harness's data and is always safe to
+  // include alongside this harness's own explicitly-tagged rows.
   const rows = (await sql`
     SELECT file_path, status, finished_at
       FROM harness_shared.test_runs
@@ -93,7 +103,7 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
        AND finished_at > now() - make_interval(days => ${lookbackDays})
        AND status IN ('pass', 'fail', 'error')
        AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
-       AND ${opts.harnessSlug ? sql`harness_slug = ${opts.harnessSlug}` : sql`TRUE`}
+       AND ${opts.harnessSlug ? sql`(harness_slug = ${opts.harnessSlug} OR harness_slug IS NULL)` : sql`TRUE`}
        AND ${!opts.harnessSlug && opts.workspaceId ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id IS NULL)` : sql`TRUE`}
      ORDER BY file_path ASC, finished_at ASC
   `) as unknown as Array<{ file_path: string; status: string; finished_at: string }>;

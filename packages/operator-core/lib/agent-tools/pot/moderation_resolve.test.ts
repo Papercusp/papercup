@@ -12,8 +12,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ isCanonicalPotOwner: vi.fn(), setReportStatus: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../pot-identity', () => ({ isCanonicalPotOwner: h.isCanonicalPotOwner }));
-vi.mock('../../pot-reports-store', () => ({ setReportStatus: h.setReportStatus }));
+// hive-identity.ts / hive-reports-store.ts are OUT OF SCOPE for the cup-lexicon
+// rename (persisted-store modules) — mock the REAL module paths + export names.
+vi.mock('../../hive-identity', () => ({ isCanonicalHiveOwner: h.isCanonicalPotOwner }));
+vi.mock('../../hive-reports-store', () => ({ setReportStatus: h.setReportStatus }));
 
 import tool from './moderation_resolve';
 

@@ -12,8 +12,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('../../cross-pot-grants', () => ({
-  loadDirectedCrossPotGrants: vi.fn(async () => [{ peer: 'pk1', kinds: ['ask'] }]),
+// cross-hive-grants.ts is OUT OF SCOPE for the cup-lexicon rename (persisted-store
+// module) — mock the REAL module path + real export names.
+vi.mock('../../cross-hive-grants', () => ({
+  loadDirectedCrossHiveGrants: vi.fn(async () => [{ peer: 'pk1', kinds: ['ask'] }]),
   setCrossHiveGrant: vi.fn(),
   revokeCrossHiveGrant: vi.fn(),
 }));

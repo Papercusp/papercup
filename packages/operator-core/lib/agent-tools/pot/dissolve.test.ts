@@ -78,8 +78,10 @@ beforeEach(() => {
   // G24 (shared-hive-public-release-2026-06-22): dissolve's membership-teardown leg
   // deletes the pot's hive_members rows (federated). PG-free here — the real fn's
   // federation is proven by lifecycle-membership-teardown.integration.test.ts.
-  vi.doMock('../../pot-membership-store', () => ({
-    removeAllPotMembers: async (_ws: string, slug: string) => {
+  // hive-membership-store.ts is OUT OF SCOPE for the cup-lexicon rename — mock
+  // the REAL module path + export name.
+  vi.doMock('../../hive-membership-store', () => ({
+    removeAllHiveMembers: async (_ws: string, slug: string) => {
       membershipDropCalls.push(slug);
       return 2;
     },
@@ -109,7 +111,7 @@ afterEach(() => {
     '../../pot/wake',
     '../../scaffold-harness-schema',
     '../../harness-membership',
-    '../../pot-membership-store',
+    '../../hive-membership-store',
     '../../pot/provision-learning-loop',
     '../../fleet/operator-spawn',
     '@papercusp/db-org',

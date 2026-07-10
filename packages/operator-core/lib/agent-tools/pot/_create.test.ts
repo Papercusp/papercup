@@ -115,14 +115,16 @@ beforeEach(() => {
   }));
   // The first-class Pot identity mint (PG + keychain) is mocked — this test is
   // PG-free; the keypair->store->topic seam is covered by its own integration test.
-  vi.doMock('../../pot-identity', () => ({
-    ensurePotIdentity: async (ws: string, slug: string) => {
+  // hive-identity.ts / hive-store.ts are OUT OF SCOPE for the cup-lexicon rename
+  // (persisted-store modules) — mock the REAL module paths + export names.
+  vi.doMock('../../hive-identity', () => ({
+    ensureHiveIdentity: async (ws: string, slug: string) => {
       ensureCalls.push([ws, slug]);
       return { record: {}, created: true };
     },
   }));
   vi.doMock('../../hive-store', () => ({
-    deletePot: async (ws: string, slug: string) => {
+    deleteHive: async (ws: string, slug: string) => {
       deletePotCalls.push([ws, slug]);
       return true;
     },
@@ -169,12 +171,14 @@ beforeEach(() => {
   // this the real setMugHomePubkey → setPotSetting → getPotBySlug hits the
   // pot-store mock above (which omits getPotBySlug) and console.warns, which
   // vitest-fail-on-console treats as a failure.
+  // hive-settings-store.ts is OUT OF SCOPE — mock the REAL export names
+  // (setQueenHomePubkey / deleteHiveSetting / QUEEN_HOME_PUBKEY_SETTING_KEY).
   vi.doMock('../../hive-settings-store', () => ({
-    setMugHomePubkey: async (ws: string, slug: string, pk: string) => {
+    setQueenHomePubkey: async (ws: string, slug: string, pk: string) => {
       mugHomeCalls.push({ workspaceId: ws, potSlug: slug, devicePubkey: pk });
     },
-    deletePotSetting: async () => true,
-    MUG_HOME_PUBKEY_SETTING_KEY: 'mug-home-pubkey',
+    deleteHiveSetting: async () => true,
+    QUEEN_HOME_PUBKEY_SETTING_KEY: 'mug-home-pubkey',
   }));
   // P-021: a deterministic self identity so the mug-home record step fires (the
   // real resolveUsageActor reads the OS keychain/gh and is env-dependent).
@@ -191,8 +195,9 @@ beforeEach(() => {
   vi.doMock('../../identity/resolve-local-github-identity', () => ({
     resolveLocalGithubIdentity: async () => ({ kind: 'ok', token: 't', githubUserId: 1, githubLogin: 'owner-login' }),
   }));
-  vi.doMock('../../pot-membership-store', () => ({
-    upsertPotMember: async (input: unknown) => {
+  // hive-membership-store.ts is OUT OF SCOPE — mock the REAL export name.
+  vi.doMock('../../hive-membership-store', () => ({
+    upsertHiveMember: async (input: unknown) => {
       upsertPotMemberCalls.push(input as never);
       return {};
     },
@@ -204,7 +209,7 @@ afterEach(() => {
   vi.doUnmock('../../scaffold-harness-schema');
   vi.doUnmock('../../blueprint/materialize-triggers');
   vi.doUnmock('../blueprint/_resolve');
-  vi.doUnmock('../../pot-identity');
+  vi.doUnmock('../../hive-identity');
   vi.doUnmock('../../hive-store');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../learning-packs/load-packs');
@@ -216,7 +221,7 @@ afterEach(() => {
   vi.doUnmock('../../harness/git-sync/git-sync-routine');
   vi.doUnmock('../../harness/routines/seed-hive-release-routines');
   vi.doUnmock('../../identity/resolve-local-github-identity');
-  vi.doUnmock('../../pot-membership-store');
+  vi.doUnmock('../../hive-membership-store');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {

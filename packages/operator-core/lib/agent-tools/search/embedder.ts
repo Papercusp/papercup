@@ -92,9 +92,52 @@ export interface ResolvedQueryEmbedder {
   embed: Embedder;
 }
 
-export async function buildQueryEmbedderResolved(): Promise<ResolvedQueryEmbedder | null> {
+/** Opt-in bound on the query-embedder ACQUISITION (the resolveEmbedderWith
+ *  cascade: OpenAI-key resolve, or — when OpenAI embed quota is exhausted — the
+ *  local sidecar spawn + ONNX pipeline cold-start that runs 15–30s the first
+ *  time). `acquireBudgetMs` caps that wait: on timeout the acquisition resolves
+ *  `null`, which is the SAME "no embedder → degrade to BM25" signal every caller
+ *  already handles, so bounding it is backward-compatible (0/undefined ⇒ today's
+ *  unbounded wait — background/batch callers keep it). This is the shared, central
+ *  form of the bound WI-3860 first applied inline in
+ *  endpoint-route/routes/adv/sessions.ts; see WI-3922. */
+export interface QueryEmbedderAcquireOpts {
+  acquireBudgetMs?: number;
+}
+
+/** Interactive default acquisition budget (ms) — env-overridable via
+ *  PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS; ≤0 disables the bound. */
+export function interactiveEmbedAcquireBudgetMs(): number {
+  const v = Number(process.env.PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS);
+  return Number.isFinite(v) && v > 0 ? v : 4000;
+}
+
+/** Race an acquisition against a time budget → resolve `null` on timeout. The
+ *  losing acquisition is NOT cancelled (no cancel seam on the cascade); it runs
+ *  on to warm the process-memoized pipeline for a later query, and its late
+ *  settle is swallowed so it never surfaces as an unhandled rejection.
+ *  Exported for unit test (embedder.test.ts) — internal otherwise. */
+export async function withAcquireBudget<T>(p: Promise<T | null>, budgetMs: number): Promise<T | null> {
+  if (!(budgetMs > 0)) return await p;
+  return await new Promise<T | null>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (v: T | null): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(v);
+    };
+    timer = setTimeout(() => finish(null), budgetMs);
+    p.then((v) => finish(v), () => finish(null));
+  });
+}
+
+export async function buildQueryEmbedderResolved(
+  opts?: QueryEmbedderAcquireOpts,
+): Promise<ResolvedQueryEmbedder | null> {
   try {
-    const resolved = await resolveEmbedderWith({
+    const acquire = resolveEmbedderWith({
       readPreference: readEmbedderPreference,
       resolveKey: resolveOpenAiKey,
       localInstalled: localAvailable,
@@ -112,7 +155,8 @@ export async function buildQueryEmbedderResolved(): Promise<ResolvedQueryEmbedde
       // must check `dims` before ranking against it.
       buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query'),
     });
-    if (resolved.mode === 'disabled') return null;
+    const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
+    if (resolved === null || resolved.mode === 'disabled') return null;
     return { mode: resolved.mode, dims: resolved.dims, embed: resolved.embed };
   } catch {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
@@ -121,7 +165,7 @@ export async function buildQueryEmbedderResolved(): Promise<ResolvedQueryEmbedde
   }
 }
 
-export async function buildQueryEmbedder(): Promise<Embedder | null> {
-  const resolved = await buildQueryEmbedderResolved();
+export async function buildQueryEmbedder(opts?: QueryEmbedderAcquireOpts): Promise<Embedder | null> {
+  const resolved = await buildQueryEmbedderResolved(opts);
   return resolved ? resolved.embed : null;
 }

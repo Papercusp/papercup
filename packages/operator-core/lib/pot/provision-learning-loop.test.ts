@@ -49,7 +49,7 @@ beforeEach(() => {
 
 describe('potScoutRoutineId', () => {
   it('sanitizes the install_slug into a routines id', () => {
-    expect(potScoutRoutineId('My-Pot.1')).toBe('rt_my_hive_1_scout_cycle');
+    expect(potScoutRoutineId('My-Pot.1')).toBe('rt_my_pot_1_scout_cycle');
   });
 });
 

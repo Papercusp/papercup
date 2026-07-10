@@ -32,6 +32,7 @@ import {
   setForeignWorkspaceState,
 } from './foreign-workspaces';
 import { registerEphemeralForeignHarness, type ProjectEntry } from '../harness-registry';
+import { enforceForeignWorkspaceQuota } from './sandbox/quota-volume';
 
 export interface ProvisionInput {
   /** The host repo to clone FROM (the canonical tree or a bare mirror). */
@@ -71,7 +72,7 @@ export type ProvisionResult =
   | {
       ok: false;
       refusal: {
-        code: 'invariant' | 'conflict' | 'clone-failed' | 'odb-not-private' | 'harness-register-failed';
+        code: 'invariant' | 'conflict' | 'clone-failed' | 'odb-not-private' | 'harness-register-failed' | 'quota-exceeded';
         detail: string;
       };
     };
@@ -154,6 +155,19 @@ export async function provisionForeignClone(input: ProvisionInput): Promise<Prov
     const detail = `offer ${input.offerId}: ephemeral harness_registry registration failed: ${e instanceof Error ? e.message : String(e)}`;
     await park(input.offerId, detail);
     return { ok: false, refusal: { code: 'harness-register-failed', detail } };
+  }
+
+  // P-105 §1: enforce disk quota on the provisioned foreign workspace.
+  // Must happen after clone succeeds but before returning success.
+  // This is a pure walk — no privilege needed.
+  // Default quota cap: 10GB per foreign workspace.
+  const quotaCapBytes = 10 * 1024 * 1024 * 1024; // 10GB default
+  const quotaResult = await enforceForeignWorkspaceQuota(input.rootPath, quotaCapBytes);
+  if (quotaResult.decision.exceeded) {
+    const detail = `offer ${input.offerId}: foreign workspace already exceeds quota at provision ` +
+      `(used ${quotaResult.usedBytes} bytes > cap ${quotaResult.capBytes} bytes)`;
+    await park(input.offerId, detail);
+    return { ok: false, refusal: { code: 'quota-exceeded', detail } };
   }
 
   // Leg iii range anchor (mig 470): record the canonical sha this clone

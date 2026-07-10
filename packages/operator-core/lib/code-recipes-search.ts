@@ -28,6 +28,20 @@
 import type postgres from 'postgres';
 import { runHybridSearch, type SearchSource, type SearchSourceParams, type Listing } from '@papercusp/search';
 
+/**
+ * EI-9312: bound the ACTUAL per-query embed call, not just the embedder's
+ * ACQUISITION. `recipes:search` already bounds resolving WHICH embedder to
+ * use (buildQueryEmbedder's acquireBudgetMs, WI-3922) but historically never
+ * passed `embedTimeoutMs` to runHybridSearch — so once an embedder was
+ * resolved (e.g. a warm local pipeline, or the OpenAI fetch with no client-side
+ * timeout), the actual `embedder(query)` invocation ran fully UNBOUNDED inside
+ * runHybridSearch, and a slow/hung embed call could still blow the tool's 60s
+ * budget (the watchdog-tracked ~4% recipes:search timeout class). Mirrors the
+ * acquire budget's default (4s) — plenty for a warm embedder, small next to
+ * the 60s tool timeout.
+ */
+const RECIPE_EMBED_CALL_TIMEOUT_MS = 4000;
+
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
 
 /**
@@ -162,6 +176,7 @@ export async function searchSimilarRecipes(
     limit: limit + (input.excludeId ? 1 : 0) + 5,
     mode: 'hybrid',
     embedder,
+    embedTimeoutMs: RECIPE_EMBED_CALL_TIMEOUT_MS,
     log: deps.log,
   });
 

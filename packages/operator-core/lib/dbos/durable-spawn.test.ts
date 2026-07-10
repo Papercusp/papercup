@@ -40,7 +40,7 @@ const h = vi.hoisted(() => ({
   // the new skip flip this to null.
   resolveProject: vi.fn(async (_slug: string, _ws?: string): Promise<{ slug: string } | null> => ({ slug: 'h' })),
   goneTargetSkipValue: { value: null as string | null },
-  setHiveStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
+  setPotStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
   setOverwatchStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
   resolveBrainOwner: vi.fn(async (_workspaceId: string) => 'owner-1' as string | null),
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
@@ -95,7 +95,7 @@ vi.mock('../inference-gateway/observability', () => ({
   gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
 }));
 vi.mock('../harness-core', () => ({ resolveProject: h.resolveProject }));
-vi.mock('../pot/started', () => ({ setHiveStarted: h.setHiveStarted }));
+vi.mock('../pot/started', () => ({ setPotStarted: h.setPotStarted }));
 vi.mock('../overwatch/control-state', () => ({ setOverwatchStarted: h.setOverwatchStarted }));
 vi.mock('../harness/routines/wake-brain-action', () => ({ resolveBrainOwner: h.resolveBrainOwner }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
@@ -140,7 +140,7 @@ beforeEach(() => {
   h.pgRunOutputRows.value = [];
   h.activeQueenRows.value = [];
   h.goneTargetSkipValue.value = null;
-  h.setHiveStarted.mockClear();
+  h.setPotStarted.mockClear();
   h.setOverwatchStarted.mockClear();
   h.resolveBrainOwner.mockReset();
   h.resolveBrainOwner.mockResolvedValue('owner-1');
@@ -396,10 +396,10 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
 
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-1' });
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-2' });
-    expect(h.setHiveStarted).not.toHaveBeenCalled();
+    expect(h.setPotStarted).not.toHaveBeenCalled();
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-3' });
 
-    expect(h.setHiveStarted).toHaveBeenCalledWith('ws', 'gone-hive', false);
+    expect(h.setPotStarted).toHaveBeenCalledWith('ws', 'gone-hive', false);
     expect(h.wakeRecipients).toHaveBeenCalledWith(['owner-1'], expect.objectContaining({
       source: 'durable-spawn:gone-target',
       workspaceId: 'ws',
@@ -409,7 +409,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     // The negative marker makes the detector idempotent while already cleared;
     // queued replays must not wake/escalate the owner on every cycle.
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-4' });
-    expect(h.setHiveStarted).toHaveBeenCalledTimes(1);
+    expect(h.setPotStarted).toHaveBeenCalledTimes(1);
     expect(h.wakeRecipients).toHaveBeenCalledTimes(1);
   });
 
@@ -424,7 +424,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-kettle-2' });
     await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-kettle-3' });
     expect(h.setOverwatchStarted).toHaveBeenCalledWith('ws', 'gone-hive', false);
-    expect(h.setHiveStarted).not.toHaveBeenCalled();
+    expect(h.setPotStarted).not.toHaveBeenCalled();
   });
 
   it('WI-3682: an existing target resets a prior gone-target streak before firing', async () => {

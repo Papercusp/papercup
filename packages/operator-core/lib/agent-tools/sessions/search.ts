@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../search/sources';
-import { buildQueryEmbedder } from '../search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
@@ -100,7 +100,9 @@ export default defineTool({
     } else {
       const scopeNames = args.include_coord ? ['session_turn', 'coord_message'] : ['session_turn'];
       const sources = SEARCH_SOURCES.filter((s) => scopeNames.includes(s.name));
-      const embedder = await buildQueryEmbedder();
+      const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+      // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
+      // call inside runHybridSearch, not just the acquisition above.
       const { results } = await runHybridSearch(sources, {
         sql: ctx.tx,
         query: args.query,
@@ -109,6 +111,7 @@ export default defineTool({
         limit,
         mode: 'hybrid',
         embedder,
+        embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
         filters,
         log: ctx.log,
       });

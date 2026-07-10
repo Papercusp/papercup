@@ -20,7 +20,9 @@ vi.mock('../../workspace-registry', () => ({
   resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
     c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'default',
 }));
-vi.mock('../../harness/leave-pot', () => ({ leaveHive: vi.fn() }));
+// harness/leave-hive.ts is OUT OF SCOPE for the cup-lexicon rename — mock the
+// REAL module path.
+vi.mock('../../harness/leave-hive', () => ({ leaveHive: vi.fn() }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
 import { leaveHive } from '../../harness/leave-hive';

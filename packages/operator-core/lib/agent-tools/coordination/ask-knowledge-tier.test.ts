@@ -14,7 +14,10 @@ const m = vi.hoisted(() => ({
   activeWorkspaceId: vi.fn(() => 'ws-active'),
 }));
 vi.mock('@papercusp/search', () => ({ runHybridSearch: m.runHybridSearch }));
-vi.mock('../search/embedder', () => ({ buildQueryEmbedder: m.buildQueryEmbedder }));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedder: m.buildQueryEmbedder,
+  interactiveEmbedAcquireBudgetMs: () => 4000,
+}));
 vi.mock('../search/sources', () => ({ SEARCH_SOURCES: [] }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../memory/backend', () => ({ getMemoryBackend: vi.fn() }));

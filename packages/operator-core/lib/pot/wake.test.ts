@@ -138,7 +138,7 @@ describe('resolvePotHomeSlug', () => {
   it('canonicalizes retired home slugs before persisting wake launch targets', () => {
     delete process.env.PAPERCUSP_POT_HOME_SLUG;
     expect(resolvePotHomeSlug('papercup', 'ctx-slug')).toBe('papercusp');
-    expect(resolvePotHomeSlug('  papercup-pot  ', undefined)).toBe('papercusp');
+    expect(resolvePotHomeSlug('  papercup-hive  ', undefined)).toBe('papercusp');
     process.env.PAPERCUSP_POT_HOME_SLUG = 'papercup';
     expect(resolvePotHomeSlug(undefined, undefined)).toBe('papercusp');
     delete process.env.PAPERCUSP_POT_HOME_SLUG;
@@ -223,7 +223,7 @@ describe('getPotTimeWake (EI-257: string-timestamp pools)', () => {
           last_fired_at: '2026-06-10T11:30:00.000Z',
         },
       ]),
-      'papercup-pot',
+      'papercup-hive',
     );
     expect(r?.nextFireAt).toBeInstanceOf(Date);
     expect(r?.lastFiredAt).toBeInstanceOf(Date);
@@ -235,19 +235,19 @@ describe('getPotTimeWake (EI-257: string-timestamp pools)', () => {
     const at = new Date('2026-06-10T12:00:00Z');
     const r = await getPotTimeWake(
       fakeSql([{ active: false, next_fire_at: at, last_fired_at: null }]),
-      'papercup-pot',
+      'papercup-hive',
     );
     expect(r?.nextFireAt).toEqual(at);
     expect(r?.lastFiredAt).toBeNull();
     const g = await getPotTimeWake(
       fakeSql([{ active: false, next_fire_at: 'not-a-date', last_fired_at: undefined }]),
-      'papercup-pot',
+      'papercup-hive',
     );
     expect(g?.nextFireAt).toBeNull();
     expect(g?.lastFiredAt).toBeNull();
   });
 
   it('returns null when no routine row exists', async () => {
-    expect(await getPotTimeWake(fakeSql([]), 'papercup-pot')).toBeNull();
+    expect(await getPotTimeWake(fakeSql([]), 'papercup-hive')).toBeNull();
   });
 });

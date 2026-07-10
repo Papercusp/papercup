@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchSimilarRecipes } from '../../code-recipes-search';
-import { buildQueryEmbedder } from '../search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 export default defineTool({
   name: 'recipes:search',
@@ -47,7 +47,9 @@ export default defineTool({
     limit: z.number().int().min(1).max(20).optional().describe('Top-N to return (default 5).'),
   }),
   async handler(args, ctx) {
-    const embedder = await buildQueryEmbedder().catch(() => null);
+    // Bound the acquisition — .catch handles a rejection but NOT a cold-pipeline
+    // HANG (the EI-9143 ~5% 60s-timeout class); on timeout → null → BM25 (WI-3922).
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
     // The query carries no separate description / tool-set — feed it as the title
     // and let the lexical + cosine legs do the work (toolsUsed empty ⇒ the
     // structural leg contributes 0, so ranking is purely text similarity here).
