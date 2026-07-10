@@ -308,18 +308,19 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   ],
   // hive_members (admission) is the offline half of the @-assign picker — a new
   // admitted member becomes assignable the moment they're admitted (P-016).
-  'harness_shared.hive_members': ['dev.assignableMembers'],
+  'harness_shared.pot_members': ['dev.assignableMembers'],
   // hive_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1) —
   // a steering write refreshes the 👑 Queen tab's hive.steering query. The set tool
   // also fires notifySyncInvalidate explicitly; this covers a FEDERATED steering
   // write arriving from a peer Swarm (the keys federate via the capture trigger).
-  'harness_shared.hive_settings': ['hive.steering'],
+  'harness_shared.pot_settings': ['hive.steering'],
   'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
-  // bee_claim_specs backs the per-run claim-spec specId@revision shown by the
+  // cup_claim_specs (né bee_claim_specs, cup-lexicon-full-rename-2026-07-09 P-009
+  // Phase 2 / WI-3954) backs the per-run claim-spec specId@revision shown by the
   // live-execution view (scheduler.running) — a Queen set_claim_spec re-steer bumps the
   // revision a running bee shows (hybrid-bee-scheduler P-001 / D-007).
-  'harness_shared.bee_claim_specs': ['scheduler.running'],
+  'harness_shared.cup_claim_specs': ['scheduler.running'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
   // tab + the /adv Conversations Feed). The emit_change_notify trigger on
   // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)

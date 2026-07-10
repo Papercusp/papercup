@@ -25,6 +25,10 @@ export interface BeaconSnapshot {
 
 interface BeaconRow {
   id: string;
+  // NOTE (WI-3953, 2026-07-10): the live migration 557 renamed the TABLE
+  // (cross_hive_beacon_history -> cross_pot_beacon_history) but did NOT rename
+  // these two columns — verified against the live schema post-apply. Do not
+  // "fix" these to pot_id/pot_pubkey without a follow-up migration first.
   hive_id: string;
   hive_pubkey: string | null;
   beacon: unknown;
@@ -64,7 +68,7 @@ export async function captureBeaconSnapshot(
   // (text→jsonb), so it neither throws (live) nor double-encodes (testcontainer).
   const sqlc = pg(sql);
   await sqlc`
-    INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
+    INSERT INTO harness_shared.cross_pot_beacon_history (hive_id, hive_pubkey, beacon)
     VALUES (${potId}, ${hivePubkey ?? null}, ${JSON.stringify(beacon)}::text::jsonb)
   `;
   void import('../sync-sse')
@@ -95,7 +99,7 @@ export async function listBeaconHistory(
 ): Promise<BeaconSnapshot[]> {
   const rows = (await pg(sql).unsafe(
     `SELECT id, hive_id, hive_pubkey, beacon, captured_at
-       FROM harness_shared.cross_hive_beacon_history
+       FROM harness_shared.cross_pot_beacon_history
       WHERE hive_id = $1 OR hive_pubkey = $1
       ORDER BY captured_at DESC
       LIMIT $2`,

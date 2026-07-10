@@ -110,7 +110,7 @@ export interface PrReviewerSettingsResponse {
   inheritedFrom?: string | null;
   /**
    * P-008 (D-003): true when the role was conferred by hive OWNERSHIP (this
-   * install created the hive — a local harness_shared.hives row exists for
+   * install created the hive — a local harness_shared.pots row exists for
    * the group's home). Pairs with inheritedFrom (the home slug; null when
    * the viewed harness IS the owned home).
    */
@@ -342,7 +342,7 @@ export async function hiveHomeOf(slug: string): Promise<string | null> {
 
 /**
  * Does this install OWN the hive whose home is `homeSlug`? A
- * `harness_shared.hives` row exists ONLY for locally-created hives (the
+ * `harness_shared.pots` row exists ONLY for locally-created hives (the
  * keypair'd creator) — a JOINED remote hive gets a registry `remote_hive`
  * view, no row, no keypair. Best-effort false on error.
  */
@@ -353,8 +353,8 @@ async function isOwnedHiveHome(
 ): Promise<boolean> {
   try {
     const rows = await sql`
-      SELECT 1 FROM harness_shared.hives
-       WHERE workspace_id = ${workspaceId} AND home_slug = ${homeSlug}
+      SELECT 1 FROM harness_shared.pots
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${homeSlug}
        LIMIT 1`;
     return rows.length > 0;
   } catch {

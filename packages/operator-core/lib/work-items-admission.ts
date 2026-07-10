@@ -116,7 +116,7 @@ export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
  *   - binding_status = 'verified'  (BINDING_STATUSES: verified|pending|unverified)
  *   - author_pubkey ∈ device_attestations (an attested binding exists)
  *   - author_pubkey ∉ revoked_pubkeys (the device wasn't revoked)
- *   - workspace-scoped (hive_members is owner/workspace-keyed); hive_home_slug
+ *   - workspace-scoped (hive_members is owner/workspace-keyed); pot_home_slug
  *     narrows further when known. The COALESCE guards keep a member with a NULL
  *     revoked_pubkeys / device_attestations from being wrongly excluded/erroring.
  */
@@ -127,10 +127,10 @@ export async function resolveVerifiedAuthorGithubId(
   const pubkey = (opts.authorPubkey ?? '').trim();
   if (!pubkey || !opts.workspaceId) return null;
   try {
-    const hiveFilter = opts.potHomeSlug ? sql`AND hive_home_slug = ${opts.potHomeSlug}` : sql``;
+    const hiveFilter = opts.potHomeSlug ? sql`AND pot_home_slug = ${opts.potHomeSlug}` : sql``;
     const rows = await sql<{ github_user_id: string | number }[]>`
       SELECT github_user_id
-        FROM harness_shared.hive_members
+        FROM harness_shared.pot_members
        WHERE workspace_id = ${opts.workspaceId}
          ${hiveFilter}
          AND binding_status = 'verified'

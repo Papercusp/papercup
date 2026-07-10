@@ -239,7 +239,7 @@ export async function resolvePlanAuthorIdentities(
     const sql = pg(opts?.sql);
     const memberRows = (await sql.unsafe(
       `SELECT github_user_id, github_username, display_name, avatar_url, device_attestations
-         FROM harness_shared.hive_members WHERE workspace_id = $1`,
+         FROM harness_shared.pot_members WHERE workspace_id = $1`,
       [workspaceId],
     )) as unknown as HiveMemberIndexRow[];
     const members = memberRows.map((r) => ({

@@ -431,8 +431,8 @@ const SUITE_WS = (runId: string) => `__hivetest__/${runId}`;
 async function sweepSuiteWorkspace(sql: Sql, runId: string): Promise<void> {
   const ws = SUITE_WS(runId);
   await sql.unsafe(`DELETE FROM harness_shared.shared_presence WHERE workspace_id = $1`, [ws]).catch(() => undefined);
-  // hive_members FK-cascades from hives; delete the hive last.
-  await sql.unsafe(`DELETE FROM harness_shared.hives WHERE workspace_id = $1`, [ws]).catch(() => undefined);
+  // pot_members FK-cascades from pots; delete the pot last.
+  await sql.unsafe(`DELETE FROM harness_shared.pots WHERE workspace_id = $1`, [ws]).catch(() => undefined);
 }
 
 /**

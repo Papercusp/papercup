@@ -241,9 +241,9 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     -- non-revoked hive_members device attestation (resolveVerifiedAuthorGithubId).
     -- Only the columns that resolver reads (the real table has more); seedTrust()
     -- attests each peer cell so cross-swarm federated work is trust-admissible.
-    CREATE TABLE harness_shared.hive_members (
+    CREATE TABLE harness_shared.pot_members (
       workspace_id        text NOT NULL,
-      hive_home_slug      text,
+      pot_home_slug      text,
       github_user_id      bigint,
       binding_status      text,
       device_attestations jsonb,
@@ -982,7 +982,7 @@ export class CompositionRig {
         if (peer === self) continue;
         const peerProvenancePubkey = peer.handle.ownLog.keyHex;
         await self.sql`
-          INSERT INTO harness_shared.hive_members
+          INSERT INTO harness_shared.pot_members
             (workspace_id, github_user_id, binding_status, device_attestations, revoked_pubkeys)
           VALUES (${this.workspaceId}, ${peer.githubUserId}, 'verified',
                   ${JSON.stringify([{ device_pubkey: peerProvenancePubkey }])}::text::jsonb,

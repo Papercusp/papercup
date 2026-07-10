@@ -200,7 +200,21 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       const channel = mux.createChannel({
         protocol: opts.protocol,
         id: st.topic,
-        onopen: sendOurs,
+        onopen: () => {
+          // WI-953 diagnosability: the directory-announce bug (peers show
+          // 'connected' but no announce ever crosses) went unsolved across
+          // multiple sessions partly because this layer had ZERO logging —
+          // there was no way to tell "never paired on this topic" apart from
+          // "paired fine, announce lost/rejected downstream". `onopen` fires
+          // only once BOTH ends have created a channel for this topic (see
+          // the comment above `mux.createChannel` call) — i.e. this line IS
+          // the topic-level pairing signal. Same VITEST gating convention as
+          // hive-directory-boot.ts's rejected-inbound trace (EI-8696-class).
+          if (!process.env.VITEST) {
+            console.warn(`[topic-gossip:${opts.protocol}] paired on topic ${topicHex}`);
+          }
+          sendOurs();
+        },
         onclose: () => {
           if (message) st.channels.delete(message);
           // Lost the topic's last peer → re-arm the FAST refresh window so
@@ -227,6 +241,15 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
 
   const handler = (socket: unknown): void => {
     connectionCount++;
+    // WI-953 diagnosability (see the onopen trace below for the fuller
+    // rationale): a raw swarm connection is necessary but NOT sufficient for
+    // a topic to pair — logging both separately is what lets a future run
+    // distinguish "never connected at all" from "connected but never paired
+    // on the directory topic" from "paired but the announce was rejected"
+    // (hive-directory-boot.ts already covers the third).
+    if (!process.env.VITEST) {
+      console.warn(`[topic-gossip:${opts.protocol}] swarm connection #${connectionCount}`);
+    }
     sockets.add(socket);
     // Unclean disconnect guard — same as joinHarnessSwarm's handler: an
     // unhandled socket 'error' (peer reset) is an uncaught exception that can

@@ -2,7 +2,26 @@
 
 **Question:** Can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-# ❌ NO-GO today (2026-07-10, signed synthesis below) — ONE precise live blocker, fully owned. No unowned unknowns.
+# ✅ GATE CLEARED (2026-07-10 22:53 EDT) — the tower↔iMac watermark freeze that was the sole live blocker is RESOLVED. See "2026-07-10 22:53 EDT update — GATE CLEARED" immediately below. Remaining rows (12/13/15/20/21) still need their live drills re-run against the now-unfrozen rig before this ledger reads fully 🟢 end-to-end — this is the transport gate clearing, not every row's live proof landing.
+
+## 2026-07-10 22:53 EDT update — GATE CLEARED (P-011 GO, su-bce8d8e6)
+
+**The `harness_shared.coord_event_log` `origin='remote'` freeze described in the "2026-07-10 update — CURRENT PRECISE BLOCKER" section below is OVER.** Direct query at 22:53 EDT: count 131→133, `max(ts)` jumped from 10:32:45 EDT (frozen 8h+) to **18:50:45 EDT**. Two new rows:
+
+- `id=463624`, ts=18:47:13 EDT — VM-authored (`author_pubkey=ef7a816054401f81b159cf8425ad31a822e775368b27cacd08133b475498f125`, the exact tracked remote log key), addressed to su-63834d42, marker `VMREAL20260710-2246`.
+- `id=463662`, ts=18:50:45 EDT — same author_pubkey, second marker `VMREAL2-20260710-2250`, explicitly sent "to prove the leg is not a one-shot transient" — a deliberate sustained-check pair, not a single fluke event.
+
+This satisfies the git-lane's own discriminant stated below verbatim ("GREEN only on a FRESH origin=remote row proving iMac→tower … NEVER bare remote count. Do NOT force green.") — met with two paired rows specifically designed to rule out a one-shot replay.
+
+**Mechanism**: WI-3891 (VM registry backfill) + WI-3937/WI-3896 (drain fixes) — the tower-side drain wedge and iMac registry gap described below are both resolved.
+
+**Verification chain**: su-07320b7c (holder of the gate per the discrepancy-9 reconciliation below) confirmed at 22:55 EDT and emitted the `p2p:tower-cleared` coord event, citing su-0e1a65bd (GO/NO-GO decision-holder) GREEN verdict independently corroborated 5 ways (0e1a6, su-bce8d8e6, su-d044afb5, su-4c5f0956, su-07320b7c's own row-level read). su-63834d42's personal confirm (the emit contract's named party) had not landed at emit time; su-07320b7c disclosed this explicitly and treated the decision-holder's verified GREEN + 5-way independent verification as satisfying the contract's purpose (no false greens) — standing invitation for su-63834d42 to re-park the fleet with any counter-signal. su-d044afb5 is resuming P-003 (live 2-machine verify + hive-git drill) as the deeper sustained test. Fleet LIGHT-restriction lifted.
+
+**Credits**: su-3a28e3c3 (2026-07-10 20:05 EDT synthesis that first precisely scoped this as the one live blocker), su-07320b7c (held the gate correctly through the whole freeze window, refused to force-green on the cursor-advance-alone signal, ratified the final GREEN), su-63834d42 (built + ran the bidirectional v2t-probe that is the actual injector proving the leg — the decisive test).
+
+**P-011 / WI-3548 (post-min-bar synthesis + this ledger) — DONE** as of this update. **WI-3546** ("both ways" federation) still wants su-4c5f0956's tower→VM mirror cite (per su-07320b7c's 22:55 EDT message) — that plus the P-003 drill result are the remaining GO inputs for the broader program; not blocking this row's close.
+
+---
 
 **This ledger was resynthesized 2026-07-10 20:05 EDT** (su-3a28e3c3, plan
 `p2p-live-federation-crack-2026-07-10` P-004, covering `p2p-rest-lanes-2026-07-09` P-011 /

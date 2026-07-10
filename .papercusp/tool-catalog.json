@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 623,
+  "count": 633,
   "tools": [
     {
       "name": "ablation:report",
@@ -242,6 +242,40 @@
       }
     },
     {
+      "name": "accounts:probe-capacity",
+      "http": {
+        "path": "/api/agent-tools/accounts/probe-capacity",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Ask UPSTREAM for each pooled Claude account's REAL unified-5h/7d budget and record it into the account-pool projection. Sends one minimal (1-token) request per account through that account's own egress + credential and reads the authoritative `anthropic-ratelimit-unified-*` headers (present on 200s, not just 429s). This is the ONLY way a usage-walled account gets a fresh reading: it is routed no live traffic, so its projection can never self-heal — it stays walled until its PROJECTED reset (days), even after a real capacity reset. Prefer this over `accounts:reset-rate { resetWindows }`, which merely ASSERTS a reset; this PROVES it (and a 429 reply CONFIRMS a genuine wall instead). Runs out-of-process — no gateway restart needed. `apply:false` for a read-only dry run. Returns { ok, probed, unwalled, applied, rows[] }.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "After a capacity/quota reset, or whenever an account reads usageWalled / healthyAccounts is 0 but you suspect the projection is STALE. Also the durable self-heal a schedule should call.",
+        "notWhen": "Clearing a stale rate-limit PAUSE (accounts:reset-rate — a different meter). Clearing the gateway’s IN-MEMORY exhaustedUntil (POST /admin/readmit or a gateway restart — a different process).",
+        "chaining": "accounts:probe-capacity { walledOnly:true } → accounts:status (confirm usageWalled cleared) → if upstream CONFIRMS the wall, do NOT force it; if the probe cannot run at all, accounts:reset-rate { resetWindows:true } is the deliberate override."
+      }
+    },
+    {
       "name": "accounts:register",
       "http": {
         "path": "/api/agent-tools/accounts/register",
@@ -316,7 +350,7 @@
           "POST"
         ]
       },
-      "description": "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. Returns {ok, account}.",
+      "description": "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. `resetWindows:true` (WI-3553) is the DELIBERATE further override that ALSO zeroes the observed-budget projection (`utilization`/`windowResetAt`/`utilization7d`/`windowResetAt7d`) for when that probe-derived reading itself is wrong or can't be re-probed — default `false` is byte-identical to today (the budget reading survives the reset). Returns {ok, account}.",
       "capabilities": [
         "harness:write"
       ],
@@ -338,7 +372,7 @@
       ],
       "guidance": {
         "when": "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
-        "notWhen": "Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status."
+        "notWhen": "Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status. The observed-budget projection is wrong AND the probe can actually run — prefer accounts:probe-capacity (asks upstream for real evidence) over resetWindows (which only asserts)."
       }
     },
     {
@@ -1874,7 +1908,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output.",
@@ -1946,7 +1981,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Stop a background job you no longer need (a dev server, a runaway build).",
@@ -2018,11 +2054,12 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves \"running\" gives the tail + exit code.",
-        "notWhen": "For a foreground command — its output is in the capability:bash result directly.",
+        "notWhen": "For a foreground command — its output is in the capability:bash result directly. Note: on a shared dev box, ANY agent restarting the operator (:3070/:3170) kills every other agent's in-flight background jobs — a miss reporting `reason: \"stranded_by_operator_restart\"` (with a log tail) means that happened, not a wrong id; re-run capability:bash rather than treating it as a tool bug.",
         "chaining": "capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early."
       }
     },
@@ -2090,7 +2127,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` first to see, then act on what you see.",
@@ -2162,7 +2200,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Make a targeted in-place change to an existing file. Include enough surrounding context in old_string to make it unique, or set replace_all.",
@@ -2234,7 +2273,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Fetch a URL — an API, a raw file, a docs page. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.",
@@ -2306,7 +2346,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Inspect or stage git state — status, diff, log, show, add, commit (within a worktree). Prefer this over capability:bash for git so the action is gated as git, not arbitrary shell.",
@@ -2409,7 +2450,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).",
@@ -2481,7 +2523,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file.",
@@ -2615,7 +2658,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Create a new file, or fully replace an existing one. For a partial change to an existing file prefer capability:edit.",
@@ -2977,7 +3021,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A task needs MANY tool calls with control flow — loop/branch/filter over results (list N items then act per item, fan-out reads, retry-until). Orchestrate them in ONE code:run and return a compact summary instead of paying a round-trip per call. Just write the script against tools.ns.verb(args) — you do NOT need a code:tools pre-call: a wrong name comes back with the typed signatures inline to fix (code:tools is there only if you want to pre-check shapes). Pass title+description so the run is saved as a reusable RECIPE other agents in your hive can find + reuse (every successful run is captured; the title+description make it discoverable instead of an auto-derived label).",
@@ -3049,7 +3094,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "OPTIONAL — only when you want to pre-check exact arg shapes before authoring a code:run script (you do NOT have to: code:run hands you the typed signatures inline if a name is wrong). Start with no args to list namespaces, then request the one or two you need.",
@@ -3279,7 +3325,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Tune how large your context grows before you self-compact — raise it for wide-context work, lower it to stay sharp on a tight task.",
@@ -4372,7 +4419,7 @@
           "POST"
         ]
       },
-      "description": "Migrate every ownerId-keyed surface from a DEAD predecessor sid to a live one after a relaunch/recovery changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts. Idempotent — re-run to finish a partial pass. Refuses while the old sid still shows a fresh presence heartbeat (a live peer) unless force:true. Returns { ok, from, to, surfaces:[{surface,moved,…}], totalMoved }.",
+      "description": "Migrate every ownerId-keyed surface from a DEAD predecessor sid to a live one after a relaunch/recovery changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts, held FILE LOCKS + lock waiters (EI-8999/P-002 — a separate side-database, rekeyed too). Idempotent — re-run to finish a partial pass. Refuses while the old sid still shows a fresh presence heartbeat (a live peer) unless force:true. Returns { ok, from, to, surfaces:[{surface,moved,…}], totalMoved }.",
       "capabilities": [
         "coord:write"
       ],
@@ -5116,7 +5163,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Use to place a background autonomous worker on new work: a cup, validator, scoper, architect, worker, or another supported role in a harness. Prefer role=\"cup\" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.",
-        "notWhen": "Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.",
+        "notWhen": "Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-cup.",
         "chaining": "cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort."
       }
     },
@@ -5236,7 +5283,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Before declaring a new datatype — check whether an approved global one already fits, to reuse instead of re-inventing.",
@@ -5308,7 +5356,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When you have datatype id(s) (from datatypes:list) and want the full definition before referencing or instantiating it.",
@@ -5380,7 +5429,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "After finding a useful approved datatype via datatypes:catalog — install it so this workspace can create instances / reference it.",
@@ -5452,7 +5502,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "To discover what datatypes exist before declaring a new one (avoid duplicates), or to find the name to put in a blueprint's dependencies.datatypes, or the generic-kind to pass to work_items:create.",
@@ -5524,7 +5575,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When a datatype you declared (meta:define-datatype) is worth sharing globally, not just locally — so other workspaces can discover/reuse it.",
@@ -5596,7 +5648,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "For a dashboard / status read of a workspace's datatype surface and its local→shared graduation.",
@@ -5668,7 +5721,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "After adding a migration, or when a runtime \"missing column/relation\" error suggests the live DB lags the sql/ dir.",
@@ -5740,7 +5794,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.",
@@ -5843,7 +5898,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.",
@@ -6148,6 +6204,32 @@
       }
     },
     {
+      "name": "deploys:vintage",
+      "http": {
+        "path": "/api/agent-tools/deploys/vintage",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Lists every runtime that has self-reported its build identity (bg-host, staging-api, dev-api, desktop sidecars, watchdogs, gateway, …) with commit-lag vs origin/staging HEAD per unit. Answers \"is the fix actually RUNNING there\" without manual ssh + log-tailing.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "release-manager",
+        "release-fixer",
+        "cup"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before trusting that a landed fix is live on a specific runtime/host — a Mac/Windows desktop bundle, the tower bg-host, a watchdog, the inference gateway, or any service that calls reportRuntimeVintageOnBoot at boot.",
+        "notWhen": "For the git-sync → green-checkpoint → :3070 pipeline of a single commit, use dev:pipeline_position instead — this tool is about WHICH RUNNING PROCESSES carry which build, not about one commit's pipeline position."
+      }
+    },
+    {
       "name": "dev:activity",
       "http": {
         "path": "/api/agent-tools/dev/activity",
@@ -6307,11 +6389,12 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Grading hive-coordination-health tool-utilization, or checking whether the code:run nudges / recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.",
+        "when": "Grading pot-coordination-health tool-utilization, or checking whether the code:run nudges / recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.",
         "notWhen": "Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence)."
       }
     },
@@ -6488,7 +6571,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6584,7 +6668,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6874,7 +6959,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You need to restart the dev server (e.g. to pick up a lib/** edit). Run dry first to see who is using it; then confirm to drain + restart.",
@@ -6890,7 +6976,7 @@
           "POST"
         ]
       },
-      "description": "Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts, AND the papercup-bg-host DBOS ticker via routine fire-freshness) — up/down + status + latency. The \"bg-host-ticker\" entry is a SEPARATE service from :3070: when it reads down, git-sync + every scheduled routine are FROZEN even though :3070 is up — do NOT dev:restart the operator for that, the bg-host needs reviving. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
+      "description": "Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts, AND the papercup-bg-host DBOS ticker via routine fire-freshness) — up/down + status + latency, PLUS a `supervision` block per critical-process-supervisor entry (layer/autoRestart/consecutiveProbeFailures/restartsLast10m/flapState) sourced from the failed-unit reconciler. The \"bg-host-ticker\" entry is a SEPARATE service from :3070: when it reads down, git-sync + every scheduled routine are FROZEN even though :3070 is up — do NOT dev:restart the operator for that, the bg-host needs reviving. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
       "capabilities": [
         "intel:read"
       ],
@@ -7270,7 +7356,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. To wait on a WHOLE family at once (any work item done, any item in a plan) pass a glob `work-item:done:*` or a macro `@plan:<slug>` / `@fleet:<slug>` instead of one exact key. Before polling, check events:catalog for an awaitable key, register it, then end your turn.",
+        "when": "You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. To wait on a WHOLE family at once (any work item done, any item in a plan) pass a glob `work-item:done:*` or a macro `@plan:<slug>` / `@fleet:<slug>` instead of one exact key. Before polling, check events:catalog for an awaitable key, register it, then end your turn. HAND-MINTED pair key? Have the completion's OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you).",
         "notWhen": "Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.",
         "chaining": "events:catalog → events:await { event } (or a sugar verb) → end your turn. Use events:cancel to retract and events:status to inspect active awaits."
       }
@@ -7313,7 +7399,7 @@
           "POST"
         ]
       },
-      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, and its sugar verb (e.g. deploy:await). Check here before you poll dev:pipeline_position / dev:build_status / a peer's status.",
+      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Check here before you poll dev:pipeline_position / dev:build_status / a peer's status.",
       "capabilities": [
         "events:read"
       ],
@@ -7330,8 +7416,8 @@
         "curator"
       ],
       "guidance": {
-        "when": "Before you POLL for something (a deploy landing, the gate going green, a peer's work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you're unsure whether an event even exists for X.",
-        "notWhen": "You already know the exact key — just events:await it. To see server REACTION wiring (\"what fires what\") use events:graph; to see YOUR pending awaits + recent wakes use events:status.",
+        "when": "Before you POLL for something (a deploy landing, the gate going green, a peer's work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you're unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).",
+        "notWhen": "You already know the exact key — just events:await it. To see server REACTION wiring (\"what fires what\") use events:graph; to see YOUR OWN pending awaits + recent wakes use events:status.",
         "chaining": "events:catalog → pick a family → events:await { event: <its key> } (or its sugar verb, e.g. deploy:await) → end your turn."
       }
     },
@@ -7343,7 +7429,7 @@
           "POST"
         ]
       },
-      "description": "Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list additionally receives a coord inbox notification (notify policy — never wakes). Use the key your waiter registered (events:await tells them what to wait on).",
+      "description": "Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes). Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.",
       "capabilities": [
         "coord:write"
       ],
@@ -7360,9 +7446,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT — re-invoke its turn — the key is `coord:inbox-wake:<ownerId>`, but prefer the higher-level verbs that hide the key: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:'required'} to message+wake.)",
-        "notWhen": "General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. Waking a specific agent — use coord:wake / coord:dispatch (they fire the inbox-wake key for you + report woken/dead). If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).",
-        "chaining": "Peer: events:await { event: K } → you: do the work → events:emit { event: K, summary } → peer wakes."
+        "when": "Announcing that the thing a peer is blocked on has happened: work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT, prefer the higher-level verbs: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:'required'} to message+wake.)",
+        "notWhen": "General status narration — lifecycle auto-emits + work_items:complete cover it. Conversation — coord:send. Waking a specific agent — coord:wake / coord:dispatch (report woken/dead). No plausible awaiter and no `to` — the emit reaches no one (not a log).",
+        "chaining": "Catalogued key: peer events:await { event: K } → you work → events:emit { event: K, summary } → peer wakes. HAND-MINTED pair key: DECLARE-FIRST — events:emit { event: K, announce: true } → peer awaits the RETURNED key (copied, never re-typed — LATCHES for late registrants) → emit that key on completion."
       }
     },
     {
@@ -7611,7 +7697,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You reached a durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"plan Y stalls on Z\", \"this harness's tests need Docker\". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.",
@@ -7683,7 +7770,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Before asserting (avoid duplicates — re-assert the same key to refresh instead), when auditing what a role/harness is being told every turn, or when hunting a stale fact to retract.",
@@ -7755,7 +7843,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A previously-asserted fact is no longer true (the residue cleared, the plan unstalled, the workaround shipped). Retract PROMPTLY — facts fold verbatim, so a stale one actively misleads every future turn.",
@@ -7964,7 +8053,7 @@
           "POST"
         ]
       },
-      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). The result's top-level `self` is YOUR own ownerId and your own agent row is stamped `isSelf:true`, so you can tell which agent in the list is THIS session. Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement. The single LIVE source for \"is X really being worked\": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither \"covered\" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast.",
+      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither \"covered\" — plus per-claim `activity` and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead — THE relaunch/re-steer field, EI-8995), `wakeMode` (auto|manual — manual STAGES directed wakes for owner release), and `unanswered` (directed messages awaiting a reply: count + oldestAgeMs + newest few). Read this, not a stale coord broadcast.",
       "capabilities": [
         "work_items:read"
       ],
@@ -7988,7 +8077,7 @@
       "guidance": {
         "when": "Answering \"who's running / what is agent X doing / X's ordered work-list / how loaded is X / is anyone on plan P\". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.",
         "notWhen": "You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).",
-        "chaining": "fleet:assignments { plan } → an orphaned/stalled claim (dead/not-progressing holder = NOT covered) → work_items:release / plan_items:release, or pick it up yourself; never assume \"someone's on it\" from a coord message. fleet:assignments { agent } before messaging an agent about its work."
+        "chaining": "fleet:assignments { plan } → an orphaned/stalled claim → work_items:release / plan_items:release, or pick it up yourself; never assume \"someone's on it\" from a coord message. fleet:assignments { agent } before messaging an agent about its work."
       }
     },
     {
@@ -8019,6 +8108,41 @@
         "when": "You lead a fleet and are waiting for it to finish all lanes before you loop:end + write the fleet-execution-health scorecard — arm this and end your turn instead of re-polling the roster each wake.",
         "notWhen": "You still have leadership work to do this wake (directing members, acking pings). Checking roster once — fleet:status / coord:roster.",
         "chaining": "fleet:await-drained { slug } → end turn → on wake the lanes are drained; loop:end + scorecard."
+      }
+    },
+    {
+      "name": "fleet:bench",
+      "http": {
+        "path": "/api/agent-tools/fleet/bench",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bench a fleet member as TRACKED, queryable state instead of a hand-written per-member convention. STAGE: fleet:bench { member, wakeEvent, stagedAssignment } captures the member's wake handle and registers the events:await FOR them (note tagged with the staged assignment) — returns `registered:false` immediately if no resumable session was found for that member (a bench miss caught before you ever emit). LIST: fleet:bench { list: true } (optionally { fleet }) returns who is benched on YOUR fleet, on what key, with what staged leg. Pairs with events:emit's `waiters`/`woken` counts (P-005) for miss-visibility at both stage time and emit time.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A leader staging a member's NEXT assignment while they wait on something (a watermark, a peer's fix, a bench key) — instead of asking the member to events:await it themselves and hoping it landed, or directed-waking everyone as a fallback because you can't tell who actually registered. Also the query surface for 'who is benched on what right now'.",
+        "notWhen": "The member is awaiting something on their OWN initiative (they call events:await directly). A one-off nudge — use coord:send / coord:wake. Fleet-wide health at a glance — fleet:leader-brief already surfaces `parkedOn` per member.",
+        "chaining": "fleet:bench { member, wakeEvent, stagedAssignment } → (later) events:emit { event: wakeEvent } wakes them, staged leg rides the wake note → fleet:bench { list: true } any time to check current bench state."
       }
     },
     {
@@ -8087,7 +8211,7 @@
       "guidance": {
         "when": "Before a placement round, to size how many FRESH cups to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.",
         "notWhen": "Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.",
-        "chaining": "fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under QUEEN_CAPACITY_DISPATCH; this tool lets you reason about it first)."
+        "chaining": "fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first)."
       }
     },
     {
@@ -8290,6 +8414,41 @@
       }
     },
     {
+      "name": "fleet:kill",
+      "http": {
+        "path": "/api/agent-tools/fleet/kill",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "KILL an agent — desktop OR headless — through one verb. Desktop psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member's stale window, or stopping a headless cup. \"Close that agent's terminal\" / \"kill that bee\" both land here.",
+        "notWhen": "To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).",
+        "chaining": "coord:presence / fleet:assignments (find the ownerId) → fleet:kill { owner, reason } . Stale windows: fleet:kill { terminal_pids:[…], reason }."
+      }
+    },
+    {
       "name": "fleet:launch-on-plan",
       "http": {
         "path": "/api/agent-tools/fleet/launch-on-plan",
@@ -8297,7 +8456,7 @@
           "POST"
         ]
       },
-      "description": "Open visible desktop su member terminals on a plan in one call. This is what \"launch a fleet\" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).",
+      "description": "Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way; use cup:spawn only for Mug-supervised cups). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. Author the plan first. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. Linux/macOS/Windows desktop.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -8315,9 +8474,44 @@
         "cup"
       ],
       "guidance": {
-        "when": "Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.",
+        "when": "The owner wants a new su fleet working a plan immediately — desktop terminals by default, `headless:true` for windowless (both are su members, not cups). Pass plan slug, fleet name, count; disclose owner-chosen `headless`/`carry`; members start on boot.",
         "notWhen": "Not for background cups (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.",
-        "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start (promotes the plan + sets a plan-scoped claim spec before opening terminals), but run plans:start yourself so the Mug/orchestrator also gets plan-started visibility. As leader, loop:arm a lean monitor and avoid polling full rosters every wake."
+        "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional — plan items become claimable work-items only through it; skipped, the fleet launches onto an empty backlog (this tool backstops it idempotently). As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
+      }
+    },
+    {
+      "name": "fleet:leader-brief",
+      "http": {
+        "path": "/api/agent-tools/fleet/leader-brief",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, current claims (doing/queuedCount/load), progress-stalled flag, unanswered directed messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure (ok|high|critical), and bench state (parkedOn — active events:await keys). Scoped to ONE fleet (yours by default) instead of the whole workspace roster fleet:assignments returns. Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats every monitor wake.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "On a leader's repeating monitor tick: \"who is actually working / stuck / unanswered / about to compact right now, across MY fleet\". Folded automatically into coord:orient { mode:'monitor' } for a resolvable fleet leader.",
+        "notWhen": "The Queen/placement-decision read over the WHOLE workspace roster (fleet:assignments), or full message history for one member (coord:inbox { agent }).",
+        "chaining": "A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero `unanswered` → coord:send a follow-up or coord:catch-up the thread."
       }
     },
     {
@@ -8575,7 +8769,7 @@
           "POST"
         ]
       },
-      "description": "Show one fleet's identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.",
+      "description": "Show one fleet's identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.",
       "capabilities": [
         "fleet:status"
       ],
@@ -8696,6 +8890,36 @@
       "guidance": {
         "when": "Before fleet:cancel (see what would be torn down) or before completing a nursery (the completion gate refuses while a child lives).",
         "chaining": "fleet:tree → fleet:cancel { spawn_id }."
+      }
+    },
+    {
+      "name": "gates:canary-check",
+      "http": {
+        "path": "/api/agent-tools/gates/canary-check",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a self-checking gate canary RIGHT NOW and return the bifurcated verdict: healthy | gate-broken (a KNOWN-GOOD sample failed the gate's own apparatus — green is unreachable by construction, the 2026-07-10 cause #10 class) | system-broken (the apparatus works, a real red is trustworthy) | unknown (the canary itself could not be determined — treated as gate-suspect). Today checks the federation-probe stamping apparatus.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Before trusting a \"still red\" reading on the federation/fed-pipeline surface, OR when diagnosing whether a perpetually-red gate is a REAL system failure vs the checker itself being broken. Also useful as a quick \"is probe:emit even working right now\" smoke check.",
+        "notWhen": "You want to prove a REAL cross-machine round trip completed — use probe:emit + probe:get directly against your actual work (this canary only proves the stamping apparatus, not a live peer round trip). Routine harness health — dev:service_health.",
+        "chaining": "gates:canary-check → if alarm:\"gate\", treat any concurrent federation red as UNTRUSTWORTHY and escalate the apparatus itself, not the system under test."
       }
     },
     {
@@ -10660,7 +10884,7 @@
           "POST"
         ]
       },
-      "description": "Claim a set of files for exclusive editing. Returns ok+lock_id, or busy+contention details. On contention prefer wake_on_grant:true — queue a waiter + a one-shot wake and return immediately; END YOUR TURN, re-invoked when the cascade grants the locks (no polling, no held turn). wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths must be repo-relative POSIX (no ./, .., //, trailing /, backslashes, or absolute paths) — the server canonicalizes equivalent spellings but rejects malformed ones; resolve symlinks caller-side.",
+      "description": "Claim a set of files for exclusive editing. Returns ok+lock_id, or busy+contention details. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn). Attach pending_edit for a small non-conflicting edit applied on grant, no wake needed. wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths must be repo-relative POSIX (no ./, .., //, trailing /, backslashes, absolute paths); resolve symlinks caller-side.",
       "capabilities": [
         "locks:write"
       ],
@@ -10716,12 +10940,13 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
-        "when": "For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Before individual Codex writes only when that session lacks lock hooks (unmanaged home, or diagnostics say hooks offline); managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
-        "notWhen": "Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release (it duplicates the hook + churns the lock). Explicit locks are the fallback for unhooked Codex.",
-        "chaining": "On ok: make your edits → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake turn carries your lock_id + TTL (already running) — edit, then release. Only block (wait) when you need the lock within THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait to retract a queued wake."
+        "when": "For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
+        "notWhen": "Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.",
+        "chaining": "On ok: edit → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
       }
     },
     {
@@ -10788,7 +11013,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A directory/subtree refactor (X on a dir), reading a whole subtree (S), or coordinating file-vs-harness-level work when a single-file lock is too narrow. Use \"\" for the harness root.",
@@ -10860,7 +11086,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Before relying on a shared resource (mode shared), or before a destructive action on it like restarting the dev server (mode exclusive). Registered resources only — check locks:list.",
@@ -10932,7 +11159,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Mid-wait, when the user redirects you to other work or you decide a different approach.",
@@ -11004,7 +11232,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A hook (or you) wants to know if a destructive command would collide with an in-flight exclusive hold before running it.",
@@ -11076,7 +11305,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "For edits expected to take >15 min, call once at the halfway mark.",
@@ -11147,7 +11377,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Holding a named resource longer than its TTL — heartbeat near the halfway mark.",
@@ -11219,7 +11450,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining.",
@@ -11291,7 +11523,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Diagnostics — \"what are the other agents doing?\" or \"why am I blocked?\". Cheap, MVCC read.",
@@ -11362,7 +11595,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Immediately after the edit is committed. Release several selected lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything.",
@@ -11434,7 +11668,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "As soon as the subtree/directory work the lock guarded is done. Release several selected lock sets at once via lock_ids:[…].",
@@ -11506,7 +11741,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "As soon as you are done using a shared resource, or immediately after an exclusive action (e.g. the dev-server restart) completes. Release several selected resource locks at once via lock_ids/resources/items.",
@@ -11911,7 +12147,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When a domain needs a shared, named entity TYPE that should be searchable / plannable / improvable like any Papercusp entity (D-001). Default tier generic-kind (a work_item kind + payload, zero migration). Use projection for money-truth/external-engine-owned types (read-only, authoritativeWriter:\"engine:<name>\").",
@@ -11983,7 +12220,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When a domain needs a new TOOL. Prefer composed (a recipe over existing primitives) — it is live and safe. Reach for sandboxed/elevated only for genuinely new power; those go through review, never runtime.",
@@ -12353,7 +12591,6 @@
       ],
       "agentRoles": [
         "operator",
-        "sentinel",
         "papercup"
       ],
       "profile": "engineer"
@@ -12949,7 +13186,6 @@
       ],
       "agentRoles": [
         "operator",
-        "sentinel",
         "papercup"
       ],
       "profile": "engineer"
@@ -13458,7 +13694,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Add several at once via items:[…].",
@@ -13530,7 +13767,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
@@ -13695,7 +13933,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Once, after the revision spine ships, to give existing plans a history before their first live write — or to seed a single plan whose spine was never populated.",
@@ -13797,7 +14036,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Correcting or rewriting a SPECIFIC part of a plan body the structured verbs cannot reach — a stale citation, a wrong line, a paragraph in `## Background` or a decision body. The default for small/targeted prose fixes.",
@@ -13843,7 +14083,7 @@
           "POST"
         ]
       },
-      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. ALWAYS pass `harness` on an operator/superuser-scoped call (a concrete slug, or 'all' for cross-harness/Papercusp's-own-plans) — omitting it throws harness_required (a harness-scoped session supplies it automatically, so this only applies when you're calling from operator scope).",
+      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. ALWAYS pass `harness` on an operator/superuser-scoped call: use the plan's concrete harness slug (for example, 'papercusp' for Papercusp's own plans). `harness: 'all'` is only valid in an unscoped (--all-workspaces) session. Omitting it throws harness_required; a harness-scoped session supplies it automatically.",
       "capabilities": [
         "plans:read"
       ],
@@ -13862,7 +14102,7 @@
         "kettle"
       ],
       "guidance": {
-        "when": "You have a slug from plans:list and need the plan contents. Pass `harness` on THIS call (a concrete slug for that plan's project, or 'all' for operator/cross-harness scope) unless your session is already scoped to a harness — an operator/superuser session is NOT auto-scoped and omitting it fails with harness_required.",
+        "when": "You have a slug from plans:list and need the plan contents. Pass `harness` on THIS call as the plan's concrete project slug (for example, `harness: 'papercusp'` for Papercusp plans) unless your session is already scoped to a harness. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session; omitting harness at operator/superuser scope fails with harness_required.",
         "notWhen": "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
         "chaining": "plans:list → plans:get { slug, harness } → optionally plans:items for cross-plan picks."
       }
@@ -13937,7 +14177,7 @@
           "POST"
         ]
       },
-      "description": "Cross-plan item query. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded.",
+      "description": "Cross-plan item query. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. ALWAYS pass `harness` on an operator/superuser-scoped call (a concrete slug, or 'all' for cross-harness/Papercusp's-own-plans) — omitting it throws harness_required (a harness-scoped session supplies it automatically, so this only applies when calling from operator scope; EI-8823).",
       "capabilities": [
         "plans:read"
       ],
@@ -14024,7 +14264,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14158,7 +14399,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Starting a new plan. The one-shot path: plans:new { slug, title, body } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.",
@@ -14230,7 +14472,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "User pauses work on a plan from the UI, or an agent needs to suspend a plan without marking it done.",
@@ -14338,7 +14581,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "profile": "engineer",
       "guidance": {
@@ -14622,7 +14866,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover. Use only for small-to-medium bodies that fit comfortably in one tool call.",
@@ -14694,7 +14939,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Writing or rewriting a large plan body. If the plan markdown is more than a few screens, use begin → append* → commit with chunks under 24k characters instead of sending one huge plans:set-content call.",
@@ -14766,7 +15012,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, and date. The structured alternative to a plans:edit on the decision block.",
@@ -14838,7 +15085,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Promoting a legacy plan — one with no/malformed frontmatter — to a tracked plan, e.g. from the Plans admin tab triage screen.",
@@ -14910,7 +15158,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Setting a custom/template frontmatter field that has no dedicated setter (e.g. template:rubric) — the structured alternative to a plans:edit string-replace on the frontmatter.",
@@ -14982,7 +15231,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation. Re-rank several at once via itemIds:[…] (one plan) or items:[…].",
@@ -15054,7 +15304,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Grouping a set of related plans under one initiative label so they filter together in the plans list — or clearing/renaming that label.",
@@ -15126,7 +15377,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line. Set several at once via itemIds:[…] (one plan) or items:[…].",
@@ -15198,7 +15450,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "An item belongs under a different phase — re-sequencing work across phases, or correcting a mis-placed item. The structured alternative to manually cutting + pasting the line with plans:edit. Move several at once via itemIds:[…] (one plan) or items:[…].",
@@ -15270,7 +15523,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.",
@@ -15342,7 +15596,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded). DEPRECATING a Mug↔Blender draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
@@ -15414,7 +15669,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "User drags a started plan to a new position in the Plans rail, or explicitly asks \"do plan A before plan B\".",
@@ -15486,7 +15742,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You want to archive a finished run, mark a run done, or un-archive one — a deliberate lifecycle change a human/agent makes.",
@@ -15588,7 +15845,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
@@ -15660,7 +15918,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Writing/updating a template-instance plan's structured data (e.g. a rubric instance's fields) — the validated, revisioned setter for the `template_data` jsonb.",
@@ -15732,7 +15991,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "User clicks 'Start Plan' in the harness UI, or an agent is asked to begin work on a specific plan.",
@@ -15804,7 +16064,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A revision from a plan-run session has no rationale and you want the \"why\" filled in — for the Revisions panel or a richer launch-context digest.",
@@ -15876,7 +16137,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Explicitly handing a plan to another user, or setting its co-owners, in a shared hive — so ownership is unambiguous instead of an opaque set-content edit.",
@@ -16158,8 +16420,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A pot has no members so pot:survey falls back to workspace-wide scope (frontier empty / Mug-unresolvable escalations) — wire the real harness in. Also the producer for shared-hive federation membership.",
-        "notWhen": "Adding a person/device to a pot (that is admission, a separate concern). Removing a member (re-point via the registry / pot:leave for a joined remote hive). Nesting a pot home as a member (rejected — pots compose as peers).",
+        "when": "A pot has no members so pot:survey falls back to workspace-wide scope (frontier empty / Mug-unresolvable escalations) — wire the real harness in. Also the producer for shared-pot federation membership.",
+        "notWhen": "Adding a person/device to a pot (that is admission, a separate concern). Removing a member (re-point via the registry / pot:leave for a joined remote pot). Nesting a pot home as a member (rejected — pots compose as peers).",
         "chaining": "pot:list / pot:get to find the pot home + the member slug → pot:add-member → pot:start (or pot:wake) so the Mug surveys the now-scoped frontier → pot:survey to confirm members[] is non-empty + scope is pot-local."
       }
     },
@@ -16171,7 +16433,7 @@
           "POST"
         ]
       },
-      "description": "Initiate a cross-Hive ASK to a peer Hive (by pubkey): a question the peer Hive owns the answer to. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; the peer's answer arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+      "description": "Initiate a cross-Pot ASK to a peer Pot (by pubkey): a question the peer Pot owns the answer to. The envelope is signed, sent store-and-forward, and recorded in this Pot's ask ledger; the peer's answer arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
       "capabilities": [
         "work_items:write"
       ],
@@ -16193,9 +16455,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Mug/owner needs an answer another Hive is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.",
-        "notWhen": "Handing the peer WORK to do (use pot:request_work). Within-Hive questions (coord:ask / conversations). Granting a peer to send asks INTO this Hive (that is the inbound pot:cross_grant).",
-        "chaining": "discovery:pots (find the peer Hive pubkey) → pot:ask { pot, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks."
+        "when": "The Mug/owner needs an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.",
+        "notWhen": "Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:ask / conversations). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).",
+        "chaining": "discovery:pots (find the peer Pot pubkey) → pot:ask { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks."
       }
     },
     {
@@ -16206,7 +16468,7 @@
           "POST"
         ]
       },
-      "description": "List this Hive's cross-Hive ask ledger: the requests it initiated to peer Hives (and inbound ones with direction:'in'), with each row's peer, kind, subject, correlation id, state (queued|sent|answered|declined|expired) and reply. Filter by state / direction / peer / kind.",
+      "description": "List this Pot's cross-Pot ask ledger: the requests it initiated to peer Pots (and inbound ones with direction:'in'), with each row's peer, kind, subject, correlation id, state (queued|sent|answered|declined|expired) and reply. Filter by state / direction / peer / kind.",
       "capabilities": [
         "work_items:read"
       ],
@@ -16228,8 +16490,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Reviewing the status of cross-Hive asks/work-requests — what is still pending, what was answered/declined — or deduping before initiating a new ask to a peer that already owns one.",
-        "notWhen": "Inbound admission policy (pot:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).",
+        "when": "Reviewing the status of cross-Pot asks/work-requests — what is still pending, what was answered/declined — or deduping before initiating a new ask to a peer that already owns one.",
+        "notWhen": "Inbound admission policy (pot:cross_grant list shows who may send INTO this Pot). Within-Pot work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).",
         "chaining": "pot:ask / pot:request_work create rows here; pot:asks { pot, state: \"answered\" } reviews the replies."
       }
     },
@@ -16241,7 +16503,7 @@
           "POST"
         ]
       },
-      "description": "OWNER bans a member for repeat abuse: records the ban in the owner-signed policy (denies re-join, keyed on the stable github id) AND revokes their devices (write-block now; a READ cut-off at the next C-001 re-key epoch). Pass unban:true to lift. Requires holding the Hive key. revoke:false bans (policy-only) without revoking.",
+      "description": "OWNER bans a member for repeat abuse: records the ban in the owner-signed policy (denies re-join, keyed on the stable github id) AND revokes their devices (write-block now; a READ cut-off at the next C-001 re-key epoch). Pass unban:true to lift. Requires holding the Pot key. revoke:false bans (policy-only) without revoking.",
       "capabilities": [
         "intel:write"
       ],
@@ -16265,7 +16527,7 @@
           "POST"
         ]
       },
-      "description": "Manage whether THIS Hive publishes a live status beacon (active agents, queue depth, focus, last-completed) onto the directory gossip — the owner-consent gate, default-OFF (D-002). Pass `consent` to set it (true = publish, false = stop); omit `consent` to read the current state. The consent federates to every Swarm of the Hive and gates B-06's beacon publisher. The beacon only rides a PUBLISHED (public/invite) hive's re-announce — enabling it on a private hive has no effect until the hive is published.",
+      "description": "Manage whether THIS Pot publishes a live status beacon (active agents, queue depth, focus, last-completed) onto the directory gossip — the owner-consent gate, default-OFF (D-002). Pass `consent` to set it (true = publish, false = stop); omit `consent` to read the current state. The consent federates to every Swarm of the Pot and gates B-06's beacon publisher. The beacon only rides a PUBLISHED (public/invite) pot's re-announce — enabling it on a private pot has no effect until the pot is published.",
       "capabilities": [
         "harness:write"
       ],
@@ -16287,9 +16549,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Enabling, disabling, or checking this Hive's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published hive into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
-        "notWhen": "Directory visibility (public/invite/private) — that's discovery:set_pot. Cross-Hive ask/work-request grants — pot:cross_grant. Within-Hive coordination — coord:* / topics.",
-        "chaining": "discovery:set_pot { visibility:'public' } (make the hive discoverable) → pot:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon)."
+        "when": "Enabling, disabling, or checking this Pot's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published pot into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
+        "notWhen": "Directory visibility (public/invite/private) — that's discovery:set_pot. Cross-Pot ask/work-request grants — pot:cross_grant. Within-Pot coordination — coord:* / topics.",
+        "chaining": "discovery:set_pot { visibility:'public' } (make the pot discoverable) → pot:beacon_consent { pot, consent:true } (opt the now-public pot into the live beacon)."
       }
     },
     {
@@ -16331,7 +16593,7 @@
           "POST"
         ]
       },
-      "description": "Stand up a NEW local pot (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
+      "description": "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
       "capabilities": [
         "harness:write"
       ],
@@ -16366,7 +16628,7 @@
           "POST"
         ]
       },
-      "description": "Create a pot FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{potSlug, memberSlug, memberPath}, publish}.",
+      "description": "Create a pot FROM a GitHub URL: repo→Pot lookup first (an existing Pot returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, pot home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{potSlug, memberSlug, memberPath}, publish}.",
       "capabilities": [
         "harness:write"
       ],
@@ -16389,7 +16651,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Onboarding a GitHub repository as a NEW pot in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.",
-        "notWhen": "The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less pot — pot:create. Adding a repo into an EXISTING pot — harness:create { hive } after cloning (the into-hive picker mode).",
+        "notWhen": "The repo may already have a Pot and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less pot — pot:create. Adding a repo into an EXISTING pot — harness:create { pot } after cloning (the into-pot picker mode).",
         "chaining": "pot:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} pot:get / discovery:set_pot to edit the listing."
       }
     },
@@ -16401,7 +16663,7 @@
           "POST"
         ]
       },
-      "description": "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Mug can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
+      "description": "Owner-managed cross-Pot grants: grant/revoke/list which peer-Pot pubkeys may exchange which kinds (ask | work-request) with this Pot. DIRECTED: 'in' admits a peer's traffic INTO this Pot; 'out' lets THIS Pot send to a peer (required before the Mug can ask another Pot). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Pot's Swarms.",
       "capabilities": [
         "work_items:write"
       ],
@@ -16423,9 +16685,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Mug's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
-        "notWhen": "Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.",
-        "chaining": "discovery:pots (peer pubkey) → pot:cross_grant {action:\"grant\", direction, peerHivePubkey, kinds}; \"out\" before pot:ask / pot:request_work."
+        "when": "Setting this Pot's cross-Pot policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Mug's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
+        "notWhen": "Within-Pot coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Pots.",
+        "chaining": "discovery:pots (peer pubkey) → pot:cross_grant {action:\"grant\", direction, peerPotPubkey, kinds}; \"out\" before pot:ask / pot:request_work."
       }
     },
     {
@@ -16506,7 +16768,7 @@
           "POST"
         ]
       },
-      "description": "The full state of one pot: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live cups with {doing, queued, load}, and its todo-work frontier depth. Composes resolveHive + fleet:assignments + work_items — the one call for \"how is pot X doing\".",
+      "description": "The full state of one pot: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live cups with {doing, queued, load}, and its todo-work frontier depth. Composes resolvePot + fleet:assignments + work_items — the one call for \"how is pot X doing\".",
       "capabilities": [
         "harness:read"
       ],
@@ -16575,7 +16837,7 @@
           "POST"
         ]
       },
-      "description": "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local pot you own — that is pot:dissolve.",
+      "description": "Leave a shared pot you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local pot you own — that is pot:dissolve.",
       "capabilities": [
         "harness:write"
       ],
@@ -16597,9 +16859,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A joiner cleanly leaving a shared hive they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.",
+        "when": "A joiner cleanly leaving a shared pot they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.",
         "notWhen": "Tearing down a LOCAL pot you OWN (stop its Mug, cancel its cups) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a cup — not allowed.",
-        "chaining": "pot:list / pot:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind."
+        "chaining": "pot:list / pot:get to find the joined pot (remote_hive) view slug before; re-join via the pot directory join flow if you change your mind."
       }
     },
     {
@@ -16645,7 +16907,7 @@
           "POST"
         ]
       },
-      "description": "OWNER decision on one OR many pending-join requests for a Hive: approve (trust-admit the joiner + their captured devices) or deny (never admitted). Pass a single `{ githubUserId, decision, reason? }` for one or `items:[{ githubUserId, decision, reason? }]` for several. Requires this Swarm to hold the Hive key (the owning Swarm). Returns { ok, results:[{ ok, githubUserId, … | error }], counts } — correlate by githubUserId, not position; one failure never fails the rest.",
+      "description": "OWNER decision on one OR many pending-join requests for a Pot: approve (trust-admit the joiner + their captured devices) or deny (never admitted). Pass a single `{ githubUserId, decision, reason? }` for one or `items:[{ githubUserId, decision, reason? }]` for several. Requires this Swarm to hold the Pot key (the owning Swarm). Returns { ok, results:[{ ok, githubUserId, … | error }], counts } — correlate by githubUserId, not position; one failure never fails the rest.",
       "capabilities": [
         "harness:write"
       ],
@@ -16657,7 +16919,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Joiner(s) are pending under approval-mode membership (see pot:membership_pending) and you (the owner) want to admit or reject them. Clearing a queue? Pass them all via `items:[{ githubUserId, decision }]`.",
-        "notWhen": "Banning an already-admitted member for abuse — use pot:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is hive policy.",
+        "notWhen": "Banning an already-admitted member for abuse — use pot:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is pot policy.",
         "chaining": "pot:membership_pending (review the queue) → pot:membership_decide (per joiner, or all at once via items[]). Bulk: correlate by githubUserId, not position; one failure never fails the rest."
       }
     },
@@ -16669,7 +16931,7 @@
           "POST"
         ]
       },
-      "description": "List a Hive's pending-join requests (the approval-mode admission queue). Under membership:'approval' a joiner stays pending until the owner approves; this is the owner's review queue. Read-only — decide with pot:membership_decide.",
+      "description": "List a Pot's pending-join requests (the approval-mode admission queue). Under membership:'approval' a joiner stays pending until the owner approves; this is the owner's review queue. Read-only — decide with pot:membership_decide.",
       "capabilities": [
         "harness:write"
       ],
@@ -16691,8 +16953,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Hive's membership policy is 'approval' and you (the owner) want to see who's waiting to join. Pair with pot:membership_decide to approve/deny.",
-        "notWhen": "For the trust roster (already-admitted members) use pot:get / harness:membership. Setting the membership MODE is hive policy (the policy authoring surface), not this.",
+        "when": "The Pot's membership policy is 'approval' and you (the owner) want to see who's waiting to join. Pair with pot:membership_decide to approve/deny.",
+        "notWhen": "For the trust roster (already-admitted members) use pot:get / harness:membership. Setting the membership MODE is pot policy (the policy authoring surface), not this.",
         "chaining": "pot:membership_pending (review) → pot:membership_decide (approve/deny each)."
       }
     },
@@ -16704,7 +16966,7 @@
           "POST"
         ]
       },
-      "description": "The owner's moderation queue — list member-filed reports for a Hive (default the open ones). Read-only. Act on a report with pot:moderation_resolve (action/dismiss), pot:takedown (hide content), or pot:ban_member.",
+      "description": "The owner's moderation queue — list member-filed reports for a Pot (default the open ones). Read-only. Act on a report with pot:moderation_resolve (action/dismiss), pot:takedown (hide content), or pot:ban_member.",
       "capabilities": [
         "harness:write"
       ],
@@ -16739,7 +17001,7 @@
           "POST"
         ]
       },
-      "description": "OWNER resolves one OR many moderation reports: 'actioned' (you took action — e.g. a takedown/ban) or 'dismissed' (no action). Pass a single `{ reportId, status }` for one or `items:[{ reportId, status }]` for several. Federates the resolutions back. Requires holding the Hive key. Does NOT itself hide content or ban — use pot:takedown / pot:ban_member for that. Returns { ok, results:[{ ok, reportId, report? | error }], counts } — correlate by reportId, not position; one failure never fails the rest.",
+      "description": "OWNER resolves one OR many moderation reports: 'actioned' (you took action — e.g. a takedown/ban) or 'dismissed' (no action). Pass a single `{ reportId, status }` for one or `items:[{ reportId, status }]` for several. Federates the resolutions back. Requires holding the Pot key. Does NOT itself hide content or ban — use pot:takedown / pot:ban_member for that. Returns { ok, results:[{ ok, reportId, report? | error }], counts } — correlate by reportId, not position; one failure never fails the rest.",
       "capabilities": [
         "harness:write"
       ],
@@ -16786,7 +17048,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "To inspect the LIVE Mug's per-wake efficiency — is the frozen-prefix cache paying off (cacheHitRatio / cachedWakes) and is the precomputed brief cutting round-trips (avgTurns)? The B-06 measurement read.",
-        "notWhen": "For a SCENARIO run’s efficiency score — that is the hive-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Mug read.",
+        "notWhen": "For a SCENARIO run’s efficiency score — that is the pot-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Mug read.",
         "chaining": "pot:status for wake/placement state; pot:survey for the frontier."
       }
     },
@@ -16857,7 +17119,7 @@
       "guidance": {
         "when": "The user clicks Pause Pot / asks to freeze autonomous operation, or you need the fleet quiet (incident, review, cost control).",
         "notWhen": "To stop ONE cup — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.",
-        "chaining": "pot:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → pot:start to resume."
+        "chaining": "pot:pause { drainCups:true } for the harder stop → coord:wake-queue to review staged wakes → pot:start to resume."
       }
     },
     {
@@ -16868,7 +17130,7 @@
           "POST"
         ]
       },
-      "description": "File a moderation report against content or a member in a Hive. The report federates to the owner's moderation queue. Requires the owner to have enabled reporting (moderation.reportable in the Hive policy); otherwise reporting is off and this no-ops.",
+      "description": "File a moderation report against content or a member in a Pot. The report federates to the owner's moderation queue. Requires the owner to have enabled reporting (moderation.reportable in the Pot policy); otherwise reporting is off and this no-ops.",
       "capabilities": [
         "harness:write"
       ],
@@ -16890,7 +17152,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are a member of a Hive with reporting enabled and want to flag abusive content or a member to the owner.",
+        "when": "You are a member of a Pot with reporting enabled and want to flag abusive content or a member to the owner.",
         "notWhen": "You ARE the owner taking action — use pot:takedown (hide content) / pot:ban_member (ban a member). Reporting is the member→owner signal, not the owner action.",
         "chaining": "pot:report (member flags) → owner reviews pot:moderation_queue → pot:moderation_resolve / pot:takedown / pot:ban_member."
       }
@@ -16903,7 +17165,7 @@
           "POST"
         ]
       },
-      "description": "Initiate a cross-Hive WORK-REQUEST to a peer Hive (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; it becomes a work_item in the peer's backlog that THEIR Mug prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+      "description": "Initiate a cross-Pot WORK-REQUEST to a peer Pot (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Pot's ask ledger; it becomes a work_item in the peer's backlog that THEIR Mug prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
       "capabilities": [
         "work_items:write"
       ],
@@ -16925,9 +17187,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The Mug/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:pots, then pot:request_work, then events:await the returned answeredEvent.",
-        "notWhen": "Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound pot:cross_grant).",
-        "chaining": "discovery:pots (find the peer Hive pubkey) → pot:request_work { pot, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks."
+        "when": "The Mug/owner wants a peer Pot to take on a piece of work in its domain. Find the peer via discovery:pots, then pot:request_work, then events:await the returned answeredEvent.",
+        "notWhen": "Asking a QUESTION (use pot:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Pot (that is the inbound pot:cross_grant).",
+        "chaining": "discovery:pots (find the peer Pot pubkey) → pot:request_work { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with pot:asks."
       }
     },
     {
@@ -16938,7 +17200,7 @@
           "POST"
         ]
       },
-      "description": "Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.",
+      "description": "Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.",
       "capabilities": [
         "harness:write"
       ],
@@ -17077,7 +17339,7 @@
           "POST"
         ]
       },
-      "description": "OWNER takedown: hide a piece of content across the Hive by adding its ref to the owner-signed moderation.takedownList (re-signed + federated; honest peers honor it as a tombstone, no resurrection). Pass restore:true to un-hide. Requires holding the Hive key.",
+      "description": "OWNER takedown: hide a piece of content across the Pot by adding its ref to the owner-signed moderation.takedownList (re-signed + federated; honest peers honor it as a tombstone, no resurrection). Pass restore:true to un-hide. Requires holding the Pot key.",
       "capabilities": [
         "harness:write"
       ],
@@ -17183,6 +17445,95 @@
         "when": "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', potSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
         "notWhen": "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (pot:set-steering / the pot policy) instead of a one-off per-SHA ratify.",
         "chaining": "{action:'list', state:'pending'} → review the head → {action:'ratify', potSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it."
+      }
+    },
+    {
+      "name": "probe:emit",
+      "http": {
+        "path": "/api/agent-tools/probe/emit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Emit a self-verifying federation probe: stamps required federation keys (workspace_id, harness_slug) and REFUSES LOUDLY (never silently) when the target harness cannot federate — fixes 2026-07-10 cause #10, where every prior ad-hoc \"v2t\" marker probe was unstamped and green was unreachable for ~6h with nothing saying so. Tracked durably with a `captured` hop stamped; later hops (drain/replicate/merge/member_guard/project) are DESIGNED to land via probe:record-hop but no pipeline stage calls it yet (WI-3962) — read with probe:get { expectedHops:[\"captured\"] } for a trustworthy verdict today.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Proving a federation/replication claim is REAL, not just \"looks green\" — verifying a fresh 2-machine rig federates content, diagnosing a \"rosters but no content\" stall, or replacing an ad-hoc marker write (the v2t convention) with something that cannot be emitted unstamped.",
+        "notWhen": "Routine coord messaging or an ordinary content write (features/issues/plans) — a probe is diagnostic, not a deliverable. Not a substitute for events:emit/events:await (in-process wake, not a federation-pipeline check).",
+        "chaining": "probe:emit → probe:get { probeKey } to read the verdict; pipeline-stage code calls probe:record-hop as the op is observed at each stage."
+      }
+    },
+    {
+      "name": "probe:get",
+      "http": {
+        "path": "/api/agent-tools/probe/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a probe:emit-created federation probe: its per-hop receipts (captured/drained/replicated/merged/member_guard/projected) and a derived verdict that NAMES the exact hop it is stalled at, rather than just \"still red\". Auto-marks the probe acked once every expected hop has landed. ⚠ WI-3962: no pipeline stage calls probe:record-hop yet, so a default (unnarrowed) verdict WILL read \"stalled\" past capture for every probe, forever — that reflects a missing observation, not a broken pipeline (response carries an instrumentationCaveat saying so). Pass expectedHops:[\"captured\"] to get the real, trustworthy signal today; check substrate_outbox/merge-cursor state for actual federation health.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Checking whether a probe:emit'd probe has round-tripped the federation pipeline, or diagnosing exactly which hop a stalled one is stuck at.",
+        "notWhen": "You never called probe:emit for this key — there is nothing to read.",
+        "chaining": "probe:emit → (wait / other work) → probe:get { probeKey }, repeat if verdict is pending/stalled."
+      }
+    },
+    {
+      "name": "probe:record-hop",
+      "http": {
+        "path": "/api/agent-tools/probe/record-hop",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Stamp that a federation probe (from probe:emit) has been OBSERVED at a later pipeline hop (drained/replicated/merged/member_guard/projected). Idempotent — re-stamping an already-landed hop is a no-op, so a retried observation can never move a receipt backwards. A hop can only be recorded while the probe is still `pending` (a refused/acked/timed_out probe is terminal).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You are pipeline-stage code (or a diagnostic script on a live rig) that just watched a specific federation_probe op pass a named stage — e.g. the outbox drain wrote it, a replicator delivered it, the merge loop admitted it, member-content-guard passed it, or projection applied it.",
+        "notWhen": "You are the emitter (probe:emit already stamps `captured`) or you only SUSPECT a hop happened — this must be a real observation, never a guess."
       }
     },
     {
@@ -17602,7 +17953,7 @@
       },
       "description": "Deterministic graduation worklist for code:run RECIPES: ranked PROMOTE candidates (recipes worth building into a tool, scored by run-frequency + distinct-agent reuse + success-rate + tool-set cohesion, 1-tool/duplicate ones excluded) + near-duplicate MERGE clusters. No LLM — counting only; YOU decide promote/merge. Read-only.",
       "capabilities": [
-        "intel:read"
+        "recipes:read"
       ],
       "agentRoles": [
         "scoper",
@@ -17656,7 +18007,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "The Queen calls this in her cadence to find recipes worth promoting to a tool or merging. It returns deterministic signals + a rubric promotionScore per active recipe in the hive — promote a top candidate by filing a work-item (\"implement <recipe> as a defineTool\"), and review each merge cluster for consolidation into one recipe.",
@@ -17674,7 +18026,7 @@
       },
       "description": "Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect what they do before recipes:run-ning them. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. Read-only.",
       "capabilities": [
-        "intel:read"
+        "recipes:read"
       ],
       "agentRoles": [
         "scoper",
@@ -17728,7 +18080,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result's similarRecipes) and want to read their script + metadata before reusing. Pass every id at once via `ids`.",
@@ -17746,7 +18099,7 @@
       },
       "description": "List reusable code:run RECIPES for your hive (most-run first). A recipe is a saved code:run script other agents authored; browse them to reuse instead of re-authoring. Low-value (≤1-tool / auto-titled) recipes are hidden by default — pass includeTrivial to see all. Read-only.",
       "capabilities": [
-        "intel:read"
+        "recipes:read"
       ],
       "agentRoles": [
         "scoper",
@@ -17800,7 +18153,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "Before authoring a multi-step code:run, to see what reusable recipes already exist in your hive — the hot ones surface first. If one fits, recipes:run it instead of re-writing the script.",
@@ -17902,7 +18256,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When a recipe already does what you need (found via recipes:search / recipes:list, or a code:run result's similarRecipes) — run it by id instead of re-authoring the same script. Run several at once via ids:[…] or items:[…]. Each runs under YOUR envelope, so you can only reuse recipes whose tools you may call.",
@@ -17920,7 +18275,7 @@
       },
       "description": "Search reusable code:run RECIPES by intent (hybrid BM25 + embedding + tool-set overlap). Use BEFORE authoring a multi-step code:run to find a recipe that already does it. Read-only.",
       "capabilities": [
-        "intel:read"
+        "recipes:read"
       ],
       "agentRoles": [
         "scoper",
@@ -17974,7 +18329,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "BEFORE writing a multi-step code:run — describe what you want to do and this ranks the recipes in your hive that already do something similar (semantic + tool-set match). If a high-similarity recipe fits, recipes:run it instead of re-authoring.",
@@ -18355,7 +18711,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the hive-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.",
+        "when": "You have one or more rubric_ids (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every id at once via `rubricIds`.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
         "chaining": "rubrics:list → rubrics:get { rubricIds:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricIds[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest."
       }
@@ -18596,7 +18952,7 @@
           "POST"
         ]
       },
-      "description": "Read the CURRENT claim spec for a bee or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing.",
+      "description": "Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing.",
       "capabilities": [
         "work_items:read"
       ],
@@ -18758,9 +19114,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to know whether the Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete hive-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
+        "when": "You want to know whether the Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
         "notWhen": "You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion's rating TREND over time — rubrics:trend. You are FILING a scorecard — improvements:capture { lane: \"observation\", observation: { rubricRef, ratings } }.",
-        "chaining": "scorecards:freshness { rubricRef: \"hive-coordination-health\", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
+        "chaining": "scorecards:freshness { rubricRef: \"pot-coordination-health\", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
       }
     },
     {
@@ -18793,9 +19149,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE hive-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.",
+        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.",
         "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — improvements:capture { lane: \"observation\", observation: { rubricRef, ratings } }.",
-        "chaining": "scorecards:list { rubricRef: \"hive-coordination-health\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions."
+        "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions."
       }
     },
     {
@@ -18973,7 +19329,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You are near your compaction limit AND at a clean stopping point (a finished unit of work — tests green, an edit landed, a decision logged).",
@@ -19659,7 +20016,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A test file is red and you want its recent flip history before treating it as a genuine regression vs a known flake — or triaging the green-checkpoint gate and want the ranked flaky-file list.",
@@ -19731,7 +20089,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "A latest-status-per-file / raw test_runs diagnostic shows a red or green for a deleted/renamed file, preserved _retired code, tdg scratch dir, or sibling checkout path.",
@@ -19803,7 +20162,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names.",
@@ -19875,7 +20235,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "You know (or just discovered via tools:find) the exact name of a tool that is NOT in your loaded set and you want to call it once — the universal way to reach the long tail of the catalog.",
@@ -19947,7 +20308,8 @@
         "tester",
         "test-writer",
         "monitor",
-        "blender"
+        "blender",
+        "foreign-session"
       ],
       "guidance": {
         "when": "When a domain needs a NEW tool (not just a datatype). Scaffold the skeleton here, implement the handler, and land it through review. This is how the elevated/sandboxed tiers reach the codebase (D-003 PR rail).",
@@ -20626,7 +20988,7 @@
           "POST"
         ]
       },
-      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (seen on your next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (fires once, auto-consumes — a grant/readiness); once:false is standing (re-fires on every match). Named sugar presets: `events:await {key}` = watch(key,{wake:true,once:true}); `topics:subscribe {topic}` = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject).",
+      "description": "The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (auto-consumes — a grant); once:false is standing (re-fires per match). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec — the engine polls a read-only tool under YOUR role and wakes you on the false→true cross.",
       "capabilities": [
         "coord:write"
       ],
@@ -20643,7 +21005,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Register interest in something and receive its updates. Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness (\"wake me when THIS grant/lock/deadline is ready\"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.",
+        "when": "Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness (\"wake me when THIS grant/lock/deadline is ready\"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.",
         "notWhen": "A sub-minute wait inside one turn — just do the bounded blocking call. A recurring TIME schedule — the pot/routines own time-based wakes. Ambient interest where a wake would burn turns — use wake:false.",
         "chaining": "wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe (inject) to stop; events:status to inspect your active wake watches + recent wakes."
       }
@@ -20752,7 +21114,7 @@
           "POST"
         ]
       },
-      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.",
+      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `since` to also get closedSince/openedSince — itemized (not just counted) terminal transitions and newly-created items, capped + newest-first. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.",
       "capabilities": [
         "work_items:read"
       ],
@@ -20787,7 +21149,7 @@
           "POST"
         ]
       },
-      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. Returns { ok, results:[{ ok, id, harness, cleared, length, by | error }], counts } — correlate by id.",
+      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead (EI-9036). Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed). A plain replace shrinking a substantial checkpoint >50% gets a non-blocking `shrinkWarning` (EI-9325, likely truncation).",
       "capabilities": [
         "work_items:write"
       ],
@@ -20811,7 +21173,7 @@
       "guidance": {
         "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next fresh-context wake) needs to continue — what is done, what is left, current approach, gotchas, open threads. Keep it COMPRESSED (a digest, not a transcript).",
         "notWhen": "Mid-task scratch state that the live transcript already holds — checkpoint only the durable, cross-boundary gist. Do not dump file contents or full tool output.",
-        "chaining": "work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note. Also the fix for EI-6772: a claim held through a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest, zero papercusp-su calls) can go presence-stale and be reclaimed as dead — a mid-investigation checkpoint is itself a papercusp-su dispatch, so it doubles as a liveness pulse (there is no separate work_items:heartbeat verb)."
+        "chaining": "work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note. Also fixes EI-6772: a claim held through long PURELY-LOCAL tool use (no papercusp-su calls) can go presence-stale and be reclaimed — checkpointing doubles as a liveness pulse (no separate heartbeat verb)."
       }
     },
     {
@@ -20997,7 +21359,7 @@
           "POST"
         ]
       },
-      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts } — act on each returned `reflect` step once, now.",
+      "description": "Finish one OR many work-items with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts each completion from the fields — you spend no tokens narrating. Optionally also transitions each item to a terminal `state`. Single: { id, completion }. Many: items:[{ id, completion, state?, harness? }]. Returns { ok, results:[{ ok, id, workItem, completion, reflect, stateError? } | error], counts }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -21019,7 +21381,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Finish several at once via items:[…].",
+        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Duplicate? Set `completion.duplicateOf` to the surviving id — auto-links + notifies the prior assignee (EI-8993).",
         "notWhen": "For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
         "chaining": "work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing."
       }
@@ -21136,7 +21498,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume.",
+      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) are the checkpoint's write recency — a checkpoint is a HYPOTHESIS about current state, more trustworthy the fresher it is; treat one older than your own recent activity as possibly stale and re-verify against ground truth (re-read the real file, re-run the real test) rather than trusting a prose narrative that may predate a fix landing.",
       "capabilities": [
         "work_items:read"
       ],
@@ -21161,6 +21523,41 @@
         "when": "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
         "notWhen": "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
         "chaining": "work_items:list → work_items:get { ids:[…] } for detail on the ones you care about."
+      }
+    },
+    {
+      "name": "work_items:hold_open",
+      "http": {
+        "path": "/api/agent-tools/work_items/hold_open",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent's hold needs force:true (leader override). Returns { ok, id, held, heldBy, reason }.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are gating an item — verifying, awaiting evidence, or keeping a recurring/leader item alive — and peers must neither close it nor self-select it while you do. Your claim stays; work continues.",
+        "notWhen": "You are WALKING AWAY from the item — that is work_items:park (checkpoint + release) or release { claimHold:true } (release + hold). Blocked on a dependency → set_state{blocked}. Done → complete (a holder completing their own held item is allowed).",
+        "chaining": "work_items:hold_open { id, reason } → work → complete/set_state yourself (holder passes the guard), or hold_open { id, clear:true } to hand it back to normal lifecycle."
       }
     },
     {
@@ -21514,7 +21911,7 @@
           "POST"
         ]
       },
-      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent's live claim: a non-holder caller gets `{ ok:false, error:\"not_holder\", holder }` per item — `force:true` (leader/reaper override only, NOT routine members) releases it anyway. A voluntary release records a short re-claim cooldown. `claimHold:true` (issue-family only) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) — it stays directly claimable by id; `claimHold:false` clears the hold.",
+      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent's live claim: a non-holder caller gets `{ ok:false, error:\"not_holder\", holder }` per item — `force:true` (leader/reaper override only, NOT routine members) releases it anyway. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and stamps you as holder — it stays directly claimable by id; `claimHold:false` clears the hold. To hold WITHOUT releasing your claim, use work_items:hold_open.",
       "capabilities": [
         "work_items:write"
       ],
@@ -21584,7 +21981,7 @@
           "POST"
         ]
       },
-      "description": "Full-text search work-items across kinds (feature/chunk/bug/change/task). Matches title + body/summary. Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920).",
+      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary PLUS a semantic (embedding cosine) leg, so differently-worded matches surface too (P-008; semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920).",
       "capabilities": [
         "work_items:read"
       ],
@@ -21723,7 +22120,7 @@
           "POST"
         ]
       },
-      "description": "Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. Reopening another agent's terminal completion into non-terminal is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).",
+      "description": "Set lifecycle state for one OR many work-items. Feature-family uses feature statuses; issue-family stores only open|resolved|closed, so blocked/needs-human/in_progress/wip/todo/done/dropped alias to open. EI-9360: for issue-family, requesting needs-human (any dialect spelling) now AUTOMATICALLY sets payload.needsHuman (EI-7776's floor — reads as fully drained, not pending) and requesting blocked AUTOMATICALLY applies the WI-2797 self-select claim hold (reads as pending-but-gated) — either way the item is durably excluded from claim_next/scheduler:get_next self-selection (still directly claimable by id) without a separate manual call; see aliasNote. Reopening another agent's terminal completion into non-terminal is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).",
       "capabilities": [
         "work_items:write"
       ],
@@ -21745,7 +22142,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. To park issue-family blocked/needs-human work, release { claimHold:true } plus a reason; set_state aliases it to open. If \"already terminally completed\", read terminalOwner/ref before any `force:true` reopen.",
+        "when": "Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. Issue-family needs-human/blocked requests are auto-excluded from self-select on alias to open (EI-9360) — no extra call needed; blocked can be un-parked via release{claimHold:false}, needs-human clears when the diagnosis is addressed. If \"already terminally completed\", read terminalOwner/ref before any `force:true` reopen.",
         "chaining": "work_items:claim → … → work_items:set_state { state }."
       }
     },

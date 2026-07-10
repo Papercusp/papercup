@@ -106,8 +106,8 @@ export async function resolvePotMemberTier(opts: ResolveTierOpts): Promise<Resol
   if (!opts.live) {
     const cached = await sql<{ repo_permission: string | null; permission_checked_at: string | null }[]>`
       SELECT repo_permission, permission_checked_at
-        FROM harness_shared.hive_members
-       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${potSlug} AND github_user_id = ${githubUserId}
+        FROM harness_shared.pot_members
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potSlug} AND github_user_id = ${githubUserId}
        LIMIT 1`;
     const row = cached[0];
     const at = row?.permission_checked_at != null ? Number(row.permission_checked_at) : null;
@@ -126,9 +126,9 @@ export async function resolvePotMemberTier(opts: ResolveTierOpts): Promise<Resol
   // Write-through cache (best-effort; advisory — owner-actions always re-derive).
   try {
     await sql`
-      UPDATE harness_shared.hive_members
+      UPDATE harness_shared.pot_members
          SET repo_permission = ${perm}, permission_checked_at = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND hive_home_slug = ${potSlug} AND github_user_id = ${githubUserId}`;
+       WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${potSlug} AND github_user_id = ${githubUserId}`;
   } catch {
     /* cache is advisory */
   }

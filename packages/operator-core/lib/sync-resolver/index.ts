@@ -3326,12 +3326,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const { activeWorkspaceId } = await import('../workspace-registry');
         const { sql } = getOrgPg();
         const members = (await sql`
-          SELECT hive_home_slug, device_attestations, revoked_pubkeys
-            FROM harness_shared.hive_members
+          SELECT pot_home_slug, device_attestations, revoked_pubkeys
+            FROM harness_shared.pot_members
            WHERE workspace_id = ${activeWorkspaceId()}
              AND github_user_id = ${actor.githubUserId}
-           ORDER BY hive_home_slug`) as unknown as Array<{
-          hive_home_slug: string;
+           ORDER BY pot_home_slug`) as unknown as Array<{
+          pot_home_slug: string;
           device_attestations: unknown;
           revoked_pubkeys: unknown;
         }>;
@@ -3350,7 +3350,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             if (isThisDevice && !isRevoked) thisDeviceLive = true;
             rows.push({
               kind: 'device',
-              potHomeSlug: m.hive_home_slug,
+              potHomeSlug: m.pot_home_slug,
               devicePubkey: pubkey,
               deviceLabel: typeof a.device_label === 'string' ? a.device_label : null,
               attestedAtMs: typeof a.created_at === 'number' ? a.created_at : null,
@@ -3360,7 +3360,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             });
           }
           if (!thisDeviceLive) {
-            rows.push({ kind: 'missing', potHomeSlug: m.hive_home_slug });
+            rows.push({ kind: 'missing', potHomeSlug: m.pot_home_slug });
           }
         }
         return rows;
