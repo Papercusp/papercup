@@ -12,12 +12,15 @@ import {
   deriveMemberVerdict,
   decorateMemberVerdicts,
   decorateParkedOn,
+  filterActiveCoverage,
+  COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
   VERDICT_STALL_MS,
   type MemberVerdict,
 } from './assignments';
 import { shapeFleetAssignments } from './assignments-shape';
 import type { AgentAssignment } from '../../fleet/assignments';
+import type { PlanItemCoverage, CoverageLevel } from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 
