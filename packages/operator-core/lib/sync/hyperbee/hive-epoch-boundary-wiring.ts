@@ -408,9 +408,9 @@ export async function reconcileOwnedHiveEpochKeys(
       const { getOrgPg } = await import('@papercusp/db-org');
       const client = sql ?? getOrgPg().sql;
       const rows = (await client`
-        SELECT DISTINCT workspace_id, home_slug FROM harness_shared.hives
-      `) as unknown as Array<{ workspace_id: string; home_slug: string }>;
-      return rows.map((r) => ({ workspaceId: r.workspace_id, potHomeSlug: r.home_slug }));
+        SELECT DISTINCT workspace_id, pot_home_slug FROM harness_shared.pots
+      `) as unknown as Array<{ workspace_id: string; pot_home_slug: string }>;
+      return rows.map((r) => ({ workspaceId: r.workspace_id, potHomeSlug: r.pot_home_slug }));
     });
   const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
 

@@ -200,8 +200,8 @@ export async function backfillLocalState(
   // kind:'hive' home"). Stamp harness_slug into the row jsonb for the projection demux.
   if (workspaceId && workspaceId !== '*' && budget > 0) {
     const [{ home }] = await pg<{ home: string | null }[]>`
-      SELECT CASE WHEN count(*) = 1 THEN min(home_slug) ELSE NULL END AS home
-        FROM harness_shared.hives WHERE workspace_id = ${workspaceId}`;
+      SELECT CASE WHEN count(*) = 1 THEN min(pot_home_slug) ELSE NULL END AS home
+        FROM harness_shared.pots WHERE workspace_id = ${workspaceId}`;
     const operatorOwnedHere = home != null && home === harnessSlug;
     const scopePredicate = operatorOwnedHere
       ? pg`(c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')`

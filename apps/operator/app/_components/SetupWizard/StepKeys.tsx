@@ -4,14 +4,15 @@ import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
 import { useLexicon } from '@/lib/useLexicon';
 
-// The one required memory choice — defaults to EmbeddingGemma-300m (local, no
+// The one required memory choice — defaults to Harrier-OSS-0.6b (local, no
 // key), so a user who changes nothing still gets working memory (owner ask
-// 2026-07-10). Each option carries a one-line tradeoff.
+// 2026-07-10, P-015 flip: harrier default for new users too). Each option
+// carries a one-line tradeoff; Gemma is the lighter-resources alternative.
 type MemMode = 'gemma' | 'harrier' | 'local' | 'openai' | 'disabled';
 const MEMORY_OPTIONS: { value: MemMode; label: string; tradeoff: string }[] = [
-  { value: 'gemma', label: 'EmbeddingGemma-300m (recommended)', tradeoff: 'Best quality, fully local & private, no API key. ~1GB RAM.' },
-  { value: 'harrier', label: 'Harrier-OSS-0.6b', tradeoff: 'Best recall (beats Gemma on the internal gold set), local & private; ~4× slower embeds, ~2.5GB RAM.' },
-  { value: 'local', label: 'BGE-small', tradeoff: 'Lighter local model (~400MB RAM), no API key; lower quality than Gemma.' },
+  { value: 'harrier', label: 'Harrier-OSS-0.6b (recommended)', tradeoff: 'Best recall on the internal gold set, fully local & private, no API key. ~2.5GB RAM.' },
+  { value: 'gemma', label: 'EmbeddingGemma-300m', tradeoff: 'Uses less resources than Harrier (~4× faster embeds, ~1GB RAM), local & private, no API key; slightly lower recall.' },
+  { value: 'local', label: 'BGE-small', tradeoff: 'Lightest local model (~400MB RAM), no API key; lower quality than Gemma.' },
   { value: 'openai', label: 'OpenAI text-embedding-3-small', tradeoff: 'Cloud embeddings — needs the API key below; memory text leaves your device.' },
   { value: 'disabled', label: 'No persistent memory', tradeoff: 'Turn memory off entirely.' },
 ];
@@ -23,7 +24,7 @@ export function StepKeys() {
   const [openaiInput, setOpenaiInput] = useState('');
   const [savingOpenai, setSavingOpenai] = useState(false);
   const [openaiSaved, setOpenaiSaved] = useState<'idle' | 'saved' | 'error'>('idle');
-  const [memMode, setMemMode] = useState<MemMode>('gemma');
+  const [memMode, setMemMode] = useState<MemMode>('harrier');
   const [memSaving, setMemSaving] = useState(false);
 
   useEffect(() => {
@@ -34,7 +35,7 @@ export function StepKeys() {
           const j = (await credsRes.json()) as { openai_api_key?: string | null };
           setOpenaiMasked(j.openai_api_key ?? null);
         }
-        // Current memory system (defaults to gemma if never set). Tolerant of
+        // Current memory system (defaults to harrier if never set). Tolerant of
         // either a bare prefs object or a { prefs } envelope.
         const prefsRes = await fetch('/api/agent-mcp/operator-voice-prefs', { cache: 'no-store' });
         if (prefsRes.ok) {
@@ -101,8 +102,9 @@ export function StepKeys() {
           <span className="pc-badge pc-badge--required">Required</span>
         </div>
         <p className="pc-key-card__desc">
-          How your agents embed and recall memories. <strong>EmbeddingGemma-300m is the default</strong> — leave it
-          as-is and memory just works, no key required.
+          How your agents embed and recall memories. <strong>Harrier-OSS-0.6b is the default</strong> — leave it
+          as-is and memory just works, no key required. Prefer a lighter footprint? EmbeddingGemma-300m
+          uses less resources (~4× faster embeds, ~1GB RAM) with slightly lower recall.
         </p>
         <div className="pc-radio-grid" role="radiogroup" aria-label="Memory system" style={{ marginTop: 4 }}>
           {MEMORY_OPTIONS.map((o) => (

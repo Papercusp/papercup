@@ -182,7 +182,7 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // bee's get_next sees spec authoring/versioning. Keyed (workspace_id, bee_id);
   // harness_slug = the hive HOME slug demux (NULL = operator-scope, stays local —
   // the mig-438 WHEN gate).
-  'bee_claim_specs',
+  'cup_claim_specs',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
   // test gate's verdict facts (projections/gate-verdicts.ts) — content-addressed,
   // device-SIGNED shard-run results federated as data so the DG-5 aggregator on any

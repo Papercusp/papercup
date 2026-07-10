@@ -42,7 +42,7 @@ export const SETUP_STEPS: readonly StepDef[] = [
     id: 'keys',
     title: 'Memory system',
     summary:
-      'Choose how memories are embedded — defaults to EmbeddingGemma-300m (best quality, local & private, no API key needed). Alternatives: BGE-small (lighter local) or OpenAI text-embedding-3-small (cloud, needs a key). Provider/voice API keys are optional and set here too.',
+      'Choose how memories are embedded — defaults to Harrier-OSS-0.6b (best recall, local & private, no API key needed). Alternatives: EmbeddingGemma-300m (uses less resources — ~4× faster, ~1GB RAM), BGE-small (lightest local), or OpenAI text-embedding-3-small (cloud, needs a key). Provider/voice API keys are optional and set here too.',
     required: true,
   },
   {

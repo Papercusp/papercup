@@ -114,7 +114,17 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
 // already document being fixed once (cost-audit-2026-06-29).
 export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
   return resolveEmbedderWith({
-    readPreference: readEmbedderPreference,
+    // P-015 harrier default flip (owner, 2026-07-10) + P-006 verdict: harrier
+    // is MEMORY-side only — its native 1024 dims don't fit the vector(384)
+    // prose columns, and harrier@384's rejection margin collapses (.0705 vs
+    // gemma .1576). Under a 'harrier' preference the prose/search surfaces
+    // would otherwise dims-guard OFF entirely (sweep skips, query legs go
+    // lexical-only), so the SEARCH side maps harrier → gemma and stays in the
+    // gemma space the 20k+ stored vectors live in.
+    readPreference: async () => {
+      const p = await readEmbedderPreference();
+      return p === 'harrier' ? 'gemma' : p;
+    },
     resolveKey: resolveOpenAiKey,
     localInstalled: localAvailable,
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,

@@ -107,7 +107,9 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   gym_qd_archive: 'gym-qd-elites-by-niche',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): per-bee claim specs.
   // Projection 'bee-claim-specs' (projections/bee-claim-spec.ts); key == bee_id.
-  bee_claim_specs: 'bee-claim-specs',
+  // Table renamed bee_claim_specs -> cup_claim_specs (cup-lexicon-full-rename-2026-07-09
+  // P-009 Phase 2 / WI-3954, mig 555) — this key must track the live table name.
+  cup_claim_specs: 'bee-claim-specs',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
   // test gate's device-signed verdict facts. Projection 'gate-verdicts'
   // (projections/gate-verdicts.ts); key == verdict_id (the content address).
@@ -969,7 +971,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     case 'hive_settings':
       value = toHiveSettingValue(row);
       break;
-    case 'bee_claim_specs':
+    case 'cup_claim_specs':
       value = toBeeClaimSpecValue(row);
       break;
     case 'gate_verdicts':

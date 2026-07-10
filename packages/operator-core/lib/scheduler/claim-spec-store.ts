@@ -144,7 +144,7 @@ export async function setClaimSpec(
 
 /**
  * The sentinel `bee_id` a FLEET-level claim spec is stored under (fleet-scheduler-
- * hardening-2026-07-03 P-002). Reuses `bee_claim_specs` unchanged — the sentinel can
+ * hardening-2026-07-03 P-002). Reuses `cup_claim_specs` (né `bee_claim_specs`) unchanged — the sentinel can
  * never collide with a real session/owner id (those are `su-<uuid>`/spawn ids) and
  * never claims anything (it is only ever a spec KEY, not a `taken_by`).
  */

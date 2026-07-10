@@ -301,13 +301,17 @@ export interface VoicePrefs {
    *                requires openai_api_key in /settings/api-keys)
    *   'local'    — force @huggingface/transformers BGE-small (free,
    *                ~400MB RAM, ~120MB disk; works offline)
+   *   'gemma'    — EmbeddingGemma-300m (local, MRL-384; lighter than
+   *                harrier: ~4× faster embeds, ~2.4GB less RAM)
+   *   'harrier'  — harrier-oss-0.6b @ native-1024 (local; best recall
+   *                on the P-006 gold set)
    *   'disabled' — turn memory off entirely (memory:* tools no-op)
    *
    * Switching modes uses per-mode collection names in pgvector, so
    * existing memories aren't corrupted but become "hidden" until you
    * switch back. See lib/memory/mem0-client.ts.
    */
-  memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'gemma' | 'disabled';
+  memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
 
   /**
    * Who the operator thinks it's talking to. Controls which audience-mode
@@ -409,16 +413,22 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
   agentLanguage: 'en',
-  // EmbeddingGemma-300m (local, MRL-384) by default — owner directive 2026-07-10
-  // "make the default EmbeddingGemma-300m" (a quality upgrade over BGE-small,
-  // still fully local/on-device). 'local' = BGE-small stays selectable. Both
+  // harrier-oss-0.6b (local, native-1024) by default — owner directive
+  // 2026-07-10 (P-015): "switch to harrier then and make it the default for
+  // new users as well", superseding the same-day gemma default. Harrier won
+  // the P-006 gold-set gate clearly (R@1 .8833 vs gemma .8083, MRR .9286 vs
+  // .8677) at ~4× embed latency + ~2.4GB extra RSS — 'gemma' stays selectable
+  // as the lighter option, 'local' (BGE-small) as the lightest. All three
   // sidestep the 'auto' cascade's key-thrash (WI-3615) and are safe as a hard
   // default because @huggingface/transformers is a real dependency (apps/operator
   // package.json), so the local embedder is always installed; it never falls
   // through to 'disabled' the way it would if the package were optional.
-  // Gemma's own space → memory_vec_gemma (migration 534); switching FROM another
-  // mode needs a re-embed (embedding-space-vs-dimension / reembedMemories).
-  memoryEmbedderMode: 'gemma',
+  // MEMORY-side only: prose/search surfaces stay gemma (vector(384) columns +
+  // harrier@384's rejection-margin collapse, P-006) via the harrier→gemma
+  // fallback in resolveBackfillEmbedder/buildQueryEmbedderResolved.
+  // Harrier's own space → memory_vec_harrier (migration 547); switching FROM
+  // another mode needs a re-embed (embedding-space-vs-dimension / reembedMemories).
+  memoryEmbedderMode: 'harrier',
   audienceMode: 'engineer',
   humanFacingRole: 'operator',
   webSpeechLeakAcked: false,
