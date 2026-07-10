@@ -45,6 +45,12 @@ import { modeById } from '../../../modes/registry';
  *  context as bulk input on every later turn. */
 const MEMORY_TEXT_CAP = 200;
 const MEMORY_HITS_CAP = 10;
+/** P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance recall hits before
+ *  folding — a degraded embedder (quota outage → lexical fallback) returns hits
+ *  scored 0.01–0.03 that are pure noise yet still cost fold tokens on EVERY
+ *  orient. Real recall hits score well above this; a hit with NO numeric score
+ *  passes (fail-open). Filtered hits surface as `filteredLowScore`, never silently. */
+const MEMORY_SCORE_FLOOR = 0.05;
 const PLAN_EVENTS_FOLD = 10;
 const FLEET_CATCHUP_FOLD = 8;
 const FLEET_CATCHUP_CAP = 25;
@@ -277,11 +283,14 @@ export async function composeOrient(
         ...(args.harness ? { harness_slug: args.harness } : {}),
         limit: memLimit,
       })) as { results?: OrientMemoryHit[] } | undefined;
-      const hits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
+      const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
         id: r.id,
         memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
         score: r.score,
       }));
+      // P-004 (fleet-member-dx): relevance floor — see MEMORY_SCORE_FLOOR.
+      const hits = rawHits.filter((h) => typeof h.score !== 'number' || h.score >= MEMORY_SCORE_FLOOR);
+      const filteredLowScore = rawHits.length - hits.length;
       // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as
       // a binding recall hit (it self-drained fleet leaders). Auto callers keep all.
       const { kept, withheld } = withholdQueenLoopControl(hits, driveMode, (h) => ({ body: h.memory }));
@@ -289,6 +298,7 @@ export async function composeOrient(
         query: memQuery,
         hits: kept,
         ...(withheld.length > 0 ? { withheld: withheld.length } : {}),
+        ...(filteredLowScore > 0 ? { filteredLowScore } : {}),
       };
     } catch {
       result.memory = null;

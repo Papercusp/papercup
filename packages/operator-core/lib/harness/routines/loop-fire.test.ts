@@ -363,7 +363,9 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
     for (const fireNumber of [2, 5, LOOP_WAKE_FULL_TEMPLATE_EVERY]) {
       const out = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber, checkpoint: note });
       expect(out).toContain('🔁 Loop wake toward: goal G');
-      expect(out).toContain(`(wake #${fireNumber}; short form`);
+      // P-006 (fleet-member-dx, EI-9018): labeled as the LOOP's own counter so it
+      // can't be misread against the event-wake delivery-log id.
+      expect(out).toContain(`(your loop's wake #${fireNumber}; short form`);
       expect(out).not.toContain('Each wake:');
       expect(out).toContain('## Next action');
       expect(out).toContain('refresh loop:checkpoint, then END YOUR TURN');
@@ -389,7 +391,7 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.summary).toContain('(wake #5; short form');
+    expect(opts.summary).toContain("(your loop's wake #5; short form");
     expect(opts.summary).not.toContain('Each wake:');
   });
 });
@@ -461,7 +463,7 @@ describe('the short-form recipe splice (P-005c — the moment-of-need reuse poin
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
     expect(res).toMatchObject({ fired: true });
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.summary).toContain('(wake #5; short form');
+    expect(opts.summary).toContain("(your loop's wake #5; short form");
     expect(opts.summary).not.toContain('recipes:run {');
   });
 });

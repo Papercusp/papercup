@@ -59,7 +59,14 @@ const ENGINEER_ISSUES_DDL = `
     PRIMARY KEY (workspace_id, issue_id))`;
 
 let db: FreshPgDb;
+// EI-9013: the store now canonicalizes the workspace via resolveConcreteWorkspaceId,
+// whose INTERNAL fallback call to activeWorkspaceId() the module mock above cannot
+// intercept (same-module internal call — see checkpoint.test.ts's EI-8824 note). Pin
+// the env override (workspace-registry precedence #2) so omitted-workspace calls
+// deterministically resolve to 'default' like the mock used to guarantee.
+const PRIOR_WS_ENV = process.env.PAPERCUSP_WORKSPACE_ID;
 beforeAll(async () => {
+  process.env.PAPERCUSP_WORKSPACE_ID = 'default';
   db = await createFreshPgDb('work-item-checkpoint');
   h.sql = db.sql;
   await db.sql.unsafe(CARRY_NOTES_DDL);
@@ -67,6 +74,8 @@ beforeAll(async () => {
   await db.sql.unsafe(ENGINEER_ISSUES_DDL);
 }, 60_000);
 afterAll(async () => {
+  if (PRIOR_WS_ENV === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = PRIOR_WS_ENV;
   await db?.cleanup();
 });
 beforeEach(async () => {
@@ -196,6 +205,27 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
       'written under null',
     );
     expect(await getWorkItemCheckpoint({ harness: '*', workItemId: 'EI-3' })).toBe('written under null');
+  });
+
+  it("EI-9013: the unscoped-session literal '*' workspace canonicalizes to the concrete workspace on BOTH write and read", async () => {
+    // The EI-9013/EI-8824 class: an unscoped su session's ctx.workspaceId is the
+    // literal '*'. A write keyed under '*' is invisible to every concrete-workspace
+    // read (the incident: a confirmed-successful checkpoint read back null after
+    // compaction). The substrate now canonicalizes at BOTH seams.
+    expect(
+      await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: '*' }, 'wildcard write'),
+    ).toBe('wildcard write');
+    // Readable with the workspace omitted (concrete), passed concretely, and passed as '*'.
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013' })).toBe('wildcard write');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: 'default' })).toBe('wildcard write');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: '*' })).toBe('wildcard write');
+    // No literal-'*' row was ever persisted.
+    const star = await db.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.carry_notes WHERE workspace_id = '*'`;
+    expect(Number(star[0]?.n ?? 0)).toBe(0);
+    // And the reverse direction: a '*'-scoped READ finds a concretely-written row.
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: 'default' }, 'concrete write');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: '*' })).toBe('concrete write');
   });
 
   it('workspace-scoped: a checkpoint in another workspace is invisible here', async () => {

@@ -392,10 +392,28 @@ export default defineTool({
       covMap = await getAllPlanItemCoverage();
       // Scope to the queried plan (when set) the same way coverage is, so a
       // { plan } filter narrows both the coverage rollup AND the collision list.
+      // P-003 (fleet-member-dx, EI-9017): an {agent}-scoped read (e.g. coord:orient's
+      // `me` sub-read on every wake) previously still returned the WHOLE workspace
+      // coverage table (~60 rows of other agents' plans) — coverage was plan-scoped
+      // but never agent-scoped. When `agent` is set and `plan` is not, restrict the
+      // rollup to the plans that agent actually touches (its claim rows + declared
+      // plan). An agent touching no plans gets an empty rollup (correct — nothing
+      // it works is covered elsewhere); an explicit {plan} still wins.
+      const agentPlans: Set<string> | null =
+        args.agent && !args.plan
+          ? new Set(
+              [
+                ...rows.map((r) => r.planSlug),
+                ...agents.map((a) => a.declaredPlanSlug),
+              ].filter((s): s is string => typeof s === 'string' && s.length > 0),
+            )
+          : null;
       const inScope = (ref: string): boolean => {
-        if (!args.plan) return true;
         const hash = ref.indexOf('#');
-        return hash > 0 && ref.slice(0, hash) === args.plan;
+        const plan = hash > 0 ? ref.slice(0, hash) : null;
+        if (args.plan) return plan === args.plan;
+        if (agentPlans) return plan != null && agentPlans.has(plan);
+        return true;
       };
       const scoped = [...covMap.values()].filter((c) => inScope(c.ref));
       collisions = coverageCollisions(scoped);
@@ -451,6 +469,9 @@ export default defineTool({
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
       coverage_collisions: collisions.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
+      // P-001 (fleet-member-dx): members deliberately parked on an events:await —
+      // idle-by-design, not stalled/abandoned.
+      parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
       work_item_load: agents.reduce((n, a) => n + a.load, 0),
     };

@@ -19,6 +19,7 @@
  */
 
 import type { Embedder } from '@papercusp/search';
+import { buildGemmaEmbedder } from '@papercusp/memory';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
   resolveEmbedderWith,
@@ -86,6 +87,10 @@ export async function buildQueryEmbedder(): Promise<Embedder | null> {
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
       buildLocal: buildLocalTransformersEmbedder,
+      // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
+      // (its dual-encoder is trained so query-prompt vectors match the
+      // document-prompt vectors written on the storage side).
+      buildGemma: async () => buildGemmaEmbedder({ kind: 'query' }),
     });
     if (resolved.mode === 'disabled') return null;
     return resolved.embed;

@@ -67,6 +67,7 @@ vi.mock('./embed-admission', async (importOriginal) => {
 
 const STUB_OPENAI_EMBED = async () => [1, 2, 3];
 const STUB_LOCAL_EMBED = async () => [4, 5, 6];
+const STUB_GEMMA_EMBED = async () => [7, 8, 9];
 const EMBEDDER_DIM = 384;
 
 /** Build a deps object; each seam defaults to a recorded spy so a test can
@@ -80,6 +81,7 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
 } {
   const buildOpenAi = vi.fn(() => STUB_OPENAI_EMBED);
   const buildLocal = vi.fn(async () => STUB_LOCAL_EMBED);
+  const buildGemma = vi.fn(async () => STUB_GEMMA_EMBED);
   const resolveKey = vi.fn(async () => '');
   const localInstalled = vi.fn(async () => false);
   const deps: ResolveEmbedderDeps = {
@@ -88,10 +90,11 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
     localInstalled,
     buildOpenAi,
     buildLocal,
+    buildGemma,
     isOpenAiRecentlyExhausted: () => false, // not in cooldown by default (EI-3381) — its own describe block below covers the cooldown branch
     ...overrides,
   };
-  return { deps, buildOpenAi, buildLocal, resolveKey, localInstalled };
+  return { deps, buildOpenAi, buildLocal, buildGemma, resolveKey, localInstalled };
 }
 
 afterEach(() => {

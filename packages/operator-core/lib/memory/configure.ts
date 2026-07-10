@@ -26,6 +26,7 @@ import path from 'node:path';
 import {
   configureMemory,
   buildLocalEmbedder,
+  buildGemmaEmbedder,
   registerMemoryBackend,
   ClaudeFileMemoryBackend,
   CLAUDE_FILE_BACKEND_NAME,
@@ -423,12 +424,13 @@ export async function localAvailable(): Promise<boolean> {
 
 /** Read the live embedder preference (env override → persisted voice pref →
  *  'auto'). Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
-export async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'disabled'> {
+export async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'gemma' | 'disabled'> {
   // Env override first (memory-backend-improve-and-hybrid P-004b): lets the
   // bench force one leg (e.g. PAPERCUSP_MEMORY_EMBEDDER=local to measure the
-  // BGE-ONNX leg) without flipping the live operator preference in PG.
+  // BGE-ONNX leg, or =gemma for EmbeddingGemma) without flipping the live
+  // operator preference in PG.
   const env = process.env.PAPERCUSP_MEMORY_EMBEDDER;
-  if (env === 'auto' || env === 'openai' || env === 'local' || env === 'disabled') return env;
+  if (env === 'auto' || env === 'openai' || env === 'local' || env === 'gemma' || env === 'disabled') return env;
   try {
     const prefs = await loadVoicePrefs();
     return prefs.memoryEmbedderMode;
@@ -441,13 +443,18 @@ export async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'loc
  * Build an embedder for an explicit mode. Throws if that mode's
  * credentials/packages aren't available (the re-embed pass surfaces it).
  */
-async function buildEmbedderForMode(mode: 'openai' | 'local'): Promise<EmbedFn> {
+async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma'): Promise<EmbedFn> {
   if (mode === 'openai') {
     const key = await resolveOpenAiKey();
     if (!key) throw new Error('openai_api_key not configured');
     return buildOpenAiEmbedder(key);
   }
-  // local — worker-thread isolated, inline fallback.
+  if (mode === 'gemma') {
+    // EmbeddingGemma-300m @ MRL-384. Storage / the re-embed pass use the
+    // document prompt (search's query embedder uses the query prompt).
+    return buildGemmaEmbedder({ kind: 'document' });
+  }
+  // local — BGE-small, worker-thread isolated, inline fallback.
   return buildLocalEmbedder();
 }
 
@@ -458,11 +465,14 @@ async function buildEmbedderForMode(mode: 'openai' | 'local'): Promise<EmbedFn> 
  * production `resolveEmbedder` wires the real implementations.
  */
 export interface ResolveEmbedderDeps {
-  readPreference: () => Promise<'auto' | 'openai' | 'local' | 'disabled'>;
+  readPreference: () => Promise<'auto' | 'openai' | 'local' | 'gemma' | 'disabled'>;
   resolveKey: () => Promise<string>;
   localInstalled: () => Promise<boolean>;
   buildOpenAi: (key: string) => EmbedFn;
   buildLocal: () => Promise<EmbedFn>;
+  /** EmbeddingGemma-300m @ MRL-384 (the default local embedder). Gated by the
+   *  same `localInstalled` (shares the @huggingface/transformers package). */
+  buildGemma: () => Promise<EmbedFn>;
   /** EI-3381: is OpenAI embedding in its post-failure cooldown (a recent hard quota/billing
    *  stop, or a fully-exhausted retry budget)? Only consulted by the 'auto' cascade — a
    *  user-FORCED 'openai' preference still tries the key regardless (that's an explicit
@@ -500,6 +510,16 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
   }
 
+  if (preference === 'gemma') {
+    // EmbeddingGemma uses the same @huggingface/transformers package as BGE, so
+    // localInstalled() gates it. Its OWN space (dims 384, mode 'gemma' →
+    // memory_vec_gemma) so its vectors never mix with BGE ('local') or OpenAI.
+    if (await deps.localInstalled()) {
+      return { mode: 'gemma', dims: EMBEDDER_DIM, embed: await deps.buildGemma() };
+    }
+    return { mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' };
+  }
+
   // 'auto': prefer local while OpenAI is in its post-failure cooldown (EI-3381) — a sustained
   // single-key exhaustion must not keep re-trying a key we just learned is unusable when a
   // local embedder can serve the request instead.
@@ -527,6 +547,8 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
     localInstalled: localAvailable,
     buildOpenAi: buildOpenAiEmbedder,
     buildLocal: buildLocalEmbedder,
+    // Storage/mem0 embed with the document prompt (search uses the query prompt).
+    buildGemma: async () => buildGemmaEmbedder({ kind: 'document' }),
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
   });
 }

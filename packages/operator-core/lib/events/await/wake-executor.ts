@@ -219,9 +219,12 @@ export function wakeTurnText(d: DeliveryWork): string {
   const timeout = payloadIsTimeout(d.payload)
     ? ' [TIMEOUT — the event did NOT fire before your deadline]'
     : '';
+  // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
+  // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
+  // two contradictory counters and confused resuming agents. Label it as an id.
   return (
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
-    `(wake #${d.id}; you registered this with events:await — continue the work that was waiting on it.)`
+    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)`
   ).replace(/\s*\n\s*/g, ' ');
 }
 

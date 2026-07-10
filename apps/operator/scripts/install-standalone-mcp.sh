@@ -260,12 +260,11 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {pre, post, os.path.basename(pre), os.path.basename(post)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        cmd = h.get('command', '')
-        if any(o in cmd for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # See the sibling merge_* helpers below for why this filters at the command
+    # level, not the whole-entry level (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 # Pass the workspace root through so the hook scopes correctly even on a
 # non-default layout. Claude/Codex run hook commands through a shell, so
@@ -275,7 +274,7 @@ post_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {post}"
 
 hooks = cfg.setdefault('hooks', {})
 for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
-    arr = [e for e in hooks.get(event, []) if not is_ours(e)]  # drop stale ours
+    arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]  # drop stale ours
     arr.append({'matcher': matcher,
                 'hooks': [{'type': 'command', 'command': cmd}]})
     hooks[event] = arr
@@ -316,18 +315,20 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {coord, os.path.basename(coord)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 # The hook scopes itself to psu sessions via PAPERCUSP_SID, but pass the
 # workspace root through too for parity with the lock hooks.
 cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {coord}"
 
 hooks = cfg.setdefault('hooks', {})
-arr = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['PostToolUse'] = arr
@@ -361,16 +362,18 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {activity, os.path.basename(activity)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 # The hook reads PAPERCUSP_SID + cwd from the session env (Claude passes the
 # session env to hooks), so no baking is needed — just the script path.
 hooks = cfg.setdefault('hooks', {})
-arr = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': activity}]})
 hooks['PostToolUse'] = arr
@@ -402,14 +405,16 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {activity, os.path.basename(activity)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 hooks = cfg.setdefault('hooks', {})
-arr = [e for e in hooks.get('PreToolUse', []) if not is_ours(e)]
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': activity}]})
 hooks['PreToolUse'] = arr
@@ -442,15 +447,17 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {lifecycle, os.path.basename(lifecycle)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 hooks = cfg.setdefault('hooks', {})
 for event in ('SessionStart', 'SessionEnd'):
-    arr = [e for e in hooks.get(event, []) if not is_ours(e)]
+    arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]
     arr.append({'hooks': [{'type': 'command', 'command': lifecycle}]})
     hooks[event] = arr
 
@@ -485,21 +492,23 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {nudge, os.path.basename(nudge)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 hooks = cfg.setdefault('hooks', {})
 # PostToolUse marker entry (file-edit tools only).
-post = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
+post = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
 post.append({'matcher': 'Edit|Write|MultiEdit',
              'hooks': [{'type': 'command', 'command': nudge}]})
 hooks['PostToolUse'] = post
 # Stop + SessionEnd nudge entries (no tool matcher — session/turn events).
 for event in ('Stop', 'SessionEnd'):
-    arr = [e for e in hooks.get(event, []) if not is_ours(e)]
+    arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]
     arr.append({'hooks': [{'type': 'command', 'command': nudge}]})
     hooks[event] = arr
 
@@ -626,16 +635,18 @@ except (json.JSONDecodeError, ValueError):
 
 ours = {gate, os.path.basename(gate)}
 
-def is_ours(entry):
-    for h in (entry.get('hooks') or []):
-        if any(o in h.get('command', '') for o in ours):
-            return True
-    return False
+def drop_ours(entry):
+    # Filter OUT just OUR command(s) from one hook entry (command-level, not whole-
+    # entry): keeps a co-located FOREIGN command, e.g. a live settings.json's Bash
+    # entry carrying both our gate hook and a third-party `rtk hook claude` — a
+    # whole-entry drop silently destroyed that foreign command (EI-8997 follow-up).
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
 
 cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {gate}"
 
 hooks = cfg.setdefault('hooks', {})
-arr = [e for e in hooks.get('PreToolUse', []) if not is_ours(e)]
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
 arr.append({'matcher': 'Bash',
             'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['PreToolUse'] = arr

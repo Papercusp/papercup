@@ -105,4 +105,22 @@ describe('mergeClaudeHookSettings — graceful degradation via `present`', () =>
     // but the hooks + statusline still register.
     expect(commandsFor(cfg, 'PreToolUse')).toContain(`${DEST}/pretooluse-locks-acquire.sh`);
   });
+
+  it('EI-8997 follow-up: a co-located FOREIGN command survives a re-merge (command-level filter, not whole-entry)', () => {
+    // Reproduces a real live-settings.json shape: ONE PreToolUse entry mixing our
+    // stale bash-gate command with a third-party command under the SAME matcher.
+    // A whole-entry drop (the pre-fix behavior) silently destroyed the foreign one.
+    const mixed = {
+      matcher: 'Bash',
+      hooks: [
+        { type: 'command', command: `${DEST}/pretooluse-bash-resource-gate.sh` },
+        { type: 'command', command: '/usr/local/bin/rtk hook claude' },
+      ],
+    };
+    const cfg = mergeClaudeHookSettings({ hooks: { PreToolUse: [mixed] } }, DEST);
+    const bashEntries = (cfg.hooks.PreToolUse as any[]).filter((e) => e.matcher === 'Bash');
+    const allBashCmds = bashEntries.flatMap((e) => e.hooks.map((h: any) => h.command));
+    expect(allBashCmds).toContain('/usr/local/bin/rtk hook claude'); // foreign command preserved
+    expect(allBashCmds).toContain(`${DEST}/pretooluse-bash-resource-gate.sh`); // ours refreshed
+  });
 });

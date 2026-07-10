@@ -476,3 +476,48 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.memory!.withheld).toBeUndefined();
   });
 });
+
+describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', () => {
+  const CORE_FLOOR = {
+    'fleet:assignments': () => ({ ok: true, summary: {}, agents: [] }),
+    'work_items:list': () => [],
+    'coord:inbox': () => ({ summary: { total: 0 }, entries: [] }),
+    'coord:plan-events': () => ({ total: 0, recent: [] }),
+    'coord:whoami': () => ({ fleetSlug: null }),
+    'recipes:search': () => ({ ok: true, recipes: [] }),
+    'coord:declare-intent': () => ({ ok: true }),
+  };
+
+  it('drops near-zero-score hits (degraded-embedder noise) and surfaces filteredLowScore', async () => {
+    const { call } = fakeCall({
+      ...CORE_FLOOR,
+      'memory:search': () => ({
+        ok: true,
+        results: [
+          { id: 'good', memory: 'a real recall hit', score: 0.42 },
+          { id: 'noise1', memory: 'lexical-fallback noise', score: 0.0306 },
+          { id: 'noise2', memory: 'more noise', score: 0.016 },
+        ],
+      }),
+    });
+    const r = await composeOrient({ intent: 'do the thing' }, call, 'me');
+    expect(r.memory?.hits.map((h) => h.id)).toEqual(['good']);
+    expect((r.memory as { filteredLowScore?: number }).filteredLowScore).toBe(2);
+  });
+
+  it('a hit with NO numeric score passes (fail-open), and no noise ⇒ no filteredLowScore key', async () => {
+    const { call } = fakeCall({
+      ...CORE_FLOOR,
+      'memory:search': () => ({
+        ok: true,
+        results: [
+          { id: 'unscored', memory: 'no score field' },
+          { id: 'good', memory: 'scored fine', score: 0.5 },
+        ],
+      }),
+    });
+    const r = await composeOrient({ intent: 'do the thing' }, call, 'me');
+    expect(r.memory?.hits.map((h) => h.id)).toEqual(['unscored', 'good']);
+    expect('filteredLowScore' in (r.memory as object)).toBe(false);
+  });
+});

@@ -70,6 +70,12 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       doing: workRef(r.doing, c.doing),
       load: typeof r.load === "number" ? r.load : 0,
       isSelf: r.isSelf === true,
+      // P-001 (fleet-member-dx): active non-inbox-wake events:await keys — a
+      // deliberately-benched member. Present only when parked (usually absent),
+      // so it is kept at EVERY tier like verdict/wakeMode.
+      ...(Array.isArray(r.parkedOn) && r.parkedOn.length > 0
+        ? { parkedOn: r.parkedOn.map(String) }
+        : {}),
     };
     if (tier === "trimmed") return base;
     return {

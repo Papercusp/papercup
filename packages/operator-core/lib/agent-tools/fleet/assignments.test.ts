@@ -11,10 +11,12 @@ import {
   reconcileWakeability,
   deriveMemberVerdict,
   decorateMemberVerdicts,
+  decorateParkedOn,
   VERDICT_SPEAKING_FRESH_MS,
   VERDICT_STALL_MS,
   type MemberVerdict,
 } from './assignments';
+import { shapeFleetAssignments } from './assignments-shape';
 import type { AgentAssignment } from '../../fleet/assignments';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
@@ -262,5 +264,73 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
     );
     expect(out).toEqual([]);
     expect(called).toBe(0);
+  });
+});
+
+describe('decorateParkedOn — P-001 fleet-member-dx (EI-9014)', () => {
+  it('stamps parkedOn from active non-inbox-wake awaits (injected fetcher)', async () => {
+    const agents = [baseAgent({ agentId: 'a1' }), baseAgent({ agentId: 'a2' })];
+    await decorateParkedOn(agents, async () => [
+      { subscriberId: 'a1', eventKey: 'p2p-git:phase3-open' },
+    ]);
+    expect((agents[0] as { parkedOn?: string[] }).parkedOn).toEqual(['p2p-git:phase3-open']);
+    expect((agents[1] as { parkedOn?: string[] }).parkedOn).toBeUndefined();
+  });
+
+  it('dedupes repeated keys and caps at 6 per agent', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    const rows = [
+      { subscriberId: 'a1', eventKey: 'k1' },
+      { subscriberId: 'a1', eventKey: 'k1' }, // dupe
+      ...Array.from({ length: 10 }, (_, i) => ({ subscriberId: 'a1', eventKey: `k${i + 2}` })),
+    ];
+    await decorateParkedOn(agents, async () => rows);
+    const parked = (agents[0] as { parkedOn?: string[] }).parkedOn ?? [];
+    expect(parked[0]).toBe('k1');
+    expect(new Set(parked).size).toBe(parked.length); // no dupes
+    expect(parked.length).toBeLessThanOrEqual(6);
+  });
+
+  it('empty agent list is a no-op that never calls the fetcher', async () => {
+    let called = false;
+    await decorateParkedOn([], async () => {
+      called = true;
+      return [];
+    });
+    expect(called).toBe(false);
+  });
+
+  it('no parked rows leaves every row unstamped', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    await decorateParkedOn(agents, async () => []);
+    expect((agents[0] as { parkedOn?: string[] }).parkedOn).toBeUndefined();
+  });
+});
+
+describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-member-dx)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 2 },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      { agentId: 'a1', parkedOn: ['p2p-git:phase3-open'], claims: [], queued: [] },
+      { agentId: 'a2', claims: [], queued: [] },
+    ],
+  };
+
+  it('trimmed tier keeps parkedOn on parked rows and omits it elsewhere', () => {
+    const shaped = shapeFleetAssignments(data, 'trimmed') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
+    expect('parkedOn' in shaped.agents[1]).toBe(false);
+  });
+
+  it('standard tier keeps it too', () => {
+    const shaped = shapeFleetAssignments(data, 'standard') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
   });
 });

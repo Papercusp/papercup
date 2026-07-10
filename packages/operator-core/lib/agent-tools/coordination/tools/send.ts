@@ -240,7 +240,10 @@ async function sendOne(
   // finite seconds only; a bad value is silently dropped rather than failing
   // the send (this is a best-effort nudge, never a hard requirement).
   if (typeof msg.replyDeadlineSec === 'number' && Number.isFinite(msg.replyDeadlineSec) && msg.replyDeadlineSec > 0) {
-    extra.replyDeadlineAt = Date.now() + msg.replyDeadlineSec * 1000;
+    // Math.round: the zod arg allows FRACTIONAL seconds, but the sweep (and the
+    // 536 partial index) cast this field `::bigint` — a fractional stamp like
+    // 1752119999999.1 would fail that cast at sweep time. Integer ms always.
+    extra.replyDeadlineAt = Math.round(Date.now() + msg.replyDeadlineSec * 1000);
   }
   // P-008 (cross-machine-coord-parity): a FEDERATED, DIRECTED, required-wake
   // send requests a DELIVERY RECEIPT — the receiving machine's projection sends

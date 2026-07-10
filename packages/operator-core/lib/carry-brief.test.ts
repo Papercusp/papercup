@@ -351,3 +351,64 @@ describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)'
     ]);
   });
 });
+
+describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace canonicalization)', () => {
+  /** Tagged-template sql stub that CAPTURES the query text + params it receives. */
+  function capturingSql(rows: Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>) {
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      calls.push({ text: strings.join('¶'), params: vals });
+      return Promise.resolve(rows);
+    }) as unknown as never;
+    return { sql, calls };
+  }
+
+  it('queries work_items DIRECTLY, covering the feature/chunk family the engineer_issues view excludes', async () => {
+    // The incident (EI-9013): WI-3535 — a held FEATURE item — never appeared in the
+    // post-compaction fold, because this read went through the engineer_issues VIEW
+    // (item_kind IN bug/change/task only). Pin that the query now targets work_items
+    // and carries BOTH per-family branches.
+    const { sql, calls } = capturingSql([
+      { issue_id: 'WI-3535', title: 'feature item', body: 'b', scope: 'harness:papercusp' },
+    ]);
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql,
+      getWorkItemCheckpointFn: async () => 'feature checkpoint',
+    });
+    expect(held).toEqual([
+      { id: 'WI-3535', title: 'feature item', body: 'b', harness: 'papercusp', checkpoint: 'feature checkpoint' },
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('harness_shared.work_items');
+    expect(calls[0]!.text).not.toContain('engineer_issues');
+    expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
+    expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
+  });
+
+  it("canonicalizes a wildcard '*' workspace to the concrete one for BOTH the query and the checkpoint reads", async () => {
+    // An unscoped su session's ctx.workspaceId is the literal '*' — previously this
+    // scoped the held-items query + checkpoint reads to a workspace with no rows,
+    // so the fold showed NOTHING held (the other half of EI-9013).
+    const prior = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'resolved-concrete-ws';
+    try {
+      const { sql, calls } = capturingSql([
+        { issue_id: 'WI-1', title: 't', body: 'b', scope: 'harness:h1' },
+      ]);
+      const checkpointRefs: Array<{ workspaceId?: string }> = [];
+      await readHeldWorkItems('su-abc', '*', {
+        sql,
+        getWorkItemCheckpointFn: async (ref) => {
+          checkpointRefs.push(ref);
+          return null;
+        },
+      });
+      expect(calls[0]!.params).toContain('resolved-concrete-ws');
+      expect(calls[0]!.params).not.toContain('*');
+      expect(checkpointRefs[0]!.workspaceId).toBe('resolved-concrete-ws');
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = prior;
+    }
+  });
+});

@@ -294,7 +294,7 @@ export interface VoicePrefs {
    * existing memories aren't corrupted but become "hidden" until you
    * switch back. See lib/memory/mem0-client.ts.
    */
-  memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'disabled';
+  memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'gemma' | 'disabled';
 
   /**
    * Who the operator thinks it's talking to. Controls which audience-mode
@@ -393,12 +393,16 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
   agentLanguage: 'en',
-  // Local (BGE-ONNX) by default — owner directive "keep local the default", and
-  // it sidesteps the 'auto' cascade's key-thrash (WI-3615). Safe as a hard default
-  // because @huggingface/transformers is a real dependency (apps/operator
-  // package.json), so the local embedder is always installed; 'local' never falls
-  // through to 'disabled' here the way it would if the package were optional.
-  memoryEmbedderMode: 'local',
+  // EmbeddingGemma-300m (local, MRL-384) by default — owner directive 2026-07-10
+  // "make the default EmbeddingGemma-300m" (a quality upgrade over BGE-small,
+  // still fully local/on-device). 'local' = BGE-small stays selectable. Both
+  // sidestep the 'auto' cascade's key-thrash (WI-3615) and are safe as a hard
+  // default because @huggingface/transformers is a real dependency (apps/operator
+  // package.json), so the local embedder is always installed; it never falls
+  // through to 'disabled' the way it would if the package were optional.
+  // Gemma's own space → memory_vec_gemma (migration 534); switching FROM another
+  // mode needs a re-embed (embedding-space-vs-dimension / reembedMemories).
+  memoryEmbedderMode: 'gemma',
   audienceMode: 'engineer',
   humanFacingRole: 'operator',
   webSpeechLeakAcked: false,

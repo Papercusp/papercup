@@ -28,6 +28,7 @@ import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
+import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 
 export const CLAIM_WATCH_OWNER = 'claim-discipline-watch';
 const WATCH_IDENTITY: AgentIdentity = {
@@ -126,6 +127,34 @@ export function filterStoreBackedTargets<T extends { agentId: string; declaredPl
   return { keep, skippedStoreAbsent };
 }
 
+/**
+ * P-002 (fleet-member-dx-improvements-2026-07-10, EI-9014): an agent PARKED on a
+ * real (non-inbox-wake) events:await is DELIBERATELY idle — benched awaiting a
+ * pushed event (typically its leader's "I'll emit when X greens; stop polling").
+ * "Declared but unclaimed" is that agent's CORRECT state, not a discipline miss:
+ * nagging it every tick pressures agents into grabbing out-of-lane work just to
+ * silence the watch. Pure filter over a precomputed parked-key map so the
+ * decision unit-tests without PG (the filterStoreBackedTargets pattern). The
+ * parked read FAILING yields an empty map upstream — fail-open toward nudging
+ * (a transient PG hiccup never suppresses a possibly-real nudge).
+ */
+export function filterParkedTargets<T extends { agentId: string }>(
+  targets: readonly T[],
+  parkedKeysByAgent: ReadonlyMap<string, readonly string[]>,
+): { keep: T[]; skippedParked: Array<{ agentId: string; parkedOn: string }> } {
+  const keep: T[] = [];
+  const skippedParked: Array<{ agentId: string; parkedOn: string }> = [];
+  for (const t of targets) {
+    const keys = parkedKeysByAgent.get(t.agentId);
+    if (keys && keys.length > 0) {
+      skippedParked.push({ agentId: t.agentId, parkedOn: keys[0] });
+      continue;
+    }
+    keep.push(t);
+  }
+  return { keep, skippedParked };
+}
+
 /** The stable summary prefix — also the outbox-throttle marker. */
 export const NUDGE_PREFIX = 'claim-discipline:';
 
@@ -211,11 +240,28 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     }),
   );
 
-  const { keep: targets, skippedStoreAbsent } = filterStoreBackedTargets(
+  const { keep: storeBacked, skippedStoreAbsent } = filterStoreBackedTargets(
     preTargets,
     workspaceByAgent,
     existsByKey,
   );
+
+  // P-002 (fleet-member-dx, EI-9014): drop targets deliberately PARKED on a real
+  // events:await — their unclaimed state is a bench, not a discipline miss. A
+  // failed read yields an empty map = nobody suppressed (fail-open to nudging).
+  let parkedKeysByAgent = new Map<string, string[]>();
+  try {
+    const parkedRows = await listParkedAwaitsForSubscribers(storeBacked.map((t) => t.agentId));
+    for (const r of parkedRows) {
+      const list = parkedKeysByAgent.get(r.subscriberId) ?? [];
+      list.push(r.eventKey);
+      parkedKeysByAgent.set(r.subscriberId, list);
+    }
+  } catch {
+    parkedKeysByAgent = new Map();
+  }
+  const { keep: targets, skippedParked } = filterParkedTargets(storeBacked, parkedKeysByAgent);
+
   for (const t of targets) {
     const plan = t.declaredPlanSlug!;
     await sendMessage(WATCH_IDENTITY, {
@@ -230,6 +276,11 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   console.log(
     `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
       (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
+      (skippedParked.length
+        ? `, ${skippedParked.length} skipped (parked on events:await: ${skippedParked
+            .map((s) => `${s.agentId.slice(0, 8)}→${s.parkedOn}`)
+            .join(', ')})`
+        : '') +
       (recentlyNudged.size ? `, ${recentlyNudged.size} in throttle window` : ''),
   );
 });

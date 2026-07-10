@@ -131,6 +131,22 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
   });
 }
 
+/** P-005 (fleet-member-dx-improvements-2026-07-10) pure rule: exclude peers'
+ *  auto `now working on:` intent-declare messages (lifecycle:'intent') from the
+ *  default read — they are presence state re-broadcast to every @plan/@fleet
+ *  subscriber, and on a busy fleet they dominate the window and make
+ *  `summary.total` meaningless (observed: the bulk of a 2,332-message inbox).
+ *  KEPT when the caller opted in (`includeIntents`) OR passed a sender `from`
+ *  filter (a sender-scoped read wants that sender's status line). Pure. */
+export function excludeIntentDeclares<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  opts: { includeIntents?: boolean; from?: string | null },
+): { kept: T[]; excluded: number } {
+  if (opts.includeIntents || opts.from) return { kept: [...entries], excluded: 0 };
+  const kept = entries.filter((e) => e["lifecycle"] !== "intent");
+  return { kept, excluded: entries.length - kept.length };
+}
+
 /** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
  *  broadcasts — same sender, kind, category, and verbatim summary, addressed to
  *  '*' — into ONE row (the newest of the group), annotated `repeat_count` +
@@ -267,6 +283,12 @@ export default defineTool({
       .describe(
         "Include ambient system broadcasts (service-health, agent-governor, doc-drift) excluded by default.",
       ),
+    include_intents: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include peers' auto `now working on:` intent-declare messages (lifecycle:'intent'), excluded from the default read like ambient — they are presence state, re-broadcast to every plan/fleet subscriber, and on a busy fleet they dominate the window (P-005 fleet-member-dx: 2,300+ of one member's inbox). summary.intent_excluded counts them. A `from`-filtered read keeps them regardless (a sender-scoped read wants that sender's status).",
+      ),
     max_body_chars: z
       .number()
       .int()
@@ -342,12 +364,19 @@ export default defineTool({
     const ambientFiltered = args.include_ambient
       ? all
       : all.filter((e) => !isAmbient(e));
+    // P-005 (fleet-member-dx): excluded by default like ambient, counted as
+    // `intent_excluded` — see excludeIntentDeclares (the pure rule).
+    const keepIntents = !!args.include_intents || !!args.from;
+    const { kept: intentFiltered, excluded: intentExcluded } = excludeIntentDeclares(
+      ambientFiltered as unknown as Array<Record<string, unknown>>,
+      { includeIntents: args.include_intents, from: args.from },
+    ) as unknown as { kept: typeof ambientFiltered; excluded: number };
     // EI-7018: honor a strict sender-only `from` filter instead of silently ignoring it (the
     // silent-ignore looked like a hit-less filtered read). Applied post-cache/in-memory so it
     // never collides with the owner-keyed derive cache; it scopes the returned window + the
     // summary counts (byKind/total below run on `filtered`). `all` stays unfiltered for the
     // resolution scan (annotateResolvedConditions).
-    const filtered = filterInboxBySender(ambientFiltered, args.from);
+    const filtered = filterInboxBySender(intentFiltered, args.from);
 
     // EI-6144: fold repeated categorized broadcasts into one ×N row BEFORE the
     // limit slice, so the returned window carries distinct signal instead of a
@@ -376,6 +405,9 @@ export default defineTool({
         ? { payload_tier: sessionTier }
         : {}),
       ambient_excluded: ambientExcluded,
+      // P-005 (fleet-member-dx): auto intent-declares excluded from the default
+      // read — presence state, not messages; include_intents opts back in.
+      intent_excluded: intentExcluded,
       // EI-6144: rows folded into a ×N representative (repeat_count on the row).
       coalesced_dupes: coalescedDupes,
       by_kind: byKind,
@@ -384,6 +416,33 @@ export default defineTool({
         ? (entries[entries.length - 1]?.ts ?? null)
         : null,
     };
+
+    // P-005 (fleet-member-dx, D-003): intents stay IN the mid-turn `[coord+N]`
+    // injection — a peer's `>` status line is a designed ambient-awareness glyph —
+    // only the RETURNED entries/summary exclude them. The injection window is
+    // therefore built from the intent-INCLUSIVE list, and `newest_ts` must cover
+    // it (the cc/omp hooks advance their cursor from newest_ts — a newest_ts that
+    // lags an injected intent would re-inject the same line every read).
+    let injectionEntries = entries;
+    if (!keepIntents && intentExcluded > 0) {
+      const withIntents = coalesceRepeatedBroadcasts(
+        filterInboxBySender(
+          ambientFiltered,
+          args.from,
+        ) as unknown as Array<Record<string, unknown>>,
+      );
+      injectionEntries = (
+        withIntents.length > limit
+          ? withIntents.slice(withIntents.length - limit)
+          : withIntents
+      ) as unknown as typeof entries;
+      const injNewest = injectionEntries.length
+        ? (injectionEntries[injectionEntries.length - 1]?.ts ?? null)
+        : null;
+      if (injNewest && (!summary.newest_ts || injNewest > summary.newest_ts)) {
+        summary.newest_ts = injNewest;
+      }
+    }
 
     // EI-2042 READ-RECEIPT: advance this agent's `messages_shown_ts` cursor to the newest
     // entry just SHOWN to them — DETERMINISTICALLY here in tool code (the moment the
@@ -406,7 +465,7 @@ export default defineTool({
     // echo `injection` + advance the cursor from `summary.newest_ts`). The
     // cursor/summary metadata stays OUT of the injection body, alongside it.
     const coordInjection = renderInjection(
-      entries as unknown as CoordLineSource[],
+      injectionEntries as unknown as CoordLineSource[],
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh

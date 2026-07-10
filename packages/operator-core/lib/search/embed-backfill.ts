@@ -38,7 +38,7 @@ import {
   localAvailable,
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
-import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
+import { buildGemmaEmbedder, type EmbedFn, type ResolvedEmbedder } from '@papercusp/memory';
 
 // Exported for embed-space-self-check.ts (WI-3644): the expected vector width.
 export const EMBEDDER_DIM = 384;
@@ -48,7 +48,7 @@ const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 // pushes bigger batches for throughput, a laptop keeps latency/memory down.
 const BATCH_SIZE = getResourceProfile().embedBatchSize;
 
-type ResolvedMode = 'openai' | 'local' | 'disabled';
+type ResolvedMode = 'openai' | 'local' | 'gemma' | 'disabled';
 
 interface BackfillStats {
   table: string;
@@ -129,6 +129,8 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
     buildLocal: buildLocalTransformersEmbedder,
+    // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
+    buildGemma: async () => buildGemmaEmbedder({ kind: 'document' }),
   });
 }
 

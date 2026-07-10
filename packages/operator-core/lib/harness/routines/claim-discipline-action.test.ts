@@ -6,6 +6,7 @@ import {
   nudgeBody,
   NUDGE_PREFIX,
   filterStoreBackedTargets,
+  filterParkedTargets,
   storeExistsKey,
 } from './claim-discipline-action';
 import type { PresenceRecord } from '@papercusp/coordination/presence';
@@ -176,5 +177,34 @@ describe('nudge content', () => {
     expect(b).toContain("plans:set-status");
     expect(b).toContain('coord:declare-intent');
     expect(b).toContain('plan-a');
+  });
+});
+
+describe('filterParkedTargets — P-002 fleet-member-dx (EI-9014)', () => {
+  const t = (agentId: string) => ({ agentId, declaredPlanSlug: 'plan-a' });
+
+  it('skips an agent parked on a real events:await and reports the awaited key', () => {
+    const parked = new Map([['a1', ['p2p-git:phase3-open']]]);
+    const { keep, skippedParked } = filterParkedTargets([t('a1'), t('a2')], parked);
+    expect(keep.map((x) => x.agentId)).toEqual(['a2']);
+    expect(skippedParked).toEqual([{ agentId: 'a1', parkedOn: 'p2p-git:phase3-open' }]);
+  });
+
+  it('an empty parked map (incl. the failed-read fallback) keeps every target — fail-open to nudging', () => {
+    const { keep, skippedParked } = filterParkedTargets([t('a1'), t('a2')], new Map());
+    expect(keep).toHaveLength(2);
+    expect(skippedParked).toHaveLength(0);
+  });
+
+  it('an agent whose key list is EMPTY is not parked', () => {
+    const { keep, skippedParked } = filterParkedTargets([t('a1')], new Map([['a1', [] as string[]]]));
+    expect(keep).toHaveLength(1);
+    expect(skippedParked).toHaveLength(0);
+  });
+
+  it('multiple parked keys: the first is the reported bench reason', () => {
+    const parked = new Map([['a1', ['gate:green', 'deploy:done']]]);
+    const { skippedParked } = filterParkedTargets([t('a1')], parked);
+    expect(skippedParked[0]?.parkedOn).toBe('gate:green');
   });
 });

@@ -32,11 +32,43 @@ import {
   withCarryNoteWalls,
   CARRY_NOTE_MAX_WALLS,
 } from '../../carry-note';
+import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
 import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
+
+/**
+ * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
+ * recent coord:inbox / coord:orient invocation (ISO), or null. The continuation
+ * gate's unread-inbox leg previously keyed ONLY off the turn-END watermark
+ * (`messages_since_ts`) — a session that never settled one has an empty
+ * watermark, so the gate reported "inbox not evaluated" FOREVER, even seconds
+ * after the agent literally read its inbox in the same turn. An inbox/orient
+ * READ is evaluation: credit it as the unread cursor. Both name forms matched
+ * (colon registry name + underscore transport variant). Best-effort: any
+ * failure returns null (the gate then fails safe toward settling, as before).
+ */
+export async function lastInboxReadAt(ownerId: string): Promise<string | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ invoked_at: string | Date }[]>`
+      SELECT invoked_at
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ${ownerId}
+         AND tool_name IN ('coord:inbox', 'coord:orient', 'coord_inbox', 'coord_orient')
+       ORDER BY invoked_at DESC
+       LIMIT 1
+    `;
+    const v = rows[0]?.invoked_at;
+    if (!v) return null;
+    const d = v instanceof Date ? v : new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  } catch {
+    return null;
+  }
+}
 
 export default defineTool({
   name: 'loop:checkpoint',
@@ -202,8 +234,16 @@ export default defineTool({
         const wm = await readWatermark(ownerId);
         // messages_since_ts advances at turn-END, so this counts messages addressed to you
         // that arrived since your last settle (excludeOwn + non-notify by filterInbox default
-        // = real interrupts, not ambient). Empty ('' — never-settled) ⇒ stays null (blocking).
-        const sinceTs = wm?.messages_since_ts;
+        // = real interrupts, not ambient).
+        // P-007 (fleet-member-dx, EI-9035): ALSO credit the owner's last coord:inbox/
+        // coord:orient READ — use the LATER of the two cursors. A never-settled session
+        // ('' watermark) that just read its inbox no longer gets a false, permanent
+        // "inbox not evaluated"; and a mid-turn read after the last settle correctly
+        // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
+        // stays null (blocking — fail safe toward settling, unchanged).
+        const wmTs = wm?.messages_since_ts || null;
+        const readTs = await lastInboxReadAt(ownerId);
+        const sinceTs = readTs && (!wmTs || readTs > wmTs) ? readTs : wmTs;
         if (sinceTs) {
           const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
           unreadInbox = unread.length;

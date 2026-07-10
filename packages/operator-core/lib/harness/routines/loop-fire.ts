@@ -289,7 +289,9 @@ export function renderLoopWakeText(opts: {
   }
   const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
   return [
-    `${firstLine} (wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
+    // P-006 (fleet-member-dx, EI-9018): label this as the LOOP's own counter so it
+    // can't be confused with the event-wake delivery-log id in the same injection.
+    `${firstLine} (your loop's wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes)`,
     '',
     ...priority.flatMap((s) => [s, '']),
     block,
