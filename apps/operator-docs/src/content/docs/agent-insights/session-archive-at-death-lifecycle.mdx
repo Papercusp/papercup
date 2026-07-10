@@ -1,0 +1,75 @@
+---
+title: "Session archive-at-death: ended sessions live in PG, not on disk"
+description: Since session-db-archive-retire-dirs-2026-07-10, an ENDED claude/codex/omp session's files are zstd-archived into harness_shared.session_archives and DELETED from disk (~15s after end + an hourly reconciler backstop). Resume rematerializes byte-exact from PG; sessions:read falls through to the archive; the per-session dir population stays capped at ~live-session count. Anything that greps dead-session dirs on disk is reading a surface that no longer exists.
+discovered: 2026-07-10
+tags: [sessions, archive, session-claude, codex-homes, omp, lifecycle, gc, resume, insights]
+status: active
+---
+
+## The inversion
+
+Before 2026-07-10 the on-disk JSONL was the permanent record and
+`session_turns` a derived 45-day index. The 17k+ dead
+`~/.papercusp/session-claude/<owner>/` dirs this accumulated fed the
+fs-watch/inotify meltdown (watch counts ×16 cluster workers → load 1126).
+Now the roles are inverted (plan `session-db-archive-retire-dirs-2026-07-10`,
+D-001):
+
+- **`harness_shared.session_archives`** (stamp/manifest) +
+  **`session_archive_files`** (zstd-9 blobs, sha256 of raw bytes, migration
+  539) are the ONE permanent canonical copy of every ended session's files.
+- **`session_turns`** stays the bounded, 45d-pruned, redacted recall INDEX —
+  unchanged.
+- **Disk** holds ONLY live sessions (owner ruling: the per-session dir model
+  stays for ACTIVE sessions — population is capped at live-session count; no
+  shared-claude-dir migration will be filed).
+
+## The two-path lifecycle (mirrors the idle-session-reaper doctrine)
+
+1. **Fast path** — `markAdvSessionEnded` fires a detached hook
+   (`session-archive-hook.ts`): 15s settle → final `ingestFileNow` (the index
+   catches the tail) → `archiveAndDeleteSession`. Flag-gated by
+   `SESSION_ARCHIVE_AT_END` (default ON; kill-switch).
+2. **Hourly reconciler** (`session-archive-reconciler.ts`, DBOS
+   `sessionArchiveReconcile` @ :20) — the backstop for kill-9/OOM/host-crash
+   ghosts: sweeps ended-unarchived adv rows (bounded 500 scanned/50 archived
+   per tick) + unprotected disk dirs (100/tick) + stale omp files (200/tick,
+   24h mtime grace).
+
+Safety invariants: **never follow symlinks** (per-session claude dirs are
+symlink farms into the shared `~/.claude`); **delete only after a
+sha-verified committed stamp**; archive write = one PG tx; rematerialize
+never clobbers a differing existing file (disk wins).
+
+## What replaced each disk read
+
+| Need | Surface |
+|---|---|
+| Resume an ended session (`claude --resume` / `codex resume`) | `wake-executor.ts` rematerializes-on-miss from the archive (byte-exact, mtimes restored) |
+| Read a dead session's turns | `sessions:read` falls through to `readArchivedSessionTurns` (`session-archive-read.ts`) — same cap+redaction as the index |
+| iq-battery bee trace after a run | `bee-instance.ts` loadTranscript falls through to `session_archives` keyed by `owner = spawnId` |
+| Search content | `sessions:search` stays INDEX-bounded by design (blobs are not a search index) |
+
+## GC is code-owned now
+
+The seeded `session-dir-gc` routine was **never armed** — the root cause of
+the 17k accumulation. The daily cadence is now a DBOS periodic workflow
+(`sessionDirGc` @ 04:35, `dbos/periodic-workflows.ts`), deploy-armed and
+immune to the seeded-but-never-enabled class. Retention picks by the flag:
+archive ON → 24h (deletion lossless; the gate is only a materialization-race
+guard), OFF → the legacy 7d (deletion lossy again). The routine action
+remains a manual/admin lever.
+
+## Traps for the next agent
+
+- A dir under `session-claude/` that "disappeared" is NOT data loss — check
+  `session_archives` first (`SELECT * FROM harness_shared.session_archives
+  WHERE session_id = …` or owner = the dir name).
+- `adv_sessions.archived_at` set + no archive rows = the "nothing to
+  archive" stamp (session left no files) — that's normal, not a bug.
+- Don't hand-write a new dead-dir walker: the reconciler + protected set
+  (`gatherProtectedSessionIdentity`, EI-311 liveness rules) already own that
+  sweep, and a walker that misses the protected set WILL delete a live
+  session's home.
+- Storage cost is measured: ~69KB zstd per session (~4.7×), ~46MB/day at
+  650 sessions/day ≈ 17GB/yr.

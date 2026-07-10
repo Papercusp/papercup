@@ -69,6 +69,14 @@ vi.mock('./promote-issue', async () => {
     }),
   };
 });
+// WI-3667/P-003: observeWorkItem's new plan-item-lane branch dynamically imports this
+// module — mocked here (module-boundary, not a real plan/DB fixture) so the C4 test below
+// exercises observeWorkItem's wiring/shape without standing up harness_plans. The guard
+// function itself is unit-pinned separately in scheduler/plan-item-lane-guard.test.ts.
+const planItemLaneBlockReasonMock = vi.fn(async () => null as unknown);
+vi.mock('./scheduler/plan-item-lane-guard', () => ({
+  planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
+}));
 
 const wi = await import('./work-items');
 
@@ -104,6 +112,7 @@ beforeEach(async () => {
                        harness_shared.coord_event_log RESTART IDENTITY`;
   // Deterministic WI ids per test (the standalone sequence is not reset by TRUNCATE).
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  planItemLaneBlockReasonMock.mockReset().mockResolvedValue(null);
 });
 
 describe('per-family state normalization (EI-24)', () => {
@@ -541,6 +550,68 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
 
   it('observing a missing work-item → null', async () => {
     expect(await wi.observeWorkItem('WI-404')).toBeNull();
+  });
+
+  // WI-3667/P-003: work_items:observe must report NOT-claimable + the blocking reason
+  // for an unclaimed row whose linked plan-item lane is effectively blocked — the same
+  // check work_items:claim_next / scheduler:get_next already enforce at claim time (a
+  // silent claim-then-release retry). planItemLaneBlockReason itself is unit-pinned in
+  // scheduler/plan-item-lane-guard.test.ts; here we only pin observeWorkItem's wiring +
+  // response shape (the guard is mocked at the module boundary — see top of file).
+  it('reports the plan-item-lane block reason for an unclaimed, plan-linked item (WI-3667/P-003)', async () => {
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+    });
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+
+    const obs = await wi.observeWorkItem(feat.id);
+    expect(obs).toMatchObject({
+      available: false,
+      claimedBy: null,
+      gated: true,
+      planItemBlocked: { planSlug: 'a-plan', itemId: 'P-9', effectiveStatus: 'blocked' },
+    });
+    expect(planItemLaneBlockReasonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a plan-linked item with a CLEAR lane is unaffected (available, no planItemBlocked)', async () => {
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked-clear',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } },
+    });
+
+    const obs = await wi.observeWorkItem(feat.id);
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+    expect(obs?.planItemBlocked).toBeUndefined();
+  });
+
+  it('does NOT consult the plan-item-lane guard once the item is already claimed', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'plan-linked-claimed',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+      assignee: 'agA',
+    });
+    planItemLaneBlockReasonMock.mockClear();
+
+    const obs = await wi.observeWorkItem(feat.id);
+    expect(obs).toMatchObject({ available: false, claimedBy: 'agA' });
+    expect(planItemLaneBlockReasonMock).not.toHaveBeenCalled();
   });
 
   // P-003 / D-002: a VOLUNTARY release of a feature mid-flight resets its status →

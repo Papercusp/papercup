@@ -109,6 +109,41 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * EI-9127 (storm-collector, 2026-07-10) — output signatures of a TOOLING-UNAVAILABLE
+ * death: the worker's session had NO working platform MCP connection and no
+ * Bash/Edit/ToolSearch fallback, so it could reason but never act — no code change, no
+ * test run, and critically no `improvements:resolve` call to close its own loop. This is
+ * an infra/spawn-environment failure exactly like the connectivity/auth patterns above,
+ * NOT evidence the item is hard or the worker is buggy — but unlike those, a worker in
+ * this state ALWAYS exits 0 (it reasons its way to "I cannot proceed" and exits cleanly
+ * rather than crashing), which `isEnvFailureExit`'s unconditional `exitCode === 0 =>
+ * not-env` short-circuit previously treated as "it resolved, or it's a real
+ * exited-0-without-resolve worker bug" — so every one of these was CHARGED as a real
+ * attempt AND fed the "auto-implement lane is broken" storm signal. Live evidence: EI-9127
+ * collected 4 items (EI-9021, EI-9107, WI-3795, EI-9116) spanning 01:23-10:02 EDT — each an
+ * independent worker session diagnosing the SAME missing-MCP/no-shell environment (all
+ * correlate with the Mac-VM crash-loop / ONNX thread-explosion host instability windows
+ * that day), e.g. "papercusp MCP server failed to connect and this runner has no
+ * Bash/Edit/ToolSearch fallback" (EI-9107), "runtime is missing its platform MCP tools,
+ * Bash, and code-edit tools" (EI-9021), "cannot call `improvements:resolve` (no platform
+ * MCP tools, no shell, no edit)" (EI-9116), "platform tools (incl.
+ * `improvements:resolve`), shell, and code-edit tools are all absent" (WI-3795). Checked
+ * BEFORE the exit===0 short-circuit so a genuine total-tooling-outage rolls back like any
+ * other env failure; a real exit-0-forgot-to-resolve worker bug (no tooling complaint in
+ * the output — e.g. "Now let me run the affected suite to confirm nothing else broke.")
+ * has none of these signatures and still falls through unchanged.
+ */
+const TOOLING_UNAVAILABLE_PATTERNS: readonly RegExp[] = [
+  /\bMCP server (?:failed to connect|unavailable|not available)\b/i,
+  /\bmissing (?:its |the )?(?:platform )?MCP tools\b/i,
+  /\bno platform MCP tools\b/i,
+  /\bplatform (?:MCP )?tools?\b[^.]*\b(?:absent|missing|unavailable)\b/i,
+  /\bno (?:bash|edit|toolsearch)\b[^.]*\bfallback\b/i,
+  /\bcannot call\b[^.]*\bimprovements:resolve\b/i,
+  /\bshell,? and code-edit tools are all absent\b/i,
+];
+
+/**
  * WI-716 — output signatures of a CONTEXT-OVERFLOW death: the worker's agentic
  * session exceeded the model's input window during a long reproduce+fix run. This
  * is an infra/context-management limit, NOT an item-quality signal (the item was
@@ -200,16 +235,22 @@ export interface EnvFailureVerdict {
 
 /**
  * Whether a worker exit is an ENVIRONMENT failure (don't charge the attempt) vs a
- * genuine worker outcome. A clean exit (0) is never an env failure — it resolved,
- * or it's a real exited-0-without-resolve worker bug. Non-zero: a recognizable
- * context-overflow or env signature in the output, a WORKER-TIMEOUT kill shape
- * (WI-2162 — checked before the generic sub-floor DOA rule since a timeout death is
- * ALWAYS past the floor and often has substantive-but-cut-off output, the opposite
- * of a DOA), or a sub-floor near-empty death (DOA). Pure.
+ * genuine worker outcome. EI-9127: checked FIRST, regardless of exit code, is the
+ * tooling-unavailable signature (a worker that ran with no MCP/Bash/Edit/ToolSearch
+ * access always exits 0 after reasoning its way to "I cannot proceed" — the exit code
+ * alone can't distinguish that from a genuine exited-0-forgot-to-resolve worker bug, so
+ * this is a text-pattern check, not an exit-code branch). Otherwise a clean exit (0) is
+ * never an env failure — it resolved, or it's a real exited-0-without-resolve worker
+ * bug. Non-zero: a recognizable context-overflow or env signature in the output, a
+ * WORKER-TIMEOUT kill shape (WI-2162 — checked before the generic sub-floor DOA rule
+ * since a timeout death is ALWAYS past the floor and often has substantive-but-cut-off
+ * output, the opposite of a DOA), or a sub-floor near-empty death (DOA). Pure.
  */
 export function isEnvFailureExit(info: WorkerExitInfo): EnvFailureVerdict {
-  if (info.exitCode === 0) return { env: false };
   const text = `${info.stdout ?? ''}\n${info.stderr ?? ''}`;
+  const toolingHit = TOOLING_UNAVAILABLE_PATTERNS.find((re) => re.test(text));
+  if (toolingHit) return { env: true, reason: `tooling unavailable ${toolingHit}` };
+  if (info.exitCode === 0) return { env: false };
   const overflowHit = CONTEXT_OVERFLOW_PATTERNS.find((re) => re.test(text));
   if (overflowHit) return { env: true, reason: `context overflow ${overflowHit}`, class: 'context-overflow' };
   if (isWorkerTimeoutExit(info)) {

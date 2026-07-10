@@ -80,10 +80,23 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       ...(Array.isArray(r.parkedOn) && r.parkedOn.length > 0
         ? { parkedOn: r.parkedOn.map(String) }
         : {}),
+      // P-007 (fleet-reliability-verification-2026-07-10): unanswered directed
+      // messages — present only when >=1 (usually absent), kept at EVERY tier
+      // like parkedOn/contextPressure. Trimmed keeps just count/oldestAgeMs;
+      // the per-message `newest` detail is standard+ only (below).
+      ...((r.unanswered as { count?: unknown } | undefined)?.count
+        ? {
+            unanswered: {
+              count: (r.unanswered as { count: number }).count,
+              oldestAgeMs: (r.unanswered as { oldestAgeMs?: number }).oldestAgeMs ?? null,
+            },
+          }
+        : {}),
     };
     if (tier === "trimmed") return base;
     return {
       ...base,
+      ...(r.unanswered ? { unanswered: r.unanswered } : {}),
       label: r.label ?? null,
       // EI-8995: the raw freshness timestamp behind `verdict` (standard+ only).
       lastToolCallAt: typeof r.lastToolCallAt === "string" ? r.lastToolCallAt : null,

@@ -2785,6 +2785,17 @@ export interface WorkItemObservation {
    * claimed instead of discovering it only via a `not_claimable` claim failure.
    */
   gated?: boolean;
+  /**
+   * WI-3667/P-003: set when the item is UNCLAIMED yet carries a plan-item back-pointer
+   * (payload.plan_item) whose linked plan lane is effectively `blocked` or needs a human
+   * decision (see scheduler/plan-item-lane-guard.ts) — the same check
+   * work_items:claim_next / scheduler:get_next already enforce at claim time (they
+   * silently claim-then-release and retry the next row). Surfacing the reason here lets a
+   * self-selecting agent — or anything reading `work_items:observe` before deciding to
+   * claim — see WHY an apparently-free item isn't really claimable, instead of only
+   * discovering it via a claim that bounces back to the pool.
+   */
+  planItemBlocked?: { reason: string; planSlug: string; itemId: string; effectiveStatus: string };
 }
 
 /**
@@ -2827,6 +2838,27 @@ export async function observeWorkItem(
   // too, not just report unclaimed and let the real claim bounce with not_claimable.
   if (unclaimed && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
     return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+  }
+  // WI-3667/P-003: an unclaimed row can still carry a plan-item back-pointer whose
+  // linked lane is effectively `blocked`/needs-human even though it cleared every SQL
+  // floor above — the same case work_items:claim_next / scheduler:get_next already
+  // catch at claim time via a silent claim-then-release retry (see
+  // scheduler/plan-item-lane-guard.ts). Surface it here too, so a caller deciding
+  // whether to claim (or auditing "why is this item not really claimable") sees the
+  // SAME reason instead of only discovering it via a bounced claim. Lazy import to
+  // avoid a module-cycle with the scheduler layer (which imports work-items types).
+  if (unclaimed) {
+    const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+    const blocked = await planItemLaneBlockReason(wi);
+    if (blocked) {
+      return {
+        item: wi,
+        available: false,
+        claimedBy: wi.assignee,
+        gated: true,
+        planItemBlocked: blocked,
+      };
+    }
   }
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }

@@ -183,8 +183,45 @@ export function computeCodeRunAdoption(calls: CallRow[]): AdoptionSummary[] {
   return summarizeSpawnAdoption(spawnRowsFromCalls(calls));
 }
 
+/** Hard ceiling on the lookback window, independent of whatever a caller asks for. The
+ *  dev:code_run_adoption TOOL already clamps `sinceDays` to 90 via its zod schema, but
+ *  `readCodeRunAdoption` has two OTHER direct callers (system-health/compute.ts,
+ *  overwatch/scorecard-backstop.ts) that bypass that tool-layer clamp entirely — so the real
+ *  ceiling belongs HERE, where every caller funnels through it (WI-3815). */
+export const CODE_RUN_ADOPTION_MAX_SINCE_DAYS = 90;
+
+/** Statement-level timeout for the heavy tool_invocations scan (WI-3815: during the 2026-07-10
+ *  host-load incident, repeated scans of this query were the recurring offender left stuck in
+ *  PG's ClientWrite state — the backend had finished, but a starved Node event loop never drained
+ *  the result, so the connection sat open indefinitely and `pg_cancel_backend` couldn't clear it;
+ *  three such zombies saturated the operator PG pool for ~4h). This bounds worst-case SERVER-side
+ *  execution time as a general safety net (a degraded box, a missing index, lock contention) —
+ *  it does not by itself guarantee an already-finished-but-unflushed query gets reaped, which is
+ *  why `buildCodeRunAdoptionQuery` also caps the result-row count below (the more direct lever for
+ *  THIS incident's mechanism: less data to flush to a slow-draining client). Scoped via SET LOCAL
+ *  to just this query's statement batch — never leaks onto the pooled connection's next query. */
+export const CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS = 30_000;
+
+/** Hard ceiling on rows returned (WI-3815) — the final SELECT is one row per SPAWN (not per
+ *  role/day; the role/day fold happens in JS via summarizeSpawnAdoption), so a busy 90-day window
+ *  can legitimately be tens of thousands of rows. This is a pathological-case safety valve, not a
+ *  routine truncation floor — sized well above any observed real window so normal reads are
+ *  never truncated (a truncated read would silently under-count and skew adoptionRate). */
+export const CODE_RUN_ADOPTION_ROW_CAP = 200_000;
+
+/** Clamp an arbitrary sinceDays to [1, CODE_RUN_ADOPTION_MAX_SINCE_DAYS], defaulting to 7 for
+ *  anything missing/non-finite/non-positive. Pure + exported so the clamp itself is unit-tested
+ *  without PG. */
+export function clampSinceDays(sinceDays: number | undefined): number {
+  const n = sinceDays == null ? NaN : Math.trunc(sinceDays);
+  if (!Number.isFinite(n) || n < 1) return 7;
+  return Math.min(n, CODE_RUN_ADOPTION_MAX_SINCE_DAYS);
+}
+
 /** The canonical live query — pre-aggregates per spawn over the last `$1` days of SUCCESSFUL calls.
- *  Runnable as-is via dev:pg_query (see agent-insights/code-run-adoption-metric). Mirrors the
+ *  Runnable as-is via dev:pg_query (see agent-insights/code-run-adoption-metric) — kept
+ *  parameterized for that ad-hoc/manual use. `readCodeRunAdoption` itself does NOT run this
+ *  directly; it runs the bounded `buildCodeRunAdoptionQuery(...)` below (WI-3815). Mirrors the
  *  normalize() + BATCH_TOOL_NORMS / BATCH_RUNNER_NORMS sets above. */
 export const CODE_RUN_ADOPTION_SQL = `
 WITH calls AS (
@@ -244,6 +281,86 @@ FROM per_spawn ps
 LEFT JOIN work_agg wa USING (spawn_id)
 `;
 
+/**
+ * WI-3815: the query `readCodeRunAdoption` ACTUALLY runs — `CODE_RUN_ADOPTION_SQL`'s body,
+ * bounded three ways:
+ *   1. `SET LOCAL statement_timeout` — sent as ONE multi-statement batch with the scan itself
+ *      (see the `runQuery(..., [])` call below: postgres.js's `unsafe()` uses the SIMPLE query
+ *      protocol — which runs multiple `;`-separated statements as a single implicit transaction —
+ *      whenever the params array is EMPTY; passing `$1` bound params would force the extended
+ *      protocol instead, which only ever runs one statement, so `SET LOCAL` and the scan can't
+ *      share a batch that way). `SET LOCAL` scopes the timeout to just this batch — it can never
+ *      leak onto the pooled connection's next, unrelated query.
+ *   2. The lookback window is clamped (`clampSinceDays`) and inlined as a validated INTEGER
+ *      literal (never a raw/interpolated string) — safe because it is always the output of
+ *      `clampSinceDays`, never a caller-supplied string.
+ *   3. A `LIMIT` bounds the worst-case row count (see CODE_RUN_ADOPTION_ROW_CAP's doc).
+ *
+ * `days` MUST already be `clampSinceDays()`-ed by the caller (readCodeRunAdoption does this).
+ */
+export function buildCodeRunAdoptionQuery(days: number): string {
+  const safeDays = clampSinceDays(days);
+  return `
+SET LOCAL statement_timeout = '${CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS}ms';
+WITH calls AS (
+  SELECT
+    spawn_id,
+    role,
+    (invoked_at AT TIME ZONE 'UTC')::date::text AS day,
+    tool_name,
+    lower(regexp_replace(tool_name, '[^a-zA-Z0-9]', '', 'g')) AS norm
+  FROM harness_shared.tool_invocations
+  WHERE invoked_at >= now() - interval '${safeDays} days'
+    AND status = 'ok'
+    -- P-006 (2026-07-03): agent traffic ONLY. The raw table is dominated by UI HTTP
+    -- polling (the measuring-code-run-adoption doc's own denominator warning) and a
+    -- NULL spawn_id would collapse every un-attributed call into one mega-spawn via
+    -- GROUP BY. Without these two filters the fleet number graded polling, not agents.
+    AND transport = 'mcp'
+    AND spawn_id IS NOT NULL
+),
+per_spawn AS (
+  SELECT
+    spawn_id,
+    max(role) AS role,
+    max(day)  AS day,
+    bool_or(norm IN ('coderun','recipesrun')) AS used_code_run
+  FROM calls
+  GROUP BY spawn_id
+),
+work_tool_counts AS (
+  SELECT spawn_id, tool_name, count(*) AS cnt
+  FROM calls
+  WHERE norm NOT IN (
+    'coderun','codetools','recipesrun','recipessearch','recipeslist',
+    'recipesget','recipesmerge','recipessweep','recipescandidates',
+    -- POLLER_TOOL_NORMS (P-006): machine-cadence reads are not batchable LLM decisions.
+    'activityrecent'
+  )
+  GROUP BY spawn_id, tool_name
+),
+work_agg AS (
+  SELECT
+    spawn_id,
+    COALESCE(sum(cnt), 0)::int  AS work_calls,
+    count(*)::int               AS distinct_tools,
+    COALESCE(max(cnt), 0)::int  AS max_same_tool
+  FROM work_tool_counts
+  GROUP BY spawn_id
+)
+SELECT
+  ps.role,
+  ps.day,
+  COALESCE(wa.work_calls, 0)     AS work_calls,
+  COALESCE(wa.distinct_tools, 0) AS distinct_tools,
+  COALESCE(wa.max_same_tool, 0)  AS max_same_tool,
+  ps.used_code_run
+FROM per_spawn ps
+LEFT JOIN work_agg wa USING (spawn_id)
+LIMIT ${CODE_RUN_ADOPTION_ROW_CAP}
+`;
+}
+
 // ── Thundering-herd guard (EI-6889) ──────────────────────────────────────────────────────────
 // CODE_RUN_ADOPTION_SQL is a HEAVY 7-day full aggregation over harness_shared.tool_invocations
 // (millions of rows; a single scan runs for minutes). Several independent operator subsystems call
@@ -285,7 +402,11 @@ export async function readCodeRunAdoption(
   runQuery: RunQuery,
   opts: { sinceDays?: number; now?: () => number } = {},
 ): Promise<AdoptionSummary[]> {
-  const sinceDays = opts.sinceDays ?? 7;
+  // WI-3815: clamp FIRST — every caller (including the two that bypass the dev tool's own
+  // zod max(90)) funnels through this ceiling, and the cache/in-flight maps below key on the
+  // CLAMPED value so a caller passing e.g. 9999 shares the memo with one passing 90 rather than
+  // minting a distinct, equally-oversized cache entry.
+  const sinceDays = clampSinceDays(opts.sinceDays);
   const now = opts.now ?? Date.now;
 
   // Fresh memo within the TTL — serve it without touching PG.
@@ -297,6 +418,10 @@ export async function readCodeRunAdoption(
   if (running) return running;
 
   const scan = (async (): Promise<AdoptionSummary[]> => {
+    // WI-3815: run the BOUNDED query (SET LOCAL statement_timeout + inlined clamped window +
+    // LIMIT) as a single simple-protocol statement batch — an EMPTY params array is what makes
+    // postgres.js use the simple protocol (see buildCodeRunAdoptionQuery's doc); a $1-bound call
+    // would run only the first statement's binding and reject/ignore the SET LOCAL batching.
     const rows = await runQuery<{
       role: string;
       day: string;
@@ -304,7 +429,7 @@ export async function readCodeRunAdoption(
       distinct_tools: number | string;
       max_same_tool: number | string;
       used_code_run: boolean;
-    }>(CODE_RUN_ADOPTION_SQL, [sinceDays]);
+    }>(buildCodeRunAdoptionQuery(sinceDays), []);
     const spawnRows: SpawnAdoptionRow[] = rows.map((r) => ({
       role: r.role,
       day: r.day,

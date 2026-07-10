@@ -24,13 +24,19 @@
  *     tool_invocations); the full source line remains on disk for
  *     sessions:read.
  *   * TRUNCATED + REDACTED at ingest: 8k chars/turn; common secret shapes
- *     scrubbed. The index is for recall, not archival — the JSONL is the
- *     archive.
- *   * COMPACTION-SAFE by construction: compaction never deletes the JSONL, so
- *     the index can never lose pre-compaction turns; `ingestFileNow` gives the
- *     read-time freshness guarantee (self live-tail) client-neutrally
- *     (compaction-context-loss D-002 — hooks are optimizations, not
- *     dependencies).
+ *     scrubbed. The index is for recall, not archival — the PERMANENT copy is
+ *     `harness_shared.session_archives` (session-db-archive-retire-dirs
+ *     -2026-07-10 D-001): a LIVE session's JSONL is on disk; an ENDED
+ *     session's files are archived-then-deleted (exit hook + hourly
+ *     reconciler), and sessions:read falls through to the archive
+ *     (session-archive-read.ts) with this same cap+redaction re-applied.
+ *   * COMPACTION-SAFE by construction: compaction never deletes the JSONL
+ *     (archive-at-death only deletes AFTER a sha-verified archive of the
+ *     whole file), so the index can never lose pre-compaction turns;
+ *     `ingestFileNow` gives the read-time freshness guarantee (self
+ *     live-tail) client-neutrally (compaction-context-loss D-002 — hooks are
+ *     optimizations, not dependencies). The end-of-session hook also runs a
+ *     FINAL ingestFileNow before archiving, so the index captures the tail.
  *   * Embeddings are NOT computed here — the embed-backfill sweep
  *     (search/embed-backfill.ts, bench admission lane) fills
  *     `text_embedding` asynchronously; ingest must never block on network.

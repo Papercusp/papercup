@@ -23,6 +23,16 @@ vi.mock('./agent-tools/coordination/escalations', () => ({
 vi.mock('./operator-standing-candidates', () => ({
   refreshCandidates: () => refreshCandidatesSpy(),
 }));
+// `surfaceForApproval` lazy-imports `./delegated-tasks` ONLY for the
+// OPERATOR_COORD_OWNER const — but the real module pulls in the heavy PG chain
+// (@papercusp/db-org → ./work-items → ./issues-engineer), whose one-time cold
+// transform (~26s here) exceeds the 60s per-test timeout under the loaded
+// green-checkpoint box. That timeout then leaks the pending openEscalation call
+// into the NEXT test (the "expected 2, got 3" symptom). Mock it so the test
+// stays hermetic and fast, matching this file's "without touching PG" intent.
+vi.mock('./delegated-tasks', () => ({
+  OPERATOR_COORD_OWNER: 'operator',
+}));
 
 import { defaultSentinelHandoffDeps } from './operator-sentinel-handoff-deps';
 

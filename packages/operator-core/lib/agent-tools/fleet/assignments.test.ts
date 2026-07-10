@@ -13,6 +13,7 @@ import {
   decorateMemberVerdicts,
   decorateParkedOn,
   decorateContextPressure,
+  decorateUnansweredDirected,
   filterActiveCoverage,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -25,6 +26,7 @@ import type { PlanItemCoverage, CoverageLevel } from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
+import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
   sessionState?: SessionState | null;
@@ -391,5 +393,67 @@ describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', 
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].contextPressure).toBe('critical');
+  });
+});
+
+describe('decorateUnansweredDirected — P-007 (fleet-reliability-verification-2026-07-10)', () => {
+  it('stamps the fetched summary per agent (injected fetcher)', async () => {
+    const agents = [baseAgent({ agentId: 'a1' }), baseAgent({ agentId: 'a2' })];
+    const summary: UnansweredDirectedSummary = {
+      count: 2,
+      oldestAgeMs: 90_000,
+      newest: [{ msgId: 'm1', from: 'a2', ageMs: 1000 }],
+    };
+    await decorateUnansweredDirected(agents, async () => new Map([['a1', summary]]));
+    expect((agents[0] as { unanswered?: UnansweredDirectedSummary }).unanswered).toEqual(summary);
+    expect((agents[1] as { unanswered?: UnansweredDirectedSummary }).unanswered).toBeUndefined();
+  });
+
+  it('an agent with none stays absent, never stamped an empty/zero summary', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    await decorateUnansweredDirected(agents, async () => new Map());
+    expect((agents[0] as { unanswered?: UnansweredDirectedSummary }).unanswered).toBeUndefined();
+  });
+
+  it('empty agent list is a no-op that never calls the fetcher', async () => {
+    let called = false;
+    await decorateUnansweredDirected([], async () => {
+      called = true;
+      return new Map();
+    });
+    expect(called).toBe(false);
+  });
+});
+
+describe('shapeFleetAssignments carries unanswered at every tier (P-007 fleet-reliability-verification)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 2 },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      {
+        agentId: 'a1',
+        claims: [],
+        queued: [],
+        unanswered: { count: 2, oldestAgeMs: 90_000, newest: [{ msgId: 'm1', from: 'a2', ageMs: 1000 }] },
+      },
+      { agentId: 'a2', claims: [], queued: [] },
+    ],
+  };
+
+  it('trimmed tier keeps count/oldestAgeMs but drops the per-message `newest` detail', () => {
+    const shaped = shapeFleetAssignments(data, 'trimmed') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].unanswered).toEqual({ count: 2, oldestAgeMs: 90_000 });
+    expect('unanswered' in shaped.agents[1]).toBe(false);
+  });
+
+  it('standard tier keeps the full per-message `newest` detail', () => {
+    const shaped = shapeFleetAssignments(data, 'standard') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].unanswered).toEqual(data.agents[0].unanswered);
   });
 });

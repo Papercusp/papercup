@@ -28,6 +28,7 @@ import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-regis
 import { runWithWorkspace } from '../../workspace-als';
 import {
   claimDueDeliveries,
+  claimSpecificOnceAwaits,
   expireLapsedAwaits,
   fireAwaitsForKey,
   fireTimedOutAwaits,
@@ -177,6 +178,42 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   }
 
   return { ok: true, key: opts.key, woken: wakes.length, notified: notifyTo, msgId, waiters: fired.length };
+}
+
+/**
+ * Deliver to SPECIFIC await rows rather than sweeping a whole key (EI-8998 predicate
+ * dedup join, fleet-reliability-verification-2026-07-10 P-004): when a new subscriber
+ * joins an ALREADY-matched shared predicate row, the normal edge-triggered fire will
+ * never happen again for it while the value stays true — it must be told NOW, without
+ * calling `emitAwaitedEvent` on the shared key (which would re-fire every OTHER
+ * standing subscriber already registered there, even though nothing changed for them).
+ * once=true rows are atomically claimed (exactly-once, same guard as
+ * `fireAwaitsForKey`); once=false rows deliver without consuming. Non-wake-policy rows
+ * are ignored (a predicate join always registers a wake await).
+ */
+export async function deliverToSpecificAwaits(input: {
+  awaitRows: AwaitRow[];
+  payload?: unknown;
+  summary?: string;
+  source?: string;
+}): Promise<{ delivered: number }> {
+  const wakeRows = input.awaitRows.filter((a) => a.policy === 'wake');
+  const onceIds = wakeRows.filter((a) => a.once).map((a) => a.id);
+  const standing = wakeRows.filter((a) => !a.once);
+  const claimedOnce = await claimSpecificOnceAwaits(onceIds);
+  const toDeliver = [...claimedOnce, ...standing];
+  if (toDeliver.length === 0) return { delivered: 0 };
+  const ws = activeWorkspaceId();
+  await insertDeliveries({
+    awaits: toDeliver,
+    payload: input.payload,
+    summary: input.summary ?? null,
+    source: input.source ?? null,
+  });
+  setImmediate(() => {
+    void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
+  });
+  return { delivered: toDeliver.length };
 }
 
 // ── the pump ──────────────────────────────────────────────────────────────────

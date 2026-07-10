@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -203,5 +203,28 @@ describe('await-event store (PG)', () => {
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
+  });
+
+  // ── EI-9000 (fleet-reliability-verification-2026-07-10 P-005): live-awaiter counts ──
+  it('countActiveAwaitsByPrefixes groups LIVE awaits per prefix, in one round trip, zero-filling a matchless prefix', async () => {
+    await registerAwait({ subscriberId: 'a', eventKey: 'work-item:status:WI-1' });
+    await registerAwait({ subscriberId: 'b', eventKey: 'work-item:status:WI-2' });
+    await registerAwait({ subscriberId: 'c', eventKey: 'release:deployed' }); // the global (no-sha) key
+    await registerAwait({ subscriberId: 'd', eventKey: 'release:deployed:abc123' }); // scoped key — same prefix
+    // a fired one-shot must NOT count
+    const fired = await registerAwait({ subscriberId: 'e', eventKey: 'work-item:status:WI-3', once: true });
+    await fireAwaitsForKey({ eventKey: 'work-item:status:WI-3' });
+    void fired;
+    // a cancelled one must NOT count
+    const cancelled = await registerAwait({ subscriberId: 'f', eventKey: 'work-item:status:WI-4' });
+    await cancelAwait({ awaitId: cancelled.id, subscriberId: 'f' });
+
+    const counts = await countActiveAwaitsByPrefixes(['work-item:status', 'release:deployed', 'nobody:listening']);
+    expect(counts.get('work-item:status')).toBe(2); // WI-1, WI-2 only (fired + cancelled excluded)
+    expect(counts.get('release:deployed')).toBe(2); // global + scoped, same prefix
+    expect(counts.get('nobody:listening')).toBe(0); // zero-filled, not absent
+
+    // empty input short-circuits to an empty map
+    expect((await countActiveAwaitsByPrefixes([])).size).toBe(0);
   });
 });

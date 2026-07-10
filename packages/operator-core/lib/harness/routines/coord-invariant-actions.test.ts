@@ -16,6 +16,7 @@ import {
   evaluateInvariants,
   planStaleHandoffAccepts,
   planSharedHiveCapture,
+  planClaimIntegrityAlarms,
   drainOperationalEscalationsBeforeMeasure,
   DEFAULT_THRESHOLDS,
   ESCALATION_RECONCILE_GRACE_MS,
@@ -25,6 +26,7 @@ import {
   type ProbeStep,
   type ProbeVerdict,
   type InvariantSnapshot,
+  type ClaimIntegrityViolation,
 } from './coord-invariant-actions';
 import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
 import { getSystemAction } from './system-actions';
@@ -366,9 +368,74 @@ describe('drainOperationalEscalationsBeforeMeasure (EI-8786 drain-before-measure
 });
 
 describe('registration', () => {
-  it('both system actions are registered by the module side-effect', () => {
+  it('all three system actions are registered by the module side-effect', () => {
     expect(getSystemAction('coord-probe-canary')).toBeTypeOf('function');
     expect(getSystemAction('coord-invariant-monitor')).toBeTypeOf('function');
+    expect(getSystemAction('claim-integrity-sweep')).toBeTypeOf('function');
+  });
+});
+
+describe('planClaimIntegrityAlarms (fleet-reliability-verification-2026-07-10 P-001 / EI-8999)', () => {
+  const orphaned: ClaimIntegrityViolation = {
+    kind: 'orphaned-wip',
+    harnessSlug: 'papercusp',
+    planSlug: 'some-plan',
+    itemId: 'P-001',
+    holderOwnerId: 'su-holder-1',
+    holderOwnerLabel: 'su · holder-1',
+    detail: 'orphaned wip detail',
+  };
+  const unbacked: ClaimIntegrityViolation = {
+    kind: 'unbacked-assignment',
+    harnessSlug: 'papercusp',
+    planSlug: 'some-plan',
+    itemId: 'P-002',
+    holderOwnerId: 'su-holder-2',
+    holderOwnerLabel: 'su-holder-2',
+    detail: 'unbacked assignment detail',
+  };
+
+  it('alarms holder + fleet leader (deduped) when a leader is known and distinct', () => {
+    const leaderByOwner = new Map([['su-holder-1', 'su-leader-9']]);
+    const [alarm] = planClaimIntegrityAlarms([orphaned], leaderByOwner);
+    expect(alarm.targets).toEqual(['su-holder-1', 'su-leader-9']);
+    expect(alarm.summary).toContain('orphaned-wip');
+    expect(alarm.summary).toContain('some-plan#P-001');
+    expect(alarm.violation).toBe(orphaned);
+  });
+
+  it('alarms ONLY the holder when no leader is known (null)', () => {
+    const leaderByOwner = new Map([['su-holder-1', null]]);
+    const [alarm] = planClaimIntegrityAlarms([orphaned], leaderByOwner);
+    expect(alarm.targets).toEqual(['su-holder-1']);
+  });
+
+  it('alarms ONLY the holder when no leader entry exists at all (map miss)', () => {
+    const [alarm] = planClaimIntegrityAlarms([orphaned], new Map());
+    expect(alarm.targets).toEqual(['su-holder-1']);
+  });
+
+  it('does not double-target when the holder IS the fleet leader', () => {
+    const leaderByOwner = new Map([['su-holder-1', 'su-holder-1']]);
+    const [alarm] = planClaimIntegrityAlarms([orphaned], leaderByOwner);
+    expect(alarm.targets).toEqual(['su-holder-1']);
+  });
+
+  it('plans one alarm per violation, independently, for a mixed batch', () => {
+    const leaderByOwner = new Map([
+      ['su-holder-1', 'su-leader-9'],
+      ['su-holder-2', null],
+    ]);
+    const planned = planClaimIntegrityAlarms([orphaned, unbacked], leaderByOwner);
+    expect(planned).toHaveLength(2);
+    expect(planned[0].targets).toEqual(['su-holder-1', 'su-leader-9']);
+    expect(planned[0].summary).toContain('orphaned-wip');
+    expect(planned[1].targets).toEqual(['su-holder-2']);
+    expect(planned[1].summary).toContain('unbacked-assignment');
+  });
+
+  it('returns an empty plan for an empty violation list', () => {
+    expect(planClaimIntegrityAlarms([], new Map())).toEqual([]);
   });
 });
 

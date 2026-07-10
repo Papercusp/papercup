@@ -1583,7 +1583,27 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
 // telemetry consent, mobile pairing, auto-update channel — not shipped), PRESENCE_GOSSIP
 // (cross-machine-coord-parity-and-trust-2026-07-01 P-108 replication-layer bug still
 // WIP, blocking the D6 flip). owner-authority entries are the owner's call, not swept here.
-export const DARK_FLAGS_REVIEW_BY = '2026-08-01';
+//
+// 2026-07-10 review (EI-9140, dark-flag-age watchdog — set at 21/22, one slot from the
+// watermark): re-walked every non-owner-authority entry against its graduation condition.
+// NONE ready to flip this round — no false-inversion bugs found this time (the 5 prior
+// EI-7230-class instances above are already all correctly listed). Re-checked:
+// PRESENCE_GOSSIP + HRW_RENDEZVOUS_AUTHORITY — still blocked on the SAME cross-machine
+// P-059/P-108 replication-layer bug (plan cross-machine-coord-parity-and-trust-2026-07-01,
+// live-verified via plans:get: "P-059 LIVE-1 drill: WIP, blocker NARROWED to the
+// replication layer" as of today). PLAN_PART_FEDERATION — added to this allowlist
+// TODAY (fixing a live default-ON bug, see the entry's own comment); its two-machine
+// merge proof + backfill (P-007/P-008) have not run, nowhere close to ready. EXTERNAL_BENCH,
+// CODEX_GATEWAY_OAUTH_PROXY, ONBOARDING_PREVIEW_FEATURES, SUBSTRATE_SIDECAR — graduation
+// conditions unchanged since 2026-07-04 (no new evidence of the M2 pilot / owner canary /
+// backing-feature ships / a driving plan). owner-authority entries (7) remain the owner's
+// call, not swept here. CAPACITY NOTE for the owner: the dark set is genuinely AT the
+// watermark ceiling with zero flags ready to graduate this round — any new default-OFF
+// flag need before the next review will require either an owner-forced graduation of an
+// existing entry or explicit sign-off to raise DARK_FLAGS_HIGH_WATERMARK; flagged via
+// coord:send this session rather than silently deferred. Review-by shortened to 2 weeks
+// (vs. the usual 4) given the zero-headroom state, so this gets re-walked sooner.
+export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
 export const DARK_FLAGS_HIGH_WATERMARK = 22;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag

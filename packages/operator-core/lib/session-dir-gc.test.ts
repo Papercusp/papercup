@@ -22,10 +22,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_RETENTION_MS,
   discoverSessionDirCandidates,
+  findUnarchivedSessionDirs,
   isProtected,
   planSessionDirGc,
   sessionDirKey,
@@ -134,6 +135,115 @@ describe('planSessionDirGc', () => {
   });
 });
 
+describe('planSessionDirGc archive guard', () => {
+  const mk = (key: string, ageMs: number): SessionDirCandidate => ({
+    path: `/tmp/${key}`,
+    keyKind: 'owner',
+    key,
+    mtimeMs: NOW - ageMs,
+  });
+
+  it('diverts a stale-but-unarchived dir to keptUnarchived instead of remove', () => {
+    const archived = mk('su-archived', DEFAULT_RETENTION_MS * 2);
+    const notYet = mk('su-not-yet', DEFAULT_RETENTION_MS * 2);
+    const plan = planSessionDirGc({
+      candidates: [archived, notYet],
+      protectedIdentity: empty,
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+      unarchivedPaths: new Set([notYet.path]),
+    });
+    expect(plan.remove).toEqual([archived]);
+    expect(plan.keptUnarchived).toEqual([notYet]);
+  });
+
+  it('protection outranks the guard, and omitting the guard restores legacy removal', () => {
+    const stale = mk('su-stale', DEFAULT_RETENTION_MS * 2);
+    // no unarchivedPaths ⇒ legacy (lossy) mode: retention alone decides
+    const legacy = planSessionDirGc({
+      candidates: [stale],
+      protectedIdentity: empty,
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+    });
+    expect(legacy.remove).toEqual([stale]);
+    expect(legacy.keptUnarchived).toEqual([]);
+
+    // a protected dir is never collected, guard or no guard
+    const prot: ProtectedSessionIdentity = { ownerIds: new Set(['su-stale']), sessionKeys: new Set() };
+    const guarded = planSessionDirGc({
+      candidates: [stale],
+      protectedIdentity: prot,
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+      unarchivedPaths: new Set([stale.path]),
+    });
+    expect(guarded.keptProtected).toEqual([stale]);
+    expect(guarded.remove).toEqual([]);
+  });
+});
+
+describe('findUnarchivedSessionDirs', () => {
+  /** A claude-shaped dir with one session jsonl under projects/<slug>/. */
+  function seedClaudeSession(root: string, name: string, sessionId: string): string {
+    const p = join(root, name, 'projects', '-home-x');
+    mkdirSync(p, { recursive: true });
+    writeFileSync(join(p, `${sessionId}.jsonl`), '{}\n');
+    return join(root, name);
+  }
+
+  it('blocks a dir with an un-stamped session, clears one whose stamp is committed', async () => {
+    const root = tmpRoot();
+    const committed = seedClaudeSession(root, 'su-committed', 'aaaaaaaa-0000-4000-8000-000000000001');
+    const missing = seedClaudeSession(root, 'su-missing', 'bbbbbbbb-0000-4000-8000-000000000002');
+    const store = {
+      readStamp: async (_kind: string, id: string) =>
+        id.startsWith('aaaaaaaa') ? { session_id: id } : null,
+    };
+    const candidates = discoverSessionDirCandidates([
+      { root, keyKind: 'owner', label: 'session-claude' },
+    ]);
+    const blocked = await findUnarchivedSessionDirs(candidates, { store });
+
+    expect(blocked.has(missing)).toBe(true);
+    expect(blocked.has(committed)).toBe(false);
+  });
+
+  it('FAILS CLOSED: a stamp read that throws keeps the dir (never risks deletion)', async () => {
+    const root = tmpRoot();
+    const dir = seedClaudeSession(root, 'su-unreadable', 'cccccccc-0000-4000-8000-000000000003');
+    const store = {
+      readStamp: async () => {
+        throw new Error('pg down');
+      },
+    };
+    const candidates = discoverSessionDirCandidates([
+      { root, keyKind: 'owner', label: 'session-claude' },
+    ]);
+    // the guard warns loudly on a failed read (by design) — assert it, and keep
+    // vitest-fail-on-console happy.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const blocked = await findUnarchivedSessionDirs(candidates, { store });
+      expect(blocked.has(dir)).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a dir with no session files is safe to collect (nothing to lose)', async () => {
+    const root = tmpRoot();
+    const bare = seedDir(root, 'su-bare', DEFAULT_RETENTION_MS * 2);
+    const store = { readStamp: async () => null };
+    const candidates = discoverSessionDirCandidates([
+      { root, keyKind: 'owner', label: 'session-claude' },
+    ]);
+    const blocked = await findUnarchivedSessionDirs(candidates, { store });
+    expect(blocked.has(bare)).toBe(false);
+  });
+});
+
 describe('discoverSessionDirCandidates', () => {
   it('finds child dirs with mtimes, skips files, and skips absent roots', () => {
     const claude = tmpRoot();
@@ -194,6 +304,25 @@ describe('sweepStaleSessionDirs', () => {
     expect(res.removed.sort()).toEqual([stale, codexStale].sort());
     expect(existsSync(stale)).toBe(true); // not actually removed
     expect(existsSync(codexStale)).toBe(true);
+  });
+
+  // The 24h retention is a materialization-race guard, NOT the safety net — the
+  // archive is. A stale dir whose sessions are not yet committed to
+  // session_archives must SURVIVE the sweep, or archive-at-death silently
+  // becomes delete-at-death for every session the archiver missed.
+  it('SAFETY: never deletes a stale dir whose sessions are not yet archived', () => {
+    const { roots, prot, stale, codexStale } = setup();
+    const res = sweepStaleSessionDirs({
+      protectedIdentity: prot,
+      roots,
+      nowMs: NOW,
+      unarchivedPaths: new Set([stale]), // archiver has not committed this one
+    });
+
+    expect(res.removed).toEqual([codexStale]); // only the archived one goes
+    expect(res.keptUnarchived).toBe(1);
+    expect(existsSync(stale)).toBe(true); // withheld — data preserved
+    expect(existsSync(codexStale)).toBe(false);
   });
 
   it('SAFETY: removing a symlink-mirror dir unlinks the links, never the real targets', () => {

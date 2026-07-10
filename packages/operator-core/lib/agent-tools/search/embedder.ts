@@ -13,13 +13,29 @@
  * independently (env override missed, OpenAI post-failure cooldown ignored),
  * which could silently pick a DIFFERENT embedder than memory for the exact
  * same text, desynchronizing query vectors from stored ones. Only the actual
- * embed-fn BODIES stay bespoke here (the admission-governed OpenAI fetch and
- * the local-transformers pipeline) — the decision of WHICH one to build now
- * has exactly one source of truth, shared with mem0.
+ * embed-fn BODIES stay bespoke here (the admission-governed OpenAI fetch) —
+ * the local leg now reuses `@papercusp/memory`'s `buildLocalEmbedder` (see
+ * EI-9143 below) so there is exactly one local-transformers pipeline builder
+ * in the codebase, shared with mem0.
+ *
+ * EI-9143 (2026-07-10): this file used to construct its OWN bare
+ * `transformers.pipeline('feature-extraction', …)` call with no
+ * `session_options`, independent of `libs/generic/memory`'s worker. ONNX
+ * Runtime defaults intra-op threads to EVERY core and spin-waits them
+ * (the same class of bug WI-3792 root-caused and fixed at the 3 pipeline
+ * sites inside `libs/generic/memory` — this was an unfixed 4th site, since
+ * it never routed through that package's capped/worker-isolated builder).
+ * Every recipes:search / search:semantic call that fell through to the
+ * local embedder (e.g. after an OpenAI quota/cooldown) could spin up an
+ * uncapped, all-core spin-wait pool, explaining the ~5% recipes:search
+ * timeouts (60s) tracked in EI-9143. Fixed by delegating to
+ * `buildLocalEmbedder` (same model, same output shape — a drop-in
+ * `Embedder` — but worker-thread isolated with `embedViaWorker` and,
+ * on inline fallback, capped via `ORT_SESSION_OPTIONS`).
  */
 
 import type { Embedder } from '@papercusp/search';
-import { buildGemmaEmbedder } from '@papercusp/memory';
+import { buildGemmaEmbedder, buildLocalEmbedder } from '@papercusp/memory';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
   resolveEmbedderWith,
@@ -31,7 +47,6 @@ import {
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
-const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 
 function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
   return async (text: string) => {
@@ -67,17 +82,6 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
   };
 }
 
-async function buildLocalTransformersEmbedder(): Promise<Embedder> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dynamicImport = new Function('s', 'return import(s)') as any;
-  const transformers = await dynamicImport('@huggingface/transformers');
-  const pipe = await transformers.pipeline('feature-extraction', LOCAL_EMBEDDER_MODEL);
-  return async (text: string) => {
-    const result = await pipe(text, { pooling: 'mean', normalize: true });
-    return Array.from(result.data) as number[];
-  };
-}
-
 export async function buildQueryEmbedder(): Promise<Embedder | null> {
   try {
     const resolved = await resolveEmbedderWith({
@@ -86,7 +90,7 @@ export async function buildQueryEmbedder(): Promise<Embedder | null> {
       localInstalled: localAvailable,
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
-      buildLocal: buildLocalTransformersEmbedder,
+      buildLocal: buildLocalEmbedder,
       // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).

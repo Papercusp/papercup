@@ -245,10 +245,15 @@ async function sessionDirGcTick(): Promise<void> {
       const { runSessionDirGc, DEFAULT_RETENTION_MS, LEGACY_RETENTION_MS } = await import('../session-dir-gc');
       const archiveOn = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
       const retentionMs = archiveOn ? DEFAULT_RETENTION_MS : LEGACY_RETENTION_MS;
-      const r = await runSessionDirGc({ retentionMs });
+      // archiveGuard tracks the flag: with the archive ON, a dir is deleted only
+      // once its sessions are committed to session_archives (the 24h retention
+      // is a race guard, NOT the safety net). With it OFF there is no archive to
+      // verify against and the legacy 7d window is the only protection.
+      const r = await runSessionDirGc({ retentionMs, archiveGuard: archiveOn });
       console.log(
         `[session-dir-gc] scanned ${r.scanned} dir(s) → removed ${r.removed.length}, ` +
           `kept ${r.keptProtected} live/resumable + ${r.keptFresh} within retention` +
+          (r.keptUnarchived ? ` + ${r.keptUnarchived} not-yet-archived` : '') +
           (r.errors.length ? `, ${r.errors.length} error(s)` : '') +
           ` (retention ${Math.round(retentionMs / 3_600_000)}h, archive ${archiveOn ? 'on' : 'off'})`,
       );

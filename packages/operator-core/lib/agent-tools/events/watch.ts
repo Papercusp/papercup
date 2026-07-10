@@ -24,12 +24,13 @@ import { defineTool, lookupByMcpName, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, cancelAwait } from '../../events/await/store';
-import { startAwaitSweeper } from '../../events/await/engine';
+import { startAwaitSweeper, deliverToSpecificAwaits } from '../../events/await/engine';
 import {
   PREDICATE_OPS,
   registerPredicateWatch,
   startPredicateWatchPoller,
   evalPredicateWatch,
+  findMatchingActivePredicateWatch,
 } from '../../events/await/predicate-watch';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { subscribeTopic } from '../coordination/topics';
@@ -134,7 +135,7 @@ export default defineTool({
       })
       .optional()
       .describe(
-        'P-008 predicate watch (wake:true only): the engine polls `tool` every interval_sec UNDER YOUR ROLE (role gate enforced per poll, audited), extracts `path`, compares with `op` against `value`, and EDGE-fires your wake on the false→true cross. `pattern` becomes a label; the real key is synthetic (predicate:<id>). once:true deactivates after the first fire; once:false re-fires per cross. Registration runs ONE inline eval — a broken tool/role/args fails loudly NOW, and an already-true predicate fires immediately.',
+        'P-008 predicate watch (wake:true only): the engine polls `tool` every interval_sec UNDER YOUR ROLE (role gate enforced per poll, audited), extracts `path`, compares with `op` against `value`, and EDGE-fires your wake on the false→true cross. `pattern` becomes a label; the real key is synthetic (predicate:<id>). once:true deactivates after the first fire; once:false re-fires per cross. Registration runs ONE inline eval — a broken tool/role/args fails loudly NOW, and an already-true predicate fires immediately. DEDUPE (P-004): an IDENTICAL predicate (same scope/tool/args/path/op/value/interval_sec/once) already active JOINS that poller instead of starting a second one — response carries `deduped.joined_watch_id` when this happens.',
       ),
     interval_sec: z
       .number()
@@ -213,6 +214,89 @@ export default defineTool({
         );
       }
       startPredicateWatchPoller();
+      const workspaceId = ctx.workspaceId ?? activeWorkspaceId();
+      const role = ctx.role ?? 'su';
+      const harnessSlug = ctx.harnessSlug ?? null;
+      const intervalSec = args.interval_sec ?? 60;
+
+      // EI-8998 dedup (fleet-reliability-verification-2026-07-10 P-004): join an
+      // existing ACTIVE poller for the IDENTICAL predicate instead of starting a
+      // second one — the motivating repro was two agents each independently polling
+      // the same watermark SQL ~12+ times during the 2026-07-09/10 night shift.
+      const existing = await findMatchingActivePredicateWatch({
+        workspaceId,
+        role,
+        harnessSlug,
+        tool: p.tool,
+        args: p.args ?? {},
+        path: p.path,
+        op: p.op,
+        value: p.value,
+        intervalSec,
+        once,
+      });
+
+      if (existing) {
+        const row = await registerAwait({
+          subscriberId: identity.ownerId,
+          eventKey: existing.eventKey,
+          policy: 'wake',
+          note: clampText(args.note ?? `predicate: ${p.tool} ${p.path} ${p.op}`, LIMITS.ANNOTATION) ?? null,
+          wakeHandle: handle,
+          timeoutBehavior: args.on_timeout ?? 'wake',
+          timeoutSec: args.timeout_sec ?? (once ? DEFAULT_TIMEOUT_SEC : null),
+          once,
+          minSleepSec,
+          urgency: args.urgency,
+          payloadFilter: null,
+        });
+        // The shared row only edge-fires on a false→true cross — a fresh join when
+        // it's ALREADY true would otherwise never wake (no cross left to observe).
+        // Deliver directly to THIS new await, without touching any other standing
+        // subscriber already on the shared key.
+        let fired = false;
+        if (existing.lastEval === true) {
+          const { delivered } = await deliverToSpecificAwaits({
+            awaitRows: [row],
+            payload: {
+              observed: existing.lastValue,
+              predicate: { tool: p.tool, path: p.path, op: p.op, value: p.value },
+            },
+            summary: `predicate already matched (joined existing poller ${existing.id}): ${p.tool} ${p.path} ${p.op}`,
+            source: `predicate-watch:${identity.ownerId}`,
+          });
+          fired = delivered > 0;
+        }
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                watch: {
+                  id: row.id,
+                  pattern: existing.eventKey,
+                  label: args.pattern,
+                  wake: true,
+                  once: row.once,
+                  min_sleep_sec: row.minSleepSec,
+                  urgency: row.urgency,
+                  expires_ts: row.expiresTs,
+                  on_timeout: row.timeoutBehavior,
+                },
+                predicate: { tool: p.tool, path: p.path, op: p.op, value: p.value, interval_sec: existing.intervalSec },
+                deduped: { joined_watch_id: existing.id },
+                first_eval: { matched: existing.lastEval === true, fired, observed: existing.lastValue },
+                wake_handle: handleNote,
+                advice: fired
+                  ? 'Predicate is ALREADY true (joined an existing poller for the identical predicate) — the wake fired on this registration. End your turn; the delivery is on its way.'
+                  : `Predicate registered — joined an EXISTING poller for the identical predicate (polled every ${existing.intervalSec}s under your role; no extra poller started). End your turn — you will be woken on the false→true cross${once ? ' exactly once' : ', each cross'} (or at the deadline). Do not poll.`,
+              }),
+            },
+          ],
+        };
+      }
+
       const id = globalThis.crypto.randomUUID();
       const eventKey = `predicate:${id}`;
       // The await registers FIRST: the poller GCs any predicate row whose paired
@@ -232,17 +316,17 @@ export default defineTool({
       });
       const watchRow = await registerPredicateWatch({
         id,
-        workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
+        workspaceId,
         ownerId: identity.ownerId,
-        role: ctx.role ?? 'su',
-        harnessSlug: ctx.harnessSlug ?? null,
+        role,
+        harnessSlug,
         eventKey,
         tool: p.tool,
         args: p.args ?? {},
         path: p.path,
         op: p.op,
         value: p.value,
-        intervalSec: args.interval_sec ?? 60,
+        intervalSec,
         once,
       });
       // ONE inline eval: validates the whole pipeline under the real envelope NOW,

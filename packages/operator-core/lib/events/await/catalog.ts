@@ -323,6 +323,24 @@ export function buildKey(family: string, params: Record<string, string | number 
   return key;
 }
 
+/**
+ * EI-9000 (fleet-reliability-verification-2026-07-10 P-005): the static LIKE-prefix
+ * that matches every concrete key a family can produce, whether or not its optional
+ * trailing param is supplied — mirrors buildKey's collapse rule (`familyKeyPrefix`
+ * for 'deploy' matches BOTH the global `release:deployed` and the scoped
+ * `release:deployed:<sha>`). A no-param family's prefix IS its literal key. This is
+ * the join key events:catalog uses to attach a live-awaiter COUNT per family
+ * (countActiveAwaitsByPrefixes in ./store) — kept here, next to the template it
+ * derives from, so the two can never drift apart (D-005: one place per key shape).
+ */
+export function familyKeyPrefix(entry: EventCatalogEntry): string {
+  const idx = entry.keyTemplate.indexOf('<');
+  if (idx === -1) return entry.keyTemplate;
+  let prefix = entry.keyTemplate.slice(0, idx);
+  if (prefix.endsWith(':')) prefix = prefix.slice(0, -1);
+  return prefix;
+}
+
 /** A render-ready row for the events:catalog tool (stable, JSON-friendly shape). */
 export interface CatalogRow {
   family: string;
@@ -334,6 +352,11 @@ export interface CatalogRow {
   replaces_poll?: string;
   sugar?: string;
   payload_filtered?: boolean;
+  /** EI-9000: live (unfired, uncancelled) events:await registrations matching this
+   *  family RIGHT NOW — "is anyone actually listening" at read time. Filled in by
+   *  the events:catalog tool handler (a DB read renderCatalog itself stays free of);
+   *  absent here means the caller didn't ask for it. */
+  live_awaiters?: number;
 }
 
 /** Project the whole catalog into render rows for the events:catalog tool. */

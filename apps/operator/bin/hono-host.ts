@@ -172,10 +172,24 @@ function startRequestServers(): void {
   // infra round-3 F1: on the production host, also capture a short CPU profile
   // when the loop saturates (≥ critical p95), so the synchronous culprit is
   // identifiable instead of re-investigated from scratch each time. Rate-limited
-  // (≤1 / 5 min), best-effort, off by default elsewhere (perf suite / tests).
-  // PAPERCUSP_LOOP_PROFILER=0 kills it.
+  // (≤1 / 5 min), best-effort — EXCEPT under genuinely extreme, sustained lag
+  // (WI-3797, 2026-07-10): captureCpuProfile()'s node:inspector Profiler
+  // session relies on its own async post()/response completing over the SAME
+  // event loop it's diagnosing, and this host's crash logs show 8x
+  // `terminate called after throwing an instance of 'Napi::Error'` (native
+  // abort — NOT a catchable JS exception, so the try/catch in
+  // captureCpuProfile() cannot save it) landing immediately after
+  // `[event-loop-lag]` p95 readings in the seconds range, correlated across
+  // many cluster-worker PIDs during the same host-wide overload window. The
+  // module's own header already documents this exact posture ("DELIBERATELY
+  // DEFAULT-OFF... opt-in until validated under load") — this caller inverted
+  // that default to on-by-default, and it has now failed that validation by
+  // crash-looping the whole green-release operator. Reverting to the
+  // module's own documented default (explicit opt-in only) until the
+  // inspector-session crash itself is hardened. PAPERCUSP_LOOP_PROFILER=1 to
+  // re-enable explicitly (e.g. for a controlled, low-load debugging session).
   startEventLoopLagMonitor({
-    profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER !== '0',
+    profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true',
   });
 
   // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()

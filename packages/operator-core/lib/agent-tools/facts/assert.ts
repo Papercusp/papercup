@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
+import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
 export default defineTool({
   name: 'facts:assert',
@@ -80,6 +81,10 @@ export default defineTool({
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact }) }] };
+    // WI-3801: warn-only nudge — undefined (no field) on the common clean case.
+    const provenanceLint = provenanceLintField(args.body);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact, ...(provenanceLint ? { provenanceLint } : {}) }) }],
+    };
   },
 });

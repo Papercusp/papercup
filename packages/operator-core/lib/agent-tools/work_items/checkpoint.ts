@@ -49,6 +49,7 @@ import { setWorkItemCheckpoint, getWorkItemCheckpoint } from '../../work-item-ch
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -240,6 +241,9 @@ export default defineTool({
           /** P-003: first 80 chars of what was stored — eyeball-check without a re-read. */
           storedHead: stored !== null ? stored.slice(0, 80) : null,
           by: ident.ownerId,
+          // WI-3801: warn-only nudge — an untagged owner-attributed imperative in this
+          // checkpoint, undefined (no field) on the overwhelming common clean case.
+          ...(stored !== null ? { provenanceLint: provenanceLintField(stored) } : {}),
         };
       },
       { keyOf: (it) => ({ id: it.id }) },

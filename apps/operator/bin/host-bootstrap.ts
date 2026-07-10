@@ -39,6 +39,7 @@ import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib/agent-config';
+import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -159,6 +160,28 @@ export function runBootstrap(): void {
     runBootAddonPreflight();
   } catch (e) {
     console.warn('[addon-preflight] boot self-check errored (non-fatal):', (e as Error)?.message ?? e);
+  }
+
+  // [fleet-reliability-verification-2026-07-10 P-008] Self-report this runtime's
+  // build identity into the deploys:vintage ledger so "is the fix actually
+  // running there" resolves in one query instead of manual ssh + log-tailing.
+  // `unit` defaults to a port-keyed hono-host label (dev-api/staging-api/prod all
+  // run this same entrypoint on different ports) or 'desktop-sidecar' under a
+  // packaged desktop install; PAPERCUSP_VINTAGE_UNIT overrides either default for
+  // a deployment that wants a more specific label (e.g. a systemd unit name).
+  try {
+    const port = process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070';
+    const isDesktop = process.env.PAPERCUSP_DESKTOP === '1';
+    const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() || (isDesktop ? 'desktop-sidecar' : `hono-host:${port}`);
+    reportRuntimeVintageOnBoot(unit, {
+      desktop: isDesktop,
+      envOperatorId: process.env.PAPERCUSP_ENV_OPERATOR_ID || null,
+      platform: process.platform,
+      arch: process.arch,
+      port,
+    });
+  } catch (e) {
+    console.warn('[runtime-vintage] boot self-report wiring failed (non-fatal):', (e as Error)?.message ?? e);
   }
 
   // [EI-2224 startup validation] Home-harness slug resolution check. Fail-fast:
@@ -786,7 +809,10 @@ export function runBootstrap(): void {
   if (backgroundWorkers) {
     try {
       startEventLoopLagMonitor({
-        profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER !== '0',
+        // WI-3797 (2026-07-10): reverted to the module's own documented default
+        // (explicit opt-in only) — see the matching comment in hono-host.ts for
+        // the native Napi::Error crash-loop this caused under real sustained lag.
+        profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true',
         // P-002 (bg-host-freeze-eventloop-stall-2026-06-30) was ON by default so the
         // 3.3->46 GB RSS leak self-captured a .heapsnapshot at high RSS without manual
         // operator access. That leak was ROOT-CAUSED + FIXED 2026-07-01 (claude-sessions.ts

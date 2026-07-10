@@ -124,6 +124,15 @@ export interface SessionDirGcPlan {
   keptProtected: SessionDirCandidate[];
   /** Kept because still within the retention window. */
   keptFresh: SessionDirCandidate[];
+  /**
+   * Kept because the dir still holds session files with NO committed archive
+   * stamp — deleting them would be LOSSY. The archive-at-death safety net is a
+   * precondition to be VERIFIED here, not an assumption inherited from another
+   * component: the fast path can miss (kill -9 between end + hook), the
+   * reconciler's disk sweep is bounded per tick, and a `dbFailed` row archives
+   * nothing at all. Retention alone would delete those 24h later.
+   */
+  keptUnarchived: SessionDirCandidate[];
 }
 
 /** Is this candidate's session live or resumable (→ never collect)? Pure. */
@@ -144,14 +153,25 @@ export function planSessionDirGc(opts: {
   protectedIdentity: ProtectedSessionIdentity;
   nowMs: number;
   retentionMs: number;
+  /**
+   * Paths whose session files are NOT yet committed to `session_archives`
+   * (computed by {@link findUnarchivedSessionDirs}). Omitted ⇒ no archive guard
+   * (legacy/lossy mode), preserving the pre-archive behaviour exactly.
+   */
+  unarchivedPaths?: ReadonlySet<string>;
 }): SessionDirGcPlan {
-  const { candidates, protectedIdentity, nowMs, retentionMs } = opts;
-  const plan: SessionDirGcPlan = { remove: [], keptProtected: [], keptFresh: [] };
+  const { candidates, protectedIdentity, nowMs, retentionMs, unarchivedPaths } = opts;
+  const plan: SessionDirGcPlan = { remove: [], keptProtected: [], keptFresh: [], keptUnarchived: [] };
   for (const c of candidates) {
     if (isProtected(c, protectedIdentity)) {
       plan.keptProtected.push(c);
     } else if (nowMs - c.mtimeMs < retentionMs) {
       plan.keptFresh.push(c);
+    } else if (unarchivedPaths?.has(c.path)) {
+      // Retention expired, but the archive does not (yet) hold these files.
+      // Keep: the reconciler will archive them on a later tick, and the NEXT
+      // sweep collects the dir. Never trade a lossless invariant for a day.
+      plan.keptUnarchived.push(c);
     } else {
       plan.remove.push(c);
     }
@@ -215,6 +235,8 @@ export interface SessionDirGcResult {
   removed: string[];
   keptProtected: number;
   keptFresh: number;
+  /** Past retention but withheld: session files not yet in `session_archives`. */
+  keptUnarchived: number;
   dryRun: boolean;
   errors: Array<{ path: string; error: string }>;
 }
@@ -229,19 +251,25 @@ export interface SessionDirGcResult {
 export function sweepStaleSessionDirs(opts: {
   protectedIdentity: ProtectedSessionIdentity;
   roots?: SessionDirRoot[];
+  /** Pre-discovered candidates (avoids a second 17k-dir walk when the caller
+   *  already discovered them to compute the archive guard). */
+  candidates?: SessionDirCandidate[];
   nowMs: number;
   retentionMs?: number;
   dryRun?: boolean;
+  /** See {@link planSessionDirGc}. Omitted ⇒ unguarded (legacy) removal. */
+  unarchivedPaths?: ReadonlySet<string>;
 }): SessionDirGcResult {
   const roots = opts.roots ?? defaultSessionDirRoots();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
   const dryRun = opts.dryRun ?? false;
-  const candidates = discoverSessionDirCandidates(roots);
+  const candidates = opts.candidates ?? discoverSessionDirCandidates(roots);
   const plan = planSessionDirGc({
     candidates,
     protectedIdentity: opts.protectedIdentity,
     nowMs: opts.nowMs,
     retentionMs,
+    unarchivedPaths: opts.unarchivedPaths,
   });
   const removed: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
@@ -265,6 +293,7 @@ export function sweepStaleSessionDirs(opts: {
     removed,
     keptProtected: plan.keptProtected.length,
     keptFresh: plan.keptFresh.length,
+    keptUnarchived: plan.keptUnarchived.length,
     dryRun,
     errors,
   };
@@ -342,18 +371,90 @@ export async function gatherProtectedSessionIdentity(): Promise<ProtectedSession
 }
 
 /**
+ * Which of `candidates` still hold session files with NO committed archive
+ * stamp? Those dirs are NOT safe to delete — returned as a set of paths for
+ * {@link planSessionDirGc}.
+ *
+ * A dir with no session files at all is safe (nothing to lose) and is absent
+ * from the result. Reads FAIL CLOSED: an unreadable dir or a failed stamp read
+ * marks the dir unarchived (kept), because the cost of a wrong "keep" is one
+ * more day of disk while the cost of a wrong "remove" is permanent data loss.
+ * (Contrast `gatherProtectedSessionIdentity`, which fails OPEN — hence this
+ * guard, which makes the tight 24h retention safe.)
+ *
+ * Lazy imports: `session-archive-reconciler` imports FROM this module, so a
+ * static import of `session-archive` here would close a cycle.
+ */
+export async function findUnarchivedSessionDirs(
+  candidates: SessionDirCandidate[],
+  deps: { store?: { readStamp(kind: string, id: string): Promise<unknown> } } = {},
+): Promise<Set<string>> {
+  const unarchived = new Set<string>();
+  if (!candidates.length) return unarchived;
+
+  const { listClaudeSessionIds, listCodexRolloutSessionIds, pgSessionArchiveStore } = await import(
+    './session-archive'
+  );
+  const store = deps.store ?? pgSessionArchiveStore();
+
+  const CONCURRENCY = 8;
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const c = candidates[cursor++];
+      if (!c) return;
+      const sourceKind = c.keyKind === 'owner' ? 'claude' : 'codex';
+      try {
+        const ids =
+          sourceKind === 'claude'
+            ? await listClaudeSessionIds(c.path)
+            : await listCodexRolloutSessionIds(c.path);
+        for (const sessionId of ids) {
+          if (!(await store.readStamp(sourceKind, sessionId))) {
+            unarchived.add(c.path); // at least one un-committed session → keep the dir
+            break;
+          }
+        }
+      } catch (e) {
+        unarchived.add(c.path); // fail CLOSED
+        console.warn(`[session-dir-gc] archive-guard read failed for ${c.path}: ${(e as Error)?.message ?? e}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  return unarchived;
+}
+
+/**
  * The top-level entry the `system:session-dir-gc` routine fires: gather the
- * protected set from PG, then sweep. `nowMs` is read here (the one impure clock
- * read) so the rest of the pipeline stays injectable.
+ * protected set from PG, verify the archive actually holds each collectible
+ * dir's sessions, then sweep. `nowMs` is read here (the one impure clock read)
+ * so the rest of the pipeline stays injectable.
+ *
+ * `archiveGuard: false` restores the pre-archive (lossy) behaviour — only
+ * correct when paired with {@link LEGACY_RETENTION_MS}.
  */
 export async function runSessionDirGc(
-  opts: { retentionMs?: number; dryRun?: boolean } = {},
+  opts: { retentionMs?: number; dryRun?: boolean; archiveGuard?: boolean } = {},
 ): Promise<SessionDirGcResult> {
   const protectedIdentity = await gatherProtectedSessionIdentity();
+  const nowMs = Date.now();
+  const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
+  const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
+
+  // Only the dirs retention would actually collect need the (PG-hitting) guard.
+  let unarchivedPaths: ReadonlySet<string> | undefined;
+  if (opts.archiveGuard !== false) {
+    const provisional = planSessionDirGc({ candidates, protectedIdentity, nowMs, retentionMs });
+    unarchivedPaths = await findUnarchivedSessionDirs(provisional.remove);
+  }
+
   return sweepStaleSessionDirs({
     protectedIdentity,
-    nowMs: Date.now(),
-    retentionMs: opts.retentionMs,
+    candidates,
+    nowMs,
+    retentionMs,
     dryRun: opts.dryRun,
+    unarchivedPaths,
   });
 }

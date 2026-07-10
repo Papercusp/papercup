@@ -132,7 +132,17 @@ export type WatchdogSource =
   // P-013; detector dark-flag-age-detect.ts). WORKSPACE-GLOBAL (one operator-scoped
   // finding, NOT in HARNESS_SCOPED_WATCHDOG_SOURCES); no flag gate (a healthy allowlist
   // emits nothing):
-  | 'dark-flag-age';
+  | 'dark-flag-age'
+  // EI-9136: the release pin sat deployable-but-not-live for 12h+ (owner-facing
+  // rubrics UI invisible) and nobody was paged — release-deploy-staleness-watchdog.ts
+  // (WI-1623) already computes this correctly but only console.warns + records a
+  // separate ledger row, never reaching the improvement queue. This wires that
+  // existing pure decider into a fleet-visible finding (detector
+  // release-deploy-staleness-detect.ts). WORKSPACE-GLOBAL (one release pipeline, NOT
+  // in HARNESS_SCOPED_WATCHDOG_SOURCES); no flag gate of its own (the underlying
+  // sweep's PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0 kill switch already makes
+  // this inert when disabled):
+  | 'release-deploy-staleness';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -2237,6 +2247,18 @@ export async function defaultPapercuspCollectors(
     {
       name: 'papercusp-dark-flag-age',
       collect: () => import('./dark-flag-age-detect').then((m) => m.collectDarkFlagAgeSignals()),
+    },
+    // EI-9136: the release pin sat deployable-but-not-live for 12h+ with nobody paged —
+    // wires the existing WI-1623 pure decider into a fleet-visible finding. OPERATOR-scoped
+    // (workspace-global): no workspaceId, no PG of its own (reads git-pipeline state); a
+    // healthy (non-stale) pipeline emits nothing, and the underlying threshold's own kill
+    // switch already makes this inert when PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0.
+    {
+      name: 'papercusp-release-deploy-staleness',
+      collect: () =>
+        import('./release-deploy-staleness-detect').then((m) =>
+          m.collectReleaseDeployStalenessSignals({ installSlug: opts.installSlug ?? undefined }),
+        ),
     },
   ];
 }

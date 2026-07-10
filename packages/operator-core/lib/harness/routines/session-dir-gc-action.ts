@@ -37,11 +37,16 @@ registerSystemAction('session-dir-gc', async (ctx: SystemActionCtx) => {
         : LEGACY_RETENTION_MS;
   const dryRun = cfg.dry_run === true;
 
-  const result = await runSessionDirGc({ retentionMs, dryRun });
+  // The archive guard verifies each collectible dir's sessions are committed to
+  // session_archives before deletion. It is meaningful only when the archive is
+  // ON; in legacy mode there is no archive to verify against (and retention is
+  // the 7d lossy window instead).
+  const result = await runSessionDirGc({ retentionMs, dryRun, archiveGuard: archiveOn });
   console.log(
     `[session-dir-gc] scanned ${result.scanned} dir(s) → ` +
       `${result.dryRun ? 'WOULD remove' : 'removed'} ${result.removed.length}, ` +
       `kept ${result.keptProtected} live/resumable + ${result.keptFresh} within retention` +
+      (result.keptUnarchived ? ` + ${result.keptUnarchived} not-yet-archived` : '') +
       (result.errors.length ? `, ${result.errors.length} error(s)` : '') +
       ` (retention ${Math.round(retentionMs / 86_400_000)}d)`,
   );

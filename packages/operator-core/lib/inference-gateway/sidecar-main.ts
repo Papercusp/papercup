@@ -26,6 +26,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { startGatewayService, DEFAULT_GATEWAY_PORT } from './launch';
+import { reportRuntimeVintageOnBoot } from '../runtime-vintage';
 
 /** Hard ceiling on the SIGTERM drain before we force-exit — DEFENSE-IN-DEPTH behind gateway.close()'s
  *  own GRACEFUL_SHUTDOWN_MS (~5s) grace. MUST stay below the supervisor's stop budget (systemd
@@ -90,6 +91,15 @@ export async function runGatewaySidecarMain(): Promise<void> {
     resolveLocalBackends: (ws) => import('./local-backend-store').then(({ listLocalBackends }) => listLocalBackends({ workspaceId: ws })),
   });
   gatewayLogLine(`up on 127.0.0.1:${svc.port} → account '${svc.account.accountId}' (${svc.account.source})`);
+
+  // [fleet-reliability-verification-2026-07-10 P-008] Self-report into the
+  // deploys:vintage ledger — best-effort, never blocks/affects boot (the gateway
+  // must keep serving even if this runtime happens to have no DB reachable).
+  try {
+    reportRuntimeVintageOnBoot('gateway', { port: svc.port });
+  } catch (e) {
+    gatewayLogLine(`[runtime-vintage] boot self-report wiring failed (non-fatal): ${(e as Error)?.message ?? e}`);
+  }
 
   // CRASH-PROOFING (backend-reliability-100pct-2026-07-03 W2) — process-level BACKSTOP.
   // A single request's unhandled stream 'error' (e.g. an AbortSignal.timeout firing on a

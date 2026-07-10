@@ -57,7 +57,7 @@ async handler(args, ctx) {
 
 ## Real-world example: work_items:get
 
-The production exemplar includes SWR caching (cache-expensive-tool-reads-2026-06-22 P-005) and work-item checkpoints (EI-7252). Checkpoints surface resumable state left by `work_items:checkpoint` on work items in progress — a cold successor (after compaction) must know if in-flight work was checkpointed before assuming state was lost:
+The production exemplar includes SWR caching (cache-expensive-tool-reads-2026-06-22 P-005) and work-item checkpoints (EI-7252). Checkpoints surface resumable state left by `work_items:checkpoint` on work items in progress — a cold successor (after compaction) must know if in-flight work was checkpointed before assuming state was lost. Since EI-8885, the checkpoint's write recency (`checkpointAgeMs`/`checkpointUpdatedAtMs`) rides alongside it — a checkpoint with no age signal reads as current even when it's several wakes stale:
 
 ```ts
 // SWR backstop for work_items:get: per-id entry tagged with harness_features_consolidated
@@ -83,10 +83,14 @@ async handler(args, ctx) {
     }
     // Surface checkpoint (EI-7252): in-flight carry-note scope `workitem:<harness>:<id>`.
     // Read-only, uncached (checkpoints change out-of-band), cheap (single indexed row lookup).
-    const checkpoint = workItem.harness
-      ? await getWorkItemCheckpoint({ harness: workItem.harness, workItemId: workItem.id }).catch(() => null)
-      : null;
-    return { ok: true as const, id, workItem, checkpoint };
+    // EI-8885: also surface the checkpoint's write recency, via *WithMeta — a stale
+    // checkpoint must be re-verified against ground truth, not trusted as current.
+    const { checkpoint, updatedAtMs: checkpointUpdatedAtMs } = await getWorkItemCheckpointWithMeta({
+      harness: workItem.harness,
+      workItemId: workItem.id,
+    }).catch(() => ({ checkpoint: null, updatedAtMs: null }));
+    const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
+    return { ok: true as const, id, workItem, checkpoint, checkpointAgeMs, checkpointUpdatedAtMs };
   }, { keyOf: (id) => ({ id }) });
   return bulkContent(env);
 }

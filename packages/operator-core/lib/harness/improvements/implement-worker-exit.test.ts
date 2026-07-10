@@ -13,6 +13,68 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     expect(isEnvFailureExit({ exitCode: 0, runtimeMs: 2_000, stdout: 'weekly limit' }).env).toBe(false);
   });
 
+  describe('EI-9127: exit-0 tooling-unavailable deaths (storm-collector — 4 live cases)', () => {
+    it('EI-9107: "papercusp MCP server failed to connect ... no Bash/Edit/ToolSearch fallback" is an env failure despite exit 0', () => {
+      const v = isEnvFailureExit({
+        exitCode: 0,
+        runtimeMs: 244_000,
+        stdout:
+          'Diagnosed: papercusp MCP server failed to connect and this runner has no Bash/Edit/ToolSearch fallback, ' +
+          'so no code change, no tests, and no `improvements:resolve` call were possible; re-dispatch to a healthy runner.',
+      });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/tooling unavailable/);
+      expect(v.class).toBeUndefined(); // generic env leg — tags 'worker-exit-backedge-env', rolled back indefinitely
+    });
+
+    it('EI-9021: "runtime is missing its platform MCP tools, Bash, and code-edit tools" is an env failure despite exit 0', () => {
+      const v = isEnvFailureExit({
+        exitCode: 0,
+        runtimeMs: 220_000,
+        stdout:
+          'I am stopping here rather than fabricating a resolve I cannot verify.\n\n' +
+          'ESCALATE — implement-worker runtime is missing its platform MCP tools, Bash, and code-edit tools; ' +
+          'EI-9021 cannot be reproduced, fixed, tested, or resolved in this context.',
+      });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/tooling unavailable/);
+    });
+
+    it('EI-9116: "this worker cannot call `improvements:resolve` (no platform MCP tools, no shell, no edit)" is an env failure despite exit 0', () => {
+      const v = isEnvFailureExit({
+        exitCode: 0,
+        runtimeMs: 652_000,
+        stdout:
+          'ESCALATE — EI-9116 is a needs-human gateway-death phantom, and this worker cannot call ' +
+          '`improvements:resolve` (no platform MCP tools, no shell, no edit) to record it.',
+      });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/tooling unavailable/);
+    });
+
+    it('WI-3795: "platform tools ... shell, and code-edit tools are all absent" is an env failure despite exit 0', () => {
+      const v = isEnvFailureExit({
+        exitCode: 0,
+        runtimeMs: 286_000,
+        stdout:
+          'ESCALATE — WI-3795 not resolvable from this session: platform tools (incl. `improvements:resolve`), ' +
+          'shell, and code-edit tools are all absent; separately, the bug itself is a native-SIGABRT root cause ' +
+          'that warrants a `needs-human` resolution rather than an auto-fix.',
+      });
+      expect(v.env).toBe(true);
+      expect(v.reason).toMatch(/tooling unavailable/);
+    });
+
+    it('a real exit-0-forgot-to-resolve worker bug (no tooling complaint) is still NOT env — unchanged behavior', () => {
+      const v = isEnvFailureExit({
+        exitCode: 0,
+        runtimeMs: 640_000,
+        stdout: 'Reproduced the bug, wrote the fix and a regression test. Now let me run the affected suite to confirm nothing else broke.',
+      });
+      expect(v.env).toBe(false);
+    });
+  });
+
   it('the live EI-75 weekly-limit DOA is an env failure', () => {
     const v = isEnvFailureExit({
       exitCode: 1,

@@ -328,6 +328,37 @@ export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow
 }
 
 /**
+ * EI-9000 (fleet-reliability-verification-2026-07-10 P-005): count LIVE (unfired,
+ * uncancelled) awaits per key-PREFIX, for MANY prefixes in one round trip — the
+ * events:catalog "is anyone actually listening" read. A prefix with zero matches
+ * comes back as 0 (not absent), so a caller can zip this 1:1 against its family
+ * list without a presence check. Best-effort caller contract: this is a discovery
+ * aid (events:catalog), not the emit-time source of truth (fireAwaitsForKey /
+ * listActiveAwaitsForKey own that).
+ */
+export async function countActiveAwaitsByPrefixes(prefixes: readonly string[]): Promise<Map<string, number>> {
+  const uniq = [...new Set(prefixes.filter((p) => p.length > 0))];
+  const out = new Map<string, number>();
+  if (uniq.length === 0) return out;
+  for (const p of uniq) out.set(p, 0);
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT p.prefix AS prefix, count(a.id)::int AS n
+      FROM unnest(${uniq}::text[]) AS p(prefix)
+      LEFT JOIN harness_shared.event_awaits a
+        ON a.workspace_id = ${ws}
+       AND a.event_key LIKE p.prefix || '%'
+       AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+     GROUP BY p.prefix
+  `;
+  for (const r of rows as unknown as Array<{ prefix: string; n: number }>) {
+    out.set(r.prefix, Number(r.n) || 0);
+  }
+  return out;
+}
+
+/**
  * Fire every active watch on a key, returning the rows fired BY THIS CALL.
  *
  * Cardinality is honored (unify-watch-primitive D-001/D-004):
@@ -445,6 +476,32 @@ export async function fireAwaitsForKey(input: {
     ...claimedPatternRows,
     ...matchedStanding,
   ].map(mapAwait);
+}
+
+/**
+ * Atomically claim SPECIFIC once-awaits by id (same exactly-once `fired_at IS NULL`
+ * guard as `fireAwaitsForKey`'s fast path), rather than sweeping every await on a key.
+ * Used for a TARGETED delivery (EI-8998 predicate dedup join,
+ * fleet-reliability-verification-2026-07-10 P-004): a subscriber that joins an
+ * ALREADY-matched shared predicate row must be told directly, without re-firing every
+ * OTHER standing subscriber already registered on that same key. Rows already
+ * fired/cancelled are silently skipped (not in the result).
+ */
+export async function claimSpecificOnceAwaits(
+  ids: number[],
+  reason: 'event' | 'timeout' = 'event',
+): Promise<AwaitRow[]> {
+  if (ids.length === 0) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET fired_at = now(), fired_reason = ${reason}
+     WHERE workspace_id = ${ws} AND id = ANY(${ids})
+       AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING *
+  `;
+  return rows.map(mapAwait);
 }
 
 /** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the

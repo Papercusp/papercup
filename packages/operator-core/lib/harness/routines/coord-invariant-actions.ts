@@ -46,11 +46,31 @@
  *     Each violation files ONE deduped improvement with a STABLE title (the
  *     dedup key), so a persisting violation never floods the backlog.
  *
- * Both handlers are replay-safe (read-only checks + idempotent probe writes +
- * dedup-gated filing) and every check is isolated — one failing query degrades
- * that check, never the fire. Pure planners (`evaluateProbe`,
- * `evaluateInvariants`) are exported for unit tests; the probe cycle takes an
- * injectable deps bag for the same reason.
+ *   - `system:claim-integrity-sweep` (fleet-reliability-verification-2026-07-10
+ *     P-001 / EI-8999, every 10 min): a LIVE double-placement risk, not a slow
+ *     leak, so unlike the two checks above it ALARMS — a directed, WOKEN message
+ *     to the holder + its fleet leader — in addition to filing the durable
+ *     dedup record. Two desyncs —
+ *       · orphaned wip           (work_item `wip` + null taken_by, but its linked
+ *                                 plan item shows a LIVE claim held by a
+ *                                 presence-live owner — the work-item's own
+ *                                 tracking desynced from the authoritative
+ *                                 plan-item lease)
+ *       · unbacked active assignment (an ACTIVE plan_item_assignments row whose
+ *                                 assignee is presence-live, but no live
+ *                                 plan_item_claims lease backs it — the
+ *                                 stale-claims.ts reapers only clean this up
+ *                                 once the holder goes dead/stalls; this is
+ *                                 their live-holder complement)
+ *     Pure planner `planClaimIntegrityAlarms` (holder + leader targets) is
+ *     exported for unit tests; the leader lookup is injectable via
+ *     `resolveLeadersForHolders`.
+ *
+ * All three handlers are replay-safe (read-only checks + idempotent probe
+ * writes + dedup-gated filing) and every check is isolated — one failing query
+ * degrades that check, never the fire. Pure planners (`evaluateProbe`,
+ * `evaluateInvariants`, `planClaimIntegrityAlarms`) are exported for unit
+ * tests; the probe cycle takes an injectable deps bag for the same reason.
  *
  * Seed: seed-coord-invariant-routines.ts. Registered via register-system-actions.
  */
@@ -113,6 +133,9 @@ import {
   tryRelease,
 } from '../../agent-tools/locks/su-lock-store';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
+import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
+import { getFleet } from '../../agent-fleets-store';
 
 // ── P-012: probe-pair canary ────────────────────────────────────────────────
 
@@ -861,6 +884,292 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
     }
   }
 }
+
+// ── EI-8999 / fleet-reliability-verification-2026-07-10 P-001: claim-integrity
+//    invariant sweep ──────────────────────────────────────────────────────────
+//
+// Every OTHER check in this file files a deduped `captureImprovement` — a
+// backlog bug nobody urgently looks at (the right shape for "handoffs stuck
+// pending" or "presence ghosts lingering", which are slow leaks). Claim
+// integrity is different: it is a LIVE double-placement risk RIGHT NOW — two
+// agents can genuinely collide on the same item while the desync persists.
+// P-001 (2026-07-09/10 night shift, found-by-hand 6x: WI-3487 x4, WI-3490,
+// WI-3583) asks for an ALARM — a directed, woken message to the affected
+// holder AND its fleet leader — not a nudge. This still ALSO files a deduped
+// improvement (the durable audit trail + the catch-all when nobody is
+// reachable to wake), but the alarm is the primary signal.
+//
+// Two distinct desyncs, both "the durable/authoritative claim disagrees with
+// what a live holder is doing":
+//
+//   (a) ORPHANED WIP — a work_item is `wip` with taken_by/assignee NULL, yet
+//       its linked plan-item shows a LIVE (non-expired) plan_item_claims lease
+//       held by someone with a fresh presence heartbeat. The work-item's own
+//       claim tracking (taken_by) has desynced from the plan-item claim (the
+//       authoritative live lease) while a real session is still working it.
+//
+//   (b) UNBACKED ACTIVE ASSIGNMENT — a durable plan_item_assignments row is
+//       ACTIVE (released_ts IS NULL) and its assignee has a fresh presence
+//       heartbeat (session LIVE, actively "declared" onto this lane), but NO
+//       live plan_item_claims lease backs it. The reapers in stale-claims.ts
+//       already clean this up once the holder goes DEAD (60m) or STALLS (30m)
+//       — this check is their live-holder complement: a genuinely-alive holder
+//       whose assignment has no backing lease is a double-placement risk
+//       *right now*, not after a decay window, and nothing else surfaces it.
+
+/** How fresh a presence heartbeat must be to count as "session LIVE" for the
+ *  claim-integrity checks. Deliberately generous (vs the 60s liveness ladder
+ *  elsewhere): a long single turn between heartbeats must never mask a real
+ *  desync as "holder went away". */
+export const CLAIM_INTEGRITY_PRESENCE_GRACE_SEC = 15 * 60;
+
+/** How long an active assignment must sit before the unbacked-assignment check
+ *  considers it a violation — settles the normal assign→claim call sequence
+ *  (declare-intent / claimForWork run milliseconds apart, but a slow request
+ *  or a retried call could briefly show the assignment before the claim
+ *  lands). Short: this is a LIVE alarm, not a decay sweep. */
+export const CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC = 120;
+
+export type ClaimIntegrityViolationKind = 'orphaned-wip' | 'unbacked-assignment';
+
+export interface ClaimIntegrityViolation {
+  kind: ClaimIntegrityViolationKind;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+  /** The live session that should be alarmed as the holder. */
+  holderOwnerId: string;
+  holderOwnerLabel: string | null;
+  detail: string;
+}
+
+interface OrphanedWipRow {
+  harness_slug: string;
+  feature_id: string;
+  title: string | null;
+  plan_slug: string;
+  item_id: string;
+  claim_owner: string;
+  claim_owner_label: string | null;
+}
+
+/** (a) ORPHANED WIP: a `wip` work-item with no assignee whose linked plan item
+ *  shows a live claim held by a presence-live owner. One isolated query — a
+ *  failure degrades this leg only (caller wraps with `.catch(() => [])`). */
+export async function findOrphanedWipClaims(
+  sql: postgres.Sql,
+  workspaceId: string,
+  opts: { presenceGraceSec?: number } = {},
+): Promise<ClaimIntegrityViolation[]> {
+  const graceSec = Math.max(1, Math.round(opts.presenceGraceSec ?? CLAIM_INTEGRITY_PRESENCE_GRACE_SEC));
+  const rows = await sql<OrphanedWipRow[]>`
+    SELECT wi.harness_slug, wi.feature_id, wi.title, wi.source_plan_slug AS plan_slug,
+           pic.item_id, pic.owner AS claim_owner, pic.owner_label AS claim_owner_label
+      FROM harness_shared.work_items wi
+      JOIN harness_shared.plan_item_claims pic
+        ON pic.workspace_id = wi.workspace_id
+       AND pic.harness_slug = wi.harness_slug
+       AND pic.plan_slug = wi.source_plan_slug
+       AND pic.item_id = ANY(wi.source_plan_item_ids)
+       AND pic.expires_ts > clock_timestamp()
+      JOIN harness_shared.coord_presence cp
+        ON cp.owner_id = pic.owner
+       AND cp.heartbeat_at > now() - make_interval(secs => ${graceSec})
+     WHERE wi.workspace_id = ${workspaceId}
+       AND wi.status = 'wip'
+       AND (wi.taken_by IS NULL OR wi.taken_by = '')
+       AND wi.source_plan_slug IS NOT NULL
+       AND wi.source_plan_item_ids IS NOT NULL`;
+  return rows.map((r) => ({
+    kind: 'orphaned-wip' as const,
+    harnessSlug: r.harness_slug,
+    planSlug: r.plan_slug,
+    itemId: r.item_id,
+    holderOwnerId: r.claim_owner,
+    holderOwnerLabel: r.claim_owner_label,
+    detail:
+      `work-item ${r.harness_slug}/${r.feature_id}${r.title ? ` ("${r.title}")` : ''} is 'wip' with NO assignee ` +
+      `(taken_by is null/empty), but its linked plan item ${r.plan_slug}#${r.item_id} shows a LIVE claim held ` +
+      `by ${r.claim_owner_label ?? r.claim_owner} (fresh presence heartbeat) — the work-item's own claim ` +
+      `tracking has desynced from the authoritative plan-item lease while a real session works it.`,
+  }));
+}
+
+interface UnbackedAssignmentRow {
+  harness_slug: string;
+  plan_slug: string;
+  item_id: string;
+  assignee_name: string;
+  assigned_ts: string;
+}
+
+/** (b) UNBACKED ACTIVE ASSIGNMENT: an active plan_item_assignments row whose
+ *  assignee is presence-live but has no backing live plan_item_claims lease.
+ *  One isolated query — a failure degrades this leg only. */
+export async function findUnbackedActiveAssignments(
+  sql: postgres.Sql,
+  workspaceId: string,
+  opts: { presenceGraceSec?: number; settleSec?: number } = {},
+): Promise<ClaimIntegrityViolation[]> {
+  const graceSec = Math.max(1, Math.round(opts.presenceGraceSec ?? CLAIM_INTEGRITY_PRESENCE_GRACE_SEC));
+  const settleSec = Math.max(0, Math.round(opts.settleSec ?? CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC));
+  const rows = await sql<UnbackedAssignmentRow[]>`
+    SELECT asg.harness_slug, asg.plan_slug, asg.item_id, asg.assignee_name,
+           asg.assigned_ts::text AS assigned_ts
+      FROM harness_shared.plan_item_assignments asg
+      JOIN harness_shared.coord_presence cp
+        ON cp.owner_id = asg.assignee_name
+       AND cp.heartbeat_at > now() - make_interval(secs => ${graceSec})
+     WHERE asg.workspace_id = ${workspaceId}
+       AND asg.released_ts IS NULL
+       AND asg.assignee_name IS NOT NULL AND asg.assignee_name <> ''
+       AND asg.assigned_ts IS NOT NULL
+       AND asg.assigned_ts < now() - make_interval(secs => ${settleSec})
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.plan_item_claims c
+          WHERE c.workspace_id = asg.workspace_id AND c.harness_slug = asg.harness_slug
+            AND c.plan_slug = asg.plan_slug AND c.item_id = asg.item_id
+            AND c.owner = asg.assignee_name AND c.expires_ts > clock_timestamp()
+       )`;
+  return rows.map((r) => ({
+    kind: 'unbacked-assignment' as const,
+    harnessSlug: r.harness_slug,
+    planSlug: r.plan_slug,
+    itemId: r.item_id,
+    holderOwnerId: r.assignee_name,
+    holderOwnerLabel: r.assignee_name,
+    detail:
+      `plan item ${r.plan_slug}#${r.item_id} (harness ${r.harness_slug}) is actively ASSIGNED to ` +
+      `${r.assignee_name} (assigned ${r.assigned_ts}, session LIVE) but has NO live plan_item_claims lease ` +
+      `backing it — the durable assignment is unprotected: a peer can double-claim this item right now.`,
+  }));
+}
+
+export interface PlannedClaimIntegrityAlarm {
+  violation: ClaimIntegrityViolation;
+  /** holder + its fleet leader (when resolvable and distinct), deduped. */
+  targets: string[];
+  summary: string;
+}
+
+/** Pure: turn violations into { targets, summary } alarms — holder + its
+ *  fleet leader (when known and different from the holder), deduped. Exported
+ *  for unit tests (no DB): the leader lookup is injected as a plain Map. */
+export function planClaimIntegrityAlarms(
+  violations: ClaimIntegrityViolation[],
+  leaderByOwner: ReadonlyMap<string, string | null>,
+): PlannedClaimIntegrityAlarm[] {
+  return violations.map((v) => {
+    const leader = leaderByOwner.get(v.holderOwnerId) ?? null;
+    const targets = [...new Set([v.holderOwnerId, ...(leader && leader !== v.holderOwnerId ? [leader] : [])])];
+    return {
+      violation: v,
+      targets,
+      summary: `claim-integrity ALARM (${v.kind}): ${v.planSlug}#${v.itemId} — reconcile now, not a backlog item.`,
+    };
+  });
+}
+
+/** System identity for this monitor's own writes (mirrors MONITOR_IDENTITY). */
+const CLAIM_INTEGRITY_IDENTITY: AgentIdentity = {
+  ownerId: 'system:claim-integrity-monitor',
+  ownerLabel: 'system · claim-integrity-monitor',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Resolve each distinct holder's CURRENT fleet leader (null when the holder
+ *  has no fleet, or is itself the leader). Best-effort per holder — a lookup
+ *  failure degrades that holder to "no leader known" rather than aborting the
+ *  pass. Exported for unit tests. */
+export async function resolveLeadersForHolders(
+  workspaceId: string,
+  holderOwnerIds: readonly string[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (holderOwnerIds.length === 0) return out;
+  let fleetByOwner: Map<string, { fleetSlug: string | null; fleetRole: string | null }>;
+  try {
+    fleetByOwner = await fetchPresenceFleet([...holderOwnerIds]);
+  } catch {
+    fleetByOwner = new Map();
+  }
+  const fleetSlugCache = new Map<string, string | null>();
+  for (const id of holderOwnerIds) {
+    const fleetSlug = fleetByOwner.get(id)?.fleetSlug ?? null;
+    if (!fleetSlug) {
+      out.set(id, null);
+      continue;
+    }
+    try {
+      if (!fleetSlugCache.has(fleetSlug)) {
+        const fleet = await getFleet(workspaceId, fleetSlug);
+        fleetSlugCache.set(fleetSlug, fleet?.leaderOwnerId ?? null);
+      }
+      out.set(id, fleetSlugCache.get(fleetSlug) ?? null);
+    } catch {
+      out.set(id, null);
+    }
+  }
+  return out;
+}
+
+registerSystemAction('claim-integrity-sweep', async (ctx: SystemActionCtx) => {
+  const presenceGraceSec = Number(
+    (ctx.payloadTemplate?.presenceGraceSec as number | undefined) ?? CLAIM_INTEGRITY_PRESENCE_GRACE_SEC,
+  );
+  const settleSec = Number(
+    (ctx.payloadTemplate?.settleSec as number | undefined) ?? CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC,
+  );
+  const { sql } = getOrgPg();
+  const [orphaned, unbacked] = await Promise.all([
+    findOrphanedWipClaims(sql, ctx.workspaceId, { presenceGraceSec }).catch(() => []),
+    findUnbackedActiveAssignments(sql, ctx.workspaceId, { presenceGraceSec, settleSec }).catch(() => []),
+  ]);
+  const violations = [...orphaned, ...unbacked];
+  if (violations.length === 0) return;
+
+  const leaderByOwner = await resolveLeadersForHolders(
+    ctx.workspaceId,
+    [...new Set(violations.map((v) => v.holderOwnerId))],
+  );
+  const planned = planClaimIntegrityAlarms(violations, leaderByOwner);
+
+  for (const alarm of planned) {
+    // LOUD: a directed, WOKEN message to the holder + its fleet leader — the
+    // primary signal (never blocks the pass on a delivery failure).
+    try {
+      await sendMessage(CLAIM_INTEGRITY_IDENTITY, {
+        to: alarm.targets,
+        summary: alarm.summary,
+        body:
+          `${alarm.violation.detail}\n\n` +
+          `This is a LOUD claim-integrity alarm (fleet-reliability-verification-2026-07-10 P-001), not a ` +
+          `filed backlog item — reconcile the claim now: confirm who actually holds the work, then either ` +
+          `re-claim the plan item (coord:declare-intent / work_items:claim) or release the stale side ` +
+          `(work_items:release / plans:set-status) so the two stay in agreement.`,
+        category: 'claim-integrity-alarm',
+      });
+      await wakeRecipients(alarm.targets, { summary: alarm.summary, source: CLAIM_INTEGRITY_IDENTITY.ownerId });
+    } catch {
+      /* an alarm-delivery failure must not abort the pass — the improvement below still files */
+    }
+    // Durable audit trail (dedup-scoped): also the catch-all when nobody was
+    // reachable to wake (a stale/dead holder — the alarm still records the fact).
+    await captureImprovement({
+      title: `claim integrity: ${alarm.violation.kind} on ${alarm.violation.planSlug}#${alarm.violation.itemId}`,
+      kind: 'bug',
+      severity: 'major',
+      dedupScope: 'open',
+      foundDuring: 'system:claim-integrity-sweep',
+      subTopic: 'coordination',
+      body: `${alarm.violation.detail}\n\nAlarmed (directed + woken): ${alarm.targets.join(', ')}\n(fleet-reliability-verification-2026-07-10 P-001 / EI-8999)`,
+    }).catch(() => {
+      /* a capture failure must not abort the remaining alarms */
+    });
+  }
+});
 
 // ── EI-436: dormant-harness substrate_outbox GC ─────────────────────────────
 // The inline drain GC (outbox-drain.ts) deletes drained rows >24h ONLY for a

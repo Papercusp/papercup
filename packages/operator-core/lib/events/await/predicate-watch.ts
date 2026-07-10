@@ -20,6 +20,12 @@
  * Poll claiming is stamp-based (`last_polled_at = now()` inside FOR UPDATE SKIP
  * LOCKED) so the multiple hosts that run this poller (dev shell, :3170, :3070)
  * never double-poll a row in the same window.
+ *
+ * fleet-reliability-verification-2026-07-10 P-004: `findMatchingActivePredicateWatch`
+ * adds registration-time DEDUPE — a second caller registering the identical
+ * predicate joins the existing row's poller instead of starting a second one (the
+ * exact repro this closes: two agents each independently polling the same watermark
+ * SQL ~12+ times during the 2026-07-09/10 night shift).
  */
 
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
@@ -225,6 +231,54 @@ export async function registerPredicateWatch(input: {
 export async function getPredicateWatch(id: string): Promise<PredicateWatchRow | null> {
   const { sql } = getOrgPg();
   const rows = await sql`SELECT * FROM harness_shared.predicate_watches WHERE id = ${id}`;
+  return rows.length > 0 ? mapRow(rows[0]) : null;
+}
+
+/**
+ * EI-8998 dedup (fleet-reliability-verification-2026-07-10 P-004): find an ACTIVE row
+ * already polling the IDENTICAL predicate — same authority scope (workspace/role/
+ * harness, since a poll dispatches under the REGISTRANT's role envelope and must
+ * never silently borrow a different registrant's authority) and the same poll target
+ * + cardinality (tool/args/path/op/value/interval_sec/once). jsonb equality is
+ * structural (key order doesn't matter), so `args`/`value` compare correctly without
+ * a canonicalization step.
+ *
+ * Best-effort, not a hard DB constraint: two registrations racing within the same
+ * tick can still each insert a row (no unique index backs this), but the motivating
+ * repro — two agents independently registering the same watermark predicate minutes
+ * apart during a vigil — collapses to ONE polled row. The caller (watch:create) is
+ * responsible for attaching the new subscriber's `event_awaits` row to the MATCH's
+ * `eventKey` instead of calling `registerPredicateWatch` again.
+ */
+export async function findMatchingActivePredicateWatch(input: {
+  workspaceId: string;
+  role: string;
+  harnessSlug?: string | null;
+  tool: string;
+  args?: Record<string, unknown>;
+  path: string;
+  op: PredicateOp;
+  value?: unknown;
+  intervalSec?: number;
+  once?: boolean;
+}): Promise<PredicateWatchRow | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT * FROM harness_shared.predicate_watches
+     WHERE active
+       AND workspace_id = ${input.workspaceId}
+       AND role = ${input.role}
+       AND harness_slug IS NOT DISTINCT FROM ${input.harnessSlug ?? null}
+       AND tool = ${input.tool}
+       AND args = ${JSON.stringify(input.args ?? {})}::text::jsonb
+       AND path = ${input.path}
+       AND op = ${input.op}
+       AND value IS NOT DISTINCT FROM ${input.value === undefined ? null : JSON.stringify(input.value)}::text::jsonb
+       AND interval_sec = ${input.intervalSec ?? 60}
+       AND once = ${input.once ?? true}
+     ORDER BY created_at ASC
+     LIMIT 1
+  `;
   return rows.length > 0 ? mapRow(rows[0]) : null;
 }
 

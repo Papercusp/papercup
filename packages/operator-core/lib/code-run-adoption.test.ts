@@ -19,6 +19,11 @@ import {
   ADOPTION_MIN_SAMPLE,
   ADOPTION_CACHE_TTL_MS,
   CODE_RUN_ADOPTION_SQL,
+  CODE_RUN_ADOPTION_MAX_SINCE_DAYS,
+  CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS,
+  CODE_RUN_ADOPTION_ROW_CAP,
+  clampSinceDays,
+  buildCodeRunAdoptionQuery,
   __resetCodeRunAdoptionCacheForTests,
   type CallRow,
   type SpawnAdoptionRow,
@@ -162,8 +167,8 @@ describe('summarizeSpawnAdoption — adoptionRate edge', () => {
   });
 });
 
-describe('readCodeRunAdoption — runs the canonical SQL through an injected runner', () => {
-  it('passes sinceDays as the param and maps DB rows into a summary', async () => {
+describe('readCodeRunAdoption — runs the BOUNDED query (WI-3815) through an injected runner', () => {
+  it('runs the bounded, empty-params query and maps DB rows into a summary', async () => {
     const captured: { query: string; params: unknown[] }[] = [];
     const fakeRun = async <T,>(query: string, params: unknown[]): Promise<T[]> => {
       captured.push({ query, params });
@@ -173,21 +178,79 @@ describe('readCodeRunAdoption — runs the canonical SQL through an injected run
       ] as unknown as T[];
     };
     const out = await readCodeRunAdoption(fakeRun, { sinceDays: 14 });
-    expect(captured[0].params).toEqual([14]);
+    // WI-3815: an EMPTY params array — the days value is inlined (clamped, validated) into the
+    // query text itself, so the batch runs via postgres.js's simple protocol (multi-statement,
+    // one implicit transaction), which is what lets SET LOCAL scope to the scan that follows it.
+    expect(captured[0].params).toEqual([]);
     expect(captured[0].query).toContain('harness_shared.tool_invocations');
-    expect(captured[0].query).toBe(CODE_RUN_ADOPTION_SQL);
+    expect(captured[0].query).toBe(buildCodeRunAdoptionQuery(14));
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({ spawns: 2, opportunitySpawns: 2, opportunitySpawnsUsingCodeRun: 1 });
     expect(out[0].adoptionRate).toBeCloseTo(0.5, 5);
   });
 
   it('defaults to a 7-day window', async () => {
-    let seen: unknown[] = [];
-    await readCodeRunAdoption(async <T,>(_q: string, p: unknown[]): Promise<T[]> => {
-      seen = p;
+    let seenQuery = '';
+    await readCodeRunAdoption(async <T,>(q: string, _p: unknown[]): Promise<T[]> => {
+      seenQuery = q;
       return [] as unknown as T[];
     });
-    expect(seen).toEqual([7]);
+    expect(seenQuery).toContain("interval '7 days'");
+  });
+
+  it('clamps an out-of-range sinceDays instead of passing it straight to PG', async () => {
+    let seenQuery = '';
+    await readCodeRunAdoption(
+      async <T,>(q: string, _p: unknown[]): Promise<T[]> => {
+        seenQuery = q;
+        return [] as unknown as T[];
+      },
+      { sinceDays: 99999 },
+    );
+    expect(seenQuery).toContain(`interval '${CODE_RUN_ADOPTION_MAX_SINCE_DAYS} days'`);
+  });
+});
+
+describe('clampSinceDays (WI-3815)', () => {
+  it('passes through an in-range value', () => {
+    expect(clampSinceDays(14)).toBe(14);
+  });
+  it('defaults missing/undefined to 7', () => {
+    expect(clampSinceDays(undefined)).toBe(7);
+  });
+  it('floors a non-positive or non-finite value to 7', () => {
+    expect(clampSinceDays(0)).toBe(7);
+    expect(clampSinceDays(-5)).toBe(7);
+    expect(clampSinceDays(NaN)).toBe(7);
+  });
+  it('caps an oversized value at CODE_RUN_ADOPTION_MAX_SINCE_DAYS', () => {
+    expect(clampSinceDays(99999)).toBe(CODE_RUN_ADOPTION_MAX_SINCE_DAYS);
+  });
+  it('truncates a fractional value', () => {
+    expect(clampSinceDays(7.9)).toBe(7);
+  });
+});
+
+describe('CODE_RUN_ADOPTION_SQL — kept parameterized for ad-hoc dev:pg_query use (WI-3815)', () => {
+  it('is NOT what readCodeRunAdoption runs, but stays a valid standalone $1-parameterized query', () => {
+    expect(CODE_RUN_ADOPTION_SQL).toContain('$1');
+    expect(CODE_RUN_ADOPTION_SQL).not.toContain('SET LOCAL');
+    expect(CODE_RUN_ADOPTION_SQL).not.toContain('LIMIT');
+  });
+});
+
+describe('buildCodeRunAdoptionQuery (WI-3815)', () => {
+  it('embeds a SET LOCAL statement_timeout ahead of the scan, in the same batch', () => {
+    const q = buildCodeRunAdoptionQuery(7);
+    expect(q.trim().startsWith(`SET LOCAL statement_timeout = '${CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS}ms';`)).toBe(true);
+  });
+  it('inlines the CLAMPED window as an interval literal, not a $1 param', () => {
+    expect(buildCodeRunAdoptionQuery(200)).toContain(`interval '${CODE_RUN_ADOPTION_MAX_SINCE_DAYS} days'`);
+    expect(buildCodeRunAdoptionQuery(3)).toContain("interval '3 days'");
+    expect(buildCodeRunAdoptionQuery(3)).not.toContain('$1');
+  });
+  it('caps the result with a LIMIT', () => {
+    expect(buildCodeRunAdoptionQuery(7)).toContain(`LIMIT ${CODE_RUN_ADOPTION_ROW_CAP}`);
   });
 });
 

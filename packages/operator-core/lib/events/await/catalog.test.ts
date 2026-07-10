@@ -12,6 +12,7 @@ import {
   buildKey,
   renderCatalog,
   sugaredFamilies,
+  familyKeyPrefix,
 } from './catalog';
 
 describe('events catalog — registry integrity', () => {
@@ -123,5 +124,40 @@ describe('catalogEntry', () => {
   it('finds by family and returns undefined for unknown', () => {
     expect(catalogEntry('deploy')?.keyTemplate).toBe('release:deployed:<sha>');
     expect(catalogEntry('does-not-exist')).toBeUndefined();
+  });
+});
+
+describe('familyKeyPrefix (EI-9000 — the live-awaiter-count join key)', () => {
+  it('strips the trailing colon before an optional/required param placeholder', () => {
+    expect(familyKeyPrefix(catalogEntry('deploy')!)).toBe('release:deployed');
+    expect(familyKeyPrefix(catalogEntry('work-item')!)).toBe('work-item:status');
+    expect(familyKeyPrefix(catalogEntry('checkpoint')!)).toBe('release:green');
+    expect(familyKeyPrefix(catalogEntry('plan-item')!)).toBe('plan-item:done');
+  });
+
+  it('a literal-key (no unresolved-prefix-worthy param) family prefix is its keyTemplate up to the optional param', () => {
+    expect(familyKeyPrefix(catalogEntry('deploy-failed')!)).toBe('release:deploy-failed');
+    expect(familyKeyPrefix(catalogEntry('checkpoint-red')!)).toBe('green-checkpoint:red');
+  });
+
+  it('every family prefix is unique (no two families would double-count a live await)', () => {
+    const prefixes = EVENT_CATALOG.map((e) => familyKeyPrefix(e));
+    expect(new Set(prefixes).size).toBe(prefixes.length);
+  });
+
+  it('the prefix, with a trailing "%", LIKE-matches both the global key (when buildable) and a concrete interpolated key', () => {
+    for (const e of EVENT_CATALOG) {
+      const prefix = familyKeyPrefix(e);
+      const hasRequired = e.params.some((p) => p.required);
+      if (!hasRequired) {
+        // no required params → the global key is buildable and must match the prefix
+        const globalKey = buildKey(e.family, {});
+        expect(globalKey.startsWith(prefix), `${e.family}: '${globalKey}' should start with '${prefix}'`).toBe(true);
+      }
+      // always buildable with every param supplied — the concrete key must match too
+      const concreteParams = Object.fromEntries(e.params.map((p) => [p.name, 'x']));
+      const concreteKey = buildKey(e.family, concreteParams);
+      expect(concreteKey.startsWith(prefix), `${e.family}: '${concreteKey}' should start with '${prefix}'`).toBe(true);
+    }
   });
 });

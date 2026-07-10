@@ -12,19 +12,21 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { EVENT_CATALOG, renderCatalog } from '../../events/await/catalog';
+import { EVENT_CATALOG, renderCatalog, familyKeyPrefix, type CatalogRow } from '../../events/await/catalog';
+import { countActiveAwaitsByPrefixes } from '../../events/await/store';
 
 export default defineTool({
   name: 'events:catalog',
   description:
-    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, and its sugar verb (e.g. deploy:await). Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
+    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
   capability: 'events:read',
   guidance: {
-    when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X.',
-    notWhen: 'You already know the exact key — just events:await it. To see server REACTION wiring ("what fires what") use events:graph; to see YOUR pending awaits + recent wakes use events:status.',
+    when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).',
+    notWhen: 'You already know the exact key — just events:await it. To see server REACTION wiring ("what fires what") use events:graph; to see YOUR OWN pending awaits + recent wakes use events:status.',
     chaining: 'events:catalog → pick a family → events:await { event: <its key> } (or its sugar verb, e.g. deploy:await) → end your turn.',
     seeAlso: [
       'events:await (arm a wait on a key you found here)',
+      'events:emit (its `waiters`/`woken` counts are the emit-TIME twin of this READ-time live_awaiters)',
       'events:graph (server reaction wiring — a different question)',
       'deploy:await / checkpoint:await / work-item:await (named sugar for the common waits)',
     ],
@@ -41,22 +43,48 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('true = only families whose emitter fires TODAY (hide not-yet-wired Phase-2 keys).'),
+    liveAwaiters: z
+      .boolean()
+      .optional()
+      .describe('default true — attach `live_awaiters` (current registered-await count) per family. Pass false to skip the extra DB read on a hot path that only needs the static catalog.'),
   }),
   async handler(args) {
     let rows = renderCatalog();
     if (args.family) rows = rows.filter((r) => r.family === args.family);
     if (args.awaitable_now) rows = rows.filter((r) => r.awaitable_now);
+
+    // EI-9000: live awaiter counts — "is anyone actually listening" per family,
+    // the read-time twin of events:emit's waiters/woken. Best-effort: a DB hiccup
+    // here must never break catalog discoverability, so a failed count read just
+    // omits live_awaiters rather than failing the whole call.
+    if (args.liveAwaiters !== false && rows.length > 0) {
+      const wanted = new Set(rows.map((r) => r.family));
+      const entries = EVENT_CATALOG.filter((e) => wanted.has(e.family));
+      const prefixByFamily = new Map(entries.map((e) => [e.family, familyKeyPrefix(e)]));
+      try {
+        const counts = await countActiveAwaitsByPrefixes([...prefixByFamily.values()]);
+        rows = rows.map((r) => {
+          const prefix = prefixByFamily.get(r.family);
+          const live_awaiters = prefix !== undefined ? (counts.get(prefix) ?? 0) : undefined;
+          return live_awaiters !== undefined ? { ...r, live_awaiters } : r;
+        });
+      } catch {
+        /* best-effort — omit live_awaiters rather than fail catalog discovery */
+      }
+    }
+
+    const rowsOut: CatalogRow[] = rows;
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            count: rows.length,
+            count: rowsOut.length,
             total: EVENT_CATALOG.length,
             note:
-              'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable.',
-            families: rows,
+              'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one.',
+            families: rowsOut,
           }),
         },
       ],

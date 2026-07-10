@@ -99,21 +99,19 @@ forms + `::jsonb[]`). The federation round-trip test stays green because
 sections below are now historical context — **new code should use
 `::text::jsonb`**.
 
-<Aside type="caution" title="The rule is wired, but the tree is not currently clean (verified 2026-07-02)">
-The 38-file sweep was a point-in-time cleanup, not a standing guarantee: running
-`npx eslint packages/operator-core/lib` today reports **50+ live
-`no-bare-jsonb-cast` violations** (54 counted 2026-07-02, up from 52 earlier the
-same day — the count moves with ordinary fleet activity) re-introduced since
-the sweep (e.g. `lib/system-health/perf-regression-rig.ts`,
-`lib/work-item-redundancy.ts`, `lib/role-capability-grants.ts`,
-`lib/agent-tools/routines/set.ts`, `lib/pr-host/pr-review-report-store.ts`,
-`lib/harness/improvements/watchdog-tunables.ts`,
-`lib/harness/git-sync/pipeline-events.ts`, `lib/iq-battery/corpus.ts`,
-`lib/replay/store.ts`) — so whatever lint gate is supposed to catch this is
-evidently linting changed files only, not the whole tree, on at least some
-merge paths. Tracked as **EI-6682**. Don't trust "the lint rule enforces it" as
-proof a given file is fixed — grep it (below) or run eslint on that file
-directly.
+<Aside type="caution" title="The rule is wired, and the tree is now near-clean (re-verified 2026-07-10)">
+The 38-file sweep was a point-in-time cleanup, not a standing guarantee — as of
+2026-07-02 the tree had drifted back up to 50+ live `no-bare-jsonb-cast`
+violations. That regression has since been cleaned up: a full-tree
+`eslint packages/operator-core/lib packages/coordination/src
+libs/papercusp/libs/db/src` on 2026-07-10 reports only **3 remaining
+violations** — `lib/harness/git-sync/git-sync-action.ts`,
+`lib/harness/join-hive-live-rekey-federation.integration.test.ts`, and
+`lib/session-archive.ts`. The count still **moves with ordinary fleet
+activity** (a bare cast can be re-introduced by any new commit until the gate
+lints the whole tree, not just changed files — tracked as **EI-6682**), so
+don't trust "the lint rule enforces it" as proof a given file is fixed — grep
+it (below) or run eslint on that file directly.
 </Aside>
 
 **Fixed 2026-06-03 (superseded by the sweep above)** — every getOrgPg-client

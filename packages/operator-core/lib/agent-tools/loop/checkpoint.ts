@@ -38,6 +38,7 @@ import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
 import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
+import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
 /**
  * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
@@ -272,6 +273,8 @@ export default defineTool({
       continuation = undefined;
     }
 
+    // WI-3801: warn-only nudge — undefined (no field) on a clean/cleared write.
+    const provenanceLint = stored !== null ? provenanceLintField(stored) : undefined;
     return {
       content: [
         {
@@ -284,6 +287,7 @@ export default defineTool({
             length: stored?.length ?? 0,
             walls: walls.length,
             ...(continuation ? { continuation } : {}),
+            ...(provenanceLint ? { provenanceLint } : {}),
           }),
         },
       ],

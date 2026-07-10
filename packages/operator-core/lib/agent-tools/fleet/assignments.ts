@@ -47,6 +47,10 @@ import {
 } from '../../plan-item-coverage';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { fetchContextPressure, type ContextPressureBucket } from '../coordination/context-pressure';
+import {
+  fetchUnansweredDirected,
+  type UnansweredDirectedSummary,
+} from '../coordination/unanswered-directed';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow } from '../plans/source';
@@ -313,11 +317,36 @@ export async function decorateContextPressure<
   return agents;
 }
 
+/**
+ * P-007 (fleet-reliability-verification-2026-07-10): stamp each agent row with
+ * `unanswered` — directed messages (never a broadcast/audience send) addressed
+ * to this member with no reply/ack yet, from the recent lookback window
+ * (see unanswered-directed.ts for the exact definitions). The night-shift gap
+ * this closes: a leader hand-tracking "who hasn't answered me" from memory
+ * across dozens of monitor wakes. Exported with an injectable fetcher so it
+ * unit-tests without PG (the decorateContextPressure pattern). Mutates in
+ * place; best-effort at the call site — a failure just omits the field.
+ */
+export async function decorateUnansweredDirected<
+  T extends AgentAssignment & { unanswered?: UnansweredDirectedSummary },
+>(
+  agents: T[],
+  fetchUnanswered: (ownerIds: string[]) => Promise<Map<string, UnansweredDirectedSummary>> = fetchUnansweredDirected,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const unanswered = await fetchUnanswered(agents.map((a) => a.agentId));
+  for (const a of agents) {
+    const u = unanswered.get(a.agentId);
+    if (u) a.unanswered = u;
+  }
+  return agents;
+}
+
 export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead — THE relaunch/re-steer field, EI-8995) and `wakeMode` (auto|manual — manual STAGES directed wakes for owner release). Read this, not a stale coord broadcast.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead — THE relaunch/re-steer field, EI-8995), `wakeMode` (auto|manual — manual STAGES directed wakes for owner release), and `unanswered` (count + oldestAgeMs + a few newest — directed messages to this member with no reply/ack yet). Read this, not a stale coord broadcast.',
   guidance: {
     when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
@@ -424,6 +453,7 @@ export default defineTool({
     const agents: (AgentAssignment & {
       sessionState?: SessionState | null;
       contextPressure?: ContextPressureBucket | null;
+      unanswered?: UnansweredDirectedSummary;
     })[] = groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
@@ -437,9 +467,13 @@ export default defineTool({
     // keys — so a deliberately-benched member reads as parked, not abandoned.
     // Best-effort: a failure just omits the field.
     await decorateParkedOn(agents).catch(() => {});
-    // P-007: stamp `contextPressure` (ok|high|critical|null) — best-effort, never
-    // breaks the read. Independent of the joins above (its own batch query).
+    // P-007 (fleet-deltas-leader-primitives): stamp `contextPressure`
+    // (ok|high|critical|null) — best-effort, never breaks the read. Independent
+    // of the joins above (its own batch query).
     await decorateContextPressure(agents).catch(() => {});
+    // P-007 (fleet-reliability-verification-2026-07-10): stamp `unanswered` —
+    // directed messages with no reply/ack yet. Best-effort, own batch query.
+    await decorateUnansweredDirected(agents).catch(() => {});
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
@@ -568,6 +602,10 @@ export default defineTool({
       // quiet-below-LOUD philosophy).
       high_context: agents.filter((a) => a.contextPressure === 'high').length,
       critical_context: agents.filter((a) => a.contextPressure === 'critical').length,
+      // P-007 (fleet-reliability-verification-2026-07-10): members with >=1
+      // unanswered directed message right now — the mechanical "who hasn't
+      // answered me" read a leader otherwise hand-tracks across wakes.
+      unanswered_directed: agents.filter((a) => (a.unanswered?.count ?? 0) > 0).length,
     };
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so
