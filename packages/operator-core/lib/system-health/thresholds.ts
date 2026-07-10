@@ -123,13 +123,23 @@ export function countLeadingZeroTokenWakes(
 export function queenPlacementStalled(args: {
   consecutiveZeroTokenWakes: number;
   frontier: number;
+  /** Of `frontier`, how many are long-unplaced/gated (WI-3597) — subtracted so a
+   *  frontier that is ALL stuck reads as correct idle, not a placement stall.
+   *  Absent/0 ⇒ every frontier item counts as fresh (prior behaviour). */
+  frontierStuck?: number;
   paused: boolean;
   beesBusy?: number;
   beesCap?: number;
   minConsecutive?: number;
 }): boolean {
   if (args.paused) return false;
-  if (args.frontier <= 0) return false; // nothing for the Queen to place → not a stall
+  // Only FRESH frontier — unblocked AND not aged past the stuck window — is
+  // placeable work the Queen is expected to act on. When every ready item has
+  // been waiting for hours while she turns on cadence, the frontier is gated on
+  // something she can't resolve (owner decision / live rig / fixture): correct
+  // idle, not a stall (WI-3597, the false "queen-workitem-selection broken" grade).
+  const fresh = args.frontier - (args.frontierStuck ?? 0);
+  if (fresh <= 0) return false; // no FRESH placeable work → not a stall
   if (
     typeof args.beesCap === 'number' && args.beesCap > 0 &&
     typeof args.beesBusy === 'number' && args.beesBusy >= args.beesCap

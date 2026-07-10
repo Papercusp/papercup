@@ -201,6 +201,13 @@ export interface WorkItemsHealth {
 export interface WorkFeedHealth {
   /** Ready-to-place frontier items (unblocked todo feature-family). */
   frontier: number;
+  /** Of `frontier`, the count still unplaced past the stuck window
+   *  (PAPERCUSP_FRONTIER_STUCK_HOURS, default 3h). An unblocked item the Queen
+   *  leaves waiting for hours while she turns on cadence isn't fresh placeable
+   *  work — it's gated on something she can't resolve (owner decision / live
+   *  rig / fixture), i.e. correct idle. A frontier that is ALL stuck must NOT
+   *  read as a placement stall (WI-3597). Subset of `frontier`. */
+  frontierStuck: number;
   /** Lanes held by unsatisfied blocked_by. */
   frontierBlocked: number;
   startedPlans: number;

@@ -409,10 +409,30 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
   });
 }
 
+/** WI-3597: the age (hours) past which a ready-but-unplaced frontier item counts
+ *  as "stuck/gated" rather than fresh placeable work. Env-tunable; default 3h —
+ *  far beyond the Queen's ~minutes placement cadence, so a stuck item is one she
+ *  has demonstrably chosen not to place (gated on owner/rig/fixture), not one she
+ *  simply hasn't reached yet. */
+function frontierStuckHours(): number {
+  const raw = Number(process.env.PAPERCUSP_FRONTIER_STUCK_HOURS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+}
+
+/** Count ranked frontier candidates whose age exceeds the stuck window. `ageDays`
+ *  is pre-computed on every candidate by the survey (frontierRowToCandidate), so
+ *  this needs no extra query. */
+function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number }>): number {
+  const stuckDays = frontierStuckHours() / 24;
+  let n = 0;
+  for (const r of rows) if ((r.ageDays ?? 0) >= stuckDays) n += 1;
+  return n;
+}
+
 async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHealth>> {
   return panelSafe<WorkFeedHealth>('workFeed', async () => {
     const { ws, potSlug } = ctx;
-    let frontier = 0, frontierBlocked = 0, startedPlans = 0;
+    let frontier = 0, frontierStuck = 0, frontierBlocked = 0, startedPlans = 0;
     if (potSlug) {
       try {
         // K1 (workspace-scoped-coordination P-003 / D-002): the ONE central-dispatcher
@@ -425,12 +445,14 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
           const { surveyWorkspace } = await import('../hive/survey');
           const ws_survey = await surveyWorkspace(ws, { fallbackHome: potSlug });
           frontier = ws_survey.crossHive.frontier.length;
+          frontierStuck = countStuckFrontier(ws_survey.crossHive.frontier);
           frontierBlocked = ws_survey.crossHive.frontierBlocked;
           startedPlans = ws_survey.crossHive.plans.length;
         } else {
           const { surveyHive } = await import('../hive/survey');
           const survey = await surveyHive(ws, potSlug);
           frontier = survey.frontier.length;
+          frontierStuck = countStuckFrontier(survey.frontier);
           frontierBlocked = survey.frontierBlocked;
           startedPlans = survey.plans.length;
         }
@@ -457,7 +479,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       autoEligibleStuck = digest.autoEligible.filter((i) => (i.attempts ?? 0) === 0).length;
     } catch { /* improvements unreadable — leave 0 (the dead-routine signal still computes) */ }
     const data: WorkFeedHealth = {
-      frontier, frontierBlocked, startedPlans, autoEligibleStuck,
+      frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
       deadRoutines: deadRoutineNames.length, deadRoutineNames,
     };
     const status = workFeedStatus(data);
@@ -465,11 +487,12 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       status,
       summary: data.deadRoutines > 0
         ? `DEAD ROUTINE(S): ${deadRoutineNames.slice(0, 3).join(', ')}`
-        : `${frontier} ready, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}`,
+        : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
         m('frontier', frontier),
+        m('stuck', frontierStuck),
         m('blocked', frontierBlocked),
         m('started plans', startedPlans),
         m('auto-stuck', autoEligibleStuck, autoEligibleStuck > 0 ? 'warn' : undefined),

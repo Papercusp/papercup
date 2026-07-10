@@ -108,6 +108,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     queenPlacementStalled({
       consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
       frontier: workFeed.frontier,
+      frontierStuck: workFeed.frontierStuck,
       paused: newWorkPaused,
       beesBusy: bees.running,
     })
@@ -426,6 +427,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
   // the bees panel's placement dispositions (see mapping notes above).
   brief.workFeed = {
     frontier: workFeed?.frontier ?? 0,
+    frontierStuck: workFeed?.frontierStuck ?? 0, // WI-3597: long-unplaced/gated subset — credited as correct idle by queenPlacementStalled
     autoEligibleStuck: workFeed?.autoEligibleStuck ?? 0, // now wired from WorkFeedHealth — activates the work-feed-stuck detector
     deadRoutines: workFeed?.deadRoutines ?? 0,
     blockedStranded: bees?.placements.stranded ?? 0,
